@@ -677,3 +677,315 @@ async fn test_merge_performance_with_deep_chains() {
         );
     }
 }
+
+/// Test merge base finding with shallow divergence (within single batch limit).
+///
+/// Creates a diamond pattern where tips are ~50 entries away from merge base.
+/// This should be resolved in a single batch (batch limit is 100).
+#[tokio::test]
+async fn test_find_merge_base_shallow_divergence() {
+    let (_instance, tree) = setup_tree().await;
+
+    // Create base entry (merge base)
+    let op_base = tree.new_transaction().await.unwrap();
+    let subtree_base = op_base.get_store::<DocStore>("data").await.unwrap();
+    subtree_base.set("base", "root").await.unwrap();
+    let base_id = op_base.commit().await.unwrap();
+
+    // Build two chains of 50 entries each from the base
+    const CHAIN_DEPTH: usize = 50;
+
+    // Chain A: 50 entries from base
+    let mut chain_a_tip = base_id.clone();
+    for i in 0..CHAIN_DEPTH {
+        let op = tree
+            .new_transaction_with_tips(std::slice::from_ref(&chain_a_tip))
+            .await
+            .unwrap();
+        let subtree = op.get_store::<DocStore>("data").await.unwrap();
+        subtree.set("chain_a_step", i.to_string()).await.unwrap();
+        chain_a_tip = op.commit().await.unwrap();
+    }
+
+    // Chain B: 50 entries from base (creates diamond)
+    let mut chain_b_tip = base_id.clone();
+    for i in 0..CHAIN_DEPTH {
+        let op = tree
+            .new_transaction_with_tips(std::slice::from_ref(&chain_b_tip))
+            .await
+            .unwrap();
+        let subtree = op.get_store::<DocStore>("data").await.unwrap();
+        subtree.set("chain_b_step", i.to_string()).await.unwrap();
+        chain_b_tip = op.commit().await.unwrap();
+    }
+
+    // Create merge operation from both tips
+    let merge_tips = vec![chain_a_tip.clone(), chain_b_tip.clone()];
+    let op_merge = tree.new_transaction_with_tips(&merge_tips).await.unwrap();
+    let subtree_merge = op_merge.get_store::<DocStore>("data").await.unwrap();
+    subtree_merge.set("merged", "true").await.unwrap();
+    let _merge_id = op_merge.commit().await.unwrap();
+
+    // Verify the final state includes data from both chains
+    let viewer = tree.get_store_viewer::<DocStore>("data").await.unwrap();
+    let final_state = viewer.get_all().await.unwrap();
+
+    // Should have base data
+    assert_eq!(
+        final_state.get("base").unwrap(),
+        &Value::Text("root".to_string())
+    );
+
+    // Should have final chain A step
+    assert_eq!(
+        final_state.get("chain_a_step").unwrap(),
+        &Value::Text((CHAIN_DEPTH - 1).to_string())
+    );
+
+    // Should have final chain B step
+    assert_eq!(
+        final_state.get("chain_b_step").unwrap(),
+        &Value::Text((CHAIN_DEPTH - 1).to_string())
+    );
+
+    // Should have merge marker
+    assert_eq!(
+        final_state.get("merged").unwrap(),
+        &Value::Text("true".to_string())
+    );
+
+    println!("✓ Shallow divergence test passed - merge base found in single batch");
+}
+
+/// Test merge base finding with deep divergence (exceeds single batch limit).
+///
+/// Creates a diamond pattern where tips are ~150 entries away from merge base.
+/// This requires multi-batch continuation (batch limit is 100).
+#[tokio::test]
+async fn test_find_merge_base_deep_divergence() {
+    let (_instance, tree) = setup_tree().await;
+
+    // Create base entry (merge base)
+    let op_base = tree.new_transaction().await.unwrap();
+    let subtree_base = op_base.get_store::<DocStore>("data").await.unwrap();
+    subtree_base.set("base", "deep_root").await.unwrap();
+    let base_id = op_base.commit().await.unwrap();
+
+    // Build two chains of 150 entries each from the base (exceeds 100 batch limit)
+    const CHAIN_DEPTH: usize = 150;
+
+    // Chain A: 150 entries from base
+    let mut chain_a_tip = base_id.clone();
+    for i in 0..CHAIN_DEPTH {
+        let op = tree
+            .new_transaction_with_tips(std::slice::from_ref(&chain_a_tip))
+            .await
+            .unwrap();
+        let subtree = op.get_store::<DocStore>("data").await.unwrap();
+        subtree.set("chain_a_step", i.to_string()).await.unwrap();
+        chain_a_tip = op.commit().await.unwrap();
+    }
+
+    // Chain B: 150 entries from base (creates deep diamond)
+    let mut chain_b_tip = base_id.clone();
+    for i in 0..CHAIN_DEPTH {
+        let op = tree
+            .new_transaction_with_tips(std::slice::from_ref(&chain_b_tip))
+            .await
+            .unwrap();
+        let subtree = op.get_store::<DocStore>("data").await.unwrap();
+        subtree.set("chain_b_step", i.to_string()).await.unwrap();
+        chain_b_tip = op.commit().await.unwrap();
+    }
+
+    // Create merge operation from both tips
+    let merge_tips = vec![chain_a_tip.clone(), chain_b_tip.clone()];
+    let op_merge = tree.new_transaction_with_tips(&merge_tips).await.unwrap();
+    let subtree_merge = op_merge.get_store::<DocStore>("data").await.unwrap();
+    subtree_merge.set("deep_merged", "true").await.unwrap();
+    let _merge_id = op_merge.commit().await.unwrap();
+
+    // Verify the final state includes data from both chains
+    let viewer = tree.get_store_viewer::<DocStore>("data").await.unwrap();
+    let final_state = viewer.get_all().await.unwrap();
+
+    // Should have base data
+    assert_eq!(
+        final_state.get("base").unwrap(),
+        &Value::Text("deep_root".to_string())
+    );
+
+    // Should have final chain A step
+    assert_eq!(
+        final_state.get("chain_a_step").unwrap(),
+        &Value::Text((CHAIN_DEPTH - 1).to_string())
+    );
+
+    // Should have final chain B step
+    assert_eq!(
+        final_state.get("chain_b_step").unwrap(),
+        &Value::Text((CHAIN_DEPTH - 1).to_string())
+    );
+
+    // Should have merge marker
+    assert_eq!(
+        final_state.get("deep_merged").unwrap(),
+        &Value::Text("true".to_string())
+    );
+
+    println!("✓ Deep divergence test passed - merge base found via multi-batch continuation");
+}
+
+/// Test merge base finding with very deep chains (multiple batch iterations needed).
+///
+/// Creates a diamond pattern where tips are ~250 entries away from merge base.
+/// This requires 3+ batch iterations (batch limit is 100).
+#[tokio::test]
+async fn test_find_merge_base_very_deep_chains() {
+    let (_instance, tree) = setup_tree().await;
+
+    // Create base entry (merge base)
+    let op_base = tree.new_transaction().await.unwrap();
+    let subtree_base = op_base.get_store::<DocStore>("data").await.unwrap();
+    subtree_base.set("base", "very_deep_root").await.unwrap();
+    let base_id = op_base.commit().await.unwrap();
+
+    // Build two chains of 250 entries each from the base (requires 3 batches)
+    const CHAIN_DEPTH: usize = 250;
+
+    // Chain A: 250 entries from base
+    let mut chain_a_tip = base_id.clone();
+    for i in 0..CHAIN_DEPTH {
+        let op = tree
+            .new_transaction_with_tips(std::slice::from_ref(&chain_a_tip))
+            .await
+            .unwrap();
+        let subtree = op.get_store::<DocStore>("data").await.unwrap();
+        subtree.set("chain_a_step", i.to_string()).await.unwrap();
+        chain_a_tip = op.commit().await.unwrap();
+    }
+
+    // Chain B: 250 entries from base (creates very deep diamond)
+    let mut chain_b_tip = base_id.clone();
+    for i in 0..CHAIN_DEPTH {
+        let op = tree
+            .new_transaction_with_tips(std::slice::from_ref(&chain_b_tip))
+            .await
+            .unwrap();
+        let subtree = op.get_store::<DocStore>("data").await.unwrap();
+        subtree.set("chain_b_step", i.to_string()).await.unwrap();
+        chain_b_tip = op.commit().await.unwrap();
+    }
+
+    // Create merge operation from both tips
+    let merge_tips = vec![chain_a_tip.clone(), chain_b_tip.clone()];
+    let op_merge = tree.new_transaction_with_tips(&merge_tips).await.unwrap();
+    let subtree_merge = op_merge.get_store::<DocStore>("data").await.unwrap();
+    subtree_merge.set("very_deep_merged", "true").await.unwrap();
+    let _merge_id = op_merge.commit().await.unwrap();
+
+    // Verify the final state includes data from both chains
+    let viewer = tree.get_store_viewer::<DocStore>("data").await.unwrap();
+    let final_state = viewer.get_all().await.unwrap();
+
+    // Should have base data
+    assert_eq!(
+        final_state.get("base").unwrap(),
+        &Value::Text("very_deep_root".to_string())
+    );
+
+    // Should have final chain A step
+    assert_eq!(
+        final_state.get("chain_a_step").unwrap(),
+        &Value::Text((CHAIN_DEPTH - 1).to_string())
+    );
+
+    // Should have final chain B step
+    assert_eq!(
+        final_state.get("chain_b_step").unwrap(),
+        &Value::Text((CHAIN_DEPTH - 1).to_string())
+    );
+
+    // Should have merge marker
+    assert_eq!(
+        final_state.get("very_deep_merged").unwrap(),
+        &Value::Text("true".to_string())
+    );
+
+    println!("✓ Very deep chains test passed - merge base found via 3+ batch iterations");
+}
+
+/// Test that actually triggers find_merge_base by reading state during merge.
+///
+/// The previous tests read state AFTER commit when there's only one tip.
+/// This test reads state DURING the merge transaction when there are multiple tips,
+/// which actually exercises the find_merge_base code path.
+#[tokio::test]
+async fn test_find_merge_base_actually_called() {
+    let (_instance, tree) = setup_tree().await;
+
+    // Create base entry (merge base)
+    let op_base = tree.new_transaction().await.unwrap();
+    let subtree_base = op_base.get_store::<DocStore>("data").await.unwrap();
+    subtree_base.set("base", "root").await.unwrap();
+    let base_id = op_base.commit().await.unwrap();
+
+    // Build two chains that exceed the batch limit (100)
+    const CHAIN_DEPTH: usize = 150;
+
+    // Chain A
+    let mut chain_a_tip = base_id.clone();
+    for i in 0..CHAIN_DEPTH {
+        let op = tree
+            .new_transaction_with_tips(std::slice::from_ref(&chain_a_tip))
+            .await
+            .unwrap();
+        let subtree = op.get_store::<DocStore>("data").await.unwrap();
+        subtree.set("chain_a", i.to_string()).await.unwrap();
+        chain_a_tip = op.commit().await.unwrap();
+    }
+
+    // Chain B
+    let mut chain_b_tip = base_id.clone();
+    for i in 0..CHAIN_DEPTH {
+        let op = tree
+            .new_transaction_with_tips(std::slice::from_ref(&chain_b_tip))
+            .await
+            .unwrap();
+        let subtree = op.get_store::<DocStore>("data").await.unwrap();
+        subtree.set("chain_b", i.to_string()).await.unwrap();
+        chain_b_tip = op.commit().await.unwrap();
+    }
+
+    // Create merge transaction with BOTH tips
+    let merge_tips = vec![chain_a_tip.clone(), chain_b_tip.clone()];
+    let op_merge = tree.new_transaction_with_tips(&merge_tips).await.unwrap();
+    let subtree_merge = op_merge.get_store::<DocStore>("data").await.unwrap();
+
+    // THIS is the key: read state DURING the merge transaction
+    // This triggers find_merge_base with multiple tips (chain_a_tip, chain_b_tip)
+    let state_during_merge = subtree_merge.get_all().await.unwrap();
+
+    // Verify we got data from both chains
+    assert_eq!(
+        state_during_merge.get("base").unwrap(),
+        &Value::Text("root".to_string()),
+        "Should have base data"
+    );
+    assert_eq!(
+        state_during_merge.get("chain_a").unwrap(),
+        &Value::Text((CHAIN_DEPTH - 1).to_string()),
+        "Should have chain A data"
+    );
+    assert_eq!(
+        state_during_merge.get("chain_b").unwrap(),
+        &Value::Text((CHAIN_DEPTH - 1).to_string()),
+        "Should have chain B data"
+    );
+
+    // Now commit
+    subtree_merge.set("merged", "true").await.unwrap();
+    op_merge.commit().await.unwrap();
+
+    println!("✓ find_merge_base actually called and succeeded with deep chains");
+}

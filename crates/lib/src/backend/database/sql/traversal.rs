@@ -53,100 +53,74 @@ pub async fn get_store_tips_up_to_entries(
 
     let pool = backend.pool();
 
-    // Get all entries in the store that are reachable from main_entries
-    // This is a complex query - for now we'll do it iteratively
+    // Use a single CTE to find all store entries reachable from main_entries
+    // This replaces the O(N²) iterative BFS with a single query
 
-    // First, get all store entries reachable from the main entries
-    let mut reachable: HashSet<ID> = HashSet::new();
-    let mut to_visit: VecDeque<ID> = main_entries.iter().cloned().collect();
-
-    while let Some(entry_id) = to_visit.pop_front() {
-        if reachable.contains(&entry_id) {
-            continue;
-        }
-
-        // Check if this entry is in the store
-        let in_store: Option<(i32,)> =
-            sqlx::query_as("SELECT 1 FROM subtrees WHERE entry_id = $1 AND store_name = $2")
-                .bind(entry_id.to_string())
-                .bind(store)
-                .fetch_optional(pool)
-                .await
-                .sql_context("Failed to check store membership")?;
-
-        if in_store.is_some() {
-            reachable.insert(entry_id.clone());
-        }
-
-        // Add tree parents to visit
-        let parent_rows: Vec<(String,)> =
-            sqlx::query_as("SELECT parent_id FROM tree_parents WHERE child_id = $1")
-                .bind(entry_id.to_string())
-                .fetch_all(pool)
-                .await
-                .sql_context("Failed to get tree parents")?;
-
-        for (parent_id,) in parent_rows {
-            let parent_id = ID::from(parent_id);
-            if !reachable.contains(&parent_id) {
-                to_visit.push_back(parent_id);
-            }
-        }
-    }
-
-    // Now find which of the reachable entries are tips (have no children in the store)
-    // O(n) algorithm: collect all parents in one query, then filter
-    if reachable.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    // Build IN clause for reachable IDs
-    let reachable_vec: Vec<String> = reachable.iter().map(|id| id.to_string()).collect();
-    let placeholders: Vec<String> = (1..=reachable_vec.len())
-        .map(|i| format!("${}", i + 1)) // +1 because $1 is store_name
+    // Build UNION ALL clause for starting entries
+    let start_selects: Vec<String> = (1..=main_entries.len())
+        .map(|i| format!("SELECT ${} AS id", i + 1)) // +1 because $1 is store_name
         .collect();
-    let in_clause = placeholders.join(", ");
+    let starts_union = start_selects.join(" UNION ALL ");
 
-    // Single query to get all parent IDs within the reachable set
+    // CTE query that:
+    // 1. Recursively traverses ancestors via tree_parents
+    // 2. Joins with subtrees to find entries in the store
+    // 3. Finds tips by excluding entries that are parents of other reachable entries
     let sql = format!(
-        "SELECT DISTINCT parent_id FROM store_parents
-         WHERE store_name = $1
-         AND child_id IN ({in_clause})
-         AND parent_id IN ({in_clause})"
+        "WITH RECURSIVE reachable AS (
+            -- Start from main_entries
+            {starts_union}
+
+            UNION
+
+            -- Follow tree parents
+            SELECT tp.parent_id AS id
+            FROM reachable r
+            JOIN tree_parents tp ON tp.child_id = r.id
+        ),
+        -- Filter to entries that are in the store
+        store_entries AS (
+            SELECT DISTINCT r.id
+            FROM reachable r
+            JOIN subtrees s ON s.entry_id = r.id AND s.store_name = $1
+        ),
+        -- Find entries that are parents of other store entries
+        non_tips AS (
+            SELECT DISTINCT sp.parent_id AS id
+            FROM store_entries se
+            JOIN store_parents sp ON sp.child_id = se.id AND sp.store_name = $1
+            WHERE sp.parent_id IN (SELECT id FROM store_entries)
+        )
+        -- Tips are store entries that are not parents
+        SELECT se.id FROM store_entries se
+        WHERE se.id NOT IN (SELECT id FROM non_tips)"
     );
 
     let mut query = sqlx::query_as::<_, (String,)>(&sql).bind(store);
-    // Bind child_id IN clause
-    for id in &reachable_vec {
-        query = query.bind(id);
-    }
-    // Bind parent_id IN clause
-    for id in &reachable_vec {
-        query = query.bind(id);
+    for entry in main_entries {
+        query = query.bind(entry.to_string());
     }
 
-    let parent_rows = query
+    let rows = query
         .fetch_all(pool)
         .await
-        .sql_context("Failed to get store parents for tips")?;
+        .sql_context("Failed to get store tips up to entries")?;
 
-    let parents_set: HashSet<ID> = parent_rows.into_iter().map(|(id,)| ID::from(id)).collect();
-
-    // Tips = reachable entries that are NOT parents of anything
-    let tips: Vec<ID> = reachable
-        .into_iter()
-        .filter(|id| !parents_set.contains(id))
-        .collect();
-
-    Ok(tips)
+    Ok(rows.into_iter().map(|(id,)| ID::from(id)).collect())
 }
+
+/// Depth limit for ancestor traversal in find_merge_base.
+/// For typical shallow divergence (< 100 commits), this captures the merge base.
+const MERGE_BASE_DEPTH_LIMIT: usize = 100;
 
 /// Find the merge base (common dominator) of the given entries in a store.
 ///
 /// The merge base is the lowest ancestor that ALL paths from ALL entries must pass through.
 ///
-/// This implementation uses recursive CTEs for efficient single-query DAG traversal
-/// and batch height lookups from the `subtrees` table.
+/// This implementation uses depth-bounded ancestor collection with multi-batch continuation
+/// to avoid pulling entire history for deep DAGs. For typical shallow divergence, the merge
+/// base is found in a single batch. For deeper divergence, additional batches are pulled
+/// until a common ancestor is found or roots are reached.
 pub async fn find_merge_base(
     backend: &SqlxBackend,
     _tree: &ID,
@@ -164,120 +138,154 @@ pub async fn find_merge_base(
         return Ok(entry_ids[0].clone());
     }
 
-    // Step 1: Collect ancestors for each entry using recursive CTE
-    let mut ancestor_sets: Vec<HashSet<ID>> = Vec::with_capacity(entry_ids.len());
-    for entry_id in entry_ids {
-        let ancestors = collect_ancestors_cte(backend, store, entry_id).await?;
-        ancestor_sets.push(ancestors);
-    }
+    // Track all known ancestors per tip and their frontiers for continuation
+    let mut ancestor_sets: Vec<HashSet<ID>> = vec![HashSet::new(); entry_ids.len()];
+    let mut frontiers: Vec<Vec<ID>> = entry_ids.iter().map(|id| vec![id.clone()]).collect();
+    let mut all_with_heights: Vec<(ID, i64)> = Vec::new();
 
-    // Step 2: Find common ancestors (intersection of all ancestor sets)
-    let mut common_ancestors: HashSet<ID> = ancestor_sets[0].clone();
-    for ancestor_set in &ancestor_sets[1..] {
-        common_ancestors.retain(|a| ancestor_set.contains(a));
-    }
-
-    if common_ancestors.is_empty() {
-        return Err(BackendError::NoCommonAncestor {
-            entry_ids: entry_ids.to_vec(),
+    loop {
+        // Check if all frontiers are exhausted (reached roots without finding common ancestor)
+        if frontiers.iter().all(|f| f.is_empty()) {
+            return Err(BackendError::NoCommonAncestor {
+                entry_ids: entry_ids.to_vec(),
+            }
+            .into());
         }
-        .into());
-    }
 
-    // Step 3: Batch-fetch heights from subtrees table, sorted descending
-    let candidates = get_heights_batch(backend, store, &common_ancestors).await?;
+        // Pull next batch from each non-empty frontier
+        for (i, frontier) in frontiers.iter_mut().enumerate() {
+            if frontier.is_empty() {
+                continue;
+            }
 
-    // Step 4: Find the first candidate where ALL paths from ALL entries pass through it
-    for (candidate, _height) in candidates {
-        let mut all_paths_pass = true;
-        for entry_id in entry_ids {
-            if !is_dominator_cte(backend, store, entry_id, &candidate).await? {
-                all_paths_pass = false;
-                break;
+            let (ancestors, new_frontier) =
+                collect_ancestors_from_frontier(backend, store, frontier, MERGE_BASE_DEPTH_LIMIT)
+                    .await?;
+
+            // Add to known ancestors (filtering duplicates)
+            for (id, height) in ancestors {
+                if ancestor_sets[i].insert(id.clone()) {
+                    all_with_heights.push((id, height));
+                }
+            }
+
+            // Update frontier for next batch - boundary entries are the starting points
+            // Note: We don't filter against ancestor_sets because boundary entries
+            // were just added to ancestors in this batch, but we need them as
+            // starting points for the next batch. The SQL UNION handles deduplication.
+            *frontier = new_frontier;
+        }
+
+        // Intersect to find common ancestors
+        let mut common: HashSet<ID> = ancestor_sets[0].clone();
+        for set in &ancestor_sets[1..] {
+            common.retain(|id| set.contains(id));
+        }
+
+        if common.is_empty() {
+            // No common ancestor yet, continue with next batch
+            continue;
+        }
+
+        // Get heights for common ancestors, sorted DESC (highest first)
+        let mut candidates: Vec<(ID, i64)> = all_with_heights
+            .iter()
+            .filter(|(id, _)| common.contains(id))
+            .cloned()
+            .collect();
+        candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        candidates.dedup_by(|a, b| a.0 == b.0);
+
+        // Find the first candidate where ALL paths from ALL entries pass through it
+        for (candidate, _height) in candidates {
+            let mut all_paths_pass = true;
+            for entry_id in entry_ids {
+                if !is_dominator_cte(backend, store, entry_id, &candidate).await? {
+                    all_paths_pass = false;
+                    break;
+                }
+            }
+            if all_paths_pass {
+                return Ok(candidate);
             }
         }
-        if all_paths_pass {
-            return Ok(candidate);
-        }
-    }
 
-    // Should not reach here if there's a root, but handle gracefully
-    Err(BackendError::NoCommonAncestor {
-        entry_ids: entry_ids.to_vec(),
+        // Found common ancestors but none were dominators, continue searching
     }
-    .into())
 }
 
-/// Collect all ancestors of an entry in a store using a recursive CTE.
+/// Collect ancestors starting from a frontier of entries, up to a depth limit.
 ///
-/// This performs the traversal in a single query instead of N queries.
-async fn collect_ancestors_cte(
+/// Returns (ancestors with heights, new frontier entries at the boundary).
+/// The new frontier contains entries at exactly `depth_limit` depth whose parents
+/// were not included - these can be used to continue traversal in the next batch.
+async fn collect_ancestors_from_frontier(
     backend: &SqlxBackend,
     store: &str,
-    entry: &ID,
-) -> Result<HashSet<ID>> {
-    let pool = backend.pool();
-
-    // Recursive CTE to collect all ancestors including the entry itself
-    let rows: Vec<(String,)> = sqlx::query_as(
-        "WITH RECURSIVE ancestors AS (
-            SELECT $1 AS id
-            UNION
-            SELECT sp.parent_id AS id
-            FROM ancestors a
-            JOIN store_parents sp ON sp.child_id = a.id AND sp.store_name = $2
-        )
-        SELECT id FROM ancestors",
-    )
-    .bind(entry.to_string())
-    .bind(store)
-    .fetch_all(pool)
-    .await
-    .sql_context("Failed to collect ancestors")?;
-
-    Ok(rows.into_iter().map(|(id,)| ID::from(id)).collect())
-}
-
-/// Get heights for multiple entries from the subtrees table in a single query.
-///
-/// Returns entries sorted by height descending (highest first = closest to tips).
-async fn get_heights_batch(
-    backend: &SqlxBackend,
-    store: &str,
-    entry_ids: &HashSet<ID>,
-) -> Result<Vec<(ID, u64)>> {
-    if entry_ids.is_empty() {
-        return Ok(Vec::new());
+    frontier: &[ID],
+    depth_limit: usize,
+) -> Result<(Vec<(ID, i64)>, Vec<ID>)> {
+    if frontier.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
     }
 
     let pool = backend.pool();
 
-    // Build IN clause - both SQLite and PostgreSQL support this syntax
-    let placeholders: Vec<String> = (1..=entry_ids.len())
-        .map(|i| format!("${}", i + 1)) // +1 because $1 is store_name
+    // Build UNION ALL clause for starting entries
+    let start_selects: Vec<String> = (1..=frontier.len())
+        .map(|i| format!("SELECT ${} AS id, 0 AS depth", i + 1)) // +1 because $1 is store_name
         .collect();
-    let in_clause = placeholders.join(", ");
+    let starts_union = start_selects.join(" UNION ALL ");
 
+    // Recursive CTE that tracks depth and collects ancestors
+    // We return both the ancestors and which entries are at max depth (new frontier)
     let sql = format!(
-        "SELECT entry_id, height FROM subtrees
-         WHERE store_name = $1 AND entry_id IN ({in_clause})
-         ORDER BY height DESC, entry_id ASC"
+        "WITH RECURSIVE ancestors AS (
+            {starts_union}
+            UNION
+            SELECT sp.parent_id AS id, a.depth + 1
+            FROM ancestors a
+            JOIN store_parents sp ON sp.child_id = a.id AND sp.store_name = $1
+            WHERE a.depth < ${depth_param}
+        )
+        SELECT a.id, s.height, a.depth
+        FROM ancestors a
+        JOIN subtrees s ON s.entry_id = a.id AND s.store_name = $1
+        ORDER BY s.height DESC",
+        depth_param = frontier.len() + 2 // +1 for store_name, +1 for 1-indexed
     );
 
-    let mut query = sqlx::query_as::<_, (String, i64)>(&sql).bind(store);
-    for entry_id in entry_ids {
-        query = query.bind(entry_id.to_string());
+    let mut query = sqlx::query_as::<_, (String, i64, i64)>(&sql).bind(store);
+    for id in frontier {
+        query = query.bind(id.to_string());
     }
+    query = query.bind(depth_limit as i64);
 
     let rows = query
         .fetch_all(pool)
         .await
-        .sql_context("Failed to get heights batch")?;
+        .sql_context("Failed to collect ancestors from frontier")?;
 
-    Ok(rows
-        .into_iter()
-        .map(|(id, height)| (ID::from(id), height as u64))
-        .collect())
+    // Separate ancestors and identify new frontier (entries at max depth with parents)
+    let mut ancestors: Vec<(ID, i64)> = Vec::with_capacity(rows.len());
+    let mut at_boundary: HashSet<ID> = HashSet::new();
+
+    for (id_str, height, depth) in rows {
+        let id = ID::from(id_str);
+        ancestors.push((id.clone(), height));
+
+        // Entries at max depth are candidates for the new frontier
+        if depth as usize == depth_limit {
+            at_boundary.insert(id);
+        }
+    }
+
+    // The new frontier is entries at the boundary that have parents not yet visited
+    // For simplicity, we just return all boundary entries - the caller will filter
+    // based on what's already been visited
+    let new_frontier: Vec<ID> = at_boundary.into_iter().collect();
+
+    Ok((ancestors, new_frontier))
 }
 
 /// Check if candidate is a dominator (all paths pass through it) using recursive CTE.
