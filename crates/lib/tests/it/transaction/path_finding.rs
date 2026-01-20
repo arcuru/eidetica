@@ -632,3 +632,170 @@ async fn test_find_merge_base_with_bypass_path() {
         "Should have bypass X data - find_merge_base correctly returns R as the merge base"
     );
 }
+
+/// Test that multi-tip merge state is cached and reused.
+///
+/// This verifies that when reading from multiple tips, the computed merge state
+/// is cached using a synthetic ID based on sorted tip IDs, and subsequent reads
+/// hit the cache instead of recomputing.
+#[tokio::test]
+async fn test_multi_tip_merge_state_caching() {
+    use eidetica::entry::ID;
+
+    let ctx = TestContext::new().with_database().await;
+
+    // Create diamond pattern: base -> left, right (two tips)
+    let diamond = create_diamond_pattern(ctx.database()).await;
+
+    // Clear any existing cache to ensure clean state
+    ctx.database()
+        .backend()
+        .unwrap()
+        .clear_crdt_cache()
+        .await
+        .unwrap();
+
+    // Create the expected cache key (sorted tip IDs)
+    let mut sorted_tips = [diamond.left.as_str(), diamond.right.as_str()];
+    sorted_tips.sort();
+    let cache_key = format!("merge:{}", sorted_tips.join(":"));
+    let cache_id = ID::new(cache_key);
+
+    // Verify cache is empty before read
+    let cached_before = ctx
+        .database()
+        .backend()
+        .unwrap()
+        .get_cached_crdt_state(&cache_id, "data")
+        .await
+        .unwrap();
+    assert!(
+        cached_before.is_none(),
+        "Cache should be empty before first read"
+    );
+
+    // Read state with multiple tips - this should populate the cache
+    let tx = ctx
+        .database()
+        .new_transaction_with_tips([diamond.left.clone(), diamond.right.clone()])
+        .await
+        .unwrap();
+    let store = tx.get_store::<DocStore>("data").await.unwrap();
+    let state = store.get_all().await.unwrap();
+
+    // Verify we got the merged state
+    assert!(state.get("base").is_some(), "Should have base data");
+    assert!(state.get("left").is_some(), "Should have left branch data");
+    assert!(
+        state.get("right").is_some(),
+        "Should have right branch data"
+    );
+
+    // Verify cache is now populated
+    let cached_after = ctx
+        .database()
+        .backend()
+        .unwrap()
+        .get_cached_crdt_state(&cache_id, "data")
+        .await
+        .unwrap();
+    assert!(
+        cached_after.is_some(),
+        "Cache should be populated after first read"
+    );
+
+    // Read again - should hit cache and return same result
+    let tx2 = ctx
+        .database()
+        .new_transaction_with_tips([diamond.left.clone(), diamond.right.clone()])
+        .await
+        .unwrap();
+    let store2 = tx2.get_store::<DocStore>("data").await.unwrap();
+    let state2 = store2.get_all().await.unwrap();
+
+    // Verify same data is returned from cache
+    assert!(
+        state2.get("base").is_some(),
+        "Cached read should have base data"
+    );
+    assert!(
+        state2.get("left").is_some(),
+        "Cached read should have left data"
+    );
+    assert!(
+        state2.get("right").is_some(),
+        "Cached read should have right data"
+    );
+}
+
+/// Test that merge cache key is order-independent (tips are sorted).
+#[tokio::test]
+async fn test_multi_tip_cache_key_is_order_independent() {
+    use eidetica::entry::ID;
+
+    let ctx = TestContext::new().with_database().await;
+    let diamond = create_diamond_pattern(ctx.database()).await;
+
+    // Clear cache
+    ctx.database()
+        .backend()
+        .unwrap()
+        .clear_crdt_cache()
+        .await
+        .unwrap();
+
+    // Read with tips in order [left, right]
+    let tx1 = ctx
+        .database()
+        .new_transaction_with_tips([diamond.left.clone(), diamond.right.clone()])
+        .await
+        .unwrap();
+    let store1 = tx1.get_store::<DocStore>("data").await.unwrap();
+    let _ = store1.get_all().await.unwrap();
+
+    // Get the cache key (sorted, so order doesn't matter)
+    let mut sorted_tips = [diamond.left.as_str(), diamond.right.as_str()];
+    sorted_tips.sort();
+    let cache_key = format!("merge:{}", sorted_tips.join(":"));
+    let cache_id = ID::new(cache_key);
+
+    // Verify cache was populated
+    let cached = ctx
+        .database()
+        .backend()
+        .unwrap()
+        .get_cached_crdt_state(&cache_id, "data")
+        .await
+        .unwrap();
+    assert!(cached.is_some(), "Cache should be populated");
+
+    // Clear cache again
+    ctx.database()
+        .backend()
+        .unwrap()
+        .clear_crdt_cache()
+        .await
+        .unwrap();
+
+    // Read with tips in REVERSE order [right, left]
+    let tx2 = ctx
+        .database()
+        .new_transaction_with_tips([diamond.right.clone(), diamond.left.clone()])
+        .await
+        .unwrap();
+    let store2 = tx2.get_store::<DocStore>("data").await.unwrap();
+    let _ = store2.get_all().await.unwrap();
+
+    // Should use the SAME cache key (tips are sorted internally)
+    let cached_reverse = ctx
+        .database()
+        .backend()
+        .unwrap()
+        .get_cached_crdt_state(&cache_id, "data")
+        .await
+        .unwrap();
+    assert!(
+        cached_reverse.is_some(),
+        "Same cache key should be used regardless of tip order"
+    );
+}

@@ -74,12 +74,28 @@ impl std::error::Error for IdError {}
 /// String format:
 /// - Current: `sha256:deadbeef123...` or `blake3:abcdef456...` (algorithm prefix required)
 /// - Legacy: `deadbeef123...` (64 hex chars, assumed SHA-256, parsing only)
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ID {
     /// String representation for compatibility and serialization
     repr: String,
     /// Cached algorithm for efficiency
     algorithm: HashAlgorithm,
+}
+
+/// Lexicographic ordering by string representation only.
+impl PartialOrd for ID {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Lexicographic ordering by string representation only.
+///
+/// The `algorithm` field is intentionally excluded since it's derived from `repr`.
+impl Ord for ID {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.repr.cmp(&other.repr)
+    }
 }
 
 impl Default for ID {

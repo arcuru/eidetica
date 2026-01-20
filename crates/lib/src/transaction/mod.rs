@@ -41,6 +41,29 @@ use crate::{
     store::{Registry, SettingsStore, StoreError},
 };
 
+/// Creates a synthetic entry ID for multi-tip merged CRDT state caching.
+///
+/// Tips are sorted to ensure deterministic keys regardless of input order.
+/// The resulting ID has format `merge:{tip1}:{tip2}:...` which is distinct
+/// from real content-addressed entry IDs.
+fn create_merge_cache_id(tip_ids: &[ID]) -> ID {
+    let mut sorted_tips = tip_ids.to_vec();
+    sorted_tips.sort();
+
+    // Format: merge:{tip1}:{tip2}:...
+    let capacity = 5 + sorted_tips
+        .iter()
+        .map(|id| id.as_str().len() + 1)
+        .sum::<usize>();
+    let mut key = String::with_capacity(capacity);
+    key.push_str("merge");
+    for tip in &sorted_tips {
+        key.push(':');
+        key.push_str(tip.as_str());
+    }
+    ID::new(key)
+}
+
 /// Trait for encrypting/decrypting subtree data transparently
 ///
 /// Encryptors are registered with a Transaction for specific subtrees, allowing
@@ -771,10 +794,6 @@ impl Transaction {
     where
         T: CRDT + Default + Send,
     {
-        // FIXME: Cache the merged state for multi-tip queries. Currently every read
-        // with 2+ tips re-runs find_merge_base and re-merges the path. Should cache
-        // keyed by (sorted_tip_ids, subtree_name) and invalidate when tips change.
-
         // Base case: no entries
         if entry_ids.is_empty() {
             return Ok(T::default());
@@ -789,7 +808,21 @@ impl Transaction {
                 .await;
         }
 
-        // Multiple entries: find merge base and compute state from there
+        // Multiple entries: check multi-tip cache first
+        let cache_id = create_merge_cache_id(entry_ids);
+
+        if let Some(cached_state) = self
+            .db
+            .backend()?
+            .get_cached_crdt_state(&cache_id, subtree_name)
+            .await?
+        {
+            let decrypted = self.decrypt_if_needed(subtree_name, &cached_state)?;
+            let result: T = serde_json::from_str(&decrypted)?;
+            return Ok(result);
+        }
+
+        // Cache miss: find merge base and compute state from there
         let merge_base_id = self
             .db
             .backend()?
@@ -812,6 +845,17 @@ impl Transaction {
         // Merge all path entries in order
         result = self
             .merge_path_entries(subtree_name, result, &path_entries)
+            .await?;
+
+        // Cache the computed merge result
+        let serialized = serde_json::to_string(&result)?;
+        let to_cache = self.encrypt_if_needed(subtree_name, &serialized)?;
+        // FIXME: Multiple tips in the cache is a hack
+        // cache_crdt_state is supposed to take in (ID, subtree, data)
+        // This caching only technically works by constructing a custom ID
+        self.db
+            .backend()?
+            .cache_crdt_state(&cache_id, subtree_name, to_cache)
             .await?;
 
         Ok(result)
