@@ -204,7 +204,7 @@ pub fn assert_user_key_count(user: &User, expected_count: usize) {
 
 /// Assert that a user can get a specific key
 pub fn assert_user_has_key(user: &User, key_id: &str) {
-    let result = user.get_signing_key(key_id);
+    let result = user.get_public_key(key_id);
     assert!(
         result.is_ok(),
         "User should have key {}, but got error: {:?}",
@@ -215,7 +215,7 @@ pub fn assert_user_has_key(user: &User, key_id: &str) {
 
 /// Assert that a user does NOT have a specific key
 pub fn assert_user_lacks_key(user: &User, key_id: &str) {
-    let result = user.get_signing_key(key_id);
+    let result = user.get_public_key(key_id);
     assert!(
         result.is_err(),
         "User should NOT have key {key_id}, but found it"

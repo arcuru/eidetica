@@ -144,9 +144,9 @@ async fn test_find_key_returns_valid_key_id() {
         .expect("Should not error")
         .expect("Should find key");
 
-    // Verify we can get the signing key with this ID
-    let _signing_key = user
-        .get_signing_key(&key_id)
+    // Verify the key ID is valid
+    let _public_key = user
+        .get_public_key(&key_id)
         .expect("Key ID should be valid");
 }
 

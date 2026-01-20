@@ -314,11 +314,6 @@ async fn test_keys_persist_across_sessions() {
     let user2 = login_user(&instance, username, None).await;
     assert_user_key_count(&user2, 2); // Default + 1 added
     assert_user_has_key(&user2, &key1);
-
-    // Verify we can get the signing key
-    let _signing_key = user2
-        .get_signing_key(&key1)
-        .expect("Should get persisted signing key");
 }
 
 #[tokio::test]

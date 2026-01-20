@@ -160,8 +160,7 @@ async fn grant_user_permission_on_database(
     use eidetica::auth::types::AuthKey;
 
     // Get user's public key
-    let signing_key = user.get_signing_key(user_key_id)?;
-    let pubkey = format_public_key(&signing_key.verifying_key());
+    let pubkey = user.get_public_key(user_key_id)?;
 
     // Update database auth settings using SettingsStore API
     let tx = database.new_transaction().await?;
