@@ -512,6 +512,34 @@ pub(crate) async fn get_tips(backend: &InMemory, tree: &ID) -> Result<Vec<ID>> {
     Ok(tips)
 }
 
+/// Compute store tips by scanning all entries in the tree.
+///
+/// This is a helper function that avoids recursion between get_store_tips
+/// and get_store_tips_up_to_entries.
+async fn compute_store_tips_from_all_entries(
+    backend: &InMemory,
+    tree: &ID,
+    subtree: &str,
+) -> Result<Vec<ID>> {
+    let mut tips = Vec::new();
+    let entries = backend.entries.read().await;
+
+    // Collect entry info before async calls
+    let entry_info: Vec<_> = entries
+        .iter()
+        .filter(|(_, entry)| entry.in_tree(tree) && entry.in_subtree(subtree))
+        .map(|(id, _)| id.clone())
+        .collect();
+    drop(entries);
+
+    for id in entry_info {
+        if super::storage::is_subtree_tip(backend, tree, subtree, &id).await {
+            tips.push(id);
+        }
+    }
+    Ok(tips)
+}
+
 /// Find the tip entries for the specified subtree
 ///
 /// Uses lazy cached subtree tips for O(1) performance after first computation.
@@ -530,17 +558,17 @@ pub(crate) async fn get_store_tips(
     subtree: &str,
 ) -> Result<Vec<ID>> {
     // Check if we have cached subtree tips
-    let tips_cache = backend.tips.read().await;
-    if let Some(cache) = tips_cache.get(tree)
-        && let Some(subtree_tips) = cache.subtree_tips.get(subtree)
     {
-        return Ok(subtree_tips.iter().cloned().collect());
+        let tips_cache = backend.tips.read().await;
+        if let Some(cache) = tips_cache.get(tree)
+            && let Some(subtree_tips) = cache.subtree_tips.get(subtree)
+        {
+            return Ok(subtree_tips.iter().cloned().collect());
+        }
     }
-    drop(tips_cache);
 
-    // Compute subtree tips lazily
-    let tree_tips = get_tips(backend, tree).await?;
-    let subtree_tips = get_store_tips_up_to_entries(backend, tree, subtree, &tree_tips).await?;
+    // Compute subtree tips (using helper to avoid recursion)
+    let subtree_tips = compute_store_tips_from_all_entries(backend, tree, subtree).await?;
 
     // Cache the result
     let tips_set: HashSet<ID> = subtree_tips.iter().cloned().collect();
@@ -574,28 +602,30 @@ pub(crate) async fn get_store_tips_up_to_entries(
         return Ok(Vec::new());
     }
 
-    // Special case: if main_entries represents current tree tips (i.e., we want all subtree tips),
-    // use the original algorithm that checks all entries
+    // Fast path: if main_entries represents current tree tips, use cached subtree tips
     let current_tree_tips = get_tips(backend, tree).await?;
     if main_entries == current_tree_tips {
-        // Use original algorithm for current tips case
-        let mut tips = Vec::new();
-        let entries = backend.entries.read().await;
-
-        // Collect entry info before async calls
-        let entry_info: Vec<_> = entries
-            .iter()
-            .filter(|(_, entry)| entry.in_tree(tree) && entry.in_subtree(subtree))
-            .map(|(id, _)| id.clone())
-            .collect();
-        drop(entries);
-
-        for id in entry_info {
-            if super::storage::is_subtree_tip(backend, tree, subtree, &id).await {
-                tips.push(id);
+        // Check cache first - O(1) lookup
+        {
+            let tips_cache = backend.tips.read().await;
+            if let Some(cache) = tips_cache.get(tree)
+                && let Some(subtree_tips) = cache.subtree_tips.get(subtree)
+            {
+                return Ok(subtree_tips.iter().cloned().collect());
             }
         }
-        return Ok(tips);
+
+        // Cache miss - compute tips and cache them
+        // (inline the computation to avoid recursion with get_store_tips)
+        let computed_tips = compute_store_tips_from_all_entries(backend, tree, subtree).await?;
+
+        // Cache the result
+        let tips_set: HashSet<ID> = computed_tips.iter().cloned().collect();
+        let mut tips_cache = backend.tips.write().await;
+        let cache = tips_cache.entry(tree.clone()).or_default();
+        cache.subtree_tips.insert(subtree.to_string(), tips_set);
+
+        return Ok(computed_tips);
     }
 
     // For custom tips: Get all tree entries reachable from the main entries,

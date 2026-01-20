@@ -35,12 +35,20 @@ pub async fn get_store_tips(backend: &SqlxBackend, tree: &ID, store: &str) -> Re
 /// Get store tips that are reachable from the given main tree entries.
 pub async fn get_store_tips_up_to_entries(
     backend: &SqlxBackend,
-    _tree: &ID,
+    tree: &ID,
     store: &str,
     main_entries: &[ID],
 ) -> Result<Vec<ID>> {
     if main_entries.is_empty() {
         return Ok(Vec::new());
+    }
+
+    // Fast path: if main_entries are current tree tips, use tips table directly
+    let current_tree_tips = get_tips(backend, tree).await?;
+    let main_entries_set: HashSet<_> = main_entries.iter().collect();
+    let current_tips_set: HashSet<_> = current_tree_tips.iter().collect();
+    if main_entries_set == current_tips_set {
+        return get_store_tips(backend, tree, store).await;
     }
 
     let pool = backend.pool();
