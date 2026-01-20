@@ -1127,7 +1127,7 @@ impl Transaction {
         // Handle authentication configuration before building
         // All entries must now be authenticated - fail if no auth key is configured
 
-        // Use provided signing key (all databases use KeySource::Provided now)
+        // Use provided signing key
         let (signing_key, _sigkey_identifier) =
             if let Some((ref provided_key, ref sigkey)) = self.provided_signing_key {
                 // Use provided signing key directly (already decrypted from UserKeyManager or device key)
@@ -1148,7 +1148,7 @@ impl Transaction {
 
                 (Some(key_clone), sigkey.clone())
             } else {
-                // No authentication key configured - all databases should provide keys via KeySource::Provided
+                // No authentication key configured
                 return Err(TransactionError::AuthenticationRequired.into());
             };
         // Encrypt subtree data if encryptors are registered

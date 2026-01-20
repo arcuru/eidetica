@@ -236,7 +236,7 @@ pub async fn create_user(
     )?;
     user_db_settings.set("auth", auth_settings.as_doc().clone());
 
-    // Create database using device_key directly (KeySource::Provided)
+    // Create database using device_key directly
     let user_database = Database::create(
         user_db_settings,
         instance,
@@ -420,7 +420,7 @@ pub async fn login_user(
     };
 
     // 6. Re-open user database with the user's default key using open()
-    // This configures the database to use KeySource::Provided with the user's key
+    // This configures the database to use KeySource with the user's key
     // so all operations work without needing keys in the backend
     let default_key_id = key_manager
         .get_default_key_id()

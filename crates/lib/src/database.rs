@@ -25,20 +25,13 @@ use crate::{
     store::{SettingsStore, Store},
 };
 
-/// Specifies where a Database gets its signing keys
+/// Specifies the signing key for database operations
 #[derive(Clone, Debug)]
-pub enum KeySource {
-    /// Look up private key from backend storage using this key name
-    /// The key name is also used as the SigKey identifier in auth settings
-    BackendLookup(String),
-
-    /// Use the provided signing key with specified SigKey identifier
-    /// The signing key is already decrypted and ready to use (from UserKeyManager)
-    /// The sigkey is the identifier used in the database's auth settings
-    Provided {
-        signing_key: Box<SigningKey>,
-        sigkey: String,
-    },
+pub struct KeySource {
+    /// The signing key, already decrypted and ready to use (from UserKeyManager)
+    pub signing_key: Box<SigningKey>,
+    /// The SigKey identifier used in the database's auth settings
+    pub sigkey: String,
 }
 
 /// Represents a collection of related entries, like a traditional database or a branch in a version control system.
@@ -61,7 +54,7 @@ impl Database {
     /// This is the preferred method for creating databases in a User context where keys
     /// are managed separately from the backend.
     ///
-    /// The created database will use `KeySource::Provided` for all subsequent operations,
+    /// The created database will use `KeySource` for all subsequent operations,
     /// meaning transactions will use the provided key directly rather than looking it up
     /// from backend storage.
     ///
@@ -80,7 +73,7 @@ impl Database {
     ///   This is typically the public key string but can be any identifier.
     ///
     /// # Returns
-    /// A `Result` containing the new `Database` instance configured with `KeySource::Provided`.
+    /// A `Result` containing the new `Database` instance configured with `KeySource`.
     ///
     /// # Example
     /// ```rust,no_run
@@ -155,12 +148,12 @@ impl Database {
                 .collect::<String>()
         );
 
-        // Create temporary database for bootstrap with KeySource::Provided
+        // Create temporary database for bootstrap with KeySource
         // This allows the bootstrap transaction to use the provided key directly
         let temp_database_for_bootstrap = Database {
             root: bootstrap_placeholder_id.clone().into(),
             instance: instance.downgrade(),
-            key_source: Some(KeySource::Provided {
+            key_source: Some(KeySource {
                 signing_key: Box::new(signing_key.clone()),
                 sigkey: sigkey.clone(),
             }),
@@ -185,11 +178,11 @@ impl Database {
         // Commit the initial entry
         let new_root_id = op.commit().await?;
 
-        // Now create the real database with the new_root_id and KeySource::Provided
+        // Now create the real database with the new_root_id and KeySource
         Ok(Self {
             root: new_root_id,
             instance: instance.downgrade(),
-            key_source: Some(KeySource::Provided {
+            key_source: Some(KeySource {
                 signing_key: Box::new(signing_key),
                 sigkey,
             }),
@@ -237,7 +230,7 @@ impl Database {
     ///
     /// This constructor uses **user-managed keys**:
     /// - The key is provided directly (e.g., from UserKeyManager)
-    /// - Uses `KeySource::Provided` for all subsequent operations
+    /// - Uses `KeySource` for all subsequent operations
     /// - No backend key storage needed
     ///
     /// Note: To **create** a new database with user-managed keys, use `create()`.
@@ -252,7 +245,7 @@ impl Database {
     /// * `sigkey` - SigKey identifier string (use `find_sigkeys()` to discover available options)
     ///
     /// # Returns
-    /// A `Result` containing the `Database` instance configured with `KeySource::Provided`
+    /// A `Result` containing the `Database` instance configured with `KeySource`
     ///
     /// # Example
     /// ```rust,no_run
@@ -324,7 +317,7 @@ impl Database {
         Ok(Self {
             root: root_id.clone(),
             instance: instance.downgrade(),
-            key_source: Some(KeySource::Provided {
+            key_source: Some(KeySource {
                 signing_key: Box::new(signing_key),
                 sigkey: effective_sigkey,
             }),
@@ -405,11 +398,7 @@ impl Database {
 
     /// Get the default authentication key ID for this database.
     pub fn default_auth_key(&self) -> Option<&str> {
-        match &self.key_source {
-            Some(KeySource::BackendLookup(key_name)) => Some(key_name.as_str()),
-            Some(KeySource::Provided { sigkey, .. }) => Some(sigkey.as_str()),
-            None => None,
-        }
+        self.key_source.as_ref().map(|ks| ks.sigkey.as_str())
     }
 
     /// Register an Instance-wide callback to be invoked when entries are written locally to this database.
@@ -615,8 +604,8 @@ impl Database {
     pub async fn new_transaction_with_tips(&self, tips: impl AsRef<[ID]>) -> Result<Transaction> {
         let mut op = Transaction::new_with_tips(self, tips.as_ref()).await?;
 
-        // Set provided signing key (all databases use KeySource::Provided now)
-        if let Some(KeySource::Provided {
+        // Set provided signing key (all databases use KeySource now)
+        if let Some(KeySource {
             signing_key,
             sigkey,
         }) = &self.key_source

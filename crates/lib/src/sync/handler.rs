@@ -614,18 +614,25 @@ impl SyncHandlerImpl {
     /// - Only allowed if database has no auth configured or has global wildcard permission
     /// - Otherwise rejected with authentication required error
     ///
-    /// # SECURITY WARNING
+    /// # Note on Key Verification
     ///
-    /// **FIXME: This function does not verify that the peer actually controls the `requesting_key`.**
+    /// This function does not verify that the peer actually controls the `requesting_key`.
+    /// The `requesting_key` parameter is an unverified string from the client.
     ///
-    /// The `requesting_key` parameter is an unverified string from the client. This function
-    /// does not receive `RequestContext` (which contains the verified `peer_pubkey` from handshake),
-    /// so it cannot verify the peer actually owns the key they claim.
+    /// **This is not a security vulnerability** because:
+    /// - Approval only adds the public key to database auth settings
+    /// - Actual database access requires signing entries with the corresponding private key
+    /// - If an attacker claims someone else's public key, approval grants access to the
+    ///   legitimate key holder (who has the private key), not the attacker
+    ///
+    /// The lack of verification may cause:
+    /// - Audit trail confusion (request appears to come from a different identity)
+    /// - Admins approving access for keys that didn't actually request it
     ///
     /// # Arguments
     /// * `tree_id` - The database/tree to bootstrap
-    /// * `requesting_key` - Optional public key requesting access (UNVERIFIED!)
-    /// * `requesting_key_name` - Optional name/identifier for the key (UNVERIFIED!)
+    /// * `requesting_key` - Optional public key requesting access (unverified, but safe - see above)
+    /// * `requesting_key_name` - Optional name/identifier for the key (unverified)
     /// * `requested_permission` - Optional permission level requested (if None, auto-detects from auth settings)
     ///
     /// # Returns

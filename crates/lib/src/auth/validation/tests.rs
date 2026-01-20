@@ -1,7 +1,8 @@
 //! Tests for authentication validation
 //!
-//! TODO: Migrate to instance.device_key() and User API once InstanceMetadata is implemented.
-//! This file requires direct access to the device signing key for testing delegation workflows
+//! These tests directly generate keypairs to test auth primitives (signatures, permissions,
+//! delegation) without going through the User API. This is intentional - we're testing the
+//! underlying auth mechanics, not the User API layer.
 
 use super::entry::AuthValidator;
 use crate::{
