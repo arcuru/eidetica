@@ -612,24 +612,26 @@ pub(crate) async fn get_store_tips_up_to_entries(
     }
 
     // Find which of these are tips within the subtree scope
-    let mut tips = Vec::new();
+    // O(n) algorithm: collect all parents first, then filter
+    let subtree_entry_ids: HashSet<ID> = subtree_entries.iter().map(|e| e.id()).collect();
+
+    // Step 1: Collect all IDs that are parents of any entry in the scope
+    let mut all_parents: HashSet<ID> = HashSet::new();
     for entry in &subtree_entries {
-        let entry_id = entry.id();
-
-        // Check if this entry is a tip by seeing if any other entry in our scope
-        // has it as a subtree parent
-        let is_tip = !subtree_entries.iter().any(|other_entry| {
-            if let Ok(parents) = other_entry.subtree_parents(subtree) {
-                parents.contains(&entry_id)
-            } else {
-                false
+        if let Ok(parents) = entry.subtree_parents(subtree) {
+            for parent in parents {
+                if subtree_entry_ids.contains(&parent) {
+                    all_parents.insert(parent);
+                }
             }
-        });
-
-        if is_tip {
-            tips.push(entry_id);
         }
     }
+
+    // Step 2: Tips = entries that are NOT parents of anything in the scope
+    let tips: Vec<ID> = subtree_entry_ids
+        .into_iter()
+        .filter(|id| !all_parents.contains(id))
+        .collect();
 
     Ok(tips)
 }

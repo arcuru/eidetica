@@ -87,35 +87,48 @@ pub async fn get_store_tips_up_to_entries(
     }
 
     // Now find which of the reachable entries are tips (have no children in the store)
-    let mut tips = Vec::new();
-    for entry_id in &reachable {
-        // Check if any reachable entry has this as a parent
-        let mut has_child = false;
-        for potential_child in &reachable {
-            if potential_child == entry_id {
-                continue;
-            }
-            // Check store parents
-            let result: Option<(i32,)> = sqlx::query_as(
-                "SELECT 1 FROM store_parents WHERE child_id = $1 AND parent_id = $2 AND store_name = $3",
-            )
-            .bind(potential_child.to_string())
-            .bind(entry_id.to_string())
-            .bind(store)
-            .fetch_optional(pool)
-            .await
-            .sql_context("Failed to check store parents")?;
-
-            if result.is_some() {
-                has_child = true;
-                break;
-            }
-        }
-
-        if !has_child {
-            tips.push(entry_id.clone());
-        }
+    // O(n) algorithm: collect all parents in one query, then filter
+    if reachable.is_empty() {
+        return Ok(Vec::new());
     }
+
+    // Build IN clause for reachable IDs
+    let reachable_vec: Vec<String> = reachable.iter().map(|id| id.to_string()).collect();
+    let placeholders: Vec<String> = (1..=reachable_vec.len())
+        .map(|i| format!("${}", i + 1)) // +1 because $1 is store_name
+        .collect();
+    let in_clause = placeholders.join(", ");
+
+    // Single query to get all parent IDs within the reachable set
+    let sql = format!(
+        "SELECT DISTINCT parent_id FROM store_parents
+         WHERE store_name = $1
+         AND child_id IN ({in_clause})
+         AND parent_id IN ({in_clause})"
+    );
+
+    let mut query = sqlx::query_as::<_, (String,)>(&sql).bind(store);
+    // Bind child_id IN clause
+    for id in &reachable_vec {
+        query = query.bind(id);
+    }
+    // Bind parent_id IN clause
+    for id in &reachable_vec {
+        query = query.bind(id);
+    }
+
+    let parent_rows = query
+        .fetch_all(pool)
+        .await
+        .sql_context("Failed to get store parents for tips")?;
+
+    let parents_set: HashSet<ID> = parent_rows.into_iter().map(|(id,)| ID::from(id)).collect();
+
+    // Tips = reachable entries that are NOT parents of anything
+    let tips: Vec<ID> = reachable
+        .into_iter()
+        .filter(|id| !parents_set.contains(id))
+        .collect();
 
     Ok(tips)
 }
