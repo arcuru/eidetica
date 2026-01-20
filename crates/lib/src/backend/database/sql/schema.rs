@@ -42,6 +42,7 @@ pub const CREATE_TABLES: &[&str] = &[
         tree_id TEXT NOT NULL,
         is_root BIGINT NOT NULL DEFAULT 0,
         verification_status BIGINT NOT NULL DEFAULT 0,
+        height BIGINT NOT NULL DEFAULT 0,
         entry_json TEXT NOT NULL
     )",
     // Tree parent relationships (main tree DAG edges)
@@ -51,10 +52,14 @@ pub const CREATE_TABLES: &[&str] = &[
         parent_id TEXT NOT NULL,
         PRIMARY KEY (child_id, parent_id)
     )",
-    // Store memberships - which stores an entry contains
-    "CREATE TABLE IF NOT EXISTS store_memberships (
+    // Subtrees - denormalized subtree data for efficient queries
+    // Replaces store_memberships with additional columns for height and data
+    "CREATE TABLE IF NOT EXISTS subtrees (
+        tree_id TEXT NOT NULL,
         entry_id TEXT NOT NULL,
         store_name TEXT NOT NULL,
+        height BIGINT NOT NULL,
+        data TEXT,
         PRIMARY KEY (entry_id, store_name)
     )",
     // Store parent relationships (per-store DAG edges)
@@ -94,13 +99,15 @@ pub const CREATE_TABLES: &[&str] = &[
 pub const CREATE_INDEXES: &[&str] = &[
     // Entry lookups and filtering
     "CREATE INDEX IF NOT EXISTS idx_entries_tree_id ON entries(tree_id)",
+    "CREATE INDEX IF NOT EXISTS idx_entries_tree_height ON entries(tree_id, height DESC, id)",
     "CREATE INDEX IF NOT EXISTS idx_entries_verification ON entries(verification_status)",
     "CREATE INDEX IF NOT EXISTS idx_entries_is_root ON entries(is_root)",
     // Parent relationship traversal
     "CREATE INDEX IF NOT EXISTS idx_tree_parents_parent ON tree_parents(parent_id)",
     "CREATE INDEX IF NOT EXISTS idx_tree_parents_child ON tree_parents(child_id)",
     // Store-specific queries
-    "CREATE INDEX IF NOT EXISTS idx_store_memberships_store ON store_memberships(store_name, entry_id)",
+    "CREATE INDEX IF NOT EXISTS idx_subtrees_tree_store_height ON subtrees(tree_id, store_name, height DESC, entry_id)",
+    "CREATE INDEX IF NOT EXISTS idx_subtrees_store_height ON subtrees(store_name, height DESC, entry_id)",
     "CREATE INDEX IF NOT EXISTS idx_store_parents_parent ON store_parents(store_name, parent_id)",
     "CREATE INDEX IF NOT EXISTS idx_store_parents_child ON store_parents(store_name, child_id)",
     // Tip lookups

@@ -861,12 +861,13 @@ impl Transaction {
         Ok(result)
     }
 
-    /// Computes the CRDT state for a single entry using correct recursive merge-base algorithm.
+    /// Computes the CRDT state for a single entry using batch fetching.
     ///
     /// Algorithm:
     /// 1. Check if entry state is cached → return it
-    /// 2. Find merge base of parents and get its state (recursively)
-    /// 3. Merge all entries from merge base to current entry into that state
+    /// 2. Fetch all ancestors in one batch query (sorted by height)
+    /// 3. Merge all entries in order from root to target
+    /// 4. Cache only the final result
     ///
     /// # Type Parameters
     /// * `T` - The CRDT type to compute the state for
@@ -899,70 +900,32 @@ impl Transaction {
                 return Ok(result);
             }
 
-            // Get the parents of this entry in the subtree
-            let parents = self
+            // Step 2: Batch fetch all ancestors sorted by height (root first)
+            // This single query replaces N recursive queries
+            let entries = self
                 .db
                 .backend()?
-                .get_sorted_store_parents(self.db.root_id(), entry_id, subtree_name)
+                .get_store_from_tips(
+                    self.db.root_id(),
+                    subtree_name,
+                    std::slice::from_ref(entry_id),
+                )
                 .await?;
 
-            // Step 2: Compute merge base state recursively
-            let (merge_base_state, merge_base_id_opt) = if parents.is_empty() {
-                // No parents - this is a root, start with default
-                (T::default(), None)
-            } else if parents.len() == 1 {
-                // Single parent - recursively get its state
-                (
-                    self.compute_single_entry_state_recursive(subtree_name, &parents[0])
-                        .await?,
-                    None,
-                )
-            } else {
-                // Multiple parents - find merge base and get its state
-                let merge_base_id = self
-                    .db
-                    .backend()?
-                    .find_merge_base(self.db.root_id(), subtree_name, &parents)
-                    .await?;
-                let merge_base_state = self
-                    .compute_single_entry_state_recursive(subtree_name, &merge_base_id)
-                    .await?;
-                (merge_base_state, Some(merge_base_id))
-            };
-
-            // Step 3: Merge entries from merge base to current entry
-            let mut result = merge_base_state;
-
-            // If we have multiple parents, we need to merge paths from merge base to all parents
-            if let Some(merge_base_id) = merge_base_id_opt {
-                // Get all entries from merge base to all parents (deduplicated and sorted)
-                let path_entries = self
-                    .db
-                    .backend()?
-                    .get_path_from_to(self.db.root_id(), subtree_name, &merge_base_id, &parents)
-                    .await?;
-
-                // Merge all path entries in order
-                result = self
-                    .merge_path_entries(subtree_name, result, &path_entries)
-                    .await?;
-            }
-
-            // Finally, merge the current entry's local data
-            let local_data = {
-                let entry = self.db.backend()?.get(entry_id).await?;
-                if let Ok(data) = entry.data(subtree_name) {
+            // Step 3: Merge all entries in order (already sorted by height, root first)
+            let mut result = T::default();
+            for entry in &entries {
+                let local_data = if let Ok(data) = entry.data(subtree_name) {
                     // Decrypt before deserializing
                     let plaintext = self.decrypt_if_needed(subtree_name, data)?;
                     serde_json::from_str::<T>(&plaintext)?
                 } else {
                     T::default()
-                }
-            };
+                };
+                result = result.merge(&local_data)?;
+            }
 
-            result = result.merge(&local_data)?;
-
-            // Cache the result (encrypted if encryptor is registered)
+            // Step 4: Cache only the final result (encrypted if encryptor is registered)
             let serialized_state = serde_json::to_string(&result)?;
             let to_cache = self.encrypt_if_needed(subtree_name, &serialized_state)?;
             self.db

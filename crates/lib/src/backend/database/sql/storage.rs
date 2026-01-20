@@ -112,14 +112,16 @@ pub async fn put(
 
     // Insert new entry (we've already confirmed it doesn't exist)
     let is_root_int: i64 = if is_root { 1 } else { 0 };
+    let tree_height = entry.height() as i64;
     sqlx::query(
-        "INSERT INTO entries (id, tree_id, is_root, verification_status, entry_json)
-         VALUES ($1, $2, $3, $4, $5)",
+        "INSERT INTO entries (id, tree_id, is_root, verification_status, height, entry_json)
+         VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(id.to_string())
     .bind(tree_id.to_string())
     .bind(is_root_int)
     .bind(status_int)
+    .bind(tree_height)
     .bind(&entry_json)
     .execute(&mut *tx)
     .await
@@ -137,14 +139,21 @@ pub async fn put(
         .await?;
     }
 
-    // Insert store memberships and store parent relationships
+    // Insert subtrees (denormalized subtree data) and store parent relationships
     for store_name in entry.subtrees() {
-        insert_or_ignore(
+        // Get resolved subtree height (falls back to tree height if not set)
+        let subtree_height = entry.subtree_height(&store_name).unwrap_or(entry.height()) as i64;
+        // Get subtree data (may be None if entry participates but has no data changes)
+        let subtree_data = entry.data(&store_name).ok();
+
+        insert_subtree(
             backend,
             &mut tx,
-            "store_memberships",
-            &["entry_id", "store_name"],
-            &[id.to_string(), store_name.clone()],
+            &tree_id,
+            &id,
+            &store_name,
+            subtree_height,
+            subtree_data.as_ref().map(|s| s.as_str()),
         )
         .await?;
 
@@ -199,6 +208,37 @@ async fn insert_or_ignore(
         .execute(&mut **tx)
         .await
         .sql_context(&format!("Failed to insert into {table}"))?;
+
+    Ok(())
+}
+
+/// Helper to insert subtree data with proper handling of nullable data column.
+async fn insert_subtree(
+    backend: &SqlxBackend,
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    tree_id: &ID,
+    entry_id: &ID,
+    store_name: &str,
+    height: i64,
+    data: Option<&str>,
+) -> Result<()> {
+    let sql = if backend.is_sqlite() {
+        "INSERT OR IGNORE INTO subtrees (tree_id, entry_id, store_name, height, data)
+         VALUES ($1, $2, $3, $4, $5)"
+    } else {
+        "INSERT INTO subtrees (tree_id, entry_id, store_name, height, data)
+         VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING"
+    };
+
+    sqlx::query(sql)
+        .bind(tree_id.to_string())
+        .bind(entry_id.to_string())
+        .bind(store_name)
+        .bind(height)
+        .bind(data)
+        .execute(&mut **tx)
+        .await
+        .sql_context("Failed to insert subtree")?;
 
     Ok(())
 }
@@ -385,11 +425,13 @@ pub async fn get_tree(backend: &SqlxBackend, tree: &ID) -> Result<Vec<Entry>> {
 pub async fn get_store(backend: &SqlxBackend, tree: &ID, store: &str) -> Result<Vec<Entry>> {
     let pool = backend.pool();
 
+    // Use subtrees table and sort by height directly in SQL
     let rows: Vec<(String,)> = sqlx::query_as(
         "SELECT e.entry_json
          FROM entries e
-         JOIN store_memberships sm ON sm.entry_id = e.id
-         WHERE e.tree_id = $1 AND sm.store_name = $2",
+         JOIN subtrees s ON s.entry_id = e.id
+         WHERE e.tree_id = $1 AND s.store_name = $2
+         ORDER BY s.height ASC, e.id ASC",
     )
     .bind(tree.to_string())
     .bind(store)
@@ -403,9 +445,6 @@ pub async fn get_store(backend: &SqlxBackend, tree: &ID, store: &str) -> Result<
             .map_err(|e| BackendError::DeserializationFailed { source: e })?;
         entries.push(entry);
     }
-
-    // Sort by store height (heights are stored in entries)
-    super::cache::sort_entries_by_subtree_height(&mut entries, store)?;
 
     Ok(entries)
 }

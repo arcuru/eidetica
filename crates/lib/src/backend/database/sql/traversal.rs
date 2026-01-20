@@ -58,14 +58,13 @@ pub async fn get_store_tips_up_to_entries(
         }
 
         // Check if this entry is in the store
-        let in_store: Option<(i32,)> = sqlx::query_as(
-            "SELECT 1 FROM store_memberships WHERE entry_id = $1 AND store_name = $2",
-        )
-        .bind(entry_id.to_string())
-        .bind(store)
-        .fetch_optional(pool)
-        .await
-        .sql_context("Failed to check store membership")?;
+        let in_store: Option<(i32,)> =
+            sqlx::query_as("SELECT 1 FROM subtrees WHERE entry_id = $1 AND store_name = $2")
+                .bind(entry_id.to_string())
+                .bind(store)
+                .fetch_optional(pool)
+                .await
+                .sql_context("Failed to check store membership")?;
 
         if in_store.is_some() {
             reachable.insert(entry_id.clone());
@@ -124,6 +123,9 @@ pub async fn get_store_tips_up_to_entries(
 /// Find the merge base (common dominator) of the given entries in a store.
 ///
 /// The merge base is the lowest ancestor that ALL paths from ALL entries must pass through.
+///
+/// This implementation uses recursive CTEs for efficient single-query DAG traversal
+/// and batch height lookups from the `subtrees` table.
 pub async fn find_merge_base(
     backend: &SqlxBackend,
     _tree: &ID,
@@ -141,11 +143,10 @@ pub async fn find_merge_base(
         return Ok(entry_ids[0].clone());
     }
 
-    // Step 1: Collect all ancestors for each entry
-    // FIXME(perf): We should not load the full list of Entries here, it's unnecessary but correct for now
+    // Step 1: Collect ancestors for each entry using recursive CTE
     let mut ancestor_sets: Vec<HashSet<ID>> = Vec::with_capacity(entry_ids.len());
     for entry_id in entry_ids {
-        let ancestors = collect_ancestors_async(backend, store, entry_id).await?;
+        let ancestors = collect_ancestors_cte(backend, store, entry_id).await?;
         ancestor_sets.push(ancestors);
     }
 
@@ -162,20 +163,14 @@ pub async fn find_merge_base(
         .into());
     }
 
-    // Step 3: Get heights for sorting (we want highest height first = closest to tips)
-    let mut candidates: Vec<(ID, u64)> = Vec::with_capacity(common_ancestors.len());
-    for id in common_ancestors {
-        let height = get_store_height_async(backend, store, &id).await?;
-        candidates.push((id, height));
-    }
-    // Sort by height descending (highest first = closest to tips)
-    candidates.sort_by(|a, b| b.1.cmp(&a.1));
+    // Step 3: Batch-fetch heights from subtrees table, sorted descending
+    let candidates = get_heights_batch(backend, store, &common_ancestors).await?;
 
     // Step 4: Find the first candidate where ALL paths from ALL entries pass through it
     for (candidate, _height) in candidates {
         let mut all_paths_pass = true;
         for entry_id in entry_ids {
-            if !all_paths_pass_through_async(backend, store, entry_id, &candidate).await? {
+            if !is_dominator_cte(backend, store, entry_id, &candidate).await? {
                 all_paths_pass = false;
                 break;
             }
@@ -192,70 +187,83 @@ pub async fn find_merge_base(
     .into())
 }
 
-/// Collect all ancestors of an entry in a store (including the entry itself).
-async fn collect_ancestors_async(
+/// Collect all ancestors of an entry in a store using a recursive CTE.
+///
+/// This performs the traversal in a single query instead of N queries.
+async fn collect_ancestors_cte(
     backend: &SqlxBackend,
     store: &str,
     entry: &ID,
 ) -> Result<HashSet<ID>> {
     let pool = backend.pool();
-    let mut ancestors: HashSet<ID> = HashSet::new();
-    let mut queue: VecDeque<ID> = VecDeque::new();
-    queue.push_back(entry.clone());
 
-    while let Some(current) = queue.pop_front() {
-        if ancestors.contains(&current) {
-            continue;
-        }
-        ancestors.insert(current.clone());
-
-        let parent_rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT parent_id FROM store_parents WHERE child_id = $1 AND store_name = $2",
+    // Recursive CTE to collect all ancestors including the entry itself
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "WITH RECURSIVE ancestors AS (
+            SELECT $1 AS id
+            UNION
+            SELECT sp.parent_id AS id
+            FROM ancestors a
+            JOIN store_parents sp ON sp.child_id = a.id AND sp.store_name = $2
         )
-        .bind(current.to_string())
-        .bind(store)
-        .fetch_all(pool)
-        .await
-        .sql_context("Failed to get store parents")?;
+        SELECT id FROM ancestors",
+    )
+    .bind(entry.to_string())
+    .bind(store)
+    .fetch_all(pool)
+    .await
+    .sql_context("Failed to collect ancestors")?;
 
-        for (parent_id,) in parent_rows {
-            queue.push_back(ID::from(parent_id));
-        }
-    }
-
-    Ok(ancestors)
+    Ok(rows.into_iter().map(|(id,)| ID::from(id)).collect())
 }
 
-/// Get the store height for an entry.
-async fn get_store_height_async(backend: &SqlxBackend, store: &str, entry: &ID) -> Result<u64> {
+/// Get heights for multiple entries from the subtrees table in a single query.
+///
+/// Returns entries sorted by height descending (highest first = closest to tips).
+async fn get_heights_batch(
+    backend: &SqlxBackend,
+    store: &str,
+    entry_ids: &HashSet<ID>,
+) -> Result<Vec<(ID, u64)>> {
+    if entry_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
     let pool = backend.pool();
 
-    // Get entry JSON and extract store height
-    let row: Option<(String,)> = sqlx::query_as("SELECT entry_json FROM entries WHERE id = $1")
-        .bind(entry.to_string())
-        .fetch_optional(pool)
-        .await
-        .sql_context("Failed to get entry")?;
+    // Build IN clause - both SQLite and PostgreSQL support this syntax
+    let placeholders: Vec<String> = (1..=entry_ids.len())
+        .map(|i| format!("${}", i + 1)) // +1 because $1 is store_name
+        .collect();
+    let in_clause = placeholders.join(", ");
 
-    if let Some((json,)) = row {
-        let entry: Entry = serde_json::from_str(&json)
-            .map_err(|e| BackendError::DeserializationFailed { source: e })?;
-        // Try to get store-specific height, fall back to tree height
-        Ok(entry
-            .subtree_height(store)
-            .unwrap_or_else(|_| entry.height()))
-    } else {
-        // Entry not found, use 0 as fallback
-        Ok(0)
+    let sql = format!(
+        "SELECT entry_id, height FROM subtrees
+         WHERE store_name = $1 AND entry_id IN ({in_clause})
+         ORDER BY height DESC, entry_id ASC"
+    );
+
+    let mut query = sqlx::query_as::<_, (String, i64)>(&sql).bind(store);
+    for entry_id in entry_ids {
+        query = query.bind(entry_id.to_string());
     }
+
+    let rows = query
+        .fetch_all(pool)
+        .await
+        .sql_context("Failed to get heights batch")?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(id, height)| (ID::from(id), height as u64))
+        .collect())
 }
 
-/// Check if ALL paths from entry to root pass through candidate.
+/// Check if candidate is a dominator (all paths pass through it) using recursive CTE.
 ///
-/// This works by trying to reach a root (entry with no parents) while avoiding
-/// the candidate. If we can reach a root, there's a bypass path and the candidate
-/// is not on all paths.
-async fn all_paths_pass_through_async(
+/// Returns true if ALL paths from entry to root pass through candidate.
+/// This works by trying to reach a root while avoiding the candidate using a CTE.
+async fn is_dominator_cte(
     backend: &SqlxBackend,
     store: &str,
     entry: &ID,
@@ -268,40 +276,43 @@ async fn all_paths_pass_through_async(
 
     let pool = backend.pool();
 
-    // Try to reach a root while avoiding the candidate
-    let mut visited: HashSet<ID> = HashSet::new();
-    visited.insert(candidate.clone()); // Block the candidate
-    let mut queue: VecDeque<ID> = VecDeque::new();
-    queue.push_back(entry.clone());
+    // Recursive CTE that tries to reach a root while avoiding the candidate.
+    // If we can reach any root (entry with no parents), there's a bypass path.
+    // Use CASE to return integer (1/0) for cross-database compatibility
+    // (SQLite returns int for EXISTS, PostgreSQL returns boolean).
+    let row: (i64,) = sqlx::query_as(
+        "WITH RECURSIVE bypass AS (
+            -- Start from entry, but only if it's not the candidate
+            SELECT $1 AS id
+            WHERE $1 != $2
 
-    while let Some(current) = queue.pop_front() {
-        if visited.contains(&current) {
-            continue;
-        }
-        visited.insert(current.clone());
+            UNION
 
-        // Get parents in store
-        let parent_rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT parent_id FROM store_parents WHERE child_id = $1 AND store_name = $2",
+            -- Follow parents, blocking the candidate
+            SELECT sp.parent_id AS id
+            FROM bypass b
+            JOIN store_parents sp ON sp.child_id = b.id AND sp.store_name = $3
+            WHERE sp.parent_id != $2
         )
-        .bind(current.to_string())
-        .bind(store)
-        .fetch_all(pool)
-        .await
-        .sql_context("Failed to get store parents")?;
+        -- Check if any node in bypass has no parents (is a root)
+        -- Use CASE to normalize boolean/int difference between SQLite and PostgreSQL
+        SELECT CASE WHEN EXISTS(
+            SELECT 1 FROM bypass b
+            WHERE NOT EXISTS (
+                SELECT 1 FROM store_parents sp
+                WHERE sp.child_id = b.id AND sp.store_name = $3
+            )
+        ) THEN 1 ELSE 0 END AS has_bypass",
+    )
+    .bind(entry.to_string())
+    .bind(candidate.to_string())
+    .bind(store)
+    .fetch_one(pool)
+    .await
+    .sql_context("Failed to check dominator")?;
 
-        if parent_rows.is_empty() {
-            // Reached a root while avoiding the candidate - there's a bypass path!
-            return Ok(false);
-        }
-
-        for (parent_id,) in parent_rows {
-            queue.push_back(ID::from(parent_id));
-        }
-    }
-
-    // Couldn't reach any root without going through the candidate
-    Ok(true)
+    // If there's a bypass path (1), candidate is NOT a dominator
+    Ok(row.0 == 0)
 }
 
 /// Collect all entries from root to the target entry in a store.
@@ -457,85 +468,72 @@ pub async fn get_store_from_tips(
     store: &str,
     tips: &[ID],
 ) -> Result<Vec<Entry>> {
-    // TODO: Optimize with recursive CTE to do traversal in a single query
-    // instead of multiple round-trips.
     if tips.is_empty() {
         return Ok(Vec::new());
     }
 
     let pool = backend.pool();
 
-    // BFS from tips to collect all ancestors in this store
-    let mut collected: HashSet<ID> = HashSet::new();
-    let mut to_visit: VecDeque<ID> = VecDeque::new();
+    // Build UNION ALL clause for starting entries (works in both SQLite and PostgreSQL)
+    let start_selects: Vec<String> = (1..=tips.len())
+        .map(|i| format!("SELECT ${} AS id", i + 2)) // +2 because $1 is tree_id, $2 is store_name
+        .collect();
+    let starts_union = start_selects.join(" UNION ALL ");
 
-    // Initialize with tips that belong to the tree and store
-    for tip in tips {
-        // Check if this tip belongs to the specified tree and store
-        let in_tree_and_store: Option<(i32,)> = sqlx::query_as(
-            "SELECT 1 FROM entries e
-             JOIN store_memberships sm ON sm.entry_id = e.id
-             WHERE e.id = $1 AND e.tree_id = $2 AND sm.store_name = $3",
+    // Single query using recursive CTE to:
+    // 1. Collect all ancestors from tips
+    // 2. Join with entries to get full entry JSON
+    // 3. Join with subtrees to get height for sorting
+    // 4. Filter by tree_id
+    let sql = format!(
+        "WITH RECURSIVE ancestors AS (
+            -- Start from tips that are in this tree and store
+            SELECT s.id
+            FROM ({starts_union}) AS s
+            JOIN entries e ON e.id = s.id AND e.tree_id = $1
+            JOIN subtrees st ON st.entry_id = s.id AND st.store_name = $2
+
+            UNION
+
+            -- Follow store parents
+            SELECT sp.parent_id AS id
+            FROM ancestors a
+            JOIN store_parents sp ON sp.child_id = a.id AND sp.store_name = $2
         )
-        .bind(tip.to_string())
-        .bind(tree.to_string())
-        .bind(store)
-        .fetch_optional(pool)
-        .await
-        .sql_context("Failed to check tree/store membership")?;
+        SELECT e.entry_json, st.height
+        FROM ancestors a
+        JOIN entries e ON e.id = a.id
+        JOIN subtrees st ON st.entry_id = a.id AND st.store_name = $2
+        ORDER BY st.height ASC, a.id ASC"
+    );
 
-        if in_tree_and_store.is_some() {
-            to_visit.push_back(tip.clone());
-        }
+    let mut query = sqlx::query_as::<_, (String, i64)>(&sql)
+        .bind(tree.to_string())
+        .bind(store);
+
+    for tip in tips {
+        query = query.bind(tip.to_string());
     }
 
-    while let Some(entry_id) = to_visit.pop_front() {
-        if collected.contains(&entry_id) {
-            continue;
-        }
-        collected.insert(entry_id.clone());
-
-        // Add store parents to visit
-        let parent_rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT parent_id FROM store_parents WHERE child_id = $1 AND store_name = $2",
-        )
-        .bind(entry_id.to_string())
-        .bind(store)
+    let rows = query
         .fetch_all(pool)
         .await
-        .sql_context("Failed to get store parents")?;
+        .sql_context("Failed to get store entries from tips")?;
 
-        for (parent_id,) in parent_rows {
-            let parent_id = ID::from(parent_id);
-            if !collected.contains(&parent_id) {
-                to_visit.push_back(parent_id);
-            }
-        }
+    // Deserialize entries (already sorted by height)
+    let mut entries = Vec::with_capacity(rows.len());
+    for (json, _height) in rows {
+        let entry: Entry = serde_json::from_str(&json)
+            .map_err(|e| BackendError::DeserializationFailed { source: e })?;
+        entries.push(entry);
     }
-
-    // Fetch the collected entries
-    let mut entries = Vec::with_capacity(collected.len());
-    for id in &collected {
-        let row: Option<(String,)> = sqlx::query_as("SELECT entry_json FROM entries WHERE id = $1")
-            .bind(id.to_string())
-            .fetch_optional(pool)
-            .await
-            .sql_context("Failed to get entry")?;
-
-        if let Some((json,)) = row {
-            let entry: Entry = serde_json::from_str(&json)
-                .map_err(|e| BackendError::DeserializationFailed { source: e })?;
-            entries.push(entry);
-        }
-    }
-
-    // Sort by store height (stored in entries)
-    super::cache::sort_entries_by_subtree_height(&mut entries, store)?;
 
     Ok(entries)
 }
 
 /// Get parents of an entry in a store, sorted by height then ID.
+///
+/// Uses a single query joining store_parents with subtrees to get heights efficiently.
 pub async fn get_sorted_store_parents(
     backend: &SqlxBackend,
     _tree_id: &ID,
@@ -544,47 +542,29 @@ pub async fn get_sorted_store_parents(
 ) -> Result<Vec<ID>> {
     let pool = backend.pool();
 
-    let parent_rows: Vec<(String,)> = sqlx::query_as(
-        "SELECT parent_id FROM store_parents WHERE child_id = $1 AND store_name = $2",
+    // Single query that joins store_parents with subtrees to get parents with heights
+    let rows: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT sp.parent_id, s.height
+         FROM store_parents sp
+         JOIN subtrees s ON s.entry_id = sp.parent_id AND s.store_name = sp.store_name
+         WHERE sp.child_id = $1 AND sp.store_name = $2
+         ORDER BY s.height ASC, sp.parent_id ASC",
     )
     .bind(entry_id.to_string())
     .bind(store)
     .fetch_all(pool)
     .await
-    .sql_context("Failed to get store parents")?;
+    .sql_context("Failed to get sorted store parents")?;
 
-    let parent_ids: Vec<ID> = parent_rows.into_iter().map(|(id,)| ID::from(id)).collect();
-
-    if parent_ids.is_empty() {
-        return Ok(parent_ids);
-    }
-
-    // Fetch parent entries to get their heights
-    let mut parent_entries: Vec<Entry> = Vec::with_capacity(parent_ids.len());
-    for id in &parent_ids {
-        let row: Option<(String,)> = sqlx::query_as("SELECT entry_json FROM entries WHERE id = $1")
-            .bind(id.to_string())
-            .fetch_optional(pool)
-            .await
-            .sql_context("Failed to get entry")?;
-
-        if let Some((json,)) = row {
-            let entry: Entry = serde_json::from_str(&json)
-                .map_err(|e| BackendError::DeserializationFailed { source: e })?;
-            parent_entries.push(entry);
-        }
-    }
-
-    // Sort by subtree height (ascending) then ID
-    super::cache::sort_entries_by_subtree_height(&mut parent_entries, store)?;
-
-    Ok(parent_entries.into_iter().map(|e| e.id()).collect())
+    Ok(rows.into_iter().map(|(id, _)| ID::from(id)).collect())
 }
 
 /// Get all entries between from_id and to_ids in a store.
 ///
 /// This correctly handles diamond patterns by finding ALL entries reachable
 /// from to_ids by following parents back to from_id.
+///
+/// Uses a recursive CTE for efficient single-query traversal.
 pub async fn get_path_from_to(
     backend: &SqlxBackend,
     _tree_id: &ID,
@@ -598,61 +578,47 @@ pub async fn get_path_from_to(
 
     let pool = backend.pool();
 
-    // BFS from to_ids backward, collecting everything until we hit from_id
-    let mut collected: HashSet<ID> = HashSet::new();
-    let mut to_visit: VecDeque<ID> = to_ids.iter().cloned().collect();
+    // Build UNION ALL clause for starting entries (works in both SQLite and PostgreSQL)
+    // Format: SELECT $3 AS id UNION ALL SELECT $4 AS id ...
+    let start_selects: Vec<String> = (1..=to_ids.len())
+        .map(|i| format!("SELECT ${} AS id", i + 2)) // +2 because $1 is store, $2 is from_id
+        .collect();
+    let starts_union = start_selects.join(" UNION ALL ");
 
-    while let Some(current) = to_visit.pop_front() {
-        if current == *from_id {
-            // Don't include from_id and don't traverse past it
-            continue;
-        }
+    // Recursive CTE that traverses from to_ids back to from_id,
+    // then joins with subtrees to get heights for sorting
+    let sql = format!(
+        "WITH RECURSIVE path_entries AS (
+            -- Start from to_ids (excluding from_id)
+            SELECT id FROM ({starts_union}) AS starts
+            WHERE id != $2
 
-        if collected.contains(&current) {
-            continue;
-        }
-        collected.insert(current.clone());
+            UNION
 
-        // Add store parents to visit
-        let parent_rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT parent_id FROM store_parents WHERE child_id = $1 AND store_name = $2",
+            -- Follow parents back, stopping at from_id
+            SELECT sp.parent_id AS id
+            FROM path_entries p
+            JOIN store_parents sp ON sp.child_id = p.id AND sp.store_name = $1
+            WHERE sp.parent_id != $2
         )
-        .bind(current.to_string())
+        SELECT p.id, s.height
+        FROM path_entries p
+        JOIN subtrees s ON s.entry_id = p.id AND s.store_name = $1
+        ORDER BY s.height ASC, p.id ASC"
+    );
+
+    let mut query = sqlx::query_as::<_, (String, i64)>(&sql)
         .bind(store)
+        .bind(from_id.to_string());
+
+    for to_id in to_ids {
+        query = query.bind(to_id.to_string());
+    }
+
+    let rows = query
         .fetch_all(pool)
         .await
-        .sql_context("Failed to get store parents")?;
+        .sql_context("Failed to get path from to")?;
 
-        for (parent_id,) in parent_rows {
-            let parent_id = ID::from(parent_id);
-            if !collected.contains(&parent_id) {
-                to_visit.push_back(parent_id);
-            }
-        }
-    }
-
-    if collected.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    // Fetch entries to get their heights for sorting
-    let mut entries: Vec<Entry> = Vec::with_capacity(collected.len());
-    for id in &collected {
-        let row: Option<(String,)> = sqlx::query_as("SELECT entry_json FROM entries WHERE id = $1")
-            .bind(id.to_string())
-            .fetch_optional(pool)
-            .await
-            .sql_context("Failed to get entry")?;
-
-        if let Some((json,)) = row {
-            let entry: Entry = serde_json::from_str(&json)
-                .map_err(|e| BackendError::DeserializationFailed { source: e })?;
-            entries.push(entry);
-        }
-    }
-
-    // Sort by subtree height (ascending) then ID
-    super::cache::sort_entries_by_subtree_height(&mut entries, store)?;
-
-    Ok(entries.into_iter().map(|e| e.id()).collect())
+    Ok(rows.into_iter().map(|(id, _)| ID::from(id)).collect())
 }
