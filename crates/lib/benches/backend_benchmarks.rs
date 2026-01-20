@@ -462,12 +462,62 @@ pub fn bench_tip_validation(c: &mut Criterion) {
     group.finish();
 }
 
+/// Benchmark get_tree_from_tips - the function optimized with batch CTE queries
+pub fn bench_get_tree_from_tips(c: &mut Criterion) {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to build Tokio runtime");
+    let mut group = c.benchmark_group("get_tree_from_tips");
+    group.sample_size(10);
+
+    let tree_sizes = [100, 500];
+    let structures = ["linear", "wide"];
+
+    for &size in &tree_sizes {
+        for structure in &structures {
+            group.throughput(Throughput::Elements(size as u64));
+            group.bench_with_input(
+                BenchmarkId::new(structure.to_string(), size),
+                &(size, structure),
+                |b, &(size, structure)| {
+                    b.iter_with_setup(
+                        || {
+                            rt.block_on(async {
+                                let (_instance, _user, tree) = setup_tree_async().await;
+                                let entry_ids = create_large_tree(&tree, size, structure).await;
+                                // Get the tips (last entries created)
+                                let tips: Vec<ID> =
+                                    entry_ids.iter().rev().take(3).cloned().collect();
+                                (_instance, tree, tips)
+                            })
+                        },
+                        |(_instance, tree, tips)| {
+                            rt.block_on(async {
+                                let backend = tree.backend().expect("Failed to get backend");
+                                let entries = backend
+                                    .get_tree_from_tips(tree.root_id(), &tips)
+                                    .await
+                                    .expect("Failed to get tree from tips");
+                                black_box(entries);
+                            });
+                        },
+                    );
+                },
+            );
+        }
+    }
+
+    group.finish();
+}
+
 criterion_group! {
     name = backend_benches;
     config = Criterion::default().sample_size(30);
     targets = bench_merge_base_linear_chains, bench_merge_base_diamond_merge,
               bench_tips_finding, bench_tree_traversal_scalability,
-              bench_crdt_merge_operations, bench_tip_validation
+              bench_crdt_merge_operations, bench_tip_validation,
+              bench_get_tree_from_tips
 }
 
 criterion_main!(backend_benches);

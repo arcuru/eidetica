@@ -3,7 +3,7 @@
 //! This module implements graph traversal operations like finding tips,
 //! computing merge bases, and collecting paths through the DAG using sqlx.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::HashSet;
 
 use crate::Result;
 use crate::backend::errors::BackendError;
@@ -398,91 +398,98 @@ pub async fn get_tree_from_tips(
     tree: &ID,
     tips: &[ID],
 ) -> Result<Vec<Entry>> {
-    // TODO: Optimize with recursive CTE to do traversal in a single query
-    // instead of multiple round-trips.
     if tips.is_empty() {
         return Ok(Vec::new());
     }
 
     let pool = backend.pool();
 
-    // BFS from tips to collect all ancestors, but only include entries in the specified tree
-    let mut collected: HashSet<ID> = HashSet::new();
-    let mut to_visit: VecDeque<ID> = VecDeque::new();
+    // Build UNION ALL clause for tip IDs (works in both SQLite and PostgreSQL)
+    let start_selects: Vec<String> = (1..=tips.len())
+        .map(|i| format!("SELECT ${} AS id", i + 1)) // +1 because $1 is tree_id
+        .collect();
+    let starts_union = start_selects.join(" UNION ALL ");
 
-    // Initialize with tips that belong to the tree
+    // Step 1: Validate all tips in a single batch query
+    // For each tip, check: does it exist? is it in the right tree?
+    // Uses CASE expressions returning 1/0 for SQLite compatibility (no native bool)
+    let validation_sql = format!(
+        "SELECT s.id,
+                CASE WHEN e_any.id IS NOT NULL THEN 1 ELSE 0 END AS exists_at_all,
+                CASE WHEN e_tree.id IS NOT NULL THEN 1 ELSE 0 END AS in_tree
+         FROM ({starts_union}) AS s
+         LEFT JOIN entries e_any ON e_any.id = s.id
+         LEFT JOIN entries e_tree ON e_tree.id = s.id AND e_tree.tree_id = $1"
+    );
+
+    let mut validation_query =
+        sqlx::query_as::<_, (String, i32, i32)>(&validation_sql).bind(tree.to_string());
+
     for tip in tips {
-        // Check if this tip belongs to the specified tree
-        let in_tree: Option<(i32,)> =
-            sqlx::query_as("SELECT 1 FROM entries WHERE id = $1 AND tree_id = $2")
-                .bind(tip.to_string())
-                .bind(tree.to_string())
-                .fetch_optional(pool)
-                .await
-                .sql_context("Failed to check tree membership")?;
+        validation_query = validation_query.bind(tip.to_string());
+    }
 
-        if in_tree.is_some() {
-            to_visit.push_back(tip.clone());
-        } else {
-            // Entry not in tree - check if it exists at all to give a better error
-            let exists: Option<(i32,)> = sqlx::query_as("SELECT 1 FROM entries WHERE id = $1")
-                .bind(tip.to_string())
-                .fetch_optional(pool)
-                .await
-                .sql_context("Failed to check entry existence")?;
+    let validation_rows = validation_query
+        .fetch_all(pool)
+        .await
+        .sql_context("Failed to validate tips")?;
 
-            if exists.is_some() {
-                return Err(BackendError::EntryNotInTree {
-                    entry_id: tip.clone(),
-                    tree_id: tree.clone(),
-                }
-                .into());
-            } else {
-                return Err(BackendError::EntryNotFound { id: tip.clone() }.into());
+    // Check for validation errors
+    for (tip_id_str, exists_at_all, in_tree) in &validation_rows {
+        if *exists_at_all == 0 {
+            return Err(BackendError::EntryNotFound {
+                id: ID::from(tip_id_str.clone()),
             }
+            .into());
         }
-    }
-
-    while let Some(entry_id) = to_visit.pop_front() {
-        if collected.contains(&entry_id) {
-            continue;
-        }
-        collected.insert(entry_id.clone());
-
-        // Add tree parents to visit
-        let parent_rows: Vec<(String,)> =
-            sqlx::query_as("SELECT parent_id FROM tree_parents WHERE child_id = $1")
-                .bind(entry_id.to_string())
-                .fetch_all(pool)
-                .await
-                .sql_context("Failed to get tree parents")?;
-
-        for (parent_id,) in parent_rows {
-            let parent_id = ID::from(parent_id);
-            if !collected.contains(&parent_id) {
-                to_visit.push_back(parent_id);
+        if *in_tree == 0 {
+            return Err(BackendError::EntryNotInTree {
+                entry_id: ID::from(tip_id_str.clone()),
+                tree_id: tree.clone(),
             }
+            .into());
         }
     }
 
-    // Fetch the collected entries
-    let mut entries = Vec::with_capacity(collected.len());
-    for id in &collected {
-        let row: Option<(String,)> = sqlx::query_as("SELECT entry_json FROM entries WHERE id = $1")
-            .bind(id.to_string())
-            .fetch_optional(pool)
-            .await
-            .sql_context("Failed to get entry")?;
+    // Step 2: Single recursive CTE query to traverse tree and fetch entries
+    let sql = format!(
+        "WITH RECURSIVE ancestors AS (
+            -- Start from tips that are in this tree
+            SELECT s.id
+            FROM ({starts_union}) AS s
+            JOIN entries e ON e.id = s.id AND e.tree_id = $1
 
-        if let Some((json,)) = row {
-            let entry: Entry = serde_json::from_str(&json)
-                .map_err(|e| BackendError::DeserializationFailed { source: e })?;
-            entries.push(entry);
-        }
+            UNION
+
+            -- Follow tree parents
+            SELECT tp.parent_id AS id
+            FROM ancestors a
+            JOIN tree_parents tp ON tp.child_id = a.id
+        )
+        SELECT e.entry_json, e.height
+        FROM ancestors a
+        JOIN entries e ON e.id = a.id
+        ORDER BY e.height ASC, a.id ASC"
+    );
+
+    let mut query = sqlx::query_as::<_, (String, i64)>(&sql).bind(tree.to_string());
+
+    for tip in tips {
+        query = query.bind(tip.to_string());
     }
 
-    // Sort by height (stored in entries)
-    super::cache::sort_entries_by_height(&mut entries);
+    let rows = query
+        .fetch_all(pool)
+        .await
+        .sql_context("Failed to get tree entries from tips")?;
+
+    // Deserialize entries (already sorted by height)
+    let mut entries = Vec::with_capacity(rows.len());
+    for (json, _height) in rows {
+        let entry: Entry = serde_json::from_str(&json)
+            .map_err(|e| BackendError::DeserializationFailed { source: e })?;
+        entries.push(entry);
+    }
 
     Ok(entries)
 }
