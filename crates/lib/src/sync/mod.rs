@@ -1139,6 +1139,113 @@ impl Sync {
             .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))?
     }
 
+    /// Start the sync server on a specific transport only.
+    ///
+    /// Unlike `start_server()` which starts on all transports, this method
+    /// starts the server on only the specified transport.
+    ///
+    /// # Arguments
+    /// * `transport_type` - The transport to start (e.g., "http", "iroh")
+    /// * `addr` - The address to bind to (transport-specific)
+    pub async fn start_server_on_transport(&self, transport_type: &str, addr: &str) -> Result<()> {
+        let (tx, rx) = oneshot::channel();
+
+        self.background_tx
+            .get()
+            .ok_or(SyncError::NoTransportEnabled)?
+            .send(SyncCommand::StartServer {
+                transport_type: Some(transport_type.to_string()),
+                addr: addr.to_string(),
+                response: tx,
+            })
+            .await
+            .map_err(|e| SyncError::CommandSendError(e.to_string()))?;
+
+        rx.await
+            .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))?
+    }
+
+    /// Configure HTTP transport for listening.
+    ///
+    /// Stores the bind address for use when `accept_connections()` is called.
+    /// This is NOT required for outbound HTTP connections (those work automatically
+    /// after `enable_sync()`).
+    ///
+    /// # Arguments
+    /// * `bind_addr` - The address to bind to (e.g., "127.0.0.1:8080" or "0.0.0.0:8080")
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// // Configure HTTP to listen on port 8080
+    /// sync.configure_http_transport("127.0.0.1:8080").await?;
+    /// // Later, when ready to accept connections:
+    /// sync.accept_connections().await?;
+    /// ```
+    pub async fn configure_http_transport(&self, bind_addr: &str) -> Result<()> {
+        use transports::http::HttpTransportConfig;
+
+        // Validate address format
+        let _: std::net::SocketAddr = bind_addr
+            .parse()
+            .map_err(|e| SyncError::InvalidAddress(format!("Invalid HTTP bind address: {e}")))?;
+
+        // Store config
+        let config = HttpTransportConfig {
+            bind_address: Some(bind_addr.to_string()),
+        };
+        self.save_transport_config(HttpTransport::TRANSPORT_TYPE, &config)
+            .await?;
+
+        debug!(bind_addr = %bind_addr, "HTTP transport configured for listening");
+        Ok(())
+    }
+
+    /// Start accepting incoming connections.
+    ///
+    /// Must be called each time the instance is created to accept inbound sync requests.
+    /// This starts:
+    /// - Iroh server (always)
+    /// - HTTP server (if configured via `configure_http_transport()`)
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// // Basic P2P setup
+    /// instance.enable_sync().await?;
+    /// let sync = instance.sync().unwrap();
+    ///
+    /// // Optional: configure HTTP listening
+    /// sync.configure_http_transport("127.0.0.1:8080").await?;
+    ///
+    /// // Start accepting connections
+    /// sync.accept_connections().await?;
+    /// ```
+    pub async fn accept_connections(&self) -> Result<()> {
+        use transports::http::HttpTransportConfig;
+
+        // Ensure transports are enabled
+        if self.background_tx.get().is_none() {
+            return Err(SyncError::NoTransportEnabled.into());
+        }
+
+        // Always start Iroh server (address ignored, binds automatically)
+        info!("Starting Iroh server for incoming connections");
+        self.start_server_on_transport(IrohTransport::TRANSPORT_TYPE, "iroh")
+            .await?;
+
+        // Start HTTP server if configured
+        let http_config: HttpTransportConfig = self
+            .load_transport_config(HttpTransport::TRANSPORT_TYPE)
+            .await?;
+
+        if let Some(ref bind_addr) = http_config.bind_address {
+            info!(bind_addr = %bind_addr, "Starting HTTP server for incoming connections");
+            self.start_server_on_transport(HttpTransport::TRANSPORT_TYPE, bind_addr)
+                .await?;
+        }
+
+        Ok(())
+    }
+
     /// Enable HTTP transport for network communication.
     ///
     /// Can be called multiple times to add HTTP transport alongside other transports.
@@ -1190,6 +1297,48 @@ impl Sync {
     /// Can be called alongside other transports for multi-transport support.
     pub async fn enable_iroh_transport_with_config(&self, transport: IrohTransport) -> Result<()> {
         self.add_transport(Box::new(transport)).await
+    }
+
+    /// Enable transports for outbound connections only.
+    ///
+    /// Called automatically by `Instance::enable_sync()`. Does NOT start servers.
+    /// This enables both HTTP and Iroh transports so outbound sync operations
+    /// work immediately without additional configuration.
+    ///
+    /// - HTTP: No config needed for outbound connections
+    /// - Iroh: Needs persisted node ID for stable identity across restarts
+    pub(crate) async fn enable_transports_for_outbound(&self) -> Result<()> {
+        if self.background_tx.get().is_some() {
+            return Ok(()); // Already enabled
+        }
+
+        debug!("Enabling transports for outbound connections");
+
+        // HTTP transport - no config needed for outbound
+        let http_transport = HttpTransport::new()?;
+        self.add_transport(Box::new(http_transport)).await?;
+
+        // Iroh transport - with persisted node ID
+        let mut config: IrohTransportConfig = self
+            .load_transport_config(IrohTransport::TRANSPORT_TYPE)
+            .await?;
+
+        let config_changed = !config.has_secret_key();
+        let secret_key = config.get_or_create_secret_key();
+
+        if config_changed {
+            self.save_transport_config(IrohTransport::TRANSPORT_TYPE, &config)
+                .await?;
+        }
+
+        let iroh_transport = IrohTransport::builder()
+            .secret_key(secret_key)
+            .relay_mode(config.relay_mode.into())
+            .build()?;
+
+        self.add_transport(Box::new(iroh_transport)).await?;
+
+        Ok(())
     }
 
     /// Add a transport to the sync system.

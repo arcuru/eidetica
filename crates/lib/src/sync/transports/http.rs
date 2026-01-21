@@ -29,12 +29,13 @@ use crate::{
 
 /// Persistable configuration for the HTTP transport.
 ///
-/// Currently empty, but provides an extension point for future
-/// HTTP-specific configuration options (e.g., TLS settings,
-/// timeouts, authentication).
+/// Stores HTTP-specific configuration such as the bind address for listening.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct HttpTransportConfig {
-    // Reserved for future configuration options
+    /// Bind address for HTTP server (e.g., "127.0.0.1:8080").
+    /// If None, HTTP server won't be started by accept_connections().
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bind_address: Option<String>,
 }
 
 impl Registered for HttpTransportConfig {

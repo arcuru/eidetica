@@ -57,6 +57,10 @@ pub enum SyncError {
     #[error("Transport type '{transport_type}' not supported")]
     UnsupportedTransport { transport_type: String },
 
+    /// Invalid address format.
+    #[error("Invalid address: {0}")]
+    InvalidAddress(String),
+
     /// Peer not found.
     #[error("Peer not found: {0}")]
     PeerNotFound(String),

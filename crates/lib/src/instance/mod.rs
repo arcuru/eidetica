@@ -592,6 +592,9 @@ impl Instance {
 
         let sync_arc = Arc::new(sync);
 
+        // Auto-enable transports for outbound connections
+        sync_arc.enable_transports_for_outbound().await?;
+
         // Register global callback for automatic sync on local writes
         let sync_for_callback = Arc::clone(&sync_arc);
         self.register_global_write_callback(
