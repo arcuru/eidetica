@@ -53,7 +53,7 @@ jobs:
         uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
 
       - name: Install mdbook and nextest
-        uses: taiki-e/install-action@0e76c5c569f13f7eb21e8e5b26fe710062b57b62 # v2
+        uses: taiki-e/install-action@0bc4cd8a3e21db4cb9519857377b0c8c5e150de5 # v2
         with:
           tool: cargo-nextest@0.9.115,mdbook@0.4
 
@@ -85,7 +85,7 @@ jobs:
         uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
 
       - name: Install nextest
-        uses: taiki-e/install-action@0e76c5c569f13f7eb21e8e5b26fe710062b57b62 # v2
+        uses: taiki-e/install-action@0bc4cd8a3e21db4cb9519857377b0c8c5e150de5 # v2
         with:
           tool: cargo-nextest@0.9.115
 
