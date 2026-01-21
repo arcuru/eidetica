@@ -5,8 +5,6 @@ ignore = [
     "RUSTSEC-2023-0089", # atomic-polyfill unmaintained (via iroh)
     "RUSTSEC-2024-0384", # instant unmaintained (via iroh)
     "RUSTSEC-2024-0436", # paste unmaintained (via iroh)
-    # lru soundness issue, waiting for transitive dependencies to update
-    "RUSTSEC-2026-0002",
 ]
 
 [bans]
