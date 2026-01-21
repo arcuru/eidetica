@@ -11,7 +11,7 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           fetch-depth: 0
-      - uses: yesolutions/mirror-action@master
+      - uses: yesolutions/mirror-action@662fce0eced8996f64d7fa264d76cddd84827f33 # master
         with:
           REMOTE: git@codeberg.org:arcuru/eidetica.git
           GIT_SSH_PRIVATE_KEY: ${{ secrets.GIT_SSH_PRIVATE_KEY }}
