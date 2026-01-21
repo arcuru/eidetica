@@ -8,6 +8,8 @@
 
 use super::helpers::*;
 
+use eidetica::crdt::Doc;
+
 // ===== CREATE DATABASE TESTS =====
 
 #[tokio::test]
@@ -334,6 +336,53 @@ async fn test_find_database_by_name() {
 
     assert_eq!(found.len(), 1, "Should find exactly one database");
     assert_database_name(&found[0], db_name).await;
+}
+
+#[tokio::test]
+async fn test_find_database_returns_writable_database() {
+    use eidetica::store::DocStore;
+
+    let (instance, username) = setup_instance_with_user("regression_test", None).await;
+    let mut user = login_user(&instance, &username, None).await;
+
+    // Step 1: Create database - this returns a properly authenticated database
+    let db_name = "Writable Database Test";
+    let created_db = create_named_database(&mut user, db_name).await;
+
+    // Step 2: Write to the created database
+    {
+        let tx = created_db.new_transaction().await.unwrap();
+        let store = tx.get_store::<DocStore>("test_store").await.unwrap();
+        let mut doc = Doc::new();
+        doc.set("value", "value1");
+        store.set("key1", doc).await.unwrap();
+        tx.commit()
+            .await
+            .expect("Created database should be writable");
+    }
+
+    // Step 3: Find the database by name
+    let found = user
+        .find_database(db_name)
+        .await
+        .expect("Should find database");
+    assert_eq!(found.len(), 1);
+    let found_db = &found[0];
+
+    // Step 4: Verify the found database is the same one
+    assert_eq!(found_db.root_id(), created_db.root_id());
+
+    // Step 5: Try to write to the found database
+    // The found database MUST be writable - this is the contract of find_database()
+    let tx = found_db.new_transaction().await.unwrap();
+    let store = tx.get_store::<DocStore>("test_store").await.unwrap();
+    let mut doc = Doc::new();
+    doc.set("value", "value2");
+    store.set("key2", doc).await.unwrap();
+
+    tx.commit()
+        .await
+        .expect("Found database should be writable");
 }
 
 #[tokio::test]

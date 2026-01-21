@@ -549,85 +549,6 @@ impl Instance {
         format_public_key(&self.inner.device_key.verifying_key())
     }
 
-    /// Load an existing database from the backend by its root ID (read-only).
-    ///
-    /// # Internal Use Only
-    ///
-    /// This method bypasses authentication validation. See `Database::open_readonly`
-    /// for details. These operations should only be performed by the server/instance
-    /// administrator, but we don't verify that yet.
-    ///
-    /// # Arguments
-    /// * `root_id` - The content-addressable ID of the root `Entry` of the database to load.
-    ///
-    /// # Returns
-    /// A `Result` containing the loaded `Database` or an error if the root ID is not found.
-    pub(crate) async fn load_database(&self, root_id: &ID) -> Result<Database> {
-        // First validate the root_id exists in the backend
-        // Make sure the entry exists
-        self.inner.backend.get(root_id).await?;
-
-        // Create a database object with the given root_id
-        let database = Database::open_unauthenticated(root_id.clone(), self)?;
-        Ok(database)
-    }
-
-    /// Load all databases stored in the backend.
-    ///
-    /// This retrieves all known root entry IDs from the backend and constructs
-    /// `Database` instances for each. Includes system databases.
-    ///
-    /// For user-facing database discovery, use `User::find_database()` instead.
-    // TODO: Will be used for Admin users
-    #[allow(dead_code)]
-    pub(crate) async fn all_databases(&self) -> Result<Vec<Database>> {
-        let root_ids = self.inner.backend.all_roots().await?;
-        let mut databases = Vec::new();
-
-        for root_id in root_ids {
-            let database = Database::open_unauthenticated(root_id.clone(), self)?;
-            databases.push(database);
-        }
-
-        Ok(databases)
-    }
-
-    /// Find databases by their assigned name.
-    ///
-    /// Searches through all databases in the backend and returns those whose "name"
-    /// setting matches the provided name. Includes system databases.
-    ///
-    /// For user-facing database discovery, use `User::find_database()` instead.
-    ///
-    /// # Errors
-    /// Returns `InstanceError::DatabaseNotFound` if no databases with the specified name are found.
-    // TODO: Will be used for Admin users
-    #[allow(dead_code)]
-    pub(crate) async fn find_database(&self, name: impl AsRef<str>) -> Result<Vec<Database>> {
-        let name = name.as_ref();
-        let all_databases = self.all_databases().await?;
-        let mut matching_databases = Vec::new();
-
-        for database in all_databases {
-            // Attempt to get the name from the database's settings
-            if let Ok(database_name) = database.get_name().await
-                && database_name == name
-            {
-                matching_databases.push(database);
-            }
-            // Ignore databases where getting the name fails or doesn't match
-        }
-
-        if matching_databases.is_empty() {
-            Err(InstanceError::DatabaseNotFound {
-                name: name.to_string(),
-            }
-            .into())
-        } else {
-            Ok(matching_databases)
-        }
-    }
-
     // === Synchronization Management ===
     //
     // These methods provide access to the Sync module for managing synchronization
@@ -1022,8 +943,8 @@ mod tests {
         // Database should have a valid root_id
         assert!(!database.root_id().is_empty());
 
-        // Database should be loadable via instance
-        let loaded = instance.load_database(database.root_id()).await.unwrap();
+        // Database should be loadable via user
+        let loaded = user.open_database(database.root_id()).await.unwrap();
         assert_eq!(loaded.root_id(), database.root_id());
     }
 
@@ -1044,79 +965,6 @@ mod tests {
         let result = user.create_database(settings, "nonexistent_key").await;
         assert!(result.is_err());
         Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_load_database() {
-        let backend = InMemory::new();
-        let instance = Instance::open(Box::new(backend))
-            .await
-            .expect("Failed to create test instance");
-
-        // Create a database using User API
-        instance.create_user("test", None).await.unwrap();
-        let mut user = instance.login_user("test", None).await.unwrap();
-        let key_id = user.add_private_key(None).await.unwrap();
-
-        let mut settings = Doc::new();
-        settings.set("name", "test_db");
-        let database = user.create_database(settings, &key_id).await.unwrap();
-        let root_id = database.root_id().clone();
-
-        // Load the database
-        let loaded_database = instance.load_database(&root_id).await.unwrap();
-        assert_eq!(loaded_database.get_name().await.unwrap(), "test_db");
-    }
-
-    #[tokio::test]
-    async fn test_all_databases() {
-        let backend = InMemory::new();
-        let instance = Instance::open(Box::new(backend))
-            .await
-            .expect("Failed to create test instance");
-
-        // Create multiple databases using User API
-        instance.create_user("test", None).await.unwrap();
-        let mut user = instance.login_user("test", None).await.unwrap();
-        let key_id = user.add_private_key(None).await.unwrap();
-
-        let mut settings1 = Doc::new();
-        settings1.set("name", "db1");
-        user.create_database(settings1, &key_id).await.unwrap();
-
-        let mut settings2 = Doc::new();
-        settings2.set("name", "db2");
-        user.create_database(settings2, &key_id).await.unwrap();
-
-        // Get all databases (should include system databases + user databases)
-        let databases = instance.all_databases().await.unwrap();
-        assert!(databases.len() >= 2); // At least our 2 databases + system databases
-    }
-
-    #[tokio::test]
-    async fn test_find_database() {
-        let backend = InMemory::new();
-        let instance = Instance::open(Box::new(backend))
-            .await
-            .expect("Failed to create test instance");
-
-        // Create database with name using User API
-        instance.create_user("test", None).await.unwrap();
-        let mut user = instance.login_user("test", None).await.unwrap();
-        let key_id = user.add_private_key(None).await.unwrap();
-
-        let mut settings = Doc::new();
-        settings.set("name", "my_special_db");
-        user.create_database(settings, &key_id).await.unwrap();
-
-        // Find by name
-        let found = instance.find_database("my_special_db").await.unwrap();
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0].get_name().await.unwrap(), "my_special_db");
-
-        // Not found
-        let result = instance.find_database("nonexistent").await;
-        assert!(result.is_err());
     }
 
     #[tokio::test]
@@ -1372,15 +1220,15 @@ mod tests {
         let backend2 = load_in_memory_backend(&path).await?;
         let instance2 =
             Instance::open_with_clock(Box::new(backend2), Arc::new(FixedClock::default())).await?;
-        let _user2 = instance2.login_user("eve", None).await?;
+        let user2 = instance2.login_user("eve", None).await?;
 
         // Load databases by root_id and verify their settings
-        let loaded_db1 = instance2.load_database(&db1_root).await?;
+        let loaded_db1 = user2.open_database(&db1_root).await?;
         assert_eq!(loaded_db1.get_name().await?, "database_one");
         let settings1_doc = loaded_db1.get_settings().await?;
         assert_eq!(settings1_doc.get_string("purpose").await?, "testing");
 
-        let loaded_db2 = instance2.load_database(&db2_root).await?;
+        let loaded_db2 = user2.open_database(&db2_root).await?;
         assert_eq!(loaded_db2.get_name().await?, "database_two");
         let settings2_doc = loaded_db2.get_settings().await?;
         assert_eq!(settings2_doc.get_string("purpose").await?, "production");

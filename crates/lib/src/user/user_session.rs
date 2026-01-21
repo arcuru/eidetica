@@ -315,7 +315,7 @@ impl User {
         let mut matching = Vec::new();
 
         for tracked_db in tracked {
-            if let Ok(database) = self.instance.load_database(&tracked_db.database_id).await
+            if let Ok(database) = self.open_database(&tracked_db.database_id).await
                 && let Ok(db_name) = database.get_name().await
                 && db_name == name
             {
