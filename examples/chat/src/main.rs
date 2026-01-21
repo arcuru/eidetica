@@ -54,7 +54,7 @@ async fn main() -> Result<()> {
 
     // Initialize Eidetica with sync enabled
     let backend = InMemory::new();
-    let instance = Instance::create(Box::new(backend)).await?;
+    let instance = Instance::open(Box::new(backend)).await?;
     instance.enable_sync().await?;
 
     // Get username from args, environment, or use default

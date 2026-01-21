@@ -1,10 +1,13 @@
 use crate::models::ChatMessage;
+use eidetica::auth::AuthKey;
+use eidetica::auth::Permission;
 use eidetica::crdt::Doc;
 use eidetica::store::Table;
+use eidetica::sync::SyncError;
 use eidetica::sync::transports::{http::HttpTransport, iroh::IrohTransport};
 use eidetica::{Database, Instance, Result, user::User};
 use ratatui::widgets::ScrollbarState;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 pub struct App {
     pub user: User,
@@ -69,8 +72,7 @@ impl App {
         // Add global "*" permission so anyone with the room ID can write
         let tx = database.new_transaction().await?;
         let settings_store = tx.get_settings()?;
-        let global_key =
-            eidetica::auth::AuthKey::active("*", eidetica::auth::Permission::Write(10))?;
+        let global_key = AuthKey::active("*", Permission::Write(0))?;
         settings_store.set_auth_key("*", global_key).await?;
         tx.commit().await?;
 
@@ -146,9 +148,11 @@ impl App {
                     sync.accept_connections().await?;
                 }
                 _ => {
-                    return Err(eidetica::Error::Sync(eidetica::sync::SyncError::Network(
-                        format!("Unknown transport: {}", self.transport),
-                    )));
+                    return Err(SyncError::Network(format!(
+                        "Unknown transport: {}",
+                        self.transport
+                    ))
+                    .into());
                 }
             }
 
@@ -163,6 +167,11 @@ impl App {
 
     pub async fn connect_to_room_debug(&mut self, room_address: &str) -> Result<()> {
         debug!(room_address = %room_address, "Starting connection to room");
+
+        // Ensure transport is enabled before syncing
+        if !self.server_running {
+            self.start_server().await?;
+        }
 
         // Parse format: room_id@http://host:port
         let parts: Vec<&str> = room_address.split('@').collect();
@@ -205,9 +214,7 @@ impl App {
                 // Bootstrap sync - authenticate and sync a room we don't have locally
                 info!(" Starting authenticated bootstrap sync (we don't have this room yet)...");
 
-                println!(
-                    "DEBUG: Starting bootstrap sync with server_addr={server_addr}, room_id={room_id}"
-                );
+                debug!(server_addr = %server_addr, room_id = %room_id, "Starting bootstrap sync");
 
                 // For bootstrap sync, use the User API which handles key management internally
                 let result = self
@@ -221,20 +228,18 @@ impl App {
                     )
                     .await;
 
-                println!("DEBUG: request_database_access result: {result:?}");
+                debug!(result = ?result, "request_database_access completed");
 
                 match &result {
                     Ok(_) => {
-                        println!("DEBUG: ✓ Bootstrap sync call returned Ok");
                         info!(" Bootstrap sync completed successfully");
                         // Check if the database root actually exists in backend
                         match self.instance.backend().get(&room_id_obj).await {
                             Ok(entry) => {
-                                println!("DEBUG: ✓ Root entry FOUND in backend: {}", entry.id());
+                                debug!(entry_id = %entry.id(), "Root entry found in backend");
                                 info!(" ✓ Root entry confirmed in backend");
                             }
                             Err(e) => {
-                                println!("DEBUG: ✗ Root entry NOT in backend after sync: {e:?}");
                                 error!(" ✗ Root entry NOT in backend after sync: {:?}", e);
                             }
                         }
@@ -243,7 +248,7 @@ impl App {
                         // so it knows which key to use when loading this database.
                         // request_database_access() only syncs the data - it doesn't update the User's
                         // key mappings. track_database() discovers available SigKeys and creates the mapping.
-                        println!("DEBUG: Registering database with User's key manager...");
+                        debug!("Registering database with User's key manager");
                         match self
                             .user
                             .track_database(eidetica::user::types::TrackedDatabase {
@@ -259,17 +264,14 @@ impl App {
                             .await
                         {
                             Ok(_) => {
-                                println!("DEBUG: ✓ Database registered with User");
                                 info!(" ✓ Database registered with User's key manager");
                             }
                             Err(e) => {
-                                println!("DEBUG: ✗ Failed to register database: {e:?}");
                                 error!(" Failed to register database with User: {:?}", e);
                             }
                         }
                     }
                     Err(e) => {
-                        println!("DEBUG: ✗ Bootstrap sync call failed: {e:?}");
                         error!(" Bootstrap sync failed: {:?}", e);
                     }
                 }
@@ -296,33 +298,30 @@ impl App {
         };
 
         if connection_success {
-            // Try to load the room (no retry loop - don't block UI)
-            debug!(" Attempting to load synced room...");
-            println!("DEBUG: Attempting to load database {room_id_obj}");
+            // Retry loading the database until success (once per second, timeout after 30s)
+            let mut attempts = 0;
+            let database = loop {
+                attempts += 1;
+                debug!(room_id = %room_id_obj, attempt = attempts, "Attempting to load synced room");
 
-            match self.user.open_database(&room_id_obj).await {
-                Ok(database) => {
-                    println!("DEBUG: ✓ Successfully loaded database!");
-                    info!(" Successfully loaded synced room!");
-
-                    self.current_room = Some(database);
-                    self.current_room_address = Some(room_address.to_string());
-                    self.load_messages().await?;
-                    return Ok(());
+                match self.user.open_database(&room_id_obj).await {
+                    Ok(database) => {
+                        info!(" Successfully loaded synced room!");
+                        break database;
+                    }
+                    Err(e) => {
+                        if attempts >= 30 {
+                            error!("Failed to load room after 30 seconds");
+                            return Err(SyncError::Network(format!(
+                                "Timed out waiting for room to sync: {e}"
+                            ))
+                            .into());
+                        }
+                        debug!(error = ?e, attempt = attempts, "Database not yet available, retrying in 1s...");
+                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                    }
                 }
-                Err(e) => {
-                    println!("DEBUG: ✗ Failed to load database: {e:?}");
-                }
-            }
-
-            // If we get here, sync hasn't completed yet - create placeholder
-            // The room will sync in the background and messages will appear when ready
-            warn!(" Database not yet available, creating placeholder (syncing in background)");
-            let mut settings = Doc::new();
-            settings.set("name", format!("Room {room_id} (Syncing...)"));
-            let key_id = self.user.get_default_key()?;
-            let database = self.user.create_database(settings, &key_id).await?;
-            info!(" Created placeholder room");
+            };
 
             self.current_room = Some(database);
             self.current_room_address = Some(room_address.to_string());
