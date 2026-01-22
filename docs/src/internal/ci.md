@@ -54,16 +54,16 @@ Code coverage runs against all storage backends to ensure comprehensive test cov
 
 | Backend    | CI  | Taskfile                 | Nix                             |
 | ---------- | --- | ------------------------ | ------------------------------- |
-| InMemory   | ✓   | `task coverage`          | `nix build .#coverage`          |
-| SQLite     | ✓   | `task coverage:sqlite`   | `nix build .#coverage.sqlite`   |
+| SQLite     | ✓   | `task coverage`          | `nix build .#coverage`          |
+| InMemory   | ✓   | `task coverage:inmemory` | `nix build .#coverage.inmemory` |
 | PostgreSQL | ✓   | `task coverage:postgres` | `nix build .#coverage.postgres` |
 | All        | —   | `task coverage:all`      | `nix build .#coverage.full`     |
 
 ### Local Coverage Commands
 
 ```bash
-task coverage           # InMemory backend (default)
-task coverage:sqlite    # SQLite backend
+task coverage           # SQLite backend (default)
+task coverage:inmemory  # InMemory backend
 task coverage:postgres  # PostgreSQL (starts a container automatically)
 task coverage:all       # All backends, merged into coverage/lcov.info
 ```

@@ -78,11 +78,11 @@ Once you've initialized a tracing subscriber, all Eidetica operations will autom
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, backend::database::InMemory, crdt::Doc};
+# use eidetica::{Instance, backend::database::Sqlite, crdt::Doc};
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-let backend = Box::new(InMemory::new());
+let backend = Box::new(Sqlite::in_memory().await?);
 let instance = Instance::open(backend).await?;
 
 // Create and login user - this will log at INFO level

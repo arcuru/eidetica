@@ -149,11 +149,11 @@ Access via `Transaction::get_index()`.
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, Transaction, Store, store::DocStore, backend::database::InMemory, crdt::Doc};
+# use eidetica::{Instance, Transaction, Store, store::DocStore, backend::database::Sqlite, crdt::Doc};
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let backend = Box::new(InMemory::new());
+# let backend = Box::new(Sqlite::in_memory().await?);
 # let instance = Instance::open(backend).await?;
 # instance.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
@@ -187,11 +187,11 @@ assert_eq!(info.config, "{}");
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, Transaction, Store, store::DocStore, backend::database::InMemory, crdt::Doc};
+# use eidetica::{Instance, Transaction, Store, store::DocStore, backend::database::Sqlite, crdt::Doc};
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let backend = Box::new(InMemory::new());
+# let backend = Box::new(Sqlite::in_memory().await?);
 # let instance = Instance::open(backend).await?;
 # instance.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
@@ -229,11 +229,11 @@ assert!(info.config.contains("compression"));
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, Transaction, Store, store::DocStore, backend::database::InMemory, crdt::Doc};
+# use eidetica::{Instance, Transaction, Store, store::DocStore, backend::database::Sqlite, crdt::Doc};
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let backend = Box::new(InMemory::new());
+# let backend = Box::new(Sqlite::in_memory().await?);
 # let instance = Instance::open(backend).await?;
 # instance.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;

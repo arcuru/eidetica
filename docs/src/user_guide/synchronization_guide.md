@@ -9,11 +9,11 @@ Eidetica's sync system enables real-time data synchronization between distribute
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, backend::database::InMemory};
+# use eidetica::{Instance, backend::database::Sqlite};
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let backend = Box::new(InMemory::new());
+# let backend = Box::new(Sqlite::in_memory().await?);
 let instance = Instance::open(backend).await?;
 instance.enable_sync().await?;
 
@@ -97,11 +97,11 @@ For persistent sync relationships:
 # extern crate eidetica;
 # extern crate tokio;
 # use eidetica::sync::{SyncPeerInfo, Address};
-# use eidetica::{Instance, backend::database::InMemory, crdt::Doc};
+# use eidetica::{Instance, backend::database::Sqlite, crdt::Doc};
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let backend = Box::new(InMemory::new());
+# let backend = Box::new(Sqlite::in_memory().await?);
 # let instance = Instance::open(backend).await?;
 # instance.enable_sync().await?;
 # instance.create_user("alice", None).await?;
@@ -135,12 +135,12 @@ Configure per-database sync behavior:
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, backend::database::InMemory, crdt::Doc};
+# use eidetica::{Instance, backend::database::Sqlite, crdt::Doc};
 # use eidetica::user::types::{SyncSettings, TrackedDatabase};
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let backend = Box::new(InMemory::new());
+# let backend = Box::new(Sqlite::in_memory().await?);
 # let instance = Instance::open(backend).await?;
 # instance.enable_sync().await?;
 # instance.create_user("alice", None).await?;

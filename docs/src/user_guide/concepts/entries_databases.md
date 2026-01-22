@@ -37,7 +37,7 @@ You interact with Databases through Transactions:
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{backend::database::InMemory, Instance, crdt::Doc, store::DocStore, Database};
+# use eidetica::{backend::database::Sqlite, Instance, crdt::Doc, store::DocStore, Database};
 #
 # use eidetica::Result;
 #
@@ -57,7 +57,7 @@ You interact with Databases through Transactions:
 #
 # #[tokio::main]
 # async fn main() -> Result<()> {
-#     let backend = InMemory::new();
+#     let backend = Sqlite::in_memory().await?;
 #     let instance = Instance::open(Box::new(backend)).await?;
 #     instance.create_user("alice", None).await?;
 #     let mut user = instance.login_user("alice", None).await?;
@@ -84,12 +84,12 @@ Each Database maintains its settings as a key-value store in a special "settings
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::SettingsStore, Database};
+# use eidetica::{Instance, backend::database::Sqlite, crdt::Doc, store::SettingsStore, Database};
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # // Setup database for testing
-# let instance = Instance::open(Box::new(InMemory::new())).await?;
+# let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
 # instance.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings_doc = Doc::new();

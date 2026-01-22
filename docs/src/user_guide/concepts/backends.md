@@ -15,13 +15,41 @@ Key responsibilities of a Database:
 
 ## Available Database Implementations
 
+### SQLite
+
+SQLite is the default and recommended backend. It provides embedded persistent storage with excellent performance. Enabled with the `sqlite` feature.
+
+<!-- Code block ignored: Requires async runtime context -->
+
+```rust,ignore
+use eidetica::backend::database::Sqlite;
+
+// File-based storage (async) - recommended for persistent data
+let backend = Sqlite::open("my_data.db").await?;
+
+// In-memory (sync) - useful for testing
+let backend = Sqlite::in_memory()?;
+```
+
+### PostgreSQL
+
+PostgreSQL provides production-grade persistent storage for larger deployments. Enabled with the `postgres` feature.
+
+<!-- Code block ignored: Requires PostgreSQL server -->
+
+```rust,ignore
+use eidetica::backend::database::Postgres;
+
+let backend = Postgres::connect("postgres://user:pass@localhost/mydb")?;
+```
+
 ### InMemory
 
 The `InMemory` database is a simple in-memory storage implementation:
 
 - Stores all entries in memory
 - Can load from and save to a JSON file
-- Well-suited for development, testing, and applications with moderate data volumes
+- Well-suited for development and testing
 - Simple to use and requires no external dependencies
 
 Example usage:
@@ -46,34 +74,6 @@ if let Some(in_memory) = database_guard.as_any().downcast_ref::<InMemory>() {
 // Load from a file
 let database = InMemory::load_from_file(&path).await?;
 let db = Instance::open(Box::new(database)).await?;
-```
-
-### SQLite
-
-SQLite provides embedded persistent storage. Enabled with the `sqlite` feature.
-
-<!-- Code block ignored: Requires async runtime context -->
-
-```rust,ignore
-use eidetica::backend::database::Sqlite;
-
-// File-based storage (async)
-let backend = Sqlite::open_sqlite("my_data.db").await?;
-
-// In-memory (sync, creates its own runtime)
-let backend = Sqlite::in_memory()?;
-```
-
-### PostgreSQL
-
-PostgreSQL provides production-grade persistent storage. Enabled with the `postgres` feature.
-
-<!-- Code block ignored: Requires PostgreSQL server -->
-
-```rust,ignore
-use eidetica::backend::database::Postgres;
-
-let backend = Postgres::connect("postgres://user:pass@localhost/mydb")?;
 ```
 
 ## Database Trait Responsibilities

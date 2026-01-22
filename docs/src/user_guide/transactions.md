@@ -25,12 +25,12 @@ Using a `Transaction` follows a distinct lifecycle:
     ```rust
     # extern crate eidetica;
     # extern crate tokio;
-    # use eidetica::{backend::database::InMemory, Instance, crdt::Doc};
+    # use eidetica::{backend::database::Sqlite, Instance, crdt::Doc};
     #
     # #[tokio::main]
     # async fn main() -> eidetica::Result<()> {
     # // Setup database
-    # let backend = InMemory::new();
+    # let backend = Sqlite::in_memory().await?;
     # let instance = Instance::open(Box::new(backend)).await?;
     # instance.create_user("alice", None).await?;
     # let mut user = instance.login_user("alice", None).await?;
@@ -50,7 +50,7 @@ Using a `Transaction` follows a distinct lifecycle:
     # extern crate eidetica;
     # extern crate tokio;
     # extern crate serde;
-    # use eidetica::{backend::database::InMemory, Instance, crdt::Doc, store::{Table, DocStore, SettingsStore}, Database};
+    # use eidetica::{backend::database::Sqlite, Instance, crdt::Doc, store::{Table, DocStore, SettingsStore}, Database};
     # use serde::{Serialize, Deserialize};
     #
     # #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -61,7 +61,7 @@ Using a `Transaction` follows a distinct lifecycle:
     # #[tokio::main]
     # async fn main() -> eidetica::Result<()> {
     # // Setup database and transaction
-    # let backend = InMemory::new();
+    # let backend = Sqlite::in_memory().await?;
     # let instance = Instance::open(Box::new(backend)).await?;
     # instance.create_user("alice", None).await?;
     # let mut user = instance.login_user("alice", None).await?;
@@ -87,7 +87,7 @@ Using a `Transaction` follows a distinct lifecycle:
     # extern crate eidetica;
     # extern crate tokio;
     # extern crate serde;
-    # use eidetica::{backend::database::InMemory, Instance, crdt::Doc, store::{Table, DocStore, SettingsStore}};
+    # use eidetica::{backend::database::Sqlite, Instance, crdt::Doc, store::{Table, DocStore, SettingsStore}};
     # use serde::{Serialize, Deserialize};
     #
     # #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -98,7 +98,7 @@ Using a `Transaction` follows a distinct lifecycle:
     # #[tokio::main]
     # async fn main() -> eidetica::Result<()> {
     # // Setup database and transaction
-    # let backend = InMemory::new();
+    # let backend = Sqlite::in_memory().await?;
     # let instance = Instance::open(Box::new(backend)).await?;
     # instance.create_user("alice", None).await?;
     # let mut user = instance.login_user("alice", None).await?;
@@ -129,12 +129,12 @@ Using a `Transaction` follows a distinct lifecycle:
     ```rust
     # extern crate eidetica;
     # extern crate tokio;
-    # use eidetica::{backend::database::InMemory, Instance, crdt::Doc};
+    # use eidetica::{backend::database::Sqlite, Instance, crdt::Doc};
     #
     # #[tokio::main]
     # async fn main() -> eidetica::Result<()> {
     # // Setup database
-    # let backend = InMemory::new();
+    # let backend = Sqlite::in_memory().await?;
     # let instance = Instance::open(Box::new(backend)).await?;
     # instance.create_user("alice", None).await?;
     # let mut user = instance.login_user("alice", None).await?;
@@ -160,14 +160,14 @@ Within transactions, you can manage database settings using `SettingsStore`. Thi
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::SettingsStore};
+# use eidetica::{Instance, backend::database::Sqlite, crdt::Doc, store::SettingsStore};
 # use eidetica::auth::{AuthKey, Permission};
 # use eidetica::auth::crypto::{generate_keypair, format_public_key};
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # // Setup database for testing
-# let instance = Instance::open(Box::new(InMemory::new())).await?;
+# let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
 # instance.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
@@ -234,11 +234,11 @@ Configure the height strategy for the entire database via `SettingsStore`:
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, backend::database::InMemory, crdt::Doc, HeightStrategy};
+# use eidetica::{Instance, backend::database::Sqlite, crdt::Doc, HeightStrategy};
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let instance = Instance::open(Box::new(InMemory::new())).await?;
+# let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
 # instance.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
@@ -263,11 +263,11 @@ Individual stores can override the database strategy for independent height trac
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, backend::database::InMemory, crdt::Doc, HeightStrategy, Store, store::DocStore};
+# use eidetica::{Instance, backend::database::Sqlite, crdt::Doc, HeightStrategy, Store, store::DocStore};
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let instance = Instance::open(Box::new(InMemory::new())).await?;
+# let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
 # instance.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
@@ -307,7 +307,7 @@ While `Transaction`s are essential for writes, you can perform reads without an 
 # extern crate eidetica;
 # extern crate tokio;
 # extern crate serde;
-# use eidetica::{backend::database::InMemory, Instance, crdt::Doc, store::Table, Database};
+# use eidetica::{backend::database::Sqlite, Instance, crdt::Doc, store::Table, Database};
 # use serde::{Serialize, Deserialize};
 #
 # #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -318,7 +318,7 @@ While `Transaction`s are essential for writes, you can perform reads without an 
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # // Setup database with some data
-# let backend = InMemory::new();
+# let backend = Sqlite::in_memory().await?;
 # let instance = Instance::open(Box::new(backend)).await?;
 # instance.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;

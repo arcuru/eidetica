@@ -9,10 +9,10 @@ A concise reference for Eidetica's synchronization API with common usage pattern
 <!-- Code block ignored: Attempts to bind to network port during testing -->
 
 ```rust,ignore
-use eidetica::{Instance, backend::InMemory};
+use eidetica::{Instance, backend::database::Sqlite};
 
 // Create database with sync enabled
-let backend = Box::new(InMemory::new());
+let backend = Box::new(Sqlite::in_memory().await?);
 let instance = Instance::open(backend).await?;
 instance.enable_sync().await?;
 
@@ -31,12 +31,12 @@ sync.start_server_async("127.0.0.1:8080").await?;
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, backend::database::InMemory};
+# use eidetica::{Instance, backend::database::Sqlite};
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # // Setup database instance with sync capability
-# let backend = Box::new(InMemory::new());
+# let backend = Box::new(Sqlite::in_memory().await?);
 # let db = Instance::open(backend).await?;
 # db.enable_sync().await?;
 #
@@ -66,11 +66,11 @@ Declare sync intent with automatic background synchronization:
 # extern crate eidetica;
 # extern crate tokio;
 # use eidetica::sync::{SyncPeerInfo, Address};
-# use eidetica::{Instance, backend::database::InMemory, crdt::Doc};
+# use eidetica::{Instance, backend::database::Sqlite, crdt::Doc};
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let backend = Box::new(InMemory::new());
+# let backend = Box::new(Sqlite::in_memory().await?);
 # let instance = Instance::open(backend).await?;
 # instance.enable_sync().await?;
 # instance.create_user("alice", None).await?;
@@ -224,11 +224,11 @@ db.sync()?.update_peer_status(&peer_key, PeerStatus::Inactive)?;
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::DocStore};
+# use eidetica::{Instance, backend::database::Sqlite, crdt::Doc, store::DocStore};
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let backend = Box::new(InMemory::new());
+# let backend = Box::new(Sqlite::in_memory().await?);
 # let instance = Instance::open(backend).await?;
 # instance.enable_sync().await?;
 # instance.create_user("alice", None).await?;
@@ -526,12 +526,12 @@ let peer = db.sync()?.connect_to_peer(&addr).await?;
 
 ```rust,ignore
 // Run multiple sync-enabled databases
-let db1 = Instance::open(Box::new(InMemory::new())).await?;
+let db1 = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
 db1.enable_sync().await?;
 db1.sync()?.enable_http_transport().await?;
 db1.sync()?.start_server_async("127.0.0.1:8080").await?;
 
-let db2 = Instance::open(Box::new(InMemory::new())).await?;
+let db2 = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
 db2.enable_sync().await?;
 db2.sync()?.enable_http_transport().await?;
 db2.sync()?.start_server_async("127.0.0.1:8081").await?;
@@ -562,12 +562,12 @@ async fn test_iroh_sync_local() -> Result<()> {
         .build()?;
 
     // Setup databases with local Iroh transport
-    let db1 = Instance::open(Box::new(InMemory::new())).await?;
+    let db1 = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
     db1.enable_sync().await?;
     db1.sync()?.enable_iroh_transport_with_config(transport1).await?;
     db1.sync()?.start_server_async("ignored").await?; // Iroh manages its own addresses
 
-    let db2 = Instance::open(Box::new(InMemory::new())).await?;
+    let db2 = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
     db2.enable_sync().await?;
     db2.sync()?.enable_iroh_transport_with_config(transport2).await?;
     db2.sync()?.start_server_async("ignored").await?;
@@ -593,7 +593,7 @@ async fn test_iroh_sync_local() -> Result<()> {
 #[tokio::test]
 async fn test_sync_between_peers() -> Result<()> {
     // Setup first peer
-    let instance1 = Instance::open(Box::new(InMemory::new())).await?;
+    let instance1 = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
     instance1.enable_sync().await?;
     instance1.create_user("peer1", None).await?;
     let mut user1 = instance1.login_user("peer1", None).await?;
@@ -603,7 +603,7 @@ async fn test_sync_between_peers() -> Result<()> {
     let addr1 = instance1.sync()?.get_server_address_async().await?;
 
     // Setup second peer
-    let instance2 = Instance::open(Box::new(InMemory::new())).await?;
+    let instance2 = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
     instance2.enable_sync().await?;
     instance2.create_user("peer2", None).await?;
     let mut user2 = instance2.login_user("peer2", None).await?;

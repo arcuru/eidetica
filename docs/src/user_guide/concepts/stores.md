@@ -44,11 +44,11 @@ The `DocStore` store provides a document-oriented interface for storing and retr
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::DocStore, path};
+# use eidetica::{Instance, backend::database::Sqlite, crdt::Doc, store::DocStore, path};
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let backend = Box::new(InMemory::new());
+# let backend = Box::new(Sqlite::in_memory().await?);
 # let instance = Instance::open(backend).await?;
 # instance.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
@@ -85,11 +85,11 @@ When using `set_path("a.b.c", value)`, DocStore creates **nested maps**, not fla
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::DocStore, path};
+# use eidetica::{Instance, backend::database::Sqlite, crdt::Doc, store::DocStore, path};
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let backend = Box::new(InMemory::new());
+# let backend = Box::new(Sqlite::in_memory().await?);
 # let instance = Instance::open(backend).await?;
 # instance.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
@@ -133,12 +133,12 @@ The `Table<T>` store manages collections of serializable items, similar to a tab
 # extern crate eidetica;
 # extern crate tokio;
 # extern crate serde;
-# use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::Table};
+# use eidetica::{Instance, backend::database::Sqlite, crdt::Doc, store::Table};
 # use serde::{Serialize, Deserialize};
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let backend = Box::new(InMemory::new());
+# let backend = Box::new(Sqlite::in_memory().await?);
 # let instance = Instance::open(backend).await?;
 # instance.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
@@ -209,11 +209,11 @@ The `SettingsStore` provides a specialized, type-safe interface for managing dat
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::SettingsStore};
+# use eidetica::{Instance, backend::database::Sqlite, crdt::Doc, store::SettingsStore};
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let backend = Box::new(InMemory::new());
+# let backend = Box::new(Sqlite::in_memory().await?);
 # let instance = Instance::open(backend).await?;
 # instance.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
@@ -244,14 +244,14 @@ transaction.commit().await?;
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::SettingsStore};
+# use eidetica::{Instance, backend::database::Sqlite, crdt::Doc, store::SettingsStore};
 # use eidetica::auth::{AuthKey, Permission};
 # use eidetica::auth::crypto::{generate_keypair, format_public_key};
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # // Setup database for testing
-# let instance = Instance::open(Box::new(InMemory::new())).await?;
+# let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
 # instance.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
@@ -290,14 +290,14 @@ For complex operations that need to be atomic, use the `update_auth_settings` me
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::SettingsStore};
+# use eidetica::{Instance, backend::database::Sqlite, crdt::Doc, store::SettingsStore};
 # use eidetica::auth::{AuthKey, Permission};
 # use eidetica::auth::crypto::{generate_keypair, format_public_key};
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # // Setup database for testing
-# let instance = Instance::open(Box::new(InMemory::new())).await?;
+# let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
 # instance.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
@@ -373,13 +373,13 @@ The `YDoc` store provides integration with Y-CRDT (Yjs) for real-time collaborat
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::YDoc};
+# use eidetica::{Instance, backend::database::Sqlite, crdt::Doc, store::YDoc};
 # use eidetica::y_crdt::{Map, Text, Transact};
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # // Setup database for testing
-# let backend = InMemory::new();
+# let backend = Sqlite::in_memory().await?;
 # let instance = Instance::open(Box::new(backend)).await?;
 # instance.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
@@ -455,11 +455,11 @@ When you first access a Store using `Transaction::get_store()`, it's automatical
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::DocStore};
+# use eidetica::{Instance, backend::database::Sqlite, crdt::Doc, store::DocStore};
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let backend = Box::new(InMemory::new());
+# let backend = Box::new(Sqlite::in_memory().await?);
 # let instance = Instance::open(backend).await?;
 # instance.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
@@ -490,12 +490,12 @@ Use `get_index()` to query information about registered subtrees:
 # extern crate eidetica;
 # extern crate tokio;
 # extern crate serde;
-# use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::{DocStore, Table}};
+# use eidetica::{Instance, backend::database::Sqlite, crdt::Doc, store::{DocStore, Table}};
 # use serde::{Serialize, Deserialize};
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let backend = Box::new(InMemory::new());
+# let backend = Box::new(Sqlite::in_memory().await?);
 # let instance = Instance::open(backend).await?;
 # instance.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;

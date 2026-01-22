@@ -62,11 +62,11 @@ Template for examples that should be compiled and validated (it might be best to
 
 ```rust
 # extern crate eidetica;
-# use eidetica::{backend::database::InMemory, Instance};
+# use eidetica::{backend::database::Sqlite, Instance};
 #
 # fn create_database() -> eidetica::Result<()> {
-// Create an in-memory database
-let database = InMemory::new();
+// Create an in-memory SQLite database
+let database = Sqlite::in_memory()?;
 let _db = Instance::new(Box::new(database));
 
 // Your example code here
@@ -81,7 +81,7 @@ Template for examples that demonstrate concepts but can't be tested due to exter
 <!-- Code block ignored: Requires network connectivity for peer synchronization -->
 
 ```rust,ignore
-use eidetica::{Instance, backend::database::InMemory};
+use eidetica::{Instance, backend::database::Sqlite};
 
 // Start a sync server
 let mut sync = instance.sync();

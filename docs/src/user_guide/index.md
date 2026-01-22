@@ -29,7 +29,7 @@ This user guide is structured to guide you from basic setup to advanced concepts
 
 Eidetica revolves around a few key components working together:
 
-1.  **`Database`**: You start by choosing or creating a storage `Database` (e.g., `InMemoryDatabase`).
+1.  **`Database`**: You start by choosing or creating a storage `Database` (e.g., SQLite).
 2.  **`Instance`**: You create a `Instance` instance, providing it the `Database`. This is your main database handle.
 3.  **`Database`**: Using the `Instance`, you create or load a `Database`, which acts as a logical container for related data and tracks its history.
 4.  **`Transaction`**: To **read or write** data, you start a `Transaction` from the `Database`. This ensures atomicity and consistent views.
@@ -44,7 +44,7 @@ Here's a quick example showing creating a user, database, and writing new data.
 # extern crate eidetica;
 # extern crate tokio;
 # extern crate serde;
-# use eidetica::{backend::database::InMemory, Instance, crdt::Doc, store::{DocStore, Table}};
+# use eidetica::{backend::database::Sqlite, Instance, crdt::Doc, store::{DocStore, Table}};
 # use serde::{Serialize, Deserialize};
 #
 # #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -54,7 +54,7 @@ Here's a quick example showing creating a user, database, and writing new data.
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-let backend = InMemory::new();
+let backend = Sqlite::in_memory().await?;
 let instance = Instance::open(Box::new(backend)).await?;
 
 // Create and login a passwordless user

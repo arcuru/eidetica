@@ -9,12 +9,12 @@ Every Eidetica database requires authentication. Here's the minimal setup:
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, backend::database::InMemory};
+# use eidetica::{Instance, backend::database::Sqlite};
 # use eidetica::crdt::Doc;
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let backend = InMemory::new();
+# let backend = Sqlite::in_memory().await?;
 # let instance = Instance::open(Box::new(backend)).await?;
 #
 // Create and login a passwordless user (generates Ed25519 keypair automatically)
@@ -56,14 +56,14 @@ Give other users access to your database:
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::SettingsStore};
+# use eidetica::{Instance, backend::database::Sqlite, crdt::Doc, store::SettingsStore};
 # use eidetica::auth::{AuthKey, Permission};
 # use eidetica::auth::crypto::{generate_keypair, format_public_key};
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # // Setup database for testing
-# let instance = Instance::open(Box::new(InMemory::new())).await?;
+# let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
 # instance.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
@@ -95,14 +95,14 @@ Allow anyone to read your database:
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, backend::database::InMemory};
+# use eidetica::{Instance, backend::database::Sqlite};
 # use eidetica::store::SettingsStore;
 # use eidetica::auth::{AuthKey, Permission};
 # use eidetica::crdt::Doc;
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let instance = Instance::open(Box::new(InMemory::new())).await?;
+# let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
 # instance.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
@@ -131,14 +131,14 @@ Create a collaborative database where anyone can read and write without individu
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, backend::database::InMemory};
+# use eidetica::{Instance, backend::database::Sqlite};
 # use eidetica::store::SettingsStore;
 # use eidetica::auth::{AuthKey, Permission};
 # use eidetica::crdt::Doc;
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let instance = Instance::open(Box::new(InMemory::new())).await?;
+# let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
 # instance.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
@@ -176,11 +176,11 @@ transaction.commit().await?;
 <!-- Code block ignored: Requires existing database with collaborative permissions setup -->
 
 ```rust,ignore
-use eidetica::{Instance, Database, backend::database::InMemory};
+use eidetica::{Instance, Database, backend::database::Sqlite};
 use eidetica::auth::crypto::{generate_keypair, format_public_key};
 use eidetica::auth::types::SigKey;
 
-let instance = Instance::open(Box::new(InMemory::new())).await?;
+let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
 let (signing_key, verifying_key) = generate_keypair();
 let database_root_id = /* ID from existing collaborative database */;
 
@@ -223,14 +223,14 @@ Remove a user's access:
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, backend::database::InMemory};
+# use eidetica::{Instance, backend::database::Sqlite};
 # use eidetica::store::SettingsStore;
 # use eidetica::auth::{AuthKey, Permission};
 # use eidetica::crdt::Doc;
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let instance = Instance::open(Box::new(InMemory::new())).await?;
+# let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
 # instance.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
@@ -261,14 +261,14 @@ Note: Historical entries created by revoked keys remain valid.
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::SettingsStore};
+# use eidetica::{Instance, backend::database::Sqlite, crdt::Doc, store::SettingsStore};
 # use eidetica::auth::{AuthKey, Permission};
 # use eidetica::auth::crypto::{generate_keypair, format_public_key};
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # // Setup database for testing
-# let instance = Instance::open(Box::new(InMemory::new())).await?;
+# let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
 # instance.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
@@ -349,13 +349,13 @@ When you delegate to another database:
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, backend::database::InMemory, crdt::Doc};
+# use eidetica::{Instance, backend::database::Sqlite, crdt::Doc};
 # use eidetica::auth::{DelegatedTreeRef, Permission, PermissionBounds, TreeReference};
 # use eidetica::store::SettingsStore;
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let instance = Instance::open(Box::new(InMemory::new())).await?;
+# let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
 # instance.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let default_key = user.get_default_key()?;
@@ -408,13 +408,13 @@ These are names in the **delegating database's** auth settings that point to **o
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, backend::database::InMemory, crdt::Doc};
+# use eidetica::{Instance, backend::database::Sqlite, crdt::Doc};
 # use eidetica::auth::{DelegatedTreeRef, Permission, PermissionBounds, TreeReference};
 # use eidetica::store::SettingsStore;
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let instance = Instance::open(Box::new(InMemory::new())).await?;
+# let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
 # instance.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let default_key = user.get_default_key()?;
@@ -458,13 +458,13 @@ These are names in the **delegated database's** auth settings that point to **pu
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, backend::database::InMemory, crdt::Doc};
+# use eidetica::{Instance, backend::database::Sqlite, crdt::Doc};
 # use eidetica::auth::{AuthKey, Permission};
 # use eidetica::store::SettingsStore;
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let instance = Instance::open(Box::new(InMemory::new())).await?;
+# let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
 # instance.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let default_key_id = user.get_default_key()?;
@@ -502,13 +502,13 @@ A delegation path is a sequence of steps that traverses from the delegating data
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, backend::database::InMemory, crdt::Doc};
+# use eidetica::{Instance, backend::database::Sqlite, crdt::Doc};
 # use eidetica::auth::{SigKey, DelegationStep};
 # use eidetica::store::DocStore;
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let instance = Instance::open(Box::new(InMemory::new())).await?;
+# let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
 # instance.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let default_key = user.get_default_key()?;

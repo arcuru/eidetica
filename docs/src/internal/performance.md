@@ -4,7 +4,7 @@ The architecture provides several performance characteristics:
 
 - **Content-addressable storage**: Enables efficient deduplication through SHA-256 content hashing.
 - **Database structure (DAG)**: Supports partial replication and sparse checkouts. Tip calculation complexity depends on parent relationships.
-- **InMemoryDatabase**: Provides high-speed operations but is limited by available RAM.
+- **SQLite Backend**: Provides excellent performance with automatic persistence. Supports both file-based and in-memory modes.
 - **Lock-based concurrency**: May create bottlenecks in high-concurrency write scenarios.
 - **Height calculation**: Uses BFS-based topological sorting with O(V + E) complexity.
 - **CRDT merge algorithm**: Employs recursive merge-base merging with intelligent caching.

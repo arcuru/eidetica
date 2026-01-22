@@ -34,12 +34,12 @@ Here's a simple example:
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{backend::database::InMemory, Instance, crdt::Doc};
+# use eidetica::{backend::database::Sqlite, Instance, crdt::Doc};
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
     // Create a new in-memory backend
-    let backend = InMemory::new();
+    let backend = Sqlite::in_memory().await?;
 
     // Create the Instance
     let instance = Instance::open(Box::new(backend)).await?;
@@ -64,89 +64,47 @@ Here's a simple example:
 
 **Note**: This example uses a passwordless user (password is `None`) for simplicity, which is perfect for embedded applications and CLI tools. For multi-user scenarios, you can create password-protected users by passing `Some("password")` instead.
 
-The backend determines how your data is stored. The example above uses `InMemory`, which keeps everything in memory but can save to a file:
+The backend determines how your data is stored. The example above uses `Sqlite::in_memory()`, which keeps everything in memory. For persistent storage, use a file-based SQLite database:
 
-```rust
-# extern crate eidetica;
-# extern crate tokio;
-# use eidetica::{Instance, backend::database::InMemory, crdt::Doc};
-# use std::path::PathBuf;
-#
-# #[tokio::main]
-# async fn main() -> eidetica::Result<()> {
-# // Create instance and user
-# let backend = InMemory::new();
-# let instance = Instance::open(Box::new(backend)).await?;
-# instance.create_user("alice", None).await?;
-# let mut user = instance.login_user("alice", None).await?;
-# let mut settings = Doc::new();
-# settings.set("name", "test_db");
-# let default_key = user.get_default_key()?;
-# let _database = user.create_database(settings, &default_key).await?;
-#
-# // Use a temporary file path for testing
-# let temp_dir = std::env::temp_dir();
-# let path = temp_dir.join("eidetica_test_save.json");
-#
-// Save the backend to a file
-let backend_guard = instance.backend();
-if let Some(in_memory) = backend_guard.as_any().downcast_ref::<InMemory>() {
-    in_memory.save_to_file(&path).await?;
+<!-- Code block ignored: Requires file system access during testing -->
+
+```rust,ignore
+use eidetica::{Instance, backend::database::Sqlite, crdt::Doc};
+
+#[tokio::main]
+async fn main() -> eidetica::Result<()> {
+    // Create a persistent SQLite backend (data is saved automatically)
+    let backend = Sqlite::open("my_data.db").await?;
+    let instance = Instance::open(Box::new(backend)).await?;
+
+    // Create user and database as before
+    instance.create_user("alice", None).await?;
+    let mut user = instance.login_user("alice", None).await?;
+    // ... all changes are automatically persisted to my_data.db
+
+    Ok(())
 }
-#
-# // Clean up the temporary file
-# if path.exists() {
-#     std::fs::remove_file(&path).ok();
-# }
-# Ok(())
-# }
 ```
 
-You can load a previously saved backend:
+You can reopen a previously created database:
 
-```rust
-# extern crate eidetica;
-# extern crate tokio;
-# use eidetica::{Instance, backend::database::InMemory, crdt::Doc};
-# use std::path::PathBuf;
-#
-# #[tokio::main]
-# async fn main() -> eidetica::Result<()> {
-# // First create and save a test backend
-# let backend = InMemory::new();
-# let instance = Instance::open(Box::new(backend)).await?;
-# instance.create_user("alice", None).await?;
-# let mut user = instance.login_user("alice", None).await?;
-# let mut settings = Doc::new();
-# settings.set("name", "test_db");
-# let default_key = user.get_default_key()?;
-# let _database = user.create_database(settings, &default_key).await?;
-#
-# // Use a temporary file path for testing
-# let temp_dir = std::env::temp_dir();
-# let path = temp_dir.join("eidetica_test_load.json");
-#
-# // Save the backend first
-# let backend_guard = instance.backend();
-# if let Some(in_memory) = backend_guard.as_any().downcast_ref::<InMemory>() {
-#     in_memory.save_to_file(&path).await?;
-# }
-#
-// Load a previously saved backend
-let backend = InMemory::load_from_file(&path).await?;
+<!-- Code block ignored: Requires file system access during testing -->
 
-// Load instance (automatically detects existing system state)
-let instance = Instance::open(Box::new(backend)).await?;
+```rust,ignore
+use eidetica::{Instance, backend::database::Sqlite};
 
-// Login to existing user
-let user = instance.login_user("alice", None).await?;
-#
-# // Clean up the temporary file
-# if path.exists() {
-#     std::fs::remove_file(&path).ok();
-# }
-# Ok(())
-# }
+#[tokio::main]
+async fn main() -> eidetica::Result<()> {
+    // Reopen existing SQLite database
+    let backend = Sqlite::open("my_data.db").await?;
+    let instance = Instance::open(Box::new(backend)).await?;
+
+    // Login to existing user
+    let user = instance.login_user("alice", None).await?;
+    // ... data persists across restarts
+
+    Ok(())
+}
 ```
 
 ## User-Centric Architecture
@@ -196,7 +154,7 @@ All operations in Eidetica happen within an atomic **Transaction**:
 # extern crate eidetica;
 # extern crate tokio;
 # extern crate serde;
-# use eidetica::{backend::database::InMemory, Instance, crdt::Doc, store::Table, Database};
+# use eidetica::{backend::database::Sqlite, Instance, crdt::Doc, store::Table, Database};
 # use serde::{Serialize, Deserialize};
 #
 # #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -207,7 +165,7 @@ All operations in Eidetica happen within an atomic **Transaction**:
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let instance = Instance::open(Box::new(InMemory::new())).await?;
+# let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
 # instance.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
@@ -237,7 +195,7 @@ op.commit().await?;
 # extern crate eidetica;
 # extern crate tokio;
 # extern crate serde;
-# use eidetica::{backend::database::InMemory, Instance, crdt::Doc, store::Table, Database};
+# use eidetica::{backend::database::Sqlite, Instance, crdt::Doc, store::Table, Database};
 # use serde::{Serialize, Deserialize};
 #
 # #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -248,7 +206,7 @@ op.commit().await?;
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let instance = Instance::open(Box::new(InMemory::new())).await?;
+# let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
 # instance.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
@@ -285,7 +243,7 @@ for (id, person) in all_people {
 # extern crate eidetica;
 # extern crate tokio;
 # extern crate serde;
-# use eidetica::{backend::database::InMemory, Instance, crdt::Doc, store::Table, Database};
+# use eidetica::{backend::database::Sqlite, Instance, crdt::Doc, store::Table, Database};
 # use serde::{Serialize, Deserialize};
 #
 # #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -296,7 +254,7 @@ for (id, person) in all_people {
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let instance = Instance::open(Box::new(InMemory::new())).await?;
+# let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
 # instance.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
@@ -330,7 +288,7 @@ op.commit().await?;
 # extern crate eidetica;
 # extern crate tokio;
 # extern crate serde;
-# use eidetica::{backend::database::InMemory, Instance, crdt::Doc, store::Table, Database};
+# use eidetica::{backend::database::Sqlite, Instance, crdt::Doc, store::Table, Database};
 # use serde::{Serialize, Deserialize};
 #
 # #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -341,7 +299,7 @@ op.commit().await?;
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let instance = Instance::open(Box::new(InMemory::new())).await?;
+# let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
 # instance.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();

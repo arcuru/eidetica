@@ -7,11 +7,11 @@
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, Registered, backend::database::InMemory, crdt::Doc, store::{PasswordStore, DocStore}};
+# use eidetica::{Instance, Registered, backend::database::Sqlite, crdt::Doc, store::{PasswordStore, DocStore}};
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let backend = Box::new(InMemory::new());
+# let backend = Box::new(Sqlite::in_memory().await?);
 # let instance = Instance::open(backend).await?;
 # instance.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
@@ -37,11 +37,11 @@ tx.commit().await?;
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, Registered, backend::database::InMemory, crdt::Doc, store::{PasswordStore, DocStore}};
+# use eidetica::{Instance, Registered, backend::database::Sqlite, crdt::Doc, store::{PasswordStore, DocStore}};
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let backend = Box::new(InMemory::new());
+# let backend = Box::new(Sqlite::in_memory().await?);
 # let instance = Instance::open(backend).await?;
 # instance.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
@@ -77,12 +77,12 @@ PasswordStore wraps any store type. Use `Registered::type_id()` to get the type 
 # extern crate eidetica;
 # extern crate tokio;
 # extern crate serde;
-# use eidetica::{Instance, Registered, backend::database::InMemory, crdt::Doc, store::{PasswordStore, Table}};
+# use eidetica::{Instance, Registered, backend::database::Sqlite, crdt::Doc, store::{PasswordStore, Table}};
 # use serde::{Serialize, Deserialize};
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let backend = Box::new(InMemory::new());
+# let backend = Box::new(Sqlite::in_memory().await?);
 # let instance = Instance::open(backend).await?;
 # instance.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;

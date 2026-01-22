@@ -14,13 +14,9 @@ The Todo example implements `load_or_create_instance()` to handle loading existi
 
 ```rust,ignore
 async fn load_or_create_instance(path: &PathBuf) -> Result<Instance> {
-    let instance = if path.exists() {
-        let backend = InMemory::load_from_file(path).await?;
-        Instance::open(Box::new(backend)).await?
-    } else {
-        let backend = InMemory::new();
-        Instance::open(Box::new(backend)).await?
-    };
+    // SQLite handles both creation and loading automatically
+    let backend = Sqlite::open(path).await?;
+    let instance = Instance::open(Box::new(backend)).await?;
 
     println!("✓ Instance initialized");
 
@@ -28,7 +24,7 @@ async fn load_or_create_instance(path: &PathBuf) -> Result<Instance> {
 }
 ```
 
-This shows how the `InMemory` backend can persist to disk. Authentication is managed through the User system (see below).
+This shows how the `Sqlite` backend provides persistent storage. Data is automatically saved to the SQLite file. Authentication is managed through the User system (see below).
 
 ### 2. Users (`User`)
 

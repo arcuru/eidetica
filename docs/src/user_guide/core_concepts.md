@@ -54,7 +54,7 @@ Eidetica organizes data in a layered architecture:
 
 Each layer builds on the ones below, providing progressively higher-level abstractions:
 
-1. **Database Storage**: Physical storage of data (currently InMemory with file persistence)
+1. **Database Storage**: Physical storage of data (SQLite, PostgreSQL, or InMemory backends)
 2. **Entries**: Immutable, content-addressed objects forming the database's history
 3. **Databases & Stores**: Logical organization and typed access to data
 4. **Operations**: Atomic transactions across multiple stores

@@ -6,60 +6,30 @@ _Assumes basic setup like `use eidetica::{Instance, Database, Error, ...};` and 
 
 ## 1. Initializing the Database (`Instance`)
 
-```rust
-# extern crate eidetica;
-# extern crate tokio;
-# use eidetica::{backend::database::InMemory, Instance, crdt::Doc};
-# use std::path::PathBuf;
-#
-# #[tokio::main]
-# async fn main() -> eidetica::Result<()> {
-# // Use a temporary file for testing
-# let temp_dir = std::env::temp_dir();
-# let db_path = temp_dir.join("eidetica_example_init.json");
-#
-# // First create and save a test database to demonstrate loading
-# let backend = InMemory::new();
-# let test_instance = Instance::open(Box::new(backend)).await?;
-# test_instance.create_user("alice", None).await?;
-# let mut test_user = test_instance.login_user("alice", None).await?;
-# let mut settings = Doc::new();
-# settings.set("name", "example_db");
-# let test_key = test_user.get_default_key()?;
-# let _database = test_user.create_database(settings, &test_key).await?;
-# let database_guard = test_instance.backend();
-# if let Some(in_memory) = database_guard.as_any().downcast_ref::<InMemory>() {
-#     in_memory.save_to_file(&db_path).await?;
-# }
-#
-// Option A: Create a new, empty in-memory database
-let database_new = InMemory::new();
-let _db_new = Instance::open(Box::new(database_new)).await?;
+<!-- Code block ignored: Requires file system access during testing -->
 
-// Option B: Load from a previously saved file
-if db_path.exists() {
-    match InMemory::load_from_file(&db_path).await {
-        Ok(database_loaded) => {
-            let _db_loaded = Instance::open(Box::new(database_loaded)).await?;
-            println!("Database loaded successfully.");
-            // Use db_loaded
-        }
-        Err(e) => {
-            eprintln!("Error loading database: {}", e);
-            // Handle error, maybe create new
-        }
-    }
-} else {
-    println!("Database file not found, creating new.");
-    // Use db_new from Option A
+```rust,ignore
+use eidetica::{backend::database::Sqlite, Instance};
+use std::path::PathBuf;
+
+#[tokio::main]
+async fn main() -> eidetica::Result<()> {
+    let db_path = PathBuf::from("my_data.db");
+
+    // Option A: Create an in-memory database (for testing)
+    let backend = Sqlite::in_memory().await?;
+    let _instance = Instance::open(Box::new(backend)).await?;
+
+    // Option B: Create or open a persistent SQLite database
+    // SQLite automatically creates the file if it doesn't exist
+    let backend = Sqlite::open(&db_path).await?;
+    let instance = Instance::open(Box::new(backend)).await?;
+
+    // Data persists automatically with SQLite file backend
+    println!("Database opened at {:?}", db_path);
+
+    Ok(())
 }
-#
-# // Clean up the temporary file
-# if db_path.exists() {
-#     std::fs::remove_file(&db_path).ok();
-# }
-# Ok(())
-# }
 ```
 
 ## 2. Creating or Loading a Database
@@ -67,11 +37,11 @@ if db_path.exists() {
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, backend::database::InMemory, crdt::Doc};
+# use eidetica::{Instance, backend::database::Sqlite, crdt::Doc};
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let instance = Instance::open(Box::new(InMemory::new())).await?;
+# let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
 # instance.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 let tree_name = "my_app_data";
@@ -101,11 +71,11 @@ println!("Using Database with root ID: {}", database.root_id());
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::DocStore};
+# use eidetica::{Instance, backend::database::Sqlite, crdt::Doc, store::DocStore};
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let instance = Instance::open(Box::new(InMemory::new())).await?;
+# let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
 # instance.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
@@ -144,7 +114,7 @@ println!("DocStore changes committed in entry: {}", entry_id);
 # extern crate eidetica;
 # extern crate tokio;
 # extern crate serde;
-# use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::Table};
+# use eidetica::{Instance, backend::database::Sqlite, crdt::Doc, store::Table};
 # use serde::{Serialize, Deserialize};
 #
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -155,7 +125,7 @@ struct Task {
 
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let instance = Instance::open(Box::new(InMemory::new())).await?;
+# let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
 # instance.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
@@ -205,11 +175,11 @@ println!("Table changes committed in entry: {}", entry_id);
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::DocStore};
+# use eidetica::{Instance, backend::database::Sqlite, crdt::Doc, store::DocStore};
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let instance = Instance::open(Box::new(InMemory::new())).await?;
+# let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
 # instance.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
@@ -247,7 +217,7 @@ match config_viewer.get("retry_count").await {
 # extern crate eidetica;
 # extern crate tokio;
 # extern crate serde;
-# use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::Table};
+# use eidetica::{Instance, backend::database::Sqlite, crdt::Doc, store::Table};
 # use serde::{Serialize, Deserialize};
 #
 # #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -258,7 +228,7 @@ match config_viewer.get("retry_count").await {
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let instance = Instance::open(Box::new(InMemory::new())).await?;
+# let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
 # instance.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
@@ -299,12 +269,12 @@ match tasks_viewer.search(|_| true).await {
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::DocStore, path, Database};
+# use eidetica::{Instance, backend::database::Sqlite, crdt::Doc, store::DocStore, path, Database};
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # // Setup database for testing
-# let instance = Instance::open(Box::new(InMemory::new())).await?;
+# let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
 # instance.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
@@ -367,13 +337,13 @@ The `YDoc` store provides access to Y-CRDT (Yrs) documents for collaborative dat
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, backend::database::InMemory, crdt::Doc, store::YDoc, Database};
+# use eidetica::{Instance, backend::database::Sqlite, crdt::Doc, store::YDoc, Database};
 # use eidetica::y_crdt::{Map as YMap, Transact};
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # // Setup database for testing
-# let backend = InMemory::new();
+# let backend = Sqlite::in_memory().await?;
 # let instance = Instance::open(Box::new(backend)).await?;
 # instance.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
@@ -485,50 +455,45 @@ prefs_read_store.with_doc(|doc| {
 - Real-time data synchronization
 - Any scenario requiring conflict-free concurrent updates
 
-## 9. Saving the Database (InMemory)
+## 9. Persistent Storage with SQLite
 
-```rust
-# extern crate eidetica;
-# extern crate tokio;
-# use eidetica::{backend::database::InMemory, Instance, crdt::Doc};
-# use std::path::PathBuf;
-#
-# #[tokio::main]
-# async fn main() -> eidetica::Result<()> {
-# // Create a test database
-# let backend = InMemory::new();
-# let instance = Instance::open(Box::new(backend)).await?;
-# instance.create_user("alice", None).await?;
-# let mut user = instance.login_user("alice", None).await?;
-# let mut settings = Doc::new();
-# settings.set("name", "save_example");
-# let default_key = user.get_default_key()?;
-# let _database = user.create_database(settings, &default_key).await?;
-#
-# // Use a temporary file for testing
-# let temp_dir = std::env::temp_dir();
-# let db_path = temp_dir.join("eidetica_save_example.json");
-#
-// Save the database to a file
-let database_guard = instance.backend();
+With SQLite, data is automatically persisted to disk when using a file path:
 
-// Downcast to the concrete InMemory type
-if let Some(in_memory_database) = database_guard.as_any().downcast_ref::<InMemory>() {
-    match in_memory_database.save_to_file(&db_path).await {
-        Ok(_) => println!("Database saved successfully to {:?}", db_path),
-        Err(e) => eprintln!("Error saving database: {}", e),
-    }
-} else {
-    eprintln!("Database is not InMemory, cannot save to file this way.");
+<!-- Code block ignored: Requires file system access during testing -->
+
+```rust,ignore
+use eidetica::{backend::database::Sqlite, Instance, crdt::Doc};
+use std::path::PathBuf;
+
+#[tokio::main]
+async fn main() -> eidetica::Result<()> {
+    let db_path = PathBuf::from("my_database.db");
+
+    // Create or open a SQLite database file
+    // Data is automatically persisted on each commit
+    let backend = Sqlite::open(&db_path).await?;
+    let instance = Instance::open(Box::new(backend)).await?;
+
+    // Create user and database
+    instance.create_user("alice", None).await?;
+    let mut user = instance.login_user("alice", None).await?;
+    let mut settings = Doc::new();
+    settings.set("name", "persistent_example");
+    let default_key = user.get_default_key()?;
+    let _database = user.create_database(settings, &default_key).await?;
+
+    // All changes are automatically saved to my_database.db
+    println!("Database created/opened at {:?}", db_path);
+
+    Ok(())
 }
-#
-# // Clean up the temporary file
-# if db_path.exists() {
-#     std::fs::remove_file(&db_path).ok();
-# }
-# Ok(())
-# }
 ```
+
+**Key Points:**
+
+- SQLite automatically handles persistence - no manual save needed
+- Use `Sqlite::in_memory()?` for testing without disk I/O
+- Use `Sqlite::open(&path).await?` for persistent storage
 
 ---
 
@@ -556,7 +521,7 @@ The chat example demonstrates several advanced patterns:
 
 ```rust,ignore
 // Initialize instance with sync enabled
-let backend = InMemory::new();
+let backend = Sqlite::in_memory().await?;
 let instance = Instance::create(Box::new(backend))?;
 instance.enable_sync()?;
 
