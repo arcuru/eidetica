@@ -19,27 +19,24 @@ async fn test_iroh_e2e_basic_local() {
     let (base_db1, sync1) = helpers::setup().await;
     let (_base_db2, sync2) = helpers::setup().await;
 
-    let transport1 = IrohTransport::builder()
-        .relay_mode(RelayMode::Disabled)
-        .build()
-        .unwrap();
-    let transport2 = IrohTransport::builder()
-        .relay_mode(RelayMode::Disabled)
-        .build()
-        .unwrap();
-
     sync1
-        .enable_iroh_transport_with_config(transport1)
+        .register_transport(
+            "iroh",
+            IrohTransport::builder().relay_mode(RelayMode::Disabled),
+        )
         .await
         .unwrap();
     sync2
-        .enable_iroh_transport_with_config(transport2)
+        .register_transport(
+            "iroh",
+            IrohTransport::builder().relay_mode(RelayMode::Disabled),
+        )
         .await
         .unwrap();
 
     // Start servers
-    sync1.start_server("ignored").await.unwrap();
-    sync2.start_server("ignored").await.unwrap();
+    sync1.accept_connections().await.unwrap();
+    sync2.accept_connections().await.unwrap();
 
     // Allow endpoints to initialize
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -100,27 +97,24 @@ async fn test_iroh_e2e_resilience() {
     let (base_db1, sync1) = helpers::setup().await;
     let (_base_db2, sync2) = helpers::setup().await;
 
-    let transport1 = IrohTransport::builder()
-        .relay_mode(RelayMode::Disabled)
-        .build()
-        .unwrap();
-    let transport2 = IrohTransport::builder()
-        .relay_mode(RelayMode::Disabled)
-        .build()
-        .unwrap();
-
     sync1
-        .enable_iroh_transport_with_config(transport1)
+        .register_transport(
+            "iroh",
+            IrohTransport::builder().relay_mode(RelayMode::Disabled),
+        )
         .await
         .unwrap();
     sync2
-        .enable_iroh_transport_with_config(transport2)
+        .register_transport(
+            "iroh",
+            IrohTransport::builder().relay_mode(RelayMode::Disabled),
+        )
         .await
         .unwrap();
 
     // Start both nodes
-    sync1.start_server("ignored").await.unwrap();
-    sync2.start_server("ignored").await.unwrap();
+    sync1.accept_connections().await.unwrap();
+    sync2.accept_connections().await.unwrap();
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -180,15 +174,14 @@ async fn test_iroh_e2e_resilience() {
 
     // Restart node 2 with a new transport
     println!("🔄 Restarting node 2 to test reconnection...");
-    let transport2_new = IrohTransport::builder()
-        .relay_mode(RelayMode::Disabled)
-        .build()
-        .unwrap();
     sync2
-        .enable_iroh_transport_with_config(transport2_new)
+        .register_transport(
+            "iroh",
+            IrohTransport::builder().relay_mode(RelayMode::Disabled),
+        )
         .await
         .unwrap();
-    sync2.start_server("ignored").await.unwrap();
+    sync2.accept_connections().await.unwrap();
 
     // Reduced wait time - just enough for endpoint to initialize
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -249,13 +242,19 @@ async fn test_iroh_e2e_with_relays() {
 
     // Enable Iroh transport with production relays (default)
     println!("🔧 Enabling Iroh transport with production relay servers...");
-    sync1.enable_iroh_transport().await.unwrap();
-    sync2.enable_iroh_transport().await.unwrap();
+    sync1
+        .register_transport("iroh", IrohTransport::builder())
+        .await
+        .unwrap();
+    sync2
+        .register_transport("iroh", IrohTransport::builder())
+        .await
+        .unwrap();
 
     // Start both servers - this will attempt to connect to relay servers
     println!("🚀 Starting Iroh endpoints (connecting to live relay servers)...");
-    let start_result1 = sync1.start_server("ignored").await;
-    let start_result2 = sync2.start_server("ignored").await;
+    let start_result1 = sync1.accept_connections().await;
+    let start_result2 = sync2.accept_connections().await;
 
     if start_result1.is_err() || start_result2.is_err() {
         eprintln!("❌ FAILED: Unable to start Iroh endpoints");

@@ -12,6 +12,7 @@ use eidetica::{
     auth::{AuthSettings, Permission, types::AuthKey},
     crdt::Doc,
     store::Table,
+    sync::transports::http::HttpTransport,
 };
 use serde::{Deserialize, Serialize};
 
@@ -123,10 +124,10 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     // Start server on device 1
     let device1_server_addr = {
         let sync = device1_instance.sync().expect("Device1 should have sync");
-        sync.enable_http_transport()
+        sync.register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
             .await
-            .expect("Failed to enable HTTP transport");
-        sync.start_server("127.0.0.1:0")
+            .expect("Failed to register HTTP transport");
+        sync.accept_connections()
             .await
             .expect("Failed to start server");
         sync.get_server_address()
@@ -151,9 +152,9 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     let bootstrap_result = {
         let device2_sync = device2_instance.sync().expect("Device2 should have sync");
         device2_sync
-            .enable_http_transport()
+            .register_transport("http", HttpTransport::builder())
             .await
-            .expect("Failed to enable HTTP transport");
+            .expect("Failed to register HTTP transport");
 
         device2_sync
             .sync_with_peer_for_bootstrap_with_key(

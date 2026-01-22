@@ -12,6 +12,7 @@ use eidetica::{
         types::{AuthKey, KeyStatus},
     },
     crdt::{Doc, doc::Value},
+    sync::transports::http::HttpTransport,
 };
 
 /// Test bootstrap behavior when the requesting key lacks sufficient admin permissions.
@@ -91,9 +92,9 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
     let bootstrap_result = {
         let client_sync = client_instance.sync().expect("Client should have sync");
         client_sync
-            .enable_http_transport()
+            .register_transport("http", HttpTransport::builder())
             .await
-            .expect("Failed to enable HTTP transport");
+            .expect("Failed to register HTTP transport");
 
         // Attempt bootstrap with key approval request - should be REJECTED by default
         let result = client_sync
@@ -208,9 +209,9 @@ async fn test_bootstrap_permission_denied_no_auth_config() {
     let bootstrap_result = {
         let client_sync = client_instance.sync().expect("Client should have sync");
         client_sync
-            .enable_http_transport()
+            .register_transport("http", HttpTransport::builder())
             .await
-            .expect("Failed to enable HTTP transport");
+            .expect("Failed to register HTTP transport");
 
         // Attempt bootstrap with key approval request on database with no auth config — should be REJECTED
         let result = client_sync
@@ -325,9 +326,9 @@ async fn test_bootstrap_invalid_public_key_format() {
 
     let client_sync = client_instance.sync().expect("Client should have sync");
     client_sync
-        .enable_http_transport()
+        .register_transport("http", HttpTransport::builder())
         .await
-        .expect("Failed to enable HTTP transport");
+        .expect("Failed to register HTTP transport");
 
     // Attempt bootstrap - current implementation may accept any key name
     let bootstrap_result = client_sync
@@ -451,9 +452,9 @@ async fn test_bootstrap_with_revoked_key() {
 
     let client_sync = client_instance.sync().expect("Client should have sync");
     client_sync
-        .enable_http_transport()
+        .register_transport("http", HttpTransport::builder())
         .await
-        .expect("Failed to enable HTTP transport");
+        .expect("Failed to register HTTP transport");
 
     // Attempt bootstrap with a different key (since we can't use the actual revoked key easily)
     let bootstrap_result = client_sync
@@ -558,9 +559,9 @@ async fn test_bootstrap_exceeds_granted_permissions() {
 
     let client_sync = client_instance.sync().expect("Client should have sync");
     client_sync
-        .enable_http_transport()
+        .register_transport("http", HttpTransport::builder())
         .await
-        .expect("Failed to enable HTTP transport");
+        .expect("Failed to register HTTP transport");
 
     // Attempt bootstrap requesting Admin permissions (excessive for a new client)
     let bootstrap_result = client_sync

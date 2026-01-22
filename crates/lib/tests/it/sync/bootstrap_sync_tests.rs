@@ -6,6 +6,7 @@
 use eidetica::{
     auth::crypto::{format_public_key, generate_keypair},
     store::DocStore,
+    sync::transports::http::HttpTransport,
 };
 
 use super::helpers::*;
@@ -57,7 +58,10 @@ async fn test_bootstrap_sync_from_zero_state() {
     );
 
     // Use the new simplified sync API to bootstrap from server
-    client_sync.enable_http_transport().await.unwrap();
+    client_sync
+        .register_transport("http", HttpTransport::builder())
+        .await
+        .unwrap();
 
     println!("🧪 TEST: Attempting bootstrap sync from server...");
     client_sync
@@ -130,7 +134,10 @@ async fn test_incremental_sync_after_bootstrap() {
         setup_sync_enabled_client("client_user", "client_key").await;
 
     // Bootstrap client
-    client_sync.enable_http_transport().await.unwrap();
+    client_sync
+        .register_transport("http", HttpTransport::builder())
+        .await
+        .unwrap();
     client_sync
         .sync_with_peer(&server_addr, Some(&test_tree_id))
         .await
@@ -197,12 +204,18 @@ async fn test_bootstrap_nonexistent_tree() {
     let (_client_instance, client_sync) = setup().await;
 
     // Start server (with no databases)
-    server_sync.enable_http_transport().await.unwrap();
-    server_sync.start_server("127.0.0.1:0").await.unwrap();
+    server_sync
+        .register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
+        .await
+        .unwrap();
+    server_sync.accept_connections().await.unwrap();
     let server_addr = server_sync.get_server_address().await.unwrap();
 
     // Try to bootstrap a tree that doesn't exist
-    client_sync.enable_http_transport().await.unwrap();
+    client_sync
+        .register_transport("http", HttpTransport::builder())
+        .await
+        .unwrap();
     let fake_tree_id = eidetica::entry::ID::from("fake_tree_id_that_doesnt_exist");
 
     let result = client_sync
@@ -231,7 +244,10 @@ async fn test_discover_peer_trees_placeholder() {
     let server_addr = start_sync_server(&server_sync).await;
 
     // Try to discover trees (currently returns empty list)
-    client_sync.enable_http_transport().await.unwrap();
+    client_sync
+        .register_transport("http", HttpTransport::builder())
+        .await
+        .unwrap();
     let trees = client_sync.discover_peer_trees(&server_addr).await.unwrap();
 
     // Currently returns empty, but should not error
@@ -266,7 +282,10 @@ async fn test_bootstrap_malformed_request_data() {
     // Start server
     let server_addr = start_sync_server(&server_sync).await;
 
-    client_sync.enable_http_transport().await.unwrap();
+    client_sync
+        .register_transport("http", HttpTransport::builder())
+        .await
+        .unwrap();
 
     // Generate a test keypair for bootstrap requests
     let (_, test_verifying_key) = generate_keypair();
@@ -328,7 +347,10 @@ async fn test_bootstrap_conflicting_tree_ids() {
     // Start server
     let server_addr = start_sync_server(&server_sync).await;
 
-    client_sync.enable_http_transport().await.unwrap();
+    client_sync
+        .register_transport("http", HttpTransport::builder())
+        .await
+        .unwrap();
 
     // Generate a test keypair for bootstrap request
     let (_, test_verifying_key) = generate_keypair();

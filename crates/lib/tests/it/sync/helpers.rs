@@ -13,7 +13,7 @@ use eidetica::{
         Sync,
         handler::{SyncHandler, SyncHandlerImpl},
         peer_types::Address,
-        transports::iroh::IrohTransport,
+        transports::{http::HttpTransport, iroh::IrohTransport},
     },
 };
 use iroh::RelayMode;
@@ -155,7 +155,8 @@ pub struct HttpTransportFactory;
 impl TransportFactory for HttpTransportFactory {
     async fn create_sync(&self, instance: Instance) -> Result<Sync> {
         let sync = Sync::new(instance).await?;
-        sync.enable_http_transport().await?;
+        sync.register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
+            .await?;
         Ok(sync)
     }
 
@@ -175,10 +176,11 @@ pub struct IrohTransportFactory;
 impl TransportFactory for IrohTransportFactory {
     async fn create_sync(&self, instance: Instance) -> Result<Sync> {
         let sync = Sync::new(instance).await?;
-        let transport = IrohTransport::builder()
-            .relay_mode(RelayMode::Disabled)
-            .build()?;
-        sync.add_transport("iroh", Box::new(transport)).await?;
+        sync.register_transport(
+            "iroh",
+            IrohTransport::builder().relay_mode(RelayMode::Disabled),
+        )
+        .await?;
         Ok(sync)
     }
 
@@ -379,10 +381,10 @@ pub async fn setup_auto_approval_server() -> (
 
 /// Start a sync server with common settings
 pub async fn start_sync_server(sync: &Sync) -> String {
-    sync.enable_http_transport()
+    sync.register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
         .await
-        .expect("Failed to enable HTTP transport");
-    sync.start_server("127.0.0.1:0")
+        .expect("Failed to register HTTP transport");
+    sync.accept_connections()
         .await
         .expect("Failed to start server");
     sync.get_server_address()
@@ -611,7 +613,9 @@ pub async fn request_and_map_database_access(
 ) -> Result<()> {
     {
         let client_sync = instance.sync().expect("Sync not initialized");
-        client_sync.enable_http_transport().await?;
+        client_sync
+            .register_transport("http", HttpTransport::builder())
+            .await?;
 
         user.request_database_access(&client_sync, server_addr, tree_id, key_id, permission)
             .await?;

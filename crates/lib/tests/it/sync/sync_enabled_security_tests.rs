@@ -9,7 +9,7 @@ use eidetica::{
     auth::{AuthSettings, Permission, types::AuthKey},
     crdt::Doc,
     store::DocStore,
-    sync::handler::SyncHandler,
+    sync::{handler::SyncHandler, transports::http::HttpTransport},
     user::types::{SyncSettings, TrackedDatabase},
 };
 
@@ -69,13 +69,19 @@ async fn test_bootstrap_rejected_when_sync_disabled() {
         .unwrap();
 
     // Enable HTTP transport and start server
-    server_sync.enable_http_transport().await.unwrap();
-    server_sync.start_server("127.0.0.1:0").await.unwrap();
+    server_sync
+        .register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
+        .await
+        .unwrap();
+    server_sync.accept_connections().await.unwrap();
     let server_addr = server_sync.get_server_address().await.unwrap();
 
     // Create client that will attempt to bootstrap
     let (client_instance, client_sync) = helpers::setup().await;
-    client_sync.enable_http_transport().await.unwrap();
+    client_sync
+        .register_transport("http", HttpTransport::builder())
+        .await
+        .unwrap();
 
     // Attempt to sync - should be rejected as "Tree not found"
     let result = client_sync
@@ -174,13 +180,19 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
         .unwrap();
 
     // Enable HTTP transport and start server
-    server_sync.enable_http_transport().await.unwrap();
-    server_sync.start_server("127.0.0.1:0").await.unwrap();
+    server_sync
+        .register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
+        .await
+        .unwrap();
+    server_sync.accept_connections().await.unwrap();
     let server_addr = server_sync.get_server_address().await.unwrap();
 
     // Create client and perform initial bootstrap (should succeed)
     let (client_instance, client_sync) = helpers::setup().await;
-    client_sync.enable_http_transport().await.unwrap();
+    client_sync
+        .register_transport("http", HttpTransport::builder())
+        .await
+        .unwrap();
 
     let result = client_sync
         .sync_with_peer(&server_addr, Some(&tree_id))
@@ -357,13 +369,19 @@ async fn test_sync_succeeds_when_enabled() {
         .unwrap();
 
     // Enable HTTP transport and start server
-    server_sync.enable_http_transport().await.unwrap();
-    server_sync.start_server("127.0.0.1:0").await.unwrap();
+    server_sync
+        .register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
+        .await
+        .unwrap();
+    server_sync.accept_connections().await.unwrap();
     let server_addr = server_sync.get_server_address().await.unwrap();
 
     // Create client and sync
     let (client_instance, client_sync) = helpers::setup().await;
-    client_sync.enable_http_transport().await.unwrap();
+    client_sync
+        .register_transport("http", HttpTransport::builder())
+        .await
+        .unwrap();
 
     let result = client_sync
         .sync_with_peer(&server_addr, Some(&tree_id))

@@ -22,6 +22,7 @@ use eidetica::{
         RequestStatus,
         handler::{SyncHandler, SyncHandlerImpl},
         protocol::{SyncRequest, SyncResponse, SyncTreeRequest},
+        transports::http::HttpTransport,
     },
 };
 
@@ -1310,7 +1311,10 @@ async fn test_client_retry_after_approval() {
     // Setup client with User API
     let (client_instance, _client_user, client_key_id, client_sync) =
         setup_sync_enabled_client("test_client", "client_key").await;
-    client_sync.enable_http_transport().await.unwrap();
+    client_sync
+        .register_transport("http", HttpTransport::builder())
+        .await
+        .unwrap();
 
     // First attempt - should be pending
     println!("🔍 Client attempting bootstrap (should be pending)...");
@@ -1415,7 +1419,10 @@ async fn test_client_denied_after_rejection() {
     // Setup client with User API
     let (client_instance, _client_user, client_key_id, client_sync) =
         setup_sync_enabled_client("test_client", "client_key").await;
-    client_sync.enable_http_transport().await.unwrap();
+    client_sync
+        .register_transport("http", HttpTransport::builder())
+        .await
+        .unwrap();
 
     // Bootstrap attempt - should be pending
     println!("🔍 Client attempting bootstrap (should be pending)...");
@@ -1513,7 +1520,10 @@ async fn test_bootstrap_api_equivalence() {
     println!("🔍 Client: Testing user-provided key API...");
     let (client_instance, _client_user, client_key_id, client_sync) =
         setup_sync_enabled_client("client", "client_key").await;
-    client_sync.enable_http_transport().await.unwrap();
+    client_sync
+        .register_transport("http", HttpTransport::builder())
+        .await
+        .unwrap();
 
     client_sync
         .sync_with_peer_for_bootstrap_with_key(

@@ -1,6 +1,3 @@
-// Allow deprecated methods in benchmarks, will migrate soon
-#![allow(deprecated)]
-
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use eidetica::{
     entry::{Entry, ID},
@@ -47,27 +44,24 @@ async fn setup_iroh_sync_pair() -> (
     let sync2 = Sync::new((*base_db2).clone()).await.unwrap();
 
     // Configure Iroh transports for local testing (no relays for consistent benchmarks)
-    let transport1 = IrohTransport::builder()
-        .relay_mode(RelayMode::Disabled)
-        .build()
-        .unwrap();
-    let transport2 = IrohTransport::builder()
-        .relay_mode(RelayMode::Disabled)
-        .build()
-        .unwrap();
-
     sync1
-        .enable_iroh_transport_with_config(transport1)
+        .register_transport(
+            "iroh",
+            IrohTransport::builder().relay_mode(RelayMode::Disabled),
+        )
         .await
         .unwrap();
     sync2
-        .enable_iroh_transport_with_config(transport2)
+        .register_transport(
+            "iroh",
+            IrohTransport::builder().relay_mode(RelayMode::Disabled),
+        )
         .await
         .unwrap();
 
     // Start servers
-    sync1.start_server("ignored").await.unwrap();
-    sync2.start_server("ignored").await.unwrap();
+    sync1.accept_connections().await.unwrap();
+    sync2.accept_connections().await.unwrap();
 
     // Allow time for initialization
     tokio::time::sleep(Duration::from_millis(100)).await;

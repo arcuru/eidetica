@@ -32,8 +32,8 @@ where
     let sync2 = factory.create_sync(db2.clone()).await?;
 
     // Start servers on any available port
-    sync1.start_server("127.0.0.1:0").await?;
-    sync2.start_server("127.0.0.1:0").await?;
+    sync1.accept_connections().await?;
+    sync2.accept_connections().await?;
 
     // Give servers time to initialize
     sleep(Duration::from_millis(200)).await;

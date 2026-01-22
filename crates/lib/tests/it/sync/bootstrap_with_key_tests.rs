@@ -5,7 +5,7 @@
 //! This is essential for working with User API managed keys that are stored in memory.
 
 use super::helpers::*;
-use eidetica::{Entry, auth::Permission};
+use eidetica::{Entry, auth::Permission, sync::transports::http::HttpTransport};
 
 /// Test basic bootstrap with user-provided signing key
 #[tokio::test]
@@ -38,7 +38,10 @@ async fn test_bootstrap_with_provided_key() {
     let client_key_id = eidetica::auth::crypto::format_public_key(&client_verifying_key);
 
     let (client_instance, client_sync) = setup().await;
-    client_sync.enable_http_transport().await.unwrap();
+    client_sync
+        .register_transport("http", HttpTransport::builder())
+        .await
+        .unwrap();
 
     // Verify client doesn't have the database initially
     assert!(
@@ -106,7 +109,10 @@ async fn test_bootstrap_with_provided_key_succeeds() {
     let client_key_id = eidetica::auth::crypto::format_public_key(&client_verifying_key);
 
     let (_client_instance, client_sync) = setup().await;
-    client_sync.enable_http_transport().await.unwrap();
+    client_sync
+        .register_transport("http", HttpTransport::builder())
+        .await
+        .unwrap();
 
     // Sync with provided public key
     client_sync
@@ -161,7 +167,10 @@ async fn test_bootstrap_with_invalid_key_fails() {
     let client_key_id = eidetica::auth::crypto::format_public_key(&client_verifying_key);
 
     let (_client_instance, client_sync) = setup().await;
-    client_sync.enable_http_transport().await.unwrap();
+    client_sync
+        .register_transport("http", HttpTransport::builder())
+        .await
+        .unwrap();
 
     // Try to sync with a non-existent tree (should fail)
     let fake_tree_id = eidetica::entry::ID::from("nonexistent_tree_id");
@@ -214,7 +223,9 @@ async fn test_multiple_clients_with_different_keys() {
         let (_signing_key, verifying_key) = eidetica::auth::crypto::generate_keypair();
         let key_id = eidetica::auth::crypto::format_public_key(&verifying_key);
         let (instance, sync) = setup().await;
-        sync.enable_http_transport().await.unwrap();
+        sync.register_transport("http", HttpTransport::builder())
+            .await
+            .unwrap();
         clients.push((instance, sync, key_id, i));
     }
 
@@ -291,7 +302,9 @@ async fn test_bootstrap_with_different_permissions() {
         let key_id = eidetica::auth::crypto::format_public_key(&verifying_key);
 
         let (_instance, sync) = setup().await;
-        sync.enable_http_transport().await.unwrap();
+        sync.register_transport("http", HttpTransport::builder())
+            .await
+            .unwrap();
 
         // Bootstrap with this permission level
         sync.sync_with_peer_for_bootstrap_with_key(
@@ -343,7 +356,9 @@ async fn test_bootstrap_with_invalid_keys() {
     let server_addr = start_sync_server(&server_sync).await;
 
     let (_instance, sync) = setup().await;
-    sync.enable_http_transport().await.unwrap();
+    sync.register_transport("http", HttpTransport::builder())
+        .await
+        .unwrap();
 
     // Generate a valid public key for comparison
     let (_signing_key, verifying_key) = eidetica::auth::crypto::generate_keypair();
@@ -468,7 +483,10 @@ async fn test_full_e2e_bootstrap_with_database_instances() {
     let client_key_id = eidetica::auth::crypto::format_public_key(&client_verifying_key);
 
     let (client_instance, client_sync) = setup().await;
-    client_sync.enable_http_transport().await.unwrap();
+    client_sync
+        .register_transport("http", HttpTransport::builder())
+        .await
+        .unwrap();
 
     // Verify client doesn't have the database initially
     assert!(
@@ -579,7 +597,10 @@ async fn test_incremental_sync_after_bootstrap_with_key() {
     let client_key_id = eidetica::auth::crypto::format_public_key(&client_verifying_key);
 
     let (_client_instance, client_sync) = setup().await;
-    client_sync.enable_http_transport().await.unwrap();
+    client_sync
+        .register_transport("http", HttpTransport::builder())
+        .await
+        .unwrap();
 
     // Bootstrap with provided public key
     client_sync

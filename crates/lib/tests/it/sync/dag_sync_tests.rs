@@ -8,7 +8,7 @@ use std::{collections::HashSet, time::Duration};
 use eidetica::{
     entry::{Entry, ID},
     store::DocStore,
-    sync::Address,
+    sync::{Address, transports::http::HttpTransport},
 };
 
 use super::helpers;
@@ -444,11 +444,17 @@ async fn test_real_sync_transport_setup() {
     let (_base_db2, sync2) = helpers::setup().await;
 
     // Enable HTTP transport for both
-    sync1.enable_http_transport().await.unwrap();
-    sync2.enable_http_transport().await.unwrap();
+    sync1
+        .register_transport("http", HttpTransport::builder())
+        .await
+        .unwrap();
+    sync2
+        .register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
+        .await
+        .unwrap();
 
     // Start server on sync2
-    sync2.start_server("127.0.0.1:0").await.unwrap();
+    sync2.accept_connections().await.unwrap();
     let server_addr = sync2.get_server_address().await.unwrap();
 
     // Give the server a moment to start
@@ -535,11 +541,17 @@ async fn test_sync_protocol_implementation() {
         helpers::setup_sync_enabled_client("client_user", "client_key").await;
 
     // Enable HTTP transport for both
-    sync1.enable_http_transport().await.unwrap();
-    sync2.enable_http_transport().await.unwrap();
+    sync1
+        .register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
+        .await
+        .unwrap();
+    sync2
+        .register_transport("http", HttpTransport::builder())
+        .await
+        .unwrap();
 
     // Start server on sync1 (which has the data)
-    sync1.start_server("127.0.0.1:0").await.unwrap();
+    sync1.accept_connections().await.unwrap();
     let server_addr = sync1.get_server_address().await.unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -704,27 +716,24 @@ async fn test_iroh_sync_end_to_end_no_relays() {
     let (base_db2, sync2) = helpers::setup().await;
 
     // Enable Iroh transport for both with relays disabled for local testing
-    let transport1 = IrohTransport::builder()
-        .relay_mode(RelayMode::Disabled)
-        .build()
-        .unwrap();
-    let transport2 = IrohTransport::builder()
-        .relay_mode(RelayMode::Disabled)
-        .build()
-        .unwrap();
-
     sync1
-        .enable_iroh_transport_with_config(transport1)
+        .register_transport(
+            "iroh",
+            IrohTransport::builder().relay_mode(RelayMode::Disabled),
+        )
         .await
         .unwrap();
     sync2
-        .enable_iroh_transport_with_config(transport2)
+        .register_transport(
+            "iroh",
+            IrohTransport::builder().relay_mode(RelayMode::Disabled),
+        )
         .await
         .unwrap();
 
     // Start servers (Iroh ignores the bind address and uses its own addressing)
-    sync2.start_server("ignored").await.unwrap();
-    sync1.start_server("ignored").await.unwrap();
+    sync2.accept_connections().await.unwrap();
+    sync1.accept_connections().await.unwrap();
 
     // Give endpoints time to initialize and discover direct addresses
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -831,8 +840,10 @@ async fn test_iroh_transport_production_defaults() {
     let (_base_db, sync) = helpers::setup().await;
 
     // Test 1: Default constructor uses production relays
-    sync.enable_iroh_transport().await.unwrap();
-    sync.start_server("ignored").await.unwrap();
+    sync.register_transport("iroh", IrohTransport::builder())
+        .await
+        .unwrap();
+    sync.accept_connections().await.unwrap();
 
     // Just verify it starts without error - we can't test actual relay connectivity
     // without internet access in CI, but this ensures the configuration is valid
@@ -841,16 +852,14 @@ async fn test_iroh_transport_production_defaults() {
 
     // Test 2: Builder with explicit Default mode
     let (_base_db2, sync2) = helpers::setup().await;
-    let transport = IrohTransport::builder()
-        .relay_mode(RelayMode::Default)
-        .build()
-        .unwrap();
-
     sync2
-        .enable_iroh_transport_with_config(transport)
+        .register_transport(
+            "iroh",
+            IrohTransport::builder().relay_mode(RelayMode::Default),
+        )
         .await
         .unwrap();
-    sync2.start_server("ignored").await.unwrap();
+    sync2.accept_connections().await.unwrap();
     assert!(sync2.get_server_address().await.is_ok());
     sync2.stop_server().await.unwrap();
 }
@@ -865,15 +874,13 @@ async fn test_iroh_transport_staging_mode() {
 
     let (_base_db, sync) = helpers::setup().await;
 
-    let transport = IrohTransport::builder()
-        .relay_mode(RelayMode::Staging)
-        .build()
-        .unwrap();
-
-    sync.enable_iroh_transport_with_config(transport)
-        .await
-        .unwrap();
-    sync.start_server("ignored").await.unwrap();
+    sync.register_transport(
+        "iroh",
+        IrohTransport::builder().relay_mode(RelayMode::Staging),
+    )
+    .await
+    .unwrap();
+    sync.accept_connections().await.unwrap();
 
     // Just verify it starts without error
     assert!(sync.get_server_address().await.is_ok());
@@ -897,18 +904,16 @@ async fn test_iroh_transport_custom_relay_config() {
     let relay_config: RelayConfig = relay_url.into();
     let relay_map = RelayMap::from_iter([relay_config]);
 
-    let transport = IrohTransport::builder()
-        .relay_mode(RelayMode::Custom(relay_map))
-        .build()
-        .unwrap();
-
-    sync.enable_iroh_transport_with_config(transport)
-        .await
-        .unwrap();
+    sync.register_transport(
+        "iroh",
+        IrohTransport::builder().relay_mode(RelayMode::Custom(relay_map)),
+    )
+    .await
+    .unwrap();
 
     // Note: This will fail to actually start because no relay is running
     // but it demonstrates the configuration pattern
-    let result = sync.start_server("ignored").await;
+    let result = sync.accept_connections().await;
 
     // We expect this to fail since no local relay is running
     // In a real integration test, you'd run iroh-relay --dev first

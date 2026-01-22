@@ -1,7 +1,7 @@
 // crates/lib/tests/it/sync/bootstrap_concurrency_tests.rs
 
 use super::helpers::*;
-use eidetica::Result;
+use eidetica::{Result, sync::transports::http::HttpTransport};
 use std::time::Duration;
 use tracing::info;
 
@@ -65,7 +65,10 @@ async fn test_multiple_clients_bootstrap_same_database() -> Result<()> {
             // Bootstrap from server
             {
                 let client_sync = client_instance.sync().unwrap();
-                client_sync.enable_http_transport().await.unwrap();
+                client_sync
+                    .register_transport("http", HttpTransport::builder())
+                    .await
+                    .unwrap();
                 client_sync
                     .sync_with_peer(&addr, Some(&tree_id))
                     .await

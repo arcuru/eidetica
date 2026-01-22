@@ -8,7 +8,7 @@
 
 use super::helpers::*;
 use crate::helpers::test_instance;
-use eidetica::store::DocStore;
+use eidetica::{store::DocStore, sync::transports::http::HttpTransport};
 
 // ===== MULTI-USER COLLABORATION SCENARIOS =====
 
@@ -541,11 +541,11 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
     let server_addr = {
         let alice_sync = alice_instance.sync().expect("Alice should have sync");
         alice_sync
-            .enable_http_transport()
+            .register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
             .await
-            .expect("Failed to enable HTTP transport");
+            .expect("Failed to register HTTP transport");
         alice_sync
-            .start_server("127.0.0.1:0")
+            .accept_connections()
             .await
             .expect("Failed to start Alice's server");
         let addr = alice_sync
@@ -582,9 +582,9 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
     {
         let bob_sync = bob_instance.sync().expect("Bob should have sync");
         bob_sync
-            .enable_http_transport()
+            .register_transport("http", HttpTransport::builder())
             .await
-            .expect("Failed to enable HTTP transport");
+            .expect("Failed to register HTTP transport");
 
         // Bootstrap sync - this will get the database from Alice
         bob_sync

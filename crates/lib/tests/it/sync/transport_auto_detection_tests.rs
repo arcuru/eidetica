@@ -9,7 +9,11 @@ use super::helpers::*;
 use eidetica::{
     auth::Permission as AuthPermission,
     crdt::Doc,
-    sync::{handler::SyncHandler, protocol::SyncResponse},
+    sync::{
+        handler::SyncHandler,
+        protocol::SyncResponse,
+        transports::{http::HttpTransport, iroh::IrohTransport},
+    },
 };
 
 /// Test that BootstrapPending error is properly returned when manual approval is required.
@@ -122,7 +126,10 @@ async fn test_bootstrap_pending_error_propagation() {
         .unwrap();
 
     let client_sync = client_instance.sync().unwrap();
-    client_sync.enable_http_transport().await.unwrap();
+    client_sync
+        .register_transport("http", HttpTransport::builder())
+        .await
+        .unwrap();
 
     // Attempt to sync - should return BootstrapPending error
     let result = client_sync
@@ -216,7 +223,10 @@ async fn test_iroh_transport_concurrent_access() {
     // Enable Iroh transport
     {
         let sync_guard = sync.lock().await;
-        sync_guard.enable_iroh_transport().await.unwrap();
+        sync_guard
+            .register_transport("iroh", IrohTransport::builder())
+            .await
+            .unwrap();
         println!("✅ Iroh transport enabled");
     }
 
@@ -287,7 +297,10 @@ async fn test_http_address_with_http_transport() {
     let client_sync = eidetica::sync::Sync::new(instance.clone()).await.unwrap();
 
     // Enable HTTP transport on client
-    client_sync.enable_http_transport().await.unwrap();
+    client_sync
+        .register_transport("http", HttpTransport::builder())
+        .await
+        .unwrap();
 
     // Use an HTTP address format
     let http_addr = "127.0.0.1:9999"; // Non-existent server, but that's okay for this test
@@ -330,7 +343,10 @@ async fn test_iroh_address_detection() {
     let client_sync = eidetica::sync::Sync::new(instance.clone()).await.unwrap();
 
     // Enable Iroh transport on client
-    client_sync.enable_iroh_transport().await.unwrap();
+    client_sync
+        .register_transport("iroh", IrohTransport::builder())
+        .await
+        .unwrap();
 
     // Use an Iroh JSON address format
     let iroh_addr = r#"{"endpoint_id":"test_endpoint_id_123"}"#;
@@ -459,7 +475,10 @@ async fn test_unauthenticated_sync_should_fail() {
     // CLIENT ATTEMPTS UNAUTHENTICATED SYNC
     // This is the vulnerability: sync_with_peer() sends no auth credentials
     let client_sync = client_instance.sync().unwrap();
-    client_sync.enable_http_transport().await.unwrap();
+    client_sync
+        .register_transport("http", HttpTransport::builder())
+        .await
+        .unwrap();
 
     println!("🔓 Attempting unauthenticated sync (NO credentials provided)...");
     let result = client_sync

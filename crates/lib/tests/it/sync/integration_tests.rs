@@ -1,4 +1,4 @@
-use eidetica::sync::Address;
+use eidetica::sync::{Address, transports::http::HttpTransport};
 
 use super::helpers::*;
 
@@ -8,11 +8,11 @@ async fn test_sync_with_http_transport() {
 
     let (_base_db, sync) = setup().await;
 
-    // Enable HTTP transport
-    sync.enable_http_transport().await.unwrap();
-
-    // Start server on port 0 (OS assigns available port)
-    sync.start_server("127.0.0.1:0").await.unwrap();
+    // Enable HTTP transport and start server
+    sync.register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
+        .await
+        .unwrap();
+    sync.accept_connections().await.unwrap();
 
     // Get the actual bound address
     let server_addr = sync.get_server_address().await.unwrap();
@@ -39,11 +39,17 @@ async fn test_multiple_sync_instances_communication() {
     let (_base_db2, sync_client) = setup().await;
 
     // Enable HTTP transport on both
-    sync_server.enable_http_transport().await.unwrap();
-    sync_client.enable_http_transport().await.unwrap();
+    sync_server
+        .register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
+        .await
+        .unwrap();
+    sync_client
+        .register_transport("http", HttpTransport::builder())
+        .await
+        .unwrap();
 
-    // Start server on first instance (port 0 for auto-assignment)
-    sync_server.start_server("127.0.0.1:0").await.unwrap();
+    // Start server on first instance
+    sync_server.accept_connections().await.unwrap();
 
     // Get the actual bound address from the server instance
     let server_addr = sync_server.get_server_address().await.unwrap();
@@ -73,11 +79,17 @@ async fn test_send_entries_http() {
     let (_base_db2, sync_client) = setup().await;
 
     // Enable HTTP transport on both
-    sync_server.enable_http_transport().await.unwrap();
-    sync_client.enable_http_transport().await.unwrap();
+    sync_server
+        .register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
+        .await
+        .unwrap();
+    sync_client
+        .register_transport("http", HttpTransport::builder())
+        .await
+        .unwrap();
 
-    // Start server on first instance (port 0 for auto-assignment)
-    sync_server.start_server("127.0.0.1:0").await.unwrap();
+    // Start server on first instance
+    sync_server.accept_connections().await.unwrap();
 
     // Get the actual bound address from the server instance
     let server_addr = sync_server.get_server_address().await.unwrap();
@@ -132,7 +144,7 @@ async fn test_sync_server_without_transport_enabled() {
     let (_base_db, sync) = setup().await;
 
     // Attempting to start server without enabling transport should fail
-    let result = sync.start_server("127.0.0.1:8085").await;
+    let result = sync.accept_connections().await;
     assert!(result.is_err());
     let err = result.unwrap_err();
     match err {
@@ -148,7 +160,9 @@ async fn test_sync_connect_to_invalid_address() {
     use eidetica::Entry;
 
     let (_base_db, sync) = setup().await;
-    sync.enable_http_transport().await.unwrap();
+    sync.register_transport("http", HttpTransport::builder())
+        .await
+        .unwrap();
 
     // Try to send entries to a non-existent server
     let entry = Entry::root_builder()

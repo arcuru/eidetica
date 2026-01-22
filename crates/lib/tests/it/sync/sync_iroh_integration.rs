@@ -1,4 +1,4 @@
-use eidetica::sync::{Address, Sync};
+use eidetica::sync::{Address, Sync, transports::iroh::IrohTransport};
 
 use crate::sync::helpers;
 
@@ -7,13 +7,15 @@ async fn test_sync_iroh_transport_integration() {
     let (_base_db, sync) = helpers::setup().await;
 
     // Initially no transport should be enabled
-    assert!(sync.start_server("ignored").await.is_err());
+    assert!(sync.accept_connections().await.is_err());
 
     // Enable Iroh transport
-    sync.enable_iroh_transport().await.unwrap();
+    sync.register_transport("iroh", IrohTransport::builder())
+        .await
+        .unwrap();
 
     // Now server operations should work
-    sync.start_server("ignored").await.unwrap();
+    sync.accept_connections().await.unwrap();
 
     // Get the server address (should be JSON with endpoint info)
     let server_addr = sync.get_server_address().await.unwrap();
@@ -66,15 +68,21 @@ async fn test_send_entries_iroh() {
 
     // Create server instance
     let (_base_db1, sync_server) = helpers::setup().await;
-    sync_server.enable_iroh_transport().await.unwrap();
+    sync_server
+        .register_transport("iroh", IrohTransport::builder())
+        .await
+        .unwrap();
 
     // Start server
-    sync_server.start_server("ignored").await.unwrap();
+    sync_server.accept_connections().await.unwrap();
     let server_addr = sync_server.get_server_address().await.unwrap();
 
     // Create client instance
     let (_base_db2, sync_client) = helpers::setup().await;
-    sync_client.enable_iroh_transport().await.unwrap();
+    sync_client
+        .register_transport("iroh", IrohTransport::builder())
+        .await
+        .unwrap();
 
     // Create some test entries
     let entry1 = Entry::root_builder()

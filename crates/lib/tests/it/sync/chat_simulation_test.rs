@@ -10,6 +10,7 @@ use eidetica::{
     constants::GLOBAL_PERMISSION_KEY,
     crdt::{Doc, doc::Value},
     store::{SettingsStore, Table},
+    sync::transports::http::HttpTransport,
 };
 use serde::{Deserialize, Serialize};
 
@@ -127,11 +128,11 @@ async fn test_chat_app_authenticated_bootstrap() {
     // Setup sync on server and get address
     let server_addr = {
         server_sync
-            .enable_http_transport()
+            .register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
             .await
-            .expect("Failed to enable HTTP transport");
+            .expect("Failed to register HTTP transport");
         server_sync
-            .start_server("127.0.0.1:0")
+            .accept_connections()
             .await
             .expect("Failed to start server");
         let addr = server_sync
@@ -162,9 +163,9 @@ async fn test_chat_app_authenticated_bootstrap() {
     {
         let client_sync = client_instance.sync().expect("Client should have sync");
         client_sync
-            .enable_http_transport()
+            .register_transport("http", HttpTransport::builder())
             .await
-            .expect("Failed to enable HTTP transport");
+            .expect("Failed to register HTTP transport");
 
         println!("\n🔄 Client attempting authenticated bootstrap...");
         let bootstrap_result = client_sync
@@ -588,11 +589,11 @@ async fn test_global_key_bootstrap() {
     // Setup sync on server
     let server_addr = {
         server_sync
-            .enable_http_transport()
+            .register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
             .await
-            .expect("Failed to enable HTTP transport");
+            .expect("Failed to register HTTP transport");
         server_sync
-            .start_server("127.0.0.1:0")
+            .accept_connections()
             .await
             .expect("Failed to start server");
         server_sync
@@ -613,9 +614,9 @@ async fn test_global_key_bootstrap() {
     {
         let client_sync = client_instance.sync().expect("Client should have sync");
         client_sync
-            .enable_http_transport()
+            .register_transport("http", HttpTransport::builder())
             .await
-            .expect("Failed to enable HTTP transport");
+            .expect("Failed to register HTTP transport");
 
         println!("🔄 Client syncing with global permission...");
         client_sync
@@ -755,11 +756,11 @@ async fn test_multiple_databases_sync() {
     // Setup sync on server
     let server_addr = {
         server_sync
-            .enable_http_transport()
+            .register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
             .await
-            .expect("Failed to enable HTTP transport");
+            .expect("Failed to register HTTP transport");
         server_sync
-            .start_server("127.0.0.1:0")
+            .accept_connections()
             .await
             .expect("Failed to start server");
         server_sync
@@ -780,9 +781,9 @@ async fn test_multiple_databases_sync() {
     {
         let client_sync = client_instance.sync().expect("Client should have sync");
         client_sync
-            .enable_http_transport()
+            .register_transport("http", HttpTransport::builder())
             .await
-            .expect("Failed to enable HTTP transport");
+            .expect("Failed to register HTTP transport");
 
         for (i, room_id) in room_ids.iter().enumerate() {
             println!("\n🔄 Bootstrapping room {}...", i + 1);

@@ -1,9 +1,7 @@
-// Allow deprecated methods in benchmarks, will migrate soon
-#![allow(deprecated)]
-
 use crate::models::ChatMessage;
 use eidetica::crdt::Doc;
 use eidetica::store::Table;
+use eidetica::sync::transports::{http::HttpTransport, iroh::IrohTransport};
 use eidetica::{Database, Instance, Result, user::User};
 use ratatui::widgets::ScrollbarState;
 use tracing::{debug, error, info, warn};
@@ -135,15 +133,17 @@ impl App {
             match self.transport.as_str() {
                 "http" => {
                     // Enable HTTP transport with simple client-server communication
-                    sync.enable_http_transport().await?;
-                    // Start server on localhost with random available port (0 = OS assigns port)
-                    sync.start_server("127.0.0.1:0").await?;
+                    sync.register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
+                        .await?;
+                    // Start server
+                    sync.accept_connections().await?;
                 }
                 "iroh" => {
                     // Enable Iroh transport for P2P communication with NAT traversal
-                    sync.enable_iroh_transport().await?;
-                    // Start server (address parameter is ignored for Iroh)
-                    sync.start_server("iroh").await?;
+                    sync.register_transport("iroh", IrohTransport::builder())
+                        .await?;
+                    // Start server
+                    sync.accept_connections().await?;
                 }
                 _ => {
                     return Err(eidetica::Error::Sync(eidetica::sync::SyncError::Network(

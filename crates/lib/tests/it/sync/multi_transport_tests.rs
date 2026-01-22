@@ -19,14 +19,15 @@ async fn test_enable_http_transport_twice_adds_transport() -> Result<()> {
     let (_instance, sync) = setup().await;
 
     // Enable first HTTP transport
-    sync.enable_http_transport().await?;
+    sync.register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
+        .await?;
 
     // Enable second HTTP transport - should still succeed (adds to existing)
-    let http2 = HttpTransport::new()?;
-    sync.add_transport("http2", Box::new(http2)).await?;
+    sync.register_transport("http2", HttpTransport::builder().bind("127.0.0.1:0"))
+        .await?;
 
     // Start server on all transports
-    sync.start_server("127.0.0.1:0").await?;
+    sync.accept_connections().await?;
 
     // Get all server addresses - should have entries
     let addresses = sync.get_all_server_addresses().await?;
@@ -49,10 +50,11 @@ async fn test_transport_routing_by_address_type() -> Result<()> {
     let (_instance, sync) = setup().await;
 
     // Enable HTTP transport
-    sync.enable_http_transport().await?;
+    sync.register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
+        .await?;
 
     // Start server
-    sync.start_server("127.0.0.1:0").await?;
+    sync.accept_connections().await?;
 
     // Get the server address
     let addr = sync.get_server_address().await?;
@@ -74,12 +76,13 @@ async fn test_server_lifecycle_with_multiple_transports() -> Result<()> {
     let (_instance, sync) = setup().await;
 
     // Enable two transports
-    sync.enable_http_transport().await?;
-    let http2 = HttpTransport::new()?;
-    sync.add_transport("http2", Box::new(http2)).await?;
+    sync.register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
+        .await?;
+    sync.register_transport("http2", HttpTransport::builder().bind("127.0.0.1:0"))
+        .await?;
 
     // Start servers on all transports
-    sync.start_server("127.0.0.1:0").await?;
+    sync.accept_connections().await?;
 
     // Verify servers are running
     let addresses = sync.get_all_server_addresses().await?;
@@ -117,16 +120,18 @@ async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
         super::helpers::setup_global_wildcard_server().await;
 
     // Enable both HTTP and Iroh transports on server
-    server_sync.enable_http_transport().await?;
-    let server_iroh = IrohTransport::builder()
-        .relay_mode(RelayMode::Disabled)
-        .build()?;
     server_sync
-        .add_transport("iroh", Box::new(server_iroh))
+        .register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
+        .await?;
+    server_sync
+        .register_transport(
+            "iroh",
+            IrohTransport::builder().relay_mode(RelayMode::Disabled),
+        )
         .await?;
 
     // Start server
-    server_sync.start_server("127.0.0.1:0").await?;
+    server_sync.accept_connections().await?;
 
     // Allow endpoints to initialize
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -161,7 +166,9 @@ async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
     println!("\n--- LEG 1: HTTP client syncs data TO server via HTTP ---");
 
     let (http_client_instance, http_client_sync) = setup().await;
-    http_client_sync.enable_http_transport().await?;
+    http_client_sync
+        .register_transport("http", HttpTransport::builder())
+        .await?;
 
     // Register server as peer
     http_client_sync
@@ -226,11 +233,11 @@ async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
     println!("\n--- LEG 2: Iroh client syncs data FROM server via Iroh ---");
 
     let (iroh_client_instance, iroh_client_sync) = setup().await;
-    let iroh_client_transport = IrohTransport::builder()
-        .relay_mode(RelayMode::Disabled)
-        .build()?;
     iroh_client_sync
-        .enable_iroh_transport_with_config(iroh_client_transport)
+        .register_transport(
+            "iroh",
+            IrohTransport::builder().relay_mode(RelayMode::Disabled),
+        )
         .await?;
 
     // Register server as peer with Iroh address
