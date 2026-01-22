@@ -128,7 +128,7 @@
             // testPkgs.testPackages
             // {full = mkAll "test-full" testPkgs.testPackages;};
 
-          # Coverage group - .#coverage runs inmemory, .#coverage.full runs all backends
+          # Coverage group - .#coverage runs sqlite, .#coverage.full runs all backends
           coverage =
             mkAll "coverage" coveragePkgs.coverageFast
             // coveragePkgs.coveragePackages

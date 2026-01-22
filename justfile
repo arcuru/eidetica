@@ -40,9 +40,9 @@ test *args:
     set -e
     args="{{ args }}"
 
-    # No args: run main tests (inmemory backend)
+    # No args: run main tests (sqlite backend)
     if [ -z "$args" ]; then
-        cargo nextest run --workspace --all-features --no-fail-fast --status-level fail
+        TEST_BACKEND=sqlite cargo nextest run --workspace --all-features --no-fail-fast --status-level fail
         exit 0
     fi
 
@@ -54,6 +54,9 @@ test *args:
     case "$first" in
         sqlite)
             TEST_BACKEND=sqlite cargo nextest run --workspace --all-features --no-fail-fast --status-level fail $rest
+            ;;
+        inmemory)
+            TEST_BACKEND=inmemory cargo nextest run --workspace --all-features --no-fail-fast --status-level fail $rest
             ;;
         postgres)
             CONTAINER_NAME="eidetica-test-postgres"
@@ -85,10 +88,10 @@ test *args:
             cargo nextest run --workspace --all-features --no-fail-fast --status-level fail $rest
             ;;
         all-backends)
-            echo "=== Testing InMemory backend ==="
-            just test
             echo "=== Testing SQLite backend ==="
-            just test sqlite
+            just test
+            echo "=== Testing InMemory backend ==="
+            just test inmemory
             echo "=== Testing PostgreSQL backend ==="
             just test postgres
             ;;
@@ -282,16 +285,16 @@ doc action='api':
 # Coverage
 # =============================================================================
 
-# Generate coverage data for a backend: inmemory, sqlite, postgres, all
-coverage backend='inmemory':
+# Generate coverage data for a backend: sqlite, inmemory, postgres, all
+coverage backend='sqlite':
     #!/usr/bin/env bash
     set -e
     case "{{ backend }}" in
-        inmemory)
-            cargo tarpaulin --workspace --skip-clean --all-features --output-dir coverage --out lcov --engine llvm
-            ;;
         sqlite)
             TEST_BACKEND=sqlite cargo tarpaulin --workspace --skip-clean --all-features --output-dir coverage --out lcov --engine llvm
+            ;;
+        inmemory)
+            TEST_BACKEND=inmemory cargo tarpaulin --workspace --skip-clean --all-features --output-dir coverage --out lcov --engine llvm
             ;;
         postgres)
             CONTAINER_NAME="eidetica-coverage-postgres"
@@ -323,14 +326,14 @@ coverage backend='inmemory':
             cargo tarpaulin --workspace --skip-clean --all-features --output-dir coverage --out lcov --engine llvm
             ;;
         all)
-            just coverage inmemory
-            mv coverage/lcov.info coverage/lcov-inmemory.info
             just coverage sqlite
             mv coverage/lcov.info coverage/lcov-sqlite.info
+            just coverage inmemory
+            mv coverage/lcov.info coverage/lcov-inmemory.info
             just coverage postgres
             mv coverage/lcov.info coverage/lcov-postgres.info
             echo "Merging coverage reports..."
-            lcov -a coverage/lcov-inmemory.info -a coverage/lcov-sqlite.info -a coverage/lcov-postgres.info -o coverage/lcov.info
+            lcov -a coverage/lcov-sqlite.info -a coverage/lcov-inmemory.info -a coverage/lcov-postgres.info -o coverage/lcov.info
             echo "Merged coverage report: coverage/lcov.info"
             ;;
         ignored)
@@ -338,7 +341,7 @@ coverage backend='inmemory':
             ;;
         *)
             echo "Unknown backend: {{ backend }}"
-            echo "Options: inmemory, sqlite, postgres, all, ignored"
+            echo "Options: sqlite, inmemory, postgres, all, ignored"
             exit 1
             ;;
     esac

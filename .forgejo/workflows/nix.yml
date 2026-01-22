@@ -248,14 +248,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - name: Run coverage (inmemory)
-        run: |
-          nix build .#coverage.inmemory -o coverage-inmemory
-          cp coverage-inmemory/lcov.info lcov-inmemory.info
-          if command -v attic &> /dev/null; then
-            attic push eidetica coverage-inmemory
-          fi
-
       - name: Run coverage (sqlite)
         run: |
           nix build .#coverage.sqlite -o coverage-sqlite
@@ -264,13 +256,21 @@ jobs:
             attic push eidetica coverage-sqlite
           fi
 
+      - name: Run coverage (inmemory)
+        run: |
+          nix build .#coverage.inmemory -o coverage-inmemory
+          cp coverage-inmemory/lcov.info lcov-inmemory.info
+          if command -v attic &> /dev/null; then
+            attic push eidetica coverage-inmemory
+          fi
+
       - name: Upload coverage to Codecov
         uses: https://github.com/codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5
         continue-on-error: true
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: arcuru/eidetica
-          files: lcov-inmemory.info,lcov-sqlite.info
+          files: lcov-sqlite.info,lcov-inmemory.info
           fail_ci_if_error: false
 
   sanitize:

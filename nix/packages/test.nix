@@ -71,18 +71,18 @@
       cargoNextestExtraArgs = "--workspace --all-features ${nextestBaseArgs}";
     });
 
-  # Fast tests for CI (inmemory + minimal)
+  # Fast tests for CI (sqlite + minimal)
   testFast = {
-    inmemory = test-inmemory;
     sqlite = test-sqlite;
+    inmemory = test-inmemory;
     minimal = test-minimal;
   };
 
   # All test packages
   testPackages =
     {
-      inmemory = test-inmemory;
       sqlite = test-sqlite;
+      inmemory = test-inmemory;
       minimal = test-minimal;
     }
     // lib.optionalAttrs pkgs.stdenv.isLinux {

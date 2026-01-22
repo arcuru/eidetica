@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        backend: [inmemory, sqlite]
+        backend: [sqlite, inmemory]
 
     steps:
       - name: Checkout
@@ -31,15 +31,16 @@ jobs:
         with:
           tool: cargo-tarpaulin@0.34.1
 
-      - name: Run coverage (inmemory)
-        if: matrix.backend == 'inmemory'
-        run: |
-          cargo tarpaulin --verbose --all-features --out lcov --output-dir coverage --engine llvm
-
       - name: Run coverage (sqlite)
         if: matrix.backend == 'sqlite'
         run: |
           TEST_BACKEND=sqlite \
+          cargo tarpaulin --verbose --all-features --out lcov --output-dir coverage --engine llvm
+
+      - name: Run coverage (inmemory)
+        if: matrix.backend == 'inmemory'
+        run: |
+          TEST_BACKEND=inmemory \
           cargo tarpaulin --verbose --all-features --out lcov --output-dir coverage --engine llvm
 
       - name: Upload coverage to Codecov

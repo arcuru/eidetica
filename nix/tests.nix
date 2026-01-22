@@ -47,7 +47,7 @@
           enable = true;
           package = pkgs.hello; # Dummy package for eval test
           port = 8080;
-          backend = "inmemory";
+          backend = "sqlite";
           host = "0.0.0.0";
         };
       }
@@ -130,7 +130,7 @@ in {
     echo "Backend: ${nixosEnabledResult.backend}" >> $out/enabled.txt
     echo "Host: ${nixosEnabledResult.host}" >> $out/enabled.txt
     ${
-      if nixosEnabledResult.enable == true && nixosEnabledResult.port == 8080 && nixosEnabledResult.backend == "inmemory"
+      if nixosEnabledResult.enable == true && nixosEnabledResult.port == 8080 && nixosEnabledResult.backend == "sqlite"
       then "echo '✓ Module evaluates correctly with service enabled'"
       else "echo '✗ Service configuration mismatch' && exit 1"
     }
@@ -177,7 +177,7 @@ in {
         enable = true;
         package = eidetica-bin;
         host = "0.0.0.0";
-        backend = "inmemory";
+        backend = "sqlite";
       };
 
       # Ensure networking is available

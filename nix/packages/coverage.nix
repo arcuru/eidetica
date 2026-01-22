@@ -66,16 +66,16 @@
       '';
     });
 
-  # Fast coverage (inmemory only)
+  # Fast coverage (sqlite only)
   coverageFast = {
-    inmemory = coverage-inmemory;
+    sqlite = coverage-sqlite;
   };
 
   # All coverage packages
   coveragePackages =
     {
-      inmemory = coverage-inmemory;
       sqlite = coverage-sqlite;
+      inmemory = coverage-inmemory;
     }
     // lib.optionalAttrs pkgs.stdenv.isLinux {
       postgres = coverage-postgres;
