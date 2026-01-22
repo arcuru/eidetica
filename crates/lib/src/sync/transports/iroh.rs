@@ -16,9 +16,10 @@ use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::oneshot;
 
-use super::{SyncTransport, TransportConfig, shared::*};
+use super::{SyncTransport, TransportBuilder, TransportConfig, shared::*};
 use crate::{
     Result,
+    crdt::Doc,
     store::Registered,
     sync::{
         error::SyncError,
@@ -164,7 +165,7 @@ impl IrohTransportConfig {
             let bytes: [u8; 32] = bytes.try_into().expect("secret key should be 32 bytes");
             SecretKey::from_bytes(&bytes)
         } else {
-            // Generate 32 random bytes for the secret key using OsRng
+            // Generate new secret key
             use rand::RngCore;
             let mut secret_bytes = [0u8; 32];
             rand::rngs::OsRng.fill_bytes(&mut secret_bytes);
@@ -283,10 +284,10 @@ impl IrohTransportBuilder {
     /// ```no_run
     /// use eidetica::sync::transports::iroh::IrohTransport;
     /// use iroh::SecretKey;
+    /// use rand::RngCore;
     ///
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// // Generate or load secret key from storage
-    /// use rand::RngCore;
     /// let mut secret_bytes = [0u8; 32];
     /// rand::rngs::OsRng.fill_bytes(&mut secret_bytes);
     /// let secret_key = SecretKey::from_bytes(&secret_bytes);
@@ -322,6 +323,67 @@ impl IrohTransportBuilder {
 impl Default for IrohTransportBuilder {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Key for storing secret key in persisted Doc
+const SECRET_KEY_FIELD: &str = "secret_key";
+
+#[async_trait]
+impl TransportBuilder for IrohTransportBuilder {
+    type Transport = IrohTransport;
+
+    /// Build the transport using persisted state for identity.
+    ///
+    /// The secret key (node identity) is loaded from the persisted Doc.
+    /// If no secret key exists, a new one is generated and the Doc is returned
+    /// for persistence. Any secret_key set via the builder is ignored -
+    /// persisted state takes precedence.
+    async fn build(self, mut persisted: Doc) -> Result<(Self::Transport, Option<Doc>)> {
+        use crate::crdt::doc::Value;
+
+        // Load or generate secret key from persisted state
+        let (secret_key, updated) = match persisted.get(SECRET_KEY_FIELD) {
+            Some(Value::Text(hex_str)) => {
+                // Decode existing secret key
+                let bytes = hex::decode(hex_str).map_err(|e| {
+                    SyncError::TransportInit(format!("Invalid secret key hex: {}", e))
+                })?;
+                let bytes: [u8; 32] = bytes.try_into().map_err(|_| {
+                    SyncError::TransportInit("Secret key must be 32 bytes".to_string())
+                })?;
+                (SecretKey::from_bytes(&bytes), None)
+            }
+            Some(_) => {
+                return Err(SyncError::TransportInit(
+                    "Secret key must be a text value".to_string(),
+                )
+                .into());
+            }
+            None => {
+                // Generate new secret key and store it
+                // FIXME: Use SecretKey::generate() here (and elsewhere)
+                // Waiting on a rand_core version mismatch to be resolved.
+                use rand::RngCore;
+                let mut secret_bytes = [0u8; 32];
+                rand::rngs::OsRng.fill_bytes(&mut secret_bytes);
+                let key = SecretKey::from_bytes(&secret_bytes);
+                persisted.set(SECRET_KEY_FIELD, hex::encode(key.to_bytes()));
+                (key, Some(persisted))
+            }
+        };
+
+        let transport = IrohTransport {
+            endpoint: Arc::new(Mutex::new(None)),
+            server_state: ServerState::new(),
+            handler: None,
+            runtime_config: IrohRuntimeConfig {
+                relay_mode: self.relay_mode,
+                secret_key: Some(secret_key),
+            },
+        };
+
+        Ok((transport, updated))
     }
 }
 

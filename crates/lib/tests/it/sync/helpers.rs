@@ -178,7 +178,7 @@ impl TransportFactory for IrohTransportFactory {
         let transport = IrohTransport::builder()
             .relay_mode(RelayMode::Disabled)
             .build()?;
-        sync.add_transport(Box::new(transport)).await?;
+        sync.add_transport("iroh", Box::new(transport)).await?;
         Ok(sync)
     }
 

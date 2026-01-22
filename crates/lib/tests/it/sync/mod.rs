@@ -3,6 +3,9 @@
 //! This module tests Sync functionality including creation, loading,
 //! and settings management.
 
+// Allow deprecated methods in tests - many tests use old API for backwards compatibility testing
+#![allow(deprecated)]
+
 mod auto_peer_registration_tests;
 mod auto_sync_e2e_test;
 mod auto_sync_tests;

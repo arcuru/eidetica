@@ -227,16 +227,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::info!("Using device key: {device_key_id}");
 
-    // Get sync object and enable Iroh transport for peer communication
+    // Get sync object (transports are auto-enabled by enable_sync())
     let sync = instance.sync().ok_or("Sync not enabled on instance")?;
 
-    // Enable Iroh transport for P2P communication with NAT traversal
-    sync.enable_iroh_transport().await?;
-    tracing::info!("Iroh transport enabled for sync");
-
-    // Start Iroh server for incoming sync requests
-    sync.start_server("iroh").await?;
-    let iroh_address = sync.get_server_address().await?;
+    // Start accepting incoming sync connections
+    // Iroh server starts automatically, HTTP only if configured
+    sync.accept_connections().await?;
+    let iroh_address = sync.get_server_address_for("iroh").await?;
     tracing::info!("Iroh server started: {}", iroh_address);
 
     let sync_tree_id = sync.sync_tree_root_id().clone();

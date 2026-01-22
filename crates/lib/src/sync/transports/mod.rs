@@ -11,6 +11,7 @@ use serde::{Serialize, de::DeserializeOwned};
 
 use crate::{
     Entry, Result,
+    crdt::Doc,
     store::Registered,
     sync::{
         handler::SyncHandler,
@@ -54,6 +55,57 @@ pub mod shared;
 pub trait TransportConfig:
     Registered + Serialize + DeserializeOwned + Default + Clone + Send + Sync
 {
+}
+
+/// Builder for creating transports with persisted state.
+///
+/// Each transport implementation should provide a builder that implements this trait.
+/// The builder configures the transport, and the `build()` method creates the transport
+/// using persisted state (loaded by name from the sync database).
+///
+/// # Persisted State
+///
+/// Each named transport instance has its own persisted [`Doc`] that stores state
+/// that should survive restarts (e.g., cryptographic keys for identity).
+/// The `build()` method receives this state and can update it (e.g., generating
+/// a new key on first run). The updated state is saved after the transport is created.
+///
+/// # Example
+///
+/// ```ignore
+/// use async_trait::async_trait;
+/// use eidetica::{Result, crdt::Doc};
+/// use eidetica::sync::transports::{TransportBuilder, SyncTransport};
+///
+/// pub struct MyTransportBuilder {
+///     pub some_setting: String,
+/// }
+///
+/// #[async_trait]
+/// impl TransportBuilder for MyTransportBuilder {
+///     type Transport = MyTransport;
+///
+///     async fn build(self, persisted: Doc) -> Result<(Self::Transport, Option<Doc>)> {
+///         let transport = MyTransport::new(self.some_setting);
+///         Ok((transport, None)) // No state to persist
+///     }
+/// }
+/// ```
+#[async_trait]
+pub trait TransportBuilder: Send {
+    /// The transport type this builder creates.
+    type Transport: SyncTransport;
+
+    /// Build the transport from persisted state.
+    ///
+    /// # Arguments
+    /// * `persisted` - The persisted state for this named transport instance.
+    ///   May be empty on first run.
+    ///
+    /// # Returns
+    /// A tuple of (transport, optional_updated_state). If `Some(doc)`, the state
+    /// will be saved to the sync database. If `None`, no save is performed.
+    async fn build(self, persisted: Doc) -> Result<(Self::Transport, Option<Doc>)>;
 }
 
 /// Trait for implementing sync communication over different transports.

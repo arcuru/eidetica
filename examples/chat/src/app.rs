@@ -1,3 +1,6 @@
+// Allow deprecated methods in benchmarks, will migrate soon
+#![allow(deprecated)]
+
 use crate::models::ChatMessage;
 use eidetica::crdt::Doc;
 use eidetica::store::Table;

@@ -21,7 +21,6 @@ use super::{
     protocol::{HandshakeRequest, PROTOCOL_VERSION, SyncRequest, SyncResponse, SyncTreeRequest},
     queue::SyncQueue,
     transport_manager::TransportManager,
-    transports::SyncTransport,
 };
 use crate::{
     Database, Result,
@@ -39,8 +38,9 @@ pub enum SyncCommand {
     Shutdown,
 
     // Transport management
-    /// Add a transport to the transport manager
+    /// Add a named transport to the transport manager
     AddTransport {
+        name: String,
         transport: Box<dyn super::transports::SyncTransport>,
         response: oneshot::Sender<Result<()>>,
     },
@@ -48,8 +48,11 @@ pub enum SyncCommand {
     // Server management commands
     /// Start the sync server on specified or all transports
     StartServer {
+        // FIXME: Rename to 'name'
         /// Transport type to start, or None for all transports
         transport_type: Option<String>,
+        // FIXME: Remove when deprecated start_server methods are removed.
+        // New APIs pass empty string; transports use pre-configured bind addresses.
         addr: String,
         response: oneshot::Sender<Result<()>>,
     },
@@ -61,7 +64,7 @@ pub enum SyncCommand {
     },
     /// Get the server's listening address for a specific transport
     GetServerAddress {
-        transport_type: String,
+        name: String,
         response: oneshot::Sender<Result<String>>,
     },
     /// Get all server addresses for running servers
@@ -107,8 +110,11 @@ impl std::fmt::Debug for SyncCommand {
                 f.debug_struct("SyncWithPeer").field("peer", peer).finish()
             }
             Self::Shutdown => write!(f, "Shutdown"),
-            Self::AddTransport { transport, .. } => f
+            Self::AddTransport {
+                name, transport, ..
+            } => f
                 .debug_struct("AddTransport")
+                .field("name", name)
                 .field("transport_type", &transport.transport_type())
                 .finish(),
             Self::StartServer {
@@ -124,9 +130,9 @@ impl std::fmt::Debug for SyncCommand {
                 .debug_struct("StopServer")
                 .field("transport_type", transport_type)
                 .finish(),
-            Self::GetServerAddress { transport_type, .. } => f
+            Self::GetServerAddress { name, .. } => f
                 .debug_struct("GetServerAddress")
-                .field("transport_type", transport_type)
+                .field("name", name)
                 .finish(),
             Self::GetAllServerAddresses { .. } => write!(f, "GetAllServerAddresses"),
             Self::ConnectToPeer { address, .. } => f
@@ -173,9 +179,11 @@ pub struct BackgroundSync {
 }
 
 impl BackgroundSync {
-    /// Start the background sync engine and return a command sender
+    /// Start the background sync engine and return a command sender.
+    ///
+    /// The engine starts with no transports registered. Use `AddTransport`
+    /// commands to add transports after starting.
     pub fn start(
-        transport: Box<dyn SyncTransport>,
         instance: crate::Instance,
         sync_tree_id: ID,
         queue: Arc<SyncQueue>,
@@ -183,7 +191,7 @@ impl BackgroundSync {
         let (tx, rx) = mpsc::channel(100);
 
         let background = Self {
-            transport_manager: TransportManager::with_transport(transport),
+            transport_manager: TransportManager::new(),
             instance: instance.downgrade(),
             sync_tree_id,
             queue,
@@ -361,10 +369,18 @@ impl BackgroundSync {
             }
 
             SyncCommand::AddTransport {
+                name,
                 transport,
                 response,
             } => {
-                self.transport_manager.add(transport);
+                // Stop server on existing transport if running
+                if let Some(old) = self.transport_manager.get_mut(&name)
+                    && old.is_server_running()
+                {
+                    let _ = old.stop_server().await;
+                }
+                self.transport_manager.add(&name, transport);
+                tracing::debug!("Added transport: {}", name);
                 let _ = response.send(Ok(()));
             }
 
@@ -385,11 +401,8 @@ impl BackgroundSync {
                 let _ = response.send(result);
             }
 
-            SyncCommand::GetServerAddress {
-                transport_type,
-                response,
-            } => {
-                let result = self.transport_manager.get_server_address(&transport_type);
+            SyncCommand::GetServerAddress { name, response } => {
+                let result = self.transport_manager.get_server_address(&name);
                 let _ = response.send(result);
             }
 
@@ -890,10 +903,11 @@ impl BackgroundSync {
             }
             None => {
                 // Start servers on all transports
+                // Pass addr as default for transports without pre-configured bind address
                 self.transport_manager
                     .start_all_servers(addr, handler)
                     .await?;
-                tracing::info!("Sync servers started on {addr} for all transports");
+                tracing::info!("Sync servers started for all transports");
             }
         }
 

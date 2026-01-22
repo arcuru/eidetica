@@ -153,9 +153,9 @@ pub enum SyncError {
         found: String,
     },
 
-    /// Transport not found by type identifier.
-    #[error("Transport not found: {transport_type}")]
-    TransportNotFound { transport_type: String },
+    /// Transport not found by name.
+    #[error("Transport not found: {name}")]
+    TransportNotFound { name: String },
 
     /// No transport can handle the given address.
     #[error("No transport can handle address: {address:?}")]

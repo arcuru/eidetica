@@ -15,9 +15,10 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
-use super::{SyncTransport, TransportConfig, shared::*};
+use super::{SyncTransport, TransportBuilder, TransportConfig, shared::*};
 use crate::{
     Result,
+    crdt::Doc,
     store::Registered,
     sync::{
         error::SyncError,
@@ -46,10 +47,81 @@ impl Registered for HttpTransportConfig {
 
 impl TransportConfig for HttpTransportConfig {}
 
+/// Builder for configuring HTTP transport.
+///
+/// # Example
+///
+/// ```ignore
+/// use eidetica::sync::transports::http::HttpTransport;
+///
+/// // Create transport with specific bind address
+/// let builder = HttpTransport::builder()
+///     .bind("127.0.0.1:8080");
+///
+/// // Register with sync system
+/// sync.register_transport("http-local", builder).await?;
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct HttpTransportBuilder {
+    bind_address: Option<String>,
+}
+
+impl HttpTransportBuilder {
+    /// Create a new builder with default settings.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the bind address for the HTTP server.
+    ///
+    /// # Arguments
+    /// * `addr` - The address to bind to (e.g., "127.0.0.1:8080" or "0.0.0.0:80")
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let builder = HttpTransport::builder()
+    ///     .bind("0.0.0.0:8080");
+    /// ```
+    pub fn bind(mut self, addr: impl Into<String>) -> Self {
+        self.bind_address = Some(addr.into());
+        self
+    }
+
+    /// Build the transport synchronously (for backwards compatibility).
+    ///
+    /// Note: The bind address is stored but the server is not started.
+    /// Call `start_server()` on the transport to actually bind.
+    pub fn build_sync(self) -> Result<HttpTransport> {
+        Ok(HttpTransport {
+            server_state: ServerState::new(),
+            bind_address: self.bind_address,
+        })
+    }
+}
+
+#[async_trait]
+impl TransportBuilder for HttpTransportBuilder {
+    type Transport = HttpTransport;
+
+    /// Build the HTTP transport.
+    ///
+    /// HTTP transport doesn't require persisted state for identity.
+    async fn build(self, _persisted: Doc) -> Result<(Self::Transport, Option<Doc>)> {
+        let transport = HttpTransport {
+            server_state: ServerState::new(),
+            bind_address: self.bind_address,
+        };
+        Ok((transport, None))
+    }
+}
+
 /// HTTP transport implementation using axum and reqwest.
 pub struct HttpTransport {
     /// Shared server state management.
     server_state: ServerState,
+    /// Configured bind address (used when start_server is called with empty addr)
+    bind_address: Option<String>,
 }
 
 impl HttpTransport {
@@ -60,7 +132,13 @@ impl HttpTransport {
     pub fn new() -> Result<Self> {
         Ok(Self {
             server_state: ServerState::new(),
+            bind_address: None,
         })
+    }
+
+    /// Create a builder for configuring the transport.
+    pub fn builder() -> HttpTransportBuilder {
+        HttpTransportBuilder::new()
     }
 
     /// Create the axum router with single JSON endpoint and handler state.
@@ -90,10 +168,23 @@ impl SyncTransport for HttpTransport {
             .into());
         }
 
-        let socket_addr: SocketAddr = addr.parse().map_err(|e| SyncError::ServerBind {
-            address: addr.to_string(),
-            reason: format!("Invalid address: {e}"),
-        })?;
+        // Use provided address, or fall back to configured bind_address
+        let effective_addr = if addr.is_empty() {
+            self.bind_address
+                .as_deref()
+                .ok_or_else(|| SyncError::ServerBind {
+                    address: addr.to_string(),
+                    reason: "No bind address provided and none configured".to_string(),
+                })?
+        } else {
+            addr
+        };
+
+        let socket_addr: SocketAddr =
+            effective_addr.parse().map_err(|e| SyncError::ServerBind {
+                address: effective_addr.to_string(),
+                reason: format!("Invalid address: {e}"),
+            })?;
 
         let router = Self::create_router(handler);
 

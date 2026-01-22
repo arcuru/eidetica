@@ -23,7 +23,7 @@ async fn test_enable_http_transport_twice_adds_transport() -> Result<()> {
 
     // Enable second HTTP transport - should still succeed (adds to existing)
     let http2 = HttpTransport::new()?;
-    sync.add_transport(Box::new(http2)).await?;
+    sync.add_transport("http2", Box::new(http2)).await?;
 
     // Start server on all transports
     sync.start_server("127.0.0.1:0").await?;
@@ -76,7 +76,7 @@ async fn test_server_lifecycle_with_multiple_transports() -> Result<()> {
     // Enable two transports
     sync.enable_http_transport().await?;
     let http2 = HttpTransport::new()?;
-    sync.add_transport(Box::new(http2)).await?;
+    sync.add_transport("http2", Box::new(http2)).await?;
 
     // Start servers on all transports
     sync.start_server("127.0.0.1:0").await?;
@@ -121,7 +121,9 @@ async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
     let server_iroh = IrohTransport::builder()
         .relay_mode(RelayMode::Disabled)
         .build()?;
-    server_sync.add_transport(Box::new(server_iroh)).await?;
+    server_sync
+        .add_transport("iroh", Box::new(server_iroh))
+        .await?;
 
     // Start server
     server_sync.start_server("127.0.0.1:0").await?;
@@ -283,5 +285,79 @@ async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
     server_sync.stop_server().await?;
 
     println!("\n✅ Multi-transport HTTP→Server→Iroh test passed!");
+    Ok(())
+}
+
+/// Test that start_all_servers returns MultipleTransportErrors when all transports fail
+#[tokio::test]
+async fn test_start_all_servers_returns_error_when_all_fail() -> Result<()> {
+    let (_instance, sync) = setup().await;
+
+    // Add two HTTP transports WITHOUT bind addresses
+    // HttpTransport::new() creates a transport with no pre-configured bind address
+    let http1 = HttpTransport::new()?;
+    let http2 = HttpTransport::new()?;
+    sync.add_transport("http1", Box::new(http1)).await?;
+    sync.add_transport("http2", Box::new(http2)).await?;
+
+    // accept_connections() passes empty address to start_all_servers
+    // Both transports should fail since they have no bind address configured
+    let result = sync.accept_connections().await;
+
+    // Verify error is returned
+    assert!(
+        result.is_err(),
+        "Should fail when all transports fail to start"
+    );
+
+    // Verify it's the MultipleTransportErrors variant
+    let err = result.unwrap_err();
+    let err_string = err.to_string();
+    assert!(
+        err_string.contains("Multiple transport errors"),
+        "Should be MultipleTransportErrors, got: {err_string}"
+    );
+
+    // Verify both transport names are in the error message
+    assert!(
+        err_string.contains("http1") && err_string.contains("http2"),
+        "Error should mention both failed transports, got: {err_string}"
+    );
+
+    Ok(())
+}
+
+/// Test that start_all_servers succeeds when at least one transport starts successfully
+#[tokio::test]
+async fn test_start_all_servers_succeeds_when_one_passes() -> Result<()> {
+    let (_instance, sync) = setup().await;
+
+    // Add one HTTP transport WITH a bind address (will succeed)
+    let http_good = HttpTransport::builder().bind("127.0.0.1:0").build_sync()?;
+    sync.add_transport("http_good", Box::new(http_good)).await?;
+
+    // Add one HTTP transport WITHOUT a bind address (will fail)
+    let http_bad = HttpTransport::new()?;
+    sync.add_transport("http_bad", Box::new(http_bad)).await?;
+
+    // accept_connections() should succeed because at least one transport started
+    let result = sync.accept_connections().await;
+    assert!(
+        result.is_ok(),
+        "Should succeed when at least one transport starts, got: {:?}",
+        result.err()
+    );
+
+    // Verify the successful transport is running by getting its address
+    let addresses = sync.get_all_server_addresses().await?;
+    assert_eq!(addresses.len(), 1, "Should have exactly one running server");
+    assert_eq!(
+        addresses[0].0, "http_good",
+        "The running server should be http_good"
+    );
+
+    // Cleanup
+    sync.stop_server().await?;
+
     Ok(())
 }

@@ -1,3 +1,6 @@
+// Allow deprecated methods in benchmarks, will migrate soon
+#![allow(deprecated)]
+
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use eidetica::{
     entry::{Entry, ID},
