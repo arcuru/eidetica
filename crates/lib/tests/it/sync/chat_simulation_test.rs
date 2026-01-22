@@ -1,812 +1,401 @@
-//! Integration tests simulating chat app sync behavior
+//! Integration tests simulating chat app sync behavior.
 //!
-//! These tests reproduce the exact sync patterns used by the chat example
-//! to debug authentication and sync issues.
+//! These tests verify bootstrap and sync patterns using the User API:
+//!
+//! - `test_chat_app_authenticated_bootstrap`: Manual approval flow where the server
+//!   requires explicit admin approval before granting access. Client uses their
+//!   registered key name as the SigKey.
+//!
+//! - `test_global_key_bootstrap`: Auto-approval flow where the server has a global
+//!   wildcard permission that grants access to any client. Client uses "*" as the
+//!   SigKey (with pubkey embedded in the signature).
+//!
+//! - `test_multiple_databases_sync`: Verifies syncing multiple databases from a
+//!   single server.
 
-use super::helpers::enable_sync_for_instance_database;
-use crate::helpers::test_instance_with_user_and_key;
-use eidetica::{
-    auth::{AuthSettings, Permission, types::AuthKey},
-    constants::GLOBAL_PERMISSION_KEY,
-    crdt::{Doc, doc::Value},
-    store::{SettingsStore, Table},
-    sync::transports::http::HttpTransport,
+use super::helpers::{
+    enable_sync_for_instance_database, set_global_wildcard_permission, setup_sync_enabled_client,
+    setup_sync_enabled_server, setup_sync_enabled_server_with_auto_approve, start_sync_server,
 };
+use crate::helpers::test_instance_with_user_and_key;
+use eidetica::{auth::Permission, crdt::Doc, store::Table, sync::transports::http::HttpTransport};
 use serde::{Deserialize, Serialize};
 
-// Simulate the chat app's key names (device-specific)
-const SERVER_KEY_NAME: &str = "CHAT_APP_SERVER";
-const CLIENT_KEY_NAME: &str = "CHAT_APP_CLIENT";
-
-// Simulate the chat app's message structure
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct ChatMessage {
     author: String,
     content: String,
     timestamp: i64,
 }
 
-/// Helper function to check if global permissions are configured in auth settings.
+/// Test authenticated bootstrap with manual approval.
 ///
-/// Returns true if global "*" permission exists and is configured with "*" pubkey.
-async fn has_global_permission_configured(settings: &SettingsStore) -> bool {
-    // Use SettingsStore's get_auth_settings method
-    if let Ok(auth_settings) = settings.get_auth_settings().await {
-        // Try to get the global "*" key
-        if let Ok(global_key) = auth_settings.get_key(GLOBAL_PERMISSION_KEY) {
-            global_key.pubkey() == GLOBAL_PERMISSION_KEY
-        } else {
-            false
-        }
-    } else {
-        false
-    }
-}
-
-/// Test authenticated bootstrap with Database operations (simulating chat app)
-///
-/// IGNORED: This test fails due to a key management architectural issue.
-/// The sync handler tries to authenticate with "admin" when operating on
-/// target databases, but target databases (like chat rooms) don't have this key.
-/// The sync system needs proper key-to-database mapping to know which admin key
-/// to use for each database. This requires additional infrastructure work.
+/// Verifies that a client can bootstrap an authenticated database from a server
+/// when the server requires manual approval (no global wildcard permission).
+/// This tests the complete approval workflow:
+/// 1. Client requests bootstrap → pending
+/// 2. Admin approves the request
+/// 3. Client retries → succeeds with their registered key
+/// 4. Client can read/write data using their own key
 #[tokio::test]
-#[ignore = "Key management bug: sync handler cannot determine which admin key to use for target databases"]
 async fn test_chat_app_authenticated_bootstrap() {
-    println!("\n🧪 TEST: Starting chat app authenticated bootstrap test");
+    // Setup server WITHOUT auto-approval (no global wildcard permission)
+    let (server_instance, server_user, server_key_id, server_database, tree_id, server_sync) =
+        setup_sync_enabled_server("server_user", "server_key", "Chat Room").await;
 
-    // Setup server instance (like Device 1 creating a room)
-    let (server_instance, mut server_user, server_key_id) =
-        test_instance_with_user_and_key("server_user", Some(SERVER_KEY_NAME)).await;
-    server_instance
-        .enable_sync()
-        .await
-        .expect("Failed to initialize sync on server");
-
-    println!("📍 Server public key: {server_key_id}");
-
-    // Create a database (like creating a chat room)
-    let mut settings = Doc::new();
-    settings.set("name", "Test Chat Room");
-
-    // Enable automatic bootstrap approval via global wildcard permission
-    let server_pubkey = server_user
-        .get_public_key(&server_key_id)
-        .expect("Failed to get server public key");
-
-    let mut auth_settings = AuthSettings::new();
-    // Include server admin key for initial database creation
-    auth_settings
-        .add_key(
-            &server_key_id,
-            AuthKey::active(&server_pubkey, Permission::Admin(10))
-                .expect("Failed to create admin key"),
-        )
-        .expect("Failed to add admin auth");
-    // Also include global write permission so clients can write using "*"
-    auth_settings
-        .add_key(
-            "*",
-            AuthKey::active("*", Permission::Write(10)).expect("Failed to create global key"),
-        )
-        .expect("Failed to add global auth");
-    settings.set("auth", auth_settings.as_doc().clone());
-    let server_database = server_user
-        .create_database(settings, &server_key_id)
-        .await
-        .expect("Failed to create server database");
-
-    let room_id = server_database.root_id().clone();
-    println!("🏠 Created room with ID: {room_id}");
-
-    // Enable sync for this database
-    let server_sync = server_instance.sync().expect("Server should have sync");
-    enable_sync_for_instance_database(&server_sync, &room_id)
-        .await
-        .expect("Failed to enable sync for database");
-
-    // Add some initial messages to the server's database
+    // Add initial message to the server database
     {
-        let op = server_database
-            .new_transaction()
-            .await
-            .expect("Failed to create transaction");
-        let store = op
+        let tx = server_database.new_transaction().await.unwrap();
+        let store = tx
             .get_store::<Table<ChatMessage>>("messages")
             .await
-            .expect("Failed to get messages store");
-
-        let msg = ChatMessage {
-            author: "server_user".to_string(),
-            content: "Welcome to the chat room!".to_string(),
-            timestamp: 1234567890,
-        };
-        store.insert(msg).await.expect("Failed to insert message");
-        op.commit().await.expect("Failed to commit transaction");
+            .unwrap();
+        store
+            .insert(ChatMessage {
+                author: "server_user".to_string(),
+                content: "Welcome to the chat room!".to_string(),
+                timestamp: 1234567890,
+            })
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
     }
 
-    // Setup sync on server and get address
-    let server_addr = {
-        server_sync
-            .register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
-            .await
-            .expect("Failed to register HTTP transport");
-        server_sync
-            .accept_connections()
-            .await
-            .expect("Failed to start server");
-        let addr = server_sync
-            .get_server_address()
-            .await
-            .expect("Failed to get server address");
-        println!("🌐 Server listening at: {addr}");
-        addr
-    };
-
-    // Setup client instance (like Device 2 joining the room)
-    let (client_instance, client_user, client_key_id) =
-        test_instance_with_user_and_key("client_user", Some(CLIENT_KEY_NAME)).await;
-    client_instance
-        .enable_sync()
+    // Start server
+    server_sync
+        .register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
         .await
-        .expect("Failed to initialize sync on client");
-
-    println!("📍 Client public key: {client_key_id}");
-
-    // Verify client doesn't have the database initially
-    assert!(
-        !client_instance.has_database(&room_id).await,
-        "Client should not have the database initially"
-    );
-
-    // Client attempts to bootstrap with authentication
-    {
-        let client_sync = client_instance.sync().expect("Client should have sync");
-        client_sync
-            .register_transport("http", HttpTransport::builder())
-            .await
-            .expect("Failed to register HTTP transport");
-
-        println!("\n🔄 Client attempting authenticated bootstrap...");
-        let bootstrap_result = client_sync
-            .sync_with_peer_for_bootstrap_with_key(
-                &server_addr,
-                &room_id,
-                &client_key_id,
-                CLIENT_KEY_NAME,
-                eidetica::auth::Permission::Write(10),
-            )
-            .await;
-
-        match bootstrap_result {
-            Ok(_) => println!("✅ Bootstrap completed successfully"),
-            Err(e) => {
-                println!("❌ Bootstrap failed: {e:?}");
-                panic!("Bootstrap should succeed but failed: {e:?}");
-            }
-        }
-    } // Drop guard here
-
-    // Flush any pending sync work
-    client_instance
-        .sync()
-        .expect("Client should have sync")
-        .flush()
-        .await
-        .ok();
-
-    // Verify client can now load the database
-    println!("\n🔍 Verifying client can load the database...");
-
-    // Debug: Check tips before loading
-    if let Ok(tips) = client_instance.backend().get_tips(&room_id).await {
-        println!("🔍 Client tips before loading database: {tips:?}");
-
-        // Check each tip to see what settings it has and their parents
-        for tip_id in &tips {
-            if let Ok(entry) = client_instance.backend().get(tip_id).await {
-                let parents = entry.parents().unwrap_or_default();
-                println!("🔍 Tip {tip_id} has parents: {parents:?}");
-                println!(
-                    "🔍 Tip {} has settings data: {}",
-                    tip_id,
-                    entry.data("_settings").is_ok()
-                );
-                if let Ok(settings_data) = entry.data("_settings") {
-                    // Check if auth section exists
-                    if settings_data.contains("\"auth\"") {
-                        println!("✅ Tip {tip_id} contains auth section");
-                    } else {
-                        println!("❌ Tip {tip_id} missing auth section");
-                    }
-                }
-            }
-        }
-
-        // Check if these are actually conflicting tips or one is ancestor of another
-        if tips.len() == 2 {
-            // Check ancestry relationship
-            let _tip1 = &tips[0];
-            let _tip2 = &tips[1];
-            println!("🔍 Checking ancestry between tips...");
-
-            // TODO: Add ancestry check logic here if needed
-        }
-    }
-
-    // Also check the _settings subtree tips
-    if let Ok(settings_tips) = client_instance
-        .backend()
-        .get_store_tips(&room_id, "_settings")
-        .await
-    {
-        println!("🔍 Client _settings subtree tips: {settings_tips:?}");
-
-        for tip_id in &settings_tips {
-            if let Ok(entry) = client_instance.backend().get(tip_id).await
-                && let Ok(settings_data) = entry.data("_settings")
-            {
-                println!(
-                    "🔍 Settings tip {} data preview: {}",
-                    tip_id,
-                    &settings_data[..settings_data.len().min(200)]
-                );
-            }
-        }
-    }
-
-    // Load database with the client's key
-    let signing_key = client_user
-        .get_signing_key(&client_key_id)
-        .expect("Failed to get client signing key");
-
-    let client_database = match eidetica::Database::open(
-        client_instance.clone(),
-        &room_id,
-        signing_key,
-        CLIENT_KEY_NAME.to_string(),
-    )
-    .await
-    {
-        Ok(db) => {
-            println!("✅ Client successfully loaded database");
-            db
-        }
-        Err(e) => {
-            println!("❌ Client failed to load database: {e:?}");
-            panic!("Client should be able to load database after bootstrap");
-        }
-    };
-
-    // Verify authentication was successful
-    println!("\n🔐 Checking authentication setup...");
-    {
-        let settings = client_database
-            .get_settings()
-            .await
-            .expect("Failed to get database settings");
-
-        // Debug: Print the entire settings
-        if let Ok(all_settings) = settings.get_all().await {
-            println!("🔍 Database settings: {all_settings:?}");
-        }
-
-        // Check if global permissions are configured
-        let has_global_permission = has_global_permission_configured(&settings).await;
-
-        if has_global_permission {
-            println!("✅ Global '*' permission detected - bootstrap worked via global permission");
-
-            // With global permissions, the client key should NOT be in auth settings initially
-            // (but the bootstrap process via global permission should have worked)
-            match settings.get("auth").await {
-                Ok(Value::Doc(auth_node)) => {
-                    if auth_node.get(CLIENT_KEY_NAME).is_none() {
-                        println!(
-                            "✅ Confirmed: Client key correctly NOT added due to global permission"
-                        );
-                        println!("   (but bootstrap approval worked via global '*' permission)");
-                    } else {
-                        println!("ℹ️  Client key found in auth settings (possibly added later)");
-                    }
-                }
-                _ => panic!("Auth section should exist"),
-            }
-        } else {
-            println!("🔍 No global permission - checking for client key in auth settings");
-
-            // Without global permissions, check that the client key was added
-            match settings.get("auth").await {
-                Ok(value) => {
-                    println!("✅ Auth value found - type: {value:?}");
-
-                    // The auth section exists but keys might be stored as JSON strings
-                    if let Value::Doc(auth_node) = value {
-                        println!("✅ Auth is a Doc");
-
-                        // Try to get the key entry - it might be JSON string
-                        if let Some(key_value) = auth_node.get(CLIENT_KEY_NAME) {
-                            println!("🔍 Key value type: {key_value:?}");
-
-                            // If it's a JSON string, parse it
-                            if let Value::Text(json_str) = key_value {
-                                let key_info: serde_json::Value = serde_json::from_str(json_str)
-                                    .expect("Failed to parse key JSON");
-                                let stored_pubkey =
-                                    key_info["pubkey"].as_str().expect("Missing pubkey in JSON");
-                                println!("✅ Client key found with pubkey: {stored_pubkey}");
-                                assert_eq!(
-                                    stored_pubkey, client_key_id,
-                                    "Stored pubkey should match client's pubkey"
-                                );
-                            } else if let Value::Doc(key_node) = key_value {
-                                // It's a proper doc
-                                if let Some(stored_pubkey) = key_node.get_as::<String>("pubkey") {
-                                    println!("✅ Client key found with pubkey: {stored_pubkey}");
-                                    assert_eq!(
-                                        stored_pubkey, client_key_id,
-                                        "Stored pubkey should match client's pubkey"
-                                    );
-                                } else {
-                                    panic!("Client key exists but missing pubkey field");
-                                }
-                            } else {
-                                panic!("Key value is neither JSON string nor Doc: {key_value:?}");
-                            }
-                        } else {
-                            panic!("Client key NOT found in auth Doc");
-                        }
-                    } else {
-                        panic!("Auth section is not a Doc: {value:?}");
-                    }
-                }
-                Err(e) => {
-                    panic!("No auth section in database settings: {e:?}");
-                }
-            }
-        }
-    }
-
-    // Verify client can read existing messages
-    println!("\n📖 Client reading existing messages...");
-    {
-        let op = client_database
-            .new_transaction()
-            .await
-            .expect("Failed to create client transaction");
-        let store = op
-            .get_store::<Table<ChatMessage>>("messages")
-            .await
-            .expect("Failed to get messages store");
-
-        let messages = store
-            .search(|_| true)
-            .await
-            .expect("Failed to search messages");
-
-        println!("📬 Client found {} messages", messages.len());
-        assert_eq!(messages.len(), 1, "Client should see the initial message");
-
-        let (_, msg) = &messages[0];
-        assert_eq!(msg.author, "server_user");
-        assert_eq!(msg.content, "Welcome to the chat room!");
-    }
-
-    // Test that client can add new messages (write permission)
-    println!("\n✍️ Client attempting to add a message...");
-    {
-        // Create transaction using default auth
-        let op = match client_database.new_transaction().await {
-            Ok(op) => {
-                println!("✅ Client created transaction successfully");
-                op
-            }
-            Err(e) => {
-                println!("❌ Client failed to create transaction: {e:?}");
-                panic!("Client should be able to create transactions after bootstrap");
-            }
-        };
-
-        let store = op
-            .get_store::<Table<ChatMessage>>("messages")
-            .await
-            .expect("Failed to get messages store");
-
-        let msg = ChatMessage {
-            author: "client_user".to_string(),
-            content: "Hello from the client!".to_string(),
-            timestamp: 1234567891,
-        };
-
-        match store.insert(msg.clone()).await {
-            Ok(_) => println!("✅ Client successfully inserted message"),
-            Err(e) => {
-                println!("❌ Client failed to insert message: {e:?}");
-                panic!("Client should be able to insert messages");
-            }
-        }
-
-        match op.commit().await {
-            Ok(_) => println!("✅ Client successfully committed transaction"),
-            Err(e) => {
-                println!("❌ Client failed to commit transaction: {e:?}");
-                panic!("Client should be able to commit transactions with global permissions");
-            }
-        }
-    }
-
-    // Check client's tips and entries before sync
-    println!("\n🔍 Client state before sync back:");
-    if let Ok(client_tips) = client_instance.backend().get_tips(&room_id).await {
-        println!("  Client has {} tips: {:?}", client_tips.len(), client_tips);
-
-        // Check what messages the client has
-        if let Ok(entries) = client_instance
-            .backend()
-            .get_store(&room_id, "messages")
-            .await
-        {
-            println!("  Client has {} entries in messages store", entries.len());
-            for entry in &entries {
-                if let Ok(data) = entry.data("messages") {
-                    println!("    Entry {}: {}", entry.id(), &data[..data.len().min(100)]);
-                }
-            }
-        }
-    }
-
-    // Sync changes back to server
-    println!("\n🔄 Syncing client changes back to server...");
-    {
-        let client_sync = client_instance.sync().expect("Client should have sync");
-        client_sync
-            .sync_with_peer(&server_addr, Some(&room_id))
-            .await
-            .expect("Client should be able to sync to server");
-        // Flush any pending sync work
-        client_sync.flush().await.ok();
-    }
-
-    // Verify server sees client's message using the original database object
-    // With bidirectional sync, the server should now have the client's entries
-    println!("\n📖 Server checking for client's message after bidirectional sync...");
-    {
-        let op = server_database
-            .new_transaction()
-            .await
-            .expect("Failed to create server transaction");
-        let store = op
-            .get_store::<Table<ChatMessage>>("messages")
-            .await
-            .expect("Failed to get messages store");
-
-        let messages = store
-            .search(|_| true)
-            .await
-            .expect("Failed to search messages");
-
-        println!("📬 Server found {} messages", messages.len());
-
-        // Debug: Print all messages
-        for (id, msg) in &messages {
-            println!(
-                "  Message {}: author={}, content={}",
-                id, msg.author, msg.content
-            );
-        }
-
-        assert_eq!(
-            messages.len(),
-            2,
-            "Server should see both messages after bidirectional sync"
-        );
-
-        let client_msg_found = messages
-            .iter()
-            .any(|(_, msg)| msg.author == "client_user" && msg.content == "Hello from the client!");
-
-        assert!(
-            client_msg_found,
-            "Server should see client's message after bidirectional sync"
-        );
-        println!("✅ Server successfully received client's message via bidirectional sync");
-    }
-
-    // Cleanup
-    {
-        let server_sync = server_instance.sync().expect("Server should have sync");
-        server_sync
-            .stop_server()
-            .await
-            .expect("Failed to stop server");
-    }
-
-    println!("\n✅ TEST COMPLETED: Chat app authenticated bootstrap works!");
-}
-
-/// Test bootstrap with global authentication key '*'
-///
-/// FIXME: This test fails because global "*" permission requires the public key
-/// to be included in SigInfo for signature verification. When a client uses their
-/// own signing key (ed25519:...) that isn't registered in auth settings, the auth
-/// system can fall back to global "*" permission and use the pubkey from SigInfo
-/// to verify the signature.
-#[tokio::test]
-async fn test_global_key_bootstrap() {
-    println!("\n🧪 TEST: Starting global key bootstrap test");
-
-    // Setup similar to above but use '*' key
-    let (server_instance, mut server_user, admin_key_id) =
-        test_instance_with_user_and_key("server_user", Some("admin_key")).await;
-    server_instance
-        .enable_sync()
-        .await
-        .expect("Failed to initialize sync on server");
-
-    // Create database with global write permission
-    let mut settings = Doc::new();
-    settings.set("name", "Public Room");
-
-    // Get the admin public key
-    let admin_pubkey = server_user
-        .get_public_key(&admin_key_id)
-        .expect("Failed to get admin public key");
-
-    let mut auth_settings = AuthSettings::new();
-    // Add global write permission to auth settings
-    auth_settings
-        .add_key(
-            "*",
-            AuthKey::active("*", Permission::Write(10)).expect("Failed to create global key"),
-        )
-        .expect("Failed to add global auth");
-
-    // Also add the admin key so database creation works
-    auth_settings
-        .add_key(
-            &admin_key_id,
-            AuthKey::active(&admin_pubkey, Permission::Admin(10))
-                .expect("Failed to create admin key"),
-        )
-        .expect("Failed to add admin auth");
-
-    settings.set("auth", auth_settings.as_doc().clone());
-
-    let server_database = server_user
-        .create_database(settings, &admin_key_id)
-        .await
-        .expect("Failed to create server database");
-
-    let room_id = server_database.root_id().clone();
-    println!("🏠 Created public room with ID: {room_id}");
-
-    // Enable sync for this database
-    let server_sync = server_instance.sync().expect("Server should have sync");
-    enable_sync_for_instance_database(&server_sync, &room_id)
-        .await
-        .expect("Failed to enable sync for database");
-
-    // Setup sync on server
-    let server_addr = {
-        server_sync
-            .register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
-            .await
-            .expect("Failed to register HTTP transport");
-        server_sync
-            .accept_connections()
-            .await
-            .expect("Failed to start server");
-        server_sync
-            .get_server_address()
-            .await
-            .expect("Failed to get server address")
-    };
+        .unwrap();
+    let server_addr = start_sync_server(&server_sync).await;
 
     // Setup client
-    let (client_instance, client_user, client_key_id) =
-        test_instance_with_user_and_key("client_user", Some("client_key")).await;
-    client_instance
-        .enable_sync()
+    let (client_instance, client_user, client_key_id, client_sync) =
+        setup_sync_enabled_client("client_user", "client_key").await;
+    client_sync
+        .register_transport("http", HttpTransport::builder())
         .await
-        .expect("Failed to initialize sync on client");
+        .unwrap();
 
-    // Client syncs without authentication (relies on global '*' permission)
-    {
-        let client_sync = client_instance.sync().expect("Client should have sync");
-        client_sync
-            .register_transport("http", HttpTransport::builder())
-            .await
-            .expect("Failed to register HTTP transport");
+    // First bootstrap attempt should fail (pending approval)
+    let first_attempt = client_sync
+        .sync_with_peer_for_bootstrap_with_key(
+            &server_addr,
+            &tree_id,
+            &client_key_id,
+            "client_key",
+            Permission::Write(10),
+        )
+        .await;
+    assert!(
+        first_attempt.is_err(),
+        "First bootstrap attempt should fail (pending approval)"
+    );
 
-        println!("🔄 Client syncing with global permission...");
-        client_sync
-            .sync_with_peer(&server_addr, Some(&room_id))
-            .await
-            .expect("Sync should succeed with global permission");
-        // Flush any pending sync work
-        client_sync.flush().await.ok();
-    } // Drop guard here
+    // Verify request is pending on server
+    let pending_requests = server_sync
+        .pending_bootstrap_requests()
+        .await
+        .expect("Should list pending requests");
+    assert_eq!(
+        pending_requests.len(),
+        1,
+        "Should have exactly one pending request"
+    );
+    let (request_id, pending_request) = &pending_requests[0];
+    assert_eq!(pending_request.tree_id, tree_id);
+    assert_eq!(pending_request.requesting_pubkey, client_key_id);
 
-    // Verify client can load and use the database with global permission
-    // The client uses their own key but the database allows writing via the global "*" permission
-    let signing_key = client_user
+    // Admin approves the request
+    server_user
+        .approve_bootstrap_request(&server_sync, request_id, &server_key_id)
+        .await
+        .expect("Admin should approve bootstrap request");
+    server_sync.flush().await.ok();
+
+    // Client retries bootstrap - should now succeed
+    // We still need to provide credentials since the database requires authentication
+    client_sync
+        .sync_with_peer_for_bootstrap_with_key(
+            &server_addr,
+            &tree_id,
+            &client_key_id,
+            "client_key",
+            Permission::Write(10),
+        )
+        .await
+        .expect("Bootstrap retry should succeed after approval");
+    client_sync.flush().await.ok();
+
+    // Verify client has the database
+    assert!(
+        client_instance.has_database(&tree_id).await,
+        "Client should have database after bootstrap"
+    );
+
+    // Client opens database using their registered key (discovered via find_sigkeys)
+    let sigkeys = eidetica::Database::find_sigkeys(&client_instance, &tree_id, &client_key_id)
+        .await
+        .expect("Should find valid SigKeys");
+    assert!(!sigkeys.is_empty(), "Should find at least one SigKey");
+
+    let (sigkey, _) = &sigkeys[0];
+    let sigkey_str = match sigkey {
+        eidetica::auth::types::SigKey::Direct(name) => name.clone(),
+        _ => panic!("Expected Direct SigKey"),
+    };
+
+    // The sigkey should be "client_key" (the registered key name), not "*"
+    assert_eq!(
+        sigkey_str, "client_key",
+        "Should use registered key name, not global permission"
+    );
+
+    let client_signing_key = client_user
         .get_signing_key(&client_key_id)
-        .expect("Failed to get client signing key")
+        .expect("Should have signing key")
         .clone();
 
     let client_database = eidetica::Database::open(
         client_instance.clone(),
-        &room_id,
-        signing_key,
-        client_key_id.clone(),
+        &tree_id,
+        client_signing_key,
+        sigkey_str,
     )
     .await
-    .expect("Client should be able to load database");
+    .expect("Client should load database");
 
-    // Client should be able to write using global permission
+    // Verify client can read the initial message
     {
-        // The client uses the "*" global permission key
-        // The transaction will automatically include the public key in the signature
-        let op = client_database
-            .new_transaction()
-            .await
-            .expect("Should create transaction with global permission");
-        let store = op
+        let tx = client_database.new_transaction().await.unwrap();
+        let store = tx
             .get_store::<Table<ChatMessage>>("messages")
             .await
-            .expect("Failed to get messages store");
+            .unwrap();
+        let messages = store.search(|_| true).await.unwrap();
 
-        let msg = ChatMessage {
-            author: "anonymous".to_string(),
-            content: "Message with global permission".to_string(),
-            timestamp: 1234567892,
-        };
+        assert_eq!(messages.len(), 1, "Client should see initial message");
+        assert_eq!(messages[0].1.content, "Welcome to the chat room!");
+    }
 
-        store
-            .insert(msg)
+    // Client adds a new message using their registered key
+    {
+        let tx = client_database.new_transaction().await.unwrap();
+        let store = tx
+            .get_store::<Table<ChatMessage>>("messages")
             .await
-            .expect("Should insert with global permission");
-        op.commit()
+            .unwrap();
+        store
+            .insert(ChatMessage {
+                author: "client_user".to_string(),
+                content: "Hello from the client!".to_string(),
+                timestamp: 1234567891,
+            })
+            .await
+            .unwrap();
+        tx.commit()
+            .await
+            .expect("Client should commit with registered key");
+    }
+
+    // Sync back to server
+    client_sync
+        .sync_with_peer(&server_addr, Some(&tree_id))
+        .await
+        .unwrap();
+    client_sync.flush().await.ok();
+
+    // Verify server received client's message
+    {
+        let tx = server_database.new_transaction().await.unwrap();
+        let store = tx
+            .get_store::<Table<ChatMessage>>("messages")
+            .await
+            .unwrap();
+        let messages = store.search(|_| true).await.unwrap();
+
+        assert_eq!(messages.len(), 2, "Server should see both messages");
+        let client_msg = messages.iter().any(|(_, m)| m.author == "client_user");
+        assert!(client_msg, "Server should have client's message");
+    }
+
+    // Cleanup
+    server_sync.stop_server().await.unwrap();
+    drop(server_instance);
+}
+
+/// Test bootstrap with global "*" permission (auto-approval).
+///
+/// Verifies that databases with global wildcard permission allow any client
+/// to sync and write without explicit key registration. The client still signs
+/// entries, but uses the global "*" as the SigKey instead of a registered key name.
+#[tokio::test]
+async fn test_global_key_bootstrap() {
+    // Setup server with global wildcard permission (auto-approval)
+    let (server_instance, _server_user, _server_key_id, server_database, tree_id, server_sync) =
+        setup_sync_enabled_server_with_auto_approve("server_user", "server_key", "Public Room")
+            .await;
+
+    // Start server
+    server_sync
+        .register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
+        .await
+        .unwrap();
+    let server_addr = start_sync_server(&server_sync).await;
+
+    // Setup client
+    let (client_instance, client_user, client_key_id, client_sync) =
+        setup_sync_enabled_client("client_user", "client_key").await;
+    client_sync
+        .register_transport("http", HttpTransport::builder())
+        .await
+        .unwrap();
+
+    // Client syncs without bootstrap credentials (relies on global wildcard permission)
+    client_sync
+        .sync_with_peer(&server_addr, Some(&tree_id))
+        .await
+        .expect("Sync should succeed with global permission");
+    client_sync.flush().await.ok();
+
+    // Client opens database with global "*" permission
+    let sigkeys = eidetica::Database::find_sigkeys(&client_instance, &tree_id, &client_key_id)
+        .await
+        .expect("Should find valid SigKeys");
+
+    let (sigkey, _) = &sigkeys[0];
+    let sigkey_str = match sigkey {
+        eidetica::auth::types::SigKey::Direct(name) => name.clone(),
+        _ => panic!("Expected Direct SigKey"),
+    };
+    assert_eq!(sigkey_str, "*", "Should resolve to global permission");
+
+    let client_signing_key = client_user
+        .get_signing_key(&client_key_id)
+        .expect("Should have signing key")
+        .clone();
+
+    let client_database = eidetica::Database::open(
+        client_instance.clone(),
+        &tree_id,
+        client_signing_key,
+        sigkey_str,
+    )
+    .await
+    .expect("Client should load database");
+
+    // Client writes using global permission
+    {
+        let tx = client_database.new_transaction().await.unwrap();
+        let store = tx
+            .get_store::<Table<ChatMessage>>("messages")
+            .await
+            .unwrap();
+        store
+            .insert(ChatMessage {
+                author: "anonymous".to_string(),
+                content: "Message with global permission".to_string(),
+                timestamp: 1234567892,
+            })
+            .await
+            .unwrap();
+        tx.commit()
             .await
             .expect("Should commit with global permission");
     }
 
-    println!("✅ TEST COMPLETED: Global key bootstrap works!");
+    // Verify entry uses global "*" key
+    let tips = client_instance.backend().get_tips(&tree_id).await.unwrap();
+    let latest_entry = client_instance.backend().get(&tips[0]).await.unwrap();
+    match &latest_entry.sig.key {
+        eidetica::auth::types::SigKey::Direct(name) => {
+            assert_eq!(name, "*", "Entry should use global '*' key");
+        }
+        other => panic!("Expected Direct SigKey, got: {other:?}"),
+    }
+    assert!(
+        latest_entry.sig.pubkey.is_some(),
+        "SigInfo should include pubkey for global permission"
+    );
 
     // Cleanup
-    {
-        let server_sync = server_instance.sync().expect("Server should have sync");
-        server_sync
-            .stop_server()
-            .await
-            .expect("Failed to stop server");
-    }
+    server_sync.stop_server().await.unwrap();
+    drop(server_instance);
+    drop(server_database);
 }
 
-/// Test multiple databases syncing simultaneously
+/// Test multiple databases syncing simultaneously.
 ///
-/// FIXME: This test fails during bootstrap because the sync_with_peer_for_bootstrap
-/// method can't properly register client keys in databases when using the User API.
-/// The sync handler needs the target database's admin key to modify auth settings,
-/// but with User API, key-to-database mapping isn't established during bootstrap.
-/// This requires additional infrastructure to properly map which admin key to use
-/// for each database during the bootstrap approval process.
+/// Verifies that a client can bootstrap and sync multiple databases from a server.
 #[tokio::test]
-#[ignore = "Bootstrap key registration doesn't work with User API key management"]
 async fn test_multiple_databases_sync() {
-    println!("\n🧪 TEST: Starting multiple databases sync test");
-
-    // Setup server with multiple databases
+    // Setup server instance with sync
     let (server_instance, mut server_user, server_key_id) =
-        test_instance_with_user_and_key("server_user", Some(SERVER_KEY_NAME)).await;
-    server_instance
-        .enable_sync()
-        .await
-        .expect("Failed to initialize sync on server");
+        test_instance_with_user_and_key("server_user", Some("server_key")).await;
+    server_instance.enable_sync().await.unwrap();
 
-    // Get server public key once for all databases
-    let server_pubkey = server_user
-        .get_public_key(&server_key_id)
-        .expect("Failed to get server public key");
+    let server_sync = server_instance.sync().unwrap();
 
-    // Create three different databases (chat rooms)
+    // Create three databases
     let mut room_ids = Vec::new();
     for i in 1..=3 {
         let mut settings = Doc::new();
         settings.set("name", format!("Room {i}"));
 
-        // Set up auth configuration with global wildcard permission
-        let mut auth_settings = AuthSettings::new();
-
-        // Include server admin key for initial database creation
-        auth_settings
-            .add_key(
-                &server_key_id,
-                AuthKey::active(&server_pubkey, Permission::Admin(10))
-                    .expect("Failed to create admin key"),
-            )
-            .expect("Failed to add admin auth");
-
-        // Add global wildcard permission for automatic bootstrap approval
-        auth_settings
-            .add_key(
-                "*",
-                AuthKey::active("*", Permission::Write(0)).expect("Failed to create global key"),
-            )
-            .expect("Failed to add global wildcard permission");
-
-        settings.set("auth", auth_settings.as_doc().clone());
-
         let database = server_user
             .create_database(settings, &server_key_id)
             .await
-            .expect("Failed to create database");
-        room_ids.push(database.root_id().clone());
-        println!("🏠 Created room {} with ID: {}", i, database.root_id());
+            .unwrap();
+
+        // Add global wildcard permission for auto-approval
+        set_global_wildcard_permission(&database).await.unwrap();
+
+        let tree_id = database.root_id().clone();
+        enable_sync_for_instance_database(&server_sync, &tree_id)
+            .await
+            .unwrap();
+
+        room_ids.push(tree_id);
     }
 
-    // Enable sync for all databases
-    let server_sync = server_instance.sync().expect("Server should have sync");
-    for room_id in &room_ids {
-        enable_sync_for_instance_database(&server_sync, room_id)
-            .await
-            .expect("Failed to enable sync for database");
-    }
-
-    // Setup sync on server
-    let server_addr = {
-        server_sync
-            .register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
-            .await
-            .expect("Failed to register HTTP transport");
-        server_sync
-            .accept_connections()
-            .await
-            .expect("Failed to start server");
-        server_sync
-            .get_server_address()
-            .await
-            .expect("Failed to get server address")
-    };
+    // Start server
+    server_sync
+        .register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
+        .await
+        .unwrap();
+    let server_addr = start_sync_server(&server_sync).await;
 
     // Setup client
-    let (client_instance, _client_user, client_key_id) =
-        test_instance_with_user_and_key("client_user", Some(CLIENT_KEY_NAME)).await;
-    client_instance
-        .enable_sync()
+    let (client_instance, _client_user, client_key_id, client_sync) =
+        setup_sync_enabled_client("client_user", "client_key").await;
+    client_sync
+        .register_transport("http", HttpTransport::builder())
         .await
-        .expect("Failed to initialize sync on client");
+        .unwrap();
 
     // Bootstrap each database
-    {
-        let client_sync = client_instance.sync().expect("Client should have sync");
-        client_sync
-            .register_transport("http", HttpTransport::builder())
-            .await
-            .expect("Failed to register HTTP transport");
-
-        for (i, room_id) in room_ids.iter().enumerate() {
-            println!("\n🔄 Bootstrapping room {}...", i + 1);
-
-            client_sync
-                .sync_with_peer_for_bootstrap_with_key(
-                    &server_addr,
-                    room_id,
-                    &client_key_id,
-                    CLIENT_KEY_NAME,
-                    eidetica::auth::Permission::Write(10),
-                )
-                .await
-                .unwrap_or_else(|_| panic!("Failed to bootstrap room {}", i + 1));
-
-            // Flush any pending sync work
-            client_sync.flush().await.ok();
-        }
-    } // Drop guard here
-
-    // Now verify all databases were loaded
-    // Use global "*" permission (rooms have wildcard permission)
     for (i, room_id) in room_ids.iter().enumerate() {
+        client_sync
+            .sync_with_peer_for_bootstrap_with_key(
+                &server_addr,
+                room_id,
+                &client_key_id,
+                "client_key",
+                Permission::Write(10),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("Failed to bootstrap room {}: {e}", i + 1));
+        client_sync.flush().await.ok();
+    }
+
+    // Verify all databases were synced
+    for (i, room_id) in room_ids.iter().enumerate() {
+        assert!(
+            client_instance.has_database(room_id).await,
+            "Client should have room {}",
+            i + 1
+        );
+
+        // Open and verify room name
         let (reader_key, _) = eidetica::auth::generate_keypair();
         let database = eidetica::Database::open(
             client_instance.clone(),
@@ -815,29 +404,14 @@ async fn test_multiple_databases_sync() {
             "*".to_string(),
         )
         .await
-        .unwrap_or_else(|_| panic!("Failed to load room {}", i + 1));
+        .unwrap_or_else(|e| panic!("Failed to load room {}: {e}", i + 1));
 
-        // Verify room name
-        let settings = database
-            .get_settings()
-            .await
-            .expect("Failed to get settings");
-        let name = settings
-            .get_string("name")
-            .await
-            .expect("Failed to get room name");
+        let settings = database.get_settings().await.unwrap();
+        let name = settings.get_string("name").await.unwrap();
         assert_eq!(name, format!("Room {}", i + 1));
-        println!("✅ Successfully loaded {name}");
     }
-
-    println!("\n✅ TEST COMPLETED: Multiple databases sync works!");
 
     // Cleanup
-    {
-        let server_sync = server_instance.sync().expect("Server should have sync");
-        server_sync
-            .stop_server()
-            .await
-            .expect("Failed to stop server");
-    }
+    server_sync.stop_server().await.unwrap();
+    drop(server_instance);
 }
