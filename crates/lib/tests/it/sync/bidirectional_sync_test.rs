@@ -1,11 +1,11 @@
-//! Test for bidirectional sync scenario that triggers "no common ancestor" error.
+//! Test for bidirectional sync scenarios.
 //!
-//! This test reproduces the specific scenario:
+//! Verifies that two devices can sync changes back and forth:
 //! 1. Device 1 creates room and adds message A
 //! 2. Device 1 syncs to Device 2 (bootstrap)
 //! 3. Device 2 adds message B
 //! 4. Device 2 syncs back to Device 1
-//! 5. Device 1 tries to add message C -> "no common ancestor found" error
+//! 5. Device 1 adds message C (CRDT merge handles concurrent changes)
 
 use eidetica::{
     Result,
@@ -16,6 +16,7 @@ use eidetica::{
 };
 use serde::{Deserialize, Serialize};
 
+use super::helpers::enable_sync_for_instance_database;
 use crate::helpers::test_instance_with_user_and_key;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,13 +42,17 @@ impl ChatMessage {
 
 const CHAT_APP_KEY: &str = "CHAT_APP_USER";
 
-/// Test the exact scenario that causes "no common ancestor" error.
+/// Test bidirectional sync between two devices.
+///
+/// Verifies the scenario:
+/// 1. Device 1 creates room and adds message A
+/// 2. Device 1 syncs to Device 2 (bootstrap)
+/// 3. Device 2 adds message B
+/// 4. Device 2 syncs back to Device 1
+/// 5. Device 1 adds message C (should succeed with proper CRDT merge)
 #[tokio::test]
-#[ignore = "BUG: Signature verification fails during bidirectional sync"]
 async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
-    println!(
-        "\n🧪 TEST: Bidirectional sync test (original sync bug fixed, now has signature verification issue)"
-    );
+    println!("\n🧪 TEST: Bidirectional sync test");
 
     // === STEP 1: Device 1 creates room and adds message A ===
     println!("📱 STEP 1: Device 1 creates room and adds message A");
@@ -107,6 +112,12 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
 
     let room_id = device1_database.root_id().clone();
 
+    // Enable sync for this database
+    let device1_sync = device1_instance.sync().expect("Device1 should have sync");
+    enable_sync_for_instance_database(&device1_sync, &room_id)
+        .await
+        .expect("Failed to enable sync for database");
+
     // Add message A on device 1
     let message_a = ChatMessage::new(
         "alice".to_string(),
@@ -123,14 +134,16 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
 
     // Start server on device 1
     let device1_server_addr = {
-        let sync = device1_instance.sync().expect("Device1 should have sync");
-        sync.register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
+        device1_sync
+            .register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
             .await
             .expect("Failed to register HTTP transport");
-        sync.accept_connections()
+        device1_sync
+            .accept_connections()
             .await
             .expect("Failed to start server");
-        sync.get_server_address()
+        device1_sync
+            .get_server_address()
             .await
             .expect("Failed to get server address")
     };
@@ -140,7 +153,7 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     // === STEP 2: Device 2 bootstraps and syncs from Device 1 ===
     println!("\n📱 STEP 2: Device 2 bootstraps and syncs from Device 1");
 
-    let (device2_instance, device2_user, device2_key_id) =
+    let (device2_instance, mut device2_user, device2_key_id) =
         test_instance_with_user_and_key("device2_user", Some(CHAT_APP_KEY)).await;
 
     device2_instance
@@ -179,7 +192,15 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
         .ok();
 
     // Verify device 2 has the database and message A
-    // Open database using User API
+    // Track and open database using User API
+    device2_user
+        .track_database(eidetica::user::TrackedDatabase {
+            database_id: room_id.clone(),
+            key_id: device2_key_id.clone(),
+            sync_settings: eidetica::user::SyncSettings::default(),
+        })
+        .await
+        .expect("Failed to track database on device2");
     let device2_database = device2_user
         .open_database(&room_id)
         .await
@@ -377,8 +398,7 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     }
 
     // Cleanup
-    let server_sync = device1_instance.sync().expect("Device1 should have sync");
-    server_sync.stop_server().await.unwrap();
+    device1_sync.stop_server().await.unwrap();
 
     println!("🧹 Test completed successfully");
 
