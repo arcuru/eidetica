@@ -27,11 +27,13 @@ let mut user = instance.login_user("alice", None).await?;
 ### 2. Start a Server
 
 ```rust,ignore
-let sync = instance.sync().unwrap();
-sync.enable_http_transport().await?;
+use eidetica::sync::transports::http::HttpTransport;
 
-// Start a server to accept connections
-sync.start_server_async("127.0.0.1:8080").await?;
+let sync = instance.sync().unwrap();
+
+// Register transport with bind address and start accepting connections
+sync.register_transport("http", HttpTransport::builder().bind("127.0.0.1:8080")).await?;
+sync.accept_connections().await?;
 ```
 
 ### 3. Connect and Sync
@@ -43,6 +45,36 @@ sync.sync_with_peer("127.0.0.1:8080", Some(&tree_id)).await?;
 
 That's it. The system automatically detects whether you need full bootstrap or incremental sync.
 
+## Connection Architecture
+
+The sync system separates **outbound** and **inbound** connection handling:
+
+- **Outbound** (`sync_with_peer()`): Works immediately after `register_transport()`. No server needed.
+- **Inbound** (`accept_connections()`): Must be called to accept incoming connections.
+
+```text
+register_transport()
+    │ - Transport ready for outbound requests
+    ▼
+[OUTBOUND READY]
+    │ - sync_with_peer() works
+    │ - Push hooks work
+    │ - NO incoming connections
+    ▼
+accept_connections()
+    │ - Starts server on registered transports
+    ▼
+[FULL P2P]
+    │ - Outbound works
+    │ - Inbound works
+```
+
+This separation provides:
+
+- **Security by default**: Nodes don't accept incoming connections unless explicitly enabled
+- **Zero-config outbound**: Applications can sync data immediately without server setup
+- **Flexible deployment**: Support client-only, server-only, or full peer-to-peer modes
+
 ## Transport Options
 
 Eidetica supports multiple transports simultaneously, allowing peers to be reachable via different networks.
@@ -52,17 +84,21 @@ Eidetica supports multiple transports simultaneously, allowing peers to be reach
 Simple REST-based sync. Good for development and fixed-IP deployments.
 
 ```rust,ignore
-sync.enable_http_transport().await?;
-sync.start_server_async("127.0.0.1:8080").await?;
+use eidetica::sync::transports::http::HttpTransport;
+
+sync.register_transport("http", HttpTransport::builder().bind("127.0.0.1:8080")).await?;
+sync.accept_connections().await?;
 ```
 
-### Iroh P2P (Recommended for Production)
+### Iroh P2P (Recommended)
 
 QUIC-based with NAT traversal. Works through firewalls.
 
 ```rust,ignore
-sync.enable_iroh_transport().await?;
-sync.start_server_async("ignored").await?;  // Iroh manages addressing
+use eidetica::sync::transports::iroh::IrohTransport;
+
+sync.register_transport("iroh", IrohTransport::builder()).await?;
+sync.accept_connections().await?;
 let my_address = sync.get_server_address_async().await?;  // Share this with peers
 ```
 
@@ -73,17 +109,20 @@ Enable multiple transports for maximum connectivity:
 <!-- Code block ignored: Requires network connectivity for transport setup -->
 
 ```rust,ignore
-// Enable both HTTP (for local network) and Iroh (for P2P)
-sync.enable_http_transport().await?;
-sync.enable_iroh_transport().await?;
+use eidetica::sync::transports::http::HttpTransport;
+use eidetica::sync::transports::iroh::IrohTransport;
 
-// Start servers on all transports (HTTP uses address, Iroh ignores it)
-sync.start_server_async("127.0.0.1:0").await?;
+// Register both HTTP (for local network) and Iroh (for P2P)
+sync.register_transport("http", HttpTransport::builder().bind("127.0.0.1:0")).await?;
+sync.register_transport("iroh", IrohTransport::builder()).await?;
+
+// Start servers on all transports
+sync.accept_connections().await?;
 
 // Get all server addresses
 let addresses = sync.get_all_server_addresses_async().await?;
-for (transport_type, addr) in addresses {
-    println!("{}: {}", transport_type, addr);
+for (transport_name, addr) in addresses {
+    println!("{}: {}", transport_name, addr);
 }
 ```
 
@@ -193,11 +232,12 @@ Once configured, the sync system handles:
 
 ## Troubleshooting
 
-| Issue                  | Solution                                                    |
-| ---------------------- | ----------------------------------------------------------- |
-| "No transport enabled" | Call `enable_http_transport()` or `enable_iroh_transport()` |
-| Sync not happening     | Check peer status, network connectivity                     |
-| Auth failures          | Verify keys are configured, protocol versions match         |
+| Issue                     | Solution                                                        |
+| ------------------------- | --------------------------------------------------------------- |
+| "No transport enabled"    | Call `register_transport()` with HTTP or Iroh transport builder |
+| Can't receive connections | Call `accept_connections()` to start servers                    |
+| Sync not happening        | Check peer status, network connectivity                         |
+| Auth failures             | Verify keys are configured, protocol versions match             |
 
 ## Example
 

@@ -10,6 +10,7 @@ A concise reference for Eidetica's synchronization API with common usage pattern
 
 ```rust,ignore
 use eidetica::{Instance, backend::database::Sqlite};
+use eidetica::sync::transports::http::HttpTransport;
 
 // Create database with sync enabled
 let backend = Box::new(Sqlite::in_memory().await?);
@@ -20,10 +21,10 @@ instance.enable_sync().await?;
 instance.create_user("alice", None).await?;
 let mut user = instance.login_user("alice", None).await?;
 
-// Enable transport
+// Register transport with bind address
 let sync = instance.sync().unwrap();
-sync.enable_http_transport().await?;
-sync.start_server_async("127.0.0.1:8080").await?;
+sync.register_transport("http", HttpTransport::builder().bind("127.0.0.1:8080")).await?;
+sync.accept_connections().await?;
 ```
 
 ### Understanding BackgroundSync
@@ -32,6 +33,7 @@ sync.start_server_async("127.0.0.1:8080").await?;
 # extern crate eidetica;
 # extern crate tokio;
 # use eidetica::{Instance, backend::database::Sqlite};
+# use eidetica::sync::transports::http::HttpTransport;
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
@@ -40,9 +42,9 @@ sync.start_server_async("127.0.0.1:8080").await?;
 # let db = Instance::open(backend).await?;
 # db.enable_sync().await?;
 #
-// The BackgroundSync engine starts automatically with transport
+// The BackgroundSync engine starts automatically with transport registration
 let sync = db.sync().unwrap();
-sync.enable_http_transport().await?; // Starts background thread
+sync.register_transport("http", HttpTransport::builder().bind("127.0.0.1:0")).await?;
 
 // Background thread configuration and behavior:
 // - Command processing (immediate response to commits)
@@ -348,9 +350,12 @@ op.commit().await?;
 <!-- Code block ignored: Attempts to bind to network port during testing -->
 
 ```rust,ignore
-// Start/stop sync server
+use eidetica::sync::transports::http::HttpTransport;
+
+// Register transport and start accepting connections
 let sync = db.sync()?;
-sync.start_server_async("127.0.0.1:8080").await?;
+sync.register_transport("http", HttpTransport::builder().bind("127.0.0.1:8080")).await?;
+sync.accept_connections().await?;
 
 // Check server status
 if sync.is_server_running() {
@@ -423,6 +428,7 @@ for entry in history {
 
 ```rust,ignore
 use eidetica::sync::SyncError;
+use eidetica::sync::transports::http::HttpTransport;
 
 // Connection errors
 match sync.connect_to_peer(&addr).await {
@@ -434,8 +440,8 @@ match sync.connect_to_peer(&addr).await {
                 // Retry with different address or check credentials
             },
             SyncError::NoTransportEnabled => {
-                eprintln!("Enable transport first");
-                sync.enable_http_transport().await?;
+                eprintln!("Register transport first");
+                sync.register_transport("http", HttpTransport::builder().bind("127.0.0.1:0")).await?;
             },
             SyncError::PeerNotFound(key) => {
                 eprintln!("Peer {} not registered", key);
@@ -477,10 +483,12 @@ for peer in peers {
 <!-- Code block ignored: Attempts to bind to network port during testing -->
 
 ```rust,ignore
+use eidetica::sync::transports::http::HttpTransport;
+
 // Fast, responsive sync for development
-// Enable HTTP transport for easy debugging
-db.sync()?.enable_http_transport().await?;
-db.sync()?.start_server_async("127.0.0.1:8080").await?;
+// Register HTTP transport for easy debugging
+db.sync()?.register_transport("http", HttpTransport::builder().bind("127.0.0.1:8080")).await?;
+db.sync()?.accept_connections().await?;
 
 // Connect to local test peer
 let addr = Address::http("127.0.0.1:8081")?;
@@ -492,25 +500,26 @@ let peer = db.sync()?.connect_to_peer(&addr).await?;
 <!-- Code block ignored: Complex Iroh setup requiring external relay servers -->
 
 ```rust,ignore
-// Use Iroh for production deployments (defaults to n0's relay servers)
-db.sync()?.enable_iroh_transport().await?;
-
-// Or configure for specific environments:
 use iroh::RelayMode;
 use eidetica::sync::transports::iroh::IrohTransport;
 
-// Custom relay server (e.g., enterprise deployment)
+// --- OPTION 1: Default relays (recommended for most deployments) ---
+db.sync()?.register_transport("iroh", IrohTransport::builder()).await?;
+db.sync()?.accept_connections().await?;
+
+// --- OPTION 2: Custom relay server (enterprise deployment) ---
+// Use this INSTEAD of Option 1 if you need a private relay
 let relay_url: iroh::RelayUrl = "https://relay.example.com".parse()?;
 let relay_node = iroh::RelayNode {
     url: relay_url,
     quic: Some(Default::default()),
 };
-let transport = IrohTransport::builder()
+db.sync()?.register_transport("iroh", IrohTransport::builder()
     .relay_mode(RelayMode::Custom(iroh::RelayMap::from_iter([relay_node])))
-    .build()?;
-db.sync()?.enable_iroh_transport_with_config(transport).await?;
+).await?;
+db.sync()?.accept_connections().await?;
 
-// Connect to peers
+// --- After either option, connect to peers ---
 let addr = Address::iroh(peer_node_id)?;
 let peer = db.sync()?.connect_to_peer(&addr).await?;
 
@@ -525,16 +534,18 @@ let peer = db.sync()?.connect_to_peer(&addr).await?;
 <!-- Code block ignored: Complex multi-instance setup requiring multiple network ports -->
 
 ```rust,ignore
+use eidetica::sync::transports::http::HttpTransport;
+
 // Run multiple sync-enabled databases
 let db1 = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
 db1.enable_sync().await?;
-db1.sync()?.enable_http_transport().await?;
-db1.sync()?.start_server_async("127.0.0.1:8080").await?;
+db1.sync()?.register_transport("http", HttpTransport::builder().bind("127.0.0.1:8080")).await?;
+db1.sync()?.accept_connections().await?;
 
 let db2 = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
 db2.enable_sync().await?;
-db2.sync()?.enable_http_transport().await?;
-db2.sync()?.start_server_async("127.0.0.1:8081").await?;
+db2.sync()?.register_transport("http", HttpTransport::builder().bind("127.0.0.1:8081")).await?;
+db2.sync()?.accept_connections().await?;
 
 // Connect them together
 let addr = Address::http("127.0.0.1:8080")?;
@@ -553,24 +564,20 @@ async fn test_iroh_sync_local() -> Result<()> {
     use iroh::RelayMode;
     use eidetica::sync::transports::iroh::IrohTransport;
 
-    // Configure Iroh for local testing (no relay servers)
-    let transport1 = IrohTransport::builder()
-        .relay_mode(RelayMode::Disabled)
-        .build()?;
-    let transport2 = IrohTransport::builder()
-        .relay_mode(RelayMode::Disabled)
-        .build()?;
-
-    // Setup databases with local Iroh transport
+    // Setup databases with local Iroh transport (no relay servers)
     let db1 = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
     db1.enable_sync().await?;
-    db1.sync()?.enable_iroh_transport_with_config(transport1).await?;
-    db1.sync()?.start_server_async("ignored").await?; // Iroh manages its own addresses
+    db1.sync()?.register_transport("iroh", IrohTransport::builder()
+        .relay_mode(RelayMode::Disabled)
+    ).await?;
+    db1.sync()?.accept_connections().await?;
 
     let db2 = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
     db2.enable_sync().await?;
-    db2.sync()?.enable_iroh_transport_with_config(transport2).await?;
-    db2.sync()?.start_server_async("ignored").await?;
+    db2.sync()?.register_transport("iroh", IrohTransport::builder()
+        .relay_mode(RelayMode::Disabled)
+    ).await?;
+    db2.sync()?.accept_connections().await?;
 
     // Get the serialized NodeAddr (includes direct addresses)
     let addr1 = db1.sync()?.get_server_address_async().await?;
@@ -590,6 +597,8 @@ async fn test_iroh_sync_local() -> Result<()> {
 <!-- Code block ignored: Complex test setup requiring multiple instances and network ports -->
 
 ```rust,ignore
+use eidetica::sync::transports::http::HttpTransport;
+
 #[tokio::test]
 async fn test_sync_between_peers() -> Result<()> {
     // Setup first peer
@@ -597,8 +606,8 @@ async fn test_sync_between_peers() -> Result<()> {
     instance1.enable_sync().await?;
     instance1.create_user("peer1", None).await?;
     let mut user1 = instance1.login_user("peer1", None).await?;
-    instance1.sync()?.enable_http_transport().await?;
-    instance1.sync()?.start_server_async("127.0.0.1:0").await?; // Random port
+    instance1.sync()?.register_transport("http", HttpTransport::builder().bind("127.0.0.1:0")).await?;
+    instance1.sync()?.accept_connections().await?;
 
     let addr1 = instance1.sync()?.get_server_address_async().await?;
 
@@ -607,7 +616,7 @@ async fn test_sync_between_peers() -> Result<()> {
     instance2.enable_sync().await?;
     instance2.create_user("peer2", None).await?;
     let mut user2 = instance2.login_user("peer2", None).await?;
-    instance2.sync()?.enable_http_transport().await?;
+    instance2.sync()?.register_transport("http", HttpTransport::builder().bind("127.0.0.1:0")).await?;
 
     // Connect peers
     let addr = Address::http(&addr1)?;

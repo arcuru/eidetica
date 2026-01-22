@@ -609,6 +609,8 @@ for (_, msg) in all_messages {
 <!-- Code block ignored: Requires network connectivity and running server -->
 
 ```rust,ignore
+use eidetica::sync::transports::http::HttpTransport;
+
 // Join an existing room using bootstrap protocol
 let room_address = "abc123def456@127.0.0.1:8080"; // From room creator
 
@@ -617,9 +619,9 @@ let parts: Vec<&str> = room_address.split('@').collect();
 let room_id = eidetica::entry::ID::from(parts[0]);
 let server_addr = parts[1];
 
-// Enable sync transport
+// Register sync transport
 if let Some(sync) = instance.sync() {
-    sync.enable_http_transport()?;
+    sync.register_transport("http", HttpTransport::builder().bind("127.0.0.1:0")).await?;
 
     // Request access to the room (bootstrap protocol)
     let key_id = user.get_default_key()?;

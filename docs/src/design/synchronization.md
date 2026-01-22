@@ -134,7 +134,44 @@ database.on_local_write(move |entry, db, _instance| {
 - Simple cloning pattern for use in closures
 - Easy testing and debugging
 
-### 4. Modular Transport Layer with TransportManager
+### 4. Connection Architecture: Outbound vs Inbound Separation
+
+**Decision:** Separate outbound (client) and inbound (server) connection handling with explicit opt-in for incoming connections.
+
+**Rationale:**
+
+- **Security by default**: Nodes don't accept incoming connections unless explicitly enabled
+- **Zero-config outbound**: Applications can sync data immediately without server setup
+- **Explicit opt-in**: Server functionality requires deliberate action each restart
+- **Flexible deployment**: Support client-only, server-only, or full peer-to-peer modes
+
+**State Model:**
+
+```text
+register_transport()
+    │ - Transport ready for outbound requests
+    ▼
+[OUTBOUND READY]
+    │ - sync_with_peer() works
+    │ - Push hooks work
+    │ - NO incoming connections accepted
+    ▼
+accept_connections()
+    │ - Starts server on registered transports
+    ▼
+[FULL P2P]
+    │ - Outbound works
+    │ - Inbound works
+```
+
+**Benefits:**
+
+- ✅ Secure by default (no listening without explicit call)
+- ✅ Zero-config for client-only usage
+- ✅ Clear separation of concerns
+- ✅ Predictable behavior across restarts
+
+### 5. Modular Transport Layer with TransportManager
 
 **Decision:** Abstract transport layer with handler-based request processing, transport metadata, and multi-transport support via TransportManager
 
@@ -149,7 +186,8 @@ pub trait SyncTransport: Send + Sync {
     fn can_handle_address(&self, address: &Address) -> bool;
 
     /// Start server with handler for processing sync requests
-    async fn start_server(&mut self, addr: &str, handler: Arc<dyn SyncHandler>) -> Result<()>;
+    /// The transport uses its pre-configured bind address (set during construction)
+    async fn start_server(&mut self, handler: Arc<dyn SyncHandler>) -> Result<()>;
 
     /// Send sync request and get response
     async fn send_request(&self, address: &Address, request: &SyncRequest) -> Result<SyncResponse>;
@@ -169,19 +207,19 @@ pub struct RequestContext {
 }
 ```
 
-**TransportManager** manages multiple transports and routes requests:
+**TransportManager** manages multiple named transports and routes requests:
 
 ```rust,ignore
 pub struct TransportManager {
-    transports: Vec<Box<dyn SyncTransport>>,
+    transports: HashMap<String, Box<dyn SyncTransport>>,
 }
 
 impl TransportManager {
     /// Route request to appropriate transport based on address
     pub async fn send_request(&self, address: &Address, request: &SyncRequest) -> Result<SyncResponse>;
 
-    /// Start servers on all or specific transports
-    pub async fn start_all_servers(&mut self, addr: &str, handler: Arc<dyn SyncHandler>) -> Result<()>;
+    /// Start servers on all registered transports
+    pub async fn start_all_servers(&mut self, handler: Arc<dyn SyncHandler>) -> Result<()>;
 }
 ```
 
@@ -261,7 +299,7 @@ pub struct IrohTransport {
 - ❌ More complex setup and debugging
 - ❌ Additional dependency
 
-### 5. Automatic Peer and Relationship Management
+### 6. Automatic Peer and Relationship Management
 
 **Decision:** Automatically register peers during handshake and track tree/peer relationships when peers request trees
 
@@ -269,13 +307,13 @@ pub struct IrohTransport {
 
 **Relationship Tracking:** Each sync request includes the peer's device public key, enabling automatic tracking of tree/peer relationships. This enables bidirectional `sync_on_commit` without manual setup.
 
-### 6. Declarative Sync API
+### 7. Declarative Sync API
 
 **Decision:** Provide `register_sync_peer()` for declaring sync intent with `SyncHandle` for status tracking
 
 Applications register sync relationships once; the background engine handles synchronization automatically. Status tracking via polling (async events planned for future).
 
-### 7. Persistent State Management
+### 8. Persistent State Management
 
 **Decision:** All peer and relationship state stored persistently in sync database
 

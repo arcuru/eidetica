@@ -54,7 +54,7 @@ The `TransportManager` enables simultaneous use of multiple transports:
 - **Address-based routing**: Each transport declares which addresses it can handle via `can_handle_address()`
 - **First-match routing**: Requests are routed to the first transport that can handle the address
 - **Independent servers**: Each transport runs its own server on different ports/protocols
-- **Unified API**: `start_server_async()` starts all transports, `get_all_server_addresses_async()` returns all addresses
+- **Unified API**: `accept_connections()` starts all registered transports, `get_all_server_addresses_async()` returns all addresses
 
 ## Current Limitations
 
