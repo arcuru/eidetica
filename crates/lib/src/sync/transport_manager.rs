@@ -175,28 +175,22 @@ impl TransportManager {
 
     /// Start servers on all transports.
     ///
-    /// Each transport is started with the given handler. Transports that fail
-    /// to start are logged and skipped. Successfully started transports continue
-    /// running even if others fail.
+    /// Each transport is started with the given handler using its pre-configured
+    /// bind address. Transports that fail to start are logged and skipped.
+    /// Successfully started transports continue running even if others fail.
     ///
     /// Returns an error only if ALL transports fail to start.
     ///
     /// # Arguments
-    /// * `default_addr` - Default address to use for transports that don't have their own configured.
-    ///   Pass an empty string to require each transport to have its bind address pre-configured.
     /// * `handler` - The sync handler to use for all transports.
-    pub async fn start_all_servers(
-        &mut self,
-        default_addr: &str,
-        handler: Arc<dyn SyncHandler>,
-    ) -> Result<()> {
+    pub async fn start_all_servers(&mut self, handler: Arc<dyn SyncHandler>) -> Result<()> {
         let names: Vec<String> = self.transports.keys().cloned().collect();
         let mut errors: Vec<String> = Vec::new();
         let mut started = 0;
 
         for name in &names {
             if let Some(transport) = self.transports.get_mut(name) {
-                if let Err(e) = transport.start_server(default_addr, handler.clone()).await {
+                if let Err(e) = transport.start_server(handler.clone()).await {
                     tracing::warn!(transport = %name, error = %e, "Failed to start transport server");
                     errors.push(format!("{}: {}", name, e));
                 } else {
@@ -213,19 +207,16 @@ impl TransportManager {
     }
 
     /// Start a server on a specific named transport.
-    pub async fn start_server(
-        &mut self,
-        name: &str,
-        addr: &str,
-        handler: Arc<dyn SyncHandler>,
-    ) -> Result<()> {
+    ///
+    /// The transport uses its pre-configured bind address.
+    pub async fn start_server(&mut self, name: &str, handler: Arc<dyn SyncHandler>) -> Result<()> {
         let transport = self
             .get_mut(name)
             .ok_or_else(|| SyncError::TransportNotFound {
                 name: name.to_string(),
             })?;
 
-        transport.start_server(addr, handler).await
+        transport.start_server(handler).await
     }
 
     /// Stop servers on all transports.

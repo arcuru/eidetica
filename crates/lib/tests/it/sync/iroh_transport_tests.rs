@@ -13,7 +13,7 @@ async fn test_iroh_transport_server_lifecycle() {
 
     // Start server (Iroh ignores the address parameter and uses its own addressing)
     let (_instance, handler) = super::helpers::setup_test_handler().await;
-    transport.start_server("ignored", handler).await.unwrap();
+    transport.start_server(handler).await.unwrap();
     assert!(transport.is_server_running());
 
     // Stop server
@@ -27,11 +27,11 @@ async fn test_iroh_transport_double_start_error() {
 
     // Start server
     let (_instance, handler) = super::helpers::setup_test_handler().await;
-    transport.start_server("ignored", handler).await.unwrap();
+    transport.start_server(handler).await.unwrap();
 
     // Attempting to start again should fail
     let (_instance2, handler2) = super::helpers::setup_test_handler().await;
-    let result = transport.start_server("ignored", handler2).await;
+    let result = transport.start_server(handler2).await;
     assert!(result.is_err());
 
     // Clean up
@@ -57,7 +57,7 @@ async fn test_iroh_transport_get_server_address() {
 
     // Start server
     let (_instance, handler) = super::helpers::setup_test_handler().await;
-    transport.start_server("ignored", handler).await.unwrap();
+    transport.start_server(handler).await.unwrap();
 
     // Should return the node ID
     let addr = transport.get_server_address().unwrap();
@@ -106,10 +106,7 @@ async fn test_iroh_transport_integration_lifecycle() {
 
     // Start server
     let (_instance, handler) = super::helpers::setup_test_handler().await;
-    server_transport
-        .start_server("ignored", handler)
-        .await
-        .unwrap();
+    server_transport.start_server(handler).await.unwrap();
     assert!(server_transport.is_server_running());
 
     // Get server address
@@ -118,7 +115,7 @@ async fn test_iroh_transport_integration_lifecycle() {
 
     // Try to start again (should fail)
     let (_instance2, handler2) = super::helpers::setup_test_handler().await;
-    let result = server_transport.start_server("ignored", handler2).await;
+    let result = server_transport.start_server(handler2).await;
     assert!(result.is_err());
 
     // Stop server
@@ -139,8 +136,8 @@ async fn test_iroh_transport_p2p_addressing() {
     // Start both transports
     let (_instance1, handler1) = super::helpers::setup_test_handler().await;
     let (_instance2, handler2) = super::helpers::setup_test_handler().await;
-    transport1.start_server("ignored", handler1).await.unwrap();
-    transport2.start_server("ignored", handler2).await.unwrap();
+    transport1.start_server(handler1).await.unwrap();
+    transport2.start_server(handler2).await.unwrap();
 
     // Get their addresses (node IDs)
     let addr1 = transport1.get_server_address().unwrap();

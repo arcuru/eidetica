@@ -6,17 +6,17 @@ use eidetica::sync::{
 
 #[tokio::test]
 async fn test_http_transport_server_lifecycle() {
-    let mut transport = HttpTransport::new().unwrap();
+    let mut transport = HttpTransport::builder()
+        .bind("127.0.0.1:0")
+        .build_sync()
+        .unwrap();
 
     // Server should not be running initially
     assert!(!transport.is_server_running());
 
     // Start server
     let (_instance, handler) = super::helpers::setup_test_handler().await;
-    transport
-        .start_server("127.0.0.1:0", handler)
-        .await
-        .unwrap();
+    transport.start_server(handler).await.unwrap();
     assert!(transport.is_server_running());
 
     // Stop server
@@ -26,18 +26,18 @@ async fn test_http_transport_server_lifecycle() {
 
 #[tokio::test]
 async fn test_http_transport_double_start_error() {
-    let mut transport = HttpTransport::new().unwrap();
+    let mut transport = HttpTransport::builder()
+        .bind("127.0.0.1:0")
+        .build_sync()
+        .unwrap();
 
     // Start server
     let (_instance, handler) = super::helpers::setup_test_handler().await;
-    transport
-        .start_server("127.0.0.1:0", handler)
-        .await
-        .unwrap();
+    transport.start_server(handler).await.unwrap();
 
     // Attempting to start again should fail
     let (_instance2, handler) = super::helpers::setup_test_handler().await;
-    let result = transport.start_server("127.0.0.1:0", handler).await;
+    let result = transport.start_server(handler).await;
     assert!(result.is_err());
 
     // Clean up
@@ -46,7 +46,10 @@ async fn test_http_transport_double_start_error() {
 
 #[tokio::test]
 async fn test_http_transport_stop_without_start() {
-    let mut transport = HttpTransport::new().unwrap();
+    let mut transport = HttpTransport::builder()
+        .bind("127.0.0.1:0")
+        .build_sync()
+        .unwrap();
 
     // Attempting to stop when not running should fail
     let result = transport.stop_server().await;
@@ -57,15 +60,15 @@ async fn test_http_transport_stop_without_start() {
 async fn test_http_transport_client_server_communication() {
     use eidetica::Entry;
 
-    let mut server_transport = HttpTransport::new().unwrap();
+    let mut server_transport = HttpTransport::builder()
+        .bind("127.0.0.1:0")
+        .build_sync()
+        .unwrap();
     let client_transport = HttpTransport::new().unwrap();
 
     // Start server on port 0 for dynamic assignment
     let (_instance, handler) = super::helpers::setup_test_handler().await;
-    server_transport
-        .start_server("127.0.0.1:0", handler)
-        .await
-        .unwrap();
+    server_transport.start_server(handler).await.unwrap();
 
     // Get the actual bound address
     let addr = server_transport.get_server_address().unwrap();
@@ -137,7 +140,10 @@ async fn test_http_transport_connection_refused() {
 
 #[tokio::test]
 async fn test_http_transport_get_server_address() {
-    let mut transport = HttpTransport::new().unwrap();
+    let mut transport = HttpTransport::builder()
+        .bind("127.0.0.1:0")
+        .build_sync()
+        .unwrap();
 
     // Should return error when no server is running
     let result = transport.get_server_address();
@@ -145,10 +151,7 @@ async fn test_http_transport_get_server_address() {
 
     // Start server on port 0
     let (_instance, handler) = super::helpers::setup_test_handler().await;
-    transport
-        .start_server("127.0.0.1:0", handler)
-        .await
-        .unwrap();
+    transport.start_server(handler).await.unwrap();
 
     // Should return the actual bound address
     let addr = transport.get_server_address().unwrap();

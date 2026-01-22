@@ -531,11 +531,11 @@ async fn test_http_transport_request_context() {
     let handler = std::sync::Arc::new(SyncHandlerImpl::new(instance, sync_tree_id));
 
     // Start HTTP server
-    let mut transport = HttpTransport::new().unwrap();
-    transport
-        .start_server("127.0.0.1:0", handler.clone())
-        .await
+    let mut transport = HttpTransport::builder()
+        .bind("127.0.0.1:0")
+        .build_sync()
         .unwrap();
+    transport.start_server(handler.clone()).await.unwrap();
 
     let server_addr = transport.get_server_address().unwrap();
 

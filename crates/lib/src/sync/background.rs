@@ -48,18 +48,14 @@ pub enum SyncCommand {
     // Server management commands
     /// Start the sync server on specified or all transports
     StartServer {
-        // FIXME: Rename to 'name'
-        /// Transport type to start, or None for all transports
-        transport_type: Option<String>,
-        // FIXME: Remove when deprecated start_server methods are removed.
-        // New APIs pass empty string; transports use pre-configured bind addresses.
-        addr: String,
+        /// Transport name to start, or None for all transports
+        name: Option<String>,
         response: oneshot::Sender<Result<()>>,
     },
     /// Stop the sync server on specified or all transports
     StopServer {
-        /// Transport type to stop, or None for all transports
-        transport_type: Option<String>,
+        /// Transport name to stop, or None for all transports
+        name: Option<String>,
         response: oneshot::Sender<Result<()>>,
     },
     /// Get the server's listening address for a specific transport
@@ -117,19 +113,12 @@ impl std::fmt::Debug for SyncCommand {
                 .field("name", name)
                 .field("transport_type", &transport.transport_type())
                 .finish(),
-            Self::StartServer {
-                transport_type,
-                addr,
-                ..
-            } => f
-                .debug_struct("StartServer")
-                .field("transport_type", transport_type)
-                .field("addr", addr)
-                .finish(),
-            Self::StopServer { transport_type, .. } => f
-                .debug_struct("StopServer")
-                .field("transport_type", transport_type)
-                .finish(),
+            Self::StartServer { name, .. } => {
+                f.debug_struct("StartServer").field("name", name).finish()
+            }
+            Self::StopServer { name, .. } => {
+                f.debug_struct("StopServer").field("name", name).finish()
+            }
             Self::GetServerAddress { name, .. } => f
                 .debug_struct("GetServerAddress")
                 .field("name", name)
@@ -384,20 +373,13 @@ impl BackgroundSync {
                 let _ = response.send(Ok(()));
             }
 
-            SyncCommand::StartServer {
-                transport_type,
-                addr,
-                response,
-            } => {
-                let result = self.start_server(transport_type.as_deref(), &addr).await;
+            SyncCommand::StartServer { name, response } => {
+                let result = self.start_server(name.as_deref()).await;
                 let _ = response.send(result);
             }
 
-            SyncCommand::StopServer {
-                transport_type,
-                response,
-            } => {
-                let result = self.stop_server(transport_type.as_deref()).await;
+            SyncCommand::StopServer { name, response } => {
+                let result = self.stop_server(name.as_deref()).await;
                 let _ = response.send(result);
             }
 
@@ -886,27 +868,22 @@ impl BackgroundSync {
     }
 
     /// Start the sync server on specified or all transports
-    async fn start_server(&mut self, transport_type: Option<&str>, addr: &str) -> Result<()> {
+    async fn start_server(&mut self, name: Option<&str>) -> Result<()> {
         // Create a sync handler with instance access and sync tree ID
         let handler = Arc::new(SyncHandlerImpl::new(
             self.instance()?,
             self.sync_tree_id.clone(),
         ));
 
-        match transport_type {
-            Some(tt) => {
+        match name {
+            Some(name) => {
                 // Start server on specific transport
-                self.transport_manager
-                    .start_server(tt, addr, handler)
-                    .await?;
-                tracing::info!("Sync server started on {addr} for transport {tt}");
+                self.transport_manager.start_server(name, handler).await?;
+                tracing::info!("Sync server started for transport {name}");
             }
             None => {
                 // Start servers on all transports
-                // Pass addr as default for transports without pre-configured bind address
-                self.transport_manager
-                    .start_all_servers(addr, handler)
-                    .await?;
+                self.transport_manager.start_all_servers(handler).await?;
                 tracing::info!("Sync servers started for all transports");
             }
         }
@@ -915,11 +892,11 @@ impl BackgroundSync {
     }
 
     /// Stop the sync server on specified or all transports
-    async fn stop_server(&mut self, transport_type: Option<&str>) -> Result<()> {
-        match transport_type {
-            Some(tt) => {
-                self.transport_manager.stop_server(tt).await?;
-                tracing::info!("Sync server stopped for transport {tt}");
+    async fn stop_server(&mut self, name: Option<&str>) -> Result<()> {
+        match name {
+            Some(name) => {
+                self.transport_manager.stop_server(name).await?;
+                tracing::info!("Sync server stopped for transport {name}");
             }
             None => {
                 self.transport_manager.stop_all_servers().await?;

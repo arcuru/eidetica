@@ -7,7 +7,10 @@ use eidetica::sync::{
 /// Test that both HTTP and Iroh transports follow the same interface
 #[tokio::test]
 async fn test_transport_interface_consistency() {
-    let mut http_transport = HttpTransport::new().unwrap();
+    let mut http_transport = HttpTransport::builder()
+        .bind("127.0.0.1:0")
+        .build_sync()
+        .unwrap();
     let mut iroh_transport = IrohTransport::new().unwrap();
 
     // Both should not be running initially
@@ -24,15 +27,9 @@ async fn test_transport_interface_consistency() {
 
     // Start both servers
     let (_instance, handler) = super::helpers::setup_test_handler().await;
-    http_transport
-        .start_server("127.0.0.1:0", handler)
-        .await
-        .unwrap();
+    http_transport.start_server(handler).await.unwrap();
     let (_instance, handler) = super::helpers::setup_test_handler().await;
-    iroh_transport
-        .start_server("ignored", handler)
-        .await
-        .unwrap();
+    iroh_transport.start_server(handler).await.unwrap();
 
     // Both should now be running
     assert!(http_transport.is_server_running());
@@ -56,18 +53,8 @@ async fn test_transport_interface_consistency() {
     // Both should fail to start again
     let (_instance2, handler2) = super::helpers::setup_test_handler().await;
     let (_instance3, handler3) = super::helpers::setup_test_handler().await;
-    assert!(
-        http_transport
-            .start_server("127.0.0.1:0", handler2)
-            .await
-            .is_err()
-    );
-    assert!(
-        iroh_transport
-            .start_server("ignored", handler3)
-            .await
-            .is_err()
-    );
+    assert!(http_transport.start_server(handler2).await.is_err());
+    assert!(iroh_transport.start_server(handler3).await.is_err());
 
     // Clean up both
     http_transport.stop_server().await.unwrap();
@@ -109,8 +96,14 @@ async fn test_transport_error_handling_consistency() {
 #[tokio::test]
 async fn test_transport_isolation() {
     // Create multiple instances of each transport type
-    let mut http1 = HttpTransport::new().unwrap();
-    let mut http2 = HttpTransport::new().unwrap();
+    let mut http1 = HttpTransport::builder()
+        .bind("127.0.0.1:0")
+        .build_sync()
+        .unwrap();
+    let mut http2 = HttpTransport::builder()
+        .bind("127.0.0.1:0")
+        .build_sync()
+        .unwrap();
     let mut iroh1 = IrohTransport::new().unwrap();
     let mut iroh2 = IrohTransport::new().unwrap();
 
@@ -119,10 +112,10 @@ async fn test_transport_isolation() {
     let (_instance2, handler2) = super::helpers::setup_test_handler().await;
     let (_instance3, handler3) = super::helpers::setup_test_handler().await;
     let (_instance4, handler4) = super::helpers::setup_test_handler().await;
-    http1.start_server("127.0.0.1:0", handler1).await.unwrap();
-    http2.start_server("127.0.0.1:0", handler2).await.unwrap();
-    iroh1.start_server("ignored", handler3).await.unwrap();
-    iroh2.start_server("ignored", handler4).await.unwrap();
+    http1.start_server(handler1).await.unwrap();
+    http2.start_server(handler2).await.unwrap();
+    iroh1.start_server(handler3).await.unwrap();
+    iroh2.start_server(handler4).await.unwrap();
 
     // All should have different addresses
     let addr1 = http1.get_server_address().unwrap();
@@ -154,17 +147,21 @@ async fn test_transport_isolation() {
 #[tokio::test]
 async fn test_transport_polymorphism() {
     let mut transports: Vec<Box<dyn SyncTransport + Send>> = vec![
-        Box::new(HttpTransport::new().unwrap()),
+        Box::new(
+            HttpTransport::builder()
+                .bind("127.0.0.1:0")
+                .build_sync()
+                .unwrap(),
+        ),
         Box::new(IrohTransport::new().unwrap()),
     ];
 
     // Test that all transports implement the same interface
-    for (i, transport) in transports.iter_mut().enumerate() {
+    for transport in transports.iter_mut() {
         assert!(!transport.is_server_running());
 
-        let addr = if i == 0 { "127.0.0.1:0" } else { "ignored" };
         let (_instance, handler) = super::helpers::setup_test_handler().await;
-        transport.start_server(addr, handler).await.unwrap();
+        transport.start_server(handler).await.unwrap();
 
         assert!(transport.is_server_running());
 
@@ -180,14 +177,17 @@ async fn test_transport_polymorphism() {
 #[tokio::test]
 async fn test_concurrent_transport_operation() {
     // Test that HTTP and Iroh can operate simultaneously
-    let mut http_transport = HttpTransport::new().unwrap();
+    let mut http_transport = HttpTransport::builder()
+        .bind("127.0.0.1:0")
+        .build_sync()
+        .unwrap();
     let mut iroh_transport = IrohTransport::new().unwrap();
 
     // Start both concurrently
     let (_instance1, handler1) = super::helpers::setup_test_handler().await;
     let (_instance2, handler2) = super::helpers::setup_test_handler().await;
-    let http_future = http_transport.start_server("127.0.0.1:0", handler1);
-    let iroh_future = iroh_transport.start_server("ignored", handler2);
+    let http_future = http_transport.start_server(handler1);
+    let iroh_future = iroh_transport.start_server(handler2);
 
     let (http_result, iroh_result) = tokio::join!(http_future, iroh_future);
 

@@ -4,20 +4,17 @@ use eidetica::sync::transports::{SyncTransport, http::HttpTransport, iroh::IrohT
 #[tokio::test]
 async fn test_version_alignment() {
     // Both transports should be using v0 versioning
-    let mut http_transport = HttpTransport::new().unwrap();
+    let mut http_transport = HttpTransport::builder()
+        .bind("127.0.0.1:0")
+        .build_sync()
+        .unwrap();
     let mut iroh_transport = IrohTransport::new().unwrap();
 
     // Start both servers
     let (_instance1, handler1) = super::helpers::setup_test_handler().await;
     let (_instance2, handler2) = super::helpers::setup_test_handler().await;
-    http_transport
-        .start_server("127.0.0.1:0", handler1)
-        .await
-        .unwrap();
-    iroh_transport
-        .start_server("ignored", handler2)
-        .await
-        .unwrap();
+    http_transport.start_server(handler1).await.unwrap();
+    iroh_transport.start_server(handler2).await.unwrap();
 
     // Get server addresses
     let http_addr = http_transport.get_server_address().unwrap();
@@ -41,12 +38,12 @@ async fn test_version_alignment() {
 /// Test HTTP v0 endpoint format explicitly
 #[tokio::test]
 async fn test_http_v0_endpoint_format() {
-    let mut transport = HttpTransport::new().unwrap();
-    let (_instance, handler) = super::helpers::setup_test_handler().await;
-    transport
-        .start_server("127.0.0.1:0", handler)
-        .await
+    let mut transport = HttpTransport::builder()
+        .bind("127.0.0.1:0")
+        .build_sync()
         .unwrap();
+    let (_instance, handler) = super::helpers::setup_test_handler().await;
+    transport.start_server(handler).await.unwrap();
     let addr = transport.get_server_address().unwrap();
 
     // Test that the v0 endpoint is accessible

@@ -129,15 +129,16 @@ pub trait SyncTransport: Send + Sync {
     /// True if this transport can handle the address, false otherwise.
     fn can_handle_address(&self, address: &Address) -> bool;
 
-    /// Start a server listening on the specified address with a sync handler.
+    /// Start a server with the pre-configured bind address.
+    ///
+    /// The transport uses its bind address configured via the builder.
     ///
     /// # Arguments
-    /// * `addr` - The address to bind the server to (use port 0 for automatic port assignment)
     /// * `handler` - The sync handler to process incoming requests
     ///
     /// # Returns
     /// A Result indicating success or failure of server startup.
-    async fn start_server(&mut self, addr: &str, handler: Arc<dyn SyncHandler>) -> Result<()>;
+    async fn start_server(&mut self, handler: Arc<dyn SyncHandler>) -> Result<()>;
 
     /// Stop the running server gracefully.
     ///

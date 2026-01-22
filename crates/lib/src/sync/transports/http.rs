@@ -159,26 +159,27 @@ impl SyncTransport for HttpTransport {
         address.transport_type == Self::TRANSPORT_TYPE
     }
 
-    async fn start_server(&mut self, addr: &str, handler: Arc<dyn SyncHandler>) -> Result<()> {
+    async fn start_server(&mut self, handler: Arc<dyn SyncHandler>) -> Result<()> {
         // Check if server is already running
         if self.server_state.is_running() {
             return Err(SyncError::ServerAlreadyRunning {
-                address: addr.to_string(),
+                address: self
+                    .bind_address
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
             }
             .into());
         }
 
-        // Use provided address, or fall back to configured bind_address
-        let effective_addr = if addr.is_empty() {
-            self.bind_address
-                .as_deref()
-                .ok_or_else(|| SyncError::ServerBind {
-                    address: addr.to_string(),
-                    reason: "No bind address provided and none configured".to_string(),
-                })?
-        } else {
-            addr
-        };
+        // Use configured bind_address
+        let effective_addr = self
+            .bind_address
+            .as_deref()
+            .ok_or_else(|| SyncError::ServerBind {
+                address: "".to_string(),
+                reason: "No bind address configured. Use HttpTransport::builder().bind(...)"
+                    .to_string(),
+            })?;
 
         let socket_addr: SocketAddr =
             effective_addr.parse().map_err(|e| SyncError::ServerBind {
@@ -225,12 +226,12 @@ impl SyncTransport for HttpTransport {
 
         // Get the actual bound address
         let actual_addr = addr_rx.await.map_err(|_| SyncError::ServerBind {
-            address: addr.to_string(),
+            address: effective_addr.to_string(),
             reason: "Failed to get actual server address".to_string(),
         })?;
 
         // Wait for server to be ready
-        wait_for_ready(ready_rx, addr).await?;
+        wait_for_ready(ready_rx, effective_addr).await?;
 
         // Start server state with address and shutdown sender
         self.server_state

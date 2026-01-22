@@ -652,7 +652,7 @@ impl SyncTransport for IrohTransport {
         address.transport_type == Self::TRANSPORT_TYPE
     }
 
-    async fn start_server(&mut self, _addr: &str, handler: Arc<dyn SyncHandler>) -> Result<()> {
+    async fn start_server(&mut self, handler: Arc<dyn SyncHandler>) -> Result<()> {
         // Check if server is already running
         if self.server_state.is_running() {
             return Err(SyncError::ServerAlreadyRunning {

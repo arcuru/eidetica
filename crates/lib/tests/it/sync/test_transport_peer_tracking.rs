@@ -110,12 +110,12 @@ async fn test_server_automatically_tracks_peers_that_sync_trees() {
         .unwrap();
 
     // Start server
-    let mut http_transport = HttpTransport::new().unwrap();
-    let handler = Arc::new(create_test_sync_handler(&server_sync));
-    http_transport
-        .start_server("127.0.0.1:0", handler)
-        .await
+    let mut http_transport = HttpTransport::builder()
+        .bind("127.0.0.1:0")
+        .build_sync()
         .unwrap();
+    let handler = Arc::new(create_test_sync_handler(&server_sync));
+    http_transport.start_server(handler).await.unwrap();
     let server_addr = http_transport.get_server_address().unwrap();
 
     // Register server as a peer and add its address

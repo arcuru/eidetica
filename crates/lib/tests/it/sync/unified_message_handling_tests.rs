@@ -51,12 +51,12 @@ async fn test_unified_message_handling() {
     }
 
     // Test HTTP transport uses same logic
-    let mut http_transport = HttpTransport::new().unwrap();
-    let (_instance, handler) = super::helpers::setup_test_handler().await;
-    http_transport
-        .start_server("127.0.0.1:0", handler)
-        .await
+    let mut http_transport = HttpTransport::builder()
+        .bind("127.0.0.1:0")
+        .build_sync()
         .unwrap();
+    let (_instance, handler) = super::helpers::setup_test_handler().await;
+    http_transport.start_server(handler).await.unwrap();
     let http_addr = http_transport.get_server_address().unwrap();
     let http_address = Address::http(&http_addr);
 
@@ -88,14 +88,14 @@ async fn test_unified_message_handling() {
 async fn test_http_v0_json_endpoint() {
     use eidetica::Entry;
 
-    let mut transport = HttpTransport::new().unwrap();
+    let mut transport = HttpTransport::builder()
+        .bind("127.0.0.1:0")
+        .build_sync()
+        .unwrap();
 
     // Start server
     let (_instance, handler) = super::helpers::setup_test_handler().await;
-    transport
-        .start_server("127.0.0.1:0", handler)
-        .await
-        .unwrap();
+    transport.start_server(handler).await.unwrap();
     let addr = transport.get_server_address().unwrap();
 
     // Test direct HTTP client call to verify endpoint format
@@ -157,7 +157,7 @@ async fn test_iroh_transport_handler_integration() {
     let (_instance, handler) = super::helpers::setup_test_handler().await;
 
     // Test that server can start with a handler (this validates the architecture)
-    iroh_transport.start_server("", handler).await.unwrap();
+    iroh_transport.start_server(handler).await.unwrap();
 
     // Verify server is running
     assert!(iroh_transport.is_server_running());
