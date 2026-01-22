@@ -46,9 +46,9 @@ pub async fn test_backend() -> Box<dyn BackendImpl> {
         Ok("sqlite") => {
             #[cfg(feature = "sqlite")]
             {
-                use eidetica::backend::database::sql::SqlxBackend;
+                use eidetica::backend::database::Sqlite;
                 Box::new(
-                    SqlxBackend::sqlite_in_memory()
+                    Sqlite::in_memory()
                         .await
                         .expect("Failed to create SQLite backend"),
                 )
@@ -61,11 +61,11 @@ pub async fn test_backend() -> Box<dyn BackendImpl> {
         Ok("postgres") => {
             #[cfg(feature = "postgres")]
             {
-                use eidetica::backend::database::sql::SqlxBackend;
+                use eidetica::backend::database::Postgres;
                 let url = std::env::var("TEST_POSTGRES_URL")
                     .unwrap_or_else(|_| "postgres://localhost/eidetica_test".to_string());
                 Box::new(
-                    SqlxBackend::connect_postgres_isolated(&url)
+                    Postgres::connect_isolated(&url)
                         .await
                         .expect("Failed to connect to PostgreSQL"),
                 )

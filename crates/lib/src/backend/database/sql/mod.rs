@@ -479,10 +479,98 @@ impl BackendImpl for SqlxBackend {
     }
 }
 
+/// Namespace for SQLite database constructors.
+///
+/// Provides ergonomic factory methods for creating SQLite-backed storage.
+/// All methods return `SqlxBackend` which implements `BackendImpl`.
+///
+/// # Example
+///
+/// ```ignore
+/// use eidetica::backend::database::Sqlite;
+///
+/// // File-based storage
+/// let backend = Sqlite::open("my_data.db").await?;
+///
+/// // In-memory (for testing)
+/// let backend = Sqlite::in_memory().await?;
+/// ```
 #[cfg(feature = "sqlite")]
-/// Convenience type alias for SQLite backend using sqlx.
-pub type Sqlite = SqlxBackend;
+pub struct Sqlite;
+
+#[cfg(feature = "sqlite")]
+impl Sqlite {
+    /// Open a SQLite database at the given path.
+    ///
+    /// Creates the database file and schema if they don't exist.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the SQLite database file
+    pub async fn open<P: AsRef<std::path::Path>>(path: P) -> Result<SqlxBackend> {
+        SqlxBackend::open_sqlite(path).await
+    }
+
+    /// Create an in-memory SQLite database.
+    ///
+    /// The database exists only for the lifetime of the returned backend.
+    /// Useful for testing.
+    pub async fn in_memory() -> Result<SqlxBackend> {
+        SqlxBackend::sqlite_in_memory().await
+    }
+
+    /// Connect to a SQLite database using a connection URL.
+    ///
+    /// # Arguments
+    ///
+    /// * `url` - SQLite connection URL (e.g., "sqlite:./my.db")
+    pub async fn connect(url: &str) -> Result<SqlxBackend> {
+        SqlxBackend::connect_sqlite(url).await
+    }
+}
+
+/// Namespace for PostgreSQL database constructors.
+///
+/// Provides ergonomic factory methods for creating PostgreSQL-backed storage.
+/// All methods return `SqlxBackend` which implements `BackendImpl`.
+///
+/// # Example
+///
+/// ```ignore
+/// use eidetica::backend::database::Postgres;
+///
+/// // Connect to PostgreSQL
+/// let backend = Postgres::connect("postgres://user:pass@localhost/mydb").await?;
+///
+/// // With test isolation (unique schema per instance)
+/// let backend = Postgres::connect_isolated("postgres://localhost/test").await?;
+/// ```
+#[cfg(feature = "postgres")]
+pub struct Postgres;
 
 #[cfg(feature = "postgres")]
-/// Convenience type alias for PostgreSQL backend using sqlx.
-pub type Postgres = SqlxBackend;
+impl Postgres {
+    /// Connect to a PostgreSQL database using a connection URL.
+    ///
+    /// This connects to the default (public) schema. For test isolation,
+    /// use `connect_isolated()` instead.
+    ///
+    /// # Arguments
+    ///
+    /// * `url` - PostgreSQL connection URL (e.g., "postgres://user:pass@localhost/dbname")
+    pub async fn connect(url: &str) -> Result<SqlxBackend> {
+        SqlxBackend::connect_postgres(url).await
+    }
+
+    /// Connect to a PostgreSQL database with test isolation.
+    ///
+    /// Creates a unique schema for this backend instance, ensuring tests
+    /// don't interfere with each other when run in parallel.
+    ///
+    /// # Arguments
+    ///
+    /// * `url` - PostgreSQL connection URL
+    pub async fn connect_isolated(url: &str) -> Result<SqlxBackend> {
+        SqlxBackend::connect_postgres_isolated(url).await
+    }
+}

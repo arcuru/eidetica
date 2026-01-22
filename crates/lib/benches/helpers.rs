@@ -19,9 +19,9 @@ async fn test_backend() -> Box<dyn BackendImpl> {
         Ok("sqlite") => {
             #[cfg(feature = "sqlite")]
             {
-                use eidetica::backend::database::sql::SqlxBackend;
+                use eidetica::backend::database::Sqlite;
                 Box::new(
-                    SqlxBackend::sqlite_in_memory()
+                    Sqlite::in_memory()
                         .await
                         .expect("Failed to create SQLite backend"),
                 )

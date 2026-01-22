@@ -13,7 +13,7 @@ use eidetica::{
     Instance,
     backend::{
         BackendImpl,
-        database::{InMemory, SqlxBackend},
+        database::{InMemory, Postgres, Sqlite},
     },
     sync::{
         handler::SyncHandlerImpl,
@@ -91,7 +91,7 @@ async fn create_backend(args: &Args) -> Result<Box<dyn BackendImpl>, Box<dyn std
         Backend::Sqlite => {
             let db_path = data_dir.join("eidetica.db");
             tracing::info!("Using SQLite backend at {}", db_path.display());
-            Ok(Box::new(SqlxBackend::open_sqlite(&db_path).await?))
+            Ok(Box::new(Sqlite::open(&db_path).await?))
         }
         Backend::Postgres => {
             let url = args
@@ -103,7 +103,7 @@ async fn create_backend(args: &Args) -> Result<Box<dyn BackendImpl>, Box<dyn std
             let display_url = redact_postgres_url(url);
             tracing::info!("Connecting to PostgreSQL backend at {}", display_url);
 
-            match SqlxBackend::connect_postgres(url).await {
+            match Postgres::connect(url).await {
                 Ok(backend) => {
                     tracing::info!("Connected to PostgreSQL successfully");
                     Ok(Box::new(backend))
