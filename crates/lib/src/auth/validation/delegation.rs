@@ -6,13 +6,12 @@
 use std::sync::Arc;
 
 use crate::{
-    Database, Result,
+    Database, Instance, Result,
     auth::{
-        crypto::parse_public_key,
         errors::AuthError,
         permission::clamp_permission,
         settings::AuthSettings,
-        types::{DelegationStep, PermissionBounds, ResolvedAuth},
+        types::{DelegationStep, KeyHint, PermissionBounds, ResolvedAuth},
     },
     backend::BackendImpl,
     entry::ID,
@@ -30,103 +29,84 @@ impl DelegationResolver {
     /// Resolve delegation path using flat list structure
     ///
     /// This iteratively processes each step in the delegation path,
-    /// applying permission clamping at each level.
+    /// applying permission clamping at each level. The final hint
+    /// is resolved in the last delegated tree's auth settings.
+    ///
+    /// Returns all matching ResolvedAuth entries. For name hints that match
+    /// multiple keys at the final step, all matches are returned with the
+    /// same permission clamping applied to each.
     pub async fn resolve_delegation_path_with_depth(
         &mut self,
         steps: &[DelegationStep],
+        final_hint: &KeyHint,
         auth_settings: &AuthSettings,
-        instance: &crate::Instance,
+        instance: &Instance,
         _depth: usize,
-    ) -> Result<ResolvedAuth> {
+    ) -> Result<Vec<ResolvedAuth>> {
         if steps.is_empty() {
             return Err(AuthError::EmptyDelegationPath.into());
+        }
+
+        // Validate no global hints in delegation (must resolve to concrete key)
+        if final_hint.is_global() {
+            return Err(AuthError::InvalidDelegationStep {
+                reason: "Delegation paths cannot use global '*' hint".to_string(),
+            }
+            .into());
         }
 
         // Iterate through delegation steps
         let mut current_auth_settings = auth_settings.clone();
         let current_backend = Arc::clone(instance.backend().as_arc_backend_impl());
-        let mut cumulative_bounds = None;
+        let mut cumulative_bounds: Option<PermissionBounds> = None;
 
-        // Process all steps except the last one (which should be the final key)
-        // Note: Wildcard "*" validation is done in KeyResolver before reaching here
-        for (i, step) in steps.iter().enumerate() {
-            let is_final_step = i == steps.len() - 1;
+        // Process all delegation steps (tree traversal)
+        for step in steps {
+            // Load delegated tree
+            let delegated_tree_ref = current_auth_settings.get_delegated_tree(&step.tree)?;
 
-            if is_final_step {
-                // Final step: resolve the actual key
-                if step.tips.is_some() {
-                    return Err(AuthError::InvalidDelegationStep {
-                        reason: "Final delegation step must not have tips".to_string(),
-                    }
-                    .into());
-                }
-
-                // Resolve the final key directly
-                let mut resolved = self.resolve_direct_key(&step.key, &current_auth_settings)?;
-
-                // Apply accumulated permission bounds
-                if let Some(bounds) = cumulative_bounds {
-                    resolved.effective_permission =
-                        clamp_permission(resolved.effective_permission, &bounds);
-                }
-
-                return Ok(resolved);
-            } else {
-                // Intermediate step: load delegated tree
-                if step.tips.is_none() {
-                    return Err(AuthError::InvalidDelegationStep {
-                        reason: "Non-final delegation step must have tips".to_string(),
-                    }
-                    .into());
-                }
-
-                let tips = step.tips.as_ref().unwrap();
-
-                // Get the delegated tree reference
-                let delegated_tree_ref = current_auth_settings.get_delegated_tree(&step.key)?;
-
-                let root_id = delegated_tree_ref.tree.root.clone();
-                let delegated_tree = Database::open_unauthenticated(root_id.clone(), instance)
-                    .map_err(|e| AuthError::DelegatedTreeLoadFailed {
-                        tree_id: root_id.to_string(),
-                        source: Box::new(e),
-                    })?;
-
-                // Validate tips
-                let current_tips = current_backend.get_tips(&root_id).await.map_err(|e| {
-                    AuthError::InvalidAuthConfiguration {
-                        reason: format!(
-                            "Failed to get current tips for delegated tree '{root_id}': {e}"
-                        ),
-                    }
+            let root_id = delegated_tree_ref.tree.root.clone();
+            let delegated_tree = Database::open_unauthenticated(root_id.clone(), instance)
+                .map_err(|e| AuthError::DelegatedTreeLoadFailed {
+                    tree_id: root_id.to_string(),
+                    source: Box::new(e),
                 })?;
 
-                let tips_valid = self
-                    .validate_tip_ancestry(tips, &current_tips, &current_backend)
-                    .await?;
-                if !tips_valid {
-                    return Err(AuthError::InvalidDelegationTips {
-                        tree_id: root_id.to_string(),
-                        claimed_tips: tips.clone(),
-                    }
-                    .into());
+            // Validate tips
+            let current_tips = current_backend.get_tips(&root_id).await.map_err(|e| {
+                AuthError::InvalidAuthConfiguration {
+                    reason: format!(
+                        "Failed to get current tips for delegated tree '{root_id}': {e}"
+                    ),
                 }
+            })?;
 
-                // Get delegated tree's auth settings
-                let delegated_settings = delegated_tree.get_settings().await.map_err(|e| {
-                    AuthError::InvalidAuthConfiguration {
-                        reason: format!("Failed to get delegated tree settings: {e}"),
-                    }
-                })?;
-                current_auth_settings =
-                    delegated_settings.get_auth_settings().await.map_err(|e| {
-                        AuthError::InvalidAuthConfiguration {
-                            reason: format!("Failed to get delegated tree auth settings: {e}"),
-                        }
-                    })?;
+            let tips_valid = self
+                .validate_tip_ancestry(&step.tips, &current_tips, &current_backend)
+                .await?;
+            if !tips_valid {
+                return Err(AuthError::InvalidDelegationTips {
+                    tree_id: root_id.to_string(),
+                    claimed_tips: step.tips.clone(),
+                }
+                .into());
+            }
 
-                // Accumulate permission bounds
-                if let Some(existing_bounds) = cumulative_bounds {
+            // Get delegated tree's auth settings
+            let delegated_settings = delegated_tree.get_settings().await.map_err(|e| {
+                AuthError::InvalidAuthConfiguration {
+                    reason: format!("Failed to get delegated tree settings: {e}"),
+                }
+            })?;
+            current_auth_settings = delegated_settings.get_auth_settings().await.map_err(|e| {
+                AuthError::InvalidAuthConfiguration {
+                    reason: format!("Failed to get delegated tree auth settings: {e}"),
+                }
+            })?;
+
+            // Accumulate permission bounds
+            cumulative_bounds = Some(match cumulative_bounds {
+                Some(existing_bounds) => {
                     // Combine bounds by taking the minimum of max permissions
                     let new_max = std::cmp::min(
                         existing_bounds.max.clone(),
@@ -143,21 +123,33 @@ impl DelegationResolver {
                         (None, Some(new_min)) => Some(new_min),
                         (None, None) => None,
                     };
-                    cumulative_bounds = Some(PermissionBounds {
+                    PermissionBounds {
                         max: new_max,
                         min: new_min,
-                    });
-                } else {
-                    cumulative_bounds = Some(delegated_tree_ref.permission_bounds);
+                    }
                 }
+                None => delegated_tree_ref.permission_bounds.clone(),
+            });
+        }
+
+        // After traversing all steps, resolve the final hint in the last tree's auth settings
+        let mut matches = current_auth_settings.resolve_hint(final_hint)?;
+        if matches.is_empty() {
+            return Err(AuthError::KeyNotFound {
+                key_name: format!("hint({:?})", final_hint.hint_type()),
+            }
+            .into());
+        }
+
+        // Apply accumulated permission bounds to all matches
+        if let Some(bounds) = cumulative_bounds {
+            for resolved in &mut matches {
+                resolved.effective_permission =
+                    clamp_permission(resolved.effective_permission.clone(), &bounds);
             }
         }
 
-        // This should never be reached due to the final step handling above
-        Err(AuthError::InvalidDelegationStep {
-            reason: "Invalid delegation path structure".to_string(),
-        }
-        .into())
+        Ok(matches)
     }
 
     /// Validate tip ancestry using backend's DAG traversal
@@ -222,28 +214,6 @@ impl DelegationResolver {
         }
 
         Ok(true)
-    }
-
-    /// Resolve a direct key reference from the delegated tree's auth settings
-    ///
-    /// This method does not support wildcard `"*"` keys - the key must exist in
-    /// auth_settings with a valid Ed25519 public key. This is intentional: delegation
-    /// paths must terminate at a named key for accountability and signature verification.
-    fn resolve_direct_key(
-        &self,
-        key_name: &str,
-        auth_settings: &AuthSettings,
-    ) -> Result<ResolvedAuth> {
-        // Get the auth key using AuthSettings
-        let auth_key = auth_settings.get_key(key_name)?;
-
-        let public_key = parse_public_key(auth_key.pubkey())?;
-
-        Ok(ResolvedAuth {
-            public_key,
-            effective_permission: auth_key.permissions().clone(),
-            key_status: auth_key.status().clone(),
-        })
     }
 }
 

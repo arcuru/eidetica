@@ -70,18 +70,13 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     settings.set("name", "Bidirectional Test Room");
 
     // Enable automatic bootstrap approval via global wildcard permission
-    let device1_pubkey = device1_user
-        .get_public_key(&device1_key_id)
-        .expect("Failed to get device1 public key");
-
     let mut auth_settings = AuthSettings::new();
 
     // Include device1 admin key for initial database creation
     auth_settings
         .add_key(
             &device1_key_id,
-            AuthKey::active(&device1_pubkey, Permission::Admin(10))
-                .expect("Failed to create admin key"),
+            AuthKey::active(Some("admin"), Permission::Admin(10)),
         )
         .expect("Failed to add admin auth");
 
@@ -90,17 +85,13 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
 
     auth_settings
         .add_key(
-            "admin",
-            AuthKey::active(&device1_device_pubkey, Permission::Admin(10))
-                .expect("Failed to create device key"),
+            &device1_device_pubkey,
+            AuthKey::active(Some("device"), Permission::Admin(10)),
         )
         .expect("Failed to add device key auth");
     // Add global wildcard permission for automatic bootstrap approval
     auth_settings
-        .add_key(
-            "*",
-            AuthKey::active("*", Permission::Admin(10)).expect("Failed to create wildcard key"),
-        )
+        .add_key("*", AuthKey::active(Some("*"), Permission::Admin(10)))
         .expect("Failed to add global wildcard permission");
 
     settings.set("auth", auth_settings.as_doc().clone());

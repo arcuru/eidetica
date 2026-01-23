@@ -804,7 +804,7 @@ async fn test_bootstrap_auto_detects_global_wildcard_permission() {
         let tx = db.new_transaction().await.unwrap();
         let settings_store = tx.get_settings().unwrap();
         let global_auth_key =
-            eidetica::auth::types::AuthKey::active("*", eidetica::auth::Permission::Read).unwrap();
+            eidetica::auth::types::AuthKey::active(Some("*"), eidetica::auth::Permission::Read);
         settings_store
             .set_auth_key("*", global_auth_key)
             .await
@@ -894,20 +894,19 @@ async fn test_bootstrap_uses_highest_permission_when_key_has_multiple() {
         let tx = db.new_transaction().await.unwrap();
         let settings_store = tx.get_settings().unwrap();
 
-        // Add the special key directly with Write(5) permission
+        // Add the special key directly with Write(5) permission (keyed by pubkey)
         let special_auth_key = eidetica::auth::types::AuthKey::active(
-            &special_pubkey,
+            Some("special_key"),
             eidetica::auth::Permission::Write(5),
-        )
-        .unwrap();
+        );
         settings_store
-            .set_auth_key("special_key", special_auth_key)
+            .set_auth_key(&special_pubkey, special_auth_key)
             .await
             .unwrap();
 
         // Add global wildcard with Read permission
         let global_auth_key =
-            eidetica::auth::types::AuthKey::active("*", eidetica::auth::Permission::Read).unwrap();
+            eidetica::auth::types::AuthKey::active(Some("*"), eidetica::auth::Permission::Read);
         settings_store
             .set_auth_key("*", global_auth_key)
             .await

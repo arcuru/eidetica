@@ -33,13 +33,13 @@ async fn test_track_database() -> eidetica::Result<()> {
 
     let mut auth_settings = AuthSettings::new();
     auth_settings.add_key(
-        "alice",
-        AuthKey::active(&alice_pubkey_str, Permission::Admin(1))?,
+        &alice_pubkey_str,
+        AuthKey::active(Some("alice"), Permission::Admin(1)),
     )?;
-    auth_settings.add_key("*", AuthKey::active("*", Permission::Write(10))?)?;
+    auth_settings.add_key("*", AuthKey::active(None::<String>, Permission::Write(10)))?;
     db_settings.set("auth", auth_settings.as_doc().clone());
 
-    let db = Database::create(db_settings, &instance, alice_key, "alice".to_string()).await?;
+    let db = Database::create(db_settings, &instance, alice_key, alice_pubkey_str.clone()).await?;
     let db_id = db.root_id().clone();
 
     // Track the database
@@ -86,12 +86,12 @@ async fn test_track_database_no_sigkey_error() -> eidetica::Result<()> {
     let mut auth_settings = AuthSettings::new();
     // Only Alice has access, no global permission
     auth_settings.add_key(
-        "alice",
-        AuthKey::active(&alice_pubkey_str, Permission::Admin(1))?,
+        &alice_pubkey_str,
+        AuthKey::active(Some("alice"), Permission::Admin(1)),
     )?;
     db_settings.set("auth", auth_settings.as_doc().clone());
 
-    let db = Database::create(db_settings, &instance, alice_key, "alice".to_string()).await?;
+    let db = Database::create(db_settings, &instance, alice_key, alice_pubkey_str.clone()).await?;
     let db_id = db.root_id().clone();
 
     let prefs = TrackedDatabase {
@@ -129,13 +129,14 @@ async fn test_list_databases() -> eidetica::Result<()> {
 
         let mut auth_settings = AuthSettings::new();
         auth_settings.add_key(
-            format!("alice_{i}"),
-            AuthKey::active(&alice_pubkey_str, Permission::Admin(1))?,
+            &alice_pubkey_str,
+            AuthKey::active(Some(&format!("alice_{i}")), Permission::Admin(1)),
         )?;
-        auth_settings.add_key("*", AuthKey::active("*", Permission::Write(10))?)?;
+        auth_settings.add_key("*", AuthKey::active(None::<String>, Permission::Write(10)))?;
         db_settings.set("auth", auth_settings.as_doc().clone());
 
-        let db = Database::create(db_settings, &instance, alice_key, format!("alice_{i}")).await?;
+        let db =
+            Database::create(db_settings, &instance, alice_key, alice_pubkey_str.clone()).await?;
 
         let prefs = TrackedDatabase {
             database_id: db.root_id().clone(),
@@ -171,13 +172,13 @@ async fn test_get_tracked_database() -> eidetica::Result<()> {
 
     let mut auth_settings = AuthSettings::new();
     auth_settings.add_key(
-        "alice",
-        AuthKey::active(&alice_pubkey_str, Permission::Admin(1))?,
+        &alice_pubkey_str,
+        AuthKey::active(Some("alice"), Permission::Admin(1)),
     )?;
-    auth_settings.add_key("*", AuthKey::active("*", Permission::Write(10))?)?;
+    auth_settings.add_key("*", AuthKey::active(None::<String>, Permission::Write(10)))?;
     db_settings.set("auth", auth_settings.as_doc().clone());
 
-    let db = Database::create(db_settings, &instance, alice_key, "alice".to_string()).await?;
+    let db = Database::create(db_settings, &instance, alice_key, alice_pubkey_str.clone()).await?;
     let db_id = db.root_id().clone();
 
     // Add database
@@ -223,13 +224,13 @@ async fn test_update_tracked_database() -> eidetica::Result<()> {
 
     let mut auth_settings = AuthSettings::new();
     auth_settings.add_key(
-        "alice",
-        AuthKey::active(&alice_pubkey_str, Permission::Admin(1))?,
+        &alice_pubkey_str,
+        AuthKey::active(Some("alice"), Permission::Admin(1)),
     )?;
-    auth_settings.add_key("*", AuthKey::active("*", Permission::Write(10))?)?;
+    auth_settings.add_key("*", AuthKey::active(None::<String>, Permission::Write(10)))?;
     db_settings.set("auth", auth_settings.as_doc().clone());
 
-    let db = Database::create(db_settings, &instance, alice_key, "alice".to_string()).await?;
+    let db = Database::create(db_settings, &instance, alice_key, alice_pubkey_str.clone()).await?;
     let db_id = db.root_id().clone();
 
     // Add database with initial settings
@@ -287,13 +288,13 @@ async fn test_untrack_database() -> eidetica::Result<()> {
 
     let mut auth_settings = AuthSettings::new();
     auth_settings.add_key(
-        "alice",
-        AuthKey::active(&alice_pubkey_str, Permission::Admin(1))?,
+        &alice_pubkey_str,
+        AuthKey::active(Some("alice"), Permission::Admin(1)),
     )?;
-    auth_settings.add_key("*", AuthKey::active("*", Permission::Write(10))?)?;
+    auth_settings.add_key("*", AuthKey::active(None::<String>, Permission::Write(10)))?;
     db_settings.set("auth", auth_settings.as_doc().clone());
 
-    let db = Database::create(db_settings, &instance, alice_key, "alice".to_string()).await?;
+    let db = Database::create(db_settings, &instance, alice_key, alice_pubkey_str.clone()).await?;
     let db_id = db.root_id().clone();
 
     // Add database
@@ -335,13 +336,13 @@ async fn test_load_tracked_database() -> eidetica::Result<()> {
 
     let mut auth_settings = AuthSettings::new();
     auth_settings.add_key(
-        "alice",
-        AuthKey::active(&alice_pubkey_str, Permission::Admin(1))?,
+        &alice_pubkey_str,
+        AuthKey::active(Some("alice"), Permission::Admin(1)),
     )?;
-    auth_settings.add_key("*", AuthKey::active("*", Permission::Write(10))?)?;
+    auth_settings.add_key("*", AuthKey::active(None::<String>, Permission::Write(10)))?;
     db_settings.set("auth", auth_settings.as_doc().clone());
 
-    let db = Database::create(db_settings, &instance, alice_key, "alice".to_string()).await?;
+    let db = Database::create(db_settings, &instance, alice_key, alice_pubkey_str.clone()).await?;
     let db_id = db.root_id().clone();
 
     // Add to user's tracked databases
@@ -382,13 +383,13 @@ async fn test_update_tracked_valid_key_change() -> eidetica::Result<()> {
 
     let mut auth_settings = AuthSettings::new();
     auth_settings.add_key(
-        "alice",
-        AuthKey::active(&alice_pubkey_str, Permission::Admin(1))?,
+        &alice_pubkey_str,
+        AuthKey::active(Some("alice"), Permission::Admin(1)),
     )?;
-    auth_settings.add_key("*", AuthKey::active("*", Permission::Write(10))?)?;
+    auth_settings.add_key("*", AuthKey::active(None::<String>, Permission::Write(10)))?;
     db_settings.set("auth", auth_settings.as_doc().clone());
 
-    let db = Database::create(db_settings, &instance, alice_key, "alice".to_string()).await?;
+    let db = Database::create(db_settings, &instance, alice_key, alice_pubkey_str.clone()).await?;
     let db_id = db.root_id().clone();
 
     // Add database with key1
@@ -440,13 +441,13 @@ async fn test_update_tracked_nonexistent_key_fails() -> eidetica::Result<()> {
 
     let mut auth_settings = AuthSettings::new();
     auth_settings.add_key(
-        "alice",
-        AuthKey::active(&alice_pubkey_str, Permission::Admin(1))?,
+        &alice_pubkey_str,
+        AuthKey::active(Some("alice"), Permission::Admin(1)),
     )?;
-    auth_settings.add_key("*", AuthKey::active("*", Permission::Write(10))?)?;
+    auth_settings.add_key("*", AuthKey::active(None::<String>, Permission::Write(10)))?;
     db_settings.set("auth", auth_settings.as_doc().clone());
 
-    let db = Database::create(db_settings, &instance, alice_key, "alice".to_string()).await?;
+    let db = Database::create(db_settings, &instance, alice_key, alice_pubkey_str.clone()).await?;
     let db_id = db.root_id().clone();
 
     // Add database
@@ -494,8 +495,8 @@ async fn test_update_tracked_no_access_fails() -> eidetica::Result<()> {
     let mut auth_settings = AuthSettings::new();
     // Only alice has access - no global permission
     auth_settings.add_key(
-        "alice",
-        AuthKey::active(&alice_pubkey_str, Permission::Admin(1))?,
+        &alice_pubkey_str,
+        AuthKey::active(Some("alice"), Permission::Admin(1)),
     )?;
     db_settings.set("auth", auth_settings.as_doc().clone());
 
@@ -503,7 +504,7 @@ async fn test_update_tracked_no_access_fails() -> eidetica::Result<()> {
         db_settings,
         &instance,
         alice_key.clone(),
-        "alice".to_string(),
+        alice_pubkey_str.clone(),
     )
     .await?;
     let db_id = db.root_id().clone();
@@ -515,8 +516,8 @@ async fn test_update_tracked_no_access_fails() -> eidetica::Result<()> {
     settings_store
         .update_auth_settings(|auth| {
             auth.add_key(
-                "user_key1",
-                AuthKey::active(&key1_pubkey, Permission::Write(5))?,
+                &key1_pubkey,
+                AuthKey::active(Some("user_key1"), Permission::Write(5)),
             )
         })
         .await?;
@@ -565,13 +566,13 @@ async fn test_update_tracked_auto_creates_mapping() -> eidetica::Result<()> {
 
     let mut auth_settings = AuthSettings::new();
     auth_settings.add_key(
-        "alice",
-        AuthKey::active(&alice_pubkey_str, Permission::Admin(1))?,
+        &alice_pubkey_str,
+        AuthKey::active(Some("alice"), Permission::Admin(1)),
     )?;
-    auth_settings.add_key("*", AuthKey::active("*", Permission::Write(10))?)?;
+    auth_settings.add_key("*", AuthKey::active(None::<String>, Permission::Write(10)))?;
     db_settings.set("auth", auth_settings.as_doc().clone());
 
-    let db = Database::create(db_settings, &instance, alice_key, "alice".to_string()).await?;
+    let db = Database::create(db_settings, &instance, alice_key, alice_pubkey_str.clone()).await?;
     let db_id = db.root_id().clone();
 
     // Add database with key1 (creates mapping: key1 -> "*")
@@ -604,9 +605,17 @@ async fn test_update_tracked_auto_creates_mapping() -> eidetica::Result<()> {
     assert!(retrieved.sync_settings.sync_enabled);
     assert_eq!(retrieved.sync_settings.interval_seconds, Some(90));
 
-    // Verify the mapping was auto-created
+    // Verify the mapping was auto-created (global permission = "*:pubkey")
     let mapping = user.key_mapping(&key2, &db_id)?;
-    assert_eq!(mapping, Some("*".to_string()));
+    // With global permission, the sigkey is formatted as "*:actual_pubkey"
+    assert!(
+        mapping
+            .as_deref()
+            .map(|s| s.starts_with("*:"))
+            .unwrap_or(false),
+        "Expected global permission mapping starting with '*:', got: {:?}",
+        mapping
+    );
 
     Ok(())
 }

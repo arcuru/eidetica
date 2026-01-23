@@ -3,8 +3,9 @@
 //! This module defines structured error types for authentication-related operations,
 //! providing better error context and type safety compared to string-based errors.
 
-use thiserror::Error;
+use thiserror::Error as ThisError;
 
+use crate::Error;
 use crate::entry::ID;
 
 /// Errors that can occur during authentication operations.
@@ -16,7 +17,7 @@ use crate::entry::ID;
 /// - Field additions/changes require a major version bump
 /// - Helper methods like `is_*()` provide stable APIs
 #[non_exhaustive]
-#[derive(Debug, Error)]
+#[derive(Debug, ThisError)]
 pub enum AuthError {
     /// A requested authentication key was not found in the configuration.
     #[error("Key not found: {key_name}")]
@@ -75,7 +76,7 @@ pub enum AuthError {
         tree_id: String,
         /// The underlying error
         #[source]
-        source: Box<crate::Error>,
+        source: Box<Error>,
     },
 
     /// Delegation tips don't match the actual tree state.
@@ -94,6 +95,13 @@ pub enum AuthError {
     CannotRevokeNonKey {
         /// The name of the entry that is not a key
         key_name: String,
+    },
+
+    /// Entry has malformed signature info (e.g., hint without signature).
+    #[error("Malformed entry: {reason}")]
+    MalformedEntry {
+        /// Description of why the entry is malformed
+        reason: &'static str,
     },
 
     /// Signature verification failed.
@@ -232,10 +240,10 @@ impl AuthError {
 }
 
 // Conversion from AuthError to the main Error type
-impl From<AuthError> for crate::Error {
+impl From<AuthError> for Error {
     fn from(err: AuthError) -> Self {
         // Use the new structured Auth variant
-        crate::Error::Auth(err)
+        Error::Auth(err)
     }
 }
 
@@ -271,9 +279,9 @@ mod tests {
         let auth_err = AuthError::KeyNotFound {
             key_name: "test".to_string(),
         };
-        let err: crate::Error = auth_err.into();
+        let err: Error = auth_err.into();
         match err {
-            crate::Error::Auth(AuthError::KeyNotFound { key_name: id }) => assert_eq!(id, "test"),
+            Error::Auth(AuthError::KeyNotFound { key_name: id }) => assert_eq!(id, "test"),
             _ => panic!("Unexpected error variant"),
         }
     }

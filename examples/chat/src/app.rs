@@ -70,9 +70,10 @@ impl App {
         let database = self.user.create_database(settings, &key_id).await?;
 
         // Add global "*" permission so anyone with the room ID can write
+        // Global permission uses "*" as the pubkey, with no name
         let tx = database.new_transaction().await?;
         let settings_store = tx.get_settings()?;
-        let global_key = AuthKey::active("*", Permission::Write(0))?;
+        let global_key = AuthKey::active(None::<String>, Permission::Write(0));
         settings_store.set_auth_key("*", global_key).await?;
         tx.commit().await?;
 

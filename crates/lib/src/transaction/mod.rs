@@ -31,7 +31,7 @@ use crate::{
     auth::{
         AuthSettings,
         crypto::{format_public_key, sign_entry},
-        types::{Operation, SigInfo, SigKey},
+        types::{KeyHint, SigInfo, SigKey},
         validation::AuthValidator,
     },
     constants::{INDEX, ROOT, SETTINGS},
@@ -1141,14 +1141,21 @@ impl Transaction {
                 let key_clone = provided_key.clone();
 
                 // Build SigInfo - sigkey already validated at Database::open time
-                let mut sig_builder = SigInfo::builder().key(SigKey::Direct(sigkey.clone()));
-
-                // Include pubkey only for global "*" permission
-                if sigkey == "*" {
+                // Determine the appropriate KeyHint based on the sigkey format
+                let hint = if sigkey == "*" {
+                    // Global permission - include actual pubkey in hint
                     let public_key = provided_key.verifying_key();
                     let pubkey_string = format_public_key(&public_key);
-                    sig_builder = sig_builder.pubkey(pubkey_string);
-                }
+                    KeyHint::global(pubkey_string)
+                } else if sigkey.starts_with("ed25519:") {
+                    // Direct pubkey hint
+                    KeyHint::from_pubkey(sigkey.clone())
+                } else {
+                    // Name hint
+                    KeyHint::from_name(sigkey.clone())
+                };
+
+                let sig_builder = SigInfo::builder().key(SigKey::Direct(hint));
 
                 // Set auth ID on the entry builder (without signature initially)
                 builder.set_sig_mut(sig_builder.build());
@@ -1327,77 +1334,16 @@ impl Transaction {
 
         let instance = self.db.instance()?;
 
-        let verification_status = match validator
+        // Validate entry (signature + permissions)
+        let is_valid = validator
             .validate_entry(&entry, &auth_settings_for_validation, Some(&instance))
-            .await
-        {
-            Ok(true) => {
-                // Authentication validation succeeded - check permissions
-                // Check if we have auth configuration
-                let has_auth_config = !auth_settings_for_validation.get_all_keys()?.is_empty();
+            .await?;
 
-                if has_auth_config {
-                    // We have auth configuration, so check permissions
-                    let operation_type = if has_settings_update
-                        || entry.subtrees().contains(&SETTINGS.to_string())
-                    {
-                        Operation::WriteSettings // Modifying settings is a settings operation
-                    } else {
-                        Operation::WriteData // Default to write for other data modifications
-                    };
+        if !is_valid {
+            return Err(TransactionError::EntryValidationFailed.into());
+        }
 
-                    let resolved_auth = validator
-                        .resolve_sig_key_with_pubkey(
-                            &entry.sig.key,
-                            &auth_settings_for_validation,
-                            Some(&instance),
-                            entry.sig.pubkey.as_deref(),
-                        )
-                        .await?;
-
-                    let has_permission =
-                        validator.check_permissions(&resolved_auth, &operation_type)?;
-
-                    if has_permission {
-                        crate::backend::VerificationStatus::Verified
-                    } else {
-                        return Err(TransactionError::InsufficientPermissions.into());
-                    }
-                } else {
-                    // No auth configuration found in historical settings
-                    // Check if this is a bootstrap operation (adding auth config for the first time)
-                    if has_settings_update || entry.subtrees().contains(&SETTINGS.to_string()) {
-                        // This operation is updating settings - check if it's adding auth configuration
-                        if let Ok(settings_data) = entry.data(SETTINGS) {
-                            if let Ok(new_settings) = serde_json::from_str::<Doc>(settings_data) {
-                                if matches!(new_settings.get("auth"), Some(Value::Doc(auth_map)) if !auth_map.is_empty())
-                                {
-                                    // This is a bootstrap operation - adding auth config for the first time
-                                    // Allow it since it's setting up authentication
-                                    crate::backend::VerificationStatus::Verified
-                                } else {
-                                    return Err(TransactionError::NoAuthConfiguration.into());
-                                }
-                            } else {
-                                return Err(TransactionError::NoAuthConfiguration.into());
-                            }
-                        } else {
-                            return Err(TransactionError::NoAuthConfiguration.into());
-                        }
-                    } else {
-                        return Err(TransactionError::NoAuthConfiguration.into());
-                    }
-                }
-            }
-            Ok(false) => {
-                // Signature verification failed
-                return Err(TransactionError::SignatureVerificationFailed.into());
-            }
-            Err(e) => {
-                // Authentication validation error
-                return Err(e);
-            }
-        };
+        let verification_status = crate::backend::VerificationStatus::Verified;
 
         // Get the entry's ID
         let id = entry.id();

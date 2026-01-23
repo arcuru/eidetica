@@ -2,6 +2,7 @@
 
 use eidetica::{
     auth::{
+        AuthSettings,
         crypto::format_public_key,
         types::{Permission, SigKey},
     },
@@ -76,7 +77,7 @@ async fn test_key_management() {
         .get_entry(&entry_id)
         .await
         .expect("Failed to get entry");
-    assert_eq!(entry.sig.key, SigKey::Direct(key_id.to_string()));
+    assert_eq!(entry.sig.key, SigKey::from_pubkey(&key_id));
     assert!(entry.sig.sig.is_some());
 
     // Verify signature with tree's auth configuration
@@ -129,7 +130,7 @@ async fn test_generated_key_can_sign() {
         .get_entry(&entry_id)
         .await
         .expect("Failed to get entry");
-    assert_eq!(entry.sig.key, SigKey::Direct(key_id.to_string()));
+    assert_eq!(entry.sig.key, SigKey::from_pubkey(&key_id));
     assert!(
         tree.verify_entry_signature(&entry_id)
             .await
@@ -139,7 +140,6 @@ async fn test_generated_key_can_sign() {
 
 #[tokio::test]
 async fn test_multi_key_authentication() {
-    use eidetica::auth::crypto::format_public_key;
     use eidetica::auth::types::AuthKey;
 
     let (instance, mut user) = test_instance_with_user("test_user").await;
@@ -149,33 +149,33 @@ async fn test_multi_key_authentication() {
         .add_private_key(Some("TEST_KEY"))
         .await
         .expect("Failed to add key");
-    let public_key1 =
+    let _public_key1 =
         eidetica::auth::crypto::parse_public_key(&key_id1).expect("Failed to parse key");
 
     let key_id2 = user
         .add_private_key(Some("SECOND_KEY"))
         .await
         .expect("Failed to add second key");
-    let public_key2 =
+    let _public_key2 =
         eidetica::auth::crypto::parse_public_key(&key_id2).expect("Failed to parse key");
 
     // Set up authentication settings with both keys
     // Note: First key needs admin permission to create tree with auth settings
     let mut settings = Doc::new();
-    let mut auth_settings = Doc::new();
+    let mut auth_settings = AuthSettings::new();
     auth_settings
-        .set_json(
+        .add_key(
             &key_id1,
-            AuthKey::active(format_public_key(&public_key1), Permission::Admin(0)).unwrap(),
+            AuthKey::active(Some("TEST_KEY"), Permission::Admin(0)),
         )
         .unwrap();
     auth_settings
-        .set_json(
+        .add_key(
             &key_id2,
-            AuthKey::active(format_public_key(&public_key2), Permission::Write(20)).unwrap(),
+            AuthKey::active(Some("SECOND_KEY"), Permission::Write(20)),
         )
         .unwrap();
-    settings.set("auth", auth_settings);
+    settings.set("auth", auth_settings.as_doc().clone());
 
     // Create database with first key (admin key)
     let tree = user
@@ -204,7 +204,7 @@ async fn test_multi_key_authentication() {
         .get_entry(&entry_id)
         .await
         .expect("Failed to get entry");
-    assert_eq!(entry.sig.key, SigKey::Direct(key_id1.to_string()));
+    assert_eq!(entry.sig.key, SigKey::from_pubkey(&key_id1));
     assert!(entry.sig.sig.is_some());
     assert!(
         tree.verify_entry_signature(&entry_id)
@@ -246,7 +246,7 @@ async fn test_multi_key_authentication() {
         .get_entry(&entry_id2)
         .await
         .expect("Failed to get entry2");
-    assert_eq!(entry2.sig.key, SigKey::Direct(key_id2.to_string()));
+    assert_eq!(entry2.sig.key, SigKey::from_pubkey(&key_id2));
     assert!(
         tree.verify_entry_signature(&entry_id2)
             .await

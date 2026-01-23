@@ -4,6 +4,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::super::permission::clamp_permission;
+
 /// Permission levels for authenticated operations
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Permission {
@@ -77,7 +79,7 @@ impl Permission {
     /// If min is specified and self is below min, raises to min.
     /// If self is above max, lowers to max.
     pub fn clamp_to_bounds(&self, bounds: &PermissionBounds) -> Permission {
-        crate::auth::permission::clamp_permission(self.clone(), bounds)
+        clamp_permission(self.clone(), bounds)
     }
 }
 

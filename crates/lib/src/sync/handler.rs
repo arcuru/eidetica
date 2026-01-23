@@ -299,7 +299,7 @@ impl SyncHandlerImpl {
         }
 
         // Auth is configured - check if there's an Active global "*" permission
-        if let Ok(global_key) = auth_settings.get_key("*")
+        if let Ok(global_key) = auth_settings.get_key_by_pubkey("*")
             && *global_key.status() == KeyStatus::Active
         {
             debug!(

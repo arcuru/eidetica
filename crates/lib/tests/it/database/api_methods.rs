@@ -22,7 +22,7 @@ async fn test_get_entry_basic() {
         .await
         .expect("Failed to get entry");
     assert_eq!(entry.id(), entry_id);
-    assert_eq!(entry.sig.key, SigKey::Direct(key_id));
+    assert_eq!(entry.sig.key, SigKey::from_pubkey(&key_id));
     assert!(entry.sig.sig.is_some());
 }
 
@@ -246,8 +246,11 @@ async fn test_auth_helpers_signed_entries() {
         .await
         .expect("Failed to get entry");
     let sig_info = &entry.sig;
-    assert!(sig_info.is_signed_by(&key_id));
-    assert!(!sig_info.is_signed_by("OTHER_KEY"));
+    let hint = sig_info.hint();
+    assert!(hint.pubkey.as_deref() == Some(&key_id) || hint.name.as_deref() == Some(&key_id));
+    assert!(
+        hint.pubkey.as_deref() != Some("OTHER_KEY") && hint.name.as_deref() != Some("OTHER_KEY")
+    );
 }
 
 /// Test authentication helpers with default authenticated entries
@@ -267,8 +270,11 @@ async fn test_auth_helpers_default_authenticated_entries() {
         .await
         .expect("Failed to get entry");
     let sig_info = &entry.sig;
-    assert!(sig_info.is_signed_by(&key_id));
-    assert!(!sig_info.is_signed_by("OTHER_KEY"));
+    let hint = sig_info.hint();
+    assert!(hint.pubkey.as_deref() == Some(&key_id) || hint.name.as_deref() == Some(&key_id));
+    assert!(
+        hint.pubkey.as_deref() != Some("OTHER_KEY") && hint.name.as_deref() != Some("OTHER_KEY")
+    );
 }
 
 /// Test verify_entry_signature with different authentication scenarios

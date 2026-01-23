@@ -1,7 +1,7 @@
 //! Integration tests for the authentication system.
 
 use eidetica::{
-    auth::{AuthKey, Permission, format_public_key},
+    auth::{AuthSettings, types::AuthKey, types::Permission, types::SigKey},
     crdt::Doc,
     store::DocStore,
 };
@@ -40,7 +40,11 @@ async fn test_authenticated_operations() {
         .get_entry(&entry_id)
         .await
         .expect("Failed to get entry");
-    assert!(entry.sig.is_signed_by(&test_key));
+    let hint = entry.sig.hint();
+    assert!(
+        hint.pubkey.as_deref() == Some(&test_key) || hint.name.as_deref() == Some("TEST_KEY"),
+        "Entry should be signed by test key"
+    );
 }
 
 #[tokio::test]
@@ -81,25 +85,21 @@ async fn test_validation_pipeline_with_concurrent_settings_changes() {
         .add_private_key(Some("KEY1"))
         .await
         .expect("Failed to add key1");
-    let key1_pubkey =
-        eidetica::auth::crypto::parse_public_key(&key1_id).expect("Failed to parse key1");
     let key2_id = user
         .add_private_key(Some("KEY2"))
         .await
         .expect("Failed to add key2");
-    let key2_pubkey =
-        eidetica::auth::crypto::parse_public_key(&key2_id).expect("Failed to parse key2");
 
     // Create initial tree with KEY1 only
     let mut settings = Doc::new();
-    let mut auth_settings = Doc::new();
+    let mut auth_settings = AuthSettings::new();
     auth_settings
-        .set_json(
+        .add_key(
             &key1_id,
-            AuthKey::active(format_public_key(&key1_pubkey), Permission::Admin(1)).unwrap(),
+            AuthKey::active(Some("KEY1"), Permission::Admin(1)),
         )
         .unwrap();
-    settings.set("auth", auth_settings);
+    settings.set("auth", auth_settings.as_doc().clone());
 
     let tree = user
         .create_database(settings, &key1_id)
@@ -114,8 +114,7 @@ async fn test_validation_pipeline_with_concurrent_settings_changes() {
     let settings_store = op1.get_settings().expect("Failed to get settings store");
 
     // Add KEY2 to auth settings using SettingsStore
-    let key2_auth =
-        AuthKey::active(format_public_key(&key2_pubkey), Permission::Write(10)).unwrap();
+    let key2_auth = AuthKey::active(Some("KEY2"), Permission::Write(10));
     settings_store
         .set_auth_key(&key2_id, key2_auth)
         .await
@@ -162,12 +161,13 @@ async fn test_validation_pipeline_with_concurrent_settings_changes() {
         .get_entry(&entry_id1)
         .await
         .expect("Failed to get entry1");
-    assert!(entry1.sig.is_signed_by(&key1_id));
+    assert_eq!(entry1.sig.key, SigKey::from_pubkey(&key1_id));
+
     let entry2 = tree_with_key2
         .get_entry(&entry_id2)
         .await
         .expect("Failed to get entry2");
-    assert!(entry2.sig.is_signed_by(&key2_id));
+    assert_eq!(entry2.sig.key, SigKey::from_pubkey(&key2_id));
 }
 
 #[tokio::test]
@@ -178,23 +178,17 @@ async fn test_prevent_auth_corruption() {
         .add_private_key(Some("VALID_KEY"))
         .await
         .expect("Failed to add key");
-    let valid_key_pubkey =
-        eidetica::auth::crypto::parse_public_key(&valid_key_id).expect("Failed to parse key");
 
     // Create tree with valid auth settings
     let mut settings = Doc::new();
-    let mut auth_settings = Doc::new();
+    let mut auth_settings = AuthSettings::new();
     auth_settings
-        .set_json(
+        .add_key(
             &valid_key_id,
-            AuthKey::active(
-                format_public_key(&valid_key_pubkey),
-                Permission::Admin(1), // Need admin to modify settings
-            )
-            .unwrap(),
+            AuthKey::active(Some("VALID_KEY"), Permission::Admin(1)),
         )
         .unwrap();
-    settings.set("auth", auth_settings);
+    settings.set("auth", auth_settings.as_doc().clone());
 
     let tree = user
         .create_database(settings, &valid_key_id)

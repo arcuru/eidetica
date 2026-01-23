@@ -4,8 +4,8 @@ use eidetica::{
         crypto::format_public_key,
         settings::AuthSettings,
         types::{
-            AuthKey, DelegatedTreeRef, DelegationStep, KeyStatus, Permission, PermissionBounds,
-            SigKey, TreeReference,
+            AuthKey, DelegatedTreeRef, DelegationStep, KeyHint, KeyStatus, Permission,
+            PermissionBounds, SigKey, TreeReference,
         },
         validation::AuthValidator,
     },
@@ -71,16 +71,8 @@ pub async fn setup_user_and_tree_with_key(
 }
 
 /// Create an AuthKey with commonly used defaults
-pub fn auth_key(key_str: &str, permission: Permission, status: KeyStatus) -> AuthKey {
-    // Use provided key if it's valid (or the wildcard "*") otherwise generate one.
-    let chosen = if key_str == "*" || eidetica::auth::crypto::parse_public_key(key_str).is_ok() {
-        key_str.to_string()
-    } else {
-        let (_, verifying_key) = eidetica::auth::crypto::generate_keypair();
-        format_public_key(&verifying_key)
-    };
-
-    AuthKey::new(chosen, permission, status).unwrap()
+pub fn auth_key(permission: Permission, status: KeyStatus) -> AuthKey {
+    AuthKey::new(None::<String>, permission, status)
 }
 
 /// Create a user with multiple keys pre-configured for testing using User API
@@ -144,12 +136,11 @@ pub async fn configure_database_auth(
             .update_auth_settings(|auth| {
                 for (display_name, key_id, permission, status) in auth_config {
                     let public_key = eidetica::auth::crypto::parse_public_key(key_id)?;
-                    let auth_key = AuthKey::new(
-                        format_public_key(&public_key),
-                        permission.clone(),
-                        status.clone(),
-                    )?;
-                    auth.add_key(*display_name, auth_key)?;
+                    let pubkey_str = format_public_key(&public_key);
+                    let auth_key =
+                        AuthKey::new(Some(*display_name), permission.clone(), status.clone());
+                    // Use overwrite_key since the key may have been added during bootstrap
+                    auth.overwrite_key(&pubkey_str, auth_key)?; // Store by pubkey
                 }
                 Ok(())
             })
@@ -294,16 +285,19 @@ pub async fn create_delegation_ref(
 }
 
 /// Create a delegation path with specified steps
-pub fn create_delegation_path(steps: &[(&str, Option<Vec<ID>>)]) -> SigKey {
+pub fn create_delegation_path(steps: &[(&str, Vec<ID>)], final_hint: KeyHint) -> SigKey {
     let delegation_steps: Vec<DelegationStep> = steps
         .iter()
-        .map(|(key, tips)| DelegationStep {
-            key: key.to_string(),
+        .map(|(tree, tips)| DelegationStep {
+            tree: tree.to_string(),
             tips: tips.clone(),
         })
         .collect();
 
-    SigKey::DelegationPath(delegation_steps)
+    SigKey::Delegation {
+        path: delegation_steps,
+        hint: final_hint,
+    }
 }
 
 /// Create nested delegation chain for testing complex scenarios
@@ -357,20 +351,18 @@ impl DelegationChain {
     pub async fn create_chain_delegation(&self, final_key: &str) -> SigKey {
         let mut steps = Vec::new();
 
-        for (i, tree) in self.trees.iter().enumerate() {
+        for tree in self.trees.iter() {
             let tips = tree.get_tips().await.expect("Failed to get tips");
             steps.push(DelegationStep {
-                key: format!("delegate_level_{i}"),
-                tips: Some(tips),
+                tree: tree.root_id().to_string(),
+                tips,
             });
         }
 
-        steps.push(DelegationStep {
-            key: final_key.to_string(),
-            tips: None,
-        });
-
-        SigKey::DelegationPath(steps)
+        SigKey::Delegation {
+            path: steps,
+            hint: KeyHint::from_name(final_key),
+        }
     }
 }
 
@@ -423,10 +415,13 @@ pub async fn assert_permission_resolution(
     expected_permission: Permission,
     expected_status: KeyStatus,
 ) {
-    let result = validator
+    let results = validator
         .resolve_sig_key(sig_key, auth_settings, instance)
         .await
         .expect("Permission resolution should succeed");
+
+    assert!(!results.is_empty(), "Expected at least one resolved auth");
+    let result = &results[0];
 
     assert_eq!(
         result.effective_permission, expected_permission,

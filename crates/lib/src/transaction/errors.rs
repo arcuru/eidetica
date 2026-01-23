@@ -59,6 +59,10 @@ pub enum TransactionError {
     #[error("Entry signature verification failed")]
     SignatureVerificationFailed,
 
+    /// Entry validation failed (signature, permissions, or configuration)
+    #[error("Entry validation failed")]
+    EntryValidationFailed,
+
     /// Store data deserialization failed
     #[error("Store data deserialization failed for '{store}': {reason}")]
     StoreDeserializationFailed { store: String, reason: String },
@@ -85,6 +89,7 @@ impl TransactionError {
                 | TransactionError::InsufficientPermissions
                 | TransactionError::SignatureVerificationFailed
                 | TransactionError::EntrySigningFailed { .. }
+                | TransactionError::EntryValidationFailed
         )
     }
 
@@ -95,6 +100,7 @@ impl TransactionError {
             TransactionError::EntryConstructionFailed { .. }
                 | TransactionError::EntrySigningFailed { .. }
                 | TransactionError::SignatureVerificationFailed
+                | TransactionError::EntryValidationFailed
         )
     }
 

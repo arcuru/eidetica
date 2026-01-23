@@ -65,16 +65,15 @@ async fn setup_user_with_database() -> eidetica::Result<(
     let device_signing_key = instance.device_key().clone();
     let device_pubkey = format_public_key(&device_signing_key.verifying_key());
 
-    // Add admin as Admin to the database
+    // Add admin as Admin to the database (keyed by pubkey, name is device_key_name)
     let tx = database
         .new_transaction()
         .await
         .expect("Failed to create transaction");
     let settings_store = tx.get_settings().expect("Failed to get settings store");
-    let device_auth_key = AuthKey::active(device_pubkey, Permission::Admin(0))
-        .expect("Failed to create device auth key");
+    let device_auth_key = AuthKey::active(Some(device_key_name), Permission::Admin(0));
     settings_store
-        .set_auth_key(device_key_name, device_auth_key)
+        .set_auth_key(&device_pubkey, device_auth_key)
         .await
         .expect("Failed to set device key");
     tx.commit().await.expect("Failed to commit device key");
@@ -162,11 +161,11 @@ async fn grant_user_permission_on_database(
     // Get user's public key
     let pubkey = user.get_public_key(user_key_id)?;
 
-    // Update database auth settings using SettingsStore API
+    // Update database auth settings using SettingsStore API (keyed by pubkey)
     let tx = database.new_transaction().await?;
     let settings_store = tx.get_settings()?;
     settings_store
-        .set_auth_key(user_key_id, AuthKey::active(pubkey, permission)?)
+        .set_auth_key(&pubkey, AuthKey::active(None::<String>, permission))
         .await?;
     tx.commit().await?;
 
@@ -229,10 +228,10 @@ async fn test_user_approve_bootstrap_request() {
         .expect("Failed to get auth settings");
     let auth_settings = AuthSettings::from_doc(auth_doc);
     let added_key = auth_settings
-        .get_key("laptop_key")
+        .get_key_by_pubkey(&client_pubkey)
         .expect("Failed to get auth key");
 
-    assert_eq!(added_key.pubkey(), &client_pubkey);
+    assert_eq!(added_key.name(), Some("laptop_key"));
     assert_eq!(added_key.permissions(), &Permission::Write(5));
     println!("✅ Requesting key successfully added to database with correct permissions");
 
@@ -297,7 +296,7 @@ async fn test_user_reject_bootstrap_request() {
     if let Ok(auth_doc) = auth_result {
         let auth_settings = AuthSettings::from_doc(auth_doc);
         assert!(
-            auth_settings.get_key("laptop_key").is_err(),
+            auth_settings.get_key_by_pubkey(&client_pubkey).is_err(),
             "Key should not have been added to database"
         );
     }
@@ -536,12 +535,11 @@ async fn test_multiple_users() {
         .get_settings()
         .expect("Failed to get Alice's settings");
     let device_auth_key = eidetica::auth::types::AuthKey::active(
-        device_pubkey.clone(),
+        Some(device_key_name),
         eidetica::auth::Permission::Admin(0),
-    )
-    .expect("Failed to create device auth key");
+    );
     alice_settings
-        .set_auth_key(device_key_name, device_auth_key)
+        .set_auth_key(&device_pubkey, device_auth_key)
         .await
         .expect("Failed to set Alice device key");
     alice_tx
@@ -555,11 +553,12 @@ async fn test_multiple_users() {
         .await
         .expect("Failed to create Bob transaction");
     let bob_settings = bob_tx.get_settings().expect("Failed to get Bob's settings");
-    let device_auth_key =
-        eidetica::auth::types::AuthKey::active(device_pubkey, eidetica::auth::Permission::Admin(0))
-            .expect("Failed to create device auth key");
+    let device_auth_key = eidetica::auth::types::AuthKey::active(
+        Some(device_key_name),
+        eidetica::auth::Permission::Admin(0),
+    );
     bob_settings
-        .set_auth_key(device_key_name, device_auth_key)
+        .set_auth_key(&device_pubkey, device_auth_key)
         .await
         .expect("Failed to set Bob device key");
     bob_tx.commit().await.expect("Failed to commit Bob auth");
@@ -660,7 +659,11 @@ async fn test_multiple_users() {
         .await
         .expect("Failed to get Alice's auth");
     let alice_auth_settings = AuthSettings::from_doc(alice_auth);
-    assert!(alice_auth_settings.get_key("laptop_key").is_ok());
+    assert!(
+        !alice_auth_settings
+            .find_keys_by_name("laptop_key")
+            .is_empty()
+    );
 
     // Verify key NOT added to Bob's database
     let bob_tx = bob_db
@@ -676,7 +679,7 @@ async fn test_multiple_users() {
         .await
         .expect("Failed to get Bob's auth");
     let bob_auth_settings = AuthSettings::from_doc(bob_auth);
-    assert!(bob_auth_settings.get_key("laptop_key").is_err());
+    assert!(bob_auth_settings.find_keys_by_name("laptop_key").is_empty());
 
     println!("✅ Multiple users can independently manage bootstrap requests for their databases");
 }
@@ -754,10 +757,9 @@ async fn test_user_without_admin_cannot_modify() {
     let alice_settings = alice_tx
         .get_settings()
         .expect("Failed to get Alice's settings");
-    let device_auth_key = AuthKey::active(device_pubkey, Permission::Admin(0))
-        .expect("Failed to create device auth key");
+    let device_auth_key = AuthKey::active(Some(device_key_name), Permission::Admin(0));
     alice_settings
-        .set_auth_key(device_key_name, device_auth_key)
+        .set_auth_key(&device_pubkey, device_auth_key)
         .await
         .expect("Failed to set Alice device key");
     alice_tx

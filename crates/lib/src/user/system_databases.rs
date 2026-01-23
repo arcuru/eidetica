@@ -47,10 +47,11 @@ pub async fn create_instance_database(
     settings.set("description", "Instance configuration and management");
 
     // Set up auth with device key as admin
+    // Keys are stored by pubkey, with name as optional metadata
     let mut auth_settings = AuthSettings::new();
     auth_settings.add_key(
-        "admin",
-        AuthKey::active(device_pubkey, Permission::Admin(0))?,
+        device_pubkey,
+        AuthKey::active(Some("admin"), Permission::Admin(0)),
     )?;
     settings.set("auth", auth_settings.as_doc().clone());
 
@@ -59,7 +60,7 @@ pub async fn create_instance_database(
         settings,
         instance,
         device_signing_key.clone(),
-        "admin".to_string(),
+        device_pubkey.to_string(),
     )
     .await?;
 
@@ -90,10 +91,11 @@ pub async fn create_users_database(
     settings.set("description", "User directory database");
 
     // Create auth settings with device key as admin
+    // Keys are stored by pubkey, with name as optional metadata
     let mut auth_settings = AuthSettings::new();
     auth_settings.add_key(
-        "admin",
-        AuthKey::active(device_pubkey, Permission::Admin(0))?,
+        device_pubkey,
+        AuthKey::active(Some("admin"), Permission::Admin(0)),
     )?;
 
     settings.set("auth", auth_settings.as_doc().clone());
@@ -103,7 +105,7 @@ pub async fn create_users_database(
         settings,
         instance,
         device_signing_key.clone(),
-        "admin".to_string(),
+        device_pubkey.to_string(),
     )
     .await?;
 
@@ -135,10 +137,11 @@ pub async fn create_databases_tracking(
     settings.set("description", "Database tracking and registry");
 
     // Create auth settings with device key as admin
+    // Keys are stored by pubkey, with name as optional metadata
     let mut auth_settings = AuthSettings::new();
     auth_settings.add_key(
-        "admin",
-        AuthKey::active(device_pubkey, Permission::Admin(0))?,
+        device_pubkey,
+        AuthKey::active(Some("admin"), Permission::Admin(0)),
     )?;
 
     settings.set("auth", auth_settings.as_doc().clone());
@@ -148,7 +151,7 @@ pub async fn create_databases_tracking(
         settings,
         instance,
         device_signing_key.clone(),
-        "admin".to_string(),
+        device_pubkey.to_string(),
     )
     .await?;
 
@@ -222,17 +225,18 @@ pub async fn create_user(
     let device_pubkey_str = crate::auth::crypto::format_public_key(&device_pubkey);
 
     // Set up authentication with both keys
+    // Keys are stored by pubkey, with name as optional metadata
     let mut auth_settings = AuthSettings::new();
     // TODO: Is it possible for the device key to only have Read permission?
     // Then the device can read it to let the user login but that's it
     // (Though at the moment it wouldn't need explicit read access, every local DB is readable)
     auth_settings.add_key(
-        "admin",
-        AuthKey::active(&device_pubkey_str, Permission::Admin(0))?,
+        &device_pubkey_str,
+        AuthKey::active(Some("device"), Permission::Admin(0)),
     )?;
     auth_settings.add_key(
         &user_public_key_str,
-        AuthKey::active(&user_public_key_str, Permission::Admin(0))?,
+        AuthKey::active(Some("user"), Permission::Admin(0)),
     )?;
     user_db_settings.set("auth", auth_settings.as_doc().clone());
 
@@ -241,7 +245,7 @@ pub async fn create_user(
         user_db_settings,
         instance,
         device_private_key,
-        "admin".to_string(),
+        device_pubkey_str.clone(),
     )
     .await?;
     let user_database_id = user_database.root_id().clone();
@@ -529,12 +533,12 @@ mod tests {
         let name = doc_store.get_string("name").await.unwrap();
         assert_eq!(name, INSTANCE);
 
-        // Verify auth settings
+        // Verify auth settings - key is stored by pubkey with name "admin"
         let settings_store = SettingsStore::new(&transaction).unwrap();
         let auth_settings = settings_store.get_auth_settings().await.unwrap();
-        let device_key = auth_settings.get_key("admin").unwrap();
+        let device_key = auth_settings.get_key_by_pubkey(&pubkey_str).unwrap();
         assert_eq!(device_key.permissions(), &Permission::Admin(0));
-        assert_eq!(device_key.pubkey(), &pubkey_str);
+        assert_eq!(device_key.name(), Some("admin"));
     }
 
     #[tokio::test]
@@ -587,14 +591,14 @@ mod tests {
             .await
             .unwrap();
 
-        // Verify admin has admin access
+        // Verify admin has admin access - key is stored by pubkey
         let transaction = users_db.new_transaction().await.unwrap();
         let settings_store = SettingsStore::new(&transaction).unwrap();
         let auth_settings = settings_store.get_auth_settings().await.unwrap();
-        let device_key = auth_settings.get_key("admin").unwrap();
+        let device_key = auth_settings.get_key_by_pubkey(&pubkey_str).unwrap();
 
         assert_eq!(device_key.permissions(), &Permission::Admin(0));
-        assert_eq!(device_key.pubkey(), &pubkey_str);
+        assert_eq!(device_key.name(), Some("admin"));
     }
 
     #[tokio::test]

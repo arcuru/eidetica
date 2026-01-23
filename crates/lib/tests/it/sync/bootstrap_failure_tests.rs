@@ -37,16 +37,11 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
     settings.set("name", "Restricted Database");
 
     // Set strict auth policy - only server_admin has permission to manage auth
-    let server_admin_pubkey = server_user
-        .get_public_key(&server_admin_key_id)
-        .expect("Failed to get server admin public key");
-
     let mut auth_settings = AuthSettings::new();
     auth_settings
         .add_key(
             &server_admin_key_id,
-            AuthKey::active(&server_admin_pubkey, Permission::Admin(0))
-                .expect("Failed to create admin key"),
+            AuthKey::active(Some("admin"), Permission::Admin(0)),
         )
         .expect("Failed to add server admin auth");
 
@@ -55,9 +50,8 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
 
     auth_settings
         .add_key(
-            "admin",
-            AuthKey::active(&device_pubkey, Permission::Admin(0))
-                .expect("Failed to create device key"),
+            &device_pubkey,
+            AuthKey::active(Some("device"), Permission::Admin(0)),
         )
         .expect("Failed to add device key auth");
 
@@ -385,31 +379,18 @@ async fn test_bootstrap_with_revoked_key() {
     let mut settings = Doc::new();
     settings.set("name", "Database With Revoked Key");
 
-    let server_admin_pubkey = server_user
-        .get_public_key(&server_admin_key_id)
-        .expect("Failed to get server admin public key");
-    let revoked_client_pubkey = server_user
-        .get_public_key(&revoked_client_key_id)
-        .expect("Failed to get revoked client public key");
-
     let mut auth_settings = AuthSettings::new();
     auth_settings
         .add_key(
             &server_admin_key_id,
-            AuthKey::active(&server_admin_pubkey, Permission::Admin(0))
-                .expect("Failed to create admin key"),
+            AuthKey::active(Some("admin"), Permission::Admin(0)),
         )
         .expect("Failed to add server admin auth");
 
     auth_settings
         .add_key(
             &revoked_client_key_id,
-            AuthKey::new(
-                &revoked_client_pubkey,
-                Permission::Write(10),
-                KeyStatus::Revoked,
-            )
-            .expect("Failed to create revoked client key"),
+            AuthKey::new(Some("revoked"), Permission::Write(10), KeyStatus::Revoked),
         )
         .expect("Failed to add revoked client auth");
 
@@ -418,9 +399,8 @@ async fn test_bootstrap_with_revoked_key() {
 
     auth_settings
         .add_key(
-            "admin",
-            AuthKey::active(&device_pubkey, Permission::Admin(0))
-                .expect("Failed to create device key"),
+            &device_pubkey,
+            AuthKey::active(Some("device"), Permission::Admin(0)),
         )
         .expect("Failed to add device key auth");
 
@@ -509,16 +489,11 @@ async fn test_bootstrap_exceeds_granted_permissions() {
     let mut settings = Doc::new();
     settings.set("name", "Restrictive Permission Database");
 
-    let server_admin_pubkey = server_user
-        .get_public_key(&server_admin_key_id)
-        .expect("Failed to get server admin public key");
-
     let mut auth_settings = AuthSettings::new();
     auth_settings
         .add_key(
             &server_admin_key_id,
-            AuthKey::active(&server_admin_pubkey, Permission::Admin(0))
-                .expect("Failed to create admin key"),
+            AuthKey::active(Some("admin"), Permission::Admin(0)),
         )
         .expect("Failed to add server admin auth");
 
@@ -527,9 +502,8 @@ async fn test_bootstrap_exceeds_granted_permissions() {
 
     auth_settings
         .add_key(
-            "admin",
-            AuthKey::active(&device_pubkey, Permission::Admin(0))
-                .expect("Failed to create device key"),
+            &device_pubkey,
+            AuthKey::active(Some("device"), Permission::Admin(0)),
         )
         .expect("Failed to add device key auth");
 

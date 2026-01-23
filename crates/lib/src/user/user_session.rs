@@ -497,8 +497,15 @@ impl User {
         // Select the first SigKey (highest permission, since find_sigkeys returns sorted list)
         let (sigkey, _permission) = &available_sigkeys[0];
         let sigkey_str = match sigkey {
-            SigKey::Direct(key_name) => key_name.clone(),
-            SigKey::DelegationPath(_) => {
+            SigKey::Direct(hint) => {
+                // Extract the sigkey string from the hint
+                // Prefer pubkey hint, fall back to name hint
+                hint.pubkey
+                    .clone()
+                    .or_else(|| hint.name.clone())
+                    .unwrap_or_default()
+            }
+            SigKey::Delegation { .. } => {
                 // FIXME: Implement delegation path handling
                 return Err(UserError::NoSigKeyFound {
                     key_id: key_id.to_string(),
@@ -991,12 +998,11 @@ mod tests {
         let mut auth_settings = crate::auth::settings::AuthSettings::new();
         auth_settings
             .add_key(
-                "admin",
+                &device_pubkey_str,
                 crate::auth::types::AuthKey::active(
-                    &device_pubkey_str,
+                    Some("admin"),
                     crate::auth::types::Permission::Admin(0),
-                )
-                .unwrap(),
+                ),
             )
             .unwrap();
         db_settings.set("auth", auth_settings.as_doc().clone());
@@ -1005,7 +1011,7 @@ mod tests {
             db_settings,
             &instance,
             device_key.clone(),
-            "admin".to_string(),
+            device_pubkey_str.clone(),
         )
         .await
         .unwrap();

@@ -177,10 +177,10 @@ Within transactions, you can manage database settings using `SettingsStore`. Thi
 # // Generate keypairs for old user and add it first so we can revoke it
 # let (_old_user_signing_key, old_user_verifying_key) = generate_keypair();
 # let old_user_public_key = format_public_key(&old_user_verifying_key);
-# let old_user_key = AuthKey::active(&old_user_public_key, Permission::Write(15))?;
+# let old_user_key = AuthKey::active(Some("old_device"), Permission::Write(15));
 # let setup_txn = database.new_transaction().await?;
 # let setup_store = setup_txn.get_settings()?;
-# setup_store.set_auth_key("old_user", old_user_key).await?;
+# setup_store.set_auth_key(&old_user_public_key, old_user_key).await?;
 # setup_txn.commit().await?;
 let transaction = database.new_transaction().await?;
 let settings_store = transaction.get_settings()?;
@@ -194,18 +194,15 @@ settings_store.set_name("Production Database").await?;
 # let (_alice_signing_key, alice_verifying_key) = generate_keypair();
 # let alice_public_key = format_public_key(&alice_verifying_key);
 
-// Add authentication keys
-let new_user_key = AuthKey::active(
-    &new_user_public_key,
-    Permission::Write(10),
-)?;
-settings_store.set_auth_key("new_user", new_user_key).await?;
+// Add authentication keys (indexed by pubkey, name is optional metadata)
+let new_user_key = AuthKey::active(Some("new_device"), Permission::Write(10));
+settings_store.set_auth_key(&new_user_public_key, new_user_key).await?;
 
 // Complex auth operations atomically
-let alice_key = AuthKey::active(&alice_public_key, Permission::Write(5))?;
+let alice_key = AuthKey::active(Some("alice_laptop"), Permission::Write(5));
 settings_store.update_auth_settings(|auth| {
-    auth.overwrite_key("alice", alice_key)?;
-    auth.revoke_key("old_user")?;
+    auth.overwrite_key(&alice_public_key, alice_key)?;
+    auth.revoke_key(&old_user_public_key)?;
     Ok(())
 }).await?;
 

@@ -4,7 +4,7 @@ use eidetica::{
     auth::{
         AuthSettings,
         crypto::{format_public_key, verify_entry_signature},
-        types::{AuthKey, KeyStatus, Permission},
+        types::{AuthKey, KeyStatus, Permission, SigKey},
     },
     crdt::{Doc, doc::Value},
     store::DocStore,
@@ -140,20 +140,17 @@ async fn test_multiple_authenticated_entries() {
         .add_private_key(Some("TEST_KEY"))
         .await
         .expect("Failed to add key");
-    let public_key =
-        eidetica::auth::crypto::parse_public_key(&key_id).expect("Failed to parse key");
 
     // Create a tree with authentication enabled
     let mut settings = Doc::new();
-    let mut auth_settings = Doc::new();
-
-    let auth_key = AuthKey::active(
-        format_public_key(&public_key),
-        Permission::Admin(0), // Admin needed to create tree with auth
-    )
-    .unwrap();
-    auth_settings.set_json(&key_id, auth_key).unwrap();
-    settings.set("auth", auth_settings);
+    let mut auth_settings = AuthSettings::new();
+    auth_settings
+        .add_key(
+            &key_id,
+            AuthKey::active(Some("TEST_KEY"), Permission::Admin(0)),
+        )
+        .unwrap();
+    settings.set("auth", auth_settings.as_doc().clone());
 
     let tree = user
         .create_database(settings, &key_id)
@@ -194,7 +191,7 @@ async fn test_multiple_authenticated_entries() {
         .get_entry(&entry_id1)
         .await
         .expect("Failed to get entry1");
-    assert!(entry1.sig.is_signed_by(&key_id));
+    assert_eq!(entry1.sig.key, SigKey::from_pubkey(&key_id));
     assert!(
         tree.verify_entry_signature(&entry_id1)
             .await
@@ -205,7 +202,7 @@ async fn test_multiple_authenticated_entries() {
         .get_entry(&entry_id2)
         .await
         .expect("Failed to get entry2");
-    assert!(entry2.sig.is_signed_by(&key_id));
+    assert_eq!(entry2.sig.key, SigKey::from_pubkey(&key_id));
     assert!(
         tree.verify_entry_signature(&entry_id2)
             .await
@@ -225,9 +222,7 @@ async fn test_entry_validation_with_corrupted_auth_section() {
         .build()
         .expect("Entry should build successfully");
     entry.sig = eidetica::auth::types::SigInfo::builder()
-        .key(eidetica::auth::types::SigKey::Direct(
-            "TEST_KEY".to_string(),
-        ))
+        .key(SigKey::from_name("TEST_KEY"))
         .build();
     let signature = eidetica::auth::crypto::sign_entry(&entry, &signing_key).unwrap();
     entry.sig.sig = Some(signature);
@@ -327,26 +322,24 @@ async fn test_entry_validation_with_mixed_key_states() {
 async fn test_entry_validation_cache_behavior() {
     let mut validator = eidetica::auth::validation::AuthValidator::new();
     let (signing_key, verifying_key) = eidetica::auth::crypto::generate_keypair();
+    let pubkey_str = format_public_key(&verifying_key);
 
-    let auth_key =
-        AuthKey::active(format_public_key(&verifying_key), Permission::Write(10)).unwrap();
+    let auth_key = AuthKey::active(Some("TEST_KEY"), Permission::Write(10));
 
     // Create settings with the key
     let mut settings = Doc::new();
-    let mut auth_settings = Doc::new();
+    let mut auth_settings = AuthSettings::new();
     auth_settings
-        .set_json("TEST_KEY", auth_key.clone())
+        .add_key(&pubkey_str, auth_key.clone())
         .unwrap();
-    settings.set("auth", auth_settings);
+    settings.set("auth", auth_settings.as_doc().clone());
 
     // Create a signed entry
     let mut entry = eidetica::Entry::root_builder()
         .build()
         .expect("Entry should build successfully");
     entry.sig = eidetica::auth::types::SigInfo::builder()
-        .key(eidetica::auth::types::SigKey::Direct(
-            "TEST_KEY".to_string(),
-        ))
+        .key(SigKey::from_pubkey(&pubkey_str))
         .build();
     let signature = eidetica::auth::crypto::sign_entry(&entry, &signing_key).unwrap();
     entry.sig.sig = Some(signature);
@@ -361,31 +354,20 @@ async fn test_entry_validation_cache_behavior() {
     let result1 = validator
         .validate_entry(&entry, &auth_settings_from_doc, None)
         .await;
-    assert!(
-        result1.is_ok() && result1.unwrap(),
-        "First validation should succeed"
-    );
+    assert!(result1.unwrap(), "First validation should succeed");
 
     // Modify the key to be revoked
     let mut revoked_auth_key = auth_key.clone();
     revoked_auth_key.set_status(eidetica::auth::types::KeyStatus::Revoked);
 
-    let mut new_settings = Doc::new();
-    let mut new_auth_settings = Doc::new();
-    new_auth_settings
-        .set_json("TEST_KEY", revoked_auth_key)
+    let mut revoked_auth_settings = AuthSettings::new();
+    revoked_auth_settings
+        .add_key(&pubkey_str, revoked_auth_key)
         .unwrap();
-    new_settings.set("auth", new_auth_settings);
 
-    // Extract AuthSettings from new Doc
-    let new_auth_settings_from_doc = match new_settings.get("auth") {
-        Some(Value::Doc(auth_doc)) => AuthSettings::from_doc(auth_doc.clone()),
-        _ => AuthSettings::new(),
-    };
-
-    // Validate with revoked key - should fail
+    // Validate with revoked key - should fail (returns Ok(false) since no active key could verify)
     let result2 = validator
-        .validate_entry(&entry, &new_auth_settings_from_doc, None)
+        .validate_entry(&entry, &revoked_auth_settings, None)
         .await;
     assert!(
         result2.is_ok() && !result2.unwrap(),
@@ -397,7 +379,7 @@ async fn test_entry_validation_cache_behavior() {
         .validate_entry(&entry, &auth_settings_from_doc, None)
         .await;
     assert!(
-        result3.is_ok() && result3.unwrap(),
+        result3.unwrap(),
         "Validation should work again with active key"
     );
 }
@@ -406,45 +388,32 @@ async fn test_entry_validation_cache_behavior() {
 async fn test_entry_validation_with_malformed_keys() {
     let mut validator = eidetica::auth::validation::AuthValidator::new();
     let (signing_key, verifying_key) = eidetica::auth::crypto::generate_keypair();
+    let pubkey_str = format_public_key(&verifying_key);
 
     // Create settings with a valid key for comparison
-    let auth_key =
-        AuthKey::active(format_public_key(&verifying_key), Permission::Write(10)).unwrap();
+    let auth_key = AuthKey::active(Some("TEST_KEY"), Permission::Write(10));
 
-    let mut settings = Doc::new();
-    let mut auth_settings = Doc::new();
+    let mut auth_settings = AuthSettings::new();
     auth_settings
-        .set_json("TEST_KEY", auth_key.clone())
+        .add_key(&pubkey_str, auth_key.clone())
         .unwrap();
-    settings.set("auth", auth_settings);
 
     // Create entry signed with correct key
     let mut correct_entry = eidetica::Entry::root_builder()
         .build()
         .expect("Entry should build successfully");
     correct_entry.sig = eidetica::auth::types::SigInfo::builder()
-        .key(eidetica::auth::types::SigKey::Direct(
-            "TEST_KEY".to_string(),
-        ))
+        .key(SigKey::from_pubkey(&pubkey_str))
         .build();
     let correct_signature =
         eidetica::auth::crypto::sign_entry(&correct_entry, &signing_key).unwrap();
     correct_entry.sig.sig = Some(correct_signature);
 
-    // Extract AuthSettings from Doc
-    let auth_settings = match settings.get("auth") {
-        Some(Value::Doc(auth_doc)) => AuthSettings::from_doc(auth_doc.clone()),
-        _ => AuthSettings::new(),
-    };
-
     // Should validate successfully with correct settings
     let result1 = validator
         .validate_entry(&correct_entry, &auth_settings, None)
         .await;
-    assert!(
-        result1.is_ok() && result1.unwrap(),
-        "Correctly signed entry should validate"
-    );
+    assert!(result1.unwrap(), "Correctly signed entry should validate");
 
     // Test validation with mismatched signature (key exists but signature is wrong)
     let (wrong_signing_key, _wrong_verifying_key) = eidetica::auth::crypto::generate_keypair();
@@ -460,7 +429,7 @@ async fn test_entry_validation_with_malformed_keys() {
         .validate_entry(&entry_with_wrong_sig, &auth_settings, None)
         .await;
     assert!(
-        result_wrong_sig.is_err() || (result_wrong_sig.is_ok() && !result_wrong_sig.unwrap()),
+        result_wrong_sig.is_ok() && !result_wrong_sig.unwrap(),
         "Entry should fail validation with mismatched signature"
     );
 
@@ -471,11 +440,11 @@ async fn test_entry_validation_with_malformed_keys() {
     let result2 = validator
         .validate_entry(&corrupted_entry, &auth_settings, None)
         .await;
-    // The validation might return an error for invalid base64, or false for invalid signature
-    // Let's check both cases
-    if let Ok(valid) = result2 {
-        assert!(!valid, "Entry with corrupted signature should not validate")
-    } // This is also acceptable - invalid format should error
+    // The validation should return Ok(false) for invalid base64 or invalid signature
+    assert!(
+        result2.is_ok() && !result2.unwrap(),
+        "Entry with corrupted signature should not validate"
+    );
 
     // Test signature created with wrong key
     let (wrong_signing_key, _wrong_verifying_key) = eidetica::auth::crypto::generate_keypair();
@@ -484,9 +453,7 @@ async fn test_entry_validation_with_malformed_keys() {
         .build()
         .expect("Entry should build successfully");
     wrong_signature_entry.sig = eidetica::auth::types::SigInfo::builder()
-        .key(eidetica::auth::types::SigKey::Direct(
-            "TEST_KEY".to_string(),
-        ))
+        .key(SigKey::from_pubkey(&pubkey_str))
         .build();
 
     // Sign with wrong key but try to validate against correct key
@@ -512,22 +479,22 @@ async fn test_entry_validation_unsigned_entry_detection() {
         .build()
         .expect("Entry should build successfully");
 
-    // Test with no auth settings
+    // Test with no auth settings - unsigned entry should be allowed
     let empty_auth_settings = AuthSettings::new();
     let result1 = validator
         .validate_entry(&entry, &empty_auth_settings, None)
         .await;
     assert!(
-        result1.is_ok() && result1.unwrap(),
+        result1.unwrap(),
         "Unsigned entry should be valid when no auth configured"
     );
 
-    // Test with auth settings present
+    // Test with auth settings present (but empty auth section - still no keys)
     let mut settings = Doc::new();
     let auth_doc = Doc::new();
     settings.set("auth", auth_doc);
 
-    // Extract AuthSettings from Doc (empty auth section)
+    // Extract AuthSettings from Doc (empty auth section = no keys configured)
     let auth_settings = match settings.get("auth") {
         Some(Value::Doc(auth_doc)) => AuthSettings::from_doc(auth_doc.clone()),
         _ => AuthSettings::new(),
@@ -535,8 +502,8 @@ async fn test_entry_validation_unsigned_entry_detection() {
 
     let result2 = validator.validate_entry(&entry, &auth_settings, None).await;
     assert!(
-        result2.is_ok() && result2.unwrap(),
-        "Unsigned entry should still be valid for backward compatibility"
+        result2.unwrap(),
+        "Unsigned entry should be valid when no auth keys configured"
     );
 }
 
@@ -545,43 +512,30 @@ async fn test_entry_validation_with_invalid_signatures() {
     let mut validator = eidetica::auth::validation::AuthValidator::new();
     let (signing_key, verifying_key) = eidetica::auth::crypto::generate_keypair();
     let (_wrong_signing_key, wrong_verifying_key) = eidetica::auth::crypto::generate_keypair();
+    let pubkey_str = format_public_key(&verifying_key);
 
     // Create settings with the correct public key
-    let auth_key =
-        AuthKey::active(format_public_key(&verifying_key), Permission::Write(10)).unwrap();
+    let auth_key = AuthKey::active(Some("TEST_KEY"), Permission::Write(10));
 
-    let mut settings = Doc::new();
-    let mut auth_settings = Doc::new();
-    auth_settings.set_json("TEST_KEY", auth_key).unwrap();
-    settings.set("auth", auth_settings);
+    let mut auth_settings = AuthSettings::new();
+    auth_settings.add_key(&pubkey_str, auth_key).unwrap();
 
     // Create entry signed with correct key
     let mut correct_entry = eidetica::Entry::root_builder()
         .build()
         .expect("Entry should build successfully");
     correct_entry.sig = eidetica::auth::types::SigInfo::builder()
-        .key(eidetica::auth::types::SigKey::Direct(
-            "TEST_KEY".to_string(),
-        ))
+        .key(SigKey::from_pubkey(&pubkey_str))
         .build();
     let correct_signature =
         eidetica::auth::crypto::sign_entry(&correct_entry, &signing_key).unwrap();
     correct_entry.sig.sig = Some(correct_signature);
 
-    // Extract AuthSettings from Doc
-    let auth_settings = match settings.get("auth") {
-        Some(Value::Doc(auth_doc)) => AuthSettings::from_doc(auth_doc.clone()),
-        _ => AuthSettings::new(),
-    };
-
     // Should validate successfully
     let result1 = validator
         .validate_entry(&correct_entry, &auth_settings, None)
         .await;
-    assert!(
-        result1.is_ok() && result1.unwrap(),
-        "Correctly signed entry should validate"
-    );
+    assert!(result1.unwrap(), "Correctly signed entry should validate");
 
     // Create entry with corrupted signature
     let mut corrupted_entry = correct_entry.clone();
@@ -590,15 +544,73 @@ async fn test_entry_validation_with_invalid_signatures() {
     let result2 = validator
         .validate_entry(&corrupted_entry, &auth_settings, None)
         .await;
-    // The validation might return an error for invalid base64, or false for invalid signature
-    // Let's check both cases
-    if let Ok(valid) = result2 {
-        assert!(!valid, "Entry with corrupted signature should not validate")
-    } // This is also acceptable - invalid format should error
+    // The validation should return Ok(false) for invalid base64 or invalid signature
+    assert!(
+        result2.is_ok() && !result2.unwrap(),
+        "Entry with corrupted signature should not validate"
+    );
 
     // Test signature verification function directly
     assert!(verify_entry_signature(&correct_entry, &verifying_key).expect("Failed to verify"));
     assert!(
         !verify_entry_signature(&correct_entry, &wrong_verifying_key).expect("Failed to verify")
+    );
+}
+
+/// Test that tampering with the SigKey after signing invalidates the signature.
+///
+/// This is a critical security property: the SigKey (pubkey, name hints)
+/// is included in the signed data, so any modification should cause verification to fail.
+#[tokio::test]
+async fn test_sigkey_tampering_invalidates_signature() {
+    let (signing_key, verifying_key) = eidetica::auth::crypto::generate_keypair();
+    let (_, other_verifying_key) = eidetica::auth::crypto::generate_keypair();
+    let pubkey_str = format_public_key(&verifying_key);
+    let other_pubkey_str = format_public_key(&other_verifying_key);
+
+    // Create and sign an entry with a pubkey hint
+    let mut entry = eidetica::Entry::root_builder()
+        .build()
+        .expect("Entry should build successfully");
+    entry.sig = eidetica::auth::types::SigInfo::builder()
+        .key(SigKey::from_pubkey(&pubkey_str))
+        .build();
+    let signature = eidetica::auth::crypto::sign_entry(&entry, &signing_key).unwrap();
+    entry.sig.sig = Some(signature);
+
+    // Original entry should verify with the correct key
+    assert!(
+        verify_entry_signature(&entry, &verifying_key).expect("Failed to verify"),
+        "Original entry should verify successfully"
+    );
+
+    // Tamper with pubkey hint - should fail verification
+    let mut tampered_pubkey = entry.clone();
+    tampered_pubkey.sig.key = SigKey::from_pubkey(&other_pubkey_str);
+    assert!(
+        !verify_entry_signature(&tampered_pubkey, &verifying_key).expect("Failed to verify"),
+        "Tampering with pubkey hint should invalidate signature"
+    );
+
+    // Tamper with name hint - should fail verification
+    let mut tampered_name = entry.clone();
+    tampered_name.sig.key = SigKey::from_name("tampered_name");
+    assert!(
+        !verify_entry_signature(&tampered_name, &verifying_key).expect("Failed to verify"),
+        "Tampering with name hint should invalidate signature"
+    );
+
+    // Tamper by changing from Direct to Delegation - should fail verification
+    let mut tampered_delegation = entry.clone();
+    tampered_delegation.sig.key = SigKey::Delegation {
+        path: vec![eidetica::auth::types::DelegationStep {
+            tree: "fake_tree".to_string(),
+            tips: vec![],
+        }],
+        hint: eidetica::auth::types::KeyHint::from_pubkey(&pubkey_str),
+    };
+    assert!(
+        !verify_entry_signature(&tampered_delegation, &verifying_key).expect("Failed to verify"),
+        "Changing SigKey variant should invalidate signature"
     );
 }

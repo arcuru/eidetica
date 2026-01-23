@@ -419,7 +419,7 @@ async fn test_unauthenticated_sync_should_fail() {
     // Verify auth is configured by checking if server_key exists
     let db_settings = database.get_settings().await.unwrap();
     let auth_settings = db_settings.get_auth_settings().await.unwrap();
-    let server_key_auth = auth_settings.get_key(&server_key_id);
+    let server_key_auth = auth_settings.get_key_by_pubkey(&server_key_id);
     assert!(
         server_key_auth.is_ok(),
         "Database should have auth configured with server_key"

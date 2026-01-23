@@ -8,7 +8,7 @@ use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand;
 
 use super::errors::AuthError;
-use crate::Entry;
+use crate::{Entry, Error};
 
 /// Size of Ed25519 public keys in bytes
 pub const ED25519_PUBLIC_KEY_SIZE: usize = 32;
@@ -80,7 +80,7 @@ pub fn generate_keypair() -> (SigningKey, VerifyingKey) {
 /// Sign an entry with an Ed25519 private key
 ///
 /// Returns base64-encoded signature string
-pub fn sign_entry(entry: &Entry, signing_key: &SigningKey) -> Result<String, crate::Error> {
+pub fn sign_entry(entry: &Entry, signing_key: &SigningKey) -> Result<String, Error> {
     let signing_bytes = entry.signing_bytes()?;
     let signature = signing_key.sign(&signing_bytes);
     Ok(Base64::encode_string(&signature.to_bytes()))
@@ -250,6 +250,7 @@ pub fn verify_challenge_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::types::{SigInfo, SigKey};
 
     #[test]
     fn test_keypair_generation() {
@@ -289,8 +290,8 @@ mod tests {
             .expect("Root entry should build successfully");
 
         // Set auth ID without signature
-        entry.sig = crate::auth::types::SigInfo::builder()
-            .key(crate::auth::types::SigKey::Direct("KEY_LAPTOP".to_string()))
+        entry.sig = SigInfo::builder()
+            .key(SigKey::from_name("KEY_LAPTOP"))
             .build();
 
         // Sign the entry

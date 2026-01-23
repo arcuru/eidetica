@@ -210,29 +210,27 @@ classDiagram
 
 ### Direct Key Example
 
+Keys are stored by their public key string under the `keys` sub-object. Names are optional metadata on each key.
+
 ```json
 {
   "_settings": {
     "auth": {
-      "KEY_LAPTOP": {
-        "pubkey": "ed25519:PExACKOW0L7bKAM9mK_mH3L5EDwszC437uRzTqAbxpk",
-        "permissions": "write:10",
-        "status": "active"
-      },
-      "KEY_DESKTOP": {
-        "pubkey": "ed25519:QJ7bKAM9mK_mH3L5EDwszC437uRzTqAbxpkPExACKOW0L",
-        "permissions": "read",
-        "status": "active"
-      },
-      "*": {
-        "pubkey": "*",
-        "permissions": "read",
-        "status": "active"
-      },
-      "PUBLIC_WRITE": {
-        "pubkey": "*",
-        "permissions": "write:100",
-        "status": "active"
+      "keys": {
+        "ed25519:PExACKOW0L7bKAM9mK_mH3L5EDwszC437uRzTqAbxpk": {
+          "name": "laptop",
+          "permissions": { "Write": 10 },
+          "status": "Active"
+        },
+        "ed25519:QJ7bKAM9mK_mH3L5EDwszC437uRzTqAbxpkPExACKOW0L": {
+          "name": "desktop",
+          "permissions": "Read",
+          "status": "Active"
+        },
+        "*": {
+          "permissions": "Read",
+          "status": "Active"
+        }
       }
     },
     "name": "My Database"
@@ -254,32 +252,48 @@ Every entry in Eidetica must be signed. The authentication information is embedd
 
 ```json
 {
-  "database": {
+  "tree": {
     "root": "tree_root_id",
-    "parents": ["parent_entry_id"],
-    "data": "{\"key\": \"value\"}",
-    "metadata": "{\"_settings\": [\"settings_tip_id\"]}"
+    "parents": ["parent_entry_id"]
   },
-  "stores": [
+  "subtrees": [
     {
       "name": "users",
       "parents": ["parent_entry_id"],
       "data": "{\"user_data\": \"example\"}"
     }
   ],
-  "auth": {
+  "sig": {
     "sig": "ed25519_signature_base64_encoded",
-    "key": "KEY_LAPTOP"
+    "key": {
+      "pubkey": "ed25519:PExACKOW0L7bKAM9mK_mH3L5EDwszC437uRzTqAbxpk"
+    }
   }
 }
 ```
 
-The `auth.key` field can be either:
+The `sig.key` field contains explicit hint fields for key lookup:
 
-- **Direct key**: A string referencing a key name in this database's `_settings.auth`
-- **Delegation path**: An ordered list of `{"key": "delegated_tree_1", "tips": ["A", "B"]}` elements, where the last element must contain only a `"key"` field
+- **`pubkey`**: Direct public key string (e.g., `"ed25519:..."`)
+- **`name`**: Key name hint for lookup by name
 
-The `auth.sig` field contains the base64-encoded Ed25519 signature of the entry's content hash.
+For global permissions, the pubkey field uses the format `"*:ed25519:ABC..."` where `*:` indicates global permission and the rest is the actual signer's public key.
+
+For delegation paths, the key includes a `path` array of delegation steps:
+
+```json
+{
+  "sig": {
+    "sig": "ed25519_signature_base64_encoded",
+    "key": {
+      "path": [{ "tree": "delegated_tree_root_id", "tips": ["tip1", "tip2"] }],
+      "pubkey": "ed25519:final_signer_pubkey"
+    }
+  }
+}
+```
+
+The `sig.sig` field contains the base64-encoded Ed25519 signature of the entry's content hash.
 
 ## Key Management
 
@@ -326,87 +340,82 @@ Priority values are u32 integers where lower values indicate higher priority:
 
 ### Key Naming and Aliasing
 
-Auth settings serve two distinct purposes in delegation:
+Auth settings contain two types of data:
 
-1. **Delegation references** - Names that point to OTHER DATABASES (DelegatedTreeRef containing TreeReference)
-2. **Signing keys** - Names that point to PUBLIC KEYS (AuthKey containing Ed25519 public key)
+1. **Signing keys** - Stored under `keys.{pubkey}`, with optional `name` metadata
+2. **Delegation references** - Stored under `delegations.{name}`, pointing to other databases
 
-Auth settings can also contain multiple names for the same public key, each potentially with different permissions. This enables:
+Keys are always stored by their public key string. The `name` field is optional metadata that enables:
 
-- **Readable delegation paths** - Use friendly names like `"alice_laptop"` instead of long public key strings
-- **Permission contexts** - Same key can have different permissions depending on how it's referenced
-- **API compatibility** - Bootstrap can use public key strings while delegation uses friendly names
+- **Readable lookups** - Find keys by friendly name like `"alice_laptop"`
+- **Name collisions** - Multiple keys can have the same name; validation tries each until signature verifies
 
-**Example**: Multiple names for same key
+**Example**: Keys stored by pubkey with optional names
 
 ```json
 {
   "_settings": {
     "auth": {
-      "Ed25519:abc123...": {
-        "pubkey": "Ed25519:abc123...",
-        "permissions": "admin:0",
-        "status": "active"
+      "keys": {
+        "ed25519:abc123...": {
+          "name": "alice_laptop",
+          "permissions": { "Admin": 0 },
+          "status": "Active"
+        },
+        "ed25519:def456...": {
+          "name": "alice_laptop",
+          "permissions": { "Write": 10 },
+          "status": "Active"
+        }
       },
-      "alice_work": {
-        "pubkey": "Ed25519:abc123...",
-        "permissions": "write:10",
-        "status": "active"
-      },
-      "alice_readonly": {
-        "pubkey": "Ed25519:abc123...",
-        "permissions": "read",
-        "status": "active"
+      "delegations": {
+        "team@example.com": {
+          "permission_bounds": { "max": { "Write": 10 } },
+          "tree": { "root": "sha256:...", "tips": ["sha256:..."] }
+        }
       }
     }
   }
 }
 ```
 
-**Use Cases**:
+Note: Two keys can have the same `name`. When resolving a name hint, the system returns all matching keys and tries each until the signature verifies.
 
-- **User API bootstrap**: When using `user.create_database(settings, key_id)`, the database is automatically bootstrapped with the specified signing key added to auth settings using the **public key string** as the name (e.g., `"Ed25519:abc123..."`). This is the name used for signature verification.
+**Key Lookup Patterns**:
 
-- **Delegation paths**: Delegation references keys by their **name** in auth settings. To enable readable delegation paths like `["alice@example.com", "alice_laptop"]` instead of `["alice@example.com", "Ed25519:abc123..."]`, add friendly name aliases to the delegated database's auth settings.
+When an entry's signature needs to be verified, the system resolves the `sig.key` hint:
 
-- **Permission differentiation**: The same physical key can have different permission levels depending on which name is used to reference it.
+1. **By pubkey**: If `pubkey` field is set, lookup key at `keys.{pubkey}`
+2. **By name**: If `name` field is set, find all keys where `key.name == name`, try each until signature verifies
+3. **Global**: If pubkey starts with `"*:"`, check global `keys.*` permission and use actual pubkey after `*:` for verification
 
-**Key Aliasing Pattern**:
+**Example API Usage**:
 
 ```rust,ignore
-// Bootstrap creates entry with public key string as name
+// Bootstrap creates database with signing key stored by pubkey
 let key_id = user.get_default_key()?;
 let database = user.create_database(Doc::new(), &key_id).await?;
-// Auth now contains: { "Ed25519:abc123...": AuthKey(...) } (user's key)
+// Auth now contains: { "keys": { "ed25519:abc123...": AuthKey(...) } }
 
-// Add friendly name alias for delegation
+// Optionally add a friendly name to the key
 let transaction = database.new_transaction()?;
 let settings = transaction.get_settings()?;
 settings.update_auth_settings(|auth| {
-    // Same public key, friendly name, potentially different permission
-    auth.add_key("alice_laptop", AuthKey::active(
-        "Ed25519:abc123...",  // Same public key
-        Permission::Write(10),  // Can differ from bootstrap permission
+    // Update the key's name metadata
+    let mut key = auth.get_key_by_pubkey(&key_id)?;
+    auth.overwrite_key(&key_id, AuthKey::active(
+        Some("alice_laptop"),  // Add friendly name
+        key.permissions().clone(),
     )?)?;
     Ok(())
 })?;
 transaction.commit()?;
-// Auth now contains both:
-// { "Ed25519:abc123...": AuthKey(..., Admin(0)) }
-// { "alice_laptop": AuthKey(..., Write(10)) }
+// Auth now contains: { "keys": { "ed25519:abc123...": AuthKey(name="alice_laptop", ...) } }
 ```
-
-**Important Notes**:
-
-- Both entries reference the same cryptographic key but can have different permissions
-- Signature verification works with any name that maps to the correct public key
-- Delegation paths use the key **name** from auth settings, making friendly aliases essential for readable delegation
-- The name used in the `auth.key` field (either direct or in a delegation path) must exactly match a name in the auth settings
-- Adding multiple names for the same key does not create duplicates - they are intentional aliases with potentially different permission contexts
 
 ## Delegation (Delegated Authentication)
 
-**Status**: Fully implemented and functional with comprehensive test coverage.
+**Status**: Mostly implemented and functional. Known gaps remain.
 
 ### Concept and Benefits
 

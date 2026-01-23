@@ -49,11 +49,11 @@ async fn test_server_automatically_tracks_peers_that_sync_trees() {
     auth_settings
         .add_key(
             &server_key_id,
-            AuthKey::active(&server_key_id, Permission::Admin(0)).unwrap(),
+            AuthKey::active(Some("admin"), Permission::Admin(0)),
         )
         .unwrap();
     auth_settings
-        .add_key("*", AuthKey::active("*", Permission::Read).unwrap())
+        .add_key("*", AuthKey::active(Some("*"), Permission::Read))
         .unwrap();
     db_settings.set("auth", auth_settings.as_doc().clone());
 

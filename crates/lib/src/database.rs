@@ -120,15 +120,16 @@ impl Database {
         } else {
             // No auth config provided - bootstrap auth configuration with the provided key
             let public_key = signing_key.verifying_key();
+            let pubkey_str = format_public_key(&public_key);
 
             // Create auth settings with the provided key
+            // Keys are stored by pubkey, with optional name metadata
             let mut auth_settings_handler = AuthSettings::new();
             let super_user_auth_key = AuthKey::active(
-                format_public_key(&public_key),
+                Some(&sigkey),        // Use sigkey as the optional name
                 Permission::Admin(0), // Highest priority
-            )
-            .unwrap();
-            auth_settings_handler.add_key(&sigkey, super_user_auth_key)?;
+            );
+            auth_settings_handler.add_key(&pubkey_str, super_user_auth_key)?;
 
             // Prepare final database settings for the initial commit
             let mut final_database_settings = initial_settings.clone();
@@ -213,6 +214,7 @@ impl Database {
     /// # Returns
     /// A `Result` containing the new `Database` instance or an error.
     pub(crate) fn open_unauthenticated(id: ID, instance: &crate::Instance) -> Result<Self> {
+        // TODO: Audit all usages of this function
         Ok(Self {
             root: id,
             instance: instance.downgrade(),
@@ -264,10 +266,10 @@ impl Database {
     ///
     /// // Use the first available SigKey
     /// if let Some((sigkey, _permission)) = sigkeys.first() {
-    ///     let sigkey_str = match sigkey {
-    ///         SigKey::Direct(name) => name.clone(),
-    ///         _ => panic!("Delegation paths not yet supported"),
-    ///     };
+    ///     // Extract pubkey or name from the KeyHint
+    ///     let sigkey_str = sigkey.hint().pubkey.clone()
+    ///         .or_else(|| sigkey.hint().name.clone())
+    ///         .expect("Expected pubkey or name hint");
     ///
     ///     // Open database with the resolved SigKey
     ///     let database = Database::open(instance, &root_id, signing_key, sigkey_str).await?;
@@ -290,6 +292,10 @@ impl Database {
         let auth_settings = settings_store.get_auth_settings().await?;
 
         // Determine effective sigkey
+        // Check if sigkey resolves either as a pubkey or as a name
+        let sigkey_resolves = auth_settings.get_key_by_pubkey(&sigkey).is_ok()
+            || !auth_settings.find_keys_by_name(&sigkey).is_empty();
+
         let effective_sigkey = if sigkey == "*" {
             // Explicit global - verify it exists
             if auth_settings.get_global_permission().is_none() {
@@ -298,8 +304,8 @@ impl Database {
                 }));
             }
             "*".to_string()
-        } else if auth_settings.get_key(&sigkey).is_ok() {
-            // Key found in settings - use it
+        } else if sigkey_resolves {
+            // Key found in settings (by pubkey or name) - use it
             sigkey
         } else if auth_settings.get_global_permission().is_some() {
             // Key not found but global exists - switch to "*"
@@ -371,10 +377,10 @@ impl Database {
     ///
     /// // Use the first available SigKey (highest permission)
     /// if let Some((sigkey, _permission)) = sigkeys.first() {
-    ///     let sigkey_str = match sigkey {
-    ///         SigKey::Direct(name) => name.clone(),
-    ///         _ => panic!("Delegation paths not yet supported"),
-    ///     };
+    ///     // Extract pubkey or name from the KeyHint
+    ///     let sigkey_str = sigkey.hint().pubkey.clone()
+    ///         .or_else(|| sigkey.hint().name.clone())
+    ///         .expect("Expected pubkey or name hint");
     ///     let database = Database::open(instance, &root_id, signing_key, sigkey_str).await?;
     /// }
     /// # Ok(())
@@ -812,11 +818,6 @@ impl Database {
     pub async fn verify_entry_signature<I: Into<ID>>(&self, entry_id: I) -> Result<bool> {
         let entry = self.get_entry(entry_id).await?;
 
-        // If the entry has no authentication, it's considered valid for backward compatibility
-        if entry.sig.key == crate::auth::types::SigKey::default() {
-            return Ok(true);
-        }
-
         // Get the authentication settings that were valid at the time this entry was created
         let historical_settings = self.get_historical_settings_for_entry(&entry).await?;
 
@@ -828,23 +829,20 @@ impl Database {
             .await
     }
 
-    /// Get the effective permission level for a given SigKey in this database.
+    /// Get the permission level for this database's configured signing key.
     ///
-    /// This method checks the database's authentication settings to determine what permission
-    /// level (if any) the specified SigKey has. This is useful for validating that a user
-    /// has the required permission before performing sensitive operations.
-    ///
-    /// # Arguments
-    /// * `sigkey` - The SigKey identifier to check permissions for
+    /// Returns the effective permission for the key that was configured when opening
+    /// or creating this database. This uses the already-resolved sigkey stored in
+    /// the database's `KeySource`, ensuring consistency with `Database::open`.
     ///
     /// # Returns
-    /// The effective Permission for the SigKey if found
+    /// The effective Permission for the configured signing key.
     ///
     /// # Errors
     /// Returns an error if:
+    /// - No signing key is configured (database opened without authentication)
     /// - The database settings cannot be retrieved
-    /// - The authentication settings cannot be parsed
-    /// - The SigKey is not found in the authentication settings
+    /// - The key is no longer valid in the current auth settings
     ///
     /// # Example
     /// ```rust,no_run
@@ -854,36 +852,61 @@ impl Database {
     /// # #[tokio::main]
     /// # async fn main() -> Result<()> {
     /// # let instance = Instance::open(Box::new(InMemory::new())).await?;
-    /// # let (signing_key, _) = generate_keypair();
+    /// # let (signing_key, public_key) = generate_keypair();
+    /// # let sigkey = format_public_key(&public_key);
     /// # let database = Database::create(
     /// #     eidetica::crdt::Doc::new(),
     /// #     &instance,
     /// #     signing_key,
-    /// #     "my_key".to_string(),
+    /// #     sigkey,
     /// # ).await?;
-    /// // Check if a key has Admin permission
-    /// let permission = database.get_sigkey_permission("my_key").await?;
+    /// // Check if the current key has Admin permission
+    /// let permission = database.current_permission().await?;
     /// if permission.can_admin() {
-    ///     println!("Key has Admin permission!");
+    ///     println!("Current key has Admin permission!");
     /// }
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn get_sigkey_permission(&self, sigkey: &str) -> Result<Permission> {
-        // Get database settings
-        let settings_store = self.get_settings().await?;
+    pub async fn current_permission(&self) -> Result<Permission> {
+        // Get the configured sigkey - this was already resolved during Database::open/create
+        let sigkey = self
+            .key_source
+            .as_ref()
+            .map(|ks| ks.sigkey.as_str())
+            .ok_or_else(|| AuthError::InvalidAuthConfiguration {
+                reason: "No signing key configured for this database".to_string(),
+            })?;
 
-        // Get auth settings from the settings store
+        // Get auth settings
+        let settings_store = self.get_settings().await?;
         let auth_settings = settings_store.get_auth_settings().await?;
 
-        // Create SigKey and validate entry auth to get effective permission
-        let instance = self.instance()?;
-        let sig_key = crate::auth::types::SigKey::Direct(sigkey.to_string());
-        let resolved_auth = auth_settings
-            .validate_entry_auth(&sig_key, Some(&instance))
-            .await?;
+        // Handle global "*" permission specially
+        if sigkey == "*" {
+            return auth_settings.get_global_permission().ok_or_else(|| {
+                AuthError::InvalidAuthConfiguration {
+                    reason: "Global '*' permission no longer configured".to_string(),
+                }
+                .into()
+            });
+        }
 
-        Ok(resolved_auth.effective_permission)
+        // Try to resolve as pubkey first (most common case after Database::open)
+        if let Ok(auth_key) = auth_settings.get_key_by_pubkey(sigkey) {
+            return Ok(auth_key.permissions().clone());
+        }
+
+        // Fall back to name lookup
+        let matches = auth_settings.find_keys_by_name(sigkey);
+        if let Some((_, auth_key)) = matches.first() {
+            return Ok(auth_key.permissions().clone());
+        }
+
+        Err(AuthError::KeyNotFound {
+            key_name: sigkey.to_string(),
+        }
+        .into())
     }
 
     /// Get the authentication settings that were valid when a specific entry was created.
@@ -941,63 +964,54 @@ mod tests {
         let (signing_key, public_key) = generate_keypair();
         let pubkey_str = format_public_key(&public_key);
 
-        // Create initial settings with multiple keys having different permissions
+        // Create initial settings
         let mut settings = Doc::new();
         settings.set("name", "test_db");
 
         let mut auth_settings = AuthSettings::new();
 
-        // Add keys with varying permissions (intentionally out of order)
+        // In the new design, keys are stored by pubkey (one entry per pubkey).
+        // To test sorting, we add a direct key and a global permission.
+        // The direct key should be returned along with the global option.
         auth_settings.add_key(
-            "key_write",
-            AuthKey::active(&pubkey_str, Permission::Write(10))?,
+            &pubkey_str,
+            AuthKey::active(Some("my_device"), Permission::Admin(5)),
         )?;
-        auth_settings.add_key(
-            "key_admin",
-            AuthKey::active(&pubkey_str, Permission::Admin(5))?,
-        )?;
-        auth_settings.add_key("key_read", AuthKey::active(&pubkey_str, Permission::Read)?)?;
-        auth_settings.add_key(
-            "key_write_high",
-            AuthKey::active(&pubkey_str, Permission::Write(2))?,
-        )?;
+
+        // Add global permission with lower priority
+        auth_settings.add_key("*", AuthKey::active(None::<String>, Permission::Write(10)))?;
 
         settings.set("auth", auth_settings.as_doc().clone());
 
         // Create database
         let db =
-            Database::create(settings, &instance, signing_key, "key_admin".to_string()).await?;
+            Database::create(settings, &instance, signing_key, "my_device".to_string()).await?;
 
         // Call find_sigkeys
         let results = Database::find_sigkeys(&instance, db.root_id(), &pubkey_str).await?;
 
-        // Verify we got all 4 keys
-        assert_eq!(results.len(), 4, "Should find all 4 keys");
+        // Verify we got 2 entries (direct key + global)
+        assert_eq!(results.len(), 2, "Should find direct key and global option");
 
         // Verify they're sorted by permission, highest first
-        // Admin(5) > Write(2) > Write(10) > Read
+        // Admin(5) > Write(10)
         assert_eq!(
             results[0].1,
             Permission::Admin(5),
-            "First should be Admin(5)"
+            "First should be Admin(5) from direct key"
         );
         assert_eq!(
             results[1].1,
-            Permission::Write(2),
-            "Second should be Write(2)"
-        );
-        assert_eq!(
-            results[2].1,
             Permission::Write(10),
-            "Third should be Write(10)"
+            "Second should be Write(10) from global"
         );
-        assert_eq!(results[3].1, Permission::Read, "Fourth should be Read");
 
-        // Verify the SigKey names match the permissions
-        assert_eq!(results[0].0, SigKey::Direct("key_admin".to_string()));
-        assert_eq!(results[1].0, SigKey::Direct("key_write_high".to_string()));
-        assert_eq!(results[2].0, SigKey::Direct("key_write".to_string()));
-        assert_eq!(results[3].0, SigKey::Direct("key_read".to_string()));
+        // Verify the SigKey types
+        assert!(
+            results[0].0.has_pubkey_hint(&pubkey_str),
+            "First should be direct pubkey hint"
+        );
+        assert!(results[1].0.is_global(), "Second should be global hint");
 
         Ok(())
     }

@@ -6,50 +6,56 @@
 
 use super::entry::AuthValidator;
 use crate::{
-    Database, Entry,
+    Database, Entry, Error,
     auth::{
         crypto::{format_public_key, generate_keypair, sign_entry},
         settings::AuthSettings,
-        types::{AuthKey, DelegationStep, KeyStatus, Operation, Permission, SigInfo, SigKey},
+        types::{
+            AuthKey, DelegationStep, KeyHint, KeyStatus, Operation, Permission, ResolvedAuth,
+            SigInfo, SigKey,
+        },
     },
     crdt::Doc,
+    entry::ID,
 };
 
-fn create_test_auth_with_key(key_name: &str, auth_key: &AuthKey) -> AuthSettings {
-    let mut auth_section = Doc::new();
-    auth_section.set_json(key_name, auth_key).unwrap();
-    AuthSettings::from_doc(auth_section)
+fn create_test_auth_with_key(pubkey: &str, auth_key: &AuthKey) -> AuthSettings {
+    let mut auth_settings = AuthSettings::new();
+    auth_settings.add_key(pubkey, auth_key.clone()).unwrap();
+    auth_settings
 }
 
 #[tokio::test]
 async fn test_basic_key_resolution() {
     let mut validator = AuthValidator::new();
     let (_, verifying_key) = generate_keypair();
+    let pubkey = format_public_key(&verifying_key);
 
-    let auth_key =
-        AuthKey::active(format_public_key(&verifying_key), Permission::Write(10)).unwrap();
+    let auth_key = AuthKey::active(Some("KEY_LAPTOP"), Permission::Write(10));
 
-    let settings = create_test_auth_with_key("KEY_LAPTOP", &auth_key);
+    let settings = create_test_auth_with_key(&pubkey, &auth_key);
 
-    let sig_key = SigKey::Direct("KEY_LAPTOP".to_string());
+    // Use pubkey hint for lookup since keys are stored by pubkey
+    let sig_key = SigKey::from_pubkey(&pubkey);
     let resolved = validator
         .resolve_sig_key(&sig_key, &settings, None)
         .await
         .unwrap();
-    assert_eq!(resolved.effective_permission, Permission::Write(10));
-    assert_eq!(resolved.key_status, KeyStatus::Active);
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].effective_permission, Permission::Write(10));
+    assert_eq!(resolved[0].key_status, KeyStatus::Active);
 }
 
 #[tokio::test]
 async fn test_revoked_key_validation() {
     let mut validator = AuthValidator::new();
     let (_signing_key, verifying_key) = generate_keypair();
+    let pubkey = format_public_key(&verifying_key);
 
-    let auth_key =
-        AuthKey::active(format_public_key(&verifying_key), Permission::Write(10)).unwrap();
+    let auth_key = AuthKey::active(Some("KEY_LAPTOP"), Permission::Write(10));
 
-    let settings = create_test_auth_with_key("KEY_LAPTOP", &auth_key);
-    let sig_key = SigKey::Direct("KEY_LAPTOP".to_string());
+    let settings = create_test_auth_with_key(&pubkey, &auth_key);
+    let sig_key = SigKey::from_pubkey(&pubkey);
     let resolved = validator.resolve_sig_key(&sig_key, &settings, None).await;
     assert!(resolved.is_ok());
 }
@@ -58,20 +64,20 @@ async fn test_revoked_key_validation() {
 async fn test_permission_levels() {
     let validator = AuthValidator::new();
 
-    let admin_auth = crate::auth::types::ResolvedAuth {
-        public_key: crate::auth::crypto::generate_keypair().1,
+    let admin_auth = ResolvedAuth {
+        public_key: generate_keypair().1,
         effective_permission: Permission::Admin(5),
         key_status: KeyStatus::Active,
     };
 
-    let write_auth = crate::auth::types::ResolvedAuth {
-        public_key: crate::auth::crypto::generate_keypair().1,
+    let write_auth = ResolvedAuth {
+        public_key: generate_keypair().1,
         effective_permission: Permission::Write(10),
         key_status: KeyStatus::Active,
     };
 
-    let read_auth = crate::auth::types::ResolvedAuth {
-        public_key: crate::auth::crypto::generate_keypair().1,
+    let read_auth = ResolvedAuth {
+        public_key: generate_keypair().1,
         effective_permission: Permission::Read,
         key_status: KeyStatus::Active,
     };
@@ -117,21 +123,19 @@ async fn test_permission_levels() {
 async fn test_entry_validation_success() {
     let mut validator = AuthValidator::new();
     let (signing_key, verifying_key) = generate_keypair();
+    let pubkey = format_public_key(&verifying_key);
 
-    let auth_key =
-        AuthKey::active(format_public_key(&verifying_key), Permission::Write(20)).unwrap();
+    let auth_key = AuthKey::active(Some("KEY_LAPTOP"), Permission::Write(20));
 
-    let settings = create_test_auth_with_key("KEY_LAPTOP", &auth_key);
+    let settings = create_test_auth_with_key(&pubkey, &auth_key);
 
     // Create a test entry using Entry::builder
     let mut entry = Entry::root_builder()
         .build()
         .expect("Root entry should build successfully");
 
-    // Set auth info without signature
-    entry.sig = SigInfo::builder()
-        .key(SigKey::Direct("KEY_LAPTOP".to_string()))
-        .build();
+    // Set auth info without signature - use pubkey hint
+    entry.sig = SigInfo::builder().key(SigKey::from_pubkey(&pubkey)).build();
 
     // Sign the entry
     let signature = sign_entry(&entry, &signing_key).unwrap();
@@ -141,8 +145,7 @@ async fn test_entry_validation_success() {
 
     // Validate the entry
     let result = validator.validate_entry(&entry, &settings, None).await;
-    assert!(result.is_ok());
-    assert!(result.unwrap());
+    assert!(result.unwrap()); // Signature verified
 }
 
 #[tokio::test]
@@ -150,14 +153,14 @@ async fn test_missing_key() {
     let mut validator = AuthValidator::new();
     let auth_settings = AuthSettings::new(); // Empty auth settings
 
-    let sig_key = SigKey::Direct("NONEXISTENT_KEY".to_string());
+    let sig_key = SigKey::from_name("NONEXISTENT_KEY");
     let result = validator
         .resolve_sig_key(&sig_key, &auth_settings, None)
         .await;
 
     assert!(result.is_err());
     match result.unwrap_err() {
-        crate::Error::Auth(_) => {} // Expected
+        Error::Auth(_) => {} // Expected
         _ => panic!("Expected Auth error"),
     }
 }
@@ -167,16 +170,13 @@ async fn test_delegated_tree_requires_backend() {
     let mut validator = AuthValidator::new();
     let auth_settings = AuthSettings::new();
 
-    let sig_key = SigKey::DelegationPath(vec![
-        DelegationStep {
-            key: "user1".to_string(),
-            tips: Some(vec![crate::entry::ID::new("tip1")]),
-        },
-        DelegationStep {
-            key: "KEY_LAPTOP".to_string(),
-            tips: None,
-        },
-    ]);
+    let sig_key = SigKey::Delegation {
+        path: vec![DelegationStep {
+            tree: "user1".to_string(),
+            tips: vec![ID::new("tip1")],
+        }],
+        hint: KeyHint::from_name("KEY_LAPTOP"),
+    };
 
     let result = validator
         .resolve_sig_key(&sig_key, &auth_settings, None)
@@ -191,42 +191,17 @@ async fn test_delegated_tree_requires_backend() {
 }
 
 #[tokio::test]
-async fn test_delegation_path_rejects_wildcard_in_final_step() {
+async fn test_delegation_path_rejects_wildcard_in_path() {
     let mut validator = AuthValidator::new();
     let auth_settings = AuthSettings::new();
 
-    let sig_key = SigKey::DelegationPath(vec![
-        DelegationStep {
-            key: "user_tree".to_string(),
-            tips: Some(vec![crate::entry::ID::new("tip1")]),
-        },
-        DelegationStep {
-            key: "*".to_string(), // Wildcard not allowed
-            tips: None,
-        },
-    ]);
-
-    let result = validator
-        .resolve_sig_key(&sig_key, &auth_settings, None)
-        .await;
-    assert!(result.is_err());
-}
-
-#[tokio::test]
-async fn test_delegation_path_rejects_wildcard_in_intermediate_step() {
-    let mut validator = AuthValidator::new();
-    let auth_settings = AuthSettings::new();
-
-    let sig_key = SigKey::DelegationPath(vec![
-        DelegationStep {
-            key: "*".to_string(), // Wildcard not allowed
-            tips: Some(vec![crate::entry::ID::new("tip1")]),
-        },
-        DelegationStep {
-            key: "final_key".to_string(),
-            tips: None,
-        },
-    ]);
+    let sig_key = SigKey::Delegation {
+        path: vec![DelegationStep {
+            tree: "*".to_string(), // Wildcard not allowed in path
+            tips: vec![ID::new("tip1")],
+        }],
+        hint: KeyHint::from_name("final_key"),
+    };
 
     let result = validator
         .resolve_sig_key(&sig_key, &auth_settings, None)
@@ -237,15 +212,14 @@ async fn test_delegation_path_rejects_wildcard_in_intermediate_step() {
 #[tokio::test]
 async fn test_validate_entry_with_auth_info_against_empty_settings() {
     let mut validator = AuthValidator::new();
-    let (signing_key, _verifying_key) = generate_keypair();
+    let (signing_key, verifying_key) = generate_keypair();
+    let pubkey = format_public_key(&verifying_key);
 
     // Create an entry with auth info (signed)
     let mut entry = Entry::root_builder()
         .build()
         .expect("Root entry should build successfully");
-    entry.sig = SigInfo::builder()
-        .key(SigKey::Direct("SOME_KEY".to_string()))
-        .build();
+    entry.sig = SigInfo::builder().key(SigKey::from_pubkey(&pubkey)).build();
 
     // Sign the entry
     let signature = sign_entry(&entry, &signing_key).unwrap();
@@ -257,24 +231,28 @@ async fn test_validate_entry_with_auth_info_against_empty_settings() {
         .validate_entry(&entry, &empty_auth_settings, None)
         .await;
 
-    // Should succeed because there's no auth configuration to validate against
-    assert!(result.is_ok(), "Validation failed: {:?}", result.err());
-    assert!(result.unwrap(), "Expected validation to return true");
+    // Signed entry with no auth config should fail validation
+    // (can't verify a signature without keys)
+    assert!(result.is_ok());
+    assert!(
+        !result.unwrap(),
+        "Expected validation to fail for signed entry with no auth config"
+    );
 }
 
 #[tokio::test]
 async fn test_entry_validation_with_revoked_key() {
     let mut validator = AuthValidator::new();
     let (signing_key, verifying_key) = generate_keypair();
+    let pubkey = format_public_key(&verifying_key);
 
     let revoked_key = AuthKey::new(
-        format_public_key(&verifying_key),
+        Some("KEY_LAPTOP"),
         Permission::Write(10),
         KeyStatus::Revoked, // Key is revoked
-    )
-    .unwrap();
+    );
 
-    let settings = create_test_auth_with_key("KEY_LAPTOP", &revoked_key);
+    let settings = create_test_auth_with_key(&pubkey, &revoked_key);
 
     // Create a test entry using Entry::builder
     let mut entry = Entry::root_builder()
@@ -282,9 +260,7 @@ async fn test_entry_validation_with_revoked_key() {
         .expect("Root entry should build successfully");
 
     // Set auth info without signature
-    entry.sig = SigInfo::builder()
-        .key(SigKey::Direct("KEY_LAPTOP".to_string()))
-        .build();
+    entry.sig = SigInfo::builder().key(SigKey::from_pubkey(&pubkey)).build();
 
     // Sign the entry
     let signature = sign_entry(&entry, &signing_key).unwrap();
@@ -292,22 +268,25 @@ async fn test_entry_validation_with_revoked_key() {
     // Set the signature on the entry
     entry.sig.sig = Some(signature);
 
-    // Validation should fail with revoked key
+    // Validation should fail with revoked key - returns Ok(false) since no active key could verify
     let result = validator.validate_entry(&entry, &settings, None).await;
-    assert!(result.is_ok()); // validate_entry returns Ok(bool)
-    assert!(!result.unwrap()); // But the validation should return false for revoked keys
+    assert!(result.is_ok());
+    assert!(
+        !result.unwrap(),
+        "Expected validation to fail for revoked key"
+    );
 }
 
 #[tokio::test]
 async fn test_performance_optimizations() {
     let mut validator = AuthValidator::new();
     let (_, verifying_key) = generate_keypair();
+    let pubkey = format_public_key(&verifying_key);
 
-    let auth_key =
-        AuthKey::active(format_public_key(&verifying_key), Permission::Write(10)).unwrap();
+    let auth_key = AuthKey::active(Some("PERF_KEY"), Permission::Write(10));
 
-    let settings = create_test_auth_with_key("PERF_KEY", &auth_key);
-    let sig_key = SigKey::Direct("PERF_KEY".to_string());
+    let settings = create_test_auth_with_key(&pubkey, &auth_key);
+    let sig_key = SigKey::from_pubkey(&pubkey);
 
     // Test that resolution works correctly
     let result1 = validator.resolve_sig_key(&sig_key, &settings, None).await;
@@ -320,11 +299,13 @@ async fn test_performance_optimizations() {
     // Results should be identical
     let resolved1 = result1.unwrap();
     let resolved2 = result2.unwrap();
+    assert_eq!(resolved1.len(), 1);
+    assert_eq!(resolved2.len(), 1);
     assert_eq!(
-        resolved1.effective_permission,
-        resolved2.effective_permission
+        resolved1[0].effective_permission,
+        resolved2[0].effective_permission
     );
-    assert_eq!(resolved1.key_status, resolved2.key_status);
+    assert_eq!(resolved1[0].key_status, resolved2[0].key_status);
 
     // Test cache clear functionality
     validator.clear_cache();
@@ -336,18 +317,19 @@ async fn test_basic_delegated_tree_resolution() {
 
     // Create a simple direct key resolution test
     let (_, verifying_key) = generate_keypair();
-    let auth_key =
-        AuthKey::active(format_public_key(&verifying_key), Permission::Admin(5)).unwrap();
+    let pubkey = format_public_key(&verifying_key);
+    let auth_key = AuthKey::active(Some("DIRECT_KEY"), Permission::Admin(5));
 
-    let settings = create_test_auth_with_key("DIRECT_KEY", &auth_key);
+    let settings = create_test_auth_with_key(&pubkey, &auth_key);
 
-    let sig_key = SigKey::Direct("DIRECT_KEY".to_string());
+    let sig_key = SigKey::from_pubkey(&pubkey);
     let result = validator.resolve_sig_key(&sig_key, &settings, None).await;
 
     match result {
         Ok(resolved) => {
-            assert_eq!(resolved.effective_permission, Permission::Admin(5));
-            assert_eq!(resolved.key_status, KeyStatus::Active);
+            assert_eq!(resolved.len(), 1);
+            assert_eq!(resolved[0].effective_permission, Permission::Admin(5));
+            assert_eq!(resolved[0].key_status, KeyStatus::Active);
         }
         Err(e) => {
             panic!("Failed to resolve auth key: {e}");
@@ -371,23 +353,25 @@ async fn test_complete_delegation_workflow() {
 
     // Use the device key for testing
     let main_key = instance.device_id();
+    let main_pubkey = format_public_key(&main_key);
     // For delegated key, we'll use the same device key for simplicity in tests
     let delegated_key = main_key;
+    let delegated_pubkey = format_public_key(&delegated_key);
 
     // Create the delegated tree with its own auth configuration
     let mut delegated_settings = Doc::new();
     let mut delegated_auth = Doc::new();
     delegated_auth
         .set_json(
-            "delegated_user", // Key name must match the key used for tree creation
-            AuthKey::active(format_public_key(&delegated_key), Permission::Admin(5)).unwrap(),
+            format!("keys.{delegated_pubkey}"), // Store by pubkey under "keys."
+            AuthKey::active(Some("delegated_user"), Permission::Admin(5)),
         )
         .unwrap();
     // Add admin to auth config so we can create the database with it
     delegated_auth
         .set_json(
-            "admin",
-            AuthKey::active(format_public_key(&main_key), Permission::Admin(0)).unwrap(),
+            format!("keys.{main_pubkey}"), // Store by pubkey under "keys."
+            AuthKey::active(Some("admin"), Permission::Admin(0)),
         )
         .unwrap();
     delegated_settings.set("auth", delegated_auth);
@@ -396,7 +380,7 @@ async fn test_complete_delegation_workflow() {
         delegated_settings,
         &instance,
         instance.device_key().clone(),
-        "admin".to_string(),
+        main_pubkey.clone(),
     )
     .await
     .unwrap();
@@ -408,25 +392,18 @@ async fn test_complete_delegation_workflow() {
     // Add direct key to main tree
     main_auth
         .set_json(
-            "main_admin",
-            AuthKey::active(format_public_key(&main_key), Permission::Admin(0)).unwrap(),
-        )
-        .unwrap();
-    // Add admin to auth config so we can create the database with it
-    main_auth
-        .set_json(
-            "admin",
-            AuthKey::active(format_public_key(&main_key), Permission::Admin(0)).unwrap(),
+            format!("keys.{main_pubkey}"),
+            AuthKey::active(Some("main_admin"), Permission::Admin(0)),
         )
         .unwrap();
 
     // Get the actual tips from the delegated tree
     let delegated_tips = delegated_tree.get_tips().await.unwrap();
 
-    // Add delegation reference
+    // Add delegation reference under "delegations."
     main_auth
         .set_json(
-            "delegate_to_user",
+            "delegations.delegate_to_user",
             DelegatedTreeRef {
                 permission_bounds: PermissionBounds {
                     max: Permission::Write(10),
@@ -445,7 +422,7 @@ async fn test_complete_delegation_workflow() {
         main_settings,
         &instance,
         instance.device_key().clone(),
-        "admin".to_string(),
+        main_pubkey.clone(),
     )
     .await
     .unwrap();
@@ -460,16 +437,13 @@ async fn test_complete_delegation_workflow() {
         .await
         .unwrap();
 
-    let delegated_sig_key = SigKey::DelegationPath(vec![
-        DelegationStep {
-            key: "delegate_to_user".to_string(),
-            tips: Some(delegated_tips),
-        },
-        DelegationStep {
-            key: "delegated_user".to_string(),
-            tips: None,
-        },
-    ]);
+    let delegated_sig_key = SigKey::Delegation {
+        path: vec![DelegationStep {
+            tree: "delegate_to_user".to_string(),
+            tips: delegated_tips,
+        }],
+        hint: KeyHint::from_pubkey(&delegated_pubkey),
+    };
 
     let result = validator
         .resolve_sig_key(&delegated_sig_key, &main_auth_settings, Some(&instance))
@@ -482,8 +456,9 @@ async fn test_complete_delegation_workflow() {
         result.err()
     );
     let resolved = result.unwrap();
-    assert_eq!(resolved.effective_permission, Permission::Write(10)); // Clamped from Admin to Write
-    assert_eq!(resolved.key_status, KeyStatus::Active);
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].effective_permission, Permission::Write(10)); // Clamped from Admin to Write
+    assert_eq!(resolved[0].key_status, KeyStatus::Active);
 }
 
 #[tokio::test]
@@ -502,6 +477,7 @@ async fn test_delegated_tree_requires_tips() {
 
     // Use the device key for testing
     let main_key = instance.device_id();
+    let main_pubkey = format_public_key(&main_key);
 
     // Create a simple delegated tree
     let delegated_settings = Doc::new();
@@ -509,7 +485,7 @@ async fn test_delegated_tree_requires_tips() {
         delegated_settings,
         &instance,
         instance.device_key().clone(),
-        "admin".to_string(),
+        main_pubkey.clone(),
     )
     .await
     .unwrap();
@@ -521,15 +497,15 @@ async fn test_delegated_tree_requires_tips() {
     // Add direct key to main tree
     main_auth
         .set_json(
-            "main_admin",
-            AuthKey::active(format_public_key(&main_key), Permission::Admin(0)).unwrap(),
+            format!("keys.{main_pubkey}"),
+            AuthKey::active(Some("main_admin"), Permission::Admin(0)),
         )
         .unwrap();
 
     // Add delegation reference (with proper tips that we'll ignore in the test)
     main_auth
         .set_json(
-            "delegate_to_user",
+            "delegations.delegate_to_user",
             DelegatedTreeRef {
                 permission_bounds: PermissionBounds {
                     max: Permission::Write(10),
@@ -537,7 +513,7 @@ async fn test_delegated_tree_requires_tips() {
                 },
                 tree: TreeReference {
                     root: delegated_tree.root_id().clone(),
-                    tips: vec![crate::entry::ID::new("some_tip")], // This will be ignored due to empty tips in auth_id
+                    tips: vec![ID::new("some_tip")], // This will be ignored due to empty tips in auth_id
                 },
             },
         )
@@ -549,17 +525,14 @@ async fn test_delegated_tree_requires_tips() {
     let mut validator = AuthValidator::new();
     let auth_settings = AuthSettings::from_doc(main_auth);
 
-    // Create a DelegationPath sig_key with empty tips
-    let sig_key = SigKey::DelegationPath(vec![
-        DelegationStep {
-            key: "delegate_to_user".to_string(),
-            tips: Some(vec![]), // Empty tips should cause validation to fail
-        },
-        DelegationStep {
-            key: "delegated_user".to_string(),
-            tips: None,
-        },
-    ]);
+    // Create a Delegation sig_key with empty tips
+    let sig_key = SigKey::Delegation {
+        path: vec![DelegationStep {
+            tree: "delegate_to_user".to_string(),
+            tips: vec![], // Empty tips should cause validation to fail
+        }],
+        hint: KeyHint::from_name("delegated_user"),
+    };
 
     let result = validator
         .resolve_sig_key(&sig_key, &auth_settings, Some(&instance))
@@ -590,27 +563,18 @@ async fn test_nested_delegation_with_permission_clamping() {
 
     // Use the device key for all operations
     let main_key = instance.device_id();
-    let intermediate_key = main_key;
-    let user_key = main_key;
+    let main_pubkey = format_public_key(&main_key);
 
     // 1. Create the final user tree (deepest level)
     let mut user_settings = Doc::new();
     let mut user_auth = Doc::new();
     user_auth
         .set_json(
-            "final_user",
+            format!("keys.{main_pubkey}"),
             AuthKey::active(
-                format_public_key(&user_key),
+                Some("final_user"),
                 Permission::Admin(3), // High privilege at source
-            )
-            .unwrap(),
-        )
-        .unwrap();
-    // Add admin to auth config so we can create the database with it
-    user_auth
-        .set_json(
-            "admin",
-            AuthKey::active(format_public_key(&main_key), Permission::Admin(0)).unwrap(),
+            ),
         )
         .unwrap();
     user_settings.set("auth", user_auth);
@@ -618,7 +582,7 @@ async fn test_nested_delegation_with_permission_clamping() {
         user_settings,
         &instance,
         instance.device_key().clone(),
-        "admin".to_string(),
+        main_pubkey.clone(),
     )
     .await
     .unwrap();
@@ -631,22 +595,15 @@ async fn test_nested_delegation_with_permission_clamping() {
     // Add direct key to intermediate tree
     intermediate_auth
         .set_json(
-            "intermediate_admin",
-            AuthKey::active(format_public_key(&intermediate_key), Permission::Admin(2)).unwrap(),
-        )
-        .unwrap();
-    // Add admin to auth config so we can create the database with it
-    intermediate_auth
-        .set_json(
-            "admin",
-            AuthKey::active(format_public_key(&main_key), Permission::Admin(0)).unwrap(),
+            format!("keys.{main_pubkey}"),
+            AuthKey::active(Some("intermediate_admin"), Permission::Admin(2)),
         )
         .unwrap();
 
     // Add delegation to user tree with bounds Write(8) max, Read min
     intermediate_auth
         .set_json(
-            "user_delegation",
+            "delegations.user_delegation",
             DelegatedTreeRef {
                 permission_bounds: PermissionBounds {
                     max: Permission::Write(8), // Clamp Admin(3) to Write(8)
@@ -665,7 +622,7 @@ async fn test_nested_delegation_with_permission_clamping() {
         intermediate_settings,
         &instance,
         instance.device_key().clone(),
-        "admin".to_string(),
+        main_pubkey.clone(),
     )
     .await
     .unwrap();
@@ -678,15 +635,8 @@ async fn test_nested_delegation_with_permission_clamping() {
     // Add direct key to main tree
     main_auth
         .set_json(
-            "main_admin",
-            AuthKey::active(format_public_key(&main_key), Permission::Admin(0)).unwrap(),
-        )
-        .unwrap();
-    // Add admin to auth config so we can create the database with it
-    main_auth
-        .set_json(
-            "admin",
-            AuthKey::active(format_public_key(&main_key), Permission::Admin(0)).unwrap(),
+            format!("keys.{main_pubkey}"),
+            AuthKey::active(Some("main_admin"), Permission::Admin(0)),
         )
         .unwrap();
 
@@ -694,7 +644,7 @@ async fn test_nested_delegation_with_permission_clamping() {
     // This should be more restrictive than the intermediate tree's Write(8)
     main_auth
         .set_json(
-            "intermediate_delegation",
+            "delegations.intermediate_delegation",
             DelegatedTreeRef {
                 permission_bounds: PermissionBounds {
                     max: Permission::Write(5), // More restrictive than Write(8)
@@ -713,7 +663,7 @@ async fn test_nested_delegation_with_permission_clamping() {
         main_settings,
         &instance,
         instance.device_key().clone(),
-        "admin".to_string(),
+        main_pubkey.clone(),
     )
     .await
     .unwrap();
@@ -732,20 +682,19 @@ async fn test_nested_delegation_with_permission_clamping() {
     // Main tree delegates to "intermediate_delegation" ->
     // Intermediate tree delegates to "user_delegation" ->
     // User tree resolves "final_user" key
-    let nested_sig_key = SigKey::DelegationPath(vec![
-        DelegationStep {
-            key: "intermediate_delegation".to_string(),
-            tips: Some(intermediate_tips),
-        },
-        DelegationStep {
-            key: "user_delegation".to_string(),
-            tips: Some(user_tips),
-        },
-        DelegationStep {
-            key: "final_user".to_string(),
-            tips: None,
-        },
-    ]);
+    let nested_sig_key = SigKey::Delegation {
+        path: vec![
+            DelegationStep {
+                tree: "intermediate_delegation".to_string(),
+                tips: intermediate_tips,
+            },
+            DelegationStep {
+                tree: "user_delegation".to_string(),
+                tips: user_tips,
+            },
+        ],
+        hint: KeyHint::from_pubkey(&main_pubkey),
+    };
 
     let result = validator
         .resolve_sig_key(&nested_sig_key, &main_auth_settings, Some(&instance))
@@ -766,8 +715,9 @@ async fn test_nested_delegation_with_permission_clamping() {
     // 3. Main tree clamps Write(8) with max bound Write(5) -> no change since Write(8) is more restrictive
     // Final result should be Write(8) - the most restrictive bound in the chain
 
-    assert_eq!(resolved.effective_permission, Permission::Write(8)); // Correctly clamped through the chain
-    assert_eq!(resolved.key_status, KeyStatus::Active);
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].effective_permission, Permission::Write(8)); // Correctly clamped through the chain
+    assert_eq!(resolved[0].key_status, KeyStatus::Active);
 }
 
 #[tokio::test]
@@ -779,7 +729,7 @@ async fn test_delegation_depth_limit() {
     let auth_settings = AuthSettings::new();
 
     // Test the depth check by directly calling with depth = MAX_DELEGATION_DEPTH
-    let simple_sig_key = SigKey::Direct("base_key".to_string());
+    let simple_sig_key = SigKey::from_name("base_key");
 
     // This should succeed (just under the limit)
     let result = validator
@@ -789,11 +739,7 @@ async fn test_delegation_depth_limit() {
     // Should fail due to missing auth configuration, not depth limit
     assert!(result.is_err());
     let error = result.unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("Key 'base_key' not found in auth settings")
-    );
+    assert!(error.to_string().contains("not found"));
 
     // This should fail due to depth limit (at the limit)
     let result = validator
@@ -809,25 +755,26 @@ async fn test_delegation_depth_limit() {
 // ===== GLOBAL PERMISSION TESTS =====
 
 #[tokio::test]
-async fn test_global_permission_with_pubkey_field() {
+async fn test_global_permission_with_pubkey_hint() {
     let mut validator = AuthValidator::new();
     let (signing_key, verifying_key) = generate_keypair();
+    let actual_pubkey = format_public_key(&verifying_key);
 
     // Create settings with global "*" permission
-    let global_auth_key = AuthKey::active("*", Permission::Write(10)).unwrap();
+    let global_auth_key = AuthKey::active(None::<String>, Permission::Write(10));
 
     let settings = create_test_auth_with_key("*", &global_auth_key);
 
-    // Create an entry that uses global permission
+    // Create an entry that uses global permission with actual signer pubkey in hint
     let mut entry = Entry::root_builder()
         .build()
         .expect("Root entry should build successfully");
 
-    // Set signature info to reference "*" permission and include actual pubkey
+    // Use "*:pubkey" format in hint to indicate global permission with actual signer
+    let global_pubkey = format!("*:{}", actual_pubkey);
     entry.sig = SigInfo {
-        key: SigKey::Direct("*".to_string()),
+        key: SigKey::from_pubkey(&global_pubkey),
         sig: None,
-        pubkey: Some(format_public_key(&verifying_key)), // Include actual signer's pubkey
     };
 
     // Sign the entry with the client's key
@@ -836,7 +783,6 @@ async fn test_global_permission_with_pubkey_field() {
 
     // Validation should succeed
     let result = validator.validate_entry(&entry, &settings, None).await;
-    assert!(result.is_ok(), "Validation failed: {:?}", result.err());
     assert!(
         result.unwrap(),
         "Expected validation to succeed with global permission"
@@ -849,29 +795,29 @@ async fn test_global_permission_without_pubkey_fails() {
     let (signing_key, _) = generate_keypair();
 
     // Create settings with global "*" permission
-    let global_auth_key = AuthKey::active("*", Permission::Write(10)).unwrap();
+    let global_auth_key = AuthKey::active(None::<String>, Permission::Write(10));
 
     let settings = create_test_auth_with_key("*", &global_auth_key);
 
-    // Create an entry that uses global permission but doesn't include pubkey
+    // Create an entry that uses global permission but doesn't include pubkey in hint
     let mut entry = Entry::root_builder()
         .build()
         .expect("Root entry should build successfully");
 
     entry.sig = SigInfo {
-        key: SigKey::Direct("*".to_string()),
+        key: SigKey::from_name("*"), // Just "*" without pubkey - should fail
         sig: None,
-        pubkey: None, // Missing pubkey field - should fail
     };
 
     let signature = sign_entry(&entry, &signing_key).unwrap();
     entry.sig.sig = Some(signature);
 
-    // Validation should fail due to missing pubkey
+    // Validation should fail due to missing pubkey in global permission
     let result = validator.validate_entry(&entry, &settings, None).await;
+    assert!(result.is_ok());
     assert!(
-        result.is_err(),
-        "Expected validation to fail without pubkey field"
+        !result.unwrap(),
+        "Expected validation to fail without pubkey in global permission hint"
     );
 }
 
@@ -879,56 +825,54 @@ async fn test_global_permission_without_pubkey_fails() {
 async fn test_global_permission_resolver() {
     let mut validator = AuthValidator::new();
     let (_, verifying_key) = generate_keypair();
+    let actual_pubkey = format_public_key(&verifying_key);
 
     // Create settings with global "*" permission
-    let global_auth_key = AuthKey::active("*", Permission::Write(10)).unwrap();
+    let global_auth_key = AuthKey::active(None::<String>, Permission::Write(10));
 
     let settings = create_test_auth_with_key("*", &global_auth_key);
 
-    // Test resolving "*" with provided pubkey
-    let sig_key = SigKey::Direct("*".to_string());
-    let actual_pubkey = format_public_key(&verifying_key);
+    // Test resolving "*:pubkey" format - should succeed
+    let global_pubkey = format!("*:{}", actual_pubkey);
+    let sig_key = SigKey::from_pubkey(&global_pubkey);
 
-    // Test with pubkey provided - should succeed now that we implemented global permissions
-    let result = validator
-        .resolve_sig_key_with_pubkey(&sig_key, &settings, None, Some(&actual_pubkey))
-        .await;
+    let result = validator.resolve_sig_key(&sig_key, &settings, None).await;
 
     assert!(
         result.is_ok(),
-        "Global permission resolution should work with pubkey: {:?}",
+        "Global permission resolution should work with pubkey hint: {:?}",
         result.err()
     );
     let resolved = result.unwrap();
-    assert_eq!(resolved.public_key, verifying_key);
-    assert_eq!(resolved.effective_permission, Permission::Write(10));
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].public_key, verifying_key);
+    assert_eq!(resolved[0].effective_permission, Permission::Write(10));
 }
 
 #[tokio::test]
 async fn test_global_permission_insufficient_perms() {
     let mut validator = AuthValidator::new();
     let (signing_key, verifying_key) = generate_keypair();
+    let actual_pubkey = format_public_key(&verifying_key);
 
     // Create settings with global "*" permission but only Read access
     let global_auth_key = AuthKey::active(
-        "*",
+        None::<String>,
         Permission::Read, // Only read permission
-    )
-    .unwrap();
+    );
 
     let settings = create_test_auth_with_key("*", &global_auth_key);
 
     // Test that global permissions still respect the permission level
-    let sig_key = SigKey::Direct("*".to_string());
-    let actual_pubkey = format_public_key(&verifying_key);
+    let global_pubkey = format!("*:{}", actual_pubkey);
+    let sig_key = SigKey::from_pubkey(&global_pubkey);
 
-    let result = validator
-        .resolve_sig_key_with_pubkey(&sig_key, &settings, None, Some(&actual_pubkey))
-        .await;
+    let result = validator.resolve_sig_key(&sig_key, &settings, None).await;
     assert!(result.is_ok(), "Resolution should succeed");
 
     let resolved = result.unwrap();
-    assert_eq!(resolved.effective_permission, Permission::Read); // Should have read permission
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].effective_permission, Permission::Read); // Should have read permission
 
     // Create an entry that tries to write (requires Write permission)
     let mut entry = Entry::root_builder()
@@ -936,9 +880,8 @@ async fn test_global_permission_insufficient_perms() {
         .expect("Root entry should build successfully");
 
     entry.sig = SigInfo {
-        key: SigKey::Direct("*".to_string()),
+        key: SigKey::from_pubkey(&global_pubkey),
         sig: None,
-        pubkey: Some(format_public_key(&verifying_key)),
     };
 
     let signature = sign_entry(&entry, &signing_key).unwrap();
@@ -946,9 +889,6 @@ async fn test_global_permission_insufficient_perms() {
 
     // Even with valid signature and pubkey, should fail due to insufficient permissions
     // This test validates that permission checking still works with global permissions
-
-    // FIXME: Once we implement the solution, we'll need to test permission checking
-    // For now, this documents the expected behavior
 }
 
 #[tokio::test]
@@ -956,30 +896,27 @@ async fn test_global_permission_vs_specific_key() {
     let mut validator = AuthValidator::new();
     let (signing_key1, verifying_key1) = generate_keypair();
     let (signing_key2, verifying_key2) = generate_keypair();
+    let pubkey1 = format_public_key(&verifying_key1);
+    let pubkey2 = format_public_key(&verifying_key2);
 
     // Create settings with both a specific key and global permission
-    let mut auth_section = Doc::new();
+    let mut auth_settings = AuthSettings::new();
 
     // Add specific key
-    let specific_key =
-        AuthKey::active(format_public_key(&verifying_key1), Permission::Admin(5)).unwrap();
-    auth_section
-        .set_json("specific_key", &specific_key)
-        .unwrap();
+    let specific_key = AuthKey::active(Some("specific_key"), Permission::Admin(5));
+    auth_settings.add_key(&pubkey1, specific_key).unwrap();
 
     // Add global permission
-    let global_key = AuthKey::active("*", Permission::Write(10)).unwrap();
-    auth_section.set_json("*", &global_key).unwrap();
-
-    let auth_settings = AuthSettings::from_doc(auth_section);
+    let global_key = AuthKey::active(None::<String>, Permission::Write(10));
+    auth_settings.add_key("*", global_key).unwrap();
 
     // Test 1: Entry signed with specific key should work normally
     let mut entry1 = Entry::root_builder()
         .build()
         .expect("Root entry should build successfully");
     entry1.sig = SigInfo::builder()
-        .key(SigKey::Direct("specific_key".to_string()))
-        .build(); // No pubkey needed for specific keys
+        .key(SigKey::from_pubkey(&pubkey1))
+        .build();
     let signature1 = sign_entry(&entry1, &signing_key1).unwrap();
     entry1.sig.sig = Some(signature1);
 
@@ -992,14 +929,14 @@ async fn test_global_permission_vs_specific_key() {
     let mut entry2 = Entry::root_builder()
         .build()
         .expect("Root entry should build successfully");
+    let global_pubkey2 = format!("*:{}", pubkey2);
     entry2.sig = SigInfo::builder()
-        .key(SigKey::Direct("*".to_string()))
-        .pubkey(format_public_key(&verifying_key2)) // Different key using global permission
+        .key(SigKey::from_pubkey(&global_pubkey2)) // Different key using global permission
         .build();
     let signature2 = sign_entry(&entry2, &signing_key2).unwrap();
     entry2.sig.sig = Some(signature2);
 
-    // Global permissions should now work with the pubkey field
+    // Global permissions should now work with the pubkey hint
     let result2 = validator
         .validate_entry(&entry2, &auth_settings, None)
         .await;

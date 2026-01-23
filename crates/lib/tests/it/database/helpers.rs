@@ -98,9 +98,14 @@ pub async fn assert_entry_authentication(tree: &Database, entry_id: &ID, expecte
     let entry = tree.get_entry(entry_id).await.expect("Failed to get entry");
     let sig_info = &entry.sig;
 
+    // Check if the hint matches the expected key (could be pubkey or name)
+    let hint = sig_info.hint();
+    let matches =
+        hint.pubkey.as_deref() == Some(expected_key) || hint.name.as_deref() == Some(expected_key);
     assert!(
-        sig_info.is_signed_by(expected_key),
-        "Entry not signed by {expected_key}"
+        matches,
+        "Entry not signed by {expected_key}, got hint: {:?}",
+        hint
     );
     assert!(sig_info.sig.is_some(), "Entry should have signature");
 

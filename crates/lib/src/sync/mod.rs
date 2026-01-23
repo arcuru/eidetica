@@ -2405,7 +2405,7 @@ impl Sync {
 
         // Explicitly check that the approving user has Admin permission
         // This provides clear error messages and fails fast before modifying the database
-        let permission = database.get_sigkey_permission(approving_sigkey).await?;
+        let permission = database.current_permission().await?;
         if !permission.can_admin() {
             return Err(SyncError::InsufficientPermission {
                 request_id: request_id.to_string(),
@@ -2422,15 +2422,16 @@ impl Sync {
         let settings_store = tx.get_settings()?;
 
         // Create the auth key for the requesting device
+        // Keys are stored by pubkey, with name as optional metadata
         let auth_key = AuthKey::active(
-            request.requesting_pubkey.clone(),
+            Some(&request.requesting_key_name), // name metadata
             request.requested_permission.clone(),
-        )?;
+        );
 
         // Add the new key to auth settings using SettingsStore API
-        // This provides proper upsert behavior and validation
+        // Store by pubkey (this provides proper upsert behavior and validation)
         settings_store
-            .set_auth_key(&request.requesting_key_name, auth_key)
+            .set_auth_key(&request.requesting_pubkey, auth_key)
             .await?;
 
         // Commit will validate that the user's key has Admin permission
@@ -2517,7 +2518,7 @@ impl Sync {
         .await?;
 
         // Check that the rejecting user has Admin permission
-        let permission = database.get_sigkey_permission(rejecting_sigkey).await?;
+        let permission = database.current_permission().await?;
         if !permission.can_admin() {
             return Err(SyncError::InsufficientPermission {
                 request_id: request_id.to_string(),

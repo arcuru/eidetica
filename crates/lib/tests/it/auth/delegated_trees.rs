@@ -7,16 +7,14 @@
 use eidetica::{
     Result,
     auth::{
-        crypto::format_public_key,
         types::{
-            AuthKey, DelegatedTreeRef, DelegationStep, KeyStatus, Permission, PermissionBounds,
-            SigKey, TreeReference,
+            AuthKey, DelegatedTreeRef, DelegationStep, KeyHint, KeyStatus, Permission,
+            PermissionBounds, SigKey, TreeReference,
         },
         validation::AuthValidator,
     },
-    crdt::{Doc, doc::Value},
+    crdt::Doc,
     entry::ID,
-    store::DocStore,
 };
 
 use super::helpers::*;
@@ -40,7 +38,7 @@ async fn test_delegated_tree_basic_validation() -> Result<()> {
     let (db, mut user) = crate::helpers::test_instance_with_user("test_user").await;
 
     // Create delegated tree
-    let (delegated_tree, _delegated_key_ids) = create_delegated_tree_with_user(
+    let (delegated_tree, delegated_key_ids) = create_delegated_tree_with_user(
         &mut user,
         &[("delegated_user", Permission::Admin(5), KeyStatus::Active)],
     )
@@ -55,7 +53,7 @@ async fn test_delegated_tree_basic_validation() -> Result<()> {
 
     // Add delegation to main tree auth settings
     let op = main_tree.new_transaction().await?;
-    let settings_store = op.get_store::<DocStore>("_settings").await?;
+    let settings = op.get_settings()?;
 
     let delegation_ref = create_delegation_ref(
         &delegated_tree,
@@ -63,10 +61,8 @@ async fn test_delegated_tree_basic_validation() -> Result<()> {
         Some(Permission::Read),
     )
     .await?;
-    let mut new_auth_settings = main_tree.get_settings().await?.get_all().await?;
-    new_auth_settings.set_json("delegate_to_user", delegation_ref)?;
-    settings_store
-        .set_value("auth", Value::Doc(new_auth_settings))
+    settings
+        .update_auth_settings(|auth| auth.add_delegated_tree("delegate_to_user", delegation_ref))
         .await?;
     op.commit().await?;
 
@@ -75,10 +71,14 @@ async fn test_delegated_tree_basic_validation() -> Result<()> {
     let main_auth_settings = main_tree.get_settings().await?.get_auth_settings().await?;
     let delegated_tips = delegated_tree.get_tips().await?;
 
-    let delegated_auth_id = create_delegation_path(&[
-        ("delegate_to_user", Some(delegated_tips)),
-        ("delegated_user", None),
-    ]);
+    // Create delegation path - DelegationStep uses tree (not key) and tips (not Option<tips>)
+    let delegated_auth_id = SigKey::Delegation {
+        path: vec![DelegationStep {
+            tree: "delegate_to_user".to_string(),
+            tips: delegated_tips,
+        }],
+        hint: KeyHint::from_pubkey(&delegated_key_ids[0]),
+    };
 
     assert_permission_resolution(
         &mut validator,
@@ -99,7 +99,7 @@ async fn test_delegated_tree_permission_clamping() -> Result<()> {
     let (db, mut user) = crate::helpers::test_instance_with_user("test_user").await;
 
     // Create delegated tree with Admin permissions
-    let (delegated_tree, _delegated_key_ids) = create_delegated_tree_with_user(
+    let (delegated_tree, delegated_key_ids) = create_delegated_tree_with_user(
         &mut user,
         &[("delegated_user", Permission::Admin(0), KeyStatus::Active)],
     )
@@ -114,13 +114,11 @@ async fn test_delegated_tree_permission_clamping() -> Result<()> {
 
     // Add read-only delegation
     let op = main_tree.new_transaction().await?;
-    let settings_store = op.get_store::<DocStore>("_settings").await?;
+    let settings = op.get_settings()?;
 
     let delegation_ref = create_delegation_ref(&delegated_tree, Permission::Read, None).await?;
-    let mut new_auth_settings = main_tree.get_settings().await?.get_all().await?;
-    new_auth_settings.set_json("delegate_readonly", delegation_ref)?;
-    settings_store
-        .set_value("auth", Value::Doc(new_auth_settings))
+    settings
+        .update_auth_settings(|auth| auth.add_delegated_tree("delegate_readonly", delegation_ref))
         .await?;
     op.commit().await?;
 
@@ -129,10 +127,13 @@ async fn test_delegated_tree_permission_clamping() -> Result<()> {
     let main_auth_settings = main_tree.get_settings().await?.get_auth_settings().await?;
     let delegated_tips = delegated_tree.get_tips().await?;
 
-    let delegated_auth_id = create_delegation_path(&[
-        ("delegate_readonly", Some(delegated_tips)),
-        ("delegated_user", None),
-    ]);
+    let delegated_auth_id = SigKey::Delegation {
+        path: vec![DelegationStep {
+            tree: "delegate_readonly".to_string(),
+            tips: delegated_tips,
+        }],
+        hint: KeyHint::from_pubkey(&delegated_key_ids[0]),
+    };
 
     // Permissions should be clamped from Admin to Read
     assert_permission_resolution(
@@ -229,29 +230,29 @@ async fn test_nested_delegation() -> Result<()> {
     let main_auth_settings = main_tree.get_settings().await?.get_auth_settings().await?;
 
     // Create a nested delegation chain: main -> org -> user
-    // Use display names from each tree's auth settings
-    let nested_auth_id = SigKey::DelegationPath(vec![
-        DelegationStep {
-            key: "delegate_to_org".to_string(),
-            tips: Some(org_tips.clone()),
-        },
-        DelegationStep {
-            key: "delegate_to_user".to_string(),
-            tips: Some(user_tips.clone()),
-        },
-        DelegationStep {
-            key: "user".to_string(),
-            tips: None,
-        },
-    ]);
+    let nested_auth_id = SigKey::Delegation {
+        path: vec![
+            DelegationStep {
+                tree: "delegate_to_org".to_string(),
+                tips: org_tips.clone(),
+            },
+            DelegationStep {
+                tree: "delegate_to_user".to_string(),
+                tips: user_tips.clone(),
+            },
+        ],
+        hint: KeyHint::from_pubkey(&user_key),
+    };
 
     // This should resolve with Write permissions (clamped through the chain)
-    let resolved_auth = validator
+    let resolved_auths = validator
         .resolve_sig_key(&nested_auth_id, &main_auth_settings, Some(&db))
         .await?;
 
     // Permissions should be clamped: user has Admin(10) -> org clamps to Write(20) -> main doesn't clamp further
     // Final result should be Write(20) (clamped at org level)
+    assert_eq!(resolved_auths.len(), 1);
+    let resolved_auth = &resolved_auths[0];
     assert_eq!(resolved_auth.effective_permission, Permission::Write(20));
     assert_eq!(resolved_auth.key_status, KeyStatus::Active);
 
@@ -316,21 +317,20 @@ async fn test_delegated_tree_with_revoked_keys() -> Result<()> {
     let mut validator = AuthValidator::new();
     let main_auth_settings = main_tree.get_settings().await?.get_auth_settings().await?;
 
-    let delegated_auth_id = SigKey::DelegationPath(vec![
-        DelegationStep {
-            key: "delegate_to_tree".to_string(),
-            tips: Some(delegated_tips.clone()),
-        },
-        DelegationStep {
-            key: "delegated_user".to_string(), // Use display name from delegated tree auth settings
-            tips: None,
-        },
-    ]);
+    let delegated_auth_id = SigKey::Delegation {
+        path: vec![DelegationStep {
+            tree: "delegate_to_tree".to_string(),
+            tips: delegated_tips.clone(),
+        }],
+        hint: KeyHint::from_pubkey(&delegated_user_key),
+    };
 
-    let resolved_auth = validator
+    let resolved_auths = validator
         .resolve_sig_key(&delegated_auth_id, &main_auth_settings, Some(&db))
         .await?;
 
+    assert_eq!(resolved_auths.len(), 1);
+    let resolved_auth = &resolved_auths[0];
     assert_eq!(resolved_auth.effective_permission, Permission::Write(10));
     assert_eq!(resolved_auth.key_status, KeyStatus::Active);
 
@@ -340,14 +340,13 @@ async fn test_delegated_tree_with_revoked_keys() -> Result<()> {
         let settings = op.get_settings()?;
         settings
             .update_auth_settings(|auth| {
-                // Update the existing key to be revoked (use overwrite_key since it already exists)
-                let public_key = eidetica::auth::crypto::parse_public_key(&delegated_user_key)?;
+                // Update the existing key to be revoked (store by pubkey)
                 let revoked_key = AuthKey::new(
-                    format_public_key(&public_key),
+                    Some("delegated_user"),
                     Permission::Write(10),
                     KeyStatus::Revoked,
-                )?;
-                auth.overwrite_key("delegated_user", revoked_key)?;
+                );
+                auth.overwrite_key(&delegated_user_key, revoked_key)?;
                 Ok(())
             })
             .await?;
@@ -362,13 +361,14 @@ async fn test_delegated_tree_with_revoked_keys() -> Result<()> {
         .await?;
     let resolved_auth_revoked = validator
         .resolve_sig_key(
-            &SigKey::Direct("delegated_user".to_string()),
+            &SigKey::from_pubkey(&delegated_user_key),
             &revoked_auth_settings,
             Some(&db),
         )
         .await?;
 
-    assert_eq!(resolved_auth_revoked.key_status, KeyStatus::Revoked);
+    assert_eq!(resolved_auth_revoked.len(), 1);
+    assert_eq!(resolved_auth_revoked[0].key_status, KeyStatus::Revoked);
 
     Ok(())
 }
@@ -423,18 +423,15 @@ async fn test_delegation_depth_limits() -> Result<()> {
     // Add 12 intermediate delegation steps (exceeds MAX_DELEGATION_DEPTH of 10)
     for _ in 0..12 {
         delegation_steps.push(DelegationStep {
-            key: "delegate_to_user".to_string(),
-            tips: Some(delegated_tips.clone()),
+            tree: "delegate_to_user".to_string(),
+            tips: delegated_tips.clone(),
         });
     }
 
-    // Add final step
-    delegation_steps.push(DelegationStep {
-        key: "user".to_string(), // Use display name from delegated tree auth settings
-        tips: None,
-    });
-
-    let nested_auth_id = SigKey::DelegationPath(delegation_steps);
+    let nested_auth_id = SigKey::Delegation {
+        path: delegation_steps,
+        hint: KeyHint::from_pubkey(&user_key),
+    };
 
     // Test depth limit validation
     let mut validator = AuthValidator::new();
@@ -522,24 +519,22 @@ async fn test_delegated_tree_min_bound_upgrade() -> Result<()> {
     let mut validator = AuthValidator::new();
     let main_auth_settings = main_tree.get_settings().await?.get_auth_settings().await?;
 
-    let auth_id = SigKey::DelegationPath(vec![
-        DelegationStep {
-            key: "delegate_user_min_upgrade".to_string(),
-            tips: Some(delegated_tips.clone()),
-        },
-        DelegationStep {
-            key: "delegated_user".to_string(), // Use display name from delegated tree auth settings
-            tips: None,
-        },
-    ]);
+    let auth_id = SigKey::Delegation {
+        path: vec![DelegationStep {
+            tree: "delegate_user_min_upgrade".to_string(),
+            tips: delegated_tips.clone(),
+        }],
+        hint: KeyHint::from_pubkey(&delegated_user_key),
+    };
 
     let resolved = validator
         .resolve_sig_key(&auth_id, &main_auth_settings, Some(&db))
         .await?;
 
     // Expect permission upgraded to Write(7)
-    assert_eq!(resolved.effective_permission, Permission::Write(7));
-    assert_eq!(resolved.key_status, KeyStatus::Active);
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].effective_permission, Permission::Write(7));
+    assert_eq!(resolved[0].key_status, KeyStatus::Active);
 
     Ok(())
 }
@@ -612,23 +607,21 @@ async fn test_delegated_tree_priority_preservation() -> Result<()> {
     let mut validator = AuthValidator::new();
     let main_auth_settings = main_tree.get_settings().await?.get_auth_settings().await?;
 
-    let auth_id = SigKey::DelegationPath(vec![
-        DelegationStep {
-            key: "delegate_user_priority".to_string(),
-            tips: Some(delegated_tips.clone()),
-        },
-        DelegationStep {
-            key: "delegated_user".to_string(), // Use display name from delegated tree auth settings
-            tips: None,
-        },
-    ]);
+    let auth_id = SigKey::Delegation {
+        path: vec![DelegationStep {
+            tree: "delegate_user_priority".to_string(),
+            tips: delegated_tips.clone(),
+        }],
+        hint: KeyHint::from_pubkey(&delegated_user_key),
+    };
 
     let resolved = validator
         .resolve_sig_key(&auth_id, &main_auth_settings, Some(&db))
         .await?;
 
     // Because Write(12) is within bounds (less privileged than Write(8)), it is preserved
-    assert_eq!(resolved.effective_permission, Permission::Write(12));
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].effective_permission, Permission::Write(12));
 
     Ok(())
 }
@@ -656,18 +649,15 @@ async fn test_delegation_depth_limit_exact() -> Result<()> {
     // Add 10 intermediate delegation steps (reaches MAX_DELEGATION_DEPTH of 10)
     for _ in 0..10 {
         delegation_steps.push(DelegationStep {
-            key: "some_delegate".to_string(), // ID doesn't exist but depth is focus
-            tips: Some(tips.clone()),
+            tree: "some_delegate".to_string(), // ID doesn't exist but depth is focus
+            tips: tips.clone(),
         });
     }
 
-    // Add final step
-    delegation_steps.push(DelegationStep {
-        key: "admin".to_string(),
-        tips: None,
-    });
-
-    let auth_id = SigKey::DelegationPath(delegation_steps);
+    let auth_id = SigKey::Delegation {
+        path: delegation_steps,
+        hint: KeyHint::from_pubkey(&admin_key),
+    };
 
     let mut validator = AuthValidator::new();
     let auth_settings = tree.get_settings().await?.get_auth_settings().await?;
@@ -759,16 +749,13 @@ async fn test_delegated_tree_invalid_tips() -> Result<()> {
     let mut validator = AuthValidator::new();
     let main_auth_settings = main_tree.get_settings().await?.get_auth_settings().await?;
 
-    let auth_id = SigKey::DelegationPath(vec![
-        DelegationStep {
-            key: "delegate_with_bad_tip".to_string(),
-            tips: Some(vec![bogus_tip]),
-        },
-        DelegationStep {
-            key: "delegated_user".to_string(), // Use display name from delegated tree auth settings
-            tips: None,
-        },
-    ]);
+    let auth_id = SigKey::Delegation {
+        path: vec![DelegationStep {
+            tree: "delegate_with_bad_tip".to_string(),
+            tips: vec![bogus_tip],
+        }],
+        hint: KeyHint::from_pubkey(&delegated_user_key),
+    };
 
     let result = validator
         .resolve_sig_key(&auth_id, &main_auth_settings, Some(&db))
@@ -810,18 +797,17 @@ async fn test_complex_nested_delegation_chain() -> Result<()> {
 
     // Test that complex delegation paths can be created correctly
     match delegation_path {
-        SigKey::DelegationPath(steps) => {
-            assert_eq!(steps.len(), 4); // 3 levels + final user
+        SigKey::Delegation { path, hint } => {
+            assert_eq!(path.len(), 3); // 3 levels
 
-            // Verify each step has the expected key
-            for (i, step) in steps.iter().take(3).enumerate() {
-                assert_eq!(step.key, format!("delegate_level_{i}"));
-                assert!(step.tips.is_some()); // Intermediate steps have tips
+            // Verify each step has tree ID (root_id) not a key name
+            for step in path.iter() {
+                assert!(!step.tree.is_empty());
+                assert!(!step.tips.is_empty()); // All steps have tips
             }
 
-            // Final step should be the target user
-            assert_eq!(steps[3].key, "final_user");
-            assert!(steps[3].tips.is_none()); // Final step has no tips
+            // Hint should reference the final user
+            assert_eq!(hint.name, Some("final_user".to_string()));
         }
         _ => panic!("Expected delegation path"),
     }

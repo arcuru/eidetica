@@ -1,4 +1,5 @@
 use eidetica::auth::{
+    crypto::{format_public_key, generate_keypair},
     settings::AuthSettings,
     types::{AuthKey, KeyStatus, Permission, ResolvedAuth},
 };
@@ -12,22 +13,27 @@ use super::helpers::*;
 fn test_admin_hierarchy_enforcement() {
     let mut settings = AuthSettings::new();
 
-    let high_admin = auth_key("ed25519:high", Permission::Admin(1), KeyStatus::Active);
-    let low_admin = auth_key("ed25519:low", Permission::Admin(100), KeyStatus::Active);
+    let (_, high_pubkey) = generate_keypair();
+    let (_, low_pubkey) = generate_keypair();
+    let high_pubkey_str = format_public_key(&high_pubkey);
+    let low_pubkey_str = format_public_key(&low_pubkey);
 
-    settings.add_key("HIGH_PRIORITY_ADMIN", high_admin).unwrap();
+    let high_admin = auth_key(Permission::Admin(1), KeyStatus::Active);
+    let low_admin = auth_key(Permission::Admin(100), KeyStatus::Active);
+
+    settings.add_key(&high_pubkey_str, high_admin).unwrap();
     settings
-        .add_key("LOW_PRIORITY_ADMIN", low_admin.clone())
+        .add_key(&low_pubkey_str, low_admin.clone())
         .unwrap();
 
     let low_priority_resolved = ResolvedAuth {
-        public_key: eidetica::auth::crypto::generate_keypair().1,
+        public_key: generate_keypair().1,
         effective_permission: low_admin.permissions().clone(),
         key_status: low_admin.status().clone(),
     };
 
     let can_modify = settings
-        .can_modify_key(&low_priority_resolved, "HIGH_PRIORITY_ADMIN")
+        .can_modify_key(&low_priority_resolved, &high_pubkey_str)
         .unwrap();
 
     // Low priority admin should NOT be able to modify high priority admin
@@ -59,37 +65,37 @@ fn test_admin_hierarchy_complete_enforcement() {
     let mut settings = AuthSettings::new();
 
     // Create a super high-priority admin (priority 0 = absolute highest)
-    let (_, super_admin_key) = eidetica::auth::crypto::generate_keypair();
+    let (_, super_admin_key) = generate_keypair();
+    let super_admin_pubkey = format_public_key(&super_admin_key);
     let super_admin = AuthKey::active(
-        eidetica::auth::crypto::format_public_key(&super_admin_key),
+        Some("super_admin"),
         Permission::Admin(0), // Absolute highest priority
-    )
-    .unwrap();
+    );
 
     // Create a very low-priority admin (almost lowest possible)
-    let (_, junior_admin_key) = eidetica::auth::crypto::generate_keypair();
+    let (_, junior_admin_key) = generate_keypair();
+    let junior_admin_pubkey = format_public_key(&junior_admin_key);
     let junior_admin = AuthKey::active(
-        eidetica::auth::crypto::format_public_key(&junior_admin_key),
+        Some("junior_admin"),
         Permission::Admin(u32::MAX - 1), // Almost lowest priority
-    )
-    .unwrap();
+    );
 
     settings
-        .add_key("SUPER_ADMIN", super_admin.clone())
+        .add_key(&super_admin_pubkey, super_admin.clone())
         .unwrap();
     settings
-        .add_key("JUNIOR_ADMIN", junior_admin.clone())
+        .add_key(&junior_admin_pubkey, junior_admin.clone())
         .unwrap();
 
     let junior_resolved = ResolvedAuth {
-        public_key: eidetica::auth::crypto::generate_keypair().1,
+        public_key: generate_keypair().1,
         effective_permission: junior_admin.permissions().clone(),
         key_status: junior_admin.status().clone(),
     };
 
     // This should NEVER be true - a low priority admin should not be able to modify a super admin
     let can_modify = settings
-        .can_modify_key(&junior_resolved, "SUPER_ADMIN")
+        .can_modify_key(&junior_resolved, &super_admin_pubkey)
         .unwrap();
 
     // Junior admin should NEVER be able to modify super admin
@@ -131,29 +137,30 @@ fn test_privilege_escalation_prevention() {
     // Scenario: A write user can somehow escalate to admin privileges
     // This tests a hypothetical privilege escalation vulnerability
 
-    let write_user = auth_key(
-        "ed25519:write_user",
-        Permission::Write(10),
-        KeyStatus::Active,
-    );
-    let admin_user = auth_key(
-        "ed25519:admin_user",
-        Permission::Admin(5),
-        KeyStatus::Active,
-    );
+    let (_, write_pubkey) = generate_keypair();
+    let (_, admin_pubkey) = generate_keypair();
+    let write_pubkey_str = format_public_key(&write_pubkey);
+    let admin_pubkey_str = format_public_key(&admin_pubkey);
 
-    settings.add_key("WRITE_USER", write_user.clone()).unwrap();
-    settings.add_key("ADMIN_USER", admin_user.clone()).unwrap();
+    let write_user = auth_key(Permission::Write(10), KeyStatus::Active);
+    let admin_user = auth_key(Permission::Admin(5), KeyStatus::Active);
+
+    settings
+        .add_key(&write_pubkey_str, write_user.clone())
+        .unwrap();
+    settings
+        .add_key(&admin_pubkey_str, admin_user.clone())
+        .unwrap();
 
     let write_resolved = ResolvedAuth {
-        public_key: eidetica::auth::crypto::generate_keypair().1,
+        public_key: generate_keypair().1,
         effective_permission: write_user.permissions().clone(),
         key_status: write_user.status().clone(),
     };
 
     // Write users should NEVER be able to modify admin keys
     let can_modify_admin = settings
-        .can_modify_key(&write_resolved, "ADMIN_USER")
+        .can_modify_key(&write_resolved, &admin_pubkey_str)
         .unwrap();
 
     // Write users should NEVER be able to create new admin keys
@@ -172,16 +179,19 @@ fn test_key_creation_privilege_escalation_prevention() {
     let mut settings = AuthSettings::new();
 
     // Create a low-priority admin that should not be able to create high-priority admins
+    let (_, low_admin_pubkey) = generate_keypair();
+    let low_admin_pubkey_str = format_public_key(&low_admin_pubkey);
     let low_admin = auth_key(
-        "ed25519:low_admin",
         Permission::Admin(100), // Low priority admin
         KeyStatus::Active,
     );
 
-    settings.add_key("LOW_ADMIN", low_admin.clone()).unwrap();
+    settings
+        .add_key(&low_admin_pubkey_str, low_admin.clone())
+        .unwrap();
 
     let low_admin_resolved = ResolvedAuth {
-        public_key: eidetica::auth::crypto::generate_keypair().1,
+        public_key: generate_keypair().1,
         effective_permission: low_admin.permissions().clone(),
         key_status: low_admin.status().clone(),
     };

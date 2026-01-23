@@ -3,11 +3,12 @@
 #[test]
 fn entry_deserialize_wrong_version_fails() {
     // Construct a JSON entry with an unsupported version
+    // SigKey is now a struct with explicit hint fields
     let json = r#"{
         "_v": 99,
         "tree": { "root": "", "parents": [] },
         "subtrees": [],
-        "sig": {"sig": null, "key": ""}
+        "sig": {"key": {}}
     }"#;
 
     let result: Result<eidetica::Entry, _> = serde_json::from_str(json);
@@ -17,10 +18,11 @@ fn entry_deserialize_wrong_version_fails() {
 #[test]
 fn entry_deserialize_missing_version_defaults_to_v0() {
     // Entry without version field should default to v0 and succeed
+    // SigKey is now a struct with explicit hint fields (untagged enum)
     let json = r#"{
         "tree": { "root": "", "parents": [] },
         "subtrees": [],
-        "sig": {"sig": null, "key": ""}
+        "sig": {"key": {}}
     }"#;
 
     let result: Result<eidetica::Entry, _> = serde_json::from_str(json);

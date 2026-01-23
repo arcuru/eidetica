@@ -5,11 +5,8 @@
 //! to provide settings-specific functionality while maintaining proper CRDT semantics.
 
 use crate::{
-    Instance, Result, Transaction,
-    auth::{
-        settings::AuthSettings,
-        types::{AuthKey, ResolvedAuth, SigKey},
-    },
+    Result, Transaction,
+    auth::{settings::AuthSettings, types::AuthKey},
     crdt::{Doc, doc},
     height::HeightStrategy,
     store::DocStore,
@@ -201,69 +198,47 @@ impl SettingsStore {
     /// Set an authentication key in the settings
     ///
     /// This method provides upsert behavior for authentication keys:
-    /// - If the key doesn't exist: creates it
-    /// - If the key exists with the same public key: updates permissions and status
-    /// - If the key exists with a different public key: returns KeyNameConflict error
+    /// - If the pubkey doesn't exist: creates the key entry
+    /// - If the pubkey exists: updates the key with new permissions/status/name
+    ///
+    /// Keys are stored by pubkey (the cryptographic public key string).
+    /// The AuthKey contains optional name metadata and permission information.
     ///
     /// # Arguments
-    /// * `key_name` - The name/identifier for the key
-    /// * `key` - The AuthKey to set
+    /// * `pubkey` - The public key string (e.g., "ed25519:ABC...")
+    /// * `key` - The AuthKey containing name, permissions, and status
     ///
     /// # Returns
     /// Result indicating success or failure
-    pub async fn set_auth_key(&self, key_name: &str, key: AuthKey) -> Result<()> {
+    pub async fn set_auth_key(&self, pubkey: &str, key: AuthKey) -> Result<()> {
         self.update_auth_settings(|auth| {
-            // Check if key already exists
-            match auth.get_key(key_name) {
-                Ok(existing_key) => {
-                    // Key exists - check if same public key
-                    if existing_key.pubkey() == key.pubkey() {
-                        // Same public key - update with new permissions/status
-                        auth.overwrite_key(key_name, key)
-                    } else {
-                        // Different public key - this is a conflict
-                        Err(crate::auth::errors::AuthError::KeyNameConflict {
-                            key_name: key_name.to_string(),
-                            existing_pubkey: existing_key.pubkey().to_string(),
-                            new_pubkey: key.pubkey().to_string(),
-                        }
-                        .into())
-                    }
-                }
-                Err(crate::Error::Auth(auth_err)) if auth_err.is_key_not_found() => {
-                    // Key doesn't exist - create it
-                    auth.overwrite_key(key_name, key)
-                }
-                Err(e) => {
-                    // Other error (e.g., format error) - propagate it
-                    Err(e)
-                }
-            }
+            // Use overwrite_key which handles both create and update
+            auth.overwrite_key(pubkey, key)
         })
         .await
     }
 
-    /// Get an authentication key from the settings
+    /// Get an authentication key from the settings by public key
     ///
     /// # Arguments
-    /// * `key_name` - The name/identifier of the key to retrieve
+    /// * `pubkey` - The public key string to retrieve
     ///
     /// # Returns
     /// AuthKey if found, or error if not present or operation fails
-    pub async fn get_auth_key(&self, key_name: &str) -> Result<AuthKey> {
+    pub async fn get_auth_key(&self, pubkey: &str) -> Result<AuthKey> {
         let auth_settings = self.get_auth_settings().await?;
-        auth_settings.get_key(key_name)
+        auth_settings.get_key_by_pubkey(pubkey)
     }
 
     /// Revoke an authentication key in the settings
     ///
     /// # Arguments
-    /// * `key_name` - The name/identifier of the key to revoke
+    /// * `pubkey` - The public key string of the key to revoke
     ///
     /// # Returns
     /// Result indicating success or failure
-    pub async fn revoke_auth_key(&self, key_name: &str) -> Result<()> {
-        self.update_auth_settings(|auth| auth.revoke_key(key_name))
+    pub async fn revoke_auth_key(&self, pubkey: &str) -> Result<()> {
+        self.update_auth_settings(|auth| auth.revoke_key(pubkey))
             .await
     }
 
@@ -278,25 +253,6 @@ impl SettingsStore {
     pub async fn get_auth_doc_for_validation(&self) -> Result<Doc> {
         let auth_settings = self.get_auth_settings().await?;
         Ok(auth_settings.as_doc().clone())
-    }
-
-    /// Validate entry authentication using the current settings
-    ///
-    /// This is a convenience method that delegates to AuthSettings.validate_entry_auth
-    ///
-    /// # Arguments
-    /// * `sig_key` - The signature key to validate
-    /// * `instance` - Optional instance for delegation path validation
-    ///
-    /// # Returns
-    /// ResolvedAuth information if validation succeeds
-    pub async fn validate_entry_auth(
-        &self,
-        sig_key: &SigKey,
-        instance: Option<&Instance>,
-    ) -> Result<ResolvedAuth> {
-        let auth_settings = self.get_auth_settings().await?;
-        auth_settings.validate_entry_auth(sig_key, instance).await
     }
 
     /// Get access to the underlying DocStore for advanced operations
@@ -317,13 +273,18 @@ mod tests {
     use crate::{
         Database, Instance,
         auth::{
-            generate_public_key,
+            crypto::{format_public_key, generate_keypair},
             types::{KeyStatus, Permission},
         },
         backend::database::InMemory,
         crdt::Doc,
         store::Store,
     };
+
+    fn generate_public_key() -> String {
+        let (_, verifying_key) = generate_keypair();
+        format_public_key(&verifying_key)
+    }
 
     async fn create_test_database() -> (Instance, Database) {
         let backend = Box::new(InMemory::new());
@@ -382,17 +343,18 @@ mod tests {
         let initial_auth_settings = settings_store.get_auth_settings().await.unwrap();
         let initial_key_count = initial_auth_settings.get_all_keys().unwrap().len();
 
-        // Should be able to add an auth key
-        let auth_key = AuthKey::active(generate_public_key(), Permission::Admin(1)).unwrap();
+        // Should be able to add an auth key (stored by pubkey)
+        let pubkey = generate_public_key();
+        let auth_key = AuthKey::active(Some("new_test_key"), Permission::Admin(1));
 
         settings_store
-            .set_auth_key("new_test_key", auth_key.clone())
+            .set_auth_key(&pubkey, auth_key.clone())
             .await
             .unwrap();
 
-        // Should be able to retrieve the key
-        let retrieved_key = settings_store.get_auth_key("new_test_key").await.unwrap();
-        assert_eq!(retrieved_key.pubkey(), auth_key.pubkey());
+        // Should be able to retrieve the key by pubkey
+        let retrieved_key = settings_store.get_auth_key(&pubkey).await.unwrap();
+        assert_eq!(retrieved_key.name(), auth_key.name());
         assert_eq!(retrieved_key.permissions(), auth_key.permissions());
         assert_eq!(retrieved_key.status(), auth_key.status());
 
@@ -408,24 +370,25 @@ mod tests {
         let transaction = database.new_transaction().await.unwrap();
         let settings_store = SettingsStore::new(&transaction).unwrap();
 
-        let auth_key = AuthKey::active(generate_public_key(), Permission::Write(5)).unwrap();
+        let pubkey = generate_public_key();
+        let auth_key = AuthKey::active(Some("laptop"), Permission::Write(5));
 
-        // Add key
+        // Add key (stored by pubkey)
         settings_store
-            .set_auth_key("laptop", auth_key.clone())
+            .set_auth_key(&pubkey, auth_key.clone())
             .await
             .unwrap();
 
-        // Verify key exists
-        let retrieved = settings_store.get_auth_key("laptop").await.unwrap();
-        assert_eq!(retrieved.pubkey(), auth_key.pubkey());
+        // Verify key exists (lookup by pubkey)
+        let retrieved = settings_store.get_auth_key(&pubkey).await.unwrap();
+        assert_eq!(retrieved.name(), Some("laptop"));
         assert_eq!(retrieved.status(), &KeyStatus::Active);
 
-        // Revoke key
-        settings_store.revoke_auth_key("laptop").await.unwrap();
+        // Revoke key (by pubkey)
+        settings_store.revoke_auth_key(&pubkey).await.unwrap();
 
         // Verify key is revoked
-        let revoked_key = settings_store.get_auth_key("laptop").await.unwrap();
+        let revoked_key = settings_store.get_auth_key(&pubkey).await.unwrap();
         assert_eq!(revoked_key.status(), &KeyStatus::Revoked);
     }
 
@@ -435,14 +398,20 @@ mod tests {
         let transaction = database.new_transaction().await.unwrap();
         let settings_store = SettingsStore::new(&transaction).unwrap();
 
-        // Use the closure-based update
-        settings_store
-            .update_auth_settings(|auth| {
-                let key1 = AuthKey::active(generate_public_key(), Permission::Admin(1)).unwrap();
-                let key2 = AuthKey::active(generate_public_key(), Permission::Write(5)).unwrap();
+        // Generate pubkeys for the test
+        let pubkey1 = generate_public_key();
+        let pubkey2 = generate_public_key();
 
-                auth.add_key("admin", key1)?;
-                auth.add_key("writer", key2)?;
+        // Use the closure-based update (keys are stored by pubkey now)
+        let pk1 = pubkey1.clone();
+        let pk2 = pubkey2.clone();
+        settings_store
+            .update_auth_settings(move |auth| {
+                let key1 = AuthKey::active(Some("admin"), Permission::Admin(1));
+                let key2 = AuthKey::active(Some("writer"), Permission::Write(5));
+
+                auth.add_key(&pk1, key1)?;
+                auth.add_key(&pk2, key2)?;
                 Ok(())
             })
             .await
@@ -452,8 +421,8 @@ mod tests {
         let auth_settings = settings_store.get_auth_settings().await.unwrap();
         let all_keys = auth_settings.get_all_keys().unwrap();
         assert!(all_keys.len() >= 2); // At least the two we added
-        assert!(all_keys.contains_key("admin"));
-        assert!(all_keys.contains_key("writer"));
+        assert!(all_keys.contains_key(&pubkey1));
+        assert!(all_keys.contains_key(&pubkey2));
     }
 
     #[tokio::test]
@@ -462,20 +431,20 @@ mod tests {
         let transaction = database.new_transaction().await.unwrap();
         let settings_store = SettingsStore::new(&transaction).unwrap();
 
-        // Add a key
-        let valid_pubkey = generate_public_key();
-        let auth_key = AuthKey::active(valid_pubkey.clone(), Permission::Read).unwrap();
+        // Add a key (stored by pubkey)
+        let pubkey = generate_public_key();
+        let auth_key = AuthKey::active(Some("validator"), Permission::Read);
         settings_store
-            .set_auth_key("validator", auth_key)
+            .set_auth_key(&pubkey, auth_key)
             .await
             .unwrap();
 
         // Get auth doc for validation
         let auth_doc = settings_store.get_auth_doc_for_validation().await.unwrap();
 
-        // Should contain the key
-        let validator_key: AuthKey = auth_doc.get_json("validator").unwrap();
-        assert_eq!(validator_key.pubkey(), &valid_pubkey);
+        // Should contain the key under keys.{pubkey}
+        let validator_key: AuthKey = auth_doc.get_json(format!("keys.{pubkey}")).unwrap();
+        assert_eq!(validator_key.name(), Some("validator"));
     }
 
     #[tokio::test]

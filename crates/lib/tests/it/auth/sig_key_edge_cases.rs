@@ -7,7 +7,7 @@ use eidetica::{
     Result,
     auth::{
         AuthSettings,
-        types::{AuthKey, DelegationStep, Permission, SigInfo, SigKey},
+        types::{AuthKey, DelegationStep, KeyHint, Permission, SigInfo, SigKey},
         validation::AuthValidator,
     },
     crdt::Doc,
@@ -19,7 +19,10 @@ use crate::helpers::{test_instance, test_instance_with_user_and_key};
 /// Test SigKey with empty delegation path
 #[tokio::test]
 async fn test_empty_delegation_path() -> Result<()> {
-    let empty_delegation = SigKey::DelegationPath(vec![]);
+    let empty_delegation = SigKey::Delegation {
+        path: vec![],
+        hint: KeyHint::from_name("final"),
+    };
 
     // Empty delegation path should be considered invalid
     let mut validator = AuthValidator::new();
@@ -34,60 +37,52 @@ async fn test_empty_delegation_path() -> Result<()> {
     Ok(())
 }
 
-/// Test SigKey::Direct with empty key ID
+/// Test SigKey::Direct with name hint (not pubkey)
 #[tokio::test]
-async fn test_direct_key_empty_id() -> Result<()> {
-    let (instance, mut user, key_id) = test_instance_with_user_and_key("test_user", Some("")).await;
+async fn test_direct_key_name_hint() -> Result<()> {
+    let (instance, mut user, key_id) =
+        test_instance_with_user_and_key("test_user", Some("test_name")).await;
 
     // Create tree with the key_id as auth entry (required for User API)
-    // Also add empty key ID entry for testing empty key resolution
-    let pubkey = user.get_public_key(&key_id)?;
     let mut auth_settings = AuthSettings::new();
     auth_settings.add_key(
-        &key_id, // Key ID as entry name (required for database creation)
-        AuthKey::active(&pubkey, Permission::Admin(0))?,
-    )?;
-    auth_settings.add_key(
-        "", // Empty key ID for testing
-        AuthKey::active(&pubkey, Permission::Admin(0))?,
+        &key_id,
+        AuthKey::active(Some("test_name"), Permission::Admin(0)),
     )?;
 
     let mut settings = Doc::new();
     settings.set("auth", auth_settings.as_doc().clone());
 
-    // This should work - empty key is technically valid
+    // This should work
     let tree = user.create_database(settings, &key_id).await?;
 
-    // Test resolving empty key ID
-    let empty_key = SigKey::Direct("".to_string());
+    // Test resolving by name hint - should find key with matching name
+    let name_key = SigKey::from_name("test_name");
     let mut validator = AuthValidator::new();
     let auth_settings = tree.get_settings().await?.get_auth_settings().await?;
 
     let result = validator
-        .resolve_sig_key(&empty_key, &auth_settings, Some(&instance))
+        .resolve_sig_key(&name_key, &auth_settings, Some(&instance))
         .await;
     assert!(
         result.is_ok(),
-        "Failed to resolve empty key: {:?}",
+        "Failed to resolve key by name: {:?}",
         result.err()
     );
 
     Ok(())
 }
 
-/// Test delegation path with null tips in intermediate step
+/// Test delegation path with empty tips in intermediate step
 #[tokio::test]
-async fn test_delegation_with_null_tips_intermediate() -> Result<()> {
-    let delegation_path = SigKey::DelegationPath(vec![
-        DelegationStep {
-            key: "intermediate".to_string(),
-            tips: None, // Should have tips for intermediate step
-        },
-        DelegationStep {
-            key: "final_key".to_string(),
-            tips: None,
-        },
-    ]);
+async fn test_delegation_with_empty_tips_intermediate() -> Result<()> {
+    let delegation_path = SigKey::Delegation {
+        path: vec![DelegationStep {
+            tree: "intermediate".to_string(),
+            tips: vec![], // Empty tips for intermediate step
+        }],
+        hint: KeyHint::from_name("final_key"),
+    };
 
     let mut validator = AuthValidator::new();
     let auth_settings = AuthSettings::new();
@@ -96,7 +91,7 @@ async fn test_delegation_with_null_tips_intermediate() -> Result<()> {
     let result = validator
         .resolve_sig_key(&delegation_path, &auth_settings, Some(&db))
         .await;
-    // Should error because intermediate steps need tips
+    // Should error because we can't resolve delegation without proper tips
     assert!(result.is_err());
 
     Ok(())
@@ -112,16 +107,13 @@ async fn test_delegation_with_duplicate_tips() -> Result<()> {
         ID::from("tip3"),
     ];
 
-    let delegation_path = SigKey::DelegationPath(vec![
-        DelegationStep {
-            key: "delegate_tree".to_string(),
-            tips: Some(duplicate_tips),
-        },
-        DelegationStep {
-            key: "final_key".to_string(),
-            tips: None,
-        },
-    ]);
+    let delegation_path = SigKey::Delegation {
+        path: vec![DelegationStep {
+            tree: "delegate_tree".to_string(),
+            tips: duplicate_tips,
+        }],
+        hint: KeyHint::from_name("final_key"),
+    };
 
     // Serialization should work even with duplicates
     let serialized = serde_json::to_string(&delegation_path)?;
@@ -138,16 +130,13 @@ async fn test_delegation_with_duplicate_tips() -> Result<()> {
 async fn test_delegation_with_long_key_names() -> Result<()> {
     let long_key = "a".repeat(10000); // Very long key name
 
-    let delegation_path = SigKey::DelegationPath(vec![
-        DelegationStep {
-            key: long_key.clone(),
-            tips: Some(vec![ID::from("tip1")]),
-        },
-        DelegationStep {
-            key: "final_key".to_string(),
-            tips: None,
-        },
-    ]);
+    let delegation_path = SigKey::Delegation {
+        path: vec![DelegationStep {
+            tree: long_key.clone(),
+            tips: vec![ID::from("tip1")],
+        }],
+        hint: KeyHint::from_name("final_key"),
+    };
 
     // Should serialize/deserialize correctly
     let serialized = serde_json::to_string(&delegation_path)?;
@@ -163,16 +152,13 @@ async fn test_delegation_with_unicode_keys() -> Result<()> {
     let unicode_keys = vec!["🔑_key", "キー", "مفتاح", "ключ", "कुंजी", "🚀💻🔐"];
 
     for unicode_key in unicode_keys {
-        let delegation_path = SigKey::DelegationPath(vec![
-            DelegationStep {
-                key: unicode_key.to_string(),
-                tips: Some(vec![ID::from("tip1")]),
-            },
-            DelegationStep {
-                key: "final_key".to_string(),
-                tips: None,
-            },
-        ]);
+        let delegation_path = SigKey::Delegation {
+            path: vec![DelegationStep {
+                tree: unicode_key.to_string(),
+                tips: vec![ID::from("tip1")],
+            }],
+            hint: KeyHint::from_name("final_key"),
+        };
 
         // Should serialize/deserialize correctly
         let serialized = serde_json::to_string(&delegation_path)?;
@@ -187,7 +173,7 @@ async fn test_delegation_with_unicode_keys() -> Result<()> {
 #[tokio::test]
 async fn test_sig_info_with_signature_no_key() {
     let sig_info = SigInfo::builder()
-        .key(SigKey::Direct("".to_string())) // Empty key
+        .key(SigKey::from_pubkey("")) // Empty key
         .sig("fake_signature")
         .build();
 
@@ -201,7 +187,7 @@ async fn test_sig_info_with_signature_no_key() {
 #[tokio::test]
 async fn test_sig_info_with_key_no_signature() {
     let sig_info = SigInfo::builder()
-        .key(SigKey::Direct("valid_key".to_string()))
+        .key(SigKey::from_pubkey("valid_key"))
         .build(); // No signature
 
     // Should serialize/deserialize correctly
@@ -219,17 +205,15 @@ async fn test_deep_delegation_path_performance() -> Result<()> {
 
     for i in 0..9 {
         delegation_steps.push(DelegationStep {
-            key: format!("delegate_level_{i}"),
-            tips: Some(vec![ID::from(format!("tip_{i}"))]),
+            tree: format!("delegate_level_{i}"),
+            tips: vec![ID::from(format!("tip_{i}"))],
         });
     }
 
-    delegation_steps.push(DelegationStep {
-        key: "final_key".to_string(),
-        tips: None,
-    });
-
-    let delegation_path = SigKey::DelegationPath(delegation_steps);
+    let delegation_path = SigKey::Delegation {
+        path: delegation_steps,
+        hint: KeyHint::from_name("final_key"),
+    };
 
     // Should serialize/deserialize without issues
     let start = std::time::Instant::now();
@@ -246,12 +230,22 @@ async fn test_deep_delegation_path_performance() -> Result<()> {
 /// Test delegation path with invalid JSON structure
 #[tokio::test]
 async fn test_delegation_path_invalid_json() {
+    // With untagged serde, SigKey tries Delegation first, then Direct(KeyHint).
+    // KeyHint has all optional fields, so most invalid JSON for Delegation
+    // will succeed as Direct(KeyHint) with fields ignored.
+    //
+    // Only truly invalid cases are those where field types don't match ANY variant:
+    // - Wrong type for pubkey (not string) - fails both Delegation and Direct
+    // - Wrong type for name (not string) - fails both variants
     let invalid_json_cases = vec![
-        r#"{"DelegationPath": "not_an_array"}"#,
-        r#"{"DelegationPath": [{"key": "test"}]}"#, // Missing tips field structure
-        r#"{"DelegationPath": [{"tips": ["tip1"]}]}"#, // Missing key field
-        r#"{"DelegationPath": [{"key": 123, "tips": null}]}"#, // Wrong type for key
-        r#"{"DelegationPath": [{"key": "test", "tips": "not_array"}]}"#, // Wrong type for tips
+        // Wrong type for pubkey (should be string or null)
+        r#"{"pubkey": 123}"#,
+        // Wrong type for name (should be string or null)
+        r#"{"name": true}"#,
+        // Not an object at all
+        r#""just_a_string""#,
+        // Null is not a valid SigKey
+        r#"null"#,
     ];
 
     for invalid_json in invalid_json_cases {
@@ -267,9 +261,11 @@ async fn test_circular_delegation_simple() -> Result<()> {
         test_instance_with_user_and_key("test_user", Some("admin")).await;
 
     // Create a tree that delegates to itself
-    let pubkey = user.get_public_key(&key_id)?;
     let mut auth_settings = AuthSettings::new();
-    auth_settings.add_key(&key_id, AuthKey::active(&pubkey, Permission::Admin(0))?)?;
+    auth_settings.add_key(
+        &key_id,
+        AuthKey::active(Some("admin"), Permission::Admin(0)),
+    )?;
 
     let mut settings = Doc::new();
     settings.set("auth", auth_settings.as_doc().clone());
@@ -277,16 +273,13 @@ async fn test_circular_delegation_simple() -> Result<()> {
     let tree_tips = tree.get_tips().await?;
 
     // Create delegation path that references the same tree
-    let circular_delegation = SigKey::DelegationPath(vec![
-        DelegationStep {
-            key: "self_reference".to_string(),
-            tips: Some(tree_tips),
-        },
-        DelegationStep {
-            key: key_id.clone(),
-            tips: None,
-        },
-    ]);
+    let circular_delegation = SigKey::Delegation {
+        path: vec![DelegationStep {
+            tree: "self_reference".to_string(),
+            tips: tree_tips,
+        }],
+        hint: KeyHint::from_pubkey(&key_id),
+    };
 
     // Add self-referencing delegation to the tree
     let op = tree.new_transaction().await?.with_auth(&key_id);
@@ -317,23 +310,18 @@ async fn test_delegation_step_serialization_edge_cases() -> Result<()> {
     let edge_cases = vec![
         // Normal case
         DelegationStep {
-            key: "normal_key".to_string(),
-            tips: Some(vec![ID::from("tip1")]),
+            tree: "normal_tree".to_string(),
+            tips: vec![ID::from("tip1")],
         },
         // Empty tips array
         DelegationStep {
-            key: "empty_tips".to_string(),
-            tips: Some(vec![]),
-        },
-        // Null tips
-        DelegationStep {
-            key: "null_tips".to_string(),
-            tips: None,
+            tree: "empty_tips".to_string(),
+            tips: vec![],
         },
         // Many tips
         DelegationStep {
-            key: "many_tips".to_string(),
-            tips: Some((0..100).map(|i| ID::from(format!("tip_{i}"))).collect()),
+            tree: "many_tips".to_string(),
+            tips: (0..100).map(|i| ID::from(format!("tip_{i}"))).collect(),
         },
     ];
 

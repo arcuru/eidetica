@@ -145,11 +145,11 @@ async fn test_approve_bootstrap_request() {
         .get_settings()
         .expect("Failed to create settings store");
     let added_key = settings_store
-        .get_auth_key("laptop_key")
+        .get_auth_key(&test_key)
         .await
         .expect("Failed to get auth key");
 
-    assert_eq!(added_key.pubkey(), &test_key);
+    assert_eq!(added_key.name(), Some("laptop_key"));
     assert_eq!(added_key.permissions(), &AuthPermission::Write(5));
     assert_eq!(
         added_key.status(),
@@ -505,26 +505,19 @@ async fn test_bootstrap_with_global_permission_auto_approval() {
     let mut settings = Doc::new();
     settings.set("name", "Test Global Permission DB");
 
-    let server_pubkey = server_user
-        .get_public_key(&server_key_id)
-        .expect("Failed to get server public key");
-
     let mut auth_settings = AuthSettings::new();
 
     // Add admin key for database creation
     auth_settings
         .add_key(
             &server_key_id,
-            AuthKey::active(&server_pubkey, AuthPermission::Admin(10)).unwrap(),
+            AuthKey::active(Some("admin"), AuthPermission::Admin(10)),
         )
         .unwrap();
 
     // Add global '*' permission with Write(10) access
     auth_settings
-        .add_key(
-            "*",
-            AuthKey::active("*", AuthPermission::Write(10)).unwrap(),
-        )
+        .add_key("*", AuthKey::active(Some("*"), AuthPermission::Write(10)))
         .unwrap();
 
     settings.set("auth", auth_settings.as_doc().clone());
@@ -648,26 +641,19 @@ async fn test_global_permission_overrides_manual_policy() {
     let mut settings = eidetica::crdt::Doc::new();
     settings.set("name", "Test Manual Policy with Global Permission");
 
-    let server_pubkey = server_user
-        .get_public_key(&server_key_id)
-        .expect("Failed to get server public key");
-
     let mut auth_settings = AuthSettings::new();
 
     // Add admin key for database creation
     auth_settings
         .add_key(
             &server_key_id,
-            AuthKey::active(&server_pubkey, AuthPermission::Admin(10)).unwrap(),
+            AuthKey::active(Some("admin"), AuthPermission::Admin(10)),
         )
         .unwrap();
 
     // Add global '*' permission with Write(10) access
     auth_settings
-        .add_key(
-            "*",
-            AuthKey::active("*", AuthPermission::Write(10)).unwrap(),
-        )
+        .add_key("*", AuthKey::active(Some("*"), AuthPermission::Write(10)))
         .unwrap();
 
     // Explicitly set bootstrap policy to require manual approval (false)
@@ -779,25 +765,21 @@ async fn test_bootstrap_with_existing_specific_key_permission() {
     let mut settings = eidetica::crdt::Doc::new();
     settings.set("name", "Test Existing Key DB");
 
-    let server_pubkey = server_user
-        .get_public_key(&server_key_id)
-        .expect("Failed to get server public key");
-
     let mut auth_settings = AuthSettings::new();
 
     // Add admin key for database creation
     auth_settings
         .add_key(
             &server_key_id,
-            AuthKey::active(&server_pubkey, AuthPermission::Admin(1)).unwrap(),
+            AuthKey::active(Some("admin"), AuthPermission::Admin(1)),
         )
         .unwrap();
 
     // Add the test key with Write(5) permission
     auth_settings
         .add_key(
-            "existing_laptop",
-            AuthKey::active(&test_key, AuthPermission::Write(5)).unwrap(),
+            &test_key,
+            AuthKey::active(Some("existing_laptop"), AuthPermission::Write(5)),
         )
         .unwrap();
 
@@ -842,21 +824,23 @@ async fn test_bootstrap_with_existing_specific_key_permission() {
     }
 
     // Verify no duplicate key was added by checking auth settings
-    let transaction = database.new_transaction().await.unwrap();
-    let settings = transaction.get_settings().unwrap();
-    let auth_doc = settings.get_auth_doc_for_validation().await.unwrap();
+    let settings_store = database.get_settings().await.unwrap();
+    let auth_settings = settings_store.get_auth_settings().await.unwrap();
 
     // Should have exactly 2 keys (admin + existing test key)
-    let key_count = auth_doc.keys().count();
+    let all_keys = auth_settings.get_all_keys().unwrap();
+    let key_count = all_keys.len();
     assert_eq!(
-        key_count, 2,
-        "Should not add duplicate key when permission already exists"
+        key_count,
+        2,
+        "Should have exactly 2 keys (admin + test_key), got: {key_count}. Keys: {:?}",
+        all_keys.keys().collect::<Vec<_>>()
     );
 
-    // Verify the original key is still there by checking the auth doc directly
+    // Verify the original test key is still there (keyed by pubkey now)
     assert!(
-        auth_doc.contains_key("existing_laptop"),
-        "Original key should still exist"
+        all_keys.contains_key(&test_key),
+        "Original test key should still exist (keyed by pubkey: {test_key})"
     );
 
     println!(
@@ -881,23 +865,19 @@ async fn test_bootstrap_with_existing_global_permission_no_duplicate() {
     let mut settings = eidetica::crdt::Doc::new();
     settings.set("name", "Test Global Permission No Duplicate DB");
 
-    let server_pubkey = server_user
-        .get_public_key(&server_key_id)
-        .expect("Failed to get server public key");
-
     let mut auth_settings = AuthSettings::new();
 
     // Add admin key for database creation
     auth_settings
         .add_key(
             &server_key_id,
-            AuthKey::active(&server_pubkey, AuthPermission::Admin(1)).unwrap(),
+            AuthKey::active(Some("admin"), AuthPermission::Admin(1)),
         )
         .unwrap();
 
     // Add global '*' permission with Write(5)
     auth_settings
-        .add_key("*", AuthKey::active("*", AuthPermission::Write(5)).unwrap())
+        .add_key("*", AuthKey::active(Some("*"), AuthPermission::Write(5)))
         .unwrap();
 
     settings.set("auth", auth_settings.as_doc().clone());
@@ -941,19 +921,21 @@ async fn test_bootstrap_with_existing_global_permission_no_duplicate() {
     }
 
     // Verify no new key was added - should still only have admin + global key
-    let transaction = database.new_transaction().await.unwrap();
-    let settings = transaction.get_settings().unwrap();
-    let auth_doc = settings.get_auth_doc_for_validation().await.unwrap();
+    let settings_store = database.get_settings().await.unwrap();
+    let auth_settings = settings_store.get_auth_settings().await.unwrap();
 
     // Should have exactly 2 keys (admin + global "*" key)
-    let key_count = auth_doc.keys().count();
+    let all_keys = auth_settings.get_all_keys().unwrap();
+    let key_count = all_keys.len();
     assert_eq!(
-        key_count, 2,
-        "Should not add new key when global permission exists"
+        key_count,
+        2,
+        "Should have exactly 2 keys (admin + global '*'), got: {key_count}. Keys: {:?}",
+        all_keys.keys().collect::<Vec<_>>()
     );
 
     // Verify the global key is still there
-    assert!(auth_doc.contains_key("*"), "Global key should still exist");
+    assert!(all_keys.contains_key("*"), "Global key should still exist");
 
     println!(
         "✅ Bootstrap with existing global permission works correctly without adding duplicate key"
@@ -998,23 +980,19 @@ async fn test_bootstrap_global_permission_client_cannot_create_entries_bug() {
     let mut settings = eidetica::crdt::Doc::new();
     settings.set("name", "Global Permission Bug Test DB");
 
-    let server_pubkey = server_user
-        .get_public_key(&server_key_id)
-        .expect("Failed to get server public key");
-
     let mut auth_settings = AuthSettings::new();
 
     // Add admin key
     auth_settings
         .add_key(
             &server_key_id,
-            AuthKey::active(&server_pubkey, AuthPermission::Admin(1)).unwrap(),
+            AuthKey::active(Some("admin"), AuthPermission::Admin(1)),
         )
         .unwrap();
 
     // Add global '*' permission
     auth_settings
-        .add_key("*", AuthKey::active("*", AuthPermission::Write(5)).unwrap())
+        .add_key("*", AuthKey::active(Some("*"), AuthPermission::Write(5)))
         .unwrap();
 
     settings.set("auth", auth_settings.as_doc().clone());
@@ -1103,26 +1081,19 @@ async fn test_global_permission_enables_transactions() {
     let mut settings = eidetica::crdt::Doc::new();
     settings.set("name", "Test Global Permission Transactions");
 
-    let server_pubkey = server_user
-        .get_public_key(&server_key_id)
-        .expect("Failed to get server public key");
-
     let mut auth_settings = AuthSettings::new();
 
     // Add admin key for database creation
     auth_settings
         .add_key(
             &server_key_id,
-            AuthKey::active(&server_pubkey, AuthPermission::Admin(10)).unwrap(),
+            AuthKey::active(Some("admin"), AuthPermission::Admin(10)),
         )
         .unwrap();
 
     // Add global '*' permission with Write(10) access
     auth_settings
-        .add_key(
-            "*",
-            AuthKey::active("*", AuthPermission::Write(10)).unwrap(),
-        )
+        .add_key("*", AuthKey::active(Some("*"), AuthPermission::Write(10)))
         .unwrap();
 
     settings.set("auth", auth_settings.as_doc().clone());
@@ -1216,16 +1187,20 @@ async fn test_global_permission_enables_transactions() {
         .await
         .expect("Should find valid SigKeys");
 
-    // Should have at least one SigKey (global "*")
+    // Should have at least one SigKey (global permission)
     assert!(!sigkeys.is_empty(), "Should find at least one SigKey");
 
-    // Extract the first SigKey (should be global "*")
+    // Extract the first SigKey (should be global permission encoded as "*:ed25519:...")
     let (sigkey, _permission) = &sigkeys[0];
+    assert!(sigkey.is_global(), "Should resolve to global permission");
     let sigkey_str = match sigkey {
-        eidetica::auth::types::SigKey::Direct(name) => name.clone(),
+        eidetica::auth::types::SigKey::Direct(hint) => hint
+            .pubkey
+            .clone()
+            .or(hint.name.clone())
+            .expect("Should have pubkey or name"),
         _ => panic!("Expected Direct SigKey"),
     };
-    assert_eq!(sigkey_str, "*", "Should resolve to global permission");
 
     let client_db = eidetica::Database::open(
         client_instance.clone(),
@@ -1255,25 +1230,28 @@ async fn test_global_permission_enables_transactions() {
         Ok(entry_id) => {
             println!("✅ Transaction committed successfully: {entry_id}");
 
-            // Verify the entry was created with global "*" key in SigInfo
+            // Verify the entry was created with global permission in SigInfo
             let entry = client_instance.backend().get(&entry_id).await.unwrap();
             match &entry.sig.key {
-                eidetica::auth::types::SigKey::Direct(key_name) => {
-                    assert_eq!(
-                        key_name, "*",
-                        "Entry should use global '*' key, got: {key_name}"
+                eidetica::auth::types::SigKey::Direct(hint) => {
+                    // Global permission is encoded as "*:ed25519:..." in the pubkey field
+                    assert!(
+                        entry.sig.key.is_global(),
+                        "Entry should use global permission key, got: {:?}",
+                        hint
                     );
-                    println!("✅ Entry correctly uses global '*' key in SigInfo");
+                    println!("✅ Entry correctly uses global permission key in SigInfo");
                 }
                 other => panic!("Expected Direct SigKey, got: {other:?}"),
             }
 
-            // Verify pubkey field is present in SigInfo (required for global "*")
+            // Verify hint has key identification
+            let hint = entry.sig.hint();
             assert!(
-                entry.sig.pubkey.is_some(),
-                "SigInfo should include pubkey for global '*' permission"
+                hint.pubkey.is_some() || hint.name.is_some(),
+                "SigInfo should include key hint"
             );
-            println!("✅ SigInfo correctly includes pubkey field");
+            println!("✅ SigInfo correctly includes key hint");
         }
         Err(e) => {
             panic!("Transaction should succeed with global permission: {e:?}");

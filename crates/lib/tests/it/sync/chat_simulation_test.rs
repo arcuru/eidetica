@@ -140,14 +140,18 @@ async fn test_chat_app_authenticated_bootstrap() {
 
     let (sigkey, _) = &sigkeys[0];
     let sigkey_str = match sigkey {
-        eidetica::auth::types::SigKey::Direct(name) => name.clone(),
+        eidetica::auth::types::SigKey::Direct(hint) => hint
+            .pubkey
+            .clone()
+            .or(hint.name.clone())
+            .expect("Should have pubkey or name"),
         _ => panic!("Expected Direct SigKey"),
     };
 
-    // The sigkey should be "client_key" (the registered key name), not "*"
+    // The sigkey should be the client_key_id (pubkey) since keys are indexed by pubkey
     assert_eq!(
-        sigkey_str, "client_key",
-        "Should use registered key name, not global permission"
+        sigkey_str, client_key_id,
+        "Should use registered key's pubkey"
     );
 
     let client_signing_key = client_user
@@ -257,17 +261,22 @@ async fn test_global_key_bootstrap() {
         .expect("Sync should succeed with global permission");
     client_sync.flush().await.ok();
 
-    // Client opens database with global "*" permission
+    // Client opens database with global permission
     let sigkeys = eidetica::Database::find_sigkeys(&client_instance, &tree_id, &client_key_id)
         .await
         .expect("Should find valid SigKeys");
 
     let (sigkey, _) = &sigkeys[0];
+    // Global permission is encoded as "*:ed25519:..." in the pubkey field
+    assert!(sigkey.is_global(), "Should resolve to global permission");
     let sigkey_str = match sigkey {
-        eidetica::auth::types::SigKey::Direct(name) => name.clone(),
+        eidetica::auth::types::SigKey::Direct(hint) => hint
+            .pubkey
+            .clone()
+            .or(hint.name.clone())
+            .expect("Should have pubkey or name"),
         _ => panic!("Expected Direct SigKey"),
     };
-    assert_eq!(sigkey_str, "*", "Should resolve to global permission");
 
     let client_signing_key = client_user
         .get_signing_key(&client_key_id)
@@ -303,18 +312,18 @@ async fn test_global_key_bootstrap() {
             .expect("Should commit with global permission");
     }
 
-    // Verify entry uses global "*" key
+    // Verify entry uses global permission key (encoded as "*:ed25519:...")
     let tips = client_instance.backend().get_tips(&tree_id).await.unwrap();
     let latest_entry = client_instance.backend().get(&tips[0]).await.unwrap();
-    match &latest_entry.sig.key {
-        eidetica::auth::types::SigKey::Direct(name) => {
-            assert_eq!(name, "*", "Entry should use global '*' key");
-        }
-        other => panic!("Expected Direct SigKey, got: {other:?}"),
-    }
     assert!(
-        latest_entry.sig.pubkey.is_some(),
-        "SigInfo should include pubkey for global permission"
+        latest_entry.sig.key.is_global(),
+        "Entry should use global permission key"
+    );
+    // For global permission, the actual pubkey should be recorded in the hint
+    let hint = latest_entry.sig.hint();
+    assert!(
+        hint.pubkey.is_some() || hint.name.is_some(),
+        "SigInfo should have key hint"
     );
 
     // Cleanup

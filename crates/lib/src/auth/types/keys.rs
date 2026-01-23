@@ -6,16 +6,18 @@
 use serde::{Deserialize, Serialize};
 
 use super::permissions::{KeyStatus, Permission};
-use crate::{Result, auth::crypto::parse_public_key, entry::ID};
+use crate::entry::ID;
 
 /// Authentication key configuration stored in _settings.auth
 ///
-/// All fields are private to ensure validation through constructors.
+/// Keys are indexed by pubkey in AuthSettings. The name field is optional
+/// metadata that can be used as a hint in signatures.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthKey {
-    /// Public key with crypto-agility prefix
-    /// Currently only supports ed25519 format: "ed25519:<base64_url_unpadded_key>"
-    pubkey: String,
+    /// Optional human-readable name for this key
+    /// Multiple keys can share the same name (aliases)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     /// Permission level for this key
     permissions: Permission,
     /// Current status of the key
@@ -25,98 +27,55 @@ pub struct AuthKey {
 impl AuthKey {
     /// Create a new AuthKey with validation
     ///
-    /// This validates the public key format and ensures all fields are valid.
-    /// Prefer this over direct struct construction for better error handling.
-    ///
     /// # Arguments
-    /// * `pubkey` - Ed25519 public key in format "ed25519:<base64_key>"
+    /// * `name` - Optional human-readable name for this key
     /// * `permissions` - Permission level for this key
     /// * `status` - Current status of the key
-    ///
-    /// # Returns
-    /// Result containing the AuthKey or an AuthError if validation fails
     ///
     /// # Examples
     /// ```
     /// use eidetica::auth::types::{AuthKey, Permission, KeyStatus};
-    /// use eidetica::auth::crypto::{generate_keypair, format_public_key};
-    ///
-    /// // Generate a valid key for the example
-    /// let (_, verifying_key) = generate_keypair();
-    /// let pubkey = format_public_key(&verifying_key);
     ///
     /// let key = AuthKey::new(
-    ///     &pubkey,
+    ///     Some("alice_laptop"),
     ///     Permission::Write(10),
     ///     KeyStatus::Active
-    /// )?;
-    /// # Ok::<(), eidetica::Error>(())
+    /// );
     /// ```
     pub fn new(
-        pubkey: impl Into<String>,
+        name: Option<impl Into<String>>,
         permissions: Permission,
         status: KeyStatus,
-    ) -> Result<Self> {
-        let pubkey = pubkey.into();
-
-        // Validate public key format (allow wildcard "*")
-        if pubkey != "*" {
-            parse_public_key(&pubkey)?;
-        }
-
-        Ok(Self {
-            pubkey,
+    ) -> Self {
+        Self {
+            name: name.map(|n| n.into()),
             permissions,
             status,
-        })
+        }
     }
 
     /// Create a new active AuthKey (common case)
     ///
-    /// This is a convenience constructor for creating active keys.
-    ///
     /// # Arguments
-    /// * `pubkey` - Ed25519 public key in format "ed25519:<base64_key>"
+    /// * `name` - Optional human-readable name for this key
     /// * `permissions` - Permission level for this key
-    ///
-    /// # Returns
-    /// Result containing the active AuthKey or an AuthError if validation fails
     ///
     /// # Examples
     /// ```
     /// use eidetica::auth::types::{AuthKey, Permission};
-    /// use eidetica::auth::crypto::{generate_keypair, format_public_key};
-    ///
-    /// // Generate a valid key for the example
-    /// let (_, verifying_key) = generate_keypair();
-    /// let pubkey = format_public_key(&verifying_key);
     ///
     /// let key = AuthKey::active(
-    ///     &pubkey,
+    ///     Some("alice_laptop"),
     ///     Permission::Admin(1)
-    /// )?;
-    /// # Ok::<(), eidetica::Error>(())
+    /// );
     /// ```
-    pub fn active(pubkey: impl Into<String>, permissions: Permission) -> Result<Self> {
-        Self::new(pubkey, permissions, KeyStatus::Active)
+    pub fn active(name: Option<impl Into<String>>, permissions: Permission) -> Self {
+        Self::new(name, permissions, KeyStatus::Active)
     }
 
-    /// Validate the format of this AuthKey
-    ///
-    /// This can be called on existing AuthKey instances to ensure they're valid.
-    /// Useful for validating keys that were created through direct construction
-    /// or deserialized from storage.
-    ///
-    /// # Returns
-    /// Result indicating success or an AuthError if validation fails
-    pub fn validate(&self) -> Result<()> {
-        parse_public_key(&self.pubkey)?;
-        Ok(())
-    }
-
-    /// Get the public key
-    pub fn pubkey(&self) -> &str {
-        &self.pubkey
+    /// Get the optional name
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
     }
 
     /// Get the permissions
@@ -138,56 +97,212 @@ impl AuthKey {
     pub fn set_permissions(&mut self, permissions: Permission) {
         self.permissions = permissions;
     }
+
+    /// Set the name
+    pub fn set_name(&mut self, name: Option<String>) {
+        self.name = name;
+    }
 }
 
 /// Step in a delegation path
 ///
-/// The `key` field is never `"*"`: intermediate steps reference tree IDs (which
-/// are content hashes), and the final step must be a named key with an actual
-/// Ed25519 public key for signature verification.
+/// References a delegated tree by ID. The final signer hint is stored
+/// in the parent SigKey, not in the DelegationStep.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DelegationStep {
-    /// Delegated tree ID (intermediate steps) or key name (final step) - never `"*"`
-    pub key: String,
-    /// Tips of the delegated tree at time of signing (None for final step)
-    pub tips: Option<Vec<ID>>,
+    /// Delegated tree ID (content hash)
+    pub tree: String,
+    /// Tips of the delegated tree at time of signing
+    pub tips: Vec<ID>,
+}
+
+/// Key hint for resolving the signer
+///
+/// Contains explicit fields for each hint type. Exactly one hint field
+/// should be set. The hint is used to look up the actual public key
+/// in AuthSettings for signature verification.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct KeyHint {
+    /// Public key hint: "ed25519:ABC..." or "*:ed25519:ABC..." for global
+    /// For global permissions, it must contain "*:" followed by the FULL pubkey
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pubkey: Option<String>,
+    /// Name hint: "alice_laptop" - searches keys where name matches
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    // TODO: Fingerprint hint (future): "7F8A9B3C..." - matches hash of pubkey
+    // This is used in other systems and may be a better option than matching/revealing
+    // the full pubkey
+    // #[serde(skip_serializing_if = "Option::is_none")]
+    // pub fingerprint: Option<String>,
+}
+
+impl KeyHint {
+    /// Create a hint from a public key
+    pub fn from_pubkey(pubkey: impl Into<String>) -> Self {
+        Self {
+            pubkey: Some(pubkey.into()),
+            name: None,
+        }
+    }
+
+    /// Create a hint from a name
+    pub fn from_name(name: impl Into<String>) -> Self {
+        Self {
+            pubkey: None,
+            name: Some(name.into()),
+        }
+    }
+
+    /// Create a global permission hint with actual signer pubkey
+    /// Format: "*:ed25519:ABC..."
+    pub fn global(actual_pubkey: impl Into<String>) -> Self {
+        Self {
+            pubkey: Some(format!("*:{}", actual_pubkey.into())),
+            name: None,
+        }
+    }
+
+    /// Check if this is a global permission hint
+    pub fn is_global(&self) -> bool {
+        self.pubkey.as_ref().is_some_and(|pk| pk.starts_with("*:"))
+    }
+
+    /// Extract the actual pubkey from a global hint
+    /// Returns None if not a global hint or no pubkey set
+    pub fn global_actual_pubkey(&self) -> Option<&str> {
+        self.pubkey.as_ref().and_then(|pk| pk.strip_prefix("*:"))
+    }
+
+    /// Check if any hint field is set
+    ///
+    /// Returns `true` if at least one of `pubkey` or `name` is `Some`.
+    ///
+    /// # Unsigned Entry Detection
+    ///
+    /// This method is primarily used to detect **unsigned entries** during validation.
+    /// An entry is considered unsigned when:
+    /// - The `SigKey` is `Direct` with an empty hint (`!hint.is_set()`)
+    /// - The signature field is `None`
+    ///
+    /// This allows databases to operate without authentication when no auth keys are
+    /// configured, supporting both authenticated and unauthenticated use cases.
+    ///
+    /// ```
+    /// # use eidetica::auth::types::KeyHint;
+    /// // Empty hint - represents an unsigned entry when combined with no signature
+    /// let empty = KeyHint::default();
+    /// assert!(!empty.is_set());
+    ///
+    /// // Hint with pubkey - this entry requires signature verification
+    /// let with_pubkey = KeyHint::from_pubkey("ed25519:ABC...");
+    /// assert!(with_pubkey.is_set());
+    ///
+    /// // Hint with name only - also requires signature verification
+    /// let with_name = KeyHint::from_name("alice_laptop");
+    /// assert!(with_name.is_set());
+    /// ```
+    pub fn is_set(&self) -> bool {
+        self.pubkey.is_some() || self.name.is_some()
+    }
+
+    /// Get the hint type as a string (for error messages)
+    pub fn hint_type(&self) -> &'static str {
+        if self.pubkey.is_some() {
+            "pubkey"
+        } else if self.name.is_some() {
+            "name"
+        } else {
+            "none"
+        }
+    }
 }
 
 /// Authentication key identifier for entry signing
 ///
 /// Represents the path to resolve the signing key, either directly or through delegation.
-/// Uses a flat list structure instead of recursive nesting.
+/// Uses explicit hint fields to point to the signer's public key.
+///
+/// # JSON Format
+///
+/// Uses untagged serialization for compact JSON:
+/// - Direct: `{"pubkey": "ed25519:..."}`
+/// - Delegation: `{"path": [...], "pubkey": "ed25519:..."}`
+///
+/// The `path` field distinguishes `Delegation` from `Direct` during deserialization.
+///
+/// # Variant Ordering
+///
+/// `Delegation` must be listed before `Direct` because serde tries variants in order.
+/// Since `Direct` contains only optional fields, it would match any object if listed first.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum SigKey {
-    /// Direct reference to a key name in the current tree's _settings.auth
-    Direct(String),
-    /// Flat delegation path as ordered list
-    /// Each step except the last contains {"key": "tree_id", "tips": ["A", "B"]}
-    /// The final step contains only {"key": "final_key_name"}
-    DelegationPath(Vec<DelegationStep>),
+    // Note: Delegation must be listed before Direct for correct deserialization.
+    // The required `path` field distinguishes it; Direct would match anything if first.
+    /// Delegation path through other trees
+    Delegation {
+        /// Path of delegation steps (tree references)
+        path: Vec<DelegationStep>,
+        /// Final signer hint (resolved in last delegated tree's auth)
+        #[serde(flatten)]
+        hint: KeyHint,
+    },
+    /// Direct reference to a key in the current tree's _settings.auth
+    Direct(KeyHint),
 }
 
 impl Default for SigKey {
     fn default() -> Self {
-        SigKey::Direct(String::new())
+        SigKey::Direct(KeyHint::default())
     }
 }
 
 impl SigKey {
-    /// Check if this SigKey ultimately resolves to a specific key name
-    pub fn is_signed_by(&self, key_name: &str) -> bool {
+    /// Create a direct key reference from a pubkey
+    pub fn from_pubkey(pubkey: impl Into<String>) -> Self {
+        SigKey::Direct(KeyHint::from_pubkey(pubkey))
+    }
+
+    /// Create a direct key reference from a name
+    pub fn from_name(name: impl Into<String>) -> Self {
+        SigKey::Direct(KeyHint::from_name(name))
+    }
+
+    /// Create a global permission key with actual signer pubkey
+    pub fn global(actual_pubkey: impl Into<String>) -> Self {
+        SigKey::Direct(KeyHint::global(actual_pubkey))
+    }
+
+    /// Get the key hint (for both Direct and Delegation variants)
+    pub fn hint(&self) -> &KeyHint {
         match self {
-            SigKey::Direct(id) => id == key_name,
-            SigKey::DelegationPath(steps) => {
-                // Check the final step in the delegation path
-                if let Some(last_step) = steps.last() {
-                    last_step.key == key_name
-                } else {
-                    false
-                }
-            }
+            SigKey::Direct(hint) => hint,
+            SigKey::Delegation { hint, .. } => hint,
         }
+    }
+
+    /// Get mutable reference to the key hint
+    pub fn hint_mut(&mut self) -> &mut KeyHint {
+        match self {
+            SigKey::Direct(hint) => hint,
+            SigKey::Delegation { hint, .. } => hint,
+        }
+    }
+
+    /// Check if this is a global permission key
+    pub fn is_global(&self) -> bool {
+        self.hint().is_global()
+    }
+
+    /// Check if this SigKey uses a specific pubkey hint
+    pub fn has_pubkey_hint(&self, pubkey: &str) -> bool {
+        self.hint().pubkey.as_deref() == Some(pubkey)
+    }
+
+    /// Check if this SigKey uses a specific name hint
+    pub fn has_name_hint(&self, name: &str) -> bool {
+        self.hint().name.as_deref() == Some(name)
     }
 }
 
@@ -196,45 +311,99 @@ impl SigKey {
 pub struct SigInfo {
     /// Authentication signature - base64-encoded signature bytes
     /// Optional to allow for entry creation before signing
-    pub sig: Option<String>,
-    /// Authentication key reference path
-    /// Either a direct key name defined in this tree's _settings.auth,
-    /// or a delegation path as an ordered list of {"key": "delegated_tree_1", "tips": ["A", "B"]}.
-    /// The last element in the delegation path must contain only a "key" field.
-    /// This represents the path that needs to be traversed to find the public key of the signing key.
-    pub key: SigKey,
-    /// Actual signer's public key for wildcard permissions
-    /// When using SigKey::Direct("*"), this field MUST contain the actual public key
-    /// of the signer since the "*" auth setting has pubkey="*" which is not a real key.
-    /// Optional for regular keys where the public key is stored in auth settings.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub pubkey: Option<String>,
+    pub sig: Option<String>,
+    /// Key lookup hint
+    pub key: SigKey,
 }
 
 impl SigInfo {
-    /// Check if this SigInfo was signed by a specific key name
-    ///
-    /// For direct keys, this checks if the key name matches.
-    /// For delegated trees, this checks if the final key in the delegation path matches the given key name.
-    pub fn is_signed_by(&self, key_name: &str) -> bool {
-        self.key.is_signed_by(key_name)
+    /// Create a new SigInfo with a pubkey hint
+    pub fn from_pubkey(pubkey: impl Into<String>) -> Self {
+        Self {
+            sig: None,
+            key: SigKey::from_pubkey(pubkey),
+        }
+    }
+
+    /// Create a new SigInfo with a name hint
+    pub fn from_name(name: impl Into<String>) -> Self {
+        Self {
+            sig: None,
+            key: SigKey::from_name(name),
+        }
+    }
+
+    /// Create a new SigInfo for global permission
+    pub fn global(actual_pubkey: impl Into<String>) -> Self {
+        Self {
+            sig: None,
+            key: SigKey::global(actual_pubkey),
+        }
+    }
+
+    /// Check if this is a global permission signature
+    pub fn is_global(&self) -> bool {
+        self.key.is_global()
+    }
+
+    /// Get the key hint
+    pub fn hint(&self) -> &KeyHint {
+        self.key.hint()
     }
 
     /// Create a new SigInfoBuilder for constructing SigInfo instances
     pub fn builder() -> SigInfoBuilder {
         SigInfoBuilder::new()
     }
+
+    /// Check if this represents an unsigned/unauthenticated entry.
+    ///
+    /// An entry is unsigned when `SigInfo` is in its default state:
+    /// - Direct SigKey (not Delegation)
+    /// - Empty KeyHint (no pubkey, no name)
+    /// - No signature
+    pub fn is_unsigned(&self) -> bool {
+        matches!(self.key, SigKey::Direct(ref hint) if !hint.is_set()) && self.sig.is_none()
+    }
+
+    /// Check if this represents a malformed/inconsistent signature state.
+    ///
+    /// Returns `Some(reason)` if malformed, `None` if valid.
+    ///
+    /// Malformed states:
+    /// - Direct with hint but no signature (can't verify without signature)
+    /// - Direct with signature but no hint (can't verify without knowing which key)
+    /// - Delegation with no signature (delegation always requires signature)
+    pub fn malformed_reason(&self) -> Option<&'static str> {
+        match &self.key {
+            SigKey::Direct(hint) => {
+                if hint.is_set() && self.sig.is_none() {
+                    Some("entry has key hint but no signature")
+                } else if !hint.is_set() && self.sig.is_some() {
+                    Some("entry has signature but no key hint")
+                } else {
+                    None
+                }
+            }
+            SigKey::Delegation { .. } => {
+                if self.sig.is_none() {
+                    Some("delegation entry requires a signature")
+                } else {
+                    None
+                }
+            }
+        }
+    }
 }
 
 /// Builder for constructing SigInfo instances
 ///
-/// This builder provides a fluent interface for creating SigInfo objects,
-/// making it easier to set optional fields like pubkey for global permissions.
+/// This builder provides a fluent interface for creating SigInfo objects.
 #[derive(Debug, Clone, Default)]
 pub struct SigInfoBuilder {
     sig: Option<String>,
     key: Option<SigKey>,
-    pubkey: Option<String>,
 }
 
 impl SigInfoBuilder {
@@ -249,18 +418,27 @@ impl SigInfoBuilder {
         self
     }
 
-    /// Set the authentication key reference path
+    /// Set the authentication key reference
     pub fn key(mut self, key: SigKey) -> Self {
         self.key = Some(key);
         self
     }
 
-    /// Set the full public key (for global permissions)
-    ///
-    /// This is only necessary when using global permissions '*' where the public key
-    /// needs to be embedded directly rather than resolved through key references.
-    pub fn pubkey(mut self, pubkey: impl Into<String>) -> Self {
-        self.pubkey = Some(pubkey.into());
+    /// Set a pubkey hint
+    pub fn pubkey_hint(mut self, pubkey: impl Into<String>) -> Self {
+        self.key = Some(SigKey::from_pubkey(pubkey));
+        self
+    }
+
+    /// Set a name hint
+    pub fn name_hint(mut self, name: impl Into<String>) -> Self {
+        self.key = Some(SigKey::from_name(name));
+        self
+    }
+
+    /// Set a global permission hint with actual signer pubkey
+    pub fn global_hint(mut self, actual_pubkey: impl Into<String>) -> Self {
+        self.key = Some(SigKey::global(actual_pubkey));
         self
     }
 
@@ -272,7 +450,6 @@ impl SigInfoBuilder {
         SigInfo {
             sig: self.sig,
             key: self.key.expect("key is required for SigInfo"),
-            pubkey: self.pubkey,
         }
     }
 }

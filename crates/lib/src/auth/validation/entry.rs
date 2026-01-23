@@ -9,12 +9,13 @@ use tracing::debug;
 
 use super::resolver::KeyResolver;
 use crate::{
-    Entry, Result,
+    Entry, Instance, Result,
     auth::{
         crypto::verify_entry_signature,
         settings::AuthSettings,
         types::{KeyStatus, Operation, ResolvedAuth, SigKey},
     },
+    constants::SETTINGS,
 };
 
 /// Authentication validator for validating entries and resolving auth information
@@ -34,7 +35,19 @@ impl AuthValidator {
         }
     }
 
-    /// Validate authentication information for an entry
+    /// Validate an entry's authentication
+    ///
+    /// This method answers: "Is this entry valid?" which includes:
+    /// 1. Is the signature valid (or is unsigned allowed)?
+    /// 2. Does the signing key have permission for what this entry does?
+    ///
+    /// For entries with name hints that match multiple keys, this method
+    /// tries signature verification against each matching key until one succeeds.
+    ///
+    /// # Returns
+    /// - `Ok(true)` - Entry is valid (signature verified with sufficient permissions, or unsigned allowed)
+    /// - `Ok(false)` - Entry is invalid (malformed, bad signature, insufficient permissions, etc.)
+    /// - `Err(...)` - Actual error (I/O, database failures)
     ///
     /// # Arguments
     /// * `entry` - The entry to validate
@@ -44,84 +57,100 @@ impl AuthValidator {
         &mut self,
         entry: &Entry,
         auth_settings: &AuthSettings,
-        instance: Option<&crate::Instance>,
+        instance: Option<&Instance>,
     ) -> Result<bool> {
-        // Handle unsigned entries (for backward compatibility)
-        // An entry is considered unsigned if it has an empty Direct key name and no signature
-        if let SigKey::Direct(key_name) = &entry.sig.key
-            && key_name.is_empty()
-            && entry.sig.sig.is_none()
-        {
-            debug!("Unsigned entry detected: {:?}", entry);
-            // This is an unsigned entry - allow it to pass without authentication
-            return Ok(true);
-        }
-
-        // If auth settings has no keys configured, allow unsigned entries
-        if auth_settings.get_all_keys()?.is_empty() {
-            debug!(
-                "No keys configured in auth settings, allowing all access: {:?}",
-                entry
-            );
-            return Ok(true);
-        }
-
-        // For all other entries, proceed with normal authentication validation
-        // Resolve the authentication information
-        let resolved_auth = self
-            .resolver
-            .resolve_sig_key_with_pubkey(
-                &entry.sig.key,
-                auth_settings,
-                instance,
-                entry.sig.pubkey.as_deref(),
-            )
-            .await?;
-
-        // Check if the key is in an active state
-        if resolved_auth.key_status != KeyStatus::Active {
+        // Malformed entries fail validation
+        if entry.sig.malformed_reason().is_some() {
+            debug!("Malformed entry detected");
             return Ok(false);
         }
 
-        // Verify the signature using the entry-based verification
-        verify_entry_signature(entry, &resolved_auth.public_key).map_err(|e| e.into())
+        // Check if auth is configured
+        let has_auth = !auth_settings.get_all_keys()?.is_empty();
+
+        // Handle unsigned entries
+        if entry.sig.is_unsigned() {
+            if has_auth {
+                // Auth is configured but entry is unsigned - invalid
+                debug!("Unsigned entry in authenticated database");
+                return Ok(false);
+            }
+            // No auth configured, unsigned is valid
+            debug!("Unsigned entry allowed (no auth configured)");
+            return Ok(true);
+        }
+
+        // Entry is signed but no auth configured - invalid
+        if !has_auth {
+            debug!("Signed entry but no auth configured");
+            return Ok(false);
+        }
+
+        // Resolve all matching keys
+        let resolved_auths = match self
+            .resolver
+            .resolve_sig_key(&entry.sig.key, auth_settings, instance)
+            .await
+        {
+            Ok(auths) => auths,
+            Err(e) => {
+                debug!("Key resolution failed: {:?}", e);
+                return Ok(false);
+            }
+        };
+
+        // Determine operation type from entry content
+        let operation = if entry.subtrees().contains(&SETTINGS.to_string()) {
+            Operation::WriteSettings
+        } else {
+            Operation::WriteData
+        };
+
+        // Try signature verification + permission check against each candidate
+        for resolved_auth in resolved_auths {
+            // Skip keys that are not active
+            if resolved_auth.key_status != KeyStatus::Active {
+                debug!("Skipping inactive key: {:?}", resolved_auth.key_status);
+                continue;
+            }
+
+            // Try to verify the signature with this key
+            if verify_entry_signature(entry, &resolved_auth.public_key).unwrap_or(false) {
+                debug!("Signature verified, checking permissions");
+                // Signature verified - now check permissions
+                if self.check_permissions(&resolved_auth, &operation)? {
+                    debug!("Entry valid: signature verified with sufficient permissions");
+                    return Ok(true);
+                }
+                debug!("Signature valid but insufficient permissions, trying next key");
+                // Continue to try other keys that might have higher permissions
+            }
+        }
+
+        // No key verified with sufficient permissions
+        debug!("Entry invalid: no key verified with sufficient permissions");
+        Ok(false)
     }
 
     /// Resolve authentication identifier to concrete authentication information
     ///
-    /// # Arguments
-    /// * `sig_key` - The signature key identifier to resolve
-    /// * `auth_settings` - Authentication settings containing auth configuration
-    /// * `instance` - Instance for loading delegated trees (required for DelegationPath sig_key)
-    pub async fn resolve_sig_key(
-        &mut self,
-        sig_key: &SigKey,
-        auth_settings: &AuthSettings,
-        instance: Option<&crate::Instance>,
-    ) -> Result<ResolvedAuth> {
-        // Delegate to the resolver
-        self.resolver
-            .resolve_sig_key(sig_key, auth_settings, instance)
-            .await
-    }
-
-    /// Resolve authentication identifier with pubkey override for global permissions
+    /// Returns all matching ResolvedAuth entries. For name hints that match
+    /// multiple keys, all matches are returned so the caller can try signature
+    /// verification against each.
     ///
     /// # Arguments
     /// * `sig_key` - The signature key identifier to resolve
     /// * `auth_settings` - Authentication settings containing auth configuration
-    /// * `instance` - Instance for loading delegated trees (required for DelegationPath sig_key)
-    /// * `pubkey_override` - Optional pubkey for global "*" permission resolution
-    pub async fn resolve_sig_key_with_pubkey(
+    /// * `instance` - Instance for loading delegated trees (required for Delegation sig_key)
+    pub async fn resolve_sig_key(
         &mut self,
         sig_key: &SigKey,
         auth_settings: &AuthSettings,
-        instance: Option<&crate::Instance>,
-        pubkey_override: Option<&str>,
-    ) -> Result<ResolvedAuth> {
+        instance: Option<&Instance>,
+    ) -> Result<Vec<ResolvedAuth>> {
         // Delegate to the resolver
         self.resolver
-            .resolve_sig_key_with_pubkey(sig_key, auth_settings, instance, pubkey_override)
+            .resolve_sig_key(sig_key, auth_settings, instance)
             .await
     }
 

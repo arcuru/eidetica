@@ -283,17 +283,16 @@ async fn test_collaborative_database_with_global_permissions() {
     let mut auth_settings = AuthSettings::new();
 
     // Add Alice's admin key
-    let alice_pubkey = alice.get_public_key(&alice_key).expect("Alice public key");
     auth_settings
         .add_key(
             &alice_key,
-            AuthKey::active(&alice_pubkey, Permission::Admin(1)).unwrap(),
+            AuthKey::active(Some("alice"), Permission::Admin(1)),
         )
         .unwrap();
 
     // Add global Write(10) permission - anyone can access with Write permission
     auth_settings
-        .add_key("*", AuthKey::active("*", Permission::Write(10)).unwrap())
+        .add_key("*", AuthKey::active(Some("*"), Permission::Write(10)))
         .unwrap();
 
     alice_db_settings.set("auth", auth_settings.as_doc().clone());
@@ -338,21 +337,27 @@ async fn test_collaborative_database_with_global_permissions() {
     assert!(!sigkeys.is_empty(), "Bob should find at least one SigKey");
     let (sigkey, permission) = &sigkeys[0];
 
-    // Verify it's the global permission
-    assert_eq!(
-        sigkey,
-        &SigKey::Direct("*".to_string()),
-        "Should discover global permission"
-    );
+    // Verify it's the global permission (encoded as "*:ed25519:..." in pubkey field)
+    assert!(sigkey.is_global(), "Should discover global permission");
     assert_eq!(
         permission,
         &Permission::Write(10),
         "Should have Write(10) permission"
     );
-    println!("✅ Bob discovered global '*' permission with Write(10)");
+    println!("✅ Bob discovered global permission with Write(10)");
+
+    // Get the actual sigkey string for mapping (will be "*:ed25519:...")
+    let sigkey_str = match sigkey {
+        SigKey::Direct(hint) => hint
+            .pubkey
+            .clone()
+            .or(hint.name.clone())
+            .expect("Should have pubkey or name"),
+        _ => panic!("Expected Direct SigKey"),
+    };
 
     // Bob adds the database key mapping to his user preferences
-    bob.map_key(&bob_key, &db_id, "*")
+    bob.map_key(&bob_key, &db_id, &sigkey_str)
         .await
         .expect("Bob adds database key mapping");
     println!("✅ Bob configured key mapping for the database");
@@ -476,17 +481,16 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
     let mut auth_settings = AuthSettings::new();
 
     // Add Alice's admin key
-    let alice_pubkey = alice.get_public_key(&alice_key).expect("Alice public key");
     auth_settings
         .add_key(
             &alice_key,
-            AuthKey::active(&alice_pubkey, Permission::Admin(1)).unwrap(),
+            AuthKey::active(Some("alice"), Permission::Admin(1)),
         )
         .unwrap();
 
     // Add global Write(10) permission - anyone can access
     auth_settings
-        .add_key("*", AuthKey::active("*", Permission::Write(10)).unwrap())
+        .add_key("*", AuthKey::active(Some("*"), Permission::Write(10)))
         .unwrap();
 
     alice_db_settings.set("auth", auth_settings.as_doc().clone());
@@ -604,19 +608,25 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
         .await
         .expect("Bob discovers SigKeys");
 
-    // Should find the global "*" permission
+    // Should find the global permission (encoded as "*:ed25519:..." in pubkey field)
     assert!(!sigkeys.is_empty(), "Bob should find at least one SigKey");
     let (sigkey, permission) = &sigkeys[0];
-    assert_eq!(
-        sigkey,
-        &SigKey::Direct("*".to_string()),
-        "Should discover global permission"
-    );
+    assert!(sigkey.is_global(), "Should discover global permission");
     assert_eq!(permission, &Permission::Write(10));
-    println!("✅ Bob discovered global '*' permission with Write(10)");
+    println!("✅ Bob discovered global permission with Write(10)");
+
+    // Get the actual sigkey string for mapping (will be "*:ed25519:...")
+    let sigkey_str = match sigkey {
+        SigKey::Direct(hint) => hint
+            .pubkey
+            .clone()
+            .or(hint.name.clone())
+            .expect("Should have pubkey or name"),
+        _ => panic!("Expected Direct SigKey"),
+    };
 
     // Bob adds the database key mapping to his user preferences
-    bob.map_key(&bob_key, &db_id, "*")
+    bob.map_key(&bob_key, &db_id, &sigkey_str)
         .await
         .expect("Bob adds database key mapping");
     println!("✅ Bob configured key mapping for the database");

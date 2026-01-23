@@ -226,13 +226,13 @@ pub async fn setup_manual_approval_server() -> (Instance, User, String, Database
 
     let mut auth_doc = Doc::new();
 
-    // Add user's key to auth settings by key_id (required for User::create_database)
+    // Add user's key to auth settings (stored by pubkey under "keys.")
     // The key_id is the public key string (e.g., "ed25519:...")
     auth_doc
         .set_json(
-            &key_id,
+            format!("keys.{key_id}"),
             serde_json::json!({
-                "pubkey": key_id,
+                "name": "server_admin",
                 "permissions": {"Admin": 0},
                 "status": "Active"
             }),
@@ -244,9 +244,9 @@ pub async fn setup_manual_approval_server() -> (Instance, User, String, Database
 
     auth_doc
         .set_json(
-            "admin",
+            format!("keys.{device_pubkey}"),
             serde_json::json!({
-                "pubkey": device_pubkey,
+                "name": "admin",
                 "permissions": {"Admin": 0},
                 "status": "Active"
             }),
@@ -301,13 +301,13 @@ pub async fn setup_global_wildcard_server() -> (
 
     let mut auth_doc = Doc::new();
 
-    // Add user's key to auth settings by key_id (required for User::create_database)
+    // Add user's key to auth settings (stored by pubkey under "keys.")
     // The key_id is the public key string (e.g., "ed25519:...")
     auth_doc
         .set_json(
-            &key_id,
+            format!("keys.{key_id}"),
             serde_json::json!({
-                "pubkey": key_id,
+                "name": "server_admin",
                 "permissions": {"Admin": 0},
                 "status": "Active"
             }),
@@ -319,9 +319,9 @@ pub async fn setup_global_wildcard_server() -> (
 
     auth_doc
         .set_json(
-            "admin",
+            format!("keys.{device_pubkey}"),
             serde_json::json!({
-                "pubkey": device_pubkey,
+                "name": "admin",
                 "permissions": {"Admin": 0},
                 "status": "Active"
             }),
@@ -331,9 +331,8 @@ pub async fn setup_global_wildcard_server() -> (
     // Add global wildcard permission for automatic bootstrap approval
     auth_doc
         .set_json(
-            "*",
+            "keys.*",
             serde_json::json!({
-                "pubkey": "*",
                 "permissions": {"Admin": 0},
                 "status": "Active"
             }),
@@ -517,17 +516,15 @@ pub async fn setup_server_with_bootstrap_database(
         .unwrap();
 
     // Add admin to the database's auth configuration so sync handler can modify the database
-    let device_key_name = "admin";
     let device_pubkey = server_instance.device_id_string();
 
-    // Add admin as Admin to the database
+    // Add admin as Admin to the database (keyed by pubkey, name is "admin")
     let tx = server_database.new_transaction().await.unwrap();
     let settings_store = tx.get_settings().unwrap();
     let device_auth_key =
-        eidetica::auth::types::AuthKey::active(device_pubkey, eidetica::auth::Permission::Admin(0))
-            .unwrap();
+        eidetica::auth::types::AuthKey::active(Some("admin"), eidetica::auth::Permission::Admin(0));
     settings_store
-        .set_auth_key(device_key_name, device_auth_key)
+        .set_auth_key(&device_pubkey, device_auth_key)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -674,7 +671,7 @@ pub async fn set_global_wildcard_permission_with_level(
     db_settings
         .set_auth_key(
             "*",
-            eidetica::auth::types::AuthKey::active("*".to_string(), permission).unwrap(),
+            eidetica::auth::types::AuthKey::active(None::<String>, permission),
         )
         .await?;
     tx.commit().await?;
@@ -736,17 +733,15 @@ pub async fn setup_sync_enabled_server(
     let tree_id = server_database.root_id().clone();
 
     // Add admin to the database's auth configuration so sync handler can modify the database
-    let device_key_name = "admin";
     let device_pubkey = server_instance.device_id_string();
 
-    // Add admin as Admin to the database
+    // Add admin as Admin to the database (keyed by pubkey, name is "admin")
     let tx = server_database.new_transaction().await.unwrap();
     let settings_store = tx.get_settings().unwrap();
     let device_auth_key =
-        eidetica::auth::types::AuthKey::active(device_pubkey, eidetica::auth::Permission::Admin(0))
-            .unwrap();
+        eidetica::auth::types::AuthKey::active(Some("admin"), eidetica::auth::Permission::Admin(0));
     settings_store
-        .set_auth_key(device_key_name, device_auth_key)
+        .set_auth_key(&device_pubkey, device_auth_key)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -921,12 +916,11 @@ pub async fn setup_public_sync_enabled_server(
 
     let device_pubkey = server_instance.device_id_string();
 
-    // Add device key for database operations
+    // Add device key for database operations (keyed by pubkey, name is "admin")
     auth_settings
         .add_key(
-            "admin",
-            eidetica::auth::AuthKey::active(&device_pubkey, eidetica::auth::Permission::Admin(0))
-                .unwrap(),
+            &device_pubkey,
+            eidetica::auth::AuthKey::active(Some("admin"), eidetica::auth::Permission::Admin(0)),
         )
         .unwrap();
 
@@ -934,8 +928,7 @@ pub async fn setup_public_sync_enabled_server(
     auth_settings
         .add_key(
             &server_key_id,
-            eidetica::auth::AuthKey::active(&server_key_id, eidetica::auth::Permission::Admin(0))
-                .unwrap(),
+            eidetica::auth::AuthKey::active(None::<String>, eidetica::auth::Permission::Admin(0)),
         )
         .unwrap();
 
@@ -943,7 +936,7 @@ pub async fn setup_public_sync_enabled_server(
     auth_settings
         .add_key(
             "*",
-            eidetica::auth::AuthKey::active("*", eidetica::auth::Permission::Read).unwrap(),
+            eidetica::auth::AuthKey::active(None::<String>, eidetica::auth::Permission::Read),
         )
         .unwrap();
 

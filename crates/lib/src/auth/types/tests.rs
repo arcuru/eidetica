@@ -1,7 +1,16 @@
 //! Comprehensive tests for authentication types
 
 use super::*;
-use crate::{auth::generate_public_key, crdt::Doc, entry::ID};
+use crate::{
+    auth::crypto::{format_public_key, generate_keypair},
+    crdt::Doc,
+    entry::ID,
+};
+
+fn generate_public_key() -> String {
+    let (_, verifying_key) = generate_keypair();
+    format_public_key(&verifying_key)
+}
 
 #[test]
 fn test_permission_min_max() {
@@ -29,12 +38,12 @@ fn test_permission_min_max() {
 
 #[test]
 fn test_auth_key_serialization() {
-    let key = AuthKey::active(generate_public_key(), Permission::Write(10)).unwrap();
+    let key = AuthKey::active(Some("my_device"), Permission::Write(10));
 
     let serialized = serde_json::to_string(&key).unwrap();
     let deserialized: AuthKey = serde_json::from_str(&serialized).unwrap();
 
-    assert_eq!(key.pubkey(), deserialized.pubkey());
+    assert_eq!(key.name(), deserialized.name());
     assert_eq!(key.permissions(), deserialized.permissions());
     assert_eq!(key.status(), deserialized.status());
 }
@@ -42,7 +51,7 @@ fn test_auth_key_serialization() {
 #[test]
 fn test_sig_info_serialization() {
     let sig_info = SigInfo::builder()
-        .key(SigKey::Direct("KEY_LAPTOP".to_string()))
+        .key(SigKey::from_name("KEY_LAPTOP"))
         .sig("signature_base64_encoded_string_here")
         .build();
 
@@ -54,21 +63,17 @@ fn test_sig_info_serialization() {
         serde_json::to_string(&deserialized.key).unwrap()
     );
     assert_eq!(sig_info.sig, deserialized.sig);
-    assert_eq!(sig_info.pubkey, deserialized.pubkey);
 }
 
 #[test]
-fn test_delegation_path_sig_key() {
-    let sig_key = SigKey::DelegationPath(vec![
-        DelegationStep {
-            key: "example@eidetica.dev".to_string(),
-            tips: Some(vec![ID::new("abc123")]),
-        },
-        DelegationStep {
-            key: "KEY_LAPTOP".to_string(),
-            tips: None,
-        },
-    ]);
+fn test_delegation_sig_key() {
+    let sig_key = SigKey::Delegation {
+        path: vec![DelegationStep {
+            tree: "example_tree_id".to_string(),
+            tips: vec![ID::new("abc123")],
+        }],
+        hint: KeyHint::from_name("KEY_LAPTOP"),
+    };
 
     let json = serde_json::to_string(&sig_key).unwrap();
     let deserialized: SigKey = serde_json::from_str(&json).unwrap();
@@ -81,14 +86,14 @@ fn test_delegation_path_sig_key() {
 
 #[test]
 fn test_auth_key_to_nested_value() {
-    let key = AuthKey::active(generate_public_key(), Permission::Read).unwrap();
+    let key = AuthKey::active(Some("my_device"), Permission::Read);
 
     let mut nested = Doc::new();
     nested.set_json("test_key", &key).unwrap();
 
     // Test that we can retrieve it back
     let retrieved: AuthKey = nested.get_json("test_key").unwrap();
-    assert_eq!(retrieved.pubkey(), key.pubkey());
+    assert_eq!(retrieved.name(), key.name());
     assert_eq!(retrieved.permissions(), key.permissions());
     assert_eq!(retrieved.status(), key.status());
 }
@@ -122,7 +127,7 @@ fn test_vec_string_nested_value_roundtrip() {
 
 #[test]
 fn test_sig_key_nested_value_roundtrip() {
-    let original = SigKey::Direct("KEY_LAPTOP".to_string());
+    let original = SigKey::from_name("KEY_LAPTOP");
     let mut nested = Doc::new();
     nested.set_json("sig_key", &original).unwrap();
     let parsed: SigKey = nested.get_json("sig_key").unwrap();
@@ -131,7 +136,7 @@ fn test_sig_key_nested_value_roundtrip() {
 
 #[test]
 fn test_sig_key_direct_format() {
-    let sig_key = SigKey::Direct("KEY_LAPTOP".to_string());
+    let sig_key = SigKey::from_name("KEY_LAPTOP");
     let mut nested = Doc::new();
     nested.set_json("sig_key", &sig_key).unwrap();
 
@@ -141,17 +146,14 @@ fn test_sig_key_direct_format() {
 }
 
 #[test]
-fn test_sig_key_delegation_path_format() {
-    let sig_key = SigKey::DelegationPath(vec![
-        DelegationStep {
-            key: "user@example.com".to_string(),
-            tips: Some(vec![ID::new("tip1"), ID::new("tip2")]),
-        },
-        DelegationStep {
-            key: "KEY_LAPTOP".to_string(),
-            tips: None,
-        },
-    ]);
+fn test_sig_key_delegation_format() {
+    let sig_key = SigKey::Delegation {
+        path: vec![DelegationStep {
+            tree: "tree_id_123".to_string(),
+            tips: vec![ID::new("tip1"), ID::new("tip2")],
+        }],
+        hint: KeyHint::from_name("KEY_LAPTOP"),
+    };
 
     let mut nested = Doc::new();
     nested.set_json("sig_key", &sig_key).unwrap();
@@ -162,17 +164,14 @@ fn test_sig_key_delegation_path_format() {
 }
 
 #[test]
-fn test_sig_key_delegation_path_roundtrip() {
-    let original = SigKey::DelegationPath(vec![
-        DelegationStep {
-            key: "user@example.com".to_string(),
-            tips: Some(vec![ID::new("tip1"), ID::new("tip2")]),
-        },
-        DelegationStep {
-            key: "KEY_LAPTOP".to_string(),
-            tips: None,
-        },
-    ]);
+fn test_sig_key_delegation_roundtrip() {
+    let original = SigKey::Delegation {
+        path: vec![DelegationStep {
+            tree: "tree_id_123".to_string(),
+            tips: vec![ID::new("tip1"), ID::new("tip2")],
+        }],
+        hint: KeyHint::from_name("KEY_LAPTOP"),
+    };
 
     let mut nested = Doc::new();
     nested.set_json("sig_key", &original).unwrap();
@@ -183,7 +182,7 @@ fn test_sig_key_delegation_path_roundtrip() {
 #[test]
 fn test_sig_info_nested_value_roundtrip() {
     let original = SigInfo::builder()
-        .key(SigKey::Direct("KEY_LAPTOP".to_string()))
+        .key(SigKey::from_name("KEY_LAPTOP"))
         .sig("signature_here")
         .build();
     let mut nested = Doc::new();
@@ -191,7 +190,6 @@ fn test_sig_info_nested_value_roundtrip() {
     let parsed: SigInfo = nested.get_json("sig_info").unwrap();
     assert_eq!(original.key, parsed.key);
     assert_eq!(original.sig, parsed.sig);
-    assert_eq!(original.pubkey, parsed.pubkey);
 }
 
 #[test]
@@ -346,83 +344,35 @@ fn test_delegated_tree_ref_complete_roundtrip() {
 
 #[test]
 fn test_auth_key_nested_value_roundtrip() {
-    let original = AuthKey::new(
-        generate_public_key(),
-        Permission::Write(42),
-        KeyStatus::Revoked,
-    )
-    .unwrap();
+    let original = AuthKey::new(Some("my_key"), Permission::Write(42), KeyStatus::Revoked);
 
     let mut nested = Doc::new();
     nested.set_json("auth_key", &original).unwrap();
     let parsed: AuthKey = nested.get_json("auth_key").unwrap();
 
-    assert_eq!(original.pubkey(), parsed.pubkey());
+    assert_eq!(original.name(), parsed.name());
     assert_eq!(original.permissions(), parsed.permissions());
     assert_eq!(original.status(), parsed.status());
 }
 
 #[test]
-fn test_auth_key_constructor_validation() {
-    use crate::auth::crypto::{format_public_key, generate_keypair};
+fn test_auth_key_with_and_without_name() {
+    // Test key with name
+    let key_with_name = AuthKey::active(Some("my_device"), Permission::Write(10));
+    assert_eq!(key_with_name.name(), Some("my_device"));
+    assert_eq!(key_with_name.permissions(), &Permission::Write(10));
+    assert_eq!(key_with_name.status(), &KeyStatus::Active);
 
-    // Generate a real valid key for testing
-    let (_, verifying_key) = generate_keypair();
-    let valid_pubkey = format_public_key(&verifying_key);
-
-    // Test valid key creation
-    let valid_key = AuthKey::active(&valid_pubkey, Permission::Write(10));
-    assert!(valid_key.is_ok());
-
-    let key = valid_key.unwrap();
-    assert_eq!(key.pubkey(), &valid_pubkey);
-    assert_eq!(key.permissions(), &Permission::Write(10));
-    assert_eq!(key.status(), &KeyStatus::Active);
-
-    // Test invalid key format
-    let invalid_key = AuthKey::active("invalid_key_format", Permission::Read);
-    assert!(invalid_key.is_err());
-
-    // Test missing ed25519 prefix
-    let no_prefix = AuthKey::new(
-        "PExACKOW0L7bKAM9mK_mH3L5EDwszC437uRzTqAbxpk",
-        Permission::Admin(1),
-        KeyStatus::Active,
-    );
-    assert!(no_prefix.is_err());
-
-    // Test active constructor with another real key
-    let (_, verifying_key2) = generate_keypair();
-    let valid_pubkey2 = format_public_key(&verifying_key2);
-
-    let active_key = AuthKey::active(&valid_pubkey2, Permission::Admin(0));
-    assert!(active_key.is_ok());
-
-    let key = active_key.unwrap();
-    assert_eq!(key.status(), &KeyStatus::Active);
-    assert_eq!(key.permissions(), &Permission::Admin(0));
-}
-
-#[test]
-fn test_auth_key_constructor_error_handling() {
-    use crate::auth::crypto::{format_public_key, generate_keypair};
-
-    // Generate a real key for testing
-    let (_, verifying_key) = generate_keypair();
-    let valid_pubkey = format_public_key(&verifying_key);
-
-    // Valid key construction should succeed
-    let valid_key = AuthKey::active(valid_pubkey, Permission::Write(5));
-    assert!(valid_key.is_ok());
-
-    // Invalid key construction should fail
-    let invalid_key = AuthKey::new("invalid_format", Permission::Read, KeyStatus::Revoked);
-    assert!(invalid_key.is_err());
+    // Test key without name
+    let key_without_name = AuthKey::active(None::<String>, Permission::Admin(5));
+    assert_eq!(key_without_name.name(), None);
+    assert_eq!(key_without_name.permissions(), &Permission::Admin(5));
+    assert_eq!(key_without_name.status(), &KeyStatus::Active);
 }
 
 #[test]
 fn test_auth_key_mutators() {
-    let mut key = AuthKey::active(generate_public_key(), Permission::Write(10)).unwrap();
+    let mut key = AuthKey::active(Some("test"), Permission::Write(10));
 
     // Test status modification
     key.set_status(KeyStatus::Revoked);
@@ -431,59 +381,81 @@ fn test_auth_key_mutators() {
     // Test permission modification
     key.set_permissions(Permission::Admin(5));
     assert_eq!(key.permissions(), &Permission::Admin(5));
+
+    // Test name modification
+    key.set_name(Some("new_name".to_string()));
+    assert_eq!(key.name(), Some("new_name"));
+
+    key.set_name(None);
+    assert_eq!(key.name(), None);
 }
 
 #[test]
-fn test_sig_key_is_signed_by() {
-    // Test direct key
-    let direct_key = SigKey::Direct("KEY_LAPTOP".to_string());
-    assert!(direct_key.is_signed_by("KEY_LAPTOP"));
-    assert!(!direct_key.is_signed_by("KEY_DESKTOP"));
+fn test_key_hint_types() {
+    // Test pubkey hint
+    let pubkey = generate_public_key();
+    let hint = KeyHint::from_pubkey(&pubkey);
+    assert_eq!(hint.pubkey, Some(pubkey.clone()));
+    assert_eq!(hint.name, None);
+    assert!(hint.is_set());
+    assert_eq!(hint.hint_type(), "pubkey");
 
-    // Test delegation path
-    let delegation_path = SigKey::DelegationPath(vec![
-        DelegationStep {
-            key: "user@example.com".to_string(),
-            tips: Some(vec![ID::new("tip1")]),
-        },
-        DelegationStep {
-            key: "KEY_LAPTOP".to_string(),
-            tips: None,
-        },
-    ]);
-    assert!(delegation_path.is_signed_by("KEY_LAPTOP"));
-    assert!(!delegation_path.is_signed_by("user@example.com"));
-    assert!(!delegation_path.is_signed_by("KEY_DESKTOP"));
+    // Test name hint
+    let hint = KeyHint::from_name("my_key");
+    assert_eq!(hint.pubkey, None);
+    assert_eq!(hint.name, Some("my_key".to_string()));
+    assert!(hint.is_set());
+    assert_eq!(hint.hint_type(), "name");
 
-    // Test empty delegation path
-    let empty_path = SigKey::DelegationPath(vec![]);
-    assert!(!empty_path.is_signed_by("KEY_LAPTOP"));
+    // Test global hint
+    let hint = KeyHint::global(&pubkey);
+    assert_eq!(hint.pubkey, Some(format!("*:{}", pubkey)));
+    assert!(hint.is_global());
+    assert_eq!(hint.global_actual_pubkey(), Some(pubkey.as_str()));
+
+    // Test empty hint
+    let hint = KeyHint::default();
+    assert!(!hint.is_set());
+    assert_eq!(hint.hint_type(), "none");
+}
+
+#[test]
+fn test_sig_key_hint_access() {
+    let pubkey = generate_public_key();
+
+    // Test Direct SigKey
+    let direct = SigKey::from_pubkey(&pubkey);
+    assert!(direct.has_pubkey_hint(&pubkey));
+    assert!(!direct.has_name_hint("test"));
+
+    let direct_name = SigKey::from_name("test");
+    assert!(direct_name.has_name_hint("test"));
+    assert!(!direct_name.has_pubkey_hint(&pubkey));
+
+    // Test Delegation SigKey
+    let delegation = SigKey::Delegation {
+        path: vec![DelegationStep {
+            tree: "tree_id".to_string(),
+            tips: vec![],
+        }],
+        hint: KeyHint::from_name("final_key"),
+    };
+    assert!(delegation.has_name_hint("final_key"));
+    assert!(!delegation.has_pubkey_hint(&pubkey));
 }
 
 #[test]
 fn test_delegation_step_serialization() {
     let step = DelegationStep {
-        key: "user@example.com".to_string(),
-        tips: Some(vec![ID::new("tip1"), ID::new("tip2")]),
+        tree: "tree_123".to_string(),
+        tips: vec![ID::new("tip1"), ID::new("tip2")],
     };
 
     let json = serde_json::to_string(&step).unwrap();
     let deserialized: DelegationStep = serde_json::from_str(&json).unwrap();
 
-    assert_eq!(step.key, deserialized.key);
+    assert_eq!(step.tree, deserialized.tree);
     assert_eq!(step.tips, deserialized.tips);
-
-    // Test final step (no tips)
-    let final_step = DelegationStep {
-        key: "KEY_LAPTOP".to_string(),
-        tips: None,
-    };
-
-    let json = serde_json::to_string(&final_step).unwrap();
-    let deserialized: DelegationStep = serde_json::from_str(&json).unwrap();
-
-    assert_eq!(final_step.key, deserialized.key);
-    assert_eq!(final_step.tips, deserialized.tips);
 }
 
 #[test]
@@ -567,25 +539,10 @@ fn test_permission_methods() {
 }
 
 #[test]
-fn test_sig_info_with_pubkey_serialization() {
+fn test_sig_info_with_global_serialization() {
+    let pubkey = generate_public_key();
     let sig_info = SigInfo::builder()
-        .key(SigKey::Direct("*".to_string()))
-        .sig("signature_base64_encoded_string_here")
-        .pubkey("ed25519:ABC123")
-        .build();
-
-    let json = serde_json::to_string(&sig_info).unwrap();
-    let deserialized: SigInfo = serde_json::from_str(&json).unwrap();
-
-    assert_eq!(sig_info.key, deserialized.key);
-    assert_eq!(sig_info.sig, deserialized.sig);
-    assert_eq!(sig_info.pubkey, deserialized.pubkey);
-}
-
-#[test]
-fn test_sig_info_without_pubkey_serialization() {
-    let sig_info = SigInfo::builder()
-        .key(SigKey::Direct("KEY_LAPTOP".to_string()))
+        .key(SigKey::global(&pubkey))
         .sig("signature_base64_encoded_string_here")
         .build();
 
@@ -594,46 +551,63 @@ fn test_sig_info_without_pubkey_serialization() {
 
     assert_eq!(sig_info.key, deserialized.key);
     assert_eq!(sig_info.sig, deserialized.sig);
-    assert_eq!(sig_info.pubkey, deserialized.pubkey);
-
-    // Verify that None pubkey fields are omitted from serialization
-    assert!(!json.contains("pubkey"));
+    assert!(sig_info.is_global());
 }
 
 #[test]
 fn test_sig_info_builder_basic() {
     let sig_info = SigInfo::builder()
-        .key(SigKey::Direct("KEY_LAPTOP".to_string()))
+        .key(SigKey::from_name("KEY_LAPTOP"))
         .sig("test_signature")
         .build();
 
-    assert_eq!(sig_info.key, SigKey::Direct("KEY_LAPTOP".to_string()));
+    assert!(sig_info.key.has_name_hint("KEY_LAPTOP"));
     assert_eq!(sig_info.sig, Some("test_signature".to_string()));
-    assert_eq!(sig_info.pubkey, None);
 }
 
 #[test]
-fn test_sig_info_builder_with_pubkey() {
+fn test_sig_info_builder_with_pubkey_hint() {
+    let pubkey = generate_public_key();
     let sig_info = SigInfo::builder()
-        .key(SigKey::Direct("*".to_string()))
+        .pubkey_hint(&pubkey)
         .sig("test_signature")
-        .pubkey("ed25519:ABC123")
         .build();
 
-    assert_eq!(sig_info.key, SigKey::Direct("*".to_string()));
+    assert!(sig_info.key.has_pubkey_hint(&pubkey));
     assert_eq!(sig_info.sig, Some("test_signature".to_string()));
-    assert_eq!(sig_info.pubkey, Some("ed25519:ABC123".to_string()));
+}
+
+#[test]
+fn test_sig_info_builder_with_name_hint() {
+    let sig_info = SigInfo::builder()
+        .name_hint("my_key")
+        .sig("test_signature")
+        .build();
+
+    assert!(sig_info.key.has_name_hint("my_key"));
+    assert_eq!(sig_info.sig, Some("test_signature".to_string()));
+}
+
+#[test]
+fn test_sig_info_builder_with_global_hint() {
+    let pubkey = generate_public_key();
+    let sig_info = SigInfo::builder()
+        .global_hint(&pubkey)
+        .sig("test_signature")
+        .build();
+
+    assert!(sig_info.is_global());
+    assert_eq!(sig_info.sig, Some("test_signature".to_string()));
 }
 
 #[test]
 fn test_sig_info_builder_minimal() {
     let sig_info = SigInfo::builder()
-        .key(SigKey::Direct("KEY_LAPTOP".to_string()))
+        .key(SigKey::from_name("KEY_LAPTOP"))
         .build();
 
-    assert_eq!(sig_info.key, SigKey::Direct("KEY_LAPTOP".to_string()));
+    assert!(sig_info.key.has_name_hint("KEY_LAPTOP"));
     assert_eq!(sig_info.sig, None);
-    assert_eq!(sig_info.pubkey, None);
 }
 
 #[test]
@@ -643,47 +617,130 @@ fn test_sig_info_builder_missing_key() {
 }
 
 #[test]
-fn test_sig_info_builder_delegation_path() {
-    let delegation_path = SigKey::DelegationPath(vec![
-        DelegationStep {
-            key: "user@example.com".to_string(),
-            tips: Some(vec![ID::new("tip1")]),
-        },
-        DelegationStep {
-            key: "KEY_LAPTOP".to_string(),
-            tips: None,
-        },
-    ]);
+fn test_sig_info_builder_delegation() {
+    let delegation = SigKey::Delegation {
+        path: vec![DelegationStep {
+            tree: "tree_id".to_string(),
+            tips: vec![ID::new("tip1")],
+        }],
+        hint: KeyHint::from_name("KEY_LAPTOP"),
+    };
 
     let sig_info = SigInfo::builder()
-        .key(delegation_path.clone())
+        .key(delegation.clone())
         .sig("test_signature")
-        .pubkey("ed25519:ABC123")
         .build();
 
-    assert_eq!(sig_info.key, delegation_path);
+    assert_eq!(sig_info.key, delegation);
     assert_eq!(sig_info.sig, Some("test_signature".to_string()));
-    assert_eq!(sig_info.pubkey, Some("ed25519:ABC123".to_string()));
 }
 
 #[test]
-fn test_sig_info_backward_compatibility() {
-    // Test that old-style direct construction still works
-    let sig_info = SigInfo {
-        key: SigKey::Direct("KEY_LAPTOP".to_string()),
-        sig: Some("signature_here".to_string()),
-        pubkey: None, // Default value for backward compatibility
-    };
-
-    // Test serialization roundtrip
-    let json = serde_json::to_string(&sig_info).unwrap();
-    let deserialized: SigInfo = serde_json::from_str(&json).unwrap();
-
-    assert_eq!(sig_info, deserialized);
-
-    // Test that Default trait still works
+fn test_sig_info_default() {
     let default_sig_info = SigInfo::default();
     assert_eq!(default_sig_info.key, SigKey::default());
     assert_eq!(default_sig_info.sig, None);
-    assert_eq!(default_sig_info.pubkey, None);
+}
+
+#[test]
+fn test_sig_info_is_unsigned() {
+    // Default SigInfo is unsigned
+    let default = SigInfo::default();
+    assert!(default.is_unsigned());
+
+    // With pubkey hint - not unsigned
+    let with_hint = SigInfo::from_pubkey("ed25519:ABC");
+    assert!(!with_hint.is_unsigned());
+
+    // With name hint - not unsigned
+    let with_name = SigInfo::from_name("my_key");
+    assert!(!with_name.is_unsigned());
+
+    // With signature - not unsigned
+    let with_sig = SigInfo {
+        sig: Some("signature".to_string()),
+        ..Default::default()
+    };
+    assert!(!with_sig.is_unsigned());
+
+    // Delegation is never unsigned (even with empty hint and no sig)
+    let delegation = SigInfo {
+        sig: None,
+        key: SigKey::Delegation {
+            path: vec![],
+            hint: KeyHint::default(),
+        },
+    };
+    assert!(!delegation.is_unsigned());
+}
+
+#[test]
+fn test_sig_info_malformed_reason() {
+    // Valid states: unsigned (default)
+    let default = SigInfo::default();
+    assert!(default.malformed_reason().is_none());
+
+    // Valid states: properly signed with hint
+    let signed = SigInfo {
+        sig: Some("signature".to_string()),
+        key: SigKey::from_pubkey("ed25519:ABC"),
+    };
+    assert!(signed.malformed_reason().is_none());
+
+    // Valid states: properly signed delegation
+    let signed_delegation = SigInfo {
+        sig: Some("signature".to_string()),
+        key: SigKey::Delegation {
+            path: vec![],
+            hint: KeyHint::from_name("key"),
+        },
+    };
+    assert!(signed_delegation.malformed_reason().is_none());
+
+    // Malformed: hint but no signature
+    let hint_no_sig = SigInfo::from_pubkey("ed25519:ABC");
+    assert_eq!(
+        hint_no_sig.malformed_reason(),
+        Some("entry has key hint but no signature")
+    );
+
+    // Malformed: signature but no hint (Direct with empty hint)
+    let sig_no_hint = SigInfo {
+        sig: Some("signature".to_string()),
+        key: SigKey::Direct(KeyHint::default()),
+    };
+    assert_eq!(
+        sig_no_hint.malformed_reason(),
+        Some("entry has signature but no key hint")
+    );
+
+    // Malformed: delegation without signature
+    let delegation_no_sig = SigInfo {
+        sig: None,
+        key: SigKey::Delegation {
+            path: vec![],
+            hint: KeyHint::from_name("key"),
+        },
+    };
+    assert_eq!(
+        delegation_no_sig.malformed_reason(),
+        Some("delegation entry requires a signature")
+    );
+}
+
+#[test]
+fn test_sig_key_is_global() {
+    let pubkey = generate_public_key();
+
+    // Direct with global hint
+    let global = SigKey::global(&pubkey);
+    assert!(global.is_global());
+
+    // Direct with regular pubkey
+    let direct = SigKey::from_pubkey(&pubkey);
+    assert!(!direct.is_global());
+
+    // Direct with name
+    let named = SigKey::from_name("test");
+    assert!(!named.is_global());
 }

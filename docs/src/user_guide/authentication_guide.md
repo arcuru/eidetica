@@ -76,12 +76,9 @@ Give other users access to your database:
 # let alice_public_key = format_public_key(&alice_verifying_key);
 let settings_store = transaction.get_settings()?;
 
-// Add a user with write access
-let user_key = AuthKey::active(
-    &alice_public_key,
-    Permission::Write(10),
-)?;
-settings_store.set_auth_key("alice", user_key).await?;
+// Add a user with write access (indexed by pubkey, name is optional metadata)
+let user_key = AuthKey::active(Some("alice_laptop"), Permission::Write(10));
+settings_store.set_auth_key(&alice_public_key, user_key).await?;
 
 transaction.commit().await?;
 # Ok(())
@@ -112,11 +109,9 @@ Allow anyone to read your database:
 # let transaction = database.new_transaction().await?;
 let settings_store = transaction.get_settings()?;
 
-// Wildcard key for public read access
-let public_key = AuthKey::active(
-    "*",
-    Permission::Read,
-)?;
+// Global permission for public read access
+// The "*" key means any valid signature is accepted
+let public_key = AuthKey::active(None::<String>, Permission::Read);
 settings_store.set_auth_key("*", public_key).await?;
 
 transaction.commit().await?;
@@ -151,10 +146,7 @@ let transaction = database.new_transaction().await?;
 let settings_store = transaction.get_settings()?;
 
 // Global permission allows any device to read and write
-let collaborative_key = AuthKey::active(
-    "*",
-    Permission::Write(10),
-)?;
+let collaborative_key = AuthKey::active(None::<String>, Permission::Write(10));
 settings_store.set_auth_key("*", collaborative_key).await?;
 
 transaction.commit().await?;
@@ -192,10 +184,10 @@ let sigkeys = Database::find_sigkeys(&instance, &database_root_id, &pubkey).awai
 
 // Use the first available SigKey (will be "*" for global permissions)
 if let Some((sigkey, _permission)) = sigkeys.first() {
-    let sigkey_str = match sigkey {
-        SigKey::Direct(name) => name.clone(),
-        _ => panic!("Delegation paths not yet supported"),
-    };
+    // Extract pubkey or name hint from the SigKey
+    let sigkey_str = sigkey.hint().pubkey.clone()
+        .or_else(|| sigkey.hint().name.clone())
+        .expect("Expected pubkey or name hint");
 
     // Open the database with the discovered SigKey
     let database = Database::open(instance, &database_root_id, signing_key, sigkey_str).await?;
@@ -226,6 +218,7 @@ Remove a user's access:
 # use eidetica::{Instance, backend::database::Sqlite};
 # use eidetica::store::SettingsStore;
 # use eidetica::auth::{AuthKey, Permission};
+# use eidetica::auth::crypto::{generate_keypair, format_public_key};
 # use eidetica::crdt::Doc;
 #
 # #[tokio::main]
@@ -237,17 +230,20 @@ Remove a user's access:
 # settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;
 # let database = user.create_database(settings, &default_key).await?;
+# // Generate a keypair for alice
+# let (_alice_signing_key, alice_verifying_key) = generate_keypair();
+# let alice_pubkey = format_public_key(&alice_verifying_key);
 // First add alice key so we can revoke it
 let transaction_setup = database.new_transaction().await?;
 let settings_setup = transaction_setup.get_settings()?;
-settings_setup.set_auth_key("alice", AuthKey::active("*", Permission::Write(10))?).await?;
+settings_setup.set_auth_key(&alice_pubkey, AuthKey::active(Some("alice"), Permission::Write(10))).await?;
 transaction_setup.commit().await?;
 let transaction = database.new_transaction().await?;
 
 let settings_store = transaction.get_settings()?;
 
-// Revoke the key
-settings_store.revoke_auth_key("alice").await?;
+// Revoke the key by its pubkey identifier
+settings_store.revoke_auth_key(&alice_pubkey).await?;
 
 transaction.commit().await?;
 # Ok(())
@@ -289,24 +285,25 @@ let (_user1_signing_key, user1_verifying_key) = generate_keypair();
 let user1_public_key = format_public_key(&user1_verifying_key);
 
 // Use update_auth_settings for complex multi-key setup
+// Keys are indexed by pubkey, with optional name metadata
 settings_store.update_auth_settings(|auth| {
     // Super admin (priority 0 - highest)
-    auth.overwrite_key("super_admin", AuthKey::active(
-        &super_admin_public_key,
+    auth.overwrite_key(&super_admin_public_key, AuthKey::active(
+        Some("super_admin"),
         Permission::Admin(0),
-    )?)?;
+    ))?;
 
     // Department admin (priority 10)
-    auth.overwrite_key("dept_admin", AuthKey::active(
-        &dept_admin_public_key,
+    auth.overwrite_key(&dept_admin_public_key, AuthKey::active(
+        Some("dept_admin"),
         Permission::Admin(10),
-    )?)?;
+    ))?;
 
     // Regular users (priority 100)
-    auth.overwrite_key("user1", AuthKey::active(
-        &user1_public_key,
+    auth.overwrite_key(&user1_public_key, AuthKey::active(
+        Some("user1"),
         Permission::Write(100),
-    )?)?;
+    ))?;
 
     Ok(())
 }).await?;
@@ -315,17 +312,6 @@ transaction.commit().await?;
 # Ok(())
 # }
 ```
-
-## Key Management Tips
-
-1. **Use descriptive key names**: "alice_laptop", "build_server", etc.
-2. **Set up admin hierarchy**: Lower priority numbers = higher authority
-3. **Use SettingsStore methods**:
-   - `set_auth_key()` for setting keys (upsert behavior)
-   - `revoke_auth_key()` for removing access
-   - `update_auth_settings()` for complex multi-step operations
-4. **Regular key rotation**: Periodically update keys for security
-5. **Backup admin keys**: Keep secure copies of critical admin keys
 
 ## Advanced: Cross-Database Authentication (Delegation)
 
@@ -473,15 +459,16 @@ These are names in the **delegated database's** auth settings that point to **pu
 # let alice_pubkey_str = eidetica::auth::crypto::format_public_key(&signing_key.verifying_key());
 # let transaction = alice_db.new_transaction().await?;
 # let settings = transaction.get_settings()?;
-// In Alice's database: "alice_laptop" points to a public key
-// (This was added automatically during bootstrap, but we can add aliases)
+// In Alice's database: keys are indexed by pubkey
+// (The default key was added automatically during bootstrap)
+// We can update it with a descriptive name
 settings.update_auth_settings(|auth| {
-    auth.add_key(
-        "alice_work",  // ← Signing key name (alias)
+    auth.overwrite_key(
+        &alice_pubkey_str,  // ← Index by pubkey
         AuthKey::active(
-            &alice_pubkey_str,  // The actual Ed25519 public key
+            Some("alice_work"),  // Optional name metadata
             Permission::Write(10),
-        )?
+        )
     )?;
     Ok(())
 }).await?;
@@ -490,10 +477,11 @@ settings.update_auth_settings(|auth| {
 # }
 ```
 
-This creates an entry in Alice's database auth settings:
+This updates the entry in Alice's database auth settings:
 
-- **Name**: `"alice_work"` (an alias for the same key as `"alice_laptop"`)
-- **Points to**: An Ed25519 public key
+- **Key**: Indexed by the pubkey string (e.g., `"ed25519:ABC..."`)
+- **Name**: `"alice_work"` (optional human-readable metadata)
+- **Permissions**: The access level for this key
 
 ### Using Delegated Keys
 
@@ -515,21 +503,20 @@ A delegation path is a sequence of steps that traverses from the delegating data
 # let project_db = user.create_database(Doc::new(), &default_key).await?;
 # let user_db = user.create_database(Doc::new(), &default_key).await?;
 # let user_tips = user_db.get_tips().await?;
-// Create a delegation path with TWO steps:
-let delegation_path = SigKey::DelegationPath(vec![
-    // Step 1: Look up "alice@example.com" in PROJECT database's auth settings
-    //         This is a delegation reference name pointing to Alice's database
-    DelegationStep {
-        key: "alice@example.com".to_string(),
-        tips: Some(user_tips),  // Tips for Alice's database
-    },
-    // Step 2: Look up "alice_laptop" in ALICE'S database's auth settings
-    //         This is a signing key name pointing to an Ed25519 public key
-    DelegationStep {
-        key: "alice_laptop".to_string(),
-        tips: None,  // Final step has no tips (it's a pubkey, not a tree)
-    },
-]);
+// Create a delegation path:
+// - path: list of delegated trees to traverse
+// - hint: identifies the final signer in the last delegated tree
+let delegation_path = SigKey::Delegation {
+    path: vec![
+        // Step: Traverse to Alice's database
+        DelegationStep {
+            tree: "alice@example.com".to_string(),  // Reference in project auth settings
+            tips: user_tips,  // Tips for Alice's database
+        },
+    ],
+    // Final signer hint - resolved in Alice's database auth settings
+    hint: eidetica::auth::KeyHint::from_name("alice_laptop"),
+};
 
 // Use the delegation path to create an authenticated operation
 // Note: This requires the actual signing key to be available
@@ -541,8 +528,8 @@ let delegation_path = SigKey::DelegationPath(vec![
 **Path traversal**:
 
 1. Start in **project database** auth settings
-2. Look up `"alice@example.com"` → finds DelegatedTreeRef → jumps to **Alice's database**
-3. Look up `"alice_laptop"` in Alice's database → finds AuthKey → gets **Ed25519 public key**
+2. Look up `"alice@example.com"` in path → finds DelegatedTreeRef → jumps to **Alice's database**
+3. Use `hint` to find the signer: look up `"alice_laptop"` (by name) → finds AuthKey → gets **Ed25519 public key**
 4. Use that public key to verify the entry signature
 
 ### Permission Clamping

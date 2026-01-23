@@ -133,19 +133,15 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
     let mut settings = Doc::new();
     settings.set("name", "test_database");
 
-    let server_pubkey = server_user
-        .get_public_key(&server_key_id)
-        .expect("Failed to get server public key");
-
     let mut auth_settings = AuthSettings::new();
     auth_settings
         .add_key(
             &server_key_id,
-            AuthKey::active(&server_pubkey, Permission::Admin(0)).unwrap(),
+            AuthKey::active(Some("admin"), Permission::Admin(0)),
         )
         .unwrap();
     auth_settings
-        .add_key("*", AuthKey::active("*", Permission::Read).unwrap())
+        .add_key("*", AuthKey::active(Some("*"), Permission::Read))
         .unwrap();
     settings.set("auth", auth_settings.as_doc().clone());
 
@@ -314,19 +310,15 @@ async fn test_sync_succeeds_when_enabled() {
     let mut settings = Doc::new();
     settings.set("name", "test_database");
 
-    let server_pubkey = server_user
-        .get_public_key(&server_key_id)
-        .expect("Failed to get server public key");
-
     let mut auth_settings = AuthSettings::new();
     auth_settings
         .add_key(
             &server_key_id,
-            AuthKey::active(&server_pubkey, Permission::Admin(0)).unwrap(),
+            AuthKey::active(Some("admin"), Permission::Admin(0)),
         )
         .unwrap();
     auth_settings
-        .add_key("*", AuthKey::active("*", Permission::Read).unwrap())
+        .add_key("*", AuthKey::active(Some("*"), Permission::Read))
         .unwrap();
     settings.set("auth", auth_settings.as_doc().clone());
 
