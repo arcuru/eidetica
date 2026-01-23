@@ -219,8 +219,9 @@ in {
       # Load the image (this triggers podman socket activation)
       machine.succeed("podman load < ${eidetica-image}")
 
-      # Create data directory and run the container
+      # Create data directory with correct ownership for container user (1000:1000)
       machine.succeed("mkdir -p /tmp/eidetica-data")
+      machine.succeed("chown 1000:1000 /tmp/eidetica-data")
       machine.succeed(
         "podman run -d --name eidetica-test -p 3000:3000 -v /tmp/eidetica-data:/data eidetica:dev"
       )
