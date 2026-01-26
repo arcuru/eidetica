@@ -19,6 +19,7 @@ use eidetica::{
         handler::SyncHandlerImpl,
         peer_types::Address,
         protocol::{RequestContext, SyncRequest, SyncResponse},
+        transports::{http::HttpTransport, iroh::IrohTransport},
     },
 };
 
@@ -227,11 +228,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::info!("Using device key: {device_key_id}");
 
-    // Get sync object (transports are auto-enabled by enable_sync())
+    // Get sync object
     let sync = instance.sync().ok_or("Sync not enabled on instance")?;
 
+    // Register transports for sync
+    sync.register_transport("iroh", IrohTransport::builder())
+        .await?;
+    sync.register_transport("http", HttpTransport::builder())
+        .await?;
+
     // Start accepting incoming sync connections
-    // Iroh server starts automatically, HTTP only if configured
     sync.accept_connections().await?;
     let iroh_address = sync.get_server_address_for("iroh").await?;
     tracing::info!("Iroh server started: {}", iroh_address);
