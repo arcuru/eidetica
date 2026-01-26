@@ -366,8 +366,7 @@ ci mode='local':
             act --workflows .github/workflows/rust.yml
             ;;
         nix)
-            just nix build
-            just nix check
+            just nix full
             ;;
         *)
             echo "Unknown mode: {{ mode }}"
@@ -392,8 +391,7 @@ nix action='check':
             nix-fast-build --no-link
             ;;
         integration)
-            nix build .#integration-nixos --no-link
-            nix build .#integration-container --no-link
+            nix build .#integration.nixos .#integration.container -L
             ;;
         full)
             just nix check
