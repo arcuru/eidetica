@@ -16,12 +16,13 @@ use crate::{
         types::{AuthKey, DelegatedTreeRef, KeyHint, KeyStatus, Permission, ResolvedAuth, SigKey},
     },
     crdt::Doc,
+    entry::ID,
 };
 
 /// Authentication settings view/interface over Doc data
 ///
 /// Keys are stored by pubkey in the "keys" sub-object.
-/// Delegations are stored by name in the "delegations" sub-object.
+/// Delegations are stored by root tree ID in the "delegations" sub-object.
 /// Global permission uses the special "*" pubkey.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthSettings {
@@ -155,27 +156,33 @@ impl AuthSettings {
     // ==================== Delegation Operations ====================
 
     /// Add or update a delegated tree reference
-    pub fn add_delegated_tree(
-        &mut self,
-        name: impl Into<String>,
-        tree_ref: DelegatedTreeRef,
-    ) -> Result<()> {
-        // FIXME: Update delegations to use "delegations.{tree.root}" to match Direct key storage
-        let name = name.into();
+    ///
+    /// The delegation is stored by root tree ID, extracted from `tree_ref.tree.root`.
+    /// This ensures collision-resistant storage similar to key storage by pubkey.
+    pub fn add_delegated_tree(&mut self, tree_ref: DelegatedTreeRef) -> Result<()> {
+        let root_id = tree_ref.tree.root.as_str();
         self.inner
-            .set_json(format!("delegations.{name}"), tree_ref)?;
+            .set_json(format!("delegations.{root_id}"), tree_ref)?;
         Ok(())
     }
 
-    /// Get a delegated tree reference by name
-    pub fn get_delegated_tree(&self, name: &str) -> Result<DelegatedTreeRef> {
+    /// Get a delegated tree reference by root tree ID
+    pub fn get_delegated_tree(&self, root_id: &ID) -> Result<DelegatedTreeRef> {
+        self.get_delegated_tree_by_str(root_id.as_str())
+    }
+
+    /// Get a delegated tree reference by root tree ID string
+    ///
+    /// This variant accepts a string directly, useful when the ID comes from
+    /// a `DelegationStep.tree` field which stores the root ID as a string.
+    pub fn get_delegated_tree_by_str(&self, root_id: &str) -> Result<DelegatedTreeRef> {
         match self
             .inner
-            .get_json::<DelegatedTreeRef>(&format!("delegations.{name}"))
+            .get_json::<DelegatedTreeRef>(&format!("delegations.{root_id}"))
         {
             Ok(tree_ref) => Ok(tree_ref),
-            Err(e) if e.is_not_found() => Err(AuthError::KeyNotFound {
-                key_name: name.to_string(),
+            Err(e) if e.is_not_found() => Err(AuthError::DelegationNotFound {
+                tree_id: root_id.to_string(),
             }
             .into()),
             Err(e) => Err(AuthError::InvalidAuthConfiguration {
@@ -186,19 +193,23 @@ impl AuthSettings {
     }
 
     /// Get all delegated tree references
-    pub fn get_all_delegated_trees(&self) -> Result<HashMap<String, DelegatedTreeRef>> {
+    ///
+    /// Returns a map from root tree ID to the delegation reference.
+    pub fn get_all_delegated_trees(&self) -> Result<HashMap<ID, DelegatedTreeRef>> {
         use crate::crdt::doc::Value;
 
-        let mut result: HashMap<String, DelegatedTreeRef> = HashMap::new();
+        let mut result: HashMap<ID, DelegatedTreeRef> = HashMap::new();
 
-        // Get the "delegations" sub-doc (delegations_value should be a Value::Doc)
+        // Get the "delegations" sub-doc
         if let Some(Value::Doc(delegations_doc)) = self.inner.get("delegations") {
-            // Iterate through all children (name -> Value::Text pairs)
-            for (name, value) in delegations_doc.iter() {
+            // Iterate through all children (root_id -> Value::Text pairs)
+            for (root_id_str, value) in delegations_doc.iter() {
                 if let Value::Text(json_str) = value {
                     // Each value is a JSON-serialized DelegatedTreeRef
                     if let Ok(tree_ref) = serde_json::from_str::<DelegatedTreeRef>(json_str) {
-                        result.insert(name.clone(), tree_ref);
+                        // Create ID from the string key
+                        let root_id = ID::new(root_id_str);
+                        result.insert(root_id, tree_ref);
                     }
                 }
             }

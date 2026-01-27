@@ -328,7 +328,7 @@ When you delegate to another database:
 1. **The delegating database** references another database in its `_settings.auth`
 2. **The delegated database** maintains its own keys in its `_settings.auth`
 3. **Permission clamping** ensures delegated keys can't exceed specified bounds
-4. **Delegation paths** reference keys by their **name** in the delegated database's auth settings
+4. **Delegation paths** reference databases by their **root entry ID** and resolve the final key in the delegated database
 
 ### Basic Delegation Setup
 
@@ -360,7 +360,8 @@ let transaction = project_database.new_transaction().await?;
 let settings = transaction.get_settings()?;
 
 settings.update_auth_settings(|auth| {
-    auth.add_delegated_tree("alice@example.com", DelegatedTreeRef {
+    // Delegation is stored by the root tree ID automatically
+    auth.add_delegated_tree(DelegatedTreeRef {
         permission_bounds: PermissionBounds {
             max: Permission::Write(15),
             min: Some(Permission::Read),
@@ -382,14 +383,14 @@ Now any key in Alice's personal database can access the project database, with p
 
 ### Understanding Delegation Paths
 
-**Critical concept**: A delegation path traverses through databases using **two different types of key names**:
+**Critical concept**: A delegation path traverses through databases using **two different types of identifiers**:
 
-1. **Delegation reference names** - Point to other databases (DelegatedTreeRef)
-2. **Signing key names** - Point to public keys (AuthKey) for signature verification
+1. **Root tree IDs** - Identify delegated databases (DelegatedTreeRef stored by root ID)
+2. **Key hints** - Identify signing keys (by pubkey or name) in the final database
 
-#### Delegation Reference Names
+#### Delegated Tree References
 
-These are names in the **delegating database's** auth settings that point to **other databases**:
+Delegations are stored in the **delegating database's** auth settings by the delegated tree's **root entry ID**:
 
 ```rust
 # extern crate eidetica;
@@ -410,21 +411,18 @@ These are names in the **delegating database's** auth settings that point to **o
 # let project_db = user.create_database(Doc::new(), &default_key).await?;
 # let transaction = project_db.new_transaction().await?;
 # let settings = transaction.get_settings()?;
-// In project database: "alice@example.com" points to Alice's database
+// In project database: delegation stored by Alice's database root ID
 settings.update_auth_settings(|auth| {
-    auth.add_delegated_tree(
-        "alice@example.com",  // ← Delegation reference name
-        DelegatedTreeRef {
-            tree: TreeReference {
-                root: alice_root,
-                tips: alice_tips,
-            },
-            permission_bounds: PermissionBounds {
-                max: Permission::Write(15),
-                min: Some(Permission::Read),
-            },
-        }
-    )?;
+    auth.add_delegated_tree(DelegatedTreeRef {
+        tree: TreeReference {
+            root: alice_root,  // ← Root ID used as storage key
+            tips: alice_tips,
+        },
+        permission_bounds: PermissionBounds {
+            max: Permission::Write(15),
+            min: Some(Permission::Read),
+        },
+    })?;
     Ok(())
 }).await?;
 # transaction.commit().await?;
@@ -434,8 +432,8 @@ settings.update_auth_settings(|auth| {
 
 This creates an entry in the project database's auth settings:
 
-- **Name**: `"alice@example.com"`
-- **Points to**: Alice's database (via TreeReference)
+- **Key**: The root entry ID of Alice's database (e.g., `sha256:abc123...`)
+- **Value**: DelegatedTreeRef with permission bounds and tree reference
 
 #### Signing Key Names
 
@@ -504,13 +502,13 @@ A delegation path is a sequence of steps that traverses from the delegating data
 # let user_db = user.create_database(Doc::new(), &default_key).await?;
 # let user_tips = user_db.get_tips().await?;
 // Create a delegation path:
-// - path: list of delegated trees to traverse
+// - path: list of delegated trees to traverse (by root ID)
 // - hint: identifies the final signer in the last delegated tree
 let delegation_path = SigKey::Delegation {
     path: vec![
-        // Step: Traverse to Alice's database
+        // Step: Traverse to Alice's database (using its root ID)
         DelegationStep {
-            tree: "alice@example.com".to_string(),  // Reference in project auth settings
+            tree: user_db.root_id().to_string(),  // Root ID of delegated database
             tips: user_tips,  // Tips for Alice's database
         },
     ],
@@ -528,7 +526,7 @@ let delegation_path = SigKey::Delegation {
 **Path traversal**:
 
 1. Start in **project database** auth settings
-2. Look up `"alice@example.com"` in path → finds DelegatedTreeRef → jumps to **Alice's database**
+2. Look up root ID in path → finds DelegatedTreeRef (stored by that root ID) → jumps to **Alice's database**
 3. Use `hint` to find the signer: look up `"alice_laptop"` (by name) → finds AuthKey → gets **Ed25519 public key**
 4. Use that public key to verify the entry signature
 
@@ -643,15 +641,15 @@ Auth settings can contain multiple names for the same public key with different 
 This allows:
 
 - The same key to have different permission contexts
-- Readable delegation path names instead of public key strings
+- Readable key names for human-friendly lookups
 - Fine-grained access control based on how the key is referenced
 
 ### Best Practices
 
-1. **Use descriptive delegation names**: `"alice@example.com"`, `"team-engineering"`
+1. **Use descriptive key names**: `"alice_laptop"`, `"deploy_bot"` for keys that will be looked up by name
 2. **Set appropriate permission bounds**: Don't grant more access than needed
 3. **Update delegation tips**: Keep tips current to ensure revocations are respected
-4. **Use friendly key names**: Add aliases for keys that will be used in delegation paths
+4. **Track delegated database root IDs**: Delegation paths use root IDs, so document which IDs correspond to which databases
 5. **Document delegation chains**: Complex hierarchies can be hard to debug
 
 ### See Also

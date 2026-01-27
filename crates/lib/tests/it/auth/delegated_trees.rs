@@ -62,7 +62,7 @@ async fn test_delegated_tree_basic_validation() -> Result<()> {
     )
     .await?;
     settings
-        .update_auth_settings(|auth| auth.add_delegated_tree("delegate_to_user", delegation_ref))
+        .update_auth_settings(|auth| auth.add_delegated_tree(delegation_ref))
         .await?;
     op.commit().await?;
 
@@ -71,10 +71,10 @@ async fn test_delegated_tree_basic_validation() -> Result<()> {
     let main_auth_settings = main_tree.get_settings().await?.get_auth_settings().await?;
     let delegated_tips = delegated_tree.get_tips().await?;
 
-    // Create delegation path - DelegationStep uses tree (not key) and tips (not Option<tips>)
+    // Create delegation path - DelegationStep uses root tree ID and tips
     let delegated_auth_id = SigKey::Delegation {
         path: vec![DelegationStep {
-            tree: "delegate_to_user".to_string(),
+            tree: delegated_tree.root_id().to_string(),
             tips: delegated_tips,
         }],
         hint: KeyHint::from_pubkey(&delegated_key_ids[0]),
@@ -118,7 +118,7 @@ async fn test_delegated_tree_permission_clamping() -> Result<()> {
 
     let delegation_ref = create_delegation_ref(&delegated_tree, Permission::Read, None).await?;
     settings
-        .update_auth_settings(|auth| auth.add_delegated_tree("delegate_readonly", delegation_ref))
+        .update_auth_settings(|auth| auth.add_delegated_tree(delegation_ref))
         .await?;
     op.commit().await?;
 
@@ -129,7 +129,7 @@ async fn test_delegated_tree_permission_clamping() -> Result<()> {
 
     let delegated_auth_id = SigKey::Delegation {
         path: vec![DelegationStep {
-            tree: "delegate_readonly".to_string(),
+            tree: delegated_tree.root_id().to_string(),
             tips: delegated_tips,
         }],
         hint: KeyHint::from_pubkey(&delegated_key_ids[0]),
@@ -183,13 +183,14 @@ async fn test_nested_delegation() -> Result<()> {
 
     // Add delegation to user tree
     let user_tips = user_tree.get_tips().await?;
+    let user_tree_root = user_tree.root_id().clone();
     let op = org_tree.new_transaction().await?;
     {
         let settings = op.get_settings()?;
         let delegation_ref = create_delegation_ref(&user_tree, Permission::Write(20), None).await?;
         settings
             .update_auth_settings(|auth| {
-                auth.add_delegated_tree("delegate_to_user", delegation_ref)?;
+                auth.add_delegated_tree(delegation_ref)?;
                 Ok(())
             })
             .await?;
@@ -211,6 +212,7 @@ async fn test_nested_delegation() -> Result<()> {
 
     // Add delegation to org tree
     let org_tips = org_tree.get_tips().await?;
+    let org_tree_root = org_tree.root_id().clone();
     let op = main_tree.new_transaction().await?;
     {
         let settings = op.get_settings()?;
@@ -218,7 +220,7 @@ async fn test_nested_delegation() -> Result<()> {
             create_delegation_ref(&org_tree, Permission::Write(15), Some(Permission::Read)).await?;
         settings
             .update_auth_settings(|auth| {
-                auth.add_delegated_tree("delegate_to_org", delegation_ref)?;
+                auth.add_delegated_tree(delegation_ref)?;
                 Ok(())
             })
             .await?;
@@ -233,11 +235,11 @@ async fn test_nested_delegation() -> Result<()> {
     let nested_auth_id = SigKey::Delegation {
         path: vec![
             DelegationStep {
-                tree: "delegate_to_org".to_string(),
+                tree: org_tree_root.to_string(),
                 tips: org_tips.clone(),
             },
             DelegationStep {
-                tree: "delegate_to_user".to_string(),
+                tree: user_tree_root.to_string(),
                 tips: user_tips.clone(),
             },
         ],
@@ -299,6 +301,7 @@ async fn test_delegated_tree_with_revoked_keys() -> Result<()> {
 
     // Add delegation to delegated tree
     let delegated_tips = delegated_tree.get_tips().await?;
+    let delegated_tree_root = delegated_tree.root_id().clone();
     let op = main_tree.new_transaction().await?;
     {
         let settings = op.get_settings()?;
@@ -306,7 +309,7 @@ async fn test_delegated_tree_with_revoked_keys() -> Result<()> {
             create_delegation_ref(&delegated_tree, Permission::Write(10), None).await?;
         settings
             .update_auth_settings(|auth| {
-                auth.add_delegated_tree("delegate_to_tree", delegation_ref)?;
+                auth.add_delegated_tree(delegation_ref)?;
                 Ok(())
             })
             .await?;
@@ -319,7 +322,7 @@ async fn test_delegated_tree_with_revoked_keys() -> Result<()> {
 
     let delegated_auth_id = SigKey::Delegation {
         path: vec![DelegationStep {
-            tree: "delegate_to_tree".to_string(),
+            tree: delegated_tree_root.to_string(),
             tips: delegated_tips.clone(),
         }],
         hint: KeyHint::from_pubkey(&delegated_user_key),
@@ -402,6 +405,7 @@ async fn test_delegation_depth_limits() -> Result<()> {
 
     // Add delegation to delegated tree
     let delegated_tips = delegated_tree.get_tips().await?;
+    let delegated_tree_root = delegated_tree.root_id().clone();
     let op = main_tree.new_transaction().await?;
     {
         let settings = op.get_settings()?;
@@ -409,7 +413,7 @@ async fn test_delegation_depth_limits() -> Result<()> {
             create_delegation_ref(&delegated_tree, Permission::Write(10), None).await?;
         settings
             .update_auth_settings(|auth| {
-                auth.add_delegated_tree("delegate_to_user", delegation_ref)?;
+                auth.add_delegated_tree(delegation_ref)?;
                 Ok(())
             })
             .await?;
@@ -423,7 +427,7 @@ async fn test_delegation_depth_limits() -> Result<()> {
     // Add 12 intermediate delegation steps (exceeds MAX_DELEGATION_DEPTH of 10)
     for _ in 0..12 {
         delegation_steps.push(DelegationStep {
-            tree: "delegate_to_user".to_string(),
+            tree: delegated_tree_root.to_string(),
             tips: delegated_tips.clone(),
         });
     }
@@ -497,6 +501,7 @@ async fn test_delegated_tree_min_bound_upgrade() -> Result<()> {
     .await?;
 
     // Add delegation with bounds using SettingsStore API
+    let delegated_tree_root = delegated_tree.root_id().clone();
     let op = main_tree.new_transaction().await?;
     {
         let settings = op.get_settings()?;
@@ -508,7 +513,7 @@ async fn test_delegated_tree_min_bound_upgrade() -> Result<()> {
         .await?;
         settings
             .update_auth_settings(|auth| {
-                auth.add_delegated_tree("delegate_user_min_upgrade", delegation_ref)?;
+                auth.add_delegated_tree(delegation_ref)?;
                 Ok(())
             })
             .await?;
@@ -521,7 +526,7 @@ async fn test_delegated_tree_min_bound_upgrade() -> Result<()> {
 
     let auth_id = SigKey::Delegation {
         path: vec![DelegationStep {
-            tree: "delegate_user_min_upgrade".to_string(),
+            tree: delegated_tree_root.to_string(),
             tips: delegated_tips.clone(),
         }],
         hint: KeyHint::from_pubkey(&delegated_user_key),
@@ -589,6 +594,7 @@ async fn test_delegated_tree_priority_preservation() -> Result<()> {
     .await?;
 
     // Add delegation using SettingsStore API
+    let delegated_tree_root = delegated_tree.root_id().clone();
     let op = main_tree.new_transaction().await?;
     {
         let settings = op.get_settings()?;
@@ -596,7 +602,7 @@ async fn test_delegated_tree_priority_preservation() -> Result<()> {
             create_delegation_ref(&delegated_tree, Permission::Write(8), None).await?;
         settings
             .update_auth_settings(|auth| {
-                auth.add_delegated_tree("delegate_user_priority", delegation_ref)?;
+                auth.add_delegated_tree(delegation_ref)?;
                 Ok(())
             })
             .await?;
@@ -609,7 +615,7 @@ async fn test_delegated_tree_priority_preservation() -> Result<()> {
 
     let auth_id = SigKey::Delegation {
         path: vec![DelegationStep {
-            tree: "delegate_user_priority".to_string(),
+            tree: delegated_tree_root.to_string(),
             tips: delegated_tips.clone(),
         }],
         hint: KeyHint::from_pubkey(&delegated_user_key),
@@ -647,9 +653,12 @@ async fn test_delegation_depth_limit_exact() -> Result<()> {
     let mut delegation_steps = Vec::new();
 
     // Add 10 intermediate delegation steps (reaches MAX_DELEGATION_DEPTH of 10)
+    // Using a non-existent ID - test will fail
+    let bogus_root_id =
+        ID::new("sha256:0000000000000000000000000000000000000000000000000000000000000000");
     for _ in 0..10 {
         delegation_steps.push(DelegationStep {
-            tree: "some_delegate".to_string(), // ID doesn't exist but depth is focus
+            tree: bogus_root_id.to_string(),
             tips: tips.clone(),
         });
     }
@@ -666,8 +675,7 @@ async fn test_delegation_depth_limit_exact() -> Result<()> {
         .resolve_sig_key(&auth_id, &auth_settings, Some(&db))
         .await;
     assert!(result.is_err());
-    let msg = result.unwrap_err().to_string();
-    assert!(msg.contains("Maximum delegation depth") || msg.contains("not found"));
+    assert!(result.unwrap_err().is_not_found());
 
     Ok(())
 }
@@ -723,6 +731,7 @@ async fn test_delegated_tree_invalid_tips() -> Result<()> {
     .await?;
 
     // Add delegation with bogus tips using SettingsStore API
+    let delegated_tree_root = delegated_tree.root_id().clone();
     let op = main_tree.new_transaction().await?;
     {
         let settings = op.get_settings()?;
@@ -733,13 +742,13 @@ async fn test_delegated_tree_invalid_tips() -> Result<()> {
                 min: None,
             },
             tree: TreeReference {
-                root: delegated_tree.root_id().clone(),
+                root: delegated_tree_root.clone(),
                 tips: vec![bogus_tip.clone()],
             },
         };
         settings
             .update_auth_settings(|auth| {
-                auth.add_delegated_tree("delegate_with_bad_tip", delegation_ref)?;
+                auth.add_delegated_tree(delegation_ref)?;
                 Ok(())
             })
             .await?;
@@ -751,7 +760,7 @@ async fn test_delegated_tree_invalid_tips() -> Result<()> {
 
     let auth_id = SigKey::Delegation {
         path: vec![DelegationStep {
-            tree: "delegate_with_bad_tip".to_string(),
+            tree: delegated_tree_root.to_string(),
             tips: vec![bogus_tip],
         }],
         hint: KeyHint::from_pubkey(&delegated_user_key),

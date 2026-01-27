@@ -457,7 +457,7 @@ mod tests {
         let result = settings_store.get_auth_key("nonexistent").await;
         assert!(result.is_err());
         if let Err(crate::Error::Auth(auth_err)) = result {
-            assert!(auth_err.is_key_not_found());
+            assert!(auth_err.is_not_found());
         } else {
             panic!("Expected Auth(KeyNotFound) error");
         }

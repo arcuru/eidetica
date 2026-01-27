@@ -23,8 +23,11 @@ use crate::helpers::{test_instance, test_instance_with_user};
 /// Test delegation resolution with missing backend
 #[tokio::test]
 async fn test_delegation_without_backend() {
+    // Create a delegation path with a fake root ID
+    let fake_root_id =
+        ID::new("sha256:0000000000000000000000000000000000000000000000000000000000000001");
     let delegation_path = create_delegation_path(
-        &[("some_tree", vec![ID::from("tip1")])],
+        &[(&fake_root_id, vec![ID::from("tip1")])],
         KeyHint::from_name("final_key"),
     );
 
@@ -57,19 +60,21 @@ async fn test_delegation_nonexistent_tree() -> Result<()> {
         .get_store::<eidetica::store::DocStore>("_settings")
         .await?;
 
+    let nonexistent_root_id = ID::from("nonexistent_root");
     let nonexistent_delegation = DelegatedTreeRef {
         permission_bounds: PermissionBounds {
             min: None,
             max: Permission::Write(10),
         },
         tree: TreeReference {
-            root: ID::from("nonexistent_root"),
+            root: nonexistent_root_id.clone(),
             tips: vec![ID::from("nonexistent_tip")],
         },
     };
 
     let mut new_auth_settings = tree.get_settings().await?.get_all().await?;
-    new_auth_settings.set_json("nonexistent_delegate", nonexistent_delegation)?;
+    // Store by root ID (the new storage format)
+    new_auth_settings.set_json(nonexistent_root_id.as_str(), nonexistent_delegation)?;
     settings_store
         .set_value("auth", Value::Doc(new_auth_settings))
         .await?;
@@ -77,7 +82,7 @@ async fn test_delegation_nonexistent_tree() -> Result<()> {
 
     // Try to resolve delegation to non-existent tree
     let delegation_path = create_delegation_path(
-        &[("nonexistent_delegate", vec![ID::from("nonexistent_tip")])],
+        &[(&nonexistent_root_id, vec![ID::from("nonexistent_tip")])],
         KeyHint::from_name("some_key"),
     );
 
@@ -89,7 +94,7 @@ async fn test_delegation_nonexistent_tree() -> Result<()> {
         &delegation_path,
         &auth_settings,
         Some(&db),
-        "key",
+        "delegation not found",
     )
     .await;
 
@@ -111,13 +116,15 @@ async fn test_delegation_corrupted_tree_references() -> Result<()> {
         AuthKey::active(Some("admin"), Permission::Admin(0)),
     )?;
 
-    // Add corrupted delegation (invalid tips)
+    // Add corrupted delegation (invalid tips) - store under a valid-looking root ID
+    let corrupted_root_id =
+        ID::new("sha256:corrupted0000000000000000000000000000000000000000000000000000");
     let mut corrupted_delegate = Doc::new();
     corrupted_delegate.set("permission-bounds", "invalid");
     corrupted_delegate.set("tree", "not_a_tree_ref");
     auth_settings
         .as_doc_mut()
-        .set("corrupted_delegate", Value::Doc(corrupted_delegate));
+        .set(corrupted_root_id.as_str(), Value::Doc(corrupted_delegate));
 
     let mut settings = Doc::new();
     settings.set("auth", auth_settings.as_doc().clone());
@@ -126,7 +133,7 @@ async fn test_delegation_corrupted_tree_references() -> Result<()> {
     // Try to resolve corrupted delegation
     let delegation_path = SigKey::Delegation {
         path: vec![DelegationStep {
-            tree: "corrupted_delegate".to_string(),
+            tree: corrupted_root_id.to_string(),
             tips: vec![ID::from("some_tip")],
         }],
         hint: KeyHint::from_name("some_key"),
@@ -177,19 +184,17 @@ async fn test_privilege_escalation_through_delegation() -> Result<()> {
     )?;
 
     // Add delegation with permission restriction (should clamp admin to write)
-    main_auth.add_delegated_tree(
-        "restricted_delegate",
-        DelegatedTreeRef {
-            permission_bounds: PermissionBounds {
-                min: None,
-                max: Permission::Write(10), // Restrict to Write only
-            },
-            tree: TreeReference {
-                root: delegated_tree.root_id().clone(),
-                tips: delegated_tips.clone(),
-            },
+    let delegated_tree_root = delegated_tree.root_id().clone();
+    main_auth.add_delegated_tree(DelegatedTreeRef {
+        permission_bounds: PermissionBounds {
+            min: None,
+            max: Permission::Write(10), // Restrict to Write only
         },
-    )?;
+        tree: TreeReference {
+            root: delegated_tree_root.clone(),
+            tips: delegated_tips.clone(),
+        },
+    })?;
 
     let mut main_settings = Doc::new();
     main_settings.set("auth", main_auth.as_doc().clone());
@@ -198,7 +203,7 @@ async fn test_privilege_escalation_through_delegation() -> Result<()> {
     // Try to use admin key from delegated tree through restricted delegation
     let delegation_path = SigKey::Delegation {
         path: vec![DelegationStep {
-            tree: "restricted_delegate".to_string(),
+            tree: delegated_tree_root.to_string(),
             tips: delegated_tips,
         }],
         hint: KeyHint::from_pubkey(&admin_key_id),
@@ -257,19 +262,17 @@ async fn test_delegation_with_tampered_tips() -> Result<()> {
         AuthKey::active(Some("admin"), Permission::Admin(0)),
     )?;
 
-    main_auth.add_delegated_tree(
-        "delegate_to_user",
-        DelegatedTreeRef {
-            permission_bounds: PermissionBounds {
-                min: None,
-                max: Permission::Write(10),
-            },
-            tree: TreeReference {
-                root: delegated_tree.root_id().clone(),
-                tips: real_tips.clone(),
-            },
+    let delegated_tree_root = delegated_tree.root_id().clone();
+    main_auth.add_delegated_tree(DelegatedTreeRef {
+        permission_bounds: PermissionBounds {
+            min: None,
+            max: Permission::Write(10),
         },
-    )?;
+        tree: TreeReference {
+            root: delegated_tree_root.clone(),
+            tips: real_tips.clone(),
+        },
+    })?;
 
     let mut main_settings = Doc::new();
     main_settings.set("auth", main_auth.as_doc().clone());
@@ -279,7 +282,7 @@ async fn test_delegation_with_tampered_tips() -> Result<()> {
     let fake_tips = vec![ID::from("fake_tip_1"), ID::from("fake_tip_2")];
     let delegation_path = SigKey::Delegation {
         path: vec![DelegationStep {
-            tree: "delegate_to_user".to_string(),
+            tree: delegated_tree_root.to_string(),
             tips: fake_tips, // Using fake tips instead of real ones
         }],
         hint: KeyHint::from_pubkey(&user_key_id),
@@ -341,19 +344,17 @@ async fn test_delegation_mixed_key_statuses() -> Result<()> {
         AuthKey::active(Some("admin"), Permission::Admin(0)),
     )?;
 
-    main_auth.add_delegated_tree(
-        "delegate_to_users",
-        DelegatedTreeRef {
-            permission_bounds: PermissionBounds {
-                min: None,
-                max: Permission::Write(10),
-            },
-            tree: TreeReference {
-                root: delegated_tree.root_id().clone(),
-                tips: delegated_tips.clone(),
-            },
+    let delegated_tree_root = delegated_tree.root_id().clone();
+    main_auth.add_delegated_tree(DelegatedTreeRef {
+        permission_bounds: PermissionBounds {
+            min: None,
+            max: Permission::Write(10),
         },
-    )?;
+        tree: TreeReference {
+            root: delegated_tree_root.clone(),
+            tips: delegated_tips.clone(),
+        },
+    })?;
 
     let mut main_settings = Doc::new();
     main_settings.set("auth", main_auth.as_doc().clone());
@@ -362,7 +363,7 @@ async fn test_delegation_mixed_key_statuses() -> Result<()> {
     // Test accessing active key through delegation
     let active_delegation = SigKey::Delegation {
         path: vec![DelegationStep {
-            tree: "delegate_to_users".to_string(),
+            tree: delegated_tree_root.to_string(),
             tips: delegated_tips.clone(),
         }],
         hint: KeyHint::from_pubkey(&active_user_key_id),
@@ -383,7 +384,7 @@ async fn test_delegation_mixed_key_statuses() -> Result<()> {
     // Test accessing revoked key through delegation
     let revoked_delegation = SigKey::Delegation {
         path: vec![DelegationStep {
-            tree: "delegate_to_users".to_string(),
+            tree: delegated_tree_root.to_string(),
             tips: delegated_tips,
         }],
         hint: KeyHint::from_pubkey(&revoked_key_id),

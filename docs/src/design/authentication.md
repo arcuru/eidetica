@@ -343,7 +343,7 @@ Priority values are u32 integers where lower values indicate higher priority:
 Auth settings contain two types of data:
 
 1. **Signing keys** - Stored under `keys.{pubkey}`, with optional `name` metadata
-2. **Delegation references** - Stored under `delegations.{name}`, pointing to other databases
+2. **Delegation references** - Stored under `delegations.{root_id}`, pointing to other databases by their root entry ID
 
 Keys are always stored by their public key string. The `name` field is optional metadata that enables:
 
@@ -557,9 +557,9 @@ Delegated databases can reference other delegated databases, creating delegation
 
 **Path Traversal**:
 
-- Steps with `tips` → lookup **delegation reference name** in current DB → find DelegatedTreeRef → jump to referenced database
-- Final step (no tips) → lookup **signing key name** in current DB → find AuthKey → get Ed25519 public key for signature verification
-- **Key names** at each step reference entries in that database's auth settings by name (see [Key Naming and Aliasing](#key-naming-and-aliasing))
+- Steps with `tips` → lookup **delegation by root tree ID** in current DB → find DelegatedTreeRef → jump to referenced database
+- Final hint → lookup **signing key** by pubkey or name in final DB → find AuthKey → get Ed25519 public key for signature verification
+- **Delegation steps** reference trees by their root entry ID; the **final hint** references a key in the last database's auth settings
 
 **Permission and Validation**:
 

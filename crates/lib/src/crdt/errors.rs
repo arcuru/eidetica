@@ -100,7 +100,7 @@ impl CRDTError {
     }
 
     /// Check if this error is related to element lookup
-    pub fn is_not_found_error(&self) -> bool {
+    pub fn is_not_found(&self) -> bool {
         matches!(self, CRDTError::ElementNotFound { .. })
     }
 
@@ -168,7 +168,7 @@ mod tests {
         assert!(!error.is_list_operation_error());
         assert!(!error.is_doc_error());
         assert!(!error.is_nested_error());
-        assert!(!error.is_not_found_error());
+        assert!(!error.is_not_found());
 
         assert_eq!(error.operation(), None);
         assert_eq!(error.path(), None);
@@ -222,7 +222,7 @@ mod tests {
         let not_found_error = CRDTError::ElementNotFound {
             key: "missing".to_string(),
         };
-        assert!(not_found_error.is_not_found_error());
+        assert!(not_found_error.is_not_found());
         assert_eq!(not_found_error.key(), Some("missing"));
     }
 

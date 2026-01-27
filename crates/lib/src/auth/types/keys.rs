@@ -106,11 +106,11 @@ impl AuthKey {
 
 /// Step in a delegation path
 ///
-/// References a delegated tree by ID. The final signer hint is stored
+/// References a delegated tree by its root entry ID. The final signer hint is stored
 /// in the parent SigKey, not in the DelegationStep.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DelegationStep {
-    /// Delegated tree ID (content hash)
+    /// Root entry ID of the delegated tree (used to look up the delegation in AuthSettings)
     pub tree: String,
     /// Tips of the delegated tree at time of signing
     pub tips: Vec<ID>,

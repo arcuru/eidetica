@@ -150,10 +150,10 @@ impl Error {
     /// Check if this error indicates a resource was not found.
     pub fn is_not_found(&self) -> bool {
         match self {
-            Error::Auth(auth_err) => auth_err.is_key_not_found(),
+            Error::Auth(auth_err) => auth_err.is_not_found(),
             Error::Backend(backend_err) => backend_err.is_not_found(),
             Error::Instance(base_err) => base_err.is_not_found(),
-            Error::CRDT(crdt_err) => crdt_err.is_not_found_error(),
+            Error::CRDT(crdt_err) => crdt_err.is_not_found(),
             Error::Store(store_err) => store_err.is_not_found(),
             Error::Sync(sync_err) => sync_err.is_not_found(),
             Error::User(user_err) => user_err.is_not_found(),

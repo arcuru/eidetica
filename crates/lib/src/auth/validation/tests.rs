@@ -360,21 +360,22 @@ async fn test_complete_delegation_workflow() {
 
     // Create the delegated tree with its own auth configuration
     let mut delegated_settings = Doc::new();
-    let mut delegated_auth = Doc::new();
+    let mut delegated_auth = AuthSettings::new();
     delegated_auth
-        .set_json(
-            format!("keys.{delegated_pubkey}"), // Store by pubkey under "keys."
+        .add_key(
+            &delegated_pubkey,
             AuthKey::active(Some("delegated_user"), Permission::Admin(5)),
         )
         .unwrap();
     // Add admin to auth config so we can create the database with it
+    // Note: main_pubkey == delegated_pubkey in this test, so we overwrite
     delegated_auth
-        .set_json(
-            format!("keys.{main_pubkey}"), // Store by pubkey under "keys."
+        .overwrite_key(
+            &main_pubkey,
             AuthKey::active(Some("admin"), Permission::Admin(0)),
         )
         .unwrap();
-    delegated_settings.set("auth", delegated_auth);
+    delegated_settings.set("auth", delegated_auth.as_doc().clone());
 
     let delegated_tree = Database::create(
         delegated_settings,
@@ -387,12 +388,12 @@ async fn test_complete_delegation_workflow() {
 
     // Create the main tree with delegation configuration
     let mut main_settings = Doc::new();
-    let mut main_auth = Doc::new();
+    let mut main_auth = AuthSettings::new();
 
     // Add direct key to main tree
     main_auth
-        .set_json(
-            format!("keys.{main_pubkey}"),
+        .add_key(
+            &main_pubkey,
             AuthKey::active(Some("main_admin"), Permission::Admin(0)),
         )
         .unwrap();
@@ -400,24 +401,21 @@ async fn test_complete_delegation_workflow() {
     // Get the actual tips from the delegated tree
     let delegated_tips = delegated_tree.get_tips().await.unwrap();
 
-    // Add delegation reference under "delegations."
+    // Add delegation reference
     main_auth
-        .set_json(
-            "delegations.delegate_to_user",
-            DelegatedTreeRef {
-                permission_bounds: PermissionBounds {
-                    max: Permission::Write(10),
-                    min: Some(Permission::Read),
-                },
-                tree: TreeReference {
-                    root: delegated_tree.root_id().clone(),
-                    tips: delegated_tips.clone(),
-                },
+        .add_delegated_tree(DelegatedTreeRef {
+            permission_bounds: PermissionBounds {
+                max: Permission::Write(10),
+                min: Some(Permission::Read),
             },
-        )
+            tree: TreeReference {
+                root: delegated_tree.root_id().clone(),
+                tips: delegated_tips.clone(),
+            },
+        })
         .unwrap();
 
-    main_settings.set("auth", main_auth);
+    main_settings.set("auth", main_auth.as_doc().clone());
     let main_tree = Database::create(
         main_settings,
         &instance,
@@ -439,7 +437,7 @@ async fn test_complete_delegation_workflow() {
 
     let delegated_sig_key = SigKey::Delegation {
         path: vec![DelegationStep {
-            tree: "delegate_to_user".to_string(),
+            tree: delegated_tree.root_id().to_string(),
             tips: delegated_tips,
         }],
         hint: KeyHint::from_pubkey(&delegated_pubkey),
@@ -492,50 +490,46 @@ async fn test_delegated_tree_requires_tips() {
 
     // Create the main tree with delegation configuration
     let mut main_settings = Doc::new();
-    let mut main_auth = Doc::new();
+    let mut main_auth = AuthSettings::new();
 
     // Add direct key to main tree
     main_auth
-        .set_json(
-            format!("keys.{main_pubkey}"),
+        .add_key(
+            &main_pubkey,
             AuthKey::active(Some("main_admin"), Permission::Admin(0)),
         )
         .unwrap();
 
-    // Add delegation reference (with proper tips that we'll ignore in the test)
+    // Add delegation reference
     main_auth
-        .set_json(
-            "delegations.delegate_to_user",
-            DelegatedTreeRef {
-                permission_bounds: PermissionBounds {
-                    max: Permission::Write(10),
-                    min: Some(Permission::Read),
-                },
-                tree: TreeReference {
-                    root: delegated_tree.root_id().clone(),
-                    tips: vec![ID::new("some_tip")], // This will be ignored due to empty tips in auth_id
-                },
+        .add_delegated_tree(DelegatedTreeRef {
+            permission_bounds: PermissionBounds {
+                max: Permission::Write(10),
+                min: Some(Permission::Read),
             },
-        )
+            tree: TreeReference {
+                root: delegated_tree.root_id().clone(),
+                tips: vec![ID::new("some_tip")], // This will be ignored due to empty tips in auth_id
+            },
+        })
         .unwrap();
 
-    main_settings.set("auth", main_auth.clone());
+    main_settings.set("auth", main_auth.as_doc().clone());
 
     // Create validator and test with empty tips
     let mut validator = AuthValidator::new();
-    let auth_settings = AuthSettings::from_doc(main_auth);
 
     // Create a Delegation sig_key with empty tips
     let sig_key = SigKey::Delegation {
         path: vec![DelegationStep {
-            tree: "delegate_to_user".to_string(),
+            tree: delegated_tree.root_id().to_string(),
             tips: vec![], // Empty tips should cause validation to fail
         }],
         hint: KeyHint::from_name("delegated_user"),
     };
 
     let result = validator
-        .resolve_sig_key(&sig_key, &auth_settings, Some(&instance))
+        .resolve_sig_key(&sig_key, &main_auth, Some(&instance))
         .await;
 
     // Should fail because tips are required for delegated tree resolution
@@ -567,17 +561,17 @@ async fn test_nested_delegation_with_permission_clamping() {
 
     // 1. Create the final user tree (deepest level)
     let mut user_settings = Doc::new();
-    let mut user_auth = Doc::new();
+    let mut user_auth = AuthSettings::new();
     user_auth
-        .set_json(
-            format!("keys.{main_pubkey}"),
+        .add_key(
+            &main_pubkey,
             AuthKey::active(
                 Some("final_user"),
                 Permission::Admin(3), // High privilege at source
             ),
         )
         .unwrap();
-    user_settings.set("auth", user_auth);
+    user_settings.set("auth", user_auth.as_doc().clone());
     let user_tree = Database::create(
         user_settings,
         &instance,
@@ -590,34 +584,31 @@ async fn test_nested_delegation_with_permission_clamping() {
 
     // 2. Create intermediate delegated tree that delegates to user tree
     let mut intermediate_settings = Doc::new();
-    let mut intermediate_auth = Doc::new();
+    let mut intermediate_auth = AuthSettings::new();
 
     // Add direct key to intermediate tree
     intermediate_auth
-        .set_json(
-            format!("keys.{main_pubkey}"),
+        .add_key(
+            &main_pubkey,
             AuthKey::active(Some("intermediate_admin"), Permission::Admin(2)),
         )
         .unwrap();
 
     // Add delegation to user tree with bounds Write(8) max, Read min
     intermediate_auth
-        .set_json(
-            "delegations.user_delegation",
-            DelegatedTreeRef {
-                permission_bounds: PermissionBounds {
-                    max: Permission::Write(8), // Clamp Admin(3) to Write(8)
-                    min: Some(Permission::Read),
-                },
-                tree: TreeReference {
-                    root: user_tree.root_id().clone(),
-                    tips: user_tips.clone(),
-                },
+        .add_delegated_tree(DelegatedTreeRef {
+            permission_bounds: PermissionBounds {
+                max: Permission::Write(8), // Clamp Admin(3) to Write(8)
+                min: Some(Permission::Read),
             },
-        )
+            tree: TreeReference {
+                root: user_tree.root_id().clone(),
+                tips: user_tips.clone(),
+            },
+        })
         .unwrap();
 
-    intermediate_settings.set("auth", intermediate_auth);
+    intermediate_settings.set("auth", intermediate_auth.as_doc().clone());
     let intermediate_tree = Database::create(
         intermediate_settings,
         &instance,
@@ -630,35 +621,32 @@ async fn test_nested_delegation_with_permission_clamping() {
 
     // 3. Create main tree that delegates to intermediate tree
     let mut main_settings = Doc::new();
-    let mut main_auth = Doc::new();
+    let mut main_auth = AuthSettings::new();
 
     // Add direct key to main tree
     main_auth
-        .set_json(
-            format!("keys.{main_pubkey}"),
+        .add_key(
+            &main_pubkey,
             AuthKey::active(Some("main_admin"), Permission::Admin(0)),
         )
         .unwrap();
 
     // Add delegation to intermediate tree with bounds Write(5) max, Read min
-    // This should be more restrictive than the intermediate tree's Write(8)
+    // This should be less restrictive than the intermediate tree's Write(8)
     main_auth
-        .set_json(
-            "delegations.intermediate_delegation",
-            DelegatedTreeRef {
-                permission_bounds: PermissionBounds {
-                    max: Permission::Write(5), // More restrictive than Write(8)
-                    min: Some(Permission::Read),
-                },
-                tree: TreeReference {
-                    root: intermediate_tree.root_id().clone(),
-                    tips: intermediate_tips.clone(),
-                },
+        .add_delegated_tree(DelegatedTreeRef {
+            permission_bounds: PermissionBounds {
+                max: Permission::Write(5), // Less restrictive than Write(8)
+                min: Some(Permission::Read),
             },
-        )
+            tree: TreeReference {
+                root: intermediate_tree.root_id().clone(),
+                tips: intermediate_tips.clone(),
+            },
+        })
         .unwrap();
 
-    main_settings.set("auth", main_auth);
+    main_settings.set("auth", main_auth.as_doc().clone());
     let main_tree = Database::create(
         main_settings,
         &instance,
@@ -679,17 +667,17 @@ async fn test_nested_delegation_with_permission_clamping() {
         .unwrap();
 
     // Create nested delegation SigKey:
-    // Main tree delegates to "intermediate_delegation" ->
-    // Intermediate tree delegates to "user_delegation" ->
-    // User tree resolves "final_user" key
+    // Main tree delegates to intermediate_tree (by root ID) ->
+    // Intermediate tree delegates to user_tree (by root ID) ->
+    // User tree resolves key by pubkey hint
     let nested_sig_key = SigKey::Delegation {
         path: vec![
             DelegationStep {
-                tree: "intermediate_delegation".to_string(),
+                tree: intermediate_tree.root_id().to_string(),
                 tips: intermediate_tips,
             },
             DelegationStep {
-                tree: "user_delegation".to_string(),
+                tree: user_tree.root_id().to_string(),
                 tips: user_tips,
             },
         ],

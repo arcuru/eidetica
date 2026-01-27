@@ -472,7 +472,7 @@ fn test_list_error_integration() {
     assert!(!error.is_list_operation_error());
     assert!(!error.is_doc_error());
     assert!(!error.is_nested_error());
-    assert!(!error.is_not_found_error());
+    assert!(!error.is_not_found());
 }
 
 // ===== JSON SERIALIZATION =====

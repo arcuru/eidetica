@@ -285,11 +285,13 @@ pub async fn create_delegation_ref(
 }
 
 /// Create a delegation path with specified steps
-pub fn create_delegation_path(steps: &[(&str, Vec<ID>)], final_hint: KeyHint) -> SigKey {
+///
+/// Each step is a (root_id, tips) tuple where root_id is the delegated tree's root entry ID.
+pub fn create_delegation_path(steps: &[(&ID, Vec<ID>)], final_hint: KeyHint) -> SigKey {
     let delegation_steps: Vec<DelegationStep> = steps
         .iter()
-        .map(|(tree, tips)| DelegationStep {
-            tree: tree.to_string(),
+        .map(|(root_id, tips)| DelegationStep {
+            tree: root_id.to_string(),
             tips: tips.clone(),
         })
         .collect();

@@ -90,6 +90,13 @@ pub enum AuthError {
         claimed_tips: Vec<ID>,
     },
 
+    /// A delegated tree reference was not found in the configuration.
+    #[error("Delegation not found for tree: {tree_id}")]
+    DelegationNotFound {
+        /// The root tree ID of the delegation that was not found
+        tree_id: String,
+    },
+
     /// Attempted to revoke an entry that is not a key.
     #[error("Cannot revoke non-key entry: {key_name}")]
     CannotRevokeNonKey {
@@ -179,9 +186,12 @@ pub enum AuthError {
 }
 
 impl AuthError {
-    /// Check if this error indicates a key was not found.
-    pub fn is_key_not_found(&self) -> bool {
-        matches!(self, AuthError::KeyNotFound { .. })
+    /// Check if this error indicates a key or delegation was not found.
+    pub fn is_not_found(&self) -> bool {
+        matches!(
+            self,
+            AuthError::KeyNotFound { .. } | AuthError::DelegationNotFound { .. }
+        )
     }
 
     /// Check if this error indicates invalid signature.
@@ -227,6 +237,7 @@ impl AuthError {
                 | AuthError::InvalidDelegationStep { .. }
                 | AuthError::DelegatedTreeLoadFailed { .. }
                 | AuthError::InvalidDelegationTips { .. }
+                | AuthError::DelegationNotFound { .. }
         )
     }
 
@@ -256,7 +267,7 @@ mod tests {
         let err = AuthError::KeyNotFound {
             key_name: "test-key".to_string(),
         };
-        assert!(err.is_key_not_found());
+        assert!(err.is_not_found());
         assert_eq!(err.key_name(), Some("test-key"));
 
         let err = AuthError::InvalidSignature;
