@@ -106,6 +106,7 @@ use crate::{
 pub mod background;
 pub mod error;
 pub mod handler;
+mod handler_tree_ops;
 pub mod peer_manager;
 pub mod peer_types;
 pub mod protocol;
