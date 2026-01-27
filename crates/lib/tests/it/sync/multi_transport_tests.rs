@@ -297,40 +297,26 @@ async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
     Ok(())
 }
 
-/// Test that start_all_servers returns MultipleTransportErrors when all transports fail
+/// Test that client-only transports (no bind address) succeed without starting a server
 #[tokio::test]
-async fn test_start_all_servers_returns_error_when_all_fail() -> Result<()> {
+async fn test_client_only_transports_succeed_without_server() -> Result<()> {
     let (_instance, sync) = setup().await;
 
-    // Add two HTTP transports WITHOUT bind addresses
+    // Add two HTTP transports WITHOUT bind addresses - these are client-only
     // HttpTransport::new() creates a transport with no pre-configured bind address
     let http1 = HttpTransport::new()?;
     let http2 = HttpTransport::new()?;
     sync.add_transport("http1", Box::new(http1)).await?;
     sync.add_transport("http2", Box::new(http2)).await?;
 
-    // accept_connections() passes empty address to start_all_servers
-    // Both transports should fail since they have no bind address configured
+    // accept_connections() should succeed - client-only transports are valid
+    // They just don't start a server (no-op), which is not an error
     let result = sync.accept_connections().await;
 
-    // Verify error is returned
     assert!(
-        result.is_err(),
-        "Should fail when all transports fail to start"
-    );
-
-    // Verify it's the MultipleTransportErrors variant
-    let err = result.unwrap_err();
-    let err_string = err.to_string();
-    assert!(
-        err_string.contains("Multiple transport errors"),
-        "Should be MultipleTransportErrors, got: {err_string}"
-    );
-
-    // Verify both transport names are in the error message
-    assert!(
-        err_string.contains("http1") && err_string.contains("http2"),
-        "Error should mention both failed transports, got: {err_string}"
+        result.is_ok(),
+        "Client-only transports should not cause errors: {:?}",
+        result.err()
     );
 
     Ok(())

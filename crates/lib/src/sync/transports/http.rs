@@ -160,26 +160,18 @@ impl SyncTransport for HttpTransport {
     }
 
     async fn start_server(&mut self, handler: Arc<dyn SyncHandler>) -> Result<()> {
+        // No bind address configured = client-only transport, nothing to start
+        let Some(effective_addr) = self.bind_address.as_deref() else {
+            return Ok(());
+        };
+
         // Check if server is already running
         if self.server_state.is_running() {
             return Err(SyncError::ServerAlreadyRunning {
-                address: self
-                    .bind_address
-                    .clone()
-                    .unwrap_or_else(|| "unknown".to_string()),
+                address: effective_addr.to_string(),
             }
             .into());
         }
-
-        // Use configured bind_address
-        let effective_addr = self
-            .bind_address
-            .as_deref()
-            .ok_or_else(|| SyncError::ServerBind {
-                address: "".to_string(),
-                reason: "No bind address configured. Use HttpTransport::builder().bind(...)"
-                    .to_string(),
-            })?;
 
         let socket_addr: SocketAddr =
             effective_addr.parse().map_err(|e| SyncError::ServerBind {

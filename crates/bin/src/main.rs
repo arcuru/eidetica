@@ -235,6 +235,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sync = instance.sync().ok_or("Sync not enabled on instance")?;
 
     // Register transports for sync
+    // - Iroh: peer-to-peer sync, starts its own server
+    // - HTTP: client-only here (no bind address) for outbound connections to HTTP peers
+    //   Inbound HTTP sync is handled by this binary's web server via /api/v0
     sync.register_transport("iroh", IrohTransport::builder())
         .await?;
     sync.register_transport("http", HttpTransport::builder())
