@@ -153,43 +153,54 @@ impl SqlxBackend {
         // For SQLite in-memory databases with shared cache, we must prevent
         // all connections from being closed. When the last connection closes,
         // the in-memory database is destroyed and all data is lost.
+        //
+        // IMPORTANT: SQLite pragmas like busy_timeout and synchronous are per-connection
+        // settings. We use after_connect to ensure every connection in the pool has
+        // these configured, not just one.
         let pool = if is_in_memory {
             AnyPoolOptions::new()
                 .max_connections(5)
                 .min_connections(1)
                 .idle_timeout(None)
                 .max_lifetime(None)
+                .after_connect(|conn, _meta| {
+                    Box::pin(async move {
+                        // In-memory databases don't need WAL mode (all in RAM)
+                        // but still need busy_timeout for lock contention
+                        conn.execute("PRAGMA busy_timeout = 5000;").await?;
+                        Ok(())
+                    })
+                })
                 .connect(url)
                 .await
                 .sql_context("Failed to connect to SQLite")?
         } else {
             AnyPoolOptions::new()
                 .max_connections(5)
+                .after_connect(|conn, _meta| {
+                    Box::pin(async move {
+                        // File-based SQLite per-connection settings:
+                        // - synchronous=NORMAL: Balanced durability (safe with WAL)
+                        // - busy_timeout=5000: Wait up to 5s for locks before failing
+                        //
+                        // Note: journal_mode=WAL is a database-level setting that persists,
+                        // so we only set it once after pool creation, not per-connection.
+                        conn.execute("PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000;")
+                            .await?;
+                        Ok(())
+                    })
+                })
                 .connect(url)
                 .await
                 .sql_context("Failed to connect to SQLite")?
         };
 
-        // Configure SQLite pragmas
-        if is_in_memory {
-            // In-memory databases don't need WAL mode (all in RAM)
-            sqlx::query("PRAGMA busy_timeout = 5000;")
+        // Set WAL mode once (database-level setting that persists in the file)
+        if !is_in_memory {
+            sqlx::query("PRAGMA journal_mode = WAL;")
                 .execute(&pool)
                 .await
-                .sql_context("Failed to configure SQLite")?;
-        } else {
-            // File-based SQLite:
-            // - journal_mode=WAL: Write-Ahead Logging for better concurrency
-            // - synchronous=NORMAL: Balanced durability (safe with WAL)
-            // - busy_timeout=5000: Wait up to 5s for locks before failing
-            sqlx::query(
-                "PRAGMA journal_mode = WAL;
-                 PRAGMA synchronous = NORMAL;
-                 PRAGMA busy_timeout = 5000;",
-            )
-            .execute(&pool)
-            .await
-            .sql_context("Failed to configure SQLite")?;
+                .sql_context("Failed to set SQLite WAL mode")?;
         }
 
         let backend = Self {
