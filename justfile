@@ -62,17 +62,17 @@ test *args:
             CONTAINER_NAME="eidetica-test-postgres"
             DB_NAME="eidetica_test"
             DB_PORT="54321"
-            docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
-            trap "docker rm -f $CONTAINER_NAME 2>/dev/null || true" EXIT
+            docker rm --force "$CONTAINER_NAME" 2>/dev/null || true
+            trap "docker rm --force $CONTAINER_NAME 2>/dev/null || true" EXIT
             echo "Starting PostgreSQL container..."
-            docker run -d --name "$CONTAINER_NAME" \
-                -e POSTGRES_DB="$DB_NAME" \
-                -e POSTGRES_HOST_AUTH_METHOD=trust \
-                -p "$DB_PORT":5432 \
+            docker run --detach --name "$CONTAINER_NAME" \
+                --env POSTGRES_DB="$DB_NAME" \
+                --env POSTGRES_HOST_AUTH_METHOD=trust \
+                --publish "$DB_PORT":5432 \
                 postgres:16-alpine
             echo "Waiting for PostgreSQL to be ready..."
             for i in $(seq 1 30); do
-                if docker exec "$CONTAINER_NAME" pg_isready -U postgres -d "$DB_NAME" >/dev/null 2>&1; then
+                if docker exec "$CONTAINER_NAME" pg_isready --username postgres --dbname "$DB_NAME" >/dev/null 2>&1; then
                     echo "PostgreSQL is ready!"
                     break
                 fi
@@ -107,8 +107,8 @@ test *args:
             cargo nextest run --workspace --all-features --no-fail-fast --status-level fail --run-ignored all
             ;;
         minimal)
-            cargo build -p eidetica --no-default-features
-            cargo test -p eidetica --no-default-features --features testing
+            cargo build --package eidetica --no-default-features
+            cargo test --package eidetica --no-default-features --features testing
             ;;
         todo)
             cd examples/todo && ./test.sh
@@ -243,8 +243,8 @@ doc action='api':
             cargo doc --workspace --all-features --quiet
             ;;
         book)
-            cargo doc -p eidetica --all-features --no-deps --quiet
-            ln -sfn ../../target/doc docs/src/rustdoc
+            cargo doc --package eidetica --all-features --no-deps --quiet
+            ln --symbolic --force --no-dereference ../../target/doc docs/src/rustdoc
             mdbook build docs
             ;;
         serve)
@@ -253,13 +253,13 @@ doc action='api':
             ;;
         test)
             just doc links
-            rm -f target/debug/deps/libeidetica-*.rlib target/debug/deps/libeidetica-*.rmeta
-            cargo build -p eidetica
-            RUST_LOG=error mdbook test docs -L target/debug/deps
+            rm --force target/debug/deps/libeidetica-*.rlib target/debug/deps/libeidetica-*.rmeta
+            cargo build --package eidetica
+            RUST_LOG=error mdbook test docs --library-path target/debug/deps
             ;;
         clean)
             mdbook clean docs
-            rm -rf docs/src/rustdoc
+            rm --recursive --force docs/src/rustdoc
             ;;
         links)
             just doc book
@@ -270,8 +270,8 @@ doc action='api':
             lychee --exclude-path 'rustdoc' --exclude-path 'fonts' docs/book
             ;;
         stats)
-            tested=$(grep -r '```rust$' docs/src | wc -l)
-            total=$(grep -r '```rust' docs/src | wc -l)
+            tested=$(grep --recursive '```rust$' docs/src | wc --lines)
+            total=$(grep --recursive '```rust' docs/src | wc --lines)
             echo "${tested}/${total} Code Blocks tested"
             ;;
         *)
@@ -300,17 +300,17 @@ coverage backend='sqlite':
             CONTAINER_NAME="eidetica-coverage-postgres"
             DB_NAME="eidetica_test"
             DB_PORT="54322"
-            docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
-            trap "docker rm -f $CONTAINER_NAME 2>/dev/null || true" EXIT
+            docker rm --force "$CONTAINER_NAME" 2>/dev/null || true
+            trap "docker rm --force $CONTAINER_NAME 2>/dev/null || true" EXIT
             echo "Starting PostgreSQL container..."
-            docker run -d --name "$CONTAINER_NAME" \
-                -e POSTGRES_DB="$DB_NAME" \
-                -e POSTGRES_HOST_AUTH_METHOD=trust \
-                -p "$DB_PORT":5432 \
+            docker run --detach --name "$CONTAINER_NAME" \
+                --env POSTGRES_DB="$DB_NAME" \
+                --env POSTGRES_HOST_AUTH_METHOD=trust \
+                --publish "$DB_PORT":5432 \
                 postgres:16-alpine
             echo "Waiting for PostgreSQL to be ready..."
             for i in $(seq 1 30); do
-                if docker exec "$CONTAINER_NAME" pg_isready -U postgres -d "$DB_NAME" >/dev/null 2>&1; then
+                if docker exec "$CONTAINER_NAME" pg_isready --username postgres --dbname "$DB_NAME" >/dev/null 2>&1; then
                     echo "PostgreSQL is ready!"
                     break
                 fi
@@ -333,7 +333,7 @@ coverage backend='sqlite':
             just coverage postgres
             mv coverage/lcov.info coverage/lcov-postgres.info
             echo "Merging coverage reports..."
-            lcov -a coverage/lcov-sqlite.info -a coverage/lcov-inmemory.info -a coverage/lcov-postgres.info -o coverage/lcov.info
+            lcov --add-tracefile coverage/lcov-sqlite.info --add-tracefile coverage/lcov-inmemory.info --add-tracefile coverage/lcov-postgres.info --output-file coverage/lcov.info
             echo "Merged coverage report: coverage/lcov.info"
             ;;
         ignored)
@@ -391,7 +391,7 @@ nix action='check':
             nix-fast-build --no-link
             ;;
         integration)
-            nix build .#integration.nixos .#integration.container -L
+            nix build .#integration.nixos .#integration.container --print-build-logs --no-link
             ;;
         full)
             just nix check
@@ -414,7 +414,7 @@ container type='docker':
     set -e
     case "{{ type }}" in
         docker)
-            docker build -t eidetica:dev .
+            docker build --tag eidetica:dev .
             ;;
         nix)
             nix build .#eidetica-image
