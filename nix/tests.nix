@@ -189,8 +189,8 @@ in {
       machine.wait_for_unit("eidetica.service")
       machine.wait_for_open_port(3000)
 
-      # Verify the service responds
-      result = machine.succeed("curl -f http://localhost:3000/ || true")
+      # Verify the service responds (follow redirects since / redirects to /login)
+      result = machine.succeed("curl -fL http://localhost:3000/")
       machine.log(f"HTTP response: {result}")
 
       # Verify service is running as correct user
@@ -220,10 +220,11 @@ in {
       machine.succeed("podman load < ${eidetica-image}")
 
       # Create data directory with correct ownership for container user (1000:1000)
-      machine.succeed("mkdir -p /tmp/eidetica-data")
-      machine.succeed("chown 1000:1000 /tmp/eidetica-data")
+      # Use /var/lib instead of /tmp to avoid tmpfs issues with SQLite WAL mode
+      machine.succeed("mkdir -p /var/lib/eidetica-data")
+      machine.succeed("chown 1000:1000 /var/lib/eidetica-data")
       machine.succeed(
-        "podman run -d --name eidetica-test -p 3000:3000 -v /tmp/eidetica-data:/data eidetica:dev"
+        "podman run -d --name eidetica-test -p 3000:3000 -v /var/lib/eidetica-data:/data eidetica:dev"
       )
 
       # Wait for container to start
@@ -233,8 +234,8 @@ in {
       # Check container is running
       machine.succeed("podman ps | grep eidetica-test")
 
-      # Verify the service responds
-      machine.wait_until_succeeds("curl -f http://localhost:3000/ || true", timeout=30)
+      # Verify the service responds (follow redirects since / redirects to /login)
+      machine.wait_until_succeeds("curl -fL http://localhost:3000/", timeout=30)
 
       # Check container logs
       logs = machine.succeed("podman logs eidetica-test")
