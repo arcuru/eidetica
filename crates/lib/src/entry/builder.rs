@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use rand::Rng;
 
 use super::{ENTRY_VERSION, Entry, EntryError, ID, RawData, SubTreeNode, TreeNode};
-use crate::{Result, auth::types::SigInfo, constants::ROOT, crdt::Doc};
+use crate::{Result, auth::types::SigInfo, constants::ROOT, crdt::Doc, store::StoreError};
 
 /// A builder for creating `Entry` instances.
 ///
@@ -152,7 +152,7 @@ impl EntryBuilder {
             .find(|node| node.name == subtree_name.as_ref())
             .and_then(|node| node.data.as_ref())
             .ok_or_else(|| {
-                crate::store::StoreError::KeyNotFound {
+                StoreError::KeyNotFound {
                     store: "entry".to_string(),
                     key: subtree_name.as_ref().to_string(),
                 }
@@ -174,7 +174,7 @@ impl EntryBuilder {
             .find(|node| node.name == subtree_name.as_ref())
             .map(|node| node.parents.clone())
             .ok_or_else(|| {
-                crate::store::StoreError::KeyNotFound {
+                StoreError::KeyNotFound {
                     store: "entry".to_string(),
                     key: subtree_name.as_ref().to_string(),
                 }
@@ -651,7 +651,7 @@ impl EntryBuilder {
     ///
     /// - `Ok(Entry)` if the entry is structurally valid
     /// - `Err(crate::Error)` if the entry fails validation (e.g., root entry with parents)
-    pub fn build(mut self) -> crate::Result<Entry> {
+    pub fn build(mut self) -> Result<Entry> {
         // Sort parent lists (if any)
         Self::sort_parents_list(&mut self.tree.parents);
         for subtree in &mut self.subtrees {

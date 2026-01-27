@@ -7,7 +7,10 @@
 use tracing::debug;
 
 use super::error::SyncError;
-use crate::{Error, Result, Transaction, crdt::doc::path, store::DocStore};
+use crate::{
+    Error, Result, Transaction, crdt::doc::path, entry::ID, store::DocStore,
+    user::types::SyncSettings,
+};
 
 /// User-aware sync subtree constants
 pub(super) const DATABASE_USERS_SUBTREE: &str = "database_users"; // Maps database_id -> {users, combined_settings}
@@ -41,7 +44,7 @@ impl<'a> UserSyncManager<'a> {
     pub(super) async fn track_user_preferences(
         &self,
         user_uuid: impl AsRef<str>,
-        preferences_db_id: &crate::entry::ID,
+        preferences_db_id: &ID,
     ) -> Result<()> {
         let user_tracking = self.op.get_store::<DocStore>(USER_TRACKING_SUBTREE).await?;
 
@@ -87,7 +90,7 @@ impl<'a> UserSyncManager<'a> {
     pub(super) async fn get_tracked_user_state(
         &self,
         user_uuid: impl AsRef<str>,
-    ) -> Result<Option<(crate::entry::ID, Vec<crate::entry::ID>)>> {
+    ) -> Result<Option<(ID, Vec<ID>)>> {
         let user_tracking = self.op.get_store::<DocStore>(USER_TRACKING_SUBTREE).await?;
 
         // Check if user exists
@@ -104,7 +107,7 @@ impl<'a> UserSyncManager<'a> {
                     "Missing preferences_db_id field".to_string(),
                 ))
             })?;
-        let prefs_db_id = crate::entry::ID::from(prefs_db_id_str.as_str());
+        let prefs_db_id = ID::from(prefs_db_id_str.as_str());
 
         // Get preferences tips
         let tips_json = user_tracking
@@ -112,9 +115,9 @@ impl<'a> UserSyncManager<'a> {
             .await
             .unwrap_or_else(|_| "[]".to_string());
         let tips_strings: Vec<String> = serde_json::from_str(&tips_json).unwrap_or_default();
-        let tips: Vec<crate::entry::ID> = tips_strings
+        let tips: Vec<ID> = tips_strings
             .into_iter()
-            .map(|s| crate::entry::ID::from(s.as_str()))
+            .map(|s| ID::from(s.as_str()))
             .collect();
 
         Ok(Some((prefs_db_id, tips)))
@@ -135,7 +138,7 @@ impl<'a> UserSyncManager<'a> {
     pub(super) async fn update_tracked_tips(
         &self,
         user_uuid: impl AsRef<str>,
-        new_tips: &[crate::entry::ID],
+        new_tips: &[ID],
     ) -> Result<()> {
         let user_tracking = self.op.get_store::<DocStore>(USER_TRACKING_SUBTREE).await?;
 
@@ -163,7 +166,7 @@ impl<'a> UserSyncManager<'a> {
     /// A Result indicating success or an error.
     pub(super) async fn link_user_to_database(
         &self,
-        database_id: &crate::entry::ID,
+        database_id: &ID,
         user_uuid: impl AsRef<str>,
     ) -> Result<()> {
         let database_users = self
@@ -214,7 +217,7 @@ impl<'a> UserSyncManager<'a> {
     /// A Result indicating success or an error.
     pub(super) async fn unlink_user_from_database(
         &self,
-        database_id: &crate::entry::ID,
+        database_id: &ID,
         user_uuid: impl AsRef<str>,
     ) -> Result<()> {
         let database_users = self
@@ -265,10 +268,7 @@ impl<'a> UserSyncManager<'a> {
     ///
     /// # Returns
     /// A vector of user UUIDs
-    pub(super) async fn get_linked_users(
-        &self,
-        database_id: &crate::entry::ID,
-    ) -> Result<Vec<String>> {
+    pub(super) async fn get_linked_users(&self, database_id: &ID) -> Result<Vec<String>> {
         let database_users = self
             .op
             .get_store::<DocStore>(DATABASE_USERS_SUBTREE)
@@ -299,10 +299,7 @@ impl<'a> UserSyncManager<'a> {
     ///
     /// # Returns
     /// A vector of database IDs
-    pub(super) async fn get_linked_databases(
-        &self,
-        user_uuid: impl AsRef<str>,
-    ) -> Result<Vec<crate::entry::ID>> {
+    pub(super) async fn get_linked_databases(&self, user_uuid: impl AsRef<str>) -> Result<Vec<ID>> {
         let database_users = self
             .op
             .get_store::<DocStore>(DATABASE_USERS_SUBTREE)
@@ -324,7 +321,7 @@ impl<'a> UserSyncManager<'a> {
                 });
 
                 if has_user {
-                    result.push(crate::entry::ID::from(db_id_str.as_str()));
+                    result.push(ID::from(db_id_str.as_str()));
                 }
             }
         }
@@ -346,8 +343,8 @@ impl<'a> UserSyncManager<'a> {
     /// A Result indicating success or an error.
     pub(super) async fn set_combined_settings(
         &self,
-        database_id: &crate::entry::ID,
-        settings: &crate::user::types::SyncSettings,
+        database_id: &ID,
+        settings: &SyncSettings,
     ) -> Result<()> {
         let database_users = self
             .op
@@ -378,8 +375,8 @@ impl<'a> UserSyncManager<'a> {
     /// The combined sync settings, or None if not found
     pub(super) async fn get_combined_settings(
         &self,
-        database_id: &crate::entry::ID,
-    ) -> Result<Option<crate::user::types::SyncSettings>> {
+        database_id: &ID,
+    ) -> Result<Option<SyncSettings>> {
         let database_users = self
             .op
             .get_store::<DocStore>(DATABASE_USERS_SUBTREE)

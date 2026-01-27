@@ -9,6 +9,7 @@
 use crate::helpers::test_instance;
 use eidetica::{
     crdt::Doc,
+    store::DocStore,
     user::types::{SyncSettings, TrackedDatabase},
 };
 
@@ -62,10 +63,7 @@ async fn test_commits_work_with_sync_enabled() {
 
     // Make a write - callback should be invoked but handle gracefully (no transport)
     let tx = db.new_transaction().await.expect("Create transaction");
-    let store = tx
-        .get_store::<eidetica::store::DocStore>("data")
-        .await
-        .expect("Get store");
+    let store = tx.get_store::<DocStore>("data").await.expect("Get store");
     let mut doc = Doc::new();
     doc.set("message", "Test");
     store.set("key1", doc).await.expect("Set doc");
@@ -103,10 +101,7 @@ async fn test_multiple_commits_with_sync_enabled() {
     // Make 5 writes - all should succeed
     for i in 0..5 {
         let tx = db.new_transaction().await.expect("Create transaction");
-        let store = tx
-            .get_store::<eidetica::store::DocStore>("data")
-            .await
-            .expect("Get store");
+        let store = tx.get_store::<DocStore>("data").await.expect("Get store");
         let mut doc = Doc::new();
         doc.set("message", format!("Message {i}"));
         store.set(format!("key{i}"), doc).await.expect("Set doc");
@@ -156,10 +151,7 @@ async fn test_commits_with_sync_disabled() {
 
     // Commit should work fine
     let tx = db.new_transaction().await.expect("Create transaction");
-    let store = tx
-        .get_store::<eidetica::store::DocStore>("data")
-        .await
-        .expect("Get store");
+    let store = tx.get_store::<DocStore>("data").await.expect("Get store");
     let mut doc = Doc::new();
     doc.set("message", "Sync disabled");
     store.set("key1", doc).await.expect("Set doc");
@@ -206,10 +198,7 @@ async fn test_commits_with_sync_on_commit_disabled() {
 
     // Commit should work fine
     let tx = db.new_transaction().await.expect("Create transaction");
-    let store = tx
-        .get_store::<eidetica::store::DocStore>("data")
-        .await
-        .expect("Get store");
+    let store = tx.get_store::<DocStore>("data").await.expect("Get store");
     let mut doc = Doc::new();
     doc.set("message", "Sync on commit disabled");
     store.set("key1", doc).await.expect("Set doc");
@@ -241,10 +230,7 @@ async fn test_commits_before_transport_enabled() {
 
     // Don't enable transport, but commits should still work
     let tx = db.new_transaction().await.expect("Create transaction");
-    let store = tx
-        .get_store::<eidetica::store::DocStore>("data")
-        .await
-        .expect("Get store");
+    let store = tx.get_store::<DocStore>("data").await.expect("Get store");
     let mut doc = Doc::new();
     doc.set("message", "No transport");
     store.set("key1", doc).await.expect("Set doc");
@@ -286,20 +272,14 @@ async fn test_commits_with_multiple_databases() {
 
     // Write to both
     let tx1 = db1.new_transaction().await.expect("Create transaction");
-    let store1 = tx1
-        .get_store::<eidetica::store::DocStore>("data")
-        .await
-        .expect("Get store");
+    let store1 = tx1.get_store::<DocStore>("data").await.expect("Get store");
     let mut doc1 = Doc::new();
     doc1.set("message", "DB1");
     store1.set("key1", doc1).await.expect("Set doc");
     tx1.commit().await.expect("Commit db1");
 
     let tx2 = db2.new_transaction().await.expect("Create transaction");
-    let store2 = tx2
-        .get_store::<eidetica::store::DocStore>("data")
-        .await
-        .expect("Get store");
+    let store2 = tx2.get_store::<DocStore>("data").await.expect("Get store");
     let mut doc2 = Doc::new();
     doc2.set("message", "DB2");
     store2.set("key1", doc2).await.expect("Set doc");

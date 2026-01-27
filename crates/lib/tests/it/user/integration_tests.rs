@@ -8,7 +8,18 @@
 
 use super::helpers::*;
 use crate::helpers::test_instance;
-use eidetica::{store::DocStore, sync::transports::http::HttpTransport};
+use eidetica::{
+    Database,
+    auth::{
+        Permission,
+        settings::AuthSettings,
+        types::{AuthKey, SigKey},
+    },
+    crdt::Doc,
+    store::DocStore,
+    sync::transports::http::HttpTransport,
+    user::types::{SyncSettings, TrackedDatabase},
+};
 
 // ===== MULTI-USER COLLABORATION SCENARIOS =====
 
@@ -121,7 +132,7 @@ async fn test_multi_device_key_management_and_database_access() {
     let db2 = user2
         .create_database(
             {
-                let mut settings = eidetica::crdt::Doc::new();
+                let mut settings = Doc::new();
                 settings.set("name", "Laptop Work");
                 settings
             },
@@ -255,16 +266,6 @@ async fn test_team_scenario_multiple_users_own_databases() {
 
 #[tokio::test]
 async fn test_collaborative_database_with_global_permissions() {
-    use eidetica::{
-        Database,
-        auth::{
-            Permission,
-            settings::AuthSettings,
-            types::{AuthKey, SigKey},
-        },
-        crdt::Doc,
-    };
-
     println!("\n🧪 TEST: End-to-end collaborative database with global Write permissions");
 
     // Setup two users on the same instance
@@ -439,15 +440,6 @@ async fn test_collaborative_database_with_global_permissions() {
 
 #[tokio::test]
 async fn test_collaborative_database_with_sync_and_global_permissions() {
-    use eidetica::{
-        Database,
-        auth::{
-            Permission,
-            settings::AuthSettings,
-            types::{AuthKey, SigKey},
-        },
-        crdt::Doc,
-    };
     use std::time::Duration;
 
     println!(
@@ -519,7 +511,6 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
     println!("✅ Alice created database {db_id} with global Write(10) permission");
 
     // Enable sync for this database
-    use eidetica::user::types::{SyncSettings, TrackedDatabase};
     alice
         .track_database(TrackedDatabase {
             database_id: db_id.clone(),

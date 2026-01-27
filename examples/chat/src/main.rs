@@ -10,9 +10,7 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use eidetica::Instance;
-use eidetica::Result;
-use eidetica::backend::database::InMemory;
+use eidetica::{Instance, Result, backend::database::InMemory};
 use handlers::handle_key_event;
 use ratatui::{Terminal, backend::CrosstermBackend};
 use std::io;

@@ -3,7 +3,10 @@
 use tracing::{debug, info};
 
 use super::{Sync, SyncError, user_sync_manager::UserSyncManager};
-use crate::{Database, Result, store::Table, user::types::TrackedDatabase};
+use crate::{
+    Database, Result, entry::ID, instance::settings_merge::merge_sync_settings, store::Table,
+    user::types::TrackedDatabase,
+};
 
 impl Sync {
     // === User Synchronization Methods ===
@@ -39,7 +42,7 @@ impl Sync {
     pub async fn sync_user(
         &self,
         user_uuid: impl AsRef<str>,
-        preferences_db_id: &crate::entry::ID,
+        preferences_db_id: &ID,
     ) -> Result<()> {
         let user_uuid_str = user_uuid.as_ref();
 
@@ -146,7 +149,7 @@ impl Sync {
 
             // Merge settings using most aggressive strategy
             if !settings_list.is_empty() {
-                let combined = crate::instance::settings_merge::merge_sync_settings(settings_list);
+                let combined = merge_sync_settings(settings_list);
                 user_mgr.set_combined_settings(&db_id, &combined).await?;
                 debug!(database_id = %db_id, "Updated combined settings for database");
             }

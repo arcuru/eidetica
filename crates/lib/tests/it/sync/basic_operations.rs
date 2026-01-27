@@ -1,3 +1,5 @@
+use eidetica::sync::Sync;
+
 use super::helpers::*;
 
 #[tokio::test]
@@ -14,8 +16,6 @@ async fn test_sync_creation() {
 
 #[tokio::test]
 async fn test_sync_load() {
-    use eidetica::sync::Sync;
-
     let (base_db, sync) = setup().await;
     let sync_root_id = sync.sync_tree_root_id().clone();
 
@@ -50,8 +50,6 @@ async fn test_sync_settings_operations() {
 
 #[tokio::test]
 async fn test_sync_settings_persistence() {
-    use eidetica::sync::Sync;
-
     let (base_db, sync) = setup().await;
 
     // Store a persistent setting

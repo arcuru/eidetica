@@ -4,6 +4,7 @@
 //! operations, custom tips, diamond patterns, and data isolation scenarios.
 
 use eidetica::{
+    Database, Instance,
     crdt::{Doc, doc::Value},
     entry::ID,
     store::DocStore,
@@ -18,7 +19,7 @@ use crate::helpers::*;
 
 /// Create and commit a simple operation with one Doc subtree
 pub async fn create_simple_operation(
-    tree: &eidetica::Database,
+    tree: &Database,
     subtree_name: &str,
     key: &str,
     value: &str,
@@ -31,7 +32,7 @@ pub async fn create_simple_operation(
 
 /// Create an operation with multiple subtrees and data
 pub async fn create_multi_subtree_operation(
-    tree: &eidetica::Database,
+    tree: &Database,
     subtree_data: &[(&str, &[(&str, &str)])],
 ) -> ID {
     let operation = tree.new_transaction().await.unwrap();
@@ -55,7 +56,7 @@ pub async fn create_multi_subtree_operation(
 /// If the Instance is dropped, operations on the Database will fail with InstanceDropped.
 pub async fn setup_tree_with_data(
     subtree_data: &[(&str, &[(&str, &str)])],
-) -> (eidetica::Instance, eidetica::Database) {
+) -> (Instance, Database) {
     let (instance, tree) = setup_tree().await;
     create_multi_subtree_operation(&tree, subtree_data).await;
     (instance, tree)
@@ -64,7 +65,7 @@ pub async fn setup_tree_with_data(
 // ===== CUSTOM TIPS HELPERS =====
 
 /// Create a diamond pattern: base -> (left, right) -> merge
-pub async fn create_diamond_pattern(tree: &eidetica::Database) -> DiamondIds {
+pub async fn create_diamond_pattern(tree: &Database) -> DiamondIds {
     // Create base
     let base_op = tree.new_transaction().await.unwrap();
     let base_store = base_op.get_store::<DocStore>("data").await.unwrap();
@@ -106,7 +107,7 @@ pub struct DiamondIds {
 }
 
 /// Create a merge operation from diamond pattern
-pub async fn create_merge_from_diamond(tree: &eidetica::Database, diamond: &DiamondIds) -> ID {
+pub async fn create_merge_from_diamond(tree: &Database, diamond: &DiamondIds) -> ID {
     let merge_op = tree
         .new_transaction_with_tips([diamond.left.clone(), diamond.right.clone()])
         .await
@@ -149,11 +150,7 @@ pub fn assert_map_data(map: &Map, expected_data: &[(&str, &str)]) {
 // ===== TOMBSTONE AND DELETE HELPERS =====
 
 /// Create operation that deletes a key and verify tombstone behavior
-pub async fn test_delete_operation(
-    tree: &eidetica::Database,
-    subtree_name: &str,
-    key_to_delete: &str,
-) -> ID {
+pub async fn test_delete_operation(tree: &Database, subtree_name: &str, key_to_delete: &str) -> ID {
     let op = tree.new_transaction().await.unwrap();
     let dict = op.get_store::<DocStore>(subtree_name).await.unwrap();
     dict.delete(key_to_delete).await.unwrap();
@@ -193,7 +190,7 @@ pub fn create_nested_map(data: &[(&str, &str)]) -> Value {
 }
 
 /// Setup operation with nested Map values
-pub async fn create_operation_with_nested_data(tree: &eidetica::Database) -> ID {
+pub async fn create_operation_with_nested_data(tree: &Database) -> ID {
     let op = tree.new_transaction().await.unwrap();
     let store = op.get_store::<DocStore>("data").await.unwrap();
 
@@ -234,7 +231,7 @@ pub async fn assert_nested_data(
 // ===== PATH FINDING HELPERS =====
 
 /// Create complex LCA scenario for path finding tests
-pub async fn create_lca_test_scenario(tree: &eidetica::Database) -> LcaTestIds {
+pub async fn create_lca_test_scenario(tree: &Database) -> LcaTestIds {
     // Create LCA
     let lca_op = tree.new_transaction().await.unwrap();
     let lca_store = lca_op.get_store::<DocStore>("data").await.unwrap();
@@ -290,11 +287,7 @@ pub struct LcaTestIds {
 }
 
 /// Verify that LCA path finding includes all expected data
-pub async fn assert_lca_path_completeness(
-    tree: &eidetica::Database,
-    tips: &[ID],
-    expected_keys: &[&str],
-) {
+pub async fn assert_lca_path_completeness(tree: &Database, tips: &[ID], expected_keys: &[&str]) {
     let op = tree.new_transaction_with_tips(tips).await.unwrap();
     let store = op.get_store::<DocStore>("data").await.unwrap();
     let state = store.get_all().await.unwrap();
@@ -310,11 +303,7 @@ pub async fn assert_lca_path_completeness(
 // ===== OPERATION LIFECYCLE HELPERS =====
 
 /// Test deterministic operation ordering
-pub async fn test_deterministic_operations(
-    tree: &eidetica::Database,
-    tips: &[ID],
-    iterations: usize,
-) {
+pub async fn test_deterministic_operations(tree: &Database, tips: &[ID], iterations: usize) {
     let mut results = Vec::new();
 
     for _i in 0..iterations {

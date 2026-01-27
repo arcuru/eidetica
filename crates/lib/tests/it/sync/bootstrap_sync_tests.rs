@@ -4,7 +4,11 @@
 //! can join and bootstrap a database from another peer without any prior setup.
 
 use eidetica::{
-    auth::crypto::{format_public_key, generate_keypair},
+    auth::{
+        Permission,
+        crypto::{format_public_key, generate_keypair},
+    },
+    entry::ID,
     store::DocStore,
     sync::transports::http::HttpTransport,
 };
@@ -27,10 +31,7 @@ async fn test_bootstrap_sync_from_zero_state() {
     // Add some test data to the database
     let test_entry_id = {
         let tx = server_database.new_transaction().await.unwrap();
-        let store = tx
-            .get_store::<eidetica::store::DocStore>("messages")
-            .await
-            .unwrap();
+        let store = tx.get_store::<DocStore>("messages").await.unwrap();
         store.set("msg1", "Hello from server!").await.unwrap();
         store.set("msg2", "Second message").await.unwrap();
         tx.commit().await.unwrap()
@@ -216,7 +217,7 @@ async fn test_bootstrap_nonexistent_tree() {
         .register_transport("http", HttpTransport::builder())
         .await
         .unwrap();
-    let fake_tree_id = eidetica::entry::ID::from("fake_tree_id_that_doesnt_exist");
+    let fake_tree_id = ID::from("fake_tree_id_that_doesnt_exist");
 
     let result = client_sync
         .sync_with_peer(&server_addr, Some(&fake_tree_id))
@@ -292,14 +293,14 @@ async fn test_bootstrap_malformed_request_data() {
     let test_pubkey = format_public_key(&test_verifying_key);
 
     // Test 1: Invalid tree ID format
-    let malformed_tree_id = eidetica::entry::ID::from("invalid_tree_format");
+    let malformed_tree_id = ID::from("invalid_tree_format");
     let result = client_sync
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &malformed_tree_id,
             &test_pubkey,
             "client_key",
-            eidetica::auth::Permission::Write(5),
+            Permission::Write(5),
         )
         .await;
 
@@ -316,7 +317,7 @@ async fn test_bootstrap_malformed_request_data() {
             &test_tree_id,
             &test_pubkey,
             "", // Empty key name
-            eidetica::auth::Permission::Write(5),
+            Permission::Write(5),
         )
         .await;
 
@@ -357,14 +358,14 @@ async fn test_bootstrap_conflicting_tree_ids() {
     let test_pubkey = format_public_key(&test_verifying_key);
 
     // Try to bootstrap with a different tree ID than what exists
-    let different_tree_id = eidetica::entry::ID::from("different_tree_that_doesnt_exist");
+    let different_tree_id = ID::from("different_tree_that_doesnt_exist");
     let result = client_sync
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &different_tree_id,
             &test_pubkey,
             "client_key",
-            eidetica::auth::Permission::Write(5),
+            Permission::Write(5),
         )
         .await;
 

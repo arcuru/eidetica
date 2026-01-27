@@ -1,6 +1,14 @@
 use std::cmp::{max, min};
 
-use eidetica::auth::types::Permission::{self, Admin, Read, Write};
+use eidetica::auth::{
+    crypto::{format_public_key, generate_keypair},
+    settings::AuthSettings,
+    types::{
+        KeyStatus, Permission,
+        Permission::{Admin, Read, Write},
+        ResolvedAuth,
+    },
+};
 
 #[test]
 fn test_permission_ordering_comprehensive() {
@@ -114,12 +122,6 @@ fn test_permission_validation_operations() {
 
 #[test]
 fn test_permission_hierarchical_key_modification() {
-    use eidetica::auth::{
-        crypto::{format_public_key, generate_keypair},
-        settings::AuthSettings,
-        types::{KeyStatus, ResolvedAuth},
-    };
-
     let mut settings = AuthSettings::new();
 
     // Generate actual keypairs for testing
@@ -157,21 +159,21 @@ fn test_permission_hierarchical_key_modification() {
 
     // Create resolved auth for super admin
     let super_resolved = ResolvedAuth {
-        public_key: eidetica::auth::crypto::generate_keypair().1,
+        public_key: generate_keypair().1,
         effective_permission: super_admin.permissions().clone(),
         key_status: super_admin.status().clone(),
     };
 
     // Create resolved auth for low admin
     let low_admin_resolved = ResolvedAuth {
-        public_key: eidetica::auth::crypto::generate_keypair().1,
+        public_key: generate_keypair().1,
         effective_permission: low_admin.permissions().clone(),
         key_status: low_admin.status().clone(),
     };
 
     // Create resolved auth for write key
     let write_resolved = ResolvedAuth {
-        public_key: eidetica::auth::crypto::generate_keypair().1,
+        public_key: generate_keypair().1,
         effective_permission: high_write.permissions().clone(),
         key_status: high_write.status().clone(),
     };

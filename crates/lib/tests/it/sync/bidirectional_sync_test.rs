@@ -13,6 +13,7 @@ use eidetica::{
     crdt::Doc,
     store::Table,
     sync::transports::http::HttpTransport,
+    user::types::{SyncSettings, TrackedDatabase},
 };
 use serde::{Deserialize, Serialize};
 
@@ -185,10 +186,10 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     // Verify device 2 has the database and message A
     // Track and open database using User API
     device2_user
-        .track_database(eidetica::user::TrackedDatabase {
+        .track_database(TrackedDatabase {
             database_id: room_id.clone(),
             key_id: device2_key_id.clone(),
-            sync_settings: eidetica::user::SyncSettings::default(),
+            sync_settings: SyncSettings::default(),
         })
         .await
         .expect("Failed to track database on device2");

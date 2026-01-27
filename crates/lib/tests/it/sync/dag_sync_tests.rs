@@ -6,9 +6,14 @@
 use std::{collections::HashSet, time::Duration};
 
 use eidetica::{
+    Database,
+    auth::generate_keypair,
     entry::{Entry, ID},
     store::DocStore,
-    sync::{Address, transports::http::HttpTransport},
+    sync::{
+        Address,
+        transports::{http::HttpTransport, iroh::IrohTransport},
+    },
 };
 
 use super::helpers;
@@ -666,11 +671,10 @@ async fn test_sync_protocol_implementation() {
 
     // Reload the tree to get the latest state
     // Use global "*" permission (public database with Permission::Read)
-    let (reader_key, _) = eidetica::auth::generate_keypair();
-    let tree2 =
-        eidetica::Database::open(base_db2.clone(), &tree_root_id, reader_key, "*".to_string())
-            .await
-            .unwrap();
+    let (reader_key, _) = generate_keypair();
+    let tree2 = Database::open(base_db2.clone(), &tree_root_id, reader_key, "*".to_string())
+        .await
+        .unwrap();
 
     // Verify ALL synced data is correct
     {
@@ -709,7 +713,6 @@ async fn test_iroh_sync_end_to_end_no_relays() {
     // This test demonstrates full end-to-end Iroh P2P sync between two nodes
     // using direct connections without relay servers for fast local testing
 
-    use eidetica::sync::transports::iroh::IrohTransport;
     use iroh::RelayMode;
 
     let (_base_db1, sync1) = helpers::setup().await;
@@ -834,7 +837,6 @@ async fn test_iroh_transport_production_defaults() {
     // This test verifies that the default transport configuration
     // uses production relay settings (n0's servers)
 
-    use eidetica::sync::transports::iroh::IrohTransport;
     use iroh::RelayMode;
 
     let (_base_db, sync) = helpers::setup().await;
@@ -869,7 +871,6 @@ async fn test_iroh_transport_staging_mode() {
     // This test verifies that staging mode can be configured
     // (useful for testing against n0's staging infrastructure)
 
-    use eidetica::sync::transports::iroh::IrohTransport;
     use iroh::RelayMode;
 
     let (_base_db, sync) = helpers::setup().await;
@@ -892,7 +893,6 @@ async fn test_iroh_transport_custom_relay_config() {
     // This test demonstrates how to configure custom relay servers
     // (e.g., for local testing with iroh-relay --dev)
 
-    use eidetica::sync::transports::iroh::IrohTransport;
     use iroh::{RelayConfig, RelayMap, RelayMode, RelayUrl};
 
     let (_base_db, sync) = helpers::setup().await;

@@ -4,7 +4,7 @@
 //! without race conditions or interference between clients.
 
 use super::helpers::*;
-use eidetica::{Result, sync::transports::http::HttpTransport};
+use eidetica::{Error, Result, sync::transports::http::HttpTransport};
 use std::time::Duration;
 use tracing::info;
 
@@ -83,7 +83,7 @@ async fn test_multiple_clients_bootstrap_same_database() -> Result<()> {
             );
 
             info!("Client {} successfully bootstrapped", i);
-            Ok::<_, eidetica::Error>((i, client_instance))
+            Ok::<_, Error>((i, client_instance))
         });
         handles.push(handle);
     }
@@ -164,7 +164,7 @@ async fn test_concurrent_key_approval_requests() -> Result<()> {
             }
 
             info!("Client {} successfully got key approval", i);
-            Ok::<_, eidetica::Error>((i, client_instance, client_user))
+            Ok::<_, Error>((i, client_instance, client_user))
         });
         handles.push(handle);
     }

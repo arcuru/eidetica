@@ -5,7 +5,9 @@
 
 use crate::helpers::test_instance;
 use eidetica::{
+    Result,
     crdt::Doc,
+    store::DocStore,
     sync::{peer_types::Address, transports::http::HttpTransport},
     user::types::{SyncSettings, TrackedDatabase},
 };
@@ -14,7 +16,7 @@ use tokio::time::sleep;
 
 /// Test that writes automatically sync between two instances
 #[tokio::test]
-async fn test_auto_sync_between_instances() -> eidetica::Result<()> {
+async fn test_auto_sync_between_instances() -> Result<()> {
     println!("\n=== Testing Automatic Sync Between Two Instances ===\n");
 
     // Create two instances
@@ -98,7 +100,7 @@ async fn test_auto_sync_between_instances() -> eidetica::Result<()> {
 
     // Write to database on instance1 - should automatically sync to instance2!
     let tx = db1.new_transaction().await?;
-    let store = tx.get_store::<eidetica::store::DocStore>("notes").await?;
+    let store = tx.get_store::<DocStore>("notes").await?;
     let mut note = Doc::new();
     note.set("title", "Meeting Notes");
     note.set("content", "Discuss automatic sync implementation");
@@ -138,7 +140,7 @@ async fn test_auto_sync_between_instances() -> eidetica::Result<()> {
 
 /// Test bidirectional automatic sync
 #[tokio::test]
-async fn test_bidirectional_auto_sync() -> eidetica::Result<()> {
+async fn test_bidirectional_auto_sync() -> Result<()> {
     println!("\n=== Testing Bidirectional Automatic Sync ===\n");
 
     // Create two instances
@@ -238,9 +240,7 @@ async fn test_bidirectional_auto_sync() -> eidetica::Result<()> {
 
     println!("--- Alice writes on instance1 ---");
     let tx1 = db1.new_transaction().await?;
-    let store1 = tx1
-        .get_store::<eidetica::store::DocStore>("messages")
-        .await?;
+    let store1 = tx1.get_store::<DocStore>("messages").await?;
     let mut msg1 = Doc::new();
     msg1.set("from", "alice");
     msg1.set("text", "Hello from instance1!");
@@ -250,9 +250,7 @@ async fn test_bidirectional_auto_sync() -> eidetica::Result<()> {
 
     println!("\n--- Bob writes on instance2 ---");
     let tx2 = db2.new_transaction().await?;
-    let store2 = tx2
-        .get_store::<eidetica::store::DocStore>("messages")
-        .await?;
+    let store2 = tx2.get_store::<DocStore>("messages").await?;
     let mut msg2 = Doc::new();
     msg2.set("from", "bob");
     msg2.set("text", "Hello from instance2!");
@@ -292,7 +290,7 @@ async fn test_bidirectional_auto_sync() -> eidetica::Result<()> {
 /// Test that automatic sync works when enable_sync is called AFTER user setup
 /// This tests the initialize_user_settings() path
 #[tokio::test]
-async fn test_enable_sync_after_user_setup() -> eidetica::Result<()> {
+async fn test_enable_sync_after_user_setup() -> Result<()> {
     println!("\n=== Testing Enable Sync After User Setup ===\n");
 
     // Phase 1: Create instance WITHOUT enabling sync first
@@ -366,7 +364,7 @@ async fn test_enable_sync_after_user_setup() -> eidetica::Result<()> {
 
     // Phase 3: Write to database - should sync even though we enabled sync AFTER user setup
     let tx = db1.new_transaction().await?;
-    let store = tx.get_store::<eidetica::store::DocStore>("notes").await?;
+    let store = tx.get_store::<DocStore>("notes").await?;
     let mut note = Doc::new();
     note.set("content", "Test note");
     store.set("note1", note).await?;
@@ -392,7 +390,7 @@ async fn test_enable_sync_after_user_setup() -> eidetica::Result<()> {
 
 /// Test that automatic sync works after instance restart (login without add_database)
 #[tokio::test]
-async fn test_auto_sync_after_restart() -> eidetica::Result<()> {
+async fn test_auto_sync_after_restart() -> Result<()> {
     println!("\n=== Testing Auto-Sync After Instance Restart ===\n");
 
     // Phase 1: Initial setup - create user and add database preferences
@@ -459,7 +457,7 @@ async fn test_auto_sync_after_restart() -> eidetica::Result<()> {
 
     // Write an entry to verify initial sync works
     let tx = db1.new_transaction().await?;
-    let store = tx.get_store::<eidetica::store::DocStore>("notes").await?;
+    let store = tx.get_store::<DocStore>("notes").await?;
     let mut note = Doc::new();
     note.set("content", "Initial write");
     store.set("note1", note).await?;
@@ -492,7 +490,7 @@ async fn test_auto_sync_after_restart() -> eidetica::Result<()> {
 
     // Write another entry - sync should still work even though we didn't call add_database
     let tx = db1_after_restart.new_transaction().await?;
-    let store = tx.get_store::<eidetica::store::DocStore>("notes").await?;
+    let store = tx.get_store::<DocStore>("notes").await?;
     let mut note = Doc::new();
     note.set("content", "After restart write");
     store.set("note2", note).await?;

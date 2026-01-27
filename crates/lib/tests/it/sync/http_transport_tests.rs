@@ -1,7 +1,10 @@
-use eidetica::sync::{
-    Address,
-    protocol::{SyncRequest, SyncResponse},
-    transports::{SyncTransport, http::HttpTransport},
+use eidetica::{
+    Entry,
+    sync::{
+        Address,
+        protocol::{SyncRequest, SyncResponse},
+        transports::{SyncTransport, http::HttpTransport},
+    },
 };
 
 #[tokio::test]
@@ -58,8 +61,6 @@ async fn test_http_transport_stop_without_start() {
 
 #[tokio::test]
 async fn test_http_transport_client_server_communication() {
-    use eidetica::Entry;
-
     let mut server_transport = HttpTransport::builder()
         .bind("127.0.0.1:0")
         .build_sync()
@@ -122,8 +123,6 @@ async fn test_http_transport_client_server_communication() {
 
 #[tokio::test]
 async fn test_http_transport_connection_refused() {
-    use eidetica::Entry;
-
     let transport = HttpTransport::new().unwrap();
 
     // Try to connect to a server that's not running on a high port

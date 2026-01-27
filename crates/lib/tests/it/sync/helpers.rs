@@ -7,13 +7,23 @@ use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use eidetica::{
-    Instance, Result,
+    Database, Entry, Error, Instance, Result,
+    auth::{AuthKey, AuthSettings, Permission as AuthPermission},
+    crdt::Doc,
     entry::ID,
+    path,
+    store::DocStore,
     sync::{
         Sync,
+        error::SyncError,
         handler::{SyncHandler, SyncHandlerImpl},
         peer_types::Address,
+        protocol::{RequestContext, SyncRequest, SyncResponse, SyncTreeRequest},
         transports::{http::HttpTransport, iroh::IrohTransport},
+    },
+    user::{
+        User,
+        types::{SyncSettings, TrackedDatabase},
     },
 };
 use iroh::RelayMode;
@@ -63,16 +73,13 @@ pub async fn setup_test_handler() -> (Instance, Arc<dyn SyncHandler>) {
 
 /// Test helper function for backward compatibility with existing tests.
 /// Creates a SyncHandlerImpl from a Sync instance and delegates to it.
-pub async fn handle_request(
-    sync: &Sync,
-    request: &eidetica::sync::protocol::SyncRequest,
-) -> eidetica::sync::protocol::SyncResponse {
+pub async fn handle_request(sync: &Sync, request: &SyncRequest) -> SyncResponse {
     let handler = SyncHandlerImpl::new(
         sync.instance().expect("Failed to get instance").clone(),
         sync.sync_tree_root_id().clone(),
     );
     // Create empty context for tests
-    let context = eidetica::sync::protocol::RequestContext::default();
+    let context = RequestContext::default();
     handler.handle_request(request, &context).await
 }
 
@@ -195,13 +202,6 @@ impl TransportFactory for IrohTransportFactory {
 
 // ===== BOOTSTRAP TESTING HELPERS =====
 
-use eidetica::{
-    Database, Entry,
-    auth::Permission as AuthPermission,
-    crdt::Doc,
-    sync::protocol::{SyncRequest, SyncResponse, SyncTreeRequest},
-};
-
 /// Create a server instance configured for manual bootstrap approval
 ///
 /// # Returns
@@ -278,14 +278,7 @@ pub async fn setup_manual_approval_server() -> (Instance, User, String, Database
 ///
 /// # Returns
 /// (Instance, User, key_id, Database, Sync, tree_id)
-pub async fn setup_global_wildcard_server() -> (
-    Instance,
-    eidetica::user::User,
-    String,
-    Database,
-    Sync,
-    eidetica::entry::ID,
-) {
+pub async fn setup_global_wildcard_server() -> (Instance, User, String, Database, Sync, ID) {
     let (instance, mut user, key_id) =
         crate::helpers::test_instance_with_user_and_key("server_user", Some("server_admin")).await;
 
@@ -363,14 +356,7 @@ pub async fn setup_global_wildcard_server() -> (
 /// Create a server with auto approval (auto_approve = true)
 ///
 /// Returns (Instance, User, key_id, Database, Arc<Sync>, tree_id)
-pub async fn setup_auto_approval_server() -> (
-    Instance,
-    User,
-    String,
-    Database,
-    Arc<Sync>,
-    eidetica::entry::ID,
-) {
+pub async fn setup_auto_approval_server() -> (Instance, User, String, Database, Arc<Sync>, ID) {
     let (instance, user, key_id, database, tree_id, sync) =
         setup_sync_enabled_server_with_auto_approve("server_user", "server_key", "test_database")
             .await;
@@ -393,7 +379,7 @@ pub async fn start_sync_server(sync: &Sync) -> String {
 
 /// Create a SyncTreeRequest for bootstrap testing
 pub fn create_bootstrap_request(
-    tree_id: &eidetica::entry::ID,
+    tree_id: &ID,
     requesting_key: &str,
     key_name: &str,
     permission: AuthPermission,
@@ -411,13 +397,13 @@ pub fn create_bootstrap_request(
 /// Create and submit a bootstrap request, returning the request ID
 pub async fn create_pending_bootstrap_request(
     handler: &SyncHandlerImpl,
-    tree_id: &eidetica::entry::ID,
+    tree_id: &ID,
     requesting_key: &str,
     key_name: &str,
     permission: AuthPermission,
 ) -> String {
     let request = create_bootstrap_request(tree_id, requesting_key, key_name, permission);
-    let context = eidetica::sync::protocol::RequestContext::default();
+    let context = RequestContext::default();
     let response = handler.handle_request(&request, &context).await;
 
     match response {
@@ -428,7 +414,7 @@ pub async fn create_pending_bootstrap_request(
 
 /// Approve a bootstrap request using a User's key
 pub async fn approve_request(
-    user: &eidetica::user::User,
+    user: &User,
     sync: &Sync,
     request_id: &str,
     approver_key_id: &str,
@@ -481,8 +467,6 @@ pub fn create_test_sync_handler(sync: &Sync) -> SyncHandlerImpl {
 
 // ===== USER API HELPERS =====
 
-use eidetica::user::User;
-
 /// Creates a server instance with a user, key, and bootstrap-enabled database
 ///
 /// Uses global wildcard permission for automatic bootstrap approval.
@@ -495,7 +479,7 @@ pub async fn setup_server_with_bootstrap_database(
     username: &str,
     key_name: &str,
     db_name: &str,
-) -> (Instance, User, String, Database, eidetica::entry::ID) {
+) -> (Instance, User, String, Database, ID) {
     let server_instance = setup_instance_with_initialized().await;
     server_instance.create_user(username, None).await.unwrap();
     let mut server_user = server_instance.login_user(username, None).await.unwrap();
@@ -521,8 +505,7 @@ pub async fn setup_server_with_bootstrap_database(
     // Add admin as Admin to the database (keyed by pubkey, name is "admin")
     let tx = server_database.new_transaction().await.unwrap();
     let settings_store = tx.get_settings().unwrap();
-    let device_auth_key =
-        eidetica::auth::types::AuthKey::active(Some("admin"), eidetica::auth::Permission::Admin(0));
+    let device_auth_key = AuthKey::active(Some("admin"), AuthPermission::Admin(0));
     settings_store
         .set_auth_key(&device_pubkey, device_auth_key)
         .await
@@ -603,7 +586,7 @@ pub async fn request_and_map_database_access(
     instance: &mut Instance,
     user: &mut User,
     server_addr: &str,
-    tree_id: &eidetica::entry::ID,
+    tree_id: &ID,
     key_id: &str,
     permission: AuthPermission,
     sync_delay_ms: u64,
@@ -633,7 +616,7 @@ pub async fn request_database_access_default(
     instance: &mut Instance,
     user: &mut User,
     server_addr: &str,
-    tree_id: &eidetica::entry::ID,
+    tree_id: &ID,
     key_id: &str,
 ) -> Result<()> {
     request_and_map_database_access(
@@ -664,15 +647,12 @@ pub async fn request_database_access_default(
 /// ```
 pub async fn set_global_wildcard_permission_with_level(
     database: &Database,
-    permission: eidetica::auth::Permission,
+    permission: AuthPermission,
 ) -> Result<()> {
     let tx = database.new_transaction().await?;
     let db_settings = tx.get_settings()?;
     db_settings
-        .set_auth_key(
-            "*",
-            eidetica::auth::types::AuthKey::active(None::<String>, permission),
-        )
+        .set_auth_key("*", AuthKey::active(None::<String>, permission))
         .await?;
     tx.commit().await?;
     Ok(())
@@ -685,12 +665,10 @@ pub async fn set_global_wildcard_permission_with_level(
 /// - All Read requests
 /// - But denies Admin requests.
 pub async fn set_global_wildcard_permission(database: &Database) -> Result<()> {
-    set_global_wildcard_permission_with_level(database, eidetica::auth::Permission::Write(0)).await
+    set_global_wildcard_permission_with_level(database, AuthPermission::Write(0)).await
 }
 
 // ===== SYNC-ENABLED DATABASE HELPERS =====
-
-use eidetica::user::types::{SyncSettings, TrackedDatabase};
 
 /// Creates a server with a sync-enabled database ready to serve sync requests.
 ///
@@ -710,14 +688,7 @@ pub async fn setup_sync_enabled_server(
     username: &str,
     key_name: &str,
     db_name: &str,
-) -> (
-    Instance,
-    User,
-    String,
-    Database,
-    eidetica::entry::ID,
-    Arc<Sync>,
-) {
+) -> (Instance, User, String, Database, ID, Arc<Sync>) {
     let server_instance = setup_instance_with_initialized().await;
     server_instance.create_user(username, None).await.unwrap();
     let mut server_user = server_instance.login_user(username, None).await.unwrap();
@@ -738,8 +709,7 @@ pub async fn setup_sync_enabled_server(
     // Add admin as Admin to the database (keyed by pubkey, name is "admin")
     let tx = server_database.new_transaction().await.unwrap();
     let settings_store = tx.get_settings().unwrap();
-    let device_auth_key =
-        eidetica::auth::types::AuthKey::active(Some("admin"), eidetica::auth::Permission::Admin(0));
+    let device_auth_key = AuthKey::active(Some("admin"), AuthPermission::Admin(0));
     settings_store
         .set_auth_key(&device_pubkey, device_auth_key)
         .await
@@ -790,14 +760,7 @@ pub async fn setup_sync_enabled_server_with_auto_approve(
     username: &str,
     key_name: &str,
     db_name: &str,
-) -> (
-    Instance,
-    User,
-    String,
-    Database,
-    eidetica::entry::ID,
-    Arc<Sync>,
-) {
+) -> (Instance, User, String, Database, ID, Arc<Sync>) {
     let (instance, user, key_id, database, tree_id, sync) =
         setup_sync_enabled_server(username, key_name, db_name).await;
 
@@ -831,18 +794,12 @@ pub async fn setup_sync_enabled_client(
 /// instead of user.create_database().
 ///
 /// TODO: This should go away eventually or be replaced by the User API
-pub async fn enable_sync_for_instance_database(
-    sync: &Sync,
-    database_id: &eidetica::entry::ID,
-) -> Result<()> {
-    use eidetica::store::DocStore;
-    use eidetica::user::types::SyncSettings;
-
+pub async fn enable_sync_for_instance_database(sync: &Sync, database_id: &ID) -> Result<()> {
     // Open the sync tree to set combined settings
     let instance = sync.instance()?;
     let signing_key = instance.device_key().clone();
 
-    let sync_database = eidetica::Database::open(
+    let sync_database = Database::open(
         instance.clone(),
         sync.sync_tree_root_id(),
         signing_key,
@@ -862,17 +819,11 @@ pub async fn enable_sync_for_instance_database(
     };
 
     let db_id_str = database_id.to_string();
-    let settings_json = serde_json::to_string(&settings).map_err(|e| {
-        eidetica::Error::Sync(eidetica::sync::error::SyncError::SerializationError(
-            e.to_string(),
-        ))
-    })?;
+    let settings_json = serde_json::to_string(&settings)
+        .map_err(|e| Error::Sync(SyncError::SerializationError(e.to_string())))?;
 
     database_users
-        .set_path(
-            eidetica::path!(&db_id_str, "combined_settings"),
-            settings_json,
-        )
+        .set_path(path!(&db_id_str, "combined_settings"), settings_json)
         .await?;
 
     tx.commit().await?;
@@ -894,14 +845,7 @@ pub async fn setup_public_sync_enabled_server(
     username: &str,
     key_name: &str,
     db_name: &str,
-) -> (
-    Instance,
-    User,
-    String,
-    Database,
-    eidetica::entry::ID,
-    Arc<Sync>,
-) {
+) -> (Instance, User, String, Database, ID, Arc<Sync>) {
     let server_instance = setup_instance_with_initialized().await;
     server_instance.create_user(username, None).await.unwrap();
     let mut server_user = server_instance.login_user(username, None).await.unwrap();
@@ -912,7 +856,7 @@ pub async fn setup_public_sync_enabled_server(
     settings.set("name", db_name);
 
     // Add auth config with wildcard permission for unauthenticated access
-    let mut auth_settings = eidetica::auth::AuthSettings::new();
+    let mut auth_settings = AuthSettings::new();
 
     let device_pubkey = server_instance.device_id_string();
 
@@ -920,7 +864,7 @@ pub async fn setup_public_sync_enabled_server(
     auth_settings
         .add_key(
             &device_pubkey,
-            eidetica::auth::AuthKey::active(Some("admin"), eidetica::auth::Permission::Admin(0)),
+            AuthKey::active(Some("admin"), AuthPermission::Admin(0)),
         )
         .unwrap();
 
@@ -928,16 +872,13 @@ pub async fn setup_public_sync_enabled_server(
     auth_settings
         .add_key(
             &server_key_id,
-            eidetica::auth::AuthKey::active(None::<String>, eidetica::auth::Permission::Admin(0)),
+            AuthKey::active(None::<String>, AuthPermission::Admin(0)),
         )
         .unwrap();
 
     // Add wildcard "*" permission to allow unauthenticated read access
     auth_settings
-        .add_key(
-            "*",
-            eidetica::auth::AuthKey::active(None::<String>, eidetica::auth::Permission::Read),
-        )
+        .add_key("*", AuthKey::active(None::<String>, AuthPermission::Read))
         .unwrap();
 
     settings.set("auth", auth_settings.as_doc().clone());

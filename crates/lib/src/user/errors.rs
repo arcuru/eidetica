@@ -1,6 +1,8 @@
 //! Error types for the user system
 use thiserror::Error;
 
+use crate::entry::ID;
+
 #[derive(Error, Debug)]
 pub enum UserError {
     #[error("User not found: {username}")]
@@ -51,19 +53,13 @@ pub enum UserError {
     InvalidNonceLength { expected: usize, actual: usize },
 
     #[error("No key found for database: {database_id}")]
-    NoKeyForDatabase { database_id: crate::entry::ID },
+    NoKeyForDatabase { database_id: ID },
 
     #[error("No SigKey mapping found for key {key_id} in database {database_id}")]
-    NoSigKeyMapping {
-        key_id: String,
-        database_id: crate::entry::ID,
-    },
+    NoSigKeyMapping { key_id: String, database_id: ID },
 
     #[error("No SigKey found for key {key_id} in database {database_id}")]
-    NoSigKeyFound {
-        key_id: String,
-        database_id: crate::entry::ID,
-    },
+    NoSigKeyFound { key_id: String, database_id: ID },
 
     #[error("Password required for operation: {operation}")]
     PasswordRequired { operation: String },

@@ -7,11 +7,17 @@
 
 use super::helpers::*;
 use eidetica::{
-    auth::Permission as AuthPermission,
+    Database,
+    auth::{
+        Permission as AuthPermission,
+        crypto::{format_public_key, generate_keypair},
+    },
     crdt::Doc,
+    store::DocStore,
     sync::{
+        Sync,
         handler::SyncHandler,
-        protocol::SyncResponse,
+        protocol::{RequestContext, SyncResponse},
         transports::{http::HttpTransport, iroh::IrohTransport},
     },
 };
@@ -29,8 +35,8 @@ async fn test_bootstrap_pending_error_structure() {
     let sync_handler = create_test_sync_handler(&sync);
 
     // Generate a test public key
-    let (_, verifying_key) = eidetica::auth::crypto::generate_keypair();
-    let test_pubkey = eidetica::auth::crypto::format_public_key(&verifying_key);
+    let (_, verifying_key) = generate_keypair();
+    let test_pubkey = format_public_key(&verifying_key);
 
     // Create a bootstrap request that will require manual approval
     let sync_request = create_bootstrap_request(
@@ -41,7 +47,7 @@ async fn test_bootstrap_pending_error_structure() {
     );
 
     // Handle the request - should return BootstrapPending
-    let context = eidetica::sync::protocol::RequestContext::default();
+    let context = RequestContext::default();
     let response = sync_handler.handle_request(&sync_request, &context).await;
 
     // Verify the response is BootstrapPending with the expected structure
@@ -217,7 +223,7 @@ async fn test_iroh_transport_concurrent_access() {
 
     let instance = setup_instance_with_initialized().await;
     let sync = Arc::new(tokio::sync::Mutex::new(
-        eidetica::sync::Sync::new(instance.clone()).await.unwrap(),
+        Sync::new(instance.clone()).await.unwrap(),
     ));
 
     // Enable Iroh transport
@@ -294,7 +300,7 @@ async fn test_http_address_with_http_transport() {
 
     let (instance, _user, _key_id, database, _sync, _tree_id) =
         setup_global_wildcard_server().await;
-    let client_sync = eidetica::sync::Sync::new(instance.clone()).await.unwrap();
+    let client_sync = Sync::new(instance.clone()).await.unwrap();
 
     // Enable HTTP transport on client
     client_sync
@@ -340,7 +346,7 @@ async fn test_iroh_address_detection() {
 
     let (instance, _user, _key_id, database, _sync, _tree_id) =
         setup_global_wildcard_server().await;
-    let client_sync = eidetica::sync::Sync::new(instance.clone()).await.unwrap();
+    let client_sync = Sync::new(instance.clone()).await.unwrap();
 
     // Enable Iroh transport on client
     client_sync
@@ -427,7 +433,6 @@ async fn test_unauthenticated_sync_should_fail() {
     println!("✅ Database has auth configured with server_key");
 
     // Add some sensitive data to the database using a store
-    use eidetica::store::DocStore;
     let tx = database.new_transaction().await.unwrap();
     let secrets_store = tx.get_store::<DocStore>("secrets").await.unwrap();
     let mut secret_doc = Doc::new();
@@ -463,7 +468,7 @@ async fn test_unauthenticated_sync_should_fail() {
         .unwrap();
 
     // Verify client key is NOT in server's auth settings
-    let sigkeys = eidetica::Database::find_sigkeys(&server_instance, &tree_id, &client_key_id)
+    let sigkeys = Database::find_sigkeys(&server_instance, &tree_id, &client_key_id)
         .await
         .unwrap();
     assert!(

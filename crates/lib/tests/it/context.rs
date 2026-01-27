@@ -6,7 +6,7 @@
 //! Right now this calls out to the test helper functions, but that
 //! relationship will flip in future changes.
 
-use eidetica::{Database, Instance};
+use eidetica::{Database, Instance, crdt::Doc};
 
 use crate::helpers::test_instance_with_user;
 
@@ -38,7 +38,7 @@ impl TestContext {
         let (instance, mut user) = test_instance_with_user("test_user").await;
         let default_key = user.get_default_key().expect("Failed to get default key");
 
-        let mut settings = eidetica::crdt::Doc::new();
+        let mut settings = Doc::new();
         settings.set("name", "test_database");
 
         let database = user

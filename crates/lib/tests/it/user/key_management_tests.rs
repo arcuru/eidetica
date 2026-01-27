@@ -8,6 +8,10 @@
 //! - Database-key mappings and sigkey retrieval
 //! - Multi-key and multi-database scenarios
 
+use eidetica::auth::crypto::format_public_key;
+use eidetica::crdt::Doc;
+use eidetica::entry::ID;
+
 use super::helpers::*;
 
 // ===== ADD KEY TESTS =====
@@ -217,7 +221,7 @@ async fn test_get_public_key() {
     let public_key = user.get_public_key(&key_id).expect("Should get public key");
 
     // Verify the public key matches the signing key's verifying key
-    let expected_pubkey = eidetica::auth::crypto::format_public_key(&signing_key.verifying_key());
+    let expected_pubkey = format_public_key(&signing_key.verifying_key());
     assert_eq!(
         public_key, expected_pubkey,
         "Public key should match the signing key's verifying key"
@@ -287,7 +291,7 @@ async fn test_get_public_key_multiple_keys() {
 
     // Verify each matches its corresponding signing key
     let signing_key1 = user.get_signing_key(&key1_id).expect("Get signing key 1");
-    let expected_pubkey1 = eidetica::auth::crypto::format_public_key(&signing_key1.verifying_key());
+    let expected_pubkey1 = format_public_key(&signing_key1.verifying_key());
     assert_eq!(
         pubkey1, expected_pubkey1,
         "Public key 1 should match signing key 1"
@@ -384,7 +388,6 @@ async fn test_find_key_for_nonexistent_database() {
     let user = login_user(&instance, &username, None).await;
 
     // Create a fake database ID
-    use eidetica::entry::ID;
     let fake_db_id = ID::from("fake_database_id");
 
     // Try to find key for nonexistent database
@@ -430,7 +433,6 @@ async fn test_get_database_sigkey_for_unmapped_database() {
     let key_id = add_user_key(&mut user, Some("Unmapped Key")).await;
 
     // Create a fake database ID
-    use eidetica::entry::ID;
     let fake_db_id = ID::from("fake_database_id");
 
     // Try to get sigkey for database this key isn't mapped to
@@ -477,7 +479,7 @@ async fn test_add_database_key_mapping() {
     let extra_key = add_user_key(&mut user, Some("Extra Key")).await;
 
     // Create a database explicitly with the default key
-    let mut settings = eidetica::crdt::Doc::new();
+    let mut settings = Doc::new();
     settings.set("name", "test_db");
     let database = user
         .create_database(settings, &default_key)
@@ -622,21 +624,21 @@ async fn test_complex_key_database_mappings() {
     let key3 = add_user_key(&mut user, Some("Home Key")).await;
 
     // Create 3 databases explicitly with the default key
-    let mut settings1 = eidetica::crdt::Doc::new();
+    let mut settings1 = Doc::new();
     settings1.set("name", "work_db");
     let db1 = user
         .create_database(settings1, &key1)
         .await
         .expect("Should create work_db");
 
-    let mut settings2 = eidetica::crdt::Doc::new();
+    let mut settings2 = Doc::new();
     settings2.set("name", "home_db");
     let db2 = user
         .create_database(settings2, &key1)
         .await
         .expect("Should create home_db");
 
-    let mut settings3 = eidetica::crdt::Doc::new();
+    let mut settings3 = Doc::new();
     settings3.set("name", "shared_db");
     let db3 = user
         .create_database(settings3, &key1)
@@ -790,21 +792,21 @@ async fn test_multiple_manual_mappings_persist() {
     let key3 = add_user_key(&mut user1, Some("Key 3")).await;
 
     // Create 3 databases explicitly with the default key
-    let mut settings1 = eidetica::crdt::Doc::new();
+    let mut settings1 = Doc::new();
     settings1.set("name", "db1");
     let db1 = user1
         .create_database(settings1, &key1)
         .await
         .expect("Should create db1");
 
-    let mut settings2 = eidetica::crdt::Doc::new();
+    let mut settings2 = Doc::new();
     settings2.set("name", "db2");
     let db2 = user1
         .create_database(settings2, &key1)
         .await
         .expect("Should create db2");
 
-    let mut settings3 = eidetica::crdt::Doc::new();
+    let mut settings3 = Doc::new();
     settings3.set("name", "db3");
     let db3 = user1
         .create_database(settings3, &key1)

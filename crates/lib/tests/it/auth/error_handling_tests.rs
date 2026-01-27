@@ -15,6 +15,7 @@ use eidetica::{
     },
     crdt::{Doc, doc::Value},
     entry::ID,
+    store::DocStore,
 };
 
 use super::helpers::*;
@@ -56,9 +57,7 @@ async fn test_delegation_nonexistent_tree() -> Result<()> {
 
     // Add delegation to non-existent tree using operations
     let op = tree.new_transaction().await?;
-    let settings_store = op
-        .get_store::<eidetica::store::DocStore>("_settings")
-        .await?;
+    let settings_store = op.get_store::<DocStore>("_settings").await?;
 
     let nonexistent_root_id = ID::from("nonexistent_root");
     let nonexistent_delegation = DelegatedTreeRef {

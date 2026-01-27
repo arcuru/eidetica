@@ -12,12 +12,12 @@ use super::helpers::*;
 #[tokio::test]
 async fn test_doc_serialization() {
     // Test serialization and deserialization of Doc
-    let mut map = eidetica::crdt::Doc::new();
+    let mut map = Doc::new();
 
     // Add various value types
     map.set("string_key", "string_value");
 
-    let mut nested = eidetica::crdt::Doc::new();
+    let mut nested = Doc::new();
     nested.set("inner", "inner_value");
     map.set("map_key", nested);
 
@@ -91,7 +91,7 @@ async fn test_serialization_mixed_doc() {
 
 #[tokio::test]
 async fn test_serialization_empty_doc() {
-    let empty_map = eidetica::crdt::Doc::new();
+    let empty_map = Doc::new();
 
     test_serialization_roundtrip(&empty_map).expect("Empty doc serialization failed");
 
@@ -103,7 +103,7 @@ async fn test_serialization_empty_doc() {
 
 #[tokio::test]
 async fn test_serialization_tombstone_only_doc() {
-    let mut tombstone_map = eidetica::crdt::Doc::new();
+    let mut tombstone_map = Doc::new();
     tombstone_map.remove("tombstone1");
     tombstone_map.remove("tombstone2");
     tombstone_map.set("direct_tombstone", Value::Deleted);

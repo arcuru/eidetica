@@ -3,7 +3,12 @@
 //! These tests verify the new register_sync_peer() API and that
 //! peer relationships are tracked correctly for sync_on_commit.
 
-use eidetica::{Result, sync::SyncPeerInfo};
+use eidetica::{
+    Database, Result,
+    auth::crypto::{format_public_key, generate_keypair},
+    crdt::Doc,
+    sync::{Address, SyncPeerInfo},
+};
 
 use super::helpers::setup_instance_with_initialized;
 
@@ -15,15 +20,14 @@ async fn test_register_sync_peer_tracks_relationship_immediately() -> Result<()>
     let sync = instance.sync().expect("sync available");
 
     // Create a test database
-    let settings = eidetica::crdt::Doc::new();
-    let (signing_key, _) = eidetica::auth::crypto::generate_keypair();
-    let db = eidetica::Database::create(settings, &instance, signing_key, "test_key".to_string())
-        .await?;
+    let settings = Doc::new();
+    let (signing_key, _) = generate_keypair();
+    let db = Database::create(settings, &instance, signing_key, "test_key".to_string()).await?;
     let tree_id = db.root_id().clone();
 
     // Generate a fake peer pubkey
-    let (_, peer_verifying_key) = eidetica::auth::crypto::generate_keypair();
-    let peer_pubkey = eidetica::auth::crypto::format_public_key(&peer_verifying_key);
+    let (_, peer_verifying_key) = generate_keypair();
+    let peer_pubkey = format_public_key(&peer_verifying_key);
 
     // Before registering, peer should not exist
     let peers_before = sync.list_peers().await?;
@@ -34,7 +38,7 @@ async fn test_register_sync_peer_tracks_relationship_immediately() -> Result<()>
         .register_sync_peer(SyncPeerInfo {
             peer_pubkey: peer_pubkey.clone(),
             tree_id: tree_id.clone(),
-            addresses: vec![eidetica::sync::Address {
+            addresses: vec![Address {
                 transport_type: "http".to_string(),
                 address: "http://test:8080".to_string(),
             }],
@@ -62,14 +66,13 @@ async fn test_sync_handle_methods() -> Result<()> {
     let instance = setup_instance_with_initialized().await;
     let sync = instance.sync().expect("sync available");
 
-    let settings = eidetica::crdt::Doc::new();
-    let (signing_key, _) = eidetica::auth::crypto::generate_keypair();
-    let db = eidetica::Database::create(settings, &instance, signing_key, "test_key".to_string())
-        .await?;
+    let settings = Doc::new();
+    let (signing_key, _) = generate_keypair();
+    let db = Database::create(settings, &instance, signing_key, "test_key".to_string()).await?;
     let tree_id = db.root_id().clone();
 
-    let (_, peer_verifying_key) = eidetica::auth::crypto::generate_keypair();
-    let peer_pubkey = eidetica::auth::crypto::format_public_key(&peer_verifying_key);
+    let (_, peer_verifying_key) = generate_keypair();
+    let peer_pubkey = format_public_key(&peer_verifying_key);
 
     let handle = sync
         .register_sync_peer(SyncPeerInfo {
@@ -101,19 +104,18 @@ async fn test_sync_handle_add_address() -> Result<()> {
     let instance = setup_instance_with_initialized().await;
     let sync = instance.sync().expect("sync available");
 
-    let settings = eidetica::crdt::Doc::new();
-    let (signing_key, _) = eidetica::auth::crypto::generate_keypair();
-    let db = eidetica::Database::create(settings, &instance, signing_key, "test_key".to_string())
-        .await?;
+    let settings = Doc::new();
+    let (signing_key, _) = generate_keypair();
+    let db = Database::create(settings, &instance, signing_key, "test_key".to_string()).await?;
 
-    let (_, peer_verifying_key) = eidetica::auth::crypto::generate_keypair();
-    let peer_pubkey = eidetica::auth::crypto::format_public_key(&peer_verifying_key);
+    let (_, peer_verifying_key) = generate_keypair();
+    let peer_pubkey = format_public_key(&peer_verifying_key);
 
     let handle = sync
         .register_sync_peer(SyncPeerInfo {
             peer_pubkey: peer_pubkey.clone(),
             tree_id: db.root_id().clone(),
-            addresses: vec![eidetica::sync::Address {
+            addresses: vec![Address {
                 transport_type: "http".to_string(),
                 address: "http://primary:8080".to_string(),
             }],
@@ -131,7 +133,7 @@ async fn test_sync_handle_add_address() -> Result<()> {
 
     // Add another address
     handle
-        .add_address(eidetica::sync::Address {
+        .add_address(Address {
             transport_type: "http".to_string(),
             address: "http://backup:8080".to_string(),
         })
@@ -155,10 +157,9 @@ async fn test_get_sync_status() -> Result<()> {
     let instance = setup_instance_with_initialized().await;
     let sync = instance.sync().expect("sync available");
 
-    let settings = eidetica::crdt::Doc::new();
-    let (signing_key, _) = eidetica::auth::crypto::generate_keypair();
-    let db = eidetica::Database::create(settings, &instance, signing_key, "test_key".to_string())
-        .await?;
+    let settings = Doc::new();
+    let (signing_key, _) = generate_keypair();
+    let db = Database::create(settings, &instance, signing_key, "test_key".to_string()).await?;
 
     // Database::create() creates root entry, so should have local data
     let status = sync.get_sync_status(db.root_id(), "fake_peer").await?;

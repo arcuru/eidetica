@@ -4,9 +4,12 @@
 //! functionality of the CRDT system.
 
 // Helper functions are self-contained and don't need external imports
-use eidetica::crdt::{
-    CRDT, Doc,
-    doc::{List, Value, list::Position},
+use eidetica::{
+    Result,
+    crdt::{
+        CRDT, Doc,
+        doc::{List, Value, list::Position},
+    },
 };
 
 // Type alias for local usage
@@ -45,11 +48,7 @@ pub fn create_merge_test_maps(
 }
 
 /// Test merge operation and verify expected results
-pub fn test_merge_result(
-    map1: &Map,
-    map2: &Map,
-    expected_values: &[(&str, &str)],
-) -> eidetica::Result<Map> {
+pub fn test_merge_result(map1: &Map, map2: &Map, expected_values: &[(&str, &str)]) -> Result<Map> {
     let merged = map1.merge(map2)?;
 
     for (key, expected_value) in expected_values {
@@ -341,10 +340,7 @@ pub fn assert_maps_equivalent(map1: &Map, map2: &Map) {
 // ===== MERGE TESTING HELPERS =====
 
 /// Test CRDT merge commutativity: A ⊕ B = B ⊕ A
-pub fn test_merge_commutativity<T: CRDT + PartialEq + std::fmt::Debug>(
-    a: &T,
-    b: &T,
-) -> eidetica::Result<()> {
+pub fn test_merge_commutativity<T: CRDT + PartialEq + std::fmt::Debug>(a: &T, b: &T) -> Result<()> {
     let merge_ab = a.merge(b)?;
     let merge_ba = b.merge(a)?;
     assert_eq!(merge_ab, merge_ba, "Merge is not commutative");
@@ -356,7 +352,7 @@ pub fn test_merge_associativity<T: CRDT + PartialEq + std::fmt::Debug>(
     a: &T,
     b: &T,
     c: &T,
-) -> eidetica::Result<()> {
+) -> Result<()> {
     let left_assoc = a.merge(b)?.merge(c)?;
     let right_assoc = a.merge(&b.merge(c)?)?;
     assert_eq!(left_assoc, right_assoc, "Merge is not associative");
@@ -364,9 +360,7 @@ pub fn test_merge_associativity<T: CRDT + PartialEq + std::fmt::Debug>(
 }
 
 /// Test CRDT merge idempotency: A ⊕ A = A
-pub fn test_merge_idempotency<T: CRDT + PartialEq + std::fmt::Debug>(
-    a: &T,
-) -> eidetica::Result<()> {
+pub fn test_merge_idempotency<T: CRDT + PartialEq + std::fmt::Debug>(a: &T) -> Result<()> {
     let merged = a.merge(a)?;
     assert_eq!(*a, merged, "Merge is not idempotent");
     Ok(())
@@ -375,7 +369,7 @@ pub fn test_merge_idempotency<T: CRDT + PartialEq + std::fmt::Debug>(
 // ===== SERIALIZATION HELPERS =====
 
 /// Test JSON serialization roundtrip for any serializable type
-pub fn test_json_roundtrip<T>(value: &T) -> eidetica::Result<T>
+pub fn test_json_roundtrip<T>(value: &T) -> Result<T>
 where
     T: serde::Serialize + for<'de> serde::Deserialize<'de> + PartialEq + std::fmt::Debug,
 {

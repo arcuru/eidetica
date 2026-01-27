@@ -5,6 +5,8 @@
 //! - Concurrent operations
 //! - User enumeration
 
+use eidetica::store::DocStore;
+
 use super::helpers::*;
 
 // ===== CONCURRENT DATABASE CREATION =====
@@ -165,8 +167,6 @@ async fn test_users_modify_own_databases_concurrently() {
     let bob_db = create_named_database(&mut user2, "Bob DB").await;
 
     // Each writes to their database
-    use eidetica::store::DocStore;
-
     let alice_tx = alice_db.new_transaction().await.expect("Alice transaction");
     {
         let alice_store = alice_tx

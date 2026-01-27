@@ -1,12 +1,14 @@
 //! Tests for cryptographic operations in the authentication system.
 
 use eidetica::{
+    Database,
     auth::{
         AuthSettings,
-        crypto::format_public_key,
-        types::{Permission, SigKey},
+        crypto::{format_public_key, parse_public_key},
+        types::{AuthKey, Permission, SigKey},
     },
     crdt::Doc,
+    store::DocStore,
 };
 
 use crate::helpers::*;
@@ -24,8 +26,7 @@ async fn test_key_management() {
         .add_private_key(Some("TEST_KEY"))
         .await
         .expect("Failed to add key");
-    let public_key =
-        eidetica::auth::crypto::parse_public_key(&key_id).expect("Failed to parse key");
+    let public_key = parse_public_key(&key_id).expect("Failed to parse key");
 
     // List keys should now show two keys (default_key + TEST_KEY)
     let keys = user.list_keys().expect("Failed to list keys");
@@ -37,8 +38,7 @@ async fn test_key_management() {
         .add_private_key(Some("TEST_KEY_2"))
         .await
         .expect("Failed to add second key");
-    let public_key2 =
-        eidetica::auth::crypto::parse_public_key(&key_id2).expect("Failed to parse key");
+    let public_key2 = parse_public_key(&key_id2).expect("Failed to parse key");
 
     // List keys should now show three keys (default_key + TEST_KEY + TEST_KEY_2)
     let keys = user.list_keys().expect("Failed to list keys");
@@ -62,7 +62,7 @@ async fn test_key_management() {
         .await
         .expect("Failed to create operation");
     let store = op
-        .get_store::<eidetica::store::DocStore>("data")
+        .get_store::<DocStore>("data")
         .await
         .expect("Failed to get subtree");
     store
@@ -115,7 +115,7 @@ async fn test_generated_key_can_sign() {
         .await
         .expect("Failed to create operation");
     let store = op
-        .get_store::<eidetica::store::DocStore>("data")
+        .get_store::<DocStore>("data")
         .await
         .expect("Failed to get subtree");
     store
@@ -140,8 +140,6 @@ async fn test_generated_key_can_sign() {
 
 #[tokio::test]
 async fn test_multi_key_authentication() {
-    use eidetica::auth::types::AuthKey;
-
     let (instance, mut user) = test_instance_with_user("test_user").await;
 
     // Add two keys using User API
@@ -149,15 +147,13 @@ async fn test_multi_key_authentication() {
         .add_private_key(Some("TEST_KEY"))
         .await
         .expect("Failed to add key");
-    let _public_key1 =
-        eidetica::auth::crypto::parse_public_key(&key_id1).expect("Failed to parse key");
+    let _public_key1 = parse_public_key(&key_id1).expect("Failed to parse key");
 
     let key_id2 = user
         .add_private_key(Some("SECOND_KEY"))
         .await
         .expect("Failed to add second key");
-    let _public_key2 =
-        eidetica::auth::crypto::parse_public_key(&key_id2).expect("Failed to parse key");
+    let _public_key2 = parse_public_key(&key_id2).expect("Failed to parse key");
 
     // Set up authentication settings with both keys
     // Note: First key needs admin permission to create tree with auth settings
@@ -189,7 +185,7 @@ async fn test_multi_key_authentication() {
         .await
         .expect("Failed to create operation");
     let store = op
-        .get_store::<eidetica::store::DocStore>("data")
+        .get_store::<DocStore>("data")
         .await
         .expect("Failed to get subtree");
     store
@@ -217,7 +213,7 @@ async fn test_multi_key_authentication() {
         .get_signing_key(&key_id2)
         .expect("Failed to get signing key")
         .clone();
-    let tree_with_key2 = eidetica::Database::open(
+    let tree_with_key2 = Database::open(
         instance.clone(),
         tree.root_id(),
         signing_key2_for_load,
@@ -231,7 +227,7 @@ async fn test_multi_key_authentication() {
         .await
         .expect("Failed to create operation");
     let store2 = op2
-        .get_store::<eidetica::store::DocStore>("data")
+        .get_store::<DocStore>("data")
         .await
         .expect("Failed to get subtree");
     store2
@@ -265,16 +261,14 @@ async fn test_keys_have_unique_identity() {
         .add_private_key(Some("TEST_KEY"))
         .await
         .expect("Failed to add key");
-    let public_key1 =
-        eidetica::auth::crypto::parse_public_key(&key_id1).expect("Failed to parse key");
+    let public_key1 = parse_public_key(&key_id1).expect("Failed to parse key");
 
     // Add another key with different name
     let key_id2 = user
         .add_private_key(Some("TEST_KEY_2"))
         .await
         .expect("Failed to add another key");
-    let public_key2 =
-        eidetica::auth::crypto::parse_public_key(&key_id2).expect("Failed to parse key");
+    let public_key2 = parse_public_key(&key_id2).expect("Failed to parse key");
 
     // Should be different keys
     assert_ne!(public_key1, public_key2);
@@ -296,7 +290,7 @@ async fn test_keys_have_unique_identity() {
         .await
         .expect("Failed to create operation");
     let store = op
-        .get_store::<eidetica::store::DocStore>("data")
+        .get_store::<DocStore>("data")
         .await
         .expect("Failed to get subtree");
     store

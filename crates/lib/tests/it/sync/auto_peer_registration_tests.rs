@@ -4,8 +4,13 @@
 //! during handshakes and sync tree requests.
 
 use eidetica::{
-    auth::crypto::{format_public_key, generate_challenge, generate_keypair},
-    crdt::Doc,
+    auth::{
+        Permission,
+        crypto::{format_public_key, generate_challenge, generate_keypair},
+        types::AuthKey,
+    },
+    crdt::{Doc, doc::path},
+    store::DocStore,
     sync::{
         Address, PeerId,
         handler::{SyncHandler, SyncHandlerImpl},
@@ -291,14 +296,8 @@ async fn test_incremental_sync_tracks_tree_peer_relationship() {
 
     // Add an entry to the database
     let tx = db.new_transaction().await.unwrap();
-    let store = tx
-        .get_store::<eidetica::store::DocStore>("test")
-        .await
-        .unwrap();
-    store
-        .set_path(eidetica::crdt::doc::path!("key"), "value")
-        .await
-        .unwrap();
+    let store = tx.get_store::<DocStore>("test").await.unwrap();
+    store.set_path(path!("key"), "value").await.unwrap();
     tx.commit().await.unwrap();
 
     let sync_tree_id = sync.sync_tree_root_id().clone();
@@ -706,7 +705,7 @@ async fn test_bootstrap_auto_detects_permission_for_authorized_key() {
             // Should have detected Admin(0) permission
             assert_eq!(
                 bootstrap_response.granted_permission.unwrap(),
-                eidetica::auth::Permission::Admin(0)
+                Permission::Admin(0)
             );
         }
         other => panic!("Expected Bootstrap response, got: {other:?}"),
@@ -803,8 +802,7 @@ async fn test_bootstrap_auto_detects_global_wildcard_permission() {
     {
         let tx = db.new_transaction().await.unwrap();
         let settings_store = tx.get_settings().unwrap();
-        let global_auth_key =
-            eidetica::auth::types::AuthKey::active(Some("*"), eidetica::auth::Permission::Read);
+        let global_auth_key = AuthKey::active(Some("*"), Permission::Read);
         settings_store
             .set_auth_key("*", global_auth_key)
             .await
@@ -863,7 +861,7 @@ async fn test_bootstrap_auto_detects_global_wildcard_permission() {
             assert!(bootstrap_response.key_approved);
             assert_eq!(
                 bootstrap_response.granted_permission.unwrap(),
-                eidetica::auth::Permission::Read
+                Permission::Read
             );
         }
         other => panic!("Expected Bootstrap response, got: {other:?}"),
@@ -895,18 +893,14 @@ async fn test_bootstrap_uses_highest_permission_when_key_has_multiple() {
         let settings_store = tx.get_settings().unwrap();
 
         // Add the special key directly with Write(5) permission (keyed by pubkey)
-        let special_auth_key = eidetica::auth::types::AuthKey::active(
-            Some("special_key"),
-            eidetica::auth::Permission::Write(5),
-        );
+        let special_auth_key = AuthKey::active(Some("special_key"), Permission::Write(5));
         settings_store
             .set_auth_key(&special_pubkey, special_auth_key)
             .await
             .unwrap();
 
         // Add global wildcard with Read permission
-        let global_auth_key =
-            eidetica::auth::types::AuthKey::active(Some("*"), eidetica::auth::Permission::Read);
+        let global_auth_key = AuthKey::active(Some("*"), Permission::Read);
         settings_store
             .set_auth_key("*", global_auth_key)
             .await
@@ -962,7 +956,7 @@ async fn test_bootstrap_uses_highest_permission_when_key_has_multiple() {
             assert!(bootstrap_response.key_approved);
             assert_eq!(
                 bootstrap_response.granted_permission.unwrap(),
-                eidetica::auth::Permission::Write(5)
+                Permission::Write(5)
             );
         }
         other => panic!("Expected Bootstrap response, got: {other:?}"),

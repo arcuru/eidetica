@@ -3,7 +3,7 @@
 //! This module contains tests for complex scenarios involving LCA (Lowest Common Ancestor)
 //! computation, path finding, and deterministic ordering in diamond and merge patterns.
 
-use eidetica::store::DocStore;
+use eidetica::{entry::ID, store::DocStore};
 
 use super::helpers::*;
 use crate::helpers::*;
@@ -640,8 +640,6 @@ async fn test_find_merge_base_with_bypass_path() {
 /// hit the cache instead of recomputing.
 #[tokio::test]
 async fn test_multi_tip_merge_state_caching() {
-    use eidetica::entry::ID;
-
     let ctx = TestContext::new().with_database().await;
 
     // Create diamond pattern: base -> left, right (two tips)
@@ -731,8 +729,6 @@ async fn test_multi_tip_merge_state_caching() {
 /// Test that merge cache key is order-independent (tips are sorted).
 #[tokio::test]
 async fn test_multi_tip_cache_key_is_order_independent() {
-    use eidetica::entry::ID;
-
     let ctx = TestContext::new().with_database().await;
     let diamond = create_diamond_pattern(ctx.database()).await;
 

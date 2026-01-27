@@ -5,7 +5,18 @@
 //! This is essential for working with User API managed keys that are stored in memory.
 
 use super::helpers::*;
-use eidetica::{Entry, auth::Permission, sync::transports::http::HttpTransport};
+use eidetica::{
+    Database, Entry,
+    auth::{
+        Permission,
+        crypto::{format_public_key, generate_keypair},
+        types::KeyStatus,
+    },
+    crdt::Doc,
+    entry::ID,
+    store::DocStore,
+    sync::transports::http::HttpTransport,
+};
 
 /// Test basic bootstrap with user-provided signing key
 #[tokio::test]
@@ -34,8 +45,8 @@ async fn test_bootstrap_with_provided_key() {
     let server_addr = start_sync_server(&server_sync).await;
 
     // Setup client with a key we'll manage manually (not in backend)
-    let (_client_signing_key, client_verifying_key) = eidetica::auth::crypto::generate_keypair();
-    let client_key_id = eidetica::auth::crypto::format_public_key(&client_verifying_key);
+    let (_client_signing_key, client_verifying_key) = generate_keypair();
+    let client_key_id = format_public_key(&client_verifying_key);
 
     let (client_instance, client_sync) = setup().await;
     client_sync
@@ -105,8 +116,8 @@ async fn test_bootstrap_with_provided_key_succeeds() {
     let server_addr = start_sync_server(&server_sync).await;
 
     // Setup client with user-managed key
-    let (_client_signing_key, client_verifying_key) = eidetica::auth::crypto::generate_keypair();
-    let client_key_id = eidetica::auth::crypto::format_public_key(&client_verifying_key);
+    let (_client_signing_key, client_verifying_key) = generate_keypair();
+    let client_key_id = format_public_key(&client_verifying_key);
 
     let (_client_instance, client_sync) = setup().await;
     client_sync
@@ -163,8 +174,8 @@ async fn test_bootstrap_with_invalid_key_fails() {
     let server_addr = start_sync_server(&server_sync).await;
 
     // Setup client with a signing key
-    let (_client_signing_key, client_verifying_key) = eidetica::auth::crypto::generate_keypair();
-    let client_key_id = eidetica::auth::crypto::format_public_key(&client_verifying_key);
+    let (_client_signing_key, client_verifying_key) = generate_keypair();
+    let client_key_id = format_public_key(&client_verifying_key);
 
     let (_client_instance, client_sync) = setup().await;
     client_sync
@@ -173,7 +184,7 @@ async fn test_bootstrap_with_invalid_key_fails() {
         .unwrap();
 
     // Try to sync with a non-existent tree (should fail)
-    let fake_tree_id = eidetica::entry::ID::from("nonexistent_tree_id");
+    let fake_tree_id = ID::from("nonexistent_tree_id");
 
     let result = client_sync
         .sync_with_peer_for_bootstrap_with_key(
@@ -220,8 +231,8 @@ async fn test_multiple_clients_with_different_keys() {
     // Setup three clients with different user-managed keys
     let mut clients = Vec::new();
     for i in 0..3 {
-        let (_signing_key, verifying_key) = eidetica::auth::crypto::generate_keypair();
-        let key_id = eidetica::auth::crypto::format_public_key(&verifying_key);
+        let (_signing_key, verifying_key) = generate_keypair();
+        let key_id = format_public_key(&verifying_key);
         let (instance, sync) = setup().await;
         sync.register_transport("http", HttpTransport::builder())
             .await
@@ -298,8 +309,8 @@ async fn test_bootstrap_with_different_permissions() {
     for (perm_name, permission) in permissions {
         println!("🧪 Testing bootstrap with {perm_name} permission");
 
-        let (_signing_key, verifying_key) = eidetica::auth::crypto::generate_keypair();
-        let key_id = eidetica::auth::crypto::format_public_key(&verifying_key);
+        let (_signing_key, verifying_key) = generate_keypair();
+        let key_id = format_public_key(&verifying_key);
 
         let (_instance, sync) = setup().await;
         sync.register_transport("http", HttpTransport::builder())
@@ -361,8 +372,8 @@ async fn test_bootstrap_with_invalid_keys() {
         .unwrap();
 
     // Generate a valid public key for comparison
-    let (_signing_key, verifying_key) = eidetica::auth::crypto::generate_keypair();
-    let valid_public_key = eidetica::auth::crypto::format_public_key(&verifying_key);
+    let (_signing_key, verifying_key) = generate_keypair();
+    let valid_public_key = format_public_key(&verifying_key);
 
     println!("🧪 TEST: Testing empty public key");
     let result = sync
@@ -461,12 +472,9 @@ async fn test_full_e2e_bootstrap_with_database_instances() {
 
     // Add content to the database via proper transaction (not bypassing to backend)
     let server_tx = server_database.new_transaction().await.unwrap();
-    let messages_store = server_tx
-        .get_store::<eidetica::store::DocStore>("messages")
-        .await
-        .unwrap();
+    let messages_store = server_tx.get_store::<DocStore>("messages").await.unwrap();
 
-    let mut msg = eidetica::crdt::Doc::new();
+    let mut msg = Doc::new();
     msg.set("text", "Hello from authenticated database!");
     msg.set_json("timestamp", 1234567890_u64).unwrap();
     messages_store.set_node("msg1", msg).await.unwrap();
@@ -479,8 +487,8 @@ async fn test_full_e2e_bootstrap_with_database_instances() {
     let server_addr = start_sync_server(&server_sync).await;
 
     // Setup client with user-managed key (simulating User API)
-    let (_client_signing_key, client_verifying_key) = eidetica::auth::crypto::generate_keypair();
-    let client_key_id = eidetica::auth::crypto::format_public_key(&client_verifying_key);
+    let (_client_signing_key, client_verifying_key) = generate_keypair();
+    let client_key_id = format_public_key(&client_verifying_key);
 
     let (client_instance, client_sync) = setup().await;
     client_sync
@@ -513,8 +521,8 @@ async fn test_full_e2e_bootstrap_with_database_instances() {
 
     // Verify client successfully bootstrapped and can load the database
     // Use global "*" permission (server has wildcard permission)
-    let (reader_key, _) = eidetica::auth::generate_keypair();
-    let client_database = eidetica::Database::open(
+    let (reader_key, _) = generate_keypair();
+    let client_database = Database::open(
         client_instance.clone(),
         &tree_id,
         reader_key,
@@ -527,10 +535,7 @@ async fn test_full_e2e_bootstrap_with_database_instances() {
 
     // Verify the client has the actual data from the server
     let client_tx = client_database.new_transaction().await.unwrap();
-    let client_messages = client_tx
-        .get_store::<eidetica::store::DocStore>("messages")
-        .await
-        .unwrap();
+    let client_messages = client_tx.get_store::<DocStore>("messages").await.unwrap();
 
     let msg1 = client_messages
         .get_node("msg1")
@@ -560,10 +565,7 @@ async fn test_full_e2e_bootstrap_with_database_instances() {
         .await
         .expect("Global wildcard permission should exist");
 
-    assert_eq!(
-        global_auth_key.status(),
-        &eidetica::auth::types::KeyStatus::Active
-    );
+    assert_eq!(global_auth_key.status(), &KeyStatus::Active);
 
     println!(
         "✅ Server: Global wildcard permission grants access (no individual client key added)"
@@ -593,8 +595,8 @@ async fn test_incremental_sync_after_bootstrap_with_key() {
     let server_addr = start_sync_server(&server_sync).await;
 
     // Setup client with user-managed key
-    let (_client_signing_key, client_verifying_key) = eidetica::auth::crypto::generate_keypair();
-    let client_key_id = eidetica::auth::crypto::format_public_key(&client_verifying_key);
+    let (_client_signing_key, client_verifying_key) = generate_keypair();
+    let client_key_id = format_public_key(&client_verifying_key);
 
     let (_client_instance, client_sync) = setup().await;
     client_sync

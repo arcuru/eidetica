@@ -1,7 +1,9 @@
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use eidetica::{
+    Instance,
+    backend::database::InMemory,
     entry::{Entry, ID},
-    sync::{peer_types::Address, transports::iroh::IrohTransport},
+    sync::{Sync, peer_types::Address, transports::iroh::IrohTransport},
 };
 use iroh::RelayMode;
 use std::{hint::black_box, sync::Arc, time::Duration};
@@ -18,15 +20,7 @@ fn create_entry_with_parents(tree_id: &str, parents: Vec<ID>) -> Entry {
 }
 
 // Helper function to setup sync engines for benchmarking
-async fn setup_iroh_sync_pair() -> (
-    Arc<eidetica::Instance>,
-    eidetica::sync::Sync,
-    Arc<eidetica::Instance>,
-    eidetica::sync::Sync,
-    Address,
-) {
-    use eidetica::{Instance, backend::database::InMemory, sync::Sync};
-
+async fn setup_iroh_sync_pair() -> (Arc<Instance>, Sync, Arc<Instance>, Sync, Address) {
     // Create databases
     let base_db1 = Arc::new(
         Instance::open(Box::new(InMemory::new()))

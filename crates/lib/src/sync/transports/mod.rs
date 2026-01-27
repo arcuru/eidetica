@@ -14,6 +14,7 @@ use crate::{
     crdt::Doc,
     store::Registered,
     sync::{
+        SyncError,
         handler::SyncHandler,
         peer_types::Address,
         protocol::{SyncRequest, SyncResponse},
@@ -171,8 +172,8 @@ pub trait SyncTransport: Send + Sync {
         let response = self.send_request(address, &request).await?;
         match response {
             SyncResponse::Ack | SyncResponse::Count(_) => Ok(()),
-            SyncResponse::Error(msg) => Err(crate::sync::SyncError::Network(msg).into()),
-            _ => Err(crate::sync::SyncError::UnexpectedResponse {
+            SyncResponse::Error(msg) => Err(SyncError::Network(msg).into()),
+            _ => Err(SyncError::UnexpectedResponse {
                 expected: "Ack or Count",
                 actual: format!("{response:?}"),
             }

@@ -12,7 +12,9 @@ use super::{
     transports::{http::HttpTransport, iroh::IrohTransport},
     user_sync_manager::UserSyncManager,
 };
-use crate::{Database, Entry, Instance, Result, entry::ID, store::DocStore};
+use crate::{Database, Entry, Instance, Result, auth::Permission, entry::ID, store::DocStore};
+
+use super::utils::collect_ancestors_to_send;
 
 impl Sync {
     // === Core Sync Methods ===
@@ -29,11 +31,7 @@ impl Sync {
     ///
     /// # Returns
     /// A Result indicating success or failure of the sync operation.
-    pub async fn sync_tree_with_peer(
-        &self,
-        peer_pubkey: &str,
-        tree_id: &crate::entry::ID,
-    ) -> Result<()> {
+    pub async fn sync_tree_with_peer(&self, peer_pubkey: &str, tree_id: &ID) -> Result<()> {
         // Get peer information and address
         let peer_info = self
             .get_peer_info(peer_pubkey)
@@ -167,12 +165,9 @@ impl Sync {
 
             // Collect entries server is missing
             let backend = self.backend()?;
-            let entries_for_server = crate::sync::utils::collect_ancestors_to_send(
-                backend.as_backend_impl(),
-                &missing_tip_ids,
-                their_tips,
-            )
-            .await?;
+            let entries_for_server =
+                collect_ancestors_to_send(backend.as_backend_impl(), &missing_tip_ids, their_tips)
+                    .await?;
 
             if !entries_for_server.is_empty() {
                 // Send these entries back to server
@@ -193,7 +188,7 @@ impl Sync {
     async fn send_missing_entries_to_peer(
         &self,
         peer_address: &peer_types::Address,
-        tree_id: &crate::entry::ID,
+        tree_id: &ID,
         entries: Vec<Entry>,
     ) -> Result<()> {
         if entries.is_empty() {
@@ -246,7 +241,7 @@ impl Sync {
     /// Validate and store received entries from a peer.
     pub(super) async fn store_received_entries(
         &self,
-        _tree_id: &crate::entry::ID,
+        _tree_id: &ID,
         entries: Vec<Entry>,
     ) -> Result<()> {
         for entry in entries {
@@ -571,11 +566,7 @@ impl Sync {
     ///
     /// # Returns
     /// Result indicating success or failure.
-    pub async fn sync_with_peer(
-        &self,
-        peer_address: &str,
-        tree_id: Option<&crate::entry::ID>,
-    ) -> Result<()> {
+    pub async fn sync_with_peer(&self, peer_address: &str, tree_id: Option<&ID>) -> Result<()> {
         use peer_types::Address;
 
         // Auto-detect transport type from address format
@@ -629,10 +620,10 @@ impl Sync {
     pub async fn sync_tree_with_peer_auth(
         &self,
         peer_pubkey: &str,
-        tree_id: &crate::entry::ID,
+        tree_id: &ID,
         requesting_key: Option<&str>,
         requesting_key_name: Option<&str>,
-        requested_permission: Option<crate::auth::Permission>,
+        requested_permission: Option<Permission>,
     ) -> Result<()> {
         // Get peer information and address
         let peer_info = self

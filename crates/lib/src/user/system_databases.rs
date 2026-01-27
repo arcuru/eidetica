@@ -14,7 +14,7 @@ use super::{
 use crate::{
     Database, Instance, Result,
     auth::{
-        crypto::generate_keypair,
+        crypto::{format_public_key, generate_keypair},
         settings::AuthSettings,
         types::{AuthKey, Permission},
     },
@@ -211,7 +211,7 @@ pub async fn create_user(
 
     // 2. Generate default keypair for this user (kept in memory only)
     let (user_private_key, user_public_key) = generate_keypair();
-    let user_public_key_str = crate::auth::crypto::format_public_key(&user_public_key);
+    let user_public_key_str = format_public_key(&user_public_key);
 
     // 3. Create user database with authentication for both admin and user's key
     let mut user_db_settings = Doc::new();
@@ -222,7 +222,7 @@ pub async fn create_user(
     // Get device key for auth settings and database creation
     let device_private_key = instance.device_key().clone();
     let device_pubkey = device_private_key.verifying_key();
-    let device_pubkey_str = crate::auth::crypto::format_public_key(&device_pubkey);
+    let device_pubkey_str = format_public_key(&device_pubkey);
 
     // Set up authentication with both keys
     // Keys are stored by pubkey, with name as optional metadata

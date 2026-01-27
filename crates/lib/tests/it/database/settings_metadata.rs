@@ -3,7 +3,11 @@
 //! This module contains tests for settings metadata management including
 //! settings tips tracking, metadata propagation, and historical validation.
 
-use eidetica::crdt::{Doc, doc::Value};
+use eidetica::{
+    Entry,
+    crdt::{Doc, doc::Value},
+    store::DocStore,
+};
 
 use crate::helpers::test_instance_with_user_and_key;
 
@@ -21,10 +25,7 @@ async fn test_settings_tips_in_metadata() {
 
     // Create an operation to add some data
     let op1 = tree.new_transaction().await.unwrap();
-    let kv = op1
-        .get_store::<eidetica::store::DocStore>("data")
-        .await
-        .unwrap();
+    let kv = op1.get_store::<DocStore>("data").await.unwrap();
     kv.set("key1", "value1").await.unwrap();
     let entry1_id = op1.commit().await.unwrap();
 
@@ -44,10 +45,7 @@ async fn test_settings_tips_in_metadata() {
 
     // Create another operation to modify settings
     let op2 = tree.new_transaction().await.unwrap();
-    let settings_store = op2
-        .get_store::<eidetica::store::DocStore>("_settings")
-        .await
-        .unwrap();
+    let settings_store = op2.get_store::<DocStore>("_settings").await.unwrap();
     settings_store
         .set("description", "A test tree")
         .await
@@ -56,10 +54,7 @@ async fn test_settings_tips_in_metadata() {
 
     // Create a third operation that doesn't modify settings
     let op3 = tree.new_transaction().await.unwrap();
-    let kv3 = op3
-        .get_store::<eidetica::store::DocStore>("data")
-        .await
-        .unwrap();
+    let kv3 = op3.get_store::<DocStore>("data").await.unwrap();
     kv3.set("key2", "value2").await.unwrap();
     let entry3_id = op3.commit().await.unwrap();
 
@@ -150,28 +145,19 @@ async fn test_settings_tips_propagation() {
 
     // Create a chain of entries
     let op1 = tree.new_transaction().await.unwrap();
-    let kv = op1
-        .get_store::<eidetica::store::DocStore>("data")
-        .await
-        .unwrap();
+    let kv = op1.get_store::<DocStore>("data").await.unwrap();
     kv.set("entry", "1").await.unwrap();
     let entry1_id = op1.commit().await.unwrap();
 
     // Modify settings
     let op2 = tree.new_transaction().await.unwrap();
-    let settings_store = op2
-        .get_store::<eidetica::store::DocStore>("_settings")
-        .await
-        .unwrap();
+    let settings_store = op2.get_store::<DocStore>("_settings").await.unwrap();
     settings_store.set("updated", "true").await.unwrap();
     let entry2_id = op2.commit().await.unwrap();
 
     // Create another entry after settings change
     let op3 = tree.new_transaction().await.unwrap();
-    let kv = op3
-        .get_store::<eidetica::store::DocStore>("data")
-        .await
-        .unwrap();
+    let kv = op3.get_store::<DocStore>("data").await.unwrap();
     kv.set("entry", "3").await.unwrap();
     let entry3_id = op3.commit().await.unwrap();
 
@@ -181,7 +167,7 @@ async fn test_settings_tips_propagation() {
     let entry3 = tree.get_entry(&entry3_id).await.unwrap();
 
     // Parse settings tips from metadata
-    let parse_tips = |entry: &eidetica::Entry| -> Vec<String> {
+    let parse_tips = |entry: &Entry| -> Vec<String> {
         if let Some(metadata_str) = entry.metadata()
             && let Ok(metadata_obj) = serde_json::from_str::<serde_json::Value>(metadata_str)
             && let Some(tips_array) = metadata_obj.get("settings_tips")
@@ -238,10 +224,7 @@ async fn test_settings_metadata_with_complex_operations() {
     let mut data_entry_ids = Vec::new();
     for i in 0..3 {
         let op = tree.new_transaction().await.unwrap();
-        let data_store = op
-            .get_store::<eidetica::store::DocStore>("data")
-            .await
-            .unwrap();
+        let data_store = op.get_store::<DocStore>("data").await.unwrap();
         data_store.set("counter", i.to_string()).await.unwrap();
         data_store
             .set(format!("data_{i}"), format!("value_{i}"))
@@ -254,7 +237,7 @@ async fn test_settings_metadata_with_complex_operations() {
     // Update settings
     let settings_op = tree.new_transaction().await.unwrap();
     let settings_store = settings_op
-        .get_store::<eidetica::store::DocStore>("_settings")
+        .get_store::<DocStore>("_settings")
         .await
         .unwrap();
     settings_store
@@ -268,10 +251,7 @@ async fn test_settings_metadata_with_complex_operations() {
     let mut post_settings_entry_ids = Vec::new();
     for i in 3..6 {
         let op = tree.new_transaction().await.unwrap();
-        let data_store = op
-            .get_store::<eidetica::store::DocStore>("data")
-            .await
-            .unwrap();
+        let data_store = op.get_store::<DocStore>("data").await.unwrap();
         data_store.set("counter", i.to_string()).await.unwrap();
         data_store
             .set(format!("data_{i}"), format!("value_{i}"))
@@ -282,7 +262,7 @@ async fn test_settings_metadata_with_complex_operations() {
     }
 
     // Helper function to parse settings tips from entry
-    let parse_settings_tips = |entry: &eidetica::Entry| -> Vec<String> {
+    let parse_settings_tips = |entry: &Entry| -> Vec<String> {
         if let Some(metadata_str) = entry.metadata() {
             let metadata_obj: serde_json::Value = serde_json::from_str(metadata_str).unwrap();
             if let Some(tips_array) = metadata_obj.get("settings_tips") {
@@ -339,10 +319,7 @@ async fn test_settings_metadata_with_branching() {
 
     // Create base entry
     let base_op = tree.new_transaction().await.unwrap();
-    let base_store = base_op
-        .get_store::<eidetica::store::DocStore>("data")
-        .await
-        .unwrap();
+    let base_store = base_op.get_store::<DocStore>("data").await.unwrap();
     base_store.set("base", "true").await.unwrap();
     let base_id = base_op.commit().await.unwrap();
 
@@ -351,10 +328,7 @@ async fn test_settings_metadata_with_branching() {
         .new_transaction_with_tips(std::slice::from_ref(&base_id))
         .await
         .unwrap();
-    let branch1_store = branch1_op
-        .get_store::<eidetica::store::DocStore>("data")
-        .await
-        .unwrap();
+    let branch1_store = branch1_op.get_store::<DocStore>("data").await.unwrap();
     branch1_store.set("branch", "1").await.unwrap();
     let branch1_id = branch1_op.commit().await.unwrap();
 
@@ -362,10 +336,7 @@ async fn test_settings_metadata_with_branching() {
         .new_transaction_with_tips(std::slice::from_ref(&base_id))
         .await
         .unwrap();
-    let branch2_store = branch2_op
-        .get_store::<eidetica::store::DocStore>("data")
-        .await
-        .unwrap();
+    let branch2_store = branch2_op.get_store::<DocStore>("data").await.unwrap();
     branch2_store.set("branch", "2").await.unwrap();
     let branch2_id = branch2_op.commit().await.unwrap();
 
@@ -375,7 +346,7 @@ async fn test_settings_metadata_with_branching() {
         .await
         .unwrap();
     let settings_store = settings_op
-        .get_store::<eidetica::store::DocStore>("_settings")
+        .get_store::<DocStore>("_settings")
         .await
         .unwrap();
     settings_store
@@ -387,10 +358,7 @@ async fn test_settings_metadata_with_branching() {
     // Create merge operation
     let merge_tips = vec![settings_id.clone(), branch2_id.clone()];
     let merge_op = tree.new_transaction_with_tips(&merge_tips).await.unwrap();
-    let merge_store = merge_op
-        .get_store::<eidetica::store::DocStore>("data")
-        .await
-        .unwrap();
+    let merge_store = merge_op.get_store::<DocStore>("data").await.unwrap();
     merge_store.set("merged", "true").await.unwrap();
     let merge_id = merge_op.commit().await.unwrap();
 
@@ -429,17 +397,14 @@ async fn test_metadata_consistency_across_operations() {
 
     // Create authenticated operation (tree already configured with key_id)
     let auth_op = tree.new_transaction().await.unwrap();
-    let auth_store = auth_op
-        .get_store::<eidetica::store::DocStore>("auth_data")
-        .await
-        .unwrap();
+    let auth_store = auth_op.get_store::<DocStore>("auth_data").await.unwrap();
     auth_store.set("authenticated", "true").await.unwrap();
     let auth_id = auth_op.commit().await.unwrap();
 
     // Create regular operation
     let regular_op = tree.new_transaction().await.unwrap();
     let regular_store = regular_op
-        .get_store::<eidetica::store::DocStore>("regular_data")
+        .get_store::<DocStore>("regular_data")
         .await
         .unwrap();
     regular_store.set("regular", "true").await.unwrap();
@@ -459,7 +424,7 @@ async fn test_metadata_consistency_across_operations() {
     );
 
     // Parse and compare settings tips
-    let get_settings_tips = |entry: &eidetica::Entry| -> Vec<String> {
+    let get_settings_tips = |entry: &Entry| -> Vec<String> {
         let metadata_str = entry.metadata().unwrap();
         let metadata_obj: serde_json::Value = serde_json::from_str(metadata_str).unwrap();
         metadata_obj

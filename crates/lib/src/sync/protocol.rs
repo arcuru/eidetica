@@ -6,7 +6,10 @@
 use serde::{Deserialize, Serialize};
 
 use super::peer_types::Address;
-use crate::entry::{Entry, ID};
+use crate::{
+    auth::Permission,
+    entry::{Entry, ID},
+};
 
 /// Handshake request sent when establishing a peer connection.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -73,7 +76,7 @@ pub struct SyncTreeRequest {
     /// Key name/identifier for the requesting key
     pub requesting_key_name: Option<String>,
     /// Desired permission level for bootstrap
-    pub requested_permission: Option<crate::auth::Permission>,
+    pub requested_permission: Option<Permission>,
 }
 
 /// Bootstrap response containing complete tree state
@@ -88,7 +91,7 @@ pub struct BootstrapResponse {
     /// Whether the requesting key was approved and added
     pub key_approved: bool,
     /// The permission level granted (if approved)
-    pub granted_permission: Option<crate::auth::Permission>,
+    pub granted_permission: Option<Permission>,
 }
 
 /// Incremental sync response for existing trees

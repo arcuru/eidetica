@@ -11,16 +11,19 @@ use clap::{Parser, ValueEnum};
 
 use eidetica::{
     Instance,
+    auth::Permission,
     backend::{
         BackendImpl,
         database::{InMemory, Postgres, Sqlite},
     },
+    entry::ID,
     sync::{
-        handler::SyncHandlerImpl,
+        handler::{SyncHandler, SyncHandlerImpl},
         peer_types::Address,
         protocol::{RequestContext, SyncRequest, SyncResponse},
         transports::{http::HttpTransport, iroh::IrohTransport},
     },
+    user::{SyncSettings, TrackedDatabase},
 };
 
 /// Storage backend type
@@ -151,7 +154,7 @@ const SESSION_COOKIE: &str = "eidetica_session";
 #[derive(Clone)]
 struct AppState {
     instance: Arc<Instance>,
-    sync_handler: Arc<dyn eidetica::sync::handler::SyncHandler>,
+    sync_handler: Arc<dyn SyncHandler>,
     sessions: SessionStore,
 }
 
@@ -244,7 +247,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let sync_tree_id = sync.sync_tree_root_id().clone();
 
-    let sync_handler: Arc<dyn eidetica::sync::handler::SyncHandler> =
+    let sync_handler: Arc<dyn SyncHandler> =
         Arc::new(SyncHandlerImpl::new(instance.clone(), sync_tree_id));
 
     // Create session store
@@ -578,7 +581,7 @@ async fn handle_database_detail(
     };
 
     // Parse database ID
-    let database_id = match eidetica::entry::ID::parse(&query.id) {
+    let database_id = match ID::parse(&query.id) {
         Ok(id) => id,
         Err(_) => {
             return (StatusCode::BAD_REQUEST, "Invalid database ID").into_response();
@@ -644,7 +647,7 @@ async fn handle_track_database(
     };
 
     // Parse the database ID
-    let database_id = match eidetica::entry::ID::parse(&form.database_id) {
+    let database_id = match ID::parse(&form.database_id) {
         Ok(id) => id,
         Err(e) => {
             return (
@@ -657,9 +660,9 @@ async fn handle_track_database(
 
     // Parse requested permission
     let permission = match form.permission.as_str() {
-        "read" => eidetica::auth::Permission::Read,
-        "write" => eidetica::auth::Permission::Write(10),
-        "admin" => eidetica::auth::Permission::Admin(0),
+        "read" => Permission::Read,
+        "write" => Permission::Write(10),
+        "admin" => Permission::Admin(0),
         _ => {
             return (
                 StatusCode::BAD_REQUEST,
@@ -714,10 +717,10 @@ async fn handle_track_database(
             let mut properties = std::collections::HashMap::new();
             properties.insert("peer_address".to_string(), peer_address);
 
-            let tracked = eidetica::user::TrackedDatabase {
+            let tracked = TrackedDatabase {
                 database_id: database_id.clone(),
                 key_id: key_id.clone(),
-                sync_settings: eidetica::user::SyncSettings {
+                sync_settings: SyncSettings {
                     sync_enabled: true,
                     sync_on_commit: false,
                     interval_seconds: Some(13),

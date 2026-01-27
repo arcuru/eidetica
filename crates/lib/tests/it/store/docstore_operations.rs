@@ -218,7 +218,7 @@ async fn test_dict_list_nonexistent_key() {
         assert!(list_result.is_err());
 
         // Create a new list
-        let mut new_list = eidetica::crdt::doc::List::new();
+        let mut new_list = List::new();
         new_list.push(Value::Text("first_item".to_string()));
 
         dict.set_list("new_list", new_list)
@@ -254,7 +254,7 @@ async fn test_dict_list_persistence() {
             .await
             .expect("Failed to get Doc");
 
-        let mut colors = eidetica::crdt::doc::List::new();
+        let mut colors = List::new();
         colors.push(Value::Text("red".to_string()));
         colors.push(Value::Text("green".to_string()));
 

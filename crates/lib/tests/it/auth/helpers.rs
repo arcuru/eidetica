@@ -1,7 +1,7 @@
 use eidetica::{
-    Database, Instance,
+    Database, Instance, Result,
     auth::{
-        crypto::format_public_key,
+        crypto::{format_public_key, parse_public_key},
         settings::AuthSettings,
         types::{
             AuthKey, DelegatedTreeRef, DelegationStep, KeyHint, KeyStatus, Permission,
@@ -128,14 +128,14 @@ pub async fn setup_test_user_with_keys(
 pub async fn configure_database_auth(
     database: &Database,
     auth_config: &[(&str, &str, Permission, KeyStatus)],
-) -> eidetica::Result<()> {
+) -> Result<()> {
     let op = database.new_transaction().await?;
     {
         let settings = op.get_settings()?;
         settings
             .update_auth_settings(|auth| {
                 for (display_name, key_id, permission, status) in auth_config {
-                    let public_key = eidetica::auth::crypto::parse_public_key(key_id)?;
+                    let public_key = parse_public_key(key_id)?;
                     let pubkey_str = format_public_key(&public_key);
                     let auth_key =
                         AuthKey::new(Some(*display_name), permission.clone(), status.clone());
@@ -223,7 +223,7 @@ pub async fn setup_complete_auth_environment_with_user(
 pub async fn create_delegated_tree_with_user(
     user: &mut User,
     keys: &[(&str, Permission, KeyStatus)],
-) -> eidetica::Result<(Database, Vec<String>)> {
+) -> Result<(Database, Vec<String>)> {
     let mut key_ids = Vec::new();
 
     // Use existing default key for first key, or create new ones
@@ -270,7 +270,7 @@ pub async fn create_delegation_ref(
     tree: &Database,
     max_permission: Permission,
     min_permission: Option<Permission>,
-) -> eidetica::Result<DelegatedTreeRef> {
+) -> Result<DelegatedTreeRef> {
     let tips = tree.get_tips().await?;
     Ok(DelegatedTreeRef {
         permission_bounds: PermissionBounds {
@@ -319,7 +319,7 @@ impl DelegationChain {
     /// Each database only contains the bootstrap entry with the public key string as the name.
     /// The `create_chain_delegation()` method uses hardcoded delegation step names
     /// (`"delegate_level_{i}"`) that won't match any keys in the auth settings.
-    pub async fn new_with_user(username: &str, levels: usize) -> eidetica::Result<Self> {
+    pub async fn new_with_user(username: &str, levels: usize) -> Result<Self> {
         let (db, mut user) = crate::helpers::test_instance_with_user(username).await;
         let mut trees = Vec::new();
         let mut keys = Vec::new(); // Will store display names

@@ -4,11 +4,12 @@
 //! and end-to-end scenarios combining multiple features.
 
 use super::helpers::*;
+use eidetica::Result;
 use eidetica::crdt::CRDT;
 use eidetica::crdt::doc::Value;
 
 #[tokio::test]
-async fn test_end_to_end_data_workflow() -> eidetica::Result<()> {
+async fn test_end_to_end_data_workflow() -> Result<()> {
     let (db, tree, op, dict) = setup_complete_test_env("integration_test").await?;
 
     // Test 1: Create nested data using path operations
@@ -83,7 +84,7 @@ async fn test_end_to_end_data_workflow() -> eidetica::Result<()> {
 }
 
 #[tokio::test]
-async fn test_mixed_operations_consistency() -> eidetica::Result<()> {
+async fn test_mixed_operations_consistency() -> Result<()> {
     let (_, _, op, dict) = setup_complete_test_env("consistency_test").await?;
 
     // Mix path operations and value editor operations
@@ -132,7 +133,7 @@ async fn test_mixed_operations_consistency() -> eidetica::Result<()> {
 }
 
 #[tokio::test]
-async fn test_merge_operations_with_editors() -> eidetica::Result<()> {
+async fn test_merge_operations_with_editors() -> Result<()> {
     let (_, _, op, dict) = setup_complete_test_env("merge_test").await?;
 
     // Create initial structure using helpers
@@ -171,7 +172,7 @@ async fn test_merge_operations_with_editors() -> eidetica::Result<()> {
 }
 
 #[tokio::test]
-async fn test_error_handling_across_apis() -> eidetica::Result<()> {
+async fn test_error_handling_across_apis() -> Result<()> {
     let (_, _, op, dict) = setup_complete_test_env("error_test").await?;
 
     // Test 1: Path operations error handling
@@ -204,7 +205,7 @@ async fn test_error_handling_across_apis() -> eidetica::Result<()> {
 }
 
 #[tokio::test]
-async fn test_performance_with_deep_nesting() -> eidetica::Result<()> {
+async fn test_performance_with_deep_nesting() -> Result<()> {
     let (_, _, op, dict) = setup_complete_test_env("performance_test").await?;
 
     // Create a deeply nested structure (10 levels deep)

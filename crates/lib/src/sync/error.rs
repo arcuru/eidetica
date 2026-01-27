@@ -2,6 +2,9 @@
 
 use thiserror::Error;
 
+use super::peer_types::Address;
+use crate::{auth::Permission, entry::ID};
+
 /// Errors that can occur during synchronization operations.
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -83,7 +86,7 @@ pub enum SyncError {
 
     /// Entry not found in backend storage.
     #[error("Entry not found: {0}")]
-    EntryNotFound(crate::entry::ID),
+    EntryNotFound(ID),
 
     /// Invalid entry received (validation failed).
     #[error("Invalid entry: {0}")]
@@ -126,7 +129,7 @@ pub enum SyncError {
     InsufficientPermission {
         request_id: String,
         required_permission: String,
-        actual_permission: crate::auth::Permission,
+        actual_permission: Permission,
     },
 
     /// Invalid public key provided.
@@ -159,9 +162,7 @@ pub enum SyncError {
 
     /// No transport can handle the given address.
     #[error("No transport can handle address: {address:?}")]
-    NoTransportForAddress {
-        address: crate::sync::peer_types::Address,
-    },
+    NoTransportForAddress { address: Address },
 
     /// Multiple transport operations failed.
     #[error("Multiple transport errors: {}", errors.join(", "))]

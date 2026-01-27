@@ -1,7 +1,7 @@
 //! Tests for User database tracking functionality
 
 use eidetica::{
-    Database,
+    Database, Result,
     auth::{
         crypto::{format_public_key, generate_keypair},
         settings::AuthSettings,
@@ -15,7 +15,7 @@ use super::helpers::{login_user, setup_instance};
 
 /// Test tracking a database
 #[tokio::test]
-async fn test_track_database() -> eidetica::Result<()> {
+async fn test_track_database() -> Result<()> {
     // Create instance with a database that has global permissions
     let instance = setup_instance().await;
 
@@ -69,7 +69,7 @@ async fn test_track_database() -> eidetica::Result<()> {
 
 /// Test that tracking a database with no available SigKey returns an error
 #[tokio::test]
-async fn test_track_database_no_sigkey_error() -> eidetica::Result<()> {
+async fn test_track_database_no_sigkey_error() -> Result<()> {
     let instance = setup_instance().await;
 
     instance.create_user("test_user", None).await?;
@@ -109,7 +109,7 @@ async fn test_track_database_no_sigkey_error() -> eidetica::Result<()> {
 
 /// Test listing tracked databases
 #[tokio::test]
-async fn test_list_databases() -> eidetica::Result<()> {
+async fn test_list_databases() -> Result<()> {
     let instance = setup_instance().await;
 
     instance.create_user("test_user", None).await?;
@@ -156,7 +156,7 @@ async fn test_list_databases() -> eidetica::Result<()> {
 
 /// Test getting a specific tracked database
 #[tokio::test]
-async fn test_get_tracked_database() -> eidetica::Result<()> {
+async fn test_get_tracked_database() -> Result<()> {
     let instance = setup_instance().await;
 
     instance.create_user("test_user", None).await?;
@@ -208,7 +208,7 @@ async fn test_get_tracked_database() -> eidetica::Result<()> {
 
 /// Test updating a tracked database (upsert behavior)
 #[tokio::test]
-async fn test_update_tracked_database() -> eidetica::Result<()> {
+async fn test_update_tracked_database() -> Result<()> {
     let instance = setup_instance().await;
 
     instance.create_user("test_user", None).await?;
@@ -272,7 +272,7 @@ async fn test_update_tracked_database() -> eidetica::Result<()> {
 
 /// Test untracking a database
 #[tokio::test]
-async fn test_untrack_database() -> eidetica::Result<()> {
+async fn test_untrack_database() -> Result<()> {
     let instance = setup_instance().await;
 
     instance.create_user("test_user", None).await?;
@@ -320,7 +320,7 @@ async fn test_untrack_database() -> eidetica::Result<()> {
 
 /// Test that user can open a tracked database
 #[tokio::test]
-async fn test_load_tracked_database() -> eidetica::Result<()> {
+async fn test_load_tracked_database() -> Result<()> {
     let instance = setup_instance().await;
 
     instance.create_user("test_user", None).await?;
@@ -364,7 +364,7 @@ async fn test_load_tracked_database() -> eidetica::Result<()> {
 
 /// Test updating tracked database with valid key change (auto-creates mapping)
 #[tokio::test]
-async fn test_update_tracked_valid_key_change() -> eidetica::Result<()> {
+async fn test_update_tracked_valid_key_change() -> Result<()> {
     let instance = setup_instance().await;
 
     instance.create_user("test_user", None).await?;
@@ -425,7 +425,7 @@ async fn test_update_tracked_valid_key_change() -> eidetica::Result<()> {
 
 /// Test updating tracked database with non-existent key fails
 #[tokio::test]
-async fn test_update_tracked_nonexistent_key_fails() -> eidetica::Result<()> {
+async fn test_update_tracked_nonexistent_key_fails() -> Result<()> {
     let instance = setup_instance().await;
 
     instance.create_user("test_user", None).await?;
@@ -475,7 +475,7 @@ async fn test_update_tracked_nonexistent_key_fails() -> eidetica::Result<()> {
 
 /// Test updating tracked database with key that has no database access fails
 #[tokio::test]
-async fn test_update_tracked_no_access_fails() -> eidetica::Result<()> {
+async fn test_update_tracked_no_access_fails() -> Result<()> {
     let instance = setup_instance().await;
 
     instance.create_user("test_user", None).await?;
@@ -547,7 +547,7 @@ async fn test_update_tracked_no_access_fails() -> eidetica::Result<()> {
 
 /// Test updating tracked database auto-creates mapping for key with global access
 #[tokio::test]
-async fn test_update_tracked_auto_creates_mapping() -> eidetica::Result<()> {
+async fn test_update_tracked_auto_creates_mapping() -> Result<()> {
     let instance = setup_instance().await;
 
     instance.create_user("test_user", None).await?;

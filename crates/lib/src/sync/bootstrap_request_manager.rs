@@ -7,7 +7,12 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
 use super::peer_types::Address;
-use crate::{Error, Result, Transaction, auth::Permission, entry::ID, store::Table};
+use crate::{
+    Error, Result, Transaction,
+    auth::Permission,
+    entry::ID,
+    store::{StoreError, Table},
+};
 
 /// Private constant for bootstrap request subtree name
 pub(super) const BOOTSTRAP_REQUESTS_SUBTREE: &str = "bootstrap_requests";
@@ -103,7 +108,7 @@ impl<'a> BootstrapRequestManager<'a> {
 
         match requests.get(request_id).await {
             Ok(request) => Ok(Some(request)),
-            Err(Error::Store(crate::store::StoreError::KeyNotFound { .. })) => Ok(None),
+            Err(Error::Store(StoreError::KeyNotFound { .. })) => Ok(None),
             Err(e) => Err(e),
         }
     }

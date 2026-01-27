@@ -3,7 +3,7 @@
 use eidetica::{
     Database, Registered,
     auth::crypto::generate_keypair,
-    crdt::Doc,
+    crdt::{Doc, doc::Value},
     store::{DocStore, Table},
 };
 
@@ -524,16 +524,10 @@ async fn test_read_index_from_viewer() {
 
     // Verify we can read the index data
     let data1_info_value = viewer.get("data1").await.unwrap();
-    assert!(matches!(
-        data1_info_value,
-        eidetica::crdt::doc::Value::Doc(_)
-    ));
+    assert!(matches!(data1_info_value, Value::Doc(_)));
 
     let data2_info_value = viewer.get("data2").await.unwrap();
-    assert!(matches!(
-        data2_info_value,
-        eidetica::crdt::doc::Value::Doc(_)
-    ));
+    assert!(matches!(data2_info_value, Value::Doc(_)));
 }
 
 #[tokio::test]

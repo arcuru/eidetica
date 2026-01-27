@@ -1,7 +1,10 @@
-use eidetica::sync::{
-    Address, Sync,
-    protocol::{SyncRequest, SyncResponse},
-    transports::{SyncTransport, http::HttpTransport, iroh::IrohTransport},
+use eidetica::{
+    Entry,
+    sync::{
+        Address, Sync,
+        protocol::{SyncRequest, SyncResponse},
+        transports::{SyncTransport, http::HttpTransport, iroh::IrohTransport},
+    },
 };
 
 use crate::helpers::test_instance;
@@ -10,8 +13,6 @@ use crate::helpers::test_instance;
 /// by directly testing the shared handler function.
 #[tokio::test]
 async fn test_unified_message_handling() {
-    use eidetica::Entry;
-
     // Create test entries
     let single_entry = Entry::root_builder()
         .set_subtree_data("data", r#"{"test": "single"}"#)
@@ -86,8 +87,6 @@ async fn test_unified_message_handling() {
 /// Test that the new HTTP v0 endpoint format works with JSON requests
 #[tokio::test]
 async fn test_http_v0_json_endpoint() {
-    use eidetica::Entry;
-
     let mut transport = HttpTransport::builder()
         .bind("127.0.0.1:0")
         .build_sync()

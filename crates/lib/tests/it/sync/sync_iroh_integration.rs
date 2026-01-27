@@ -1,4 +1,7 @@
-use eidetica::sync::{Address, Sync, transports::iroh::IrohTransport};
+use eidetica::{
+    Entry,
+    sync::{Address, Sync, transports::iroh::IrohTransport},
+};
 
 use crate::sync::helpers;
 
@@ -64,8 +67,6 @@ async fn test_sync_iroh_settings_persistence() {
 
 #[tokio::test]
 async fn test_send_entries_iroh() {
-    use eidetica::Entry;
-
     // Create server instance
     let (_base_db1, sync_server) = helpers::setup().await;
     sync_server

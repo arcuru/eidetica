@@ -35,6 +35,7 @@ use crate::{
     Result, Transaction,
     crdt::Data,
     store::{Registered, Store, StoreError},
+    transaction::Encryptor,
 };
 
 /// Encrypted data fragment containing ciphertext and nonce.
@@ -230,7 +231,7 @@ impl PasswordEncryptor {
     }
 }
 
-impl crate::transaction::Encryptor for PasswordEncryptor {
+impl Encryptor for PasswordEncryptor {
     fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>> {
         // Wire format: nonce (12 bytes) || ciphertext
         if ciphertext.len() < AES_GCM_NONCE_SIZE {

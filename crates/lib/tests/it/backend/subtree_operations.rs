@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use eidetica::backend::VerificationStatus;
 use eidetica::entry::{Entry, ID};
 
 use super::helpers::test_backend;
@@ -200,10 +201,7 @@ async fn test_get_store_tips() {
         .expect("Root entry should build successfully");
     let root_id = root.id();
     backend
-        .put(
-            eidetica::backend::VerificationStatus::Verified,
-            root.clone(),
-        )
+        .put(VerificationStatus::Verified, root.clone())
         .await
         .unwrap();
 

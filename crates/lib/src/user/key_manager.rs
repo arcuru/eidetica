@@ -318,7 +318,7 @@ mod tests {
     use super::*;
     use crate::auth::crypto::generate_keypair;
     use crate::user::crypto::{encrypt_private_key, hash_password};
-    use crate::{Clock, SystemClock};
+    use crate::{Clock, Error, SystemClock};
 
     fn create_test_user_key(
         key_id: &str,
@@ -716,7 +716,7 @@ mod tests {
         if let Err(err) = result {
             assert!(matches!(
                 err,
-                crate::Error::User(UserError::DecryptionFailed { .. })
+                Error::User(UserError::DecryptionFailed { .. })
             ));
         }
     }

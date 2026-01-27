@@ -1,11 +1,19 @@
 use crate::models::ChatMessage;
-use eidetica::auth::AuthKey;
-use eidetica::auth::Permission;
-use eidetica::crdt::Doc;
-use eidetica::store::Table;
-use eidetica::sync::SyncError;
-use eidetica::sync::transports::{http::HttpTransport, iroh::IrohTransport};
-use eidetica::{Database, Instance, Result, user::User};
+use eidetica::{
+    Database, Instance, Result,
+    auth::{AuthKey, Permission, types::Permission as PermissionType},
+    crdt::Doc,
+    entry::ID,
+    store::Table,
+    sync::{
+        SyncError,
+        transports::{http::HttpTransport, iroh::IrohTransport},
+    },
+    user::{
+        User,
+        types::{SyncSettings, TrackedDatabase},
+    },
+};
 use ratatui::widgets::ScrollbarState;
 use tracing::{debug, error, info};
 
@@ -80,10 +88,10 @@ impl App {
         // Enable sync for this database with periodic sync every 2 seconds
         let database_id = database.root_id().clone();
         self.user
-            .track_database(eidetica::user::types::TrackedDatabase {
+            .track_database(TrackedDatabase {
                 database_id,
                 key_id: key_id.clone(),
-                sync_settings: eidetica::user::types::SyncSettings {
+                sync_settings: SyncSettings {
                     sync_enabled: true,
                     sync_on_commit: true,
                     interval_seconds: Some(2), // Sync every 2 seconds
@@ -186,7 +194,7 @@ impl App {
         debug!(room_id = %room_id, server_addr = %server_addr, "Parsed room address components");
 
         // Check if room already exists locally
-        let room_id_obj = eidetica::entry::ID::from(room_id);
+        let room_id_obj = ID::from(room_id);
         if let Ok(_database) = self.user.open_database(&room_id_obj).await {
             debug!("Room already exists locally");
         } else {
@@ -225,7 +233,7 @@ impl App {
                         server_addr,
                         &room_id_obj,
                         &key_id,
-                        eidetica::auth::types::Permission::Write(5),
+                        PermissionType::Write(5),
                     )
                     .await;
 
@@ -252,10 +260,10 @@ impl App {
                         debug!("Registering database with User's key manager");
                         match self
                             .user
-                            .track_database(eidetica::user::types::TrackedDatabase {
+                            .track_database(TrackedDatabase {
                                 database_id: room_id_obj.clone(),
                                 key_id: key_id.clone(),
-                                sync_settings: eidetica::user::types::SyncSettings {
+                                sync_settings: SyncSettings {
                                     sync_enabled: true,
                                     sync_on_commit: true,
                                     interval_seconds: Some(2), // Sync every 2 seconds

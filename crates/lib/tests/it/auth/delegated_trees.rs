@@ -152,8 +152,6 @@ async fn test_delegated_tree_permission_clamping() -> Result<()> {
 /// Test nested delegation (delegated tree delegating to another delegated tree)
 #[tokio::test]
 async fn test_nested_delegation() -> Result<()> {
-    use eidetica::auth::validation::AuthValidator;
-
     let (db, mut user) = crate::helpers::test_instance_with_user("test_user").await;
 
     let main_admin_key = user.add_private_key(Some("main_admin")).await?;
@@ -264,8 +262,6 @@ async fn test_nested_delegation() -> Result<()> {
 /// Test delegated tree with revoked keys
 #[tokio::test]
 async fn test_delegated_tree_with_revoked_keys() -> Result<()> {
-    use eidetica::auth::validation::AuthValidator;
-
     let (db, mut user) = crate::helpers::test_instance_with_user("test_user").await;
 
     let main_admin_key = user.add_private_key(Some("main_admin")).await?;
@@ -379,8 +375,6 @@ async fn test_delegated_tree_with_revoked_keys() -> Result<()> {
 /// Test delegation depth limits
 #[tokio::test]
 async fn test_delegation_depth_limits() -> Result<()> {
-    use eidetica::auth::validation::AuthValidator;
-
     let (db, mut user) = crate::helpers::test_instance_with_user("test_user").await;
 
     // Create a deeply nested delegation chain that exceeds the limit
@@ -454,8 +448,6 @@ async fn test_delegation_depth_limits() -> Result<()> {
 /// Test permission upgrade when delegated permission is below `min` bound
 #[tokio::test]
 async fn test_delegated_tree_min_bound_upgrade() -> Result<()> {
-    use eidetica::auth::validation::AuthValidator;
-
     let (db, mut user) = crate::helpers::test_instance_with_user("test_user").await;
 
     // Keys
@@ -547,8 +539,6 @@ async fn test_delegated_tree_min_bound_upgrade() -> Result<()> {
 /// Test that priority (the numeric part) is preserved when permission is already within bounds
 #[tokio::test]
 async fn test_delegated_tree_priority_preservation() -> Result<()> {
-    use eidetica::auth::validation::AuthValidator;
-
     let (db, mut user) = crate::helpers::test_instance_with_user("test_user").await;
 
     // Keys
@@ -635,8 +625,6 @@ async fn test_delegated_tree_priority_preservation() -> Result<()> {
 /// Test delegation depth limit at exactly MAX_DELEGATION_DEPTH (10)
 #[tokio::test]
 async fn test_delegation_depth_limit_exact() -> Result<()> {
-    use eidetica::auth::validation::AuthValidator;
-
     let (db, mut user) = crate::helpers::test_instance_with_user("test_user").await;
 
     // Setup simple tree with direct key using SettingsStore API
@@ -683,8 +671,6 @@ async fn test_delegation_depth_limit_exact() -> Result<()> {
 /// Test that invalid (unknown) tips cause delegation validation to fail
 #[tokio::test]
 async fn test_delegated_tree_invalid_tips() -> Result<()> {
-    use eidetica::auth::validation::AuthValidator;
-
     let (db, mut user) = crate::helpers::test_instance_with_user("test_user").await;
 
     // Keys and delegated tree setup using SettingsStore API

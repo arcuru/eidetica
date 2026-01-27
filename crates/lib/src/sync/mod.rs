@@ -95,6 +95,7 @@ use handle_trait::Handle;
 
 use crate::{
     Database, Instance, Result, WeakInstance,
+    auth::Permission,
     crdt::{Doc, doc::Value},
     entry::ID,
     instance::backend::Backend,
@@ -152,7 +153,7 @@ pub struct AuthParams {
     /// The name/ID of the requesting key
     pub requesting_key_name: String,
     /// The permission level being requested
-    pub requested_permission: crate::auth::Permission,
+    pub requested_permission: Permission,
 }
 
 /// Information needed to register a peer for syncing.
@@ -352,7 +353,7 @@ impl Sync {
     }
 
     /// Get the root ID of the sync settings tree.
-    pub fn sync_tree_root_id(&self) -> &crate::entry::ID {
+    pub fn sync_tree_root_id(&self) -> &ID {
         self.sync_tree.root_id()
     }
 

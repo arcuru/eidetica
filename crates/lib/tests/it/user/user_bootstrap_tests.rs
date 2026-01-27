@@ -4,7 +4,7 @@
 //! using their keys, with proper permission validation and error handling.
 
 use eidetica::{
-    Instance,
+    Database, Instance, Result,
     auth::{
         AuthKey, Permission,
         crypto::{format_public_key, generate_keypair},
@@ -12,11 +12,16 @@ use eidetica::{
     },
     constants::SETTINGS,
     crdt::Doc,
+    entry::ID,
     store::DocStore,
     sync::{
         RequestStatus, Sync,
         handler::{SyncHandler, SyncHandlerImpl},
-        protocol::{SyncRequest, SyncTreeRequest},
+        protocol::{RequestContext, SyncRequest, SyncResponse, SyncTreeRequest},
+    },
+    user::{
+        User,
+        types::{SyncSettings, TrackedDatabase},
     },
 };
 
@@ -27,14 +32,7 @@ use crate::helpers::test_instance;
 /// Create a server instance with a user who owns a database
 ///
 /// Returns: (Instance, User, Database, Sync, tree_id, user_key_id)
-async fn setup_user_with_database() -> eidetica::Result<(
-    Instance,
-    eidetica::user::User,
-    eidetica::Database,
-    Sync,
-    eidetica::entry::ID,
-    String,
-)> {
+async fn setup_user_with_database() -> Result<(Instance, User, Database, Sync, ID, String)> {
     let instance = test_instance().await;
 
     // Create and login user
@@ -84,7 +82,6 @@ async fn setup_user_with_database() -> eidetica::Result<(
         .expect("Failed to create sync");
 
     // Enable sync for this database
-    use eidetica::user::types::{SyncSettings, TrackedDatabase};
     user.track_database(TrackedDatabase {
         database_id: tree_id.clone(),
         key_id: user_key_id.clone(),
@@ -116,7 +113,7 @@ fn create_client_key() -> (ed25519_dalek::SigningKey, String) {
 /// Create and submit a bootstrap request, returning the request ID
 async fn create_pending_request(
     sync: &Sync,
-    tree_id: &eidetica::entry::ID,
+    tree_id: &ID,
     client_pubkey: &str,
     permission: Permission,
 ) -> String {
@@ -134,11 +131,11 @@ async fn create_pending_request(
         requested_permission: Some(permission),
     });
 
-    let context = eidetica::sync::protocol::RequestContext::default();
+    let context = RequestContext::default();
     let response = handler.handle_request(&request, &context).await;
 
     match response {
-        eidetica::sync::protocol::SyncResponse::BootstrapPending { request_id, .. } => request_id,
+        SyncResponse::BootstrapPending { request_id, .. } => request_id,
         other => panic!("Expected BootstrapPending, got: {other:?}"),
     }
 }
@@ -151,13 +148,11 @@ async fn create_pending_request(
 /// * `user` - The user who owns the key (for getting the signing key)
 /// * `permission` - The permission level to grant
 async fn grant_user_permission_on_database(
-    database: &eidetica::Database,
+    database: &Database,
     user_key_id: &str,
-    user: &eidetica::user::User,
+    user: &User,
     permission: Permission,
-) -> eidetica::Result<()> {
-    use eidetica::auth::types::AuthKey;
-
+) -> Result<()> {
     // Get user's public key
     let pubkey = user.get_public_key(user_key_id)?;
 
@@ -534,10 +529,7 @@ async fn test_multiple_users() {
     let alice_settings = alice_tx
         .get_settings()
         .expect("Failed to get Alice's settings");
-    let device_auth_key = eidetica::auth::types::AuthKey::active(
-        Some(device_key_name),
-        eidetica::auth::Permission::Admin(0),
-    );
+    let device_auth_key = AuthKey::active(Some(device_key_name), Permission::Admin(0));
     alice_settings
         .set_auth_key(&device_pubkey, device_auth_key)
         .await
@@ -553,10 +545,7 @@ async fn test_multiple_users() {
         .await
         .expect("Failed to create Bob transaction");
     let bob_settings = bob_tx.get_settings().expect("Failed to get Bob's settings");
-    let device_auth_key = eidetica::auth::types::AuthKey::active(
-        Some(device_key_name),
-        eidetica::auth::Permission::Admin(0),
-    );
+    let device_auth_key = AuthKey::active(Some(device_key_name), Permission::Admin(0));
     bob_settings
         .set_auth_key(&device_pubkey, device_auth_key)
         .await
@@ -564,7 +553,6 @@ async fn test_multiple_users() {
     bob_tx.commit().await.expect("Failed to commit Bob auth");
 
     // Enable sync for Alice's database
-    use eidetica::user::types::{SyncSettings, TrackedDatabase};
     alice
         .track_database(TrackedDatabase {
             database_id: alice_tree_id.clone(),
@@ -768,7 +756,6 @@ async fn test_user_without_admin_cannot_modify() {
         .expect("Failed to commit Alice auth");
 
     // Enable sync for Alice's database
-    use eidetica::user::types::{SyncSettings, TrackedDatabase};
     alice
         .track_database(TrackedDatabase {
             database_id: tree_id.clone(),

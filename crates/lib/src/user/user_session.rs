@@ -36,9 +36,13 @@ use handle_trait::Handle;
 
 use super::{UserKeyManager, types::UserInfo};
 use crate::{
-    Database, Instance, Result,
-    auth::{self, SigKey},
+    Database, Error, Instance, Result, Transaction,
+    auth::{self, Permission, SigKey, crypto::format_public_key},
+    crdt::Doc,
+    entry::ID,
+    instance::{InstanceError, backend::Backend},
     store::Table,
+    sync::{BootstrapRequest, Sync},
     user::{TrackedDatabase, UserError},
 };
 
@@ -128,7 +132,7 @@ impl User {
     }
 
     /// Get a reference to the backend
-    pub fn backend(&self) -> &crate::instance::backend::Backend {
+    pub fn backend(&self) -> &Backend {
         self.instance.backend()
     }
 
@@ -189,19 +193,14 @@ impl User {
     /// settings.set("name", "My Database");
     /// let database = user.new_database(settings, key_id)?;
     /// ```
-    pub async fn create_database(
-        &mut self,
-        settings: crate::crdt::Doc,
-        key_id: &str,
-    ) -> Result<crate::Database> {
-        use crate::store::Table;
+    pub async fn create_database(&mut self, settings: Doc, key_id: &str) -> Result<Database> {
         use crate::user::types::{SyncSettings, UserKey};
 
         // Get the signing key from UserKeyManager
         let signing_key = self
             .key_manager
             .get_signing_key(key_id)
-            .ok_or_else(|| crate::user::errors::UserError::KeyNotFound {
+            .ok_or_else(|| UserError::KeyNotFound {
                 key_id: key_id.to_string(),
             })?
             .clone();
@@ -220,7 +219,7 @@ impl User {
             .await?
             .into_iter()
             .next()
-            .ok_or_else(|| crate::user::errors::UserError::KeyNotFound {
+            .ok_or_else(|| UserError::KeyNotFound {
                 key_id: key_id.to_string(),
             })?;
 
@@ -270,7 +269,7 @@ impl User {
     /// - Returns an error if no key is found for the database
     /// - Returns an error if no SigKey mapping exists
     /// - Returns an error if the key is not in the UserKeyManager
-    pub async fn open_database(&self, root_id: &crate::entry::ID) -> Result<crate::Database> {
+    pub async fn open_database(&self, root_id: &ID) -> Result<Database> {
         // Validate the root exists
         self.instance.backend().get(root_id).await?;
 
@@ -309,7 +308,7 @@ impl User {
     ///
     /// # Returns
     /// Vector of matching databases from the user's tracked list
-    pub async fn find_database(&self, name: impl AsRef<str>) -> Result<Vec<crate::Database>> {
+    pub async fn find_database(&self, name: impl AsRef<str>) -> Result<Vec<Database>> {
         let name = name.as_ref();
         let tracked = self.databases().await?;
         let mut matching = Vec::new();
@@ -324,7 +323,7 @@ impl User {
         }
 
         if matching.is_empty() {
-            Err(crate::user::UserError::DatabaseNotTracked {
+            Err(UserError::DatabaseNotTracked {
                 database_id: format!("name:{name}"),
             }
             .into())
@@ -345,7 +344,7 @@ impl User {
     ///
     /// # Returns
     /// Some(key_id) if a suitable key is found, None if no keys can access this database
-    pub fn find_key(&self, database_id: &crate::entry::ID) -> Result<Option<String>> {
+    pub fn find_key(&self, database_id: &ID) -> Result<Option<String>> {
         // Iterate through all keys and find ones with SigKey mappings for this database
         for key_id in self.key_manager.list_key_ids() {
             if let Some(metadata) = self.key_manager.get_key_metadata(&key_id)
@@ -374,11 +373,7 @@ impl User {
     ///
     /// # Errors
     /// Returns an error if the key_id doesn't exist in the UserKeyManager
-    pub fn key_mapping(
-        &self,
-        key_id: &str,
-        database_id: &crate::entry::ID,
-    ) -> Result<Option<String>> {
+    pub fn key_mapping(&self, key_id: &str, database_id: &ID) -> Result<Option<String>> {
         let metadata = self.key_manager.get_key_metadata(key_id).ok_or_else(|| {
             super::errors::UserError::KeyNotFound {
                 key_id: key_id.to_string(),
@@ -407,12 +402,7 @@ impl User {
     ///
     /// # Errors
     /// Returns an error if the key_id doesn't exist in the user database
-    pub async fn map_key(
-        &mut self,
-        key_id: &str,
-        database_id: &crate::entry::ID,
-        sigkey: &str,
-    ) -> Result<()> {
+    pub async fn map_key(&mut self, key_id: &str, database_id: &ID, sigkey: &str) -> Result<()> {
         let tx = self.user_database.new_transaction().await?;
         self.map_key_in_txn(&tx, key_id, database_id, sigkey)
             .await?;
@@ -426,9 +416,9 @@ impl User {
     /// For external use, call `map_key()` instead.
     async fn map_key_in_txn(
         &mut self,
-        tx: &crate::Transaction,
+        tx: &Transaction,
         key_id: &str,
-        database_id: &crate::entry::ID,
+        database_id: &ID,
         sigkey: &str,
     ) -> Result<()> {
         use crate::store::Table;
@@ -466,8 +456,8 @@ impl User {
     /// SigKey, and creates the mapping. Used by track_database (which has upsert behavior).
     async fn validate_and_map_key_in_txn(
         &mut self,
-        tx: &crate::Transaction,
-        database_id: &crate::entry::ID,
+        tx: &Transaction,
+        database_id: &ID,
         key_id: &str,
     ) -> Result<()> {
         // Verify the key exists
@@ -611,9 +601,9 @@ impl User {
     /// # Errors
     /// Returns an error if no keys exist
     pub fn get_default_key(&self) -> Result<String> {
-        self.key_manager.get_default_key_id().ok_or_else(|| {
-            crate::Error::from(crate::instance::InstanceError::AuthenticationRequired)
-        })
+        self.key_manager
+            .get_default_key_id()
+            .ok_or_else(|| Error::from(InstanceError::AuthenticationRequired))
     }
 
     /// Get a signing key by its ID.
@@ -629,7 +619,7 @@ impl User {
             .get_signing_key(key_id)
             .cloned()
             .ok_or_else(|| {
-                crate::user::errors::UserError::KeyNotFound {
+                UserError::KeyNotFound {
                     key_id: key_id.to_string(),
                 }
                 .into()
@@ -647,11 +637,11 @@ impl User {
     /// The formatted public key string if the key is found
     pub fn get_public_key(&self, key_id: &str) -> Result<String> {
         let verifying_key = self.key_manager.get_public_key(key_id).ok_or_else(|| {
-            crate::Error::from(crate::user::errors::UserError::KeyNotFound {
+            Error::from(UserError::KeyNotFound {
                 key_id: key_id.to_string(),
             })
         })?;
-        Ok(crate::auth::crypto::format_public_key(&verifying_key))
+        Ok(format_public_key(&verifying_key))
     }
 
     // === Bootstrap Request Management (User Context) ===
@@ -667,8 +657,8 @@ impl User {
     /// A vector of (request_id, bootstrap_request) pairs for pending requests
     pub async fn pending_bootstrap_requests(
         &self,
-        sync: &crate::sync::Sync,
-    ) -> Result<Vec<(String, crate::sync::BootstrapRequest)>> {
+        sync: &Sync,
+    ) -> Result<Vec<(String, BootstrapRequest)>> {
         sync.pending_bootstrap_requests().await
     }
 
@@ -691,7 +681,7 @@ impl User {
     /// - Returns an error if the key addition to the database fails
     pub async fn approve_bootstrap_request(
         &self,
-        sync: &crate::sync::Sync,
+        sync: &Sync,
         request_id: &str,
         approving_key_id: &str,
     ) -> Result<()> {
@@ -731,7 +721,7 @@ impl User {
     /// - Returns an error if the rejecting key lacks Admin permission on the target database
     pub async fn reject_bootstrap_request(
         &self,
-        sync: &crate::sync::Sync,
+        sync: &Sync,
         request_id: &str,
         rejecting_key_id: &str,
     ) -> Result<()> {
@@ -793,11 +783,11 @@ impl User {
     /// ```
     pub async fn request_database_access(
         &self,
-        sync: &crate::sync::Sync,
+        sync: &Sync,
         peer_address: &str,
-        database_id: &crate::entry::ID,
+        database_id: &ID,
         key_id: &str,
-        requested_permission: crate::auth::Permission,
+        requested_permission: Permission,
     ) -> Result<()> {
         // Get the signing key from the key manager
         let signing_key = self.key_manager.get_signing_key(key_id).ok_or_else(|| {
@@ -808,7 +798,7 @@ impl User {
 
         // Derive the public key from the signing key
         let verifying_key = signing_key.verifying_key();
-        let public_key = crate::auth::crypto::format_public_key(&verifying_key);
+        let public_key = format_public_key(&verifying_key);
 
         // Delegate to Sync layer with the public key
         sync.sync_with_peer_for_bootstrap_with_key(
@@ -918,7 +908,7 @@ impl User {
     ///
     /// # Errors
     /// Returns `DatabaseNotTracked` if the database is not in the user's list
-    pub async fn database(&self, database_id: &crate::entry::ID) -> Result<TrackedDatabase> {
+    pub async fn database(&self, database_id: &ID) -> Result<TrackedDatabase> {
         let databases_table = self
             .user_database()
             .get_store_viewer::<Table<TrackedDatabase>>("databases")
@@ -944,7 +934,7 @@ impl User {
     ///
     /// # Errors
     /// Returns `DatabaseNotTracked` if the database is not in the user's list
-    pub async fn untrack_database(&mut self, database_id: &crate::entry::ID) -> Result<()> {
+    pub async fn untrack_database(&mut self, database_id: &ID) -> Result<()> {
         let tx = self.user_database.new_transaction().await?;
         let databases_table = tx.get_store::<Table<TrackedDatabase>>("databases").await?;
 
@@ -972,10 +962,15 @@ mod tests {
     use super::*;
     use crate::{
         Clock, SystemClock,
+        auth::{
+            settings::AuthSettings,
+            types::{AuthKey, Permission},
+        },
         backend::database::InMemory,
+        crdt::Doc,
         user::{
             crypto::{derive_encryption_key, encrypt_private_key, hash_password},
-            types::{UserKey, UserStatus},
+            types::{KeyEncryption, UserKey, UserStatus},
         },
     };
     use std::{collections::HashMap, sync::Arc};
@@ -992,17 +987,14 @@ mod tests {
         let device_key = instance.device_key().clone();
         let device_pubkey_str = instance.device_id_string();
 
-        let mut db_settings = crate::crdt::Doc::new();
+        let mut db_settings = Doc::new();
         db_settings.set("name", "test_user_db");
 
-        let mut auth_settings = crate::auth::settings::AuthSettings::new();
+        let mut auth_settings = AuthSettings::new();
         auth_settings
             .add_key(
                 &device_pubkey_str,
-                crate::auth::types::AuthKey::active(
-                    Some("admin"),
-                    crate::auth::types::Permission::Admin(0),
-                ),
+                AuthKey::active(Some("admin"), Permission::Admin(0)),
             )
             .unwrap();
         db_settings.set("auth", auth_settings.as_doc().clone());
@@ -1036,7 +1028,7 @@ mod tests {
         let user_key = UserKey {
             key_id: "admin".to_string(),
             private_key_bytes: encrypted_key,
-            encryption: crate::user::types::KeyEncryption::Encrypted { nonce },
+            encryption: KeyEncryption::Encrypted { nonce },
             display_name: Some("Device Key".to_string()),
             created_at: SystemClock.now_secs(),
             last_used: None,

@@ -1,6 +1,7 @@
 //! Integration tests for the authentication system.
 
 use eidetica::{
+    Database,
     auth::{AuthSettings, types::AuthKey, types::Permission, types::SigKey},
     crdt::Doc,
     store::DocStore,
@@ -131,7 +132,7 @@ async fn test_validation_pipeline_with_concurrent_settings_changes() {
         .expect("Failed to get KEY2 signing key")
         .clone();
 
-    let tree_with_key2 = eidetica::Database::open(
+    let tree_with_key2 = Database::open(
         instance.clone(),
         tree.root_id(),
         key2_signing_key,

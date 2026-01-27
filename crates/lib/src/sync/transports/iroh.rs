@@ -18,7 +18,7 @@ use tokio::sync::oneshot;
 
 use super::{SyncTransport, TransportBuilder, TransportConfig, shared::*};
 use crate::{
-    Result,
+    Error, Result,
     crdt::Doc,
     store::Registered,
     sync::{
@@ -48,7 +48,7 @@ impl From<&EndpointAddr> for EndpointAddrInfo {
 }
 
 impl TryFrom<EndpointAddrInfo> for EndpointAddr {
-    type Error = crate::Error;
+    type Error = Error;
 
     fn try_from(info: EndpointAddrInfo) -> Result<Self> {
         let endpoint_id = info.endpoint_id.parse().map_err(|e| {

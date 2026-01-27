@@ -19,12 +19,12 @@ use super::{
     user_sync_manager::UserSyncManager,
 };
 use crate::{
-    Database, Instance, Result,
+    Database, Error, Instance, Result, WeakInstance,
     auth::{
         KeyStatus, Permission,
         crypto::{create_challenge_response, format_public_key, generate_challenge},
     },
-    entry::ID,
+    entry::{Entry, ID},
     store::SettingsStore,
     sync::error::SyncError,
 };
@@ -53,7 +53,7 @@ pub trait SyncHandler: Send + std::marker::Sync {
 
 /// Default implementation of SyncHandler with database backend access.
 pub struct SyncHandlerImpl {
-    instance: crate::WeakInstance,
+    instance: WeakInstance,
     sync_tree_id: ID,
 }
 
@@ -110,8 +110,8 @@ impl SyncHandlerImpl {
         tree_id: &ID,
         requesting_key: &str,
         requesting_key_name: &str,
-        requested_permission: &crate::auth::Permission,
-    ) -> crate::Result<String> {
+        requested_permission: &Permission,
+    ) -> Result<String> {
         let sync_tree = self.get_sync_tree().await?;
         let op = sync_tree.new_transaction().await?;
         let manager = BootstrapRequestManager::new(&op);
@@ -398,7 +398,7 @@ impl SyncHandlerImpl {
             Ok(()) => {
                 info!(peer_pubkey = %peer_pubkey, "Registered new incoming peer");
             }
-            Err(crate::Error::Sync(crate::sync::error::SyncError::PeerAlreadyExists(_))) => {
+            Err(Error::Sync(SyncError::PeerAlreadyExists(_))) => {
                 debug!(peer_pubkey = %peer_pubkey, "Peer already registered, updating addresses");
             }
             Err(e) => return Err(e),
@@ -641,10 +641,10 @@ impl SyncHandlerImpl {
     /// - `Error`: Tree not found, auth required, key not authorized, or processing failure
     async fn handle_bootstrap_request(
         &self,
-        tree_id: &crate::entry::ID,
+        tree_id: &ID,
         requesting_key: Option<&str>,
         requesting_key_name: Option<&str>,
-        requested_permission: Option<crate::auth::Permission>,
+        requested_permission: Option<Permission>,
     ) -> SyncResponse {
         // SECURITY: Check if database has sync enabled (FIRST CHECK - before anything else)
         // This prevents information leakage about database existence
@@ -864,11 +864,7 @@ impl SyncHandlerImpl {
     }
 
     /// Handle incremental sync request
-    async fn handle_incremental_sync(
-        &self,
-        tree_id: &crate::entry::ID,
-        peer_tips: &[crate::entry::ID],
-    ) -> SyncResponse {
+    async fn handle_incremental_sync(&self, tree_id: &ID, peer_tips: &[ID]) -> SyncResponse {
         // SECURITY: Check if database has sync enabled (FIRST CHECK - before anything else)
         // This prevents information leakage about database existence
         if !self.is_database_sync_enabled(tree_id).await {
@@ -954,10 +950,7 @@ impl SyncHandlerImpl {
 
     /// Collect all entries in a tree (excluding the root)
     #[allow(dead_code)]
-    async fn collect_all_tree_entries(
-        &self,
-        tree_id: &crate::entry::ID,
-    ) -> crate::Result<Vec<crate::entry::Entry>> {
+    async fn collect_all_tree_entries(&self, tree_id: &ID) -> Result<Vec<Entry>> {
         let mut entries = Vec::new();
         let mut visited = std::collections::HashSet::new();
         let mut to_visit = std::collections::VecDeque::new();
@@ -999,10 +992,7 @@ impl SyncHandlerImpl {
     }
 
     /// Collect ALL entries in a tree for bootstrap (including root)
-    async fn collect_all_entries_for_bootstrap(
-        &self,
-        tree_id: &crate::entry::ID,
-    ) -> crate::Result<Vec<crate::entry::Entry>> {
+    async fn collect_all_entries_for_bootstrap(&self, tree_id: &ID) -> Result<Vec<Entry>> {
         let mut entries = Vec::new();
         let mut visited = std::collections::HashSet::new();
         let mut to_visit = std::collections::VecDeque::new();
@@ -1051,9 +1041,9 @@ impl SyncHandlerImpl {
     /// Find entries that peer is missing
     async fn find_missing_entries_for_peer(
         &self,
-        our_tips: &[crate::entry::ID],
-        peer_tips: &[crate::entry::ID],
-    ) -> crate::Result<Vec<crate::entry::Entry>> {
+        our_tips: &[ID],
+        peer_tips: &[ID],
+    ) -> Result<Vec<Entry>> {
         // Find tips they don't have
         let missing_tip_ids: Vec<_> = our_tips
             .iter()
@@ -1075,7 +1065,7 @@ impl SyncHandlerImpl {
     }
 
     /// Count entries in a tree
-    async fn count_tree_entries(&self, tree_id: &crate::entry::ID) -> crate::Result<usize> {
+    async fn count_tree_entries(&self, tree_id: &ID) -> Result<usize> {
         let mut count = 1; // Include root
         let mut visited = std::collections::HashSet::new();
         let mut to_visit = std::collections::VecDeque::new();

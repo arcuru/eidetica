@@ -5,7 +5,13 @@
 
 use std::time::Duration;
 
-use eidetica::{Instance, Result, sync::PeerId, user::User};
+use eidetica::{
+    Database, Instance, Result,
+    crdt::Doc,
+    store::DocStore,
+    sync::{PeerId, Sync},
+    user::User,
+};
 use tokio::time::sleep;
 
 use super::helpers::{HttpTransportFactory, IrohTransportFactory, TransportFactory};
@@ -23,7 +29,7 @@ async fn setup_sync_with_peers<F>(
     factory: &F,
     db1: &Instance,
     db2: &Instance,
-) -> Result<(eidetica::sync::Sync, eidetica::sync::Sync, String, String)>
+) -> Result<(Sync, Sync, String, String)>
 where
     F: TransportFactory,
 {
@@ -79,16 +85,16 @@ async fn setup_sync_hooks(
     user2: &mut User,
     key_id1: &str,
     key_id2: &str,
-    sync1: &eidetica::sync::Sync,
-    sync2: &eidetica::sync::Sync,
+    sync1: &Sync,
+    sync2: &Sync,
     peer1_pubkey: &str,
     peer2_pubkey: &str,
-) -> Result<(eidetica::Database, eidetica::Database)> {
-    let mut settings1 = eidetica::crdt::Doc::new();
+) -> Result<(Database, Database)> {
+    let mut settings1 = Doc::new();
     settings1.set("name", "test_tree_1");
     let tree1 = user1.create_database(settings1, key_id1).await?;
 
-    let mut settings2 = eidetica::crdt::Doc::new();
+    let mut settings2 = Doc::new();
     settings2.set("name", "test_tree_2");
     let tree2 = user2.create_database(settings2, key_id2).await?;
 
@@ -124,7 +130,7 @@ async fn setup_sync_hooks(
 }
 
 /// Clean up sync instances
-async fn cleanup_sync(sync1: eidetica::sync::Sync, sync2: eidetica::sync::Sync) -> Result<()> {
+async fn cleanup_sync(sync1: Sync, sync2: Sync) -> Result<()> {
     sync1.stop_server().await?;
     sync2.stop_server().await?;
     Ok(())
@@ -155,13 +161,13 @@ where
 
     // Create entries in DB1 - these should automatically sync via hooks
     let op1 = tree1.new_transaction().await?;
-    let docstore1 = op1.get_store::<eidetica::store::DocStore>("data").await?;
+    let docstore1 = op1.get_store::<DocStore>("data").await?;
     docstore1.set("name", "Alice").await?;
     docstore1.set("age", "30").await?;
     let entry_id1 = op1.commit().await?;
 
     let op2 = tree1.new_transaction().await?;
-    let docstore1_2 = op2.get_store::<eidetica::store::DocStore>("data").await?;
+    let docstore1_2 = op2.get_store::<DocStore>("data").await?;
     docstore1_2.set("name", "Bob").await?;
     docstore1_2.set("age", "25").await?;
     let entry_id2 = op2.commit().await?;
@@ -239,13 +245,13 @@ where
 
     // Create entry in DB1
     let op1 = tree1.new_transaction().await?;
-    let docstore1 = op1.get_store::<eidetica::store::DocStore>("data").await?;
+    let docstore1 = op1.get_store::<DocStore>("data").await?;
     docstore1.set("origin", "db1").await?;
     let entry_from_db1 = op1.commit().await?;
 
     // Create entry in DB2
     let op2 = tree2.new_transaction().await?;
-    let docstore2 = op2.get_store::<eidetica::store::DocStore>("data").await?;
+    let docstore2 = op2.get_store::<DocStore>("data").await?;
     docstore2.set("origin", "db2").await?;
     let entry_from_db2 = op2.commit().await?;
 

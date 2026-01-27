@@ -5,10 +5,14 @@
 
 use std::time::Duration;
 
-use eidetica::Result;
-use eidetica::sync::peer_types::Address;
-use eidetica::sync::transports::http::HttpTransport;
-use eidetica::sync::transports::iroh::IrohTransport;
+use eidetica::{
+    Database, Result,
+    store::DocStore,
+    sync::{
+        peer_types::Address,
+        transports::{http::HttpTransport, iroh::IrohTransport},
+    },
+};
 use iroh::RelayMode;
 
 use super::helpers::setup;
@@ -113,8 +117,6 @@ async fn test_server_lifecycle_with_multiple_transports() -> Result<()> {
 /// in `user/integration_tests.rs` which demonstrates correct sync_with_peer usage.
 #[tokio::test]
 async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
-    use eidetica::store::DocStore;
-
     // Server with a sync-enabled database (wildcard permissions for testing)
     let (server_instance, _user, _key_id, _server_database, server_sync, tree_id) =
         super::helpers::setup_global_wildcard_server().await;
@@ -195,7 +197,7 @@ async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
     // HTTP client opens the database using the wildcard permission ("*")
     // The wildcard allows any key to write, so we use the client's device key
     // but sign as "*" to use the global permission
-    let http_client_db = eidetica::Database::open(
+    let http_client_db = Database::open(
         http_client_instance.clone(),
         &tree_id,
         http_client_instance.device_key().clone(),

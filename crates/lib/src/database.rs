@@ -16,12 +16,13 @@ use crate::{
         errors::AuthError,
         settings::AuthSettings,
         types::{AuthKey, Permission, SigKey},
+        validation::AuthValidator,
     },
+    backend::VerificationStatus,
     constants::{ROOT, SETTINGS},
     crdt::{Doc, doc::Value},
     entry::{Entry, ID},
-    instance::backend::Backend,
-    instance::errors::InstanceError,
+    instance::{WriteSource, backend::Backend, errors::InstanceError},
     store::{SettingsStore, Store},
 };
 
@@ -105,7 +106,7 @@ impl Database {
     /// ```
     pub async fn create(
         initial_settings: Doc,
-        instance: &crate::Instance,
+        instance: &Instance,
         signing_key: SigningKey,
         sigkey: String,
     ) -> Result<Self> {
@@ -213,7 +214,7 @@ impl Database {
     ///
     /// # Returns
     /// A `Result` containing the new `Database` instance or an error.
-    pub(crate) fn open_unauthenticated(id: ID, instance: &crate::Instance) -> Result<Self> {
+    pub(crate) fn open_unauthenticated(id: ID, instance: &Instance) -> Result<Self> {
         // TODO: Audit all usages of this function
         Ok(Self {
             root: id,
@@ -456,11 +457,7 @@ impl Database {
         Fut: std::future::Future<Output = Result<()>> + Send + 'static,
     {
         let instance = self.instance()?;
-        instance.register_write_callback(
-            crate::instance::WriteSource::Local,
-            self.root_id().clone(),
-            callback,
-        )
+        instance.register_write_callback(WriteSource::Local, self.root_id().clone(), callback)
     }
 
     /// Register an Instance-wide callback to be invoked when entries are written remotely to this database.
@@ -511,11 +508,7 @@ impl Database {
         Fut: std::future::Future<Output = Result<()>> + Send + 'static,
     {
         let instance = self.instance()?;
-        instance.register_write_callback(
-            crate::instance::WriteSource::Remote,
-            self.root_id().clone(),
-            callback,
-        )
+        instance.register_write_callback(WriteSource::Remote, self.root_id().clone(), callback)
     }
 
     /// Get the ID of the root entry
@@ -629,9 +622,7 @@ impl Database {
         let instance = self.instance()?;
         let id = entry.id();
 
-        instance
-            .put(crate::backend::VerificationStatus::Verified, entry)
-            .await?;
+        instance.put(VerificationStatus::Verified, entry).await?;
 
         Ok(id)
     }
@@ -823,7 +814,7 @@ impl Database {
 
         // Use the authentication validator with historical settings
         let instance = self.instance()?;
-        let mut validator = crate::auth::validation::AuthValidator::new();
+        let mut validator = AuthValidator::new();
         validator
             .validate_entry(&entry, &historical_settings, Some(&instance))
             .await

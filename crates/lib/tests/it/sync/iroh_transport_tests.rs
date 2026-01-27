@@ -1,7 +1,10 @@
-use eidetica::sync::{
-    Address,
-    protocol::SyncRequest,
-    transports::{SyncTransport, iroh::IrohTransport},
+use eidetica::{
+    Entry,
+    sync::{
+        Address,
+        protocol::SyncRequest,
+        transports::{SyncTransport, iroh::IrohTransport},
+    },
 };
 
 #[tokio::test]
@@ -75,8 +78,6 @@ async fn test_iroh_transport_get_server_address() {
 
 #[tokio::test]
 async fn test_iroh_transport_send_request_no_endpoint() {
-    use eidetica::Entry;
-
     let transport = IrohTransport::new().unwrap();
 
     // Try to send request without initializing endpoint

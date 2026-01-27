@@ -7,7 +7,7 @@
 use crate::{
     Result, Transaction,
     auth::{settings::AuthSettings, types::AuthKey},
-    crdt::{Doc, doc},
+    crdt::{CRDTError, Doc, doc},
     height::HeightStrategy,
     store::DocStore,
 };
@@ -114,7 +114,7 @@ impl SettingsStore {
                     _ => return Ok(HeightStrategy::default()),
                 };
                 serde_json::from_str(&json).map_err(|e| {
-                    crate::crdt::CRDTError::DeserializationFailed {
+                    CRDTError::DeserializationFailed {
                         reason: e.to_string(),
                     }
                     .into()
@@ -130,11 +130,10 @@ impl SettingsStore {
     /// # Arguments
     /// * `strategy` - The height strategy to use
     pub async fn set_height_strategy(&self, strategy: HeightStrategy) -> Result<()> {
-        let json = serde_json::to_string(&strategy).map_err(|e| {
-            crate::crdt::CRDTError::SerializationFailed {
+        let json =
+            serde_json::to_string(&strategy).map_err(|e| CRDTError::SerializationFailed {
                 reason: e.to_string(),
-            }
-        })?;
+            })?;
         self.inner
             .set("height_strategy", doc::Value::Text(json))
             .await
@@ -271,7 +270,7 @@ impl SettingsStore {
 mod tests {
     use super::*;
     use crate::{
-        Database, Instance,
+        Database, Error, Instance,
         auth::{
             crypto::{format_public_key, generate_keypair},
             types::{KeyStatus, Permission},
@@ -456,7 +455,7 @@ mod tests {
         // Getting non-existent auth key should return KeyNotFound error
         let result = settings_store.get_auth_key("nonexistent").await;
         assert!(result.is_err());
-        if let Err(crate::Error::Auth(auth_err)) = result {
+        if let Err(Error::Auth(auth_err)) = result {
             assert!(auth_err.is_not_found());
         } else {
             panic!("Expected Auth(KeyNotFound) error");

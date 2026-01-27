@@ -7,7 +7,7 @@ use super::{
     Address, ConnectionState, PeerId, PeerInfo, PeerStatus, Sync, SyncError, SyncHandle,
     SyncPeerInfo, SyncStatus, background::SyncCommand, peer_manager::PeerManager,
 };
-use crate::Result;
+use crate::{Result, entry::ID};
 
 impl Sync {
     // === Peer Management Methods ===
@@ -188,11 +188,7 @@ impl Sync {
     ///
     /// # Returns
     /// Current sync status including whether we have local data.
-    pub async fn get_sync_status(
-        &self,
-        tree_id: &crate::entry::ID,
-        _peer_pubkey: &str,
-    ) -> Result<SyncStatus> {
+    pub async fn get_sync_status(&self, tree_id: &ID, _peer_pubkey: &str) -> Result<SyncStatus> {
         // Check if we have local data for this tree
         let backend = self.backend()?;
         let our_tips = backend.get_tips(tree_id).await.unwrap_or_default();

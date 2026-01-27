@@ -8,7 +8,7 @@
 
 use super::helpers::*;
 
-use eidetica::crdt::Doc;
+use eidetica::{crdt::Doc, entry::ID, store::DocStore};
 
 // ===== CREATE DATABASE TESTS =====
 
@@ -158,7 +158,6 @@ async fn test_find_key_for_nonexistent_database() {
     let user = login_user(&instance, &username, None).await;
 
     // Fake database ID
-    use eidetica::entry::ID;
     let fake_id = ID::from("nonexistent_database");
 
     // Should return None
@@ -242,7 +241,6 @@ async fn test_database_supports_stores() {
     let database = create_named_database(&mut user, "Store Test").await;
 
     // Access a store
-    use eidetica::store::DocStore;
     let tx = database
         .new_transaction()
         .await
@@ -340,8 +338,6 @@ async fn test_find_database_by_name() {
 
 #[tokio::test]
 async fn test_find_database_returns_writable_database() {
-    use eidetica::store::DocStore;
-
     let (instance, username) = setup_instance_with_user("regression_test", None).await;
     let mut user = login_user(&instance, &username, None).await;
 
@@ -473,7 +469,6 @@ async fn test_load_database_with_invalid_id() {
     let user = login_user(&instance, &username, None).await;
 
     // Try to load a database that doesn't exist
-    use eidetica::entry::ID;
     let fake_id = ID::from("sha256:nonexistent_database_id_12345678");
 
     let result = user.open_database(&fake_id).await;
@@ -490,7 +485,7 @@ async fn test_create_database_with_nonexistent_key() {
     let mut user = login_user(&instance, &username, None).await;
 
     // Try to create database with a key that doesn't exist
-    let mut settings = eidetica::crdt::Doc::new();
+    let mut settings = Doc::new();
     settings.set("name", "Test DB");
 
     let result = user.create_database(settings, "nonexistent_key_id").await;
@@ -521,7 +516,7 @@ async fn test_create_databases_with_different_keys() {
     let key2 = add_user_key(&mut user, Some("Second Device")).await;
 
     // Create database with first key
-    let mut settings1 = eidetica::crdt::Doc::new();
+    let mut settings1 = Doc::new();
     settings1.set("name", "DB from Key 1");
     let db1 = user
         .create_database(settings1, &key1)
@@ -529,7 +524,7 @@ async fn test_create_databases_with_different_keys() {
         .expect("Should create with key1");
 
     // Create database with second key
-    let mut settings2 = eidetica::crdt::Doc::new();
+    let mut settings2 = Doc::new();
     settings2.set("name", "DB from Key 2");
     let db2 = user
         .create_database(settings2, &key2)

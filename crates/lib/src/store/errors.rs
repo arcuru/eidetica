@@ -5,6 +5,8 @@
 
 use thiserror::Error;
 
+use crate::Error;
+
 /// Generic error types for store operations.
 ///
 /// This enum provides fundamental error variants that apply to any store implementation.
@@ -128,8 +130,8 @@ impl StoreError {
 }
 
 // Conversion from SubtreeError to the main Error type
-impl From<StoreError> for crate::Error {
+impl From<StoreError> for Error {
     fn from(err: StoreError) -> Self {
-        crate::Error::Store(err)
+        Error::Store(err)
     }
 }

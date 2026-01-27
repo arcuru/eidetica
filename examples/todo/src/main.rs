@@ -1,13 +1,13 @@
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
-use eidetica::Instance;
-use eidetica::backend::database::InMemory;
-use eidetica::crdt::Doc;
-use eidetica::store::Table;
-use eidetica::store::YDoc;
-use eidetica::user::User;
-use eidetica::y_crdt::{Map as YMap, Transact};
-use eidetica::{Database, Result};
+use eidetica::{
+    Database, Error, Instance, Result,
+    backend::database::InMemory,
+    crdt::Doc,
+    store::{StoreError, Table, YDoc},
+    user::User,
+    y_crdt::{Map as YMap, Transact},
+};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -189,7 +189,7 @@ async fn save_instance(instance: &Instance, path: &PathBuf) -> Result<()> {
         .as_any()
         .downcast_ref::<InMemory>()
         .ok_or_else(|| {
-            eidetica::Error::Io(std::io::Error::other(
+            Error::Io(std::io::Error::other(
                 "Failed to downcast database to InMemory",
             ))
         })?;
@@ -263,7 +263,7 @@ async fn complete_todo(database: &Database, id: &str) -> Result<()> {
         Ok(todo) => todo,
         Err(e) if e.is_not_found() => {
             // Provide a user-friendly error message for not found
-            return Err(eidetica::store::StoreError::KeyNotFound {
+            return Err(StoreError::KeyNotFound {
                 store: "todos".to_string(),
                 key: id.to_string(),
             }

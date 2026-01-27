@@ -3,12 +3,14 @@
 //! This module tests the path-based API for accessing and modifying nested data
 //! structures using string paths.
 
+use eidetica::Result;
+use eidetica::crdt::Doc;
 use eidetica::crdt::doc::Value;
 
 use super::helpers::*;
 
 #[tokio::test]
-async fn test_dict_set_at_path_and_get_at_path_simple() -> eidetica::Result<()> {
+async fn test_dict_set_at_path_and_get_at_path_simple() -> Result<()> {
     let (_db, tree, op, dict) = setup_complete_test_env("path_test_store").await?;
 
     let path = ["simple_key"];
@@ -31,7 +33,7 @@ async fn test_dict_set_at_path_and_get_at_path_simple() -> eidetica::Result<()> 
 }
 
 #[tokio::test]
-async fn test_dict_set_at_path_and_get_at_path_nested() -> eidetica::Result<()> {
+async fn test_dict_set_at_path_and_get_at_path_nested() -> Result<()> {
     let (_db, tree, op, dict) = setup_complete_test_env("path_test_store").await?;
 
     let path = ["user", "profile", "email"];
@@ -59,7 +61,7 @@ async fn test_dict_set_at_path_and_get_at_path_nested() -> eidetica::Result<()> 
 }
 
 #[tokio::test]
-async fn test_dict_set_at_path_creates_intermediate_maps() -> eidetica::Result<()> {
+async fn test_dict_set_at_path_creates_intermediate_maps() -> Result<()> {
     let (_, _, _op, dict) = setup_complete_test_env("path_test_store").await?;
 
     let path = ["a", "b", "c"];
@@ -81,7 +83,7 @@ async fn test_dict_set_at_path_creates_intermediate_maps() -> eidetica::Result<(
 }
 
 #[tokio::test]
-async fn test_dict_set_at_path_overwrites_non_map() -> eidetica::Result<()> {
+async fn test_dict_set_at_path_overwrites_non_map() -> Result<()> {
     let (_, _, _op, dict) = setup_complete_test_env("path_test_store").await?;
 
     // Set user.profile = "string_value"
@@ -107,7 +109,7 @@ async fn test_dict_set_at_path_overwrites_non_map() -> eidetica::Result<()> {
 }
 
 #[tokio::test]
-async fn test_dict_get_at_path_not_found() -> eidetica::Result<()> {
+async fn test_dict_get_at_path_not_found() -> Result<()> {
     let (_, _, _op, dict) = setup_complete_test_env("path_test_store").await?;
 
     let path = ["non", "existent", "key"];
@@ -115,7 +117,7 @@ async fn test_dict_get_at_path_not_found() -> eidetica::Result<()> {
 
     // Test path where an intermediate key segment does not exist within a valid map.
     // Set up: existing_root -> some_child_map (empty map)
-    let child_map = eidetica::crdt::Doc::new();
+    let child_map = Doc::new();
     dict.set_at_path(["existing_root_map"], child_map.into())
         .await?;
 
@@ -133,7 +135,7 @@ async fn test_dict_get_at_path_not_found() -> eidetica::Result<()> {
 }
 
 #[tokio::test]
-async fn test_dict_get_at_path_invalid_intermediate_type() -> eidetica::Result<()> {
+async fn test_dict_get_at_path_invalid_intermediate_type() -> Result<()> {
     let (_, _, _op, dict) = setup_complete_test_env("path_test_store").await?;
 
     // Set a.b = "string" (not a map)
@@ -148,7 +150,7 @@ async fn test_dict_get_at_path_invalid_intermediate_type() -> eidetica::Result<(
 }
 
 #[tokio::test]
-async fn test_dict_set_at_path_empty_path() -> eidetica::Result<()> {
+async fn test_dict_set_at_path_empty_path() -> Result<()> {
     let (_, _, _op, dict) = setup_complete_test_env("path_test_store").await?;
 
     let path: Vec<String> = vec![];
@@ -160,14 +162,14 @@ async fn test_dict_set_at_path_empty_path() -> eidetica::Result<()> {
     );
 
     // Setting a map value at the root should succeed
-    let nested_map = eidetica::crdt::Doc::new();
+    let nested_map = Doc::new();
     assert!(dict.set_at_path(&path, nested_map.into()).await.is_ok());
 
     Ok(())
 }
 
 #[tokio::test]
-async fn test_dict_get_at_path_empty_path() -> eidetica::Result<()> {
+async fn test_dict_get_at_path_empty_path() -> Result<()> {
     let (_, _, _op, dict) = setup_complete_test_env("path_test_store").await?;
 
     let path: Vec<String> = vec![];
@@ -182,7 +184,7 @@ async fn test_dict_get_at_path_empty_path() -> eidetica::Result<()> {
 }
 
 #[tokio::test]
-async fn test_dict_cascading_delete() -> eidetica::Result<()> {
+async fn test_dict_cascading_delete() -> Result<()> {
     let (_, _, _op, dict) = setup_complete_test_env("path_test_store").await?;
 
     // Create a deeply nested structure using path operations
@@ -227,7 +229,7 @@ async fn test_dict_cascading_delete() -> eidetica::Result<()> {
 }
 
 #[tokio::test]
-async fn test_path_operations_complex_scenarios() -> eidetica::Result<()> {
+async fn test_path_operations_complex_scenarios() -> Result<()> {
     let (_, _, _op, dict) = setup_complete_test_env("path_test_store").await?;
 
     // Test multiple overlapping paths

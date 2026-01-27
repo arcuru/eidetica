@@ -3,12 +3,14 @@
 //! This module tests the value editor API for manipulating nested data structures
 //! through a fluent interface.
 
+use eidetica::Result;
+use eidetica::crdt::Doc;
 use eidetica::crdt::doc::Value;
 
 use super::helpers::*;
 
 #[tokio::test]
-async fn test_value_editor_set_and_get_string_at_root() -> eidetica::Result<()> {
+async fn test_value_editor_set_and_get_string_at_root() -> Result<()> {
     let (_, _, _op, dict) = setup_complete_test_env("editor_test_store").await?;
 
     test_editor_basic_set_get(&dict, "user", Value::Text("alice".to_string())).await?;
@@ -20,7 +22,7 @@ async fn test_value_editor_set_and_get_string_at_root() -> eidetica::Result<()> 
 }
 
 #[tokio::test]
-async fn test_value_editor_set_and_get_nested_string() -> eidetica::Result<()> {
+async fn test_value_editor_set_and_get_nested_string() -> Result<()> {
     let (_, _, _op, dict) = setup_complete_test_env("editor_test_store").await?;
 
     // Test nested editor operations
@@ -57,7 +59,7 @@ async fn test_value_editor_set_and_get_nested_string() -> eidetica::Result<()> {
 }
 
 #[tokio::test]
-async fn test_value_editor_overwrite_non_map_with_map() -> eidetica::Result<()> {
+async fn test_value_editor_overwrite_non_map_with_map() -> Result<()> {
     let (_, _, _op, dict) = setup_complete_test_env("editor_test_store").await?;
 
     // Set user = "string_value"
@@ -93,7 +95,7 @@ async fn test_value_editor_overwrite_non_map_with_map() -> eidetica::Result<()> 
 }
 
 #[tokio::test]
-async fn test_value_editor_get_non_existent_path() -> eidetica::Result<()> {
+async fn test_value_editor_get_non_existent_path() -> Result<()> {
     let (_, _, _op, dict) = setup_complete_test_env("editor_test_store").await?;
 
     let editor = dict.get_value_mut("nonexistent");
@@ -108,7 +110,7 @@ async fn test_value_editor_get_non_existent_path() -> eidetica::Result<()> {
 }
 
 #[tokio::test]
-async fn test_value_editor_set_deeply_nested_creates_path() -> eidetica::Result<()> {
+async fn test_value_editor_set_deeply_nested_creates_path() -> Result<()> {
     let (_, _, _op, dict) = setup_complete_test_env("editor_test_store").await?;
 
     // Test deep nesting in one operation
@@ -135,7 +137,7 @@ async fn test_value_editor_set_deeply_nested_creates_path() -> eidetica::Result<
 }
 
 #[tokio::test]
-async fn test_value_editor_set_string_on_editor_path() -> eidetica::Result<()> {
+async fn test_value_editor_set_string_on_editor_path() -> Result<()> {
     let (_, _, _op, dict) = setup_complete_test_env("editor_test_store").await?;
 
     let user_editor = dict.get_value_mut("user");
@@ -186,7 +188,7 @@ async fn test_value_editor_set_string_on_editor_path() -> eidetica::Result<()> {
 }
 
 #[tokio::test]
-async fn test_value_editor_root_operations() -> eidetica::Result<()> {
+async fn test_value_editor_root_operations() -> Result<()> {
     let (_db, tree, op, dict) = setup_complete_test_env("editor_test_store").await?;
 
     // Set some values at the top level
@@ -209,7 +211,7 @@ async fn test_value_editor_root_operations() -> eidetica::Result<()> {
     assert_text_value(&root_editor.get_value("key1").await?, "value1");
 
     // Create a new nested map at root level
-    let mut nested = eidetica::crdt::Doc::new();
+    let mut nested = Doc::new();
     nested.set("nested_key", "nested_value");
     root_editor
         .get_value_mut("nested")
@@ -237,15 +239,15 @@ async fn test_value_editor_root_operations() -> eidetica::Result<()> {
 }
 
 #[tokio::test]
-async fn test_value_editor_delete_methods() -> eidetica::Result<()> {
+async fn test_value_editor_delete_methods() -> Result<()> {
     let (_db, tree, op, dict) = setup_complete_test_env("editor_test_store").await?;
 
     // Set up a nested structure
-    let mut user_profile = eidetica::crdt::Doc::new();
+    let mut user_profile = Doc::new();
     user_profile.set("name", "Alice");
     user_profile.set("email", "alice@example.com");
 
-    let mut user_data = eidetica::crdt::Doc::new();
+    let mut user_data = Doc::new();
     user_data.set("profile", user_profile);
     user_data.set("role", "admin");
 
@@ -298,7 +300,7 @@ async fn test_value_editor_delete_methods() -> eidetica::Result<()> {
 }
 
 #[tokio::test]
-async fn test_value_editor_set_non_map_to_root() -> eidetica::Result<()> {
+async fn test_value_editor_set_non_map_to_root() -> Result<()> {
     let (_, _, _op, dict) = setup_complete_test_env("editor_test_store").await?;
 
     // Get a root editor
@@ -312,7 +314,7 @@ async fn test_value_editor_set_non_map_to_root() -> eidetica::Result<()> {
     );
 
     // Setting a map value should succeed
-    let mut map = eidetica::crdt::Doc::new();
+    let mut map = Doc::new();
     map.set("key", "value");
     assert!(root_editor.set(map.into()).await.is_ok());
 

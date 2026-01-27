@@ -12,16 +12,19 @@ fn generate_public_key() -> String {
 }
 
 use eidetica::{
+    Database, Entry,
     auth::{
         AuthSettings, Permission as AuthPermission,
         crypto::{format_public_key, generate_keypair},
-        types::AuthKey,
+        types::{AuthKey, KeyStatus, SigKey},
     },
-    crdt::Doc,
+    backend::VerificationStatus,
+    crdt::{Doc, doc::Value},
+    store::Table,
     sync::{
-        RequestStatus,
+        RequestStatus, Sync,
         handler::{SyncHandler, SyncHandlerImpl},
-        protocol::{SyncRequest, SyncResponse, SyncTreeRequest},
+        protocol::{RequestContext, SyncRequest, SyncResponse, SyncTreeRequest},
         transports::http::HttpTransport,
     },
 };
@@ -38,7 +41,7 @@ async fn test_manual_approval_stores_pending_request() {
         create_bootstrap_request(&tree_id, &test_key, "laptop_key", AuthPermission::Write(5));
 
     // Handle the request
-    let context = eidetica::sync::protocol::RequestContext::default();
+    let context = RequestContext::default();
     let response = sync_handler.handle_request(&sync_request, &context).await;
     let request_id = assert_bootstrap_pending(&response);
     println!("✅ Bootstrap request stored as pending: {request_id}");
@@ -71,7 +74,7 @@ async fn test_auto_approve_still_works() {
         create_bootstrap_request(&tree_id, &test_key, "laptop_key", AuthPermission::Write(5));
 
     // Handle the request
-    let context = eidetica::sync::protocol::RequestContext::default();
+    let context = RequestContext::default();
     let response = sync_handler.handle_request(&sync_request, &context).await;
 
     // Should return Bootstrap (auto-approved)
@@ -151,10 +154,7 @@ async fn test_approve_bootstrap_request() {
 
     assert_eq!(added_key.name(), Some("laptop_key"));
     assert_eq!(added_key.permissions(), &AuthPermission::Write(5));
-    assert_eq!(
-        added_key.status(),
-        &eidetica::auth::types::KeyStatus::Active
-    );
+    assert_eq!(added_key.status(), &KeyStatus::Active);
 
     println!("✅ Requesting key successfully added to target database");
 
@@ -189,7 +189,7 @@ async fn test_reject_bootstrap_request() {
     });
 
     // Handle the request to store it as pending
-    let context = eidetica::sync::protocol::RequestContext::default();
+    let context = RequestContext::default();
     let response = sync_handler.handle_request(&sync_request, &context).await;
     let request_id = match response {
         SyncResponse::BootstrapPending { request_id, .. } => request_id,
@@ -272,7 +272,7 @@ async fn test_list_bootstrap_requests_by_status() {
         requested_permission: Some(AuthPermission::Write(5)),
     });
 
-    let context = eidetica::sync::protocol::RequestContext::default();
+    let context = RequestContext::default();
     let response = sync_handler.handle_request(&sync_request, &context).await;
     let request_id = match response {
         SyncResponse::BootstrapPending { request_id, .. } => request_id,
@@ -333,7 +333,7 @@ async fn test_duplicate_bootstrap_requests_same_client() {
     });
 
     // Handle first request
-    let context = eidetica::sync::protocol::RequestContext::default();
+    let context = RequestContext::default();
     let response1 = sync_handler.handle_request(&sync_request1, &context).await;
     let request_id1 = match response1 {
         SyncResponse::BootstrapPending { request_id, .. } => request_id,
@@ -351,7 +351,7 @@ async fn test_duplicate_bootstrap_requests_same_client() {
     });
 
     // Handle second identical request
-    let context = eidetica::sync::protocol::RequestContext::default();
+    let context = RequestContext::default();
     let response2 = sync_handler.handle_request(&sync_request2, &context).await;
     let request_id2 = match response2 {
         SyncResponse::BootstrapPending { request_id, .. } => request_id,
@@ -467,7 +467,7 @@ async fn test_malformed_permission_requests() {
             requested_permission: Some(permission.clone()),
         });
 
-        let context = eidetica::sync::protocol::RequestContext::default();
+        let context = RequestContext::default();
         let response = sync_handler.handle_request(&sync_request, &context).await;
 
         match response {
@@ -529,9 +529,7 @@ async fn test_bootstrap_with_global_permission_auto_approval() {
     let tree_id = database.root_id().clone();
 
     // Setup sync
-    let sync = eidetica::sync::Sync::new(server_instance.clone())
-        .await
-        .unwrap();
+    let sync = Sync::new(server_instance.clone()).await.unwrap();
 
     // Enable sync for this database
     enable_sync_for_instance_database(&sync, &tree_id)
@@ -550,7 +548,7 @@ async fn test_bootstrap_with_global_permission_auto_approval() {
         AuthPermission::Write(15),
     );
 
-    let context = eidetica::sync::protocol::RequestContext::default();
+    let context = RequestContext::default();
     let response = sync_handler.handle_request(&sync_request, &context).await;
     match response {
         SyncResponse::Bootstrap(bootstrap_response) => {
@@ -582,7 +580,7 @@ async fn test_bootstrap_with_global_permission_auto_approval() {
         AuthPermission::Read,
     );
 
-    let context = eidetica::sync::protocol::RequestContext::default();
+    let context = RequestContext::default();
     let response = sync_handler.handle_request(&sync_request, &context).await;
     match response {
         SyncResponse::Bootstrap(bootstrap_response) => {
@@ -605,7 +603,7 @@ async fn test_bootstrap_with_global_permission_auto_approval() {
         AuthPermission::Admin(5),
     );
 
-    let context = eidetica::sync::protocol::RequestContext::default();
+    let context = RequestContext::default();
     let response = sync_handler.handle_request(&sync_request, &context).await;
     match response {
         SyncResponse::BootstrapPending { request_id, .. } => {
@@ -638,7 +636,7 @@ async fn test_global_permission_overrides_manual_policy() {
 
     // Create database with manual approval policy (bootstrap_auto_approve: false)
     // but also global '*' permission
-    let mut settings = eidetica::crdt::Doc::new();
+    let mut settings = Doc::new();
     settings.set("name", "Test Manual Policy with Global Permission");
 
     let mut auth_settings = AuthSettings::new();
@@ -672,9 +670,7 @@ async fn test_global_permission_overrides_manual_policy() {
     let tree_id = database.root_id().clone();
 
     // Setup sync
-    let sync = eidetica::sync::Sync::new(server_instance.clone())
-        .await
-        .unwrap();
+    let sync = Sync::new(server_instance.clone()).await.unwrap();
 
     // Enable sync for this database
     enable_sync_for_instance_database(&sync, &tree_id)
@@ -692,7 +688,7 @@ async fn test_global_permission_overrides_manual_policy() {
         AuthPermission::Read,
     );
 
-    let context = eidetica::sync::protocol::RequestContext::default();
+    let context = RequestContext::default();
     let response = sync_handler.handle_request(&sync_request, &context).await;
     match response {
         SyncResponse::Bootstrap(bootstrap_response) => {
@@ -724,7 +720,7 @@ async fn test_global_permission_overrides_manual_policy() {
         AuthPermission::Write(5),
     );
 
-    let context = eidetica::sync::protocol::RequestContext::default();
+    let context = RequestContext::default();
     let response = sync_handler.handle_request(&sync_request, &context).await;
     match response {
         SyncResponse::BootstrapPending { request_id, .. } => {
@@ -762,7 +758,7 @@ async fn test_bootstrap_with_existing_specific_key_permission() {
     let test_key = generate_public_key();
 
     // Create database with both admin key and the test key with Write(5) permission
-    let mut settings = eidetica::crdt::Doc::new();
+    let mut settings = Doc::new();
     settings.set("name", "Test Existing Key DB");
 
     let mut auth_settings = AuthSettings::new();
@@ -792,9 +788,7 @@ async fn test_bootstrap_with_existing_specific_key_permission() {
     let tree_id = database.root_id().clone();
 
     // Set up sync system
-    let sync = eidetica::sync::Sync::new(server_instance.clone())
-        .await
-        .unwrap();
+    let sync = Sync::new(server_instance.clone()).await.unwrap();
 
     // Enable sync for this database
     enable_sync_for_instance_database(&sync, &tree_id)
@@ -807,7 +801,7 @@ async fn test_bootstrap_with_existing_specific_key_permission() {
     let sync_request =
         create_bootstrap_request(&tree_id, &test_key, "laptop_key", AuthPermission::Write(10));
 
-    let context = eidetica::sync::protocol::RequestContext::default();
+    let context = RequestContext::default();
     let response = sync_handler.handle_request(&sync_request, &context).await;
 
     match response {
@@ -862,7 +856,7 @@ async fn test_bootstrap_with_existing_global_permission_no_duplicate() {
     let test_key = generate_public_key();
 
     // Create database with admin key and global Write(5) permission
-    let mut settings = eidetica::crdt::Doc::new();
+    let mut settings = Doc::new();
     settings.set("name", "Test Global Permission No Duplicate DB");
 
     let mut auth_settings = AuthSettings::new();
@@ -889,9 +883,7 @@ async fn test_bootstrap_with_existing_global_permission_no_duplicate() {
     let tree_id = database.root_id().clone();
 
     // Set up sync system
-    let sync = eidetica::sync::Sync::new(server_instance.clone())
-        .await
-        .unwrap();
+    let sync = Sync::new(server_instance.clone()).await.unwrap();
 
     // Enable sync for this database
     enable_sync_for_instance_database(&sync, &tree_id)
@@ -904,7 +896,7 @@ async fn test_bootstrap_with_existing_global_permission_no_duplicate() {
     let sync_request =
         create_bootstrap_request(&tree_id, &test_key, "laptop_key", AuthPermission::Write(10));
 
-    let context = eidetica::sync::protocol::RequestContext::default();
+    let context = RequestContext::default();
     let response = sync_handler.handle_request(&sync_request, &context).await;
 
     match response {
@@ -977,7 +969,7 @@ async fn test_bootstrap_global_permission_client_cannot_create_entries_bug() {
     server_instance.enable_sync().await.unwrap();
 
     // Create database with global '*' permission allowing Write(5)
-    let mut settings = eidetica::crdt::Doc::new();
+    let mut settings = Doc::new();
     settings.set("name", "Global Permission Bug Test DB");
 
     let mut auth_settings = AuthSettings::new();
@@ -1008,9 +1000,7 @@ async fn test_bootstrap_global_permission_client_cannot_create_entries_bug() {
     client_instance.enable_sync().await.unwrap();
 
     // Set up sync system and handler
-    let sync = eidetica::sync::Sync::new(server_instance.clone())
-        .await
-        .unwrap();
+    let sync = Sync::new(server_instance.clone()).await.unwrap();
     let sync_handler = create_test_sync_handler(&sync);
 
     // Client bootstraps via global permission - this should succeed
@@ -1020,7 +1010,7 @@ async fn test_bootstrap_global_permission_client_cannot_create_entries_bug() {
         "client_key",
         AuthPermission::Write(10),
     );
-    let context = eidetica::sync::protocol::RequestContext::default();
+    let context = RequestContext::default();
     let response = sync_handler.handle_request(&sync_request, &context).await;
 
     // Verify bootstrap succeeded
@@ -1062,7 +1052,6 @@ async fn test_bootstrap_global_permission_client_cannot_create_entries_bug() {
 
 #[tokio::test]
 async fn test_global_permission_enables_transactions() {
-    use eidetica::store::Table;
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1078,7 +1067,7 @@ async fn test_global_permission_enables_transactions() {
     server_instance.enable_sync().await.unwrap();
 
     // Create database with global Write(10) permission
-    let mut settings = eidetica::crdt::Doc::new();
+    let mut settings = Doc::new();
     settings.set("name", "Test Global Permission Transactions");
 
     let mut auth_settings = AuthSettings::new();
@@ -1105,9 +1094,7 @@ async fn test_global_permission_enables_transactions() {
     let tree_id = database.root_id().clone();
 
     // Setup sync
-    let sync = eidetica::sync::Sync::new(server_instance.clone())
-        .await
-        .unwrap();
+    let sync = Sync::new(server_instance.clone()).await.unwrap();
 
     // Enable sync for this database
     enable_sync_for_instance_database(&sync, &tree_id)
@@ -1128,13 +1115,13 @@ async fn test_global_permission_enables_transactions() {
         &tree_id,
         &client_key_id,
         "client_device",
-        eidetica::auth::Permission::Write(15),
+        AuthPermission::Write(15),
     );
 
-    let context = eidetica::sync::protocol::RequestContext::default();
+    let context = RequestContext::default();
     let response = sync_handler.handle_request(&sync_request, &context).await;
     match response {
-        eidetica::sync::protocol::SyncResponse::Bootstrap(bootstrap_response) => {
+        SyncResponse::Bootstrap(bootstrap_response) => {
             assert_eq!(bootstrap_response.tree_id, tree_id);
             assert!(bootstrap_response.key_approved);
             println!("✅ Bootstrap approved via global permission");
@@ -1153,7 +1140,7 @@ async fn test_global_permission_enables_transactions() {
     // Verify client key was NOT added to auth settings (global permission used instead)
     let db_settings = database.get_settings().await.unwrap();
     match db_settings.get("auth").await {
-        Ok(eidetica::crdt::doc::Value::Doc(auth_node)) => {
+        Ok(Value::Doc(auth_node)) => {
             // Client key should NOT be present
             assert!(
                 auth_node.get("client_device").is_none(),
@@ -1171,7 +1158,7 @@ async fn test_global_permission_enables_transactions() {
     let root_entry = server_instance.backend().get(&tree_id).await.unwrap();
     client_instance
         .backend()
-        .put(eidetica::backend::VerificationStatus::Verified, root_entry)
+        .put(VerificationStatus::Verified, root_entry)
         .await
         .unwrap();
 
@@ -1183,7 +1170,7 @@ async fn test_global_permission_enables_transactions() {
 
     // Discover which SigKeys this public key can use
     // This will return global "*" since the client is using global permissions
-    let sigkeys = eidetica::Database::find_sigkeys(&client_instance, &tree_id, &client_key_id)
+    let sigkeys = Database::find_sigkeys(&client_instance, &tree_id, &client_key_id)
         .await
         .expect("Should find valid SigKeys");
 
@@ -1194,7 +1181,7 @@ async fn test_global_permission_enables_transactions() {
     let (sigkey, _permission) = &sigkeys[0];
     assert!(sigkey.is_global(), "Should resolve to global permission");
     let sigkey_str = match sigkey {
-        eidetica::auth::types::SigKey::Direct(hint) => hint
+        SigKey::Direct(hint) => hint
             .pubkey
             .clone()
             .or(hint.name.clone())
@@ -1202,7 +1189,7 @@ async fn test_global_permission_enables_transactions() {
         _ => panic!("Expected Direct SigKey"),
     };
 
-    let client_db = eidetica::Database::open(
+    let client_db = Database::open(
         client_instance.clone(),
         &tree_id,
         client_signing_key,
@@ -1233,7 +1220,7 @@ async fn test_global_permission_enables_transactions() {
             // Verify the entry was created with global permission in SigInfo
             let entry = client_instance.backend().get(&entry_id).await.unwrap();
             match &entry.sig.key {
-                eidetica::auth::types::SigKey::Direct(hint) => {
+                SigKey::Direct(hint) => {
                     // Global permission is encoded as "*:ed25519:..." in the pubkey field
                     assert!(
                         entry.sig.key.is_global(),
@@ -1480,7 +1467,7 @@ async fn test_bootstrap_api_equivalence() {
         setup_global_wildcard_server().await;
 
     // Add some content to the server database
-    let entry = eidetica::Entry::root_builder()
+    let entry = Entry::root_builder()
         .set_subtree_data("data", r#"{"test": "data"}"#)
         .build()
         .unwrap();

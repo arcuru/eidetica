@@ -34,10 +34,12 @@ use crate::{
         types::{KeyHint, SigInfo, SigKey},
         validation::AuthValidator,
     },
+    backend::VerificationStatus,
     constants::{INDEX, ROOT, SETTINGS},
-    crdt::{CRDT, Doc, doc::Value},
+    crdt::{CRDT, Data, Doc, doc::Value},
     entry::{Entry, EntryBuilder, ID},
     height::HeightStrategy,
+    instance::WriteSource,
     store::{Registry, SettingsStore, StoreError},
 };
 
@@ -658,7 +660,7 @@ impl Transaction {
     /// Returns an error if the subtree data exists but cannot be deserialized to type `T`.
     pub fn get_local_data<T>(&self, subtree_name: impl AsRef<str>) -> Result<T>
     where
-        T: crate::crdt::Data + Default,
+        T: Data + Default,
     {
         let subtree_name = subtree_name.as_ref();
         let builder_ref = self.entry_builder.lock().unwrap();
@@ -1343,7 +1345,7 @@ impl Transaction {
             return Err(TransactionError::EntryValidationFailed.into());
         }
 
-        let verification_status = crate::backend::VerificationStatus::Verified;
+        let verification_status = VerificationStatus::Verified;
 
         // Get the entry's ID
         let id = entry.id();
@@ -1355,7 +1357,7 @@ impl Transaction {
                 self.db.root_id(),
                 verification_status,
                 entry.clone(),
-                crate::instance::WriteSource::Local,
+                WriteSource::Local,
             )
             .await?;
 

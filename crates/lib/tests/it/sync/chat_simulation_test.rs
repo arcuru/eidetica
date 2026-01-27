@@ -18,7 +18,13 @@ use super::helpers::{
     setup_sync_enabled_server, setup_sync_enabled_server_with_auto_approve, start_sync_server,
 };
 use crate::helpers::test_instance_with_user_and_key;
-use eidetica::{auth::Permission, crdt::Doc, store::Table, sync::transports::http::HttpTransport};
+use eidetica::{
+    Database,
+    auth::{Permission, generate_keypair, types::SigKey},
+    crdt::Doc,
+    store::Table,
+    sync::transports::http::HttpTransport,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -133,14 +139,14 @@ async fn test_chat_app_authenticated_bootstrap() {
     );
 
     // Client opens database using their registered key (discovered via find_sigkeys)
-    let sigkeys = eidetica::Database::find_sigkeys(&client_instance, &tree_id, &client_key_id)
+    let sigkeys = Database::find_sigkeys(&client_instance, &tree_id, &client_key_id)
         .await
         .expect("Should find valid SigKeys");
     assert!(!sigkeys.is_empty(), "Should find at least one SigKey");
 
     let (sigkey, _) = &sigkeys[0];
     let sigkey_str = match sigkey {
-        eidetica::auth::types::SigKey::Direct(hint) => hint
+        SigKey::Direct(hint) => hint
             .pubkey
             .clone()
             .or(hint.name.clone())
@@ -159,7 +165,7 @@ async fn test_chat_app_authenticated_bootstrap() {
         .expect("Should have signing key")
         .clone();
 
-    let client_database = eidetica::Database::open(
+    let client_database = Database::open(
         client_instance.clone(),
         &tree_id,
         client_signing_key,
@@ -262,7 +268,7 @@ async fn test_global_key_bootstrap() {
     client_sync.flush().await.ok();
 
     // Client opens database with global permission
-    let sigkeys = eidetica::Database::find_sigkeys(&client_instance, &tree_id, &client_key_id)
+    let sigkeys = Database::find_sigkeys(&client_instance, &tree_id, &client_key_id)
         .await
         .expect("Should find valid SigKeys");
 
@@ -270,7 +276,7 @@ async fn test_global_key_bootstrap() {
     // Global permission is encoded as "*:ed25519:..." in the pubkey field
     assert!(sigkey.is_global(), "Should resolve to global permission");
     let sigkey_str = match sigkey {
-        eidetica::auth::types::SigKey::Direct(hint) => hint
+        SigKey::Direct(hint) => hint
             .pubkey
             .clone()
             .or(hint.name.clone())
@@ -283,7 +289,7 @@ async fn test_global_key_bootstrap() {
         .expect("Should have signing key")
         .clone();
 
-    let client_database = eidetica::Database::open(
+    let client_database = Database::open(
         client_instance.clone(),
         &tree_id,
         client_signing_key,
@@ -405,8 +411,8 @@ async fn test_multiple_databases_sync() {
         );
 
         // Open and verify room name
-        let (reader_key, _) = eidetica::auth::generate_keypair();
-        let database = eidetica::Database::open(
+        let (reader_key, _) = generate_keypair();
+        let database = Database::open(
             client_instance.clone(),
             room_id,
             reader_key,

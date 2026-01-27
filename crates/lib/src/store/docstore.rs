@@ -1,9 +1,9 @@
 use std::str::FromStr;
 
 use crate::{
-    Result, Store, Transaction,
+    Error, Result, Store, Transaction,
     crdt::{
-        CRDT, Doc,
+        CRDT, CRDTError, Doc,
         doc::{List, Path, PathBuf, PathError, Value},
     },
     store::{Registered, errors::StoreError},
@@ -435,10 +435,10 @@ impl DocStore {
     }
 }
 
-impl From<PathError> for crate::Error {
+impl From<PathError> for Error {
     fn from(err: PathError) -> Self {
         // Convert PathError to CRDTError first, then to main Error
-        crate::Error::CRDT(err.into())
+        Error::CRDT(err.into())
     }
 }
 
@@ -471,7 +471,7 @@ impl DocStore {
     /// ```
     pub async fn get_as<T>(&self, key: impl AsRef<str>) -> Result<T>
     where
-        T: for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError>,
+        T: for<'a> TryFrom<&'a Value, Error = CRDTError>,
     {
         let value = self.get(key).await?;
         T::try_from(&value).map_err(Into::into)
@@ -512,7 +512,7 @@ impl DocStore {
     /// - The DocStore operation fails
     pub async fn get_path_as<T>(&self, path: impl AsRef<Path>) -> Result<T>
     where
-        T: for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError>,
+        T: for<'a> TryFrom<&'a Value, Error = CRDTError>,
     {
         let value = self.get_path(path).await?;
         T::try_from(&value).map_err(Into::into)
@@ -551,7 +551,7 @@ impl DocStore {
     /// ```
     pub async fn get_or_insert<T>(&self, key: impl AsRef<str>, default: T) -> Result<T>
     where
-        T: Into<Value> + for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError> + Clone,
+        T: Into<Value> + for<'a> TryFrom<&'a Value, Error = CRDTError> + Clone,
     {
         let key_str = key.as_ref();
 
@@ -613,7 +613,7 @@ impl DocStore {
     /// ```
     pub async fn modify<T, F>(&self, key: impl AsRef<str>, f: F) -> Result<()>
     where
-        T: for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError> + Into<Value>,
+        T: for<'a> TryFrom<&'a Value, Error = CRDTError> + Into<Value>,
         F: FnOnce(&mut T),
     {
         let key = key.as_ref();
@@ -659,7 +659,7 @@ impl DocStore {
     /// ```
     pub async fn modify_or_insert<T, F>(&self, key: impl AsRef<str>, default: T, f: F) -> Result<()>
     where
-        T: Into<Value> + for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError> + Clone,
+        T: Into<Value> + for<'a> TryFrom<&'a Value, Error = CRDTError> + Clone,
         F: FnOnce(&mut T),
     {
         let key = key.as_ref();
@@ -705,7 +705,7 @@ impl DocStore {
     /// ```
     pub async fn get_or_insert_path<T>(&self, path: impl AsRef<Path>, default: T) -> Result<T>
     where
-        T: Into<Value> + for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError> + Clone,
+        T: Into<Value> + for<'a> TryFrom<&'a Value, Error = CRDTError> + Clone,
     {
         // Try to get existing value first
         match self.get_path_as(path.as_ref()).await {
@@ -721,7 +721,7 @@ impl DocStore {
     /// Get or insert a value at a path with string paths for runtime normalization
     pub async fn get_or_insert_path_str<T>(&self, path: &str, default: T) -> Result<T>
     where
-        T: Into<Value> + for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError> + Clone,
+        T: Into<Value> + for<'a> TryFrom<&'a Value, Error = CRDTError> + Clone,
     {
         let pathbuf = PathBuf::from_str(path).unwrap(); // Infallible
         self.get_or_insert_path(&pathbuf, default).await
@@ -763,7 +763,7 @@ impl DocStore {
         f: F,
     ) -> Result<()>
     where
-        T: Into<Value> + for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError> + Clone,
+        T: Into<Value> + for<'a> TryFrom<&'a Value, Error = CRDTError> + Clone,
         F: FnOnce(&mut T),
     {
         // Get existing value or insert default
@@ -781,7 +781,7 @@ impl DocStore {
     /// Modify a value or insert a default with string paths for runtime normalization
     pub async fn modify_or_insert_path_str<T, F>(&self, path: &str, default: T, f: F) -> Result<()>
     where
-        T: Into<Value> + for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError> + Clone,
+        T: Into<Value> + for<'a> TryFrom<&'a Value, Error = CRDTError> + Clone,
         F: FnOnce(&mut T),
     {
         let pathbuf = PathBuf::from_str(path).unwrap(); // Infallible
@@ -916,7 +916,7 @@ impl DocStore {
     /// ```
     pub async fn modify_path<T, F>(&self, path: impl AsRef<Path>, f: F) -> Result<()>
     where
-        T: for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError> + Into<Value>,
+        T: for<'a> TryFrom<&'a Value, Error = CRDTError> + Into<Value>,
         F: FnOnce(&mut T),
     {
         // Try to get and convert the current value
@@ -933,7 +933,7 @@ impl DocStore {
     /// Modify a value at a path with string paths for runtime normalization
     pub async fn modify_path_str<T, F>(&self, path: &str, f: F) -> Result<()>
     where
-        T: for<'a> TryFrom<&'a Value, Error = crate::crdt::CRDTError> + Into<Value>,
+        T: for<'a> TryFrom<&'a Value, Error = CRDTError> + Into<Value>,
         F: FnOnce(&mut T),
     {
         let pathbuf = PathBuf::from_str(path).unwrap(); // Infallible

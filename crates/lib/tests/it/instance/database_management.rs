@@ -5,6 +5,8 @@
 //!
 //! Note: Instance-level database listing is internal. Use User::find_database for discovery.
 
+use eidetica::crdt::Doc;
+
 use super::helpers::*;
 use crate::helpers::test_instance_with_user;
 
@@ -163,7 +165,7 @@ async fn test_tree_metadata_management() {
         .get_default_key()
         .expect("User should have default key");
     let tree = user
-        .create_database(eidetica::crdt::Doc::new(), &key_id)
+        .create_database(Doc::new(), &key_id)
         .await
         .expect("Failed to create tree");
 
@@ -216,7 +218,7 @@ async fn test_tree_listing_and_searching() {
         .get_default_key()
         .expect("User should have default key");
     let _tree4 = user
-        .create_database(eidetica::crdt::Doc::new(), &key_id)
+        .create_database(Doc::new(), &key_id)
         .await
         .expect("Failed to create unnamed tree");
 

@@ -10,8 +10,8 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+use super::peer_types::PeerId;
 use crate::entry::ID;
-use crate::sync::peer_types::PeerId;
 
 /// Thread-safe queue for entries pending synchronization.
 ///

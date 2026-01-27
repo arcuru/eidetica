@@ -5,7 +5,7 @@
 
 use eidetica::crdt::{
     CRDT, Doc,
-    doc::{Value, path},
+    doc::{List, Value, path},
 };
 
 use super::helpers::*;
@@ -162,7 +162,7 @@ fn test_crdt_with_lists_integration() {
     let mut doc = Doc::new();
 
     // Add a list to the document
-    let mut items = eidetica::crdt::doc::List::new();
+    let mut items = List::new();
     items.push(Value::Text("item1".to_string()));
     items.push(Value::Text("item2".to_string()));
     doc.set("items", Value::List(items));

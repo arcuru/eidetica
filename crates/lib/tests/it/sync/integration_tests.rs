@@ -1,11 +1,12 @@
-use eidetica::sync::{Address, transports::http::HttpTransport};
+use eidetica::{
+    Entry, Error,
+    sync::{Address, transports::http::HttpTransport},
+};
 
 use super::helpers::*;
 
 #[tokio::test]
 async fn test_sync_with_http_transport() {
-    use eidetica::Entry;
-
     let (_base_db, sync) = setup().await;
 
     // Enable HTTP transport and start server
@@ -32,8 +33,6 @@ async fn test_sync_with_http_transport() {
 
 #[tokio::test]
 async fn test_multiple_sync_instances_communication() {
-    use eidetica::Entry;
-
     // Create two separate sync instances
     let (_base_db1, sync_server) = setup().await;
     let (_base_db2, sync_client) = setup().await;
@@ -72,8 +71,6 @@ async fn test_multiple_sync_instances_communication() {
 
 #[tokio::test]
 async fn test_send_entries_http() {
-    use eidetica::Entry;
-
     // Create two separate sync instances
     let (_base_db1, sync_server) = setup().await;
     let (_base_db2, sync_client) = setup().await;
@@ -118,8 +115,6 @@ async fn test_send_entries_http() {
 
 #[tokio::test]
 async fn test_sync_without_transport_enabled() {
-    use eidetica::Entry;
-
     let (_base_db, sync) = setup().await;
 
     // Attempting to send entries without enabling transport should fail
@@ -132,7 +127,7 @@ async fn test_sync_without_transport_enabled() {
     assert!(result.is_err());
     let err = result.unwrap_err();
     match err {
-        eidetica::Error::Sync(sync_err) => {
+        Error::Sync(sync_err) => {
             assert!(sync_err.is_configuration_error());
         }
         _ => panic!("Expected Sync error, got {err:?}"),
@@ -148,7 +143,7 @@ async fn test_sync_server_without_transport_enabled() {
     assert!(result.is_err());
     let err = result.unwrap_err();
     match err {
-        eidetica::Error::Sync(sync_err) => {
+        Error::Sync(sync_err) => {
             assert!(sync_err.is_configuration_error());
         }
         _ => panic!("Expected Sync error, got {err:?}"),
@@ -157,8 +152,6 @@ async fn test_sync_server_without_transport_enabled() {
 
 #[tokio::test]
 async fn test_sync_connect_to_invalid_address() {
-    use eidetica::Entry;
-
     let (_base_db, sync) = setup().await;
     sync.register_transport("http", HttpTransport::builder())
         .await

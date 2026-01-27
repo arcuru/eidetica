@@ -8,7 +8,7 @@
 
 #![allow(dead_code)]
 
-use eidetica::{Database, Instance, user::User};
+use eidetica::{Database, Instance, crdt::Doc, entry::ID, sync::Sync, user::User};
 
 use crate::helpers::test_instance;
 
@@ -88,7 +88,7 @@ pub async fn add_multiple_keys(user: &mut User, count: usize) -> Vec<String> {
 
 /// Create a database for a user with default settings
 pub async fn create_user_database(user: &mut User) -> Database {
-    let mut settings = eidetica::crdt::Doc::new();
+    let mut settings = Doc::new();
     settings.set("name", "Test Database");
 
     // Get the default key (earliest created key)
@@ -101,7 +101,7 @@ pub async fn create_user_database(user: &mut User) -> Database {
 
 /// Create a database with custom name
 pub async fn create_named_database(user: &mut User, name: &str) -> Database {
-    let mut settings = eidetica::crdt::Doc::new();
+    let mut settings = Doc::new();
     settings.set("name", name);
 
     // Get the default key (earliest created key)
@@ -122,10 +122,7 @@ pub async fn create_multiple_databases(user: &mut User, names: &[&str]) -> Vec<D
 }
 
 /// Create a database and return both the database and its ID
-pub async fn create_database_with_id(
-    user: &mut User,
-    name: &str,
-) -> (Database, eidetica::entry::ID) {
+pub async fn create_database_with_id(user: &mut User, name: &str) -> (Database, ID) {
     let db = create_named_database(user, name).await;
     let id = db.root_id().clone();
     (db, id)
@@ -169,7 +166,7 @@ pub async fn setup_users_with_shared_database(
     owner_name: &str,
     requester_name: &str,
     db_name: &str,
-) -> (Instance, User, User, Database, eidetica::entry::ID) {
+) -> (Instance, User, User, Database, ID) {
     let instance = setup_instance().await;
     instance
         .create_user(owner_name, None)
@@ -235,11 +232,7 @@ pub async fn assert_database_name(database: &Database, expected_name: &str) {
 }
 
 /// Assert that a user has a sigkey mapping for a database
-pub fn assert_user_has_database_access(
-    user: &User,
-    key_id: &str,
-    database_id: &eidetica::entry::ID,
-) {
+pub fn assert_user_has_database_access(user: &User, key_id: &str, database_id: &ID) {
     let sigkey = user
         .key_mapping(key_id, database_id)
         .expect("Failed to get database sigkey");
@@ -250,7 +243,7 @@ pub fn assert_user_has_database_access(
 }
 
 /// Assert that a user can find a key for a database
-pub fn assert_user_can_access_database(user: &User, database_id: &eidetica::entry::ID) {
+pub fn assert_user_can_access_database(user: &User, database_id: &ID) {
     let key = user
         .find_key(database_id)
         .expect("Failed to find key for database");
@@ -311,16 +304,7 @@ pub async fn test_multi_user_bootstrap_workflow(
     owner_name: &str,
     requester_name: &str,
     db_name: &str,
-) -> (
-    Instance,
-    User,
-    User,
-    Database,
-    eidetica::sync::Sync,
-    eidetica::entry::ID,
-) {
-    use eidetica::sync::Sync;
-
+) -> (Instance, User, User, Database, Sync, ID) {
     let instance = setup_instance().await;
 
     // Create both users

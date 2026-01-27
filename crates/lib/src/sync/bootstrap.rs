@@ -8,7 +8,11 @@ use super::{
     peer_types::Address,
     transports::{http::HttpTransport, iroh::IrohTransport},
 };
-use crate::{Database, Result, auth::types::AuthKey};
+use crate::{
+    Database, Result,
+    auth::{Permission, crypto::parse_public_key, types::AuthKey},
+    entry::ID,
+};
 
 impl Sync {
     // === Bootstrap Sync Methods ===
@@ -42,10 +46,10 @@ impl Sync {
     async fn sync_with_peer_for_bootstrap_internal(
         &self,
         peer_address: &str,
-        tree_id: &crate::entry::ID,
+        tree_id: &ID,
         requesting_public_key: String,
         requesting_key_name: &str,
-        requested_permission: crate::auth::Permission,
+        requested_permission: Permission,
     ) -> Result<()> {
         // Validate public key is not empty
         if requesting_public_key.is_empty() {
@@ -56,10 +60,8 @@ impl Sync {
         }
 
         // Validate public key format by attempting to parse it
-        crate::auth::crypto::parse_public_key(&requesting_public_key).map_err(|e| {
-            SyncError::InvalidPublicKey {
-                reason: format!("Invalid public key format: {e}"),
-            }
+        parse_public_key(&requesting_public_key).map_err(|e| SyncError::InvalidPublicKey {
+            reason: format!("Invalid public key format: {e}"),
         })?;
 
         // Validate key name is not empty
@@ -137,10 +139,10 @@ impl Sync {
     pub async fn sync_with_peer_for_bootstrap_with_key(
         &self,
         peer_address: &str,
-        tree_id: &crate::entry::ID,
+        tree_id: &ID,
         requesting_public_key: &str,
         requesting_key_name: &str,
-        requested_permission: crate::auth::Permission,
+        requested_permission: Permission,
     ) -> Result<()> {
         // Delegate to internal method
         self.sync_with_peer_for_bootstrap_internal(

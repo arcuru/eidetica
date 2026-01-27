@@ -17,15 +17,16 @@ use super::{
     error::SyncError,
     handler::SyncHandlerImpl,
     peer_manager::PeerManager,
-    peer_types::{Address, PeerId},
+    peer_types::{Address, PeerId, PeerStatus},
     protocol::{HandshakeRequest, PROTOCOL_VERSION, SyncRequest, SyncResponse, SyncTreeRequest},
     queue::SyncQueue,
     transport_manager::TransportManager,
 };
 use crate::{
-    Database, Result,
+    Database, Error, Instance, Result, WeakInstance,
     auth::crypto::{generate_challenge, verify_challenge_response},
     entry::{Entry, ID},
+    store::DocStore,
 };
 
 /// Commands that can be sent to the background sync engine
@@ -154,7 +155,7 @@ struct RetryEntry {
 pub struct BackgroundSync {
     // Core components - owns everything
     transport_manager: TransportManager,
-    instance: crate::WeakInstance,
+    instance: WeakInstance,
     sync_tree_id: ID,
 
     // Queue for entries pending synchronization (shared with Sync frontend)
@@ -173,7 +174,7 @@ impl BackgroundSync {
     /// The engine starts with no transports registered. Use `AddTransport`
     /// commands to add transports after starting.
     pub fn start(
-        instance: crate::Instance,
+        instance: Instance,
         sync_tree_id: ID,
         queue: Arc<SyncQueue>,
     ) -> mpsc::Sender<SyncCommand> {
@@ -195,10 +196,10 @@ impl BackgroundSync {
     }
 
     /// Upgrade the weak instance reference to a strong reference.
-    fn instance(&self) -> Result<crate::Instance> {
+    fn instance(&self) -> Result<Instance> {
         self.instance
             .upgrade()
-            .ok_or_else(|| crate::sync::error::SyncError::InstanceDropped.into())
+            .ok_or_else(|| SyncError::InstanceDropped.into())
     }
 
     /// Get the sync tree for accessing peer data
@@ -233,7 +234,7 @@ impl BackgroundSync {
 
         // Get all tracked database IDs from the DATABASE_USERS_SUBTREE
         let database_users = match op
-            .get_store::<crate::store::DocStore>(super::user_sync_manager::DATABASE_USERS_SUBTREE)
+            .get_store::<DocStore>(super::user_sync_manager::DATABASE_USERS_SUBTREE)
             .await
         {
             Ok(store) => store,
@@ -248,7 +249,7 @@ impl BackgroundSync {
         // Find the minimum interval across all databases
         let mut min_interval: Option<u64> = None;
         for db_id_str in all_dbs.keys() {
-            if let Ok(db_id) = crate::entry::ID::parse(db_id_str)
+            if let Ok(db_id) = ID::parse(db_id_str)
                 && let Ok(Some(settings)) = user_mgr.get_combined_settings(&db_id).await
                 && let Some(interval) = settings.interval_seconds
             {
@@ -472,11 +473,10 @@ impl BackgroundSync {
             .await?;
 
         match response {
-            crate::sync::protocol::SyncResponse::Ack
-            | crate::sync::protocol::SyncResponse::Count(_) => Ok(()),
-            crate::sync::protocol::SyncResponse::Error(msg) => Err(SyncError::SyncProtocolError(
-                format!("Peer {peer} returned error: {msg}"),
-            )
+            SyncResponse::Ack | SyncResponse::Count(_) => Ok(()),
+            SyncResponse::Error(msg) => Err(SyncError::SyncProtocolError(format!(
+                "Peer {peer} returned error: {msg}"
+            ))
             .into()),
             _ => Err(SyncError::UnexpectedResponse {
                 expected: "Ack or Count",
@@ -487,13 +487,7 @@ impl BackgroundSync {
     }
 
     /// Add failed send to retry queue
-    fn add_to_retry_queue(
-        &mut self,
-        peer: PeerId,
-        entries: Vec<Entry>,
-        error: crate::Error,
-        now_ms: u64,
-    ) {
+    fn add_to_retry_queue(&mut self, peer: PeerId, entries: Vec<Entry>, error: Error, now_ms: u64) {
         // Log send failure and add to retry queue
         tracing::warn!("Failed to send to {peer}: {error}. Adding to retry queue.");
         self.retry_queue.push(RetryEntry {
@@ -653,7 +647,7 @@ impl BackgroundSync {
 
         // Now sync with peers (operation is dropped, so no Send issues)
         for peer_info in peers {
-            if peer_info.status == crate::sync::peer_types::PeerStatus::Active
+            if peer_info.status == PeerStatus::Active
                 && let Err(e) = self.sync_with_peer(&peer_info.id).await
             {
                 // Log individual peer sync failure but continue with others
@@ -997,9 +991,7 @@ impl BackgroundSync {
                     Ok(_) => {
                         op.commit().await?;
                     }
-                    Err(crate::Error::Sync(crate::sync::error::SyncError::PeerAlreadyExists(
-                        _,
-                    ))) => {
+                    Err(Error::Sync(SyncError::PeerAlreadyExists(_))) => {
                         // Peer already exists, that's fine - just continue with handshake result
                     }
                     Err(e) => return Err(e),

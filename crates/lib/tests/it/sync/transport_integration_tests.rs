@@ -1,7 +1,10 @@
-use eidetica::sync::{
-    Address,
-    protocol::SyncRequest,
-    transports::{SyncTransport, http::HttpTransport, iroh::IrohTransport},
+use eidetica::{
+    Entry,
+    sync::{
+        Address,
+        protocol::SyncRequest,
+        transports::{SyncTransport, http::HttpTransport, iroh::IrohTransport},
+    },
 };
 
 /// Test that both HTTP and Iroh transports follow the same interface
@@ -68,8 +71,6 @@ async fn test_transport_interface_consistency() {
 /// Test error handling consistency across transports
 #[tokio::test]
 async fn test_transport_error_handling_consistency() {
-    use eidetica::Entry;
-
     let http_transport = HttpTransport::new().unwrap();
     let iroh_transport = IrohTransport::new().unwrap();
 

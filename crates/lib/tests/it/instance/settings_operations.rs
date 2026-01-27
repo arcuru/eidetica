@@ -3,9 +3,10 @@
 //! This module contains tests for tree settings operations including
 //! initial settings creation, settings modification, and metadata management.
 
+use eidetica::crdt::Doc;
+
 use super::helpers::*;
 use crate::helpers::test_instance_with_user;
-use eidetica::crdt::Doc;
 
 #[tokio::test]
 async fn test_create_tree_with_initial_settings() {
@@ -40,7 +41,7 @@ async fn test_multiple_settings_updates() {
         .get_default_key()
         .expect("User should have default key");
     let tree = user
-        .create_database(eidetica::crdt::Doc::new(), &key_id)
+        .create_database(Doc::new(), &key_id)
         .await
         .expect("Failed to create tree");
 

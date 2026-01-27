@@ -3,7 +3,14 @@
 //! This module provides utilities for testing Instance functionality including
 //! database operations, tree management, settings configuration, and basic operations.
 
-use eidetica::{Database, Instance, constants::SETTINGS, entry::ID, store::DocStore, user::User};
+use eidetica::{
+    Database, Error, Instance,
+    constants::SETTINGS,
+    crdt::Doc,
+    entry::ID,
+    store::DocStore,
+    user::{User, UserError},
+};
 
 use crate::helpers::test_instance_with_user;
 
@@ -23,7 +30,7 @@ pub async fn create_database_with_default_key(user: &mut User) -> Database {
     let key_id = user
         .get_default_key()
         .expect("User should have default key");
-    user.create_database(eidetica::crdt::Doc::new(), &key_id)
+    user.create_database(Doc::new(), &key_id)
         .await
         .expect("Failed to create database")
 }
@@ -301,10 +308,7 @@ pub async fn test_tree_not_found_error(user: &User, non_existent_name: &str) {
     let result = user.find_database(non_existent_name).await;
     assert!(result.is_err(), "Expected error for non-existent tree");
 
-    if let Err(eidetica::Error::User(eidetica::user::UserError::DatabaseNotTracked {
-        database_id,
-    })) = result
-    {
+    if let Err(Error::User(UserError::DatabaseNotTracked { database_id })) = result {
         // The error contains "name:{non_existent_name}" format
         assert!(
             database_id.contains(non_existent_name),

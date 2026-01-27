@@ -6,10 +6,11 @@
 //! - Convenience methods for common patterns (extract, try_extract, etc.)
 
 use eidetica::{
-    Result,
+    Error, Result,
     crdt::{
         Doc,
         doc::{Value, path},
+        errors::CRDTError,
     },
 };
 
@@ -175,7 +176,7 @@ fn test_convenience_methods() {
 }
 
 #[test]
-fn test_complex_nested_structures() -> eidetica::Result<()> {
+fn test_complex_nested_structures() -> Result<()> {
     let mut doc = Doc::new();
 
     // Create nested structure - set() returns Option<Value>, not Result
@@ -186,7 +187,7 @@ fn test_complex_nested_structures() -> eidetica::Result<()> {
 
     // Test deep path access with type inference
     let username: String = doc.get_as(path!("app.users.123.name")).ok_or_else(|| {
-        eidetica::Error::CRDT(eidetica::crdt::errors::CRDTError::ElementNotFound {
+        Error::CRDT(CRDTError::ElementNotFound {
             key: "app.users.123.name".to_string(),
         })
     })?;
@@ -195,7 +196,7 @@ fn test_complex_nested_structures() -> eidetica::Result<()> {
     let can_read: bool = doc
         .get_as(path!("app.users.123.permissions.read"))
         .ok_or_else(|| {
-            eidetica::Error::CRDT(eidetica::crdt::errors::CRDTError::ElementNotFound {
+            Error::CRDT(CRDTError::ElementNotFound {
                 key: "app.users.123.permissions.read".to_string(),
             })
         })?;
@@ -204,14 +205,14 @@ fn test_complex_nested_structures() -> eidetica::Result<()> {
     let can_write: bool = doc
         .get_as(path!("app.users.123.permissions.write"))
         .ok_or_else(|| {
-            eidetica::Error::CRDT(eidetica::crdt::errors::CRDTError::ElementNotFound {
+            Error::CRDT(CRDTError::ElementNotFound {
                 key: "app.users.123.permissions.write".to_string(),
             })
         })?;
     assert!(!can_write);
 
     let max_users: i64 = doc.get_as(path!("app.config.max_users")).ok_or_else(|| {
-        eidetica::Error::CRDT(eidetica::crdt::errors::CRDTError::ElementNotFound {
+        Error::CRDT(CRDTError::ElementNotFound {
             key: "app.config.max_users".to_string(),
         })
     })?;
@@ -221,7 +222,7 @@ fn test_complex_nested_structures() -> eidetica::Result<()> {
 }
 
 #[test]
-fn test_interface_comparison() -> eidetica::Result<()> {
+fn test_interface_comparison() -> Result<()> {
     let mut doc = Doc::new();
     doc.set("message", "Hello World");
     doc.set("count", 42);
@@ -241,7 +242,7 @@ fn test_interface_comparison() -> eidetica::Result<()> {
 
     // New method way (most ergonomic) - use ok_or_else to convert Option to Result for ?
     let method_way: String = doc.get_as("message").ok_or_else(|| {
-        eidetica::Error::CRDT(eidetica::crdt::errors::CRDTError::ElementNotFound {
+        Error::CRDT(CRDTError::ElementNotFound {
             key: "message".to_string(),
         })
     })?;

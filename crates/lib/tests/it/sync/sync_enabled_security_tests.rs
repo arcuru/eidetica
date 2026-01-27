@@ -6,10 +6,14 @@
 
 use eidetica::{
     Database,
-    auth::{AuthSettings, Permission, types::AuthKey},
+    auth::{AuthSettings, Permission, generate_keypair, types::AuthKey},
     crdt::Doc,
     store::DocStore,
-    sync::{handler::SyncHandler, transports::http::HttpTransport},
+    sync::{
+        handler::SyncHandler,
+        protocol::{RequestContext, SyncRequest, SyncResponse, SyncTreeRequest},
+        transports::http::HttpTransport,
+    },
     user::types::{SyncSettings, TrackedDatabase},
 };
 
@@ -206,7 +210,7 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
 
     // Load the database on client to get tips for incremental sync
     // Use global "*" permission (configured above with Permission::Read)
-    let (reader_key, _) = eidetica::auth::generate_keypair();
+    let (reader_key, _) = generate_keypair();
     let client_db = Database::open(
         client_instance.clone(),
         &tree_id,
@@ -247,16 +251,12 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
     // Make a change on the server
     {
         let tx = server_database.new_transaction().await.unwrap();
-        let doc_store = tx
-            .get_store::<eidetica::store::DocStore>("data")
-            .await
-            .unwrap();
+        let doc_store = tx.get_store::<DocStore>("data").await.unwrap();
         doc_store.set("key", "value").await.unwrap();
         tx.commit().await.unwrap();
     }
 
     // Attempt incremental sync - should be rejected
-    use eidetica::sync::protocol::{SyncRequest, SyncTreeRequest};
     let sync_handler = helpers::create_test_sync_handler(&server_sync);
     let sync_request = SyncRequest::SyncTree(SyncTreeRequest {
         tree_id: tree_id.clone(),
@@ -267,12 +267,12 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
         requested_permission: None,
     });
 
-    let context = eidetica::sync::protocol::RequestContext::default();
+    let context = RequestContext::default();
     let response = sync_handler.handle_request(&sync_request, &context).await;
 
     // Verify the request was rejected
     match response {
-        eidetica::sync::protocol::SyncResponse::Error(msg) => {
+        SyncResponse::Error(msg) => {
             assert!(
                 msg.contains("Tree not found") || msg.contains("not found"),
                 "Error should indicate tree not found: {msg}"
@@ -384,7 +384,7 @@ async fn test_sync_succeeds_when_enabled() {
 
     // Verify data was synced
     // Use global "*" permission (configured with Permission::Read)
-    let (reader_key, _) = eidetica::auth::generate_keypair();
+    let (reader_key, _) = generate_keypair();
     let client_db = Database::open(
         client_instance.clone(),
         &tree_id,

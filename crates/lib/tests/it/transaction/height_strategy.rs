@@ -6,15 +6,15 @@
 use std::sync::Arc;
 
 use eidetica::{
-    Clock, FixedClock, HeightStrategy, Instance, Store, backend::database::InMemory, crdt::Doc,
-    store::DocStore,
+    Clock, Database, FixedClock, HeightStrategy, Instance, Store, backend::database::InMemory,
+    crdt::Doc, store::DocStore,
 };
 
 /// Helper to create a test instance and database
 ///
 /// Uses FixedClock for more deterministic testing. For tests needing explicit
 /// clock control, use `create_test_database_with_clock()` instead.
-async fn create_test_database() -> (Instance, eidetica::Database) {
+async fn create_test_database() -> (Instance, Database) {
     let clock = Arc::new(FixedClock::default());
     let backend = Box::new(InMemory::new());
     let instance = Instance::open_with_clock(backend, clock)
@@ -40,7 +40,7 @@ async fn create_test_database() -> (Instance, eidetica::Database) {
 }
 
 /// Helper to create a test instance and database with a custom clock
-async fn create_test_database_with_clock(clock: Arc<dyn Clock>) -> (Instance, eidetica::Database) {
+async fn create_test_database_with_clock(clock: Arc<dyn Clock>) -> (Instance, Database) {
     let backend = Box::new(InMemory::new());
     let instance = Instance::open_with_clock(backend, clock)
         .await
@@ -102,7 +102,7 @@ async fn test_height_strategy_incremental_produces_sequential_heights() {
 #[tokio::test]
 async fn test_height_strategy_timestamp_produces_timestamp_heights() {
     // Use a fixed clock with a known timestamp
-    let clock = Arc::new(eidetica::FixedClock::new(1_700_000_000_000)); // ~Nov 2023
+    let clock = Arc::new(FixedClock::new(1_700_000_000_000)); // ~Nov 2023
     let (_instance, database) = create_test_database_with_clock(clock.clone()).await;
 
     // Set timestamp strategy
@@ -178,7 +178,7 @@ async fn test_height_strategy_timestamp_ensures_monotonic() {
 #[tokio::test]
 async fn test_height_strategy_subtrees_inherit_database_strategy() {
     // Use a fixed clock with a known timestamp
-    let clock = Arc::new(eidetica::FixedClock::new(1_700_000_000_000));
+    let clock = Arc::new(FixedClock::new(1_700_000_000_000));
     let (_instance, database) = create_test_database_with_clock(clock.clone()).await;
 
     // Set timestamp strategy
@@ -242,7 +242,7 @@ async fn test_height_strategy_persisted_in_settings() {
 #[tokio::test]
 async fn test_height_strategy_works_in_same_transaction() {
     // Use a fixed clock with a known timestamp
-    let clock = Arc::new(eidetica::FixedClock::new(1_700_000_000_000));
+    let clock = Arc::new(FixedClock::new(1_700_000_000_000));
     let (_instance, database) = create_test_database_with_clock(clock.clone()).await;
 
     // Set clock to known value (undoes any auto-advance from setup)

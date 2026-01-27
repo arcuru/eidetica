@@ -1,8 +1,12 @@
 use std::sync::Arc;
 
 use eidetica::{
-    FixedClock, Instance, backend::BackendImpl, backend::database::InMemory, crdt::doc::Value,
-    store::DocStore, user::User,
+    Database, Error, FixedClock, Instance,
+    backend::BackendImpl,
+    backend::database::InMemory,
+    crdt::{Doc, doc::Value},
+    store::DocStore,
+    user::User,
 };
 
 // Re-export tokio test macro for convenience
@@ -149,11 +153,11 @@ pub async fn test_instance_with_user_and_key(
 ///
 /// This is the preferred pattern for new tests. The key_id should be used
 /// in assertions like `is_signed_by(&key_id)`.
-pub async fn setup_tree_with_user_key() -> (Instance, eidetica::Database, String) {
+pub async fn setup_tree_with_user_key() -> (Instance, Database, String) {
     let (instance, mut user, key_id) =
         test_instance_with_user_and_key("test_user", Some("test_key")).await;
 
-    let mut settings = eidetica::crdt::Doc::new();
+    let mut settings = Doc::new();
     settings.set("name", "test_tree");
 
     let tree = user
@@ -187,11 +191,11 @@ pub async fn setup_empty_db() -> Instance {
 ///
 /// Note: Returns the Instance along with the Database because Database holds a weak reference.
 /// If the Instance is dropped, operations on the Database will fail with InstanceDropped.
-pub async fn setup_tree() -> (Instance, eidetica::Database) {
+pub async fn setup_tree() -> (Instance, Database) {
     let (instance, mut user) = setup_db().await;
     let default_key = user.get_default_key().expect("Failed to get default key");
 
-    let mut settings = eidetica::crdt::Doc::new();
+    let mut settings = Doc::new();
     settings.set("name", "test_tree");
 
     let tree = user
@@ -205,11 +209,11 @@ pub async fn setup_tree() -> (Instance, eidetica::Database) {
 ///
 /// Note: Returns the Instance along with the Database because Database holds a weak reference.
 /// If the Instance is dropped, operations on the Database will fail with InstanceDropped.
-pub async fn setup_tree_with_settings(settings: &[(&str, &str)]) -> (Instance, eidetica::Database) {
+pub async fn setup_tree_with_settings(settings: &[(&str, &str)]) -> (Instance, Database) {
     let (instance, mut user) = setup_db().await;
     let default_key = user.get_default_key().expect("Failed to get default key");
 
-    let mut db_settings = eidetica::crdt::Doc::new();
+    let mut db_settings = Doc::new();
     db_settings.set("name", "test_tree_with_settings");
 
     let tree = user
@@ -257,7 +261,7 @@ pub async fn assert_dict_value(store: &DocStore, key: &str, expected: &str) {
 }
 
 /// Helper for checking NotFound errors
-pub fn assert_key_not_found(result: Result<Value, eidetica::Error>) {
+pub fn assert_key_not_found(result: Result<Value, Error>) {
     match result {
         Err(ref err) if err.is_not_found() => (), // Expected
         other => panic!("Expected NotFound error, got {other:?}"),

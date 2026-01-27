@@ -4,7 +4,7 @@
 //! value editors, path operations, and merge scenarios.
 
 use eidetica::{
-    Database, Instance, Transaction,
+    Database, Instance, Result, Transaction,
     crdt::{Doc, doc::Value},
     store::DocStore,
 };
@@ -17,13 +17,13 @@ type Node = Doc;
 // ===== BASIC SETUP HELPERS =====
 
 /// Create a database with a test key and return both Instance and tree
-pub async fn setup_db_and_tree() -> eidetica::Result<(Instance, Database)> {
+pub async fn setup_db_and_tree() -> Result<(Instance, Database)> {
     let instance = test_instance().await;
     instance.create_user("test_user", None).await?;
     let mut user = instance.login_user("test_user", None).await?;
     let default_key = user.get_default_key()?;
 
-    let mut settings = eidetica::crdt::Doc::new();
+    let mut settings = Doc::new();
     settings.set("name", "test_tree");
 
     let tree = user.create_database(settings, &default_key).await?;
@@ -31,17 +31,14 @@ pub async fn setup_db_and_tree() -> eidetica::Result<(Instance, Database)> {
 }
 
 /// Setup a Doc subtree for testing
-pub async fn setup_dict_subtree(
-    op: &Transaction,
-    subtree_name: &str,
-) -> eidetica::Result<DocStore> {
+pub async fn setup_dict_subtree(op: &Transaction, subtree_name: &str) -> Result<DocStore> {
     op.get_store::<DocStore>(subtree_name).await
 }
 
 /// Create a complete test environment with DB, tree, operation, and Doc
 pub async fn setup_complete_test_env(
     subtree_name: &str,
-) -> eidetica::Result<(Instance, Database, Transaction, DocStore)> {
+) -> Result<(Instance, Database, Transaction, DocStore)> {
     let (db, tree) = setup_db_and_tree().await?;
     let op = tree.new_transaction().await?;
     let dict = setup_dict_subtree(&op, subtree_name).await?;
@@ -144,7 +141,7 @@ pub fn create_mixed_map() -> Node {
 }
 
 /// Test serialization roundtrip for a Node
-pub fn test_serialization_roundtrip(map: &Node) -> eidetica::Result<()> {
+pub fn test_serialization_roundtrip(map: &Node) -> Result<()> {
     let serialized = serde_json::to_string(map).expect("Serialization failed");
     let deserialized: Doc = serde_json::from_str(&serialized).expect("Deserialization failed");
 
@@ -183,16 +180,12 @@ pub fn assert_map_contains(value: &Value, expected_keys: &[&str]) {
 // ===== VALUE EDITOR HELPERS =====
 
 /// Setup a Doc for path operation tests
-pub async fn setup_path_test_dict(op: &Transaction) -> eidetica::Result<DocStore> {
+pub async fn setup_path_test_dict(op: &Transaction) -> Result<DocStore> {
     setup_dict_subtree(op, "path_test_store").await
 }
 
 /// Test value editor basic functionality
-pub async fn test_editor_basic_set_get(
-    dict: &DocStore,
-    key: &str,
-    value: Value,
-) -> eidetica::Result<()> {
+pub async fn test_editor_basic_set_get(dict: &DocStore, key: &str, value: Value) -> Result<()> {
     let editor = dict.get_value_mut(key);
     editor.set(value.clone()).await?;
 
@@ -207,7 +200,7 @@ pub async fn test_nested_editor_operations(
     dict: &DocStore,
     path: &[&str],
     value: Value,
-) -> eidetica::Result<()> {
+) -> Result<()> {
     // Navigate to the target path using chained editors
     let mut editor = dict.get_value_mut(path[0]);
     for &segment in &path[1..] {
@@ -225,11 +218,7 @@ pub async fn test_nested_editor_operations(
 }
 
 /// Test path-based operations
-pub async fn test_path_operations(
-    dict: &DocStore,
-    path: &[&str],
-    value: Value,
-) -> eidetica::Result<()> {
+pub async fn test_path_operations(dict: &DocStore, path: &[&str], value: Value) -> Result<()> {
     dict.set_at_path(path, value.clone()).await?;
     let retrieved = dict.get_at_path(path).await?;
     assert_eq!(retrieved, value, "Path operation mismatch at {path:?}");
@@ -254,12 +243,12 @@ pub fn assert_error_type<T, E: std::fmt::Debug>(
 }
 
 /// Test that a not found error occurs
-pub fn assert_not_found_error<T>(result: eidetica::Result<T>) {
+pub fn assert_not_found_error<T>(result: Result<T>) {
     assert_error_type(result, |e| e.is_not_found(), "NotFound error");
 }
 
 /// Test that a type error occurs
-pub fn assert_type_error<T>(result: eidetica::Result<T>) {
+pub fn assert_type_error<T>(result: Result<T>) {
     assert_error_type(result, |e| e.is_type_error(), "Type error");
 }
 

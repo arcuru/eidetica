@@ -1,10 +1,12 @@
 //! Tests for authentication validation.
 
 use eidetica::{
+    Database, Entry,
     auth::{
         AuthSettings,
-        crypto::{format_public_key, verify_entry_signature},
-        types::{AuthKey, KeyStatus, Permission, SigKey},
+        crypto::{format_public_key, generate_keypair, sign_entry, verify_entry_signature},
+        types::{AuthKey, DelegationStep, KeyHint, KeyStatus, Permission, SigInfo, SigKey},
+        validation::AuthValidator,
     },
     crdt::{Doc, doc::Value},
     store::DocStore,
@@ -32,7 +34,7 @@ async fn test_authentication_validation_revoked_key() {
         .expect("Failed to get revoked key")
         .clone();
 
-    let tree_with_revoked_key = eidetica::Database::open(
+    let tree_with_revoked_key = Database::open(
         instance.clone(),
         tree.root_id(),
         revoked_signing_key,
@@ -78,7 +80,7 @@ async fn test_permission_checking_admin_operations() {
         .expect("Failed to get write key")
         .clone();
 
-    let tree_with_write_key = eidetica::Database::open(
+    let tree_with_write_key = Database::open(
         instance.clone(),
         tree.root_id(),
         write_signing_key,
@@ -100,7 +102,7 @@ async fn test_permission_checking_admin_operations() {
         .expect("Failed to get secondary admin key")
         .clone();
 
-    let tree_with_secondary_admin_key = eidetica::Database::open(
+    let tree_with_secondary_admin_key = Database::open(
         instance.clone(),
         tree.root_id(),
         secondary_admin_signing_key,
@@ -212,19 +214,17 @@ async fn test_multiple_authenticated_entries() {
 
 #[tokio::test]
 async fn test_entry_validation_with_corrupted_auth_section() {
-    use eidetica::auth::validation::AuthValidator;
-
     let mut validator = AuthValidator::new();
-    let (signing_key, _verifying_key) = eidetica::auth::crypto::generate_keypair();
+    let (signing_key, _verifying_key) = generate_keypair();
 
     // Create a signed entry
-    let mut entry = eidetica::Entry::root_builder()
+    let mut entry = Entry::root_builder()
         .build()
         .expect("Entry should build successfully");
-    entry.sig = eidetica::auth::types::SigInfo::builder()
+    entry.sig = SigInfo::builder()
         .key(SigKey::from_name("TEST_KEY"))
         .build();
-    let signature = eidetica::auth::crypto::sign_entry(&entry, &signing_key).unwrap();
+    let signature = sign_entry(&entry, &signing_key).unwrap();
     entry.sig.sig = Some(signature);
 
     // Test with no auth section at all
@@ -277,7 +277,7 @@ async fn test_entry_validation_with_mixed_key_states() {
         .expect("Failed to get active key")
         .clone();
 
-    let tree_with_active_key = eidetica::Database::open(
+    let tree_with_active_key = Database::open(
         instance.clone(),
         tree.root_id(),
         active_signing_key,
@@ -300,7 +300,7 @@ async fn test_entry_validation_with_mixed_key_states() {
         .expect("Failed to get revoked key")
         .clone();
 
-    let tree_with_revoked_key = eidetica::Database::open(
+    let tree_with_revoked_key = Database::open(
         instance.clone(),
         tree.root_id(),
         revoked_signing_key,
@@ -320,8 +320,8 @@ async fn test_entry_validation_with_mixed_key_states() {
 
 #[tokio::test]
 async fn test_entry_validation_cache_behavior() {
-    let mut validator = eidetica::auth::validation::AuthValidator::new();
-    let (signing_key, verifying_key) = eidetica::auth::crypto::generate_keypair();
+    let mut validator = AuthValidator::new();
+    let (signing_key, verifying_key) = generate_keypair();
     let pubkey_str = format_public_key(&verifying_key);
 
     let auth_key = AuthKey::active(Some("TEST_KEY"), Permission::Write(10));
@@ -335,13 +335,13 @@ async fn test_entry_validation_cache_behavior() {
     settings.set("auth", auth_settings.as_doc().clone());
 
     // Create a signed entry
-    let mut entry = eidetica::Entry::root_builder()
+    let mut entry = Entry::root_builder()
         .build()
         .expect("Entry should build successfully");
-    entry.sig = eidetica::auth::types::SigInfo::builder()
+    entry.sig = SigInfo::builder()
         .key(SigKey::from_pubkey(&pubkey_str))
         .build();
-    let signature = eidetica::auth::crypto::sign_entry(&entry, &signing_key).unwrap();
+    let signature = sign_entry(&entry, &signing_key).unwrap();
     entry.sig.sig = Some(signature);
 
     // Extract AuthSettings from Doc
@@ -358,7 +358,7 @@ async fn test_entry_validation_cache_behavior() {
 
     // Modify the key to be revoked
     let mut revoked_auth_key = auth_key.clone();
-    revoked_auth_key.set_status(eidetica::auth::types::KeyStatus::Revoked);
+    revoked_auth_key.set_status(KeyStatus::Revoked);
 
     let mut revoked_auth_settings = AuthSettings::new();
     revoked_auth_settings
@@ -386,8 +386,8 @@ async fn test_entry_validation_cache_behavior() {
 
 #[tokio::test]
 async fn test_entry_validation_with_malformed_keys() {
-    let mut validator = eidetica::auth::validation::AuthValidator::new();
-    let (signing_key, verifying_key) = eidetica::auth::crypto::generate_keypair();
+    let mut validator = AuthValidator::new();
+    let (signing_key, verifying_key) = generate_keypair();
     let pubkey_str = format_public_key(&verifying_key);
 
     // Create settings with a valid key for comparison
@@ -399,14 +399,13 @@ async fn test_entry_validation_with_malformed_keys() {
         .unwrap();
 
     // Create entry signed with correct key
-    let mut correct_entry = eidetica::Entry::root_builder()
+    let mut correct_entry = Entry::root_builder()
         .build()
         .expect("Entry should build successfully");
-    correct_entry.sig = eidetica::auth::types::SigInfo::builder()
+    correct_entry.sig = SigInfo::builder()
         .key(SigKey::from_pubkey(&pubkey_str))
         .build();
-    let correct_signature =
-        eidetica::auth::crypto::sign_entry(&correct_entry, &signing_key).unwrap();
+    let correct_signature = sign_entry(&correct_entry, &signing_key).unwrap();
     correct_entry.sig.sig = Some(correct_signature);
 
     // Should validate successfully with correct settings
@@ -416,12 +415,11 @@ async fn test_entry_validation_with_malformed_keys() {
     assert!(result1.unwrap(), "Correctly signed entry should validate");
 
     // Test validation with mismatched signature (key exists but signature is wrong)
-    let (wrong_signing_key, _wrong_verifying_key) = eidetica::auth::crypto::generate_keypair();
+    let (wrong_signing_key, _wrong_verifying_key) = generate_keypair();
     let mut entry_with_wrong_sig = correct_entry.clone();
 
     // Sign with a different key than what's in settings
-    let wrong_signature =
-        eidetica::auth::crypto::sign_entry(&entry_with_wrong_sig, &wrong_signing_key).unwrap();
+    let wrong_signature = sign_entry(&entry_with_wrong_sig, &wrong_signing_key).unwrap();
     entry_with_wrong_sig.sig.sig = Some(wrong_signature);
 
     // Should fail validation because signature doesn't match the key in settings
@@ -447,18 +445,17 @@ async fn test_entry_validation_with_malformed_keys() {
     );
 
     // Test signature created with wrong key
-    let (wrong_signing_key, _wrong_verifying_key) = eidetica::auth::crypto::generate_keypair();
+    let (wrong_signing_key, _wrong_verifying_key) = generate_keypair();
 
-    let mut wrong_signature_entry = eidetica::Entry::root_builder()
+    let mut wrong_signature_entry = Entry::root_builder()
         .build()
         .expect("Entry should build successfully");
-    wrong_signature_entry.sig = eidetica::auth::types::SigInfo::builder()
+    wrong_signature_entry.sig = SigInfo::builder()
         .key(SigKey::from_pubkey(&pubkey_str))
         .build();
 
     // Sign with wrong key but try to validate against correct key
-    let wrong_signature =
-        eidetica::auth::crypto::sign_entry(&wrong_signature_entry, &wrong_signing_key).unwrap();
+    let wrong_signature = sign_entry(&wrong_signature_entry, &wrong_signing_key).unwrap();
     wrong_signature_entry.sig.sig = Some(wrong_signature);
 
     let result3 = validator
@@ -472,10 +469,10 @@ async fn test_entry_validation_with_malformed_keys() {
 
 #[tokio::test]
 async fn test_entry_validation_unsigned_entry_detection() {
-    let mut validator = eidetica::auth::validation::AuthValidator::new();
+    let mut validator = AuthValidator::new();
 
     // Create an unsigned entry
-    let entry = eidetica::Entry::root_builder()
+    let entry = Entry::root_builder()
         .build()
         .expect("Entry should build successfully");
 
@@ -509,9 +506,9 @@ async fn test_entry_validation_unsigned_entry_detection() {
 
 #[tokio::test]
 async fn test_entry_validation_with_invalid_signatures() {
-    let mut validator = eidetica::auth::validation::AuthValidator::new();
-    let (signing_key, verifying_key) = eidetica::auth::crypto::generate_keypair();
-    let (_wrong_signing_key, wrong_verifying_key) = eidetica::auth::crypto::generate_keypair();
+    let mut validator = AuthValidator::new();
+    let (signing_key, verifying_key) = generate_keypair();
+    let (_wrong_signing_key, wrong_verifying_key) = generate_keypair();
     let pubkey_str = format_public_key(&verifying_key);
 
     // Create settings with the correct public key
@@ -521,14 +518,13 @@ async fn test_entry_validation_with_invalid_signatures() {
     auth_settings.add_key(&pubkey_str, auth_key).unwrap();
 
     // Create entry signed with correct key
-    let mut correct_entry = eidetica::Entry::root_builder()
+    let mut correct_entry = Entry::root_builder()
         .build()
         .expect("Entry should build successfully");
-    correct_entry.sig = eidetica::auth::types::SigInfo::builder()
+    correct_entry.sig = SigInfo::builder()
         .key(SigKey::from_pubkey(&pubkey_str))
         .build();
-    let correct_signature =
-        eidetica::auth::crypto::sign_entry(&correct_entry, &signing_key).unwrap();
+    let correct_signature = sign_entry(&correct_entry, &signing_key).unwrap();
     correct_entry.sig.sig = Some(correct_signature);
 
     // Should validate successfully
@@ -563,19 +559,19 @@ async fn test_entry_validation_with_invalid_signatures() {
 /// is included in the signed data, so any modification should cause verification to fail.
 #[tokio::test]
 async fn test_sigkey_tampering_invalidates_signature() {
-    let (signing_key, verifying_key) = eidetica::auth::crypto::generate_keypair();
-    let (_, other_verifying_key) = eidetica::auth::crypto::generate_keypair();
+    let (signing_key, verifying_key) = generate_keypair();
+    let (_, other_verifying_key) = generate_keypair();
     let pubkey_str = format_public_key(&verifying_key);
     let other_pubkey_str = format_public_key(&other_verifying_key);
 
     // Create and sign an entry with a pubkey hint
-    let mut entry = eidetica::Entry::root_builder()
+    let mut entry = Entry::root_builder()
         .build()
         .expect("Entry should build successfully");
-    entry.sig = eidetica::auth::types::SigInfo::builder()
+    entry.sig = SigInfo::builder()
         .key(SigKey::from_pubkey(&pubkey_str))
         .build();
-    let signature = eidetica::auth::crypto::sign_entry(&entry, &signing_key).unwrap();
+    let signature = sign_entry(&entry, &signing_key).unwrap();
     entry.sig.sig = Some(signature);
 
     // Original entry should verify with the correct key
@@ -603,11 +599,11 @@ async fn test_sigkey_tampering_invalidates_signature() {
     // Tamper by changing from Direct to Delegation - should fail verification
     let mut tampered_delegation = entry.clone();
     tampered_delegation.sig.key = SigKey::Delegation {
-        path: vec![eidetica::auth::types::DelegationStep {
+        path: vec![DelegationStep {
             tree: "fake_tree".to_string(),
             tips: vec![],
         }],
-        hint: eidetica::auth::types::KeyHint::from_pubkey(&pubkey_str),
+        hint: KeyHint::from_pubkey(&pubkey_str),
     };
     assert!(
         !verify_entry_signature(&tampered_delegation, &verifying_key).expect("Failed to verify"),

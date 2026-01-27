@@ -2,6 +2,7 @@ mod helpers;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use eidetica::{
+    Database,
     backend::{BackendImpl, database::InMemory},
     entry::ID,
     store::DocStore,
@@ -11,7 +12,7 @@ use std::hint::black_box;
 use helpers::setup_tree_async;
 
 /// Create a linear chain of entries for testing merge base performance
-async fn create_linear_chain(tree: &eidetica::Database, length: usize) -> Vec<ID> {
+async fn create_linear_chain(tree: &Database, length: usize) -> Vec<ID> {
     let mut entry_ids = Vec::with_capacity(length);
 
     for i in 0..length {
@@ -31,7 +32,7 @@ async fn create_linear_chain(tree: &eidetica::Database, length: usize) -> Vec<ID
 }
 
 /// Create a diamond pattern for testing merge scenarios
-async fn create_diamond_pattern(tree: &eidetica::Database) -> (Vec<ID>, ID) {
+async fn create_diamond_pattern(tree: &Database) -> (Vec<ID>, ID) {
     // Create root A
     let op_a = tree.new_transaction().await.expect("Failed to create op");
     let kv_a = op_a
@@ -76,7 +77,7 @@ async fn create_diamond_pattern(tree: &eidetica::Database) -> (Vec<ID>, ID) {
 
 /// Create multiple branches for testing tips performance
 async fn create_branching_tree(
-    tree: &eidetica::Database,
+    tree: &Database,
     num_branches: usize,
     entries_per_branch: usize,
 ) -> Vec<Vec<ID>> {
@@ -121,11 +122,7 @@ async fn create_branching_tree(
 }
 
 /// Create a large tree with specified structure
-async fn create_large_tree(
-    tree: &eidetica::Database,
-    num_entries: usize,
-    structure: &str,
-) -> Vec<ID> {
+async fn create_large_tree(tree: &Database, num_entries: usize, structure: &str) -> Vec<ID> {
     let mut entry_ids = Vec::new();
 
     match structure {

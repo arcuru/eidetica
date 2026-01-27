@@ -1,5 +1,7 @@
 //! Tests for Entry version validation during deserialization.
 
+use eidetica::Entry;
+
 #[test]
 fn entry_deserialize_wrong_version_fails() {
     // Construct a JSON entry with an unsupported version
@@ -11,7 +13,7 @@ fn entry_deserialize_wrong_version_fails() {
         "sig": {"key": {}}
     }"#;
 
-    let result: Result<eidetica::Entry, _> = serde_json::from_str(json);
+    let result: Result<Entry, _> = serde_json::from_str(json);
     assert!(result.is_err(), "Should fail to deserialize wrong version");
 }
 
@@ -25,14 +27,12 @@ fn entry_deserialize_missing_version_defaults_to_v0() {
         "sig": {"key": {}}
     }"#;
 
-    let result: Result<eidetica::Entry, _> = serde_json::from_str(json);
+    let result: Result<Entry, _> = serde_json::from_str(json);
     assert!(result.is_ok(), "Missing version should default to v0");
 }
 
 #[test]
 fn entry_roundtrip() {
-    use eidetica::Entry;
-
     let entry = Entry::root_builder().build().unwrap();
     let json = serde_json::to_string(&entry).unwrap();
     let deserialized: Entry = serde_json::from_str(&json).unwrap();

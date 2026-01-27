@@ -1,4 +1,10 @@
-use eidetica::sync::transports::{SyncTransport, http::HttpTransport, iroh::IrohTransport};
+use eidetica::{
+    Entry,
+    sync::{
+        protocol::SyncRequest,
+        transports::{SyncTransport, http::HttpTransport, iroh::IrohTransport},
+    },
+};
 
 /// Test to demonstrate that HTTP and Iroh transports use aligned v0 versioning
 #[tokio::test]
@@ -47,8 +53,6 @@ async fn test_http_v0_endpoint_format() {
     let addr = transport.get_server_address().unwrap();
 
     // Test that the v0 endpoint is accessible
-    use eidetica::{Entry, sync::protocol::SyncRequest};
-
     let client = reqwest::Client::new();
     let entry = Entry::root_builder()
         .set_subtree_data("data", r#"{"test": "v0_endpoint"}"#)

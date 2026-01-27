@@ -2,7 +2,10 @@
 //!
 //! Simple inline HTML templates without a template engine.
 
-use eidetica::{Database, user::User};
+use eidetica::{
+    Database,
+    user::{TrackedDatabase, User},
+};
 
 /// Common CSS styles for all pages
 const COMMON_STYLES: &str = r#"
@@ -435,10 +438,7 @@ pub struct DatabaseInfo {
 
 impl DatabaseInfo {
     /// Create DatabaseInfo from tracked database and database
-    pub async fn from_tracked(
-        tracked: &eidetica::user::TrackedDatabase,
-        db: Option<&Database>,
-    ) -> Self {
+    pub async fn from_tracked(tracked: &TrackedDatabase, db: Option<&Database>) -> Self {
         let name = if let Some(d) = db {
             d.get_name().await.ok()
         } else {

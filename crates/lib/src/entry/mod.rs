@@ -18,7 +18,9 @@ pub use builder::EntryBuilder;
 pub use errors::EntryError;
 pub use id::ID;
 
-use crate::{Result, auth::types::SigInfo, constants::ROOT};
+use crate::{Error, Result, auth::types::SigInfo, constants::ROOT, store::StoreError};
+
+use id::IdError;
 
 /// Represents serialized data, typically JSON, provided by the user.
 ///
@@ -260,7 +262,7 @@ impl Entry {
             .find(|node| node.name == subtree_name.as_ref())
             .and_then(|node| node.data.as_ref())
             .ok_or_else(|| {
-                crate::store::StoreError::KeyNotFound {
+                StoreError::KeyNotFound {
                     store: "entry".to_string(),
                     key: subtree_name.as_ref().to_string(),
                 }
@@ -282,7 +284,7 @@ impl Entry {
             .find(|node| node.name == subtree_name.as_ref())
             .map(|node| node.parents.clone())
             .ok_or_else(|| {
-                crate::store::StoreError::KeyNotFound {
+                StoreError::KeyNotFound {
                     store: "entry".to_string(),
                     key: subtree_name.as_ref().to_string(),
                 }
@@ -308,7 +310,7 @@ impl Entry {
             .find(|node| node.name == subtree_name.as_ref())
             .map(|node| node.height.unwrap_or_else(|| self.height()))
             .ok_or_else(|| {
-                crate::store::StoreError::KeyNotFound {
+                StoreError::KeyNotFound {
                     store: "entry".to_string(),
                     key: subtree_name.as_ref().to_string(),
                 }
@@ -331,15 +333,15 @@ impl Entry {
     ///
     /// This method serializes the entry to JSON with deterministic field ordering.
     /// For signing purposes, call `canonical_for_signing()` first.
-    pub fn canonical_bytes(&self) -> crate::Result<Vec<u8>> {
-        let json = serde_json::to_string(self).map_err(crate::Error::Serialize)?;
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>> {
+        let json = serde_json::to_string(self).map_err(Error::Serialize)?;
         Ok(json.into_bytes())
     }
 
     /// Create canonical bytes for signing (convenience method).
     ///
     /// This combines `canonical_for_signing()` and `canonical_bytes()` for convenience.
-    pub fn signing_bytes(&self) -> crate::Result<Vec<u8>> {
+    pub fn signing_bytes(&self) -> Result<Vec<u8>> {
         self.canonical_for_signing().canonical_bytes()
     }
 
@@ -403,22 +405,22 @@ impl Entry {
     ///
     /// This function now supports multiple hash algorithms and uses the structured
     /// ID validation from the ID type itself.
-    fn validate_id_format(id: &ID, context: &str) -> crate::Result<()> {
+    fn validate_id_format(id: &ID, context: &str) -> Result<()> {
         // Use the ID's built-in validation by attempting to parse its string representation
         // This ensures we validate according to the actual algorithm and format rules
         if let Err(id_err) = ID::parse(id.as_str()) {
             // Add context to the error and convert through the error system
             let contextual_err = match &id_err {
-                crate::entry::id::IdError::InvalidFormat(_) => {
-                    crate::entry::id::IdError::InvalidFormat(format!(
-                        "Invalid ID format in {}: {}",
-                        context,
-                        id.as_str()
-                    ))
-                }
-                crate::entry::id::IdError::InvalidHex(_) => crate::entry::id::IdError::InvalidHex(
-                    format!("Invalid hex characters in {} ID: {}", context, id.as_str()),
-                ),
+                IdError::InvalidFormat(_) => IdError::InvalidFormat(format!(
+                    "Invalid ID format in {}: {}",
+                    context,
+                    id.as_str()
+                )),
+                IdError::InvalidHex(_) => IdError::InvalidHex(format!(
+                    "Invalid hex characters in {} ID: {}",
+                    context,
+                    id.as_str()
+                )),
                 // For length and algorithm errors, the original error is sufficient
                 _ => id_err,
             };
@@ -428,7 +430,7 @@ impl Entry {
         Ok(())
     }
 
-    pub fn validate(&self) -> crate::Result<()> {
+    pub fn validate(&self) -> Result<()> {
         use crate::constants::{ROOT, SETTINGS};
         use crate::instance::errors::InstanceError;
 

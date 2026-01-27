@@ -1,4 +1,6 @@
+use eidetica::Error;
 use eidetica::backend::BackendImpl;
+use eidetica::backend::VerificationStatus;
 use eidetica::backend::database::InMemory;
 use eidetica::backend::errors::BackendError;
 use eidetica::entry::{Entry, ID};
@@ -167,10 +169,7 @@ async fn test_backend_get_tree_from_tips() {
     assert!(result.is_err(), "Non-existent tip should return an error");
     let err = result.unwrap_err();
     assert!(
-        matches!(
-            err,
-            eidetica::Error::Backend(BackendError::EntryNotFound { .. })
-        ),
+        matches!(err, Error::Backend(BackendError::EntryNotFound { .. })),
         "Expected EntryNotFound error, got: {err:?}"
     );
 
@@ -184,10 +183,7 @@ async fn test_backend_get_tree_from_tips() {
     assert!(result.is_err(), "Mismatched tree should return an error");
     let err = result.unwrap_err();
     assert!(
-        matches!(
-            err,
-            eidetica::Error::Backend(BackendError::EntryNotInTree { .. })
-        ),
+        matches!(err, Error::Backend(BackendError::EntryNotInTree { .. })),
         "Expected EntryNotInTree error, got: {err:?}"
     );
 
@@ -218,10 +214,7 @@ async fn test_get_tips() {
         .expect("Root entry should build successfully");
     let root_id = root.id();
     backend
-        .put(
-            eidetica::backend::VerificationStatus::Verified,
-            root.clone(),
-        )
+        .put(VerificationStatus::Verified, root.clone())
         .await
         .unwrap();
 
@@ -238,10 +231,7 @@ async fn test_get_tips() {
         .expect("Entry A should build successfully");
     let id_a = entry_a.id();
     backend
-        .put(
-            eidetica::backend::VerificationStatus::Verified,
-            entry_a.clone(),
-        )
+        .put(VerificationStatus::Verified, entry_a.clone())
         .await
         .unwrap();
 
@@ -258,10 +248,7 @@ async fn test_get_tips() {
         .expect("Entry B should build successfully");
     let id_b = entry_b.id();
     backend
-        .put(
-            eidetica::backend::VerificationStatus::Verified,
-            entry_b.clone(),
-        )
+        .put(VerificationStatus::Verified, entry_b.clone())
         .await
         .unwrap();
 
@@ -278,10 +265,7 @@ async fn test_get_tips() {
         .expect("Entry C should build successfully");
     let id_c = entry_c.id();
     backend
-        .put(
-            eidetica::backend::VerificationStatus::Verified,
-            entry_c.clone(),
-        )
+        .put(VerificationStatus::Verified, entry_c.clone())
         .await
         .unwrap();
 
