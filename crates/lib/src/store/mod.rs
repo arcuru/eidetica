@@ -8,6 +8,9 @@ pub use errors::StoreError;
 mod docstore;
 pub use docstore::DocStore;
 
+mod value_editor;
+pub use value_editor::ValueEditor;
+
 mod table;
 pub use table::Table;
 
