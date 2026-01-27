@@ -4,8 +4,18 @@
   debugArgs,
   noDepsArgs,
   pkgs,
-  rootSrc,
+  lib,
 }: let
+  # Source filtered to include only Rust/cargo files + docs directory
+  # This prevents rebuilds when unrelated files (like nix/) change
+  docsFilter = path: _type: builtins.match ".*/docs/.*" path != null;
+  docsOrCargo = path: type:
+    (docsFilter path type) || (craneLib.filterCargoSources path type);
+  docSrc = lib.cleanSourceWith {
+    src = ../..;
+    filter = docsOrCargo;
+  };
+
   doc-api = craneLib.cargoDoc (debugArgs
     // {
       cargoDocExtraArgs = "--workspace --all-features --no-deps";
@@ -21,7 +31,7 @@
   doc-links =
     pkgs.runCommand "doc-links" {
       nativeBuildInputs = [pkgs.mdbook pkgs.mdbook-mermaid pkgs.lychee];
-      src = rootSrc;
+      src = docSrc;
     } ''
       cd $src
       mdbook build docs -d $TMPDIR/book
@@ -33,7 +43,7 @@
   doc-book =
     pkgs.runCommand "book" {
       nativeBuildInputs = [pkgs.mdbook pkgs.mdbook-mermaid];
-      src = rootSrc;
+      src = docSrc;
     } ''
       cd $src
       mdbook build docs -d $out
@@ -43,7 +53,7 @@
   doc-book-test = craneLib.mkCargoDerivation (noDepsArgs
     // {
       pname = "book-test";
-      src = rootSrc; # Needs the docs directory (not just cleanCargoSource)
+      src = docSrc;
       nativeBuildInputs = noDepsArgs.nativeBuildInputs ++ [pkgs.mdbook];
       buildPhaseCargoCommand = ''
         rm -f target/debug/deps/libeidetica-*.rlib target/debug/deps/libeidetica-*.rmeta

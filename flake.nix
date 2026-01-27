@@ -67,9 +67,6 @@
         lib,
         ...
       }: let
-        # Root source for packages that need full source tree
-        rootSrc = ./.;
-
         # Import toolchain setup
         toolchain = import ./nix/toolchain.nix {inherit inputs system pkgs;};
         inherit
@@ -92,9 +89,9 @@
         # Import package groups
         mainPkgs = import ./nix/packages/main.nix {inherit craneLib releaseArgs;};
         testPkgs = import ./nix/packages/test.nix {inherit craneLib debugArgs baseArgs pkgs lib;};
-        coveragePkgs = import ./nix/packages/coverage.nix {inherit craneLib baseArgs fenixStable pkgs lib rootSrc;};
+        coveragePkgs = import ./nix/packages/coverage.nix {inherit craneLib baseArgs fenixStable pkgs lib;};
         sanitizePkgs = import ./nix/packages/sanitize.nix {inherit craneLib noDepsArgs asanArgs lsanArgs fenixStable pkgs lib;};
-        docPkgs = import ./nix/packages/doc.nix {inherit craneLib debugArgs noDepsArgs pkgs rootSrc;};
+        docPkgs = import ./nix/packages/doc.nix {inherit craneLib debugArgs noDepsArgs pkgs lib;};
         lintPkgs = import ./nix/packages/lint.nix {inherit craneLib debugArgs noDepsArgs pkgs;};
         standalonePkgs = import ./nix/packages/standalone.nix {inherit craneLib releaseArgs baseArgs pkgs;};
 

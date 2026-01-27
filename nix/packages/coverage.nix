@@ -5,11 +5,13 @@
   fenixStable,
   pkgs,
   lib,
-  rootSrc,
 }: let
+  # Dummy artifacts for coverage builds (which rebuild everything anyway)
+  dummyArtifacts = craneLib.mkDummySrc {src = baseArgs.src;};
+
   coverage-inmemory = craneLib.cargoTarpaulin (baseArgs
     // {
-      cargoArtifacts = craneLib.mkDummySrc {src = rootSrc;};
+      cargoArtifacts = dummyArtifacts;
       cargoTarpaulinExtraArgs = "--skip-clean --output-dir $out --out lcov --all-features --engine llvm";
       nativeBuildInputs =
         baseArgs.nativeBuildInputs
@@ -23,7 +25,7 @@
   coverage-sqlite = craneLib.cargoTarpaulin (baseArgs
     // {
       pname = "coverage-sqlite";
-      cargoArtifacts = craneLib.mkDummySrc {src = rootSrc;};
+      cargoArtifacts = dummyArtifacts;
       cargoTarpaulinExtraArgs = "--skip-clean --output-dir $out --out lcov --all-features --engine llvm";
       TEST_BACKEND = "sqlite";
       nativeBuildInputs =
@@ -40,7 +42,7 @@
     // {
       pname = "coverage-postgres";
       TEST_BACKEND = "postgres";
-      cargoArtifacts = craneLib.mkDummySrc {src = rootSrc;};
+      cargoArtifacts = dummyArtifacts;
       cargoTarpaulinExtraArgs = "--skip-clean --output-dir $out --out lcov --all-features --engine llvm";
       nativeBuildInputs =
         baseArgs.nativeBuildInputs
