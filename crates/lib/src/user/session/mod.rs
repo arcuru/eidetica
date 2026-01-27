@@ -616,8 +616,8 @@ impl User {
     ///
     /// # Returns
     /// The SigningKey if found
+    #[cfg(any(test, feature = "testing"))]
     pub fn get_signing_key(&self, key_id: &str) -> Result<ed25519_dalek::SigningKey> {
-        // FIXME: get_signing_key should be private
         self.key_manager
             .get_signing_key(key_id)
             .cloned()
