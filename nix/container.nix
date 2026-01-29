@@ -45,18 +45,23 @@
     config = {
       Cmd = ["${eidetica-bin}/bin/eidetica"];
       User = "1000:1000";
-      WorkingDir = "/data";
+      WorkingDir = "/config";
       ExposedPorts = {
         "3000/tcp" = {};
       };
-      Volumes = {
-        "/data" = {};
-      };
       Env = [
-        "EIDETICA_DATA_DIR=/data"
+        "EIDETICA_DATA_DIR=/config"
         "EIDETICA_HOST=0.0.0.0"
-        "HOME=/tmp"
+        "HOME=/tmp" # should be unused, set to /tmp for safety
       ];
+      Healthcheck = {
+        Test = ["CMD" "${eidetica-bin}/bin/eidetica" "health"];
+        # These need to be in nanoseconds, written here as multiplications for clarity
+        Interval = 30 * 1000 * 1000 * 1000; # 30s
+        Timeout = 5 * 1000 * 1000 * 1000; # 5s
+        StartPeriod = 5 * 1000 * 1000 * 1000; # 5s
+        Retries = 3;
+      };
       Labels = {
         "org.opencontainers.image.source" = "https://github.com/arcuru/eidetica";
         "org.opencontainers.image.description" = "Eidetica: Remember Everything - Decentralized Database";
