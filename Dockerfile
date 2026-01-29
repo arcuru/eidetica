@@ -36,16 +36,23 @@ COPY --from=builder /build/target/release/eidetica /usr/local/bin/eidetica
 # Set ownership
 RUN chown eidetica:eidetica /usr/local/bin/eidetica
 
+# Create config directory
+RUN mkdir -p /config && chown eidetica:eidetica /config
+
 # Switch to non-root user
 USER eidetica
-WORKDIR /home/eidetica
+WORKDIR /config
 
-# Expose default port (adjust if needed)
+# Environment variables
+ENV EIDETICA_DATA_DIR=/config
+ENV EIDETICA_HOST=0.0.0.0
+
+# Expose default port
 EXPOSE 3000
 
-# Health check (adjust endpoint as needed)
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD [ "eidetica", "--help" ]
+# Health check
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+    CMD [ "eidetica", "health" ]
 
 # Run the application
 ENTRYPOINT ["/usr/local/bin/eidetica"]
