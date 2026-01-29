@@ -32,6 +32,48 @@ fix:
 build mode='debug':
     cargo build --workspace --all-targets --all-features {{ if mode == "release" { "--release" } else { "" } }} --quiet
 
+# Run local dev server with persistent cache
+serve port='3000' mode='debug' backend='sqlite':
+    #!/usr/bin/env bash
+    set -e
+
+    # PRJ_SPEC-compliant cache directory
+    cache_base="${PRJ_CACHE_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}}/eidetica"
+    data_dir="${cache_base}/serve-{{ port }}"
+    mkdir -p "$data_dir"
+
+    # Build binary
+    if [ "{{ mode }}" = "release" ]; then
+        cargo build --bin eidetica --release
+        bin="target/release/eidetica"
+    else
+        cargo build --bin eidetica
+        bin="target/debug/eidetica"
+    fi
+
+    echo "Data directory: $data_dir"
+    echo "Starting eidetica on port {{ port }}..."
+
+    # Open browser if graphical display available (backgrounded, ignore failures)
+    if [ -n "$DISPLAY" ] || [ -n "$WAYLAND_DISPLAY" ]; then
+        (sleep 1 && xdg-open "http://localhost:{{ port }}" >/dev/null 2>&1) &
+    fi
+
+    # Run server
+    "$bin" serve --port {{ port }} --data-dir "$data_dir" --backend {{ backend }}
+
+# Clean serve cache for a specific port
+serve-clean port='3000':
+    #!/usr/bin/env bash
+    cache_base="${PRJ_CACHE_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}}/eidetica"
+    data_dir="${cache_base}/serve-{{ port }}"
+    if [ -d "$data_dir" ]; then
+        rm -rf "$data_dir"
+        echo "Removed $data_dir"
+    else
+        echo "No cache found at $data_dir"
+    fi
+
 # =============================================================================
 # Testing
 # =============================================================================
