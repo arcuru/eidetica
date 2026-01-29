@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use axum::{
     Form, Router,
@@ -7,14 +7,14 @@ use axum::{
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
 };
-use clap::{Parser, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 
 use eidetica::{
     Instance,
     auth::Permission,
     backend::{
         BackendImpl,
-        database::{InMemory, Postgres, Sqlite},
+        database::{DbKind, InMemory, Postgres, Sqlite, SqlxBackend},
     },
     entry::ID,
     sync::{
@@ -42,7 +42,22 @@ enum Backend {
 #[command(name = "eidetica")]
 #[command(about = "Eidetica: Remember Everything - Decentralized Database Server")]
 #[command(version)]
-struct Args {
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Run the Eidetica server
+    Serve(ServeArgs),
+    /// Check health of a running Eidetica server
+    Health(HealthArgs),
+}
+
+/// Arguments for the serve command
+#[derive(clap::Args, Debug)]
+struct ServeArgs {
     /// Port to listen on
     #[arg(short, long, default_value_t = 3000, env = "EIDETICA_PORT")]
     port: u16,
@@ -66,6 +81,22 @@ struct Args {
     postgres_url: Option<String>,
 }
 
+/// Arguments for the health command
+#[derive(clap::Args, Debug)]
+struct HealthArgs {
+    /// Port of the server to check
+    #[arg(short, long, default_value_t = 3000, env = "EIDETICA_PORT")]
+    port: u16,
+
+    /// Host of the server to check
+    #[arg(long, default_value = "127.0.0.1", env = "EIDETICA_HOST")]
+    host: String,
+
+    /// Timeout in seconds
+    #[arg(short, long, default_value_t = 5)]
+    timeout: u64,
+}
+
 /// Redact credentials from a PostgreSQL connection URL for safe logging
 fn redact_postgres_url(url: &str) -> String {
     // Try to parse and redact credentials, fall back to generic message on failure
@@ -85,7 +116,9 @@ fn redact_postgres_url(url: &str) -> String {
 }
 
 /// Create the appropriate backend based on configuration
-async fn create_backend(args: &Args) -> Result<Box<dyn BackendImpl>, Box<dyn std::error::Error>> {
+async fn create_backend(
+    args: &ServeArgs,
+) -> Result<Box<dyn BackendImpl>, Box<dyn std::error::Error>> {
     let data_dir = args.data_dir.clone().unwrap_or_else(|| PathBuf::from("."));
 
     // Ensure data directory exists
@@ -184,8 +217,60 @@ struct TrackDatabaseForm {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Parse command line arguments
-    let args = Args::parse();
+    let cli = Cli::parse();
 
+    // Handle subcommands
+    match cli.command {
+        Some(Commands::Health(args)) => run_health_check(args).await,
+        Some(Commands::Serve(args)) => run_server(args).await,
+        None => {
+            // Default to serve with default args for backward compatibility
+            // Re-parse as if "serve" was provided to pick up env vars
+            let serve_cli = Cli::parse_from(["eidetica", "serve"]);
+            if let Some(Commands::Serve(args)) = serve_cli.command {
+                run_server(args).await
+            } else {
+                unreachable!()
+            }
+        }
+    }
+}
+
+/// Run the health check command
+async fn run_health_check(args: HealthArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let url = format!("http://{}:{}/health", args.host, args.port);
+    let timeout = Duration::from_secs(args.timeout);
+
+    let client = reqwest::Client::builder().timeout(timeout).build()?;
+
+    match client.get(&url).send().await {
+        Ok(response) if response.status().is_success() => {
+            let body: serde_json::Value = response.json().await?;
+            let status = body.get("status").and_then(|s| s.as_str()).unwrap_or("");
+            if status == "healthy" {
+                println!("healthy: {}", body);
+                Ok(())
+            } else {
+                eprintln!("unhealthy: server returned status {}", status);
+                std::process::exit(1);
+            }
+        }
+        Ok(response) => {
+            eprintln!(
+                "unhealthy: server returned HTTP status {}",
+                response.status()
+            );
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("unhealthy: failed to connect to {}: {}", url, e);
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Run the Eidetica server
+async fn run_server(args: ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -266,6 +351,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Build router
     let app = Router::new()
         .route("/", get(handle_root_request))
+        .route("/health", get(handle_health_endpoint))
         .route("/login", get(handle_login_page).post(handle_login_submit))
         .route(
             "/register",
@@ -758,8 +844,37 @@ async fn handle_track_database(
 }
 
 // ============================================================================
-// Stats and Sync Handlers
+// Health, Stats and Sync Handlers
 // ============================================================================
+
+/// Health check response
+#[derive(serde::Serialize)]
+struct HealthResponse {
+    status: &'static str,
+    backend: &'static str,
+}
+
+/// Handler for GET /health - Health check endpoint
+async fn handle_health_endpoint(State(state): State<AppState>) -> axum::Json<HealthResponse> {
+    // Determine backend type by checking what type we have
+    let backend = state.instance.backend();
+    // TODO: add a better method to get the name/type of the backend
+    let backend_type = if let Some(sqlx) = backend.as_any().downcast_ref::<SqlxBackend>() {
+        match sqlx.kind() {
+            DbKind::Sqlite => "sqlite",
+            DbKind::Postgres => "postgres",
+        }
+    } else if backend.as_any().is::<InMemory>() {
+        "inmemory"
+    } else {
+        "unknown"
+    };
+
+    axum::Json(HealthResponse {
+        status: "healthy",
+        backend: backend_type,
+    })
+}
 
 /// Handler for GET /stats - Statistics page
 async fn handle_stats_request(State(state): State<AppState>) -> Html<String> {

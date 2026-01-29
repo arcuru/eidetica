@@ -28,3 +28,4 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 base64ct = { workspace = true }
 url = { workspace = true }
+reqwest = { workspace = true }

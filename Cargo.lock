@@ -1300,6 +1300,7 @@ dependencies = [
  "base64ct",
  "clap",
  "eidetica",
+ "reqwest",
  "serde",
  "serde_json",
  "signal-hook",
