@@ -27,7 +27,7 @@ jobs:
         id: cratesio-auth
 
       - name: Run release-plz
-        uses: release-plz/action@5ab144c9d67d4346240190d0f95ed08668677928 # v0.5
+        uses: release-plz/action@e592230ad39e3ec735402572601fc621aa24355c # v0.5
         with:
           command: release
           config: .config/release-plz.toml
@@ -64,7 +64,7 @@ jobs:
 
       - name: Run release-plz
         if: github.event_name == 'workflow_dispatch' || steps.check-pr.outputs.exists != '0'
-        uses: release-plz/action@5ab144c9d67d4346240190d0f95ed08668677928 # v0.5
+        uses: release-plz/action@e592230ad39e3ec735402572601fc621aa24355c # v0.5
         with:
           command: release-pr
           config: .config/release-plz.toml
