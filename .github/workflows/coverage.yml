@@ -27,7 +27,7 @@ jobs:
         uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
 
       - name: Install cargo-tarpaulin
-        uses: taiki-e/install-action@0bc4cd8a3e21db4cb9519857377b0c8c5e150de5 # v2
+        uses: taiki-e/install-action@a362280ea100b5bb920cf9040c038ce9a50c7943 # v2
         with:
           tool: cargo-tarpaulin@0.34.1
 
@@ -56,7 +56,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:18-alpine@sha256:b40d931bd0e7ce6eecc59a5a6ac3b3c04a01e559750e73e7086b6dbd7f8bf545
+        image: postgres:18-alpine@sha256:4eb15de8e7b692c02427a2df278d18eb89422a534e428efb6d43c968250334d4
         env:
           POSTGRES_DB: eidetica_test
           POSTGRES_HOST_AUTH_METHOD: trust
@@ -79,7 +79,7 @@ jobs:
         uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
 
       - name: Install cargo-tarpaulin
-        uses: taiki-e/install-action@0bc4cd8a3e21db4cb9519857377b0c8c5e150de5 # v2
+        uses: taiki-e/install-action@a362280ea100b5bb920cf9040c038ce9a50c7943 # v2
         with:
           tool: cargo-tarpaulin@0.34.1
 
