@@ -1,15 +1,10 @@
 mod helpers;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use eidetica::{
-    Database,
-    backend::{BackendImpl, database::InMemory},
-    entry::ID,
-    store::DocStore,
-};
+use eidetica::{Database, backend::database::InMemory, entry::ID, store::DocStore};
 use std::hint::black_box;
 
-use helpers::setup_tree_async;
+use helpers::{setup_tree_async, setup_tree_inmemory};
 
 /// Create a linear chain of entries for testing merge base performance
 async fn create_linear_chain(tree: &Database, length: usize) -> Vec<ID> {
@@ -219,14 +214,8 @@ pub fn bench_merge_base_linear_chains(c: &mut Criterion) {
                                 vec![entry_ids[0].clone(), entry_ids[length - 1].clone()];
                             let expected_merge_base = &entry_ids[0]; // In a linear chain, merge base of first and last is the first
 
-                            // Access database to call find_merge_base
                             let backend = tree.backend().expect("Failed to get backend");
-                            let in_memory = backend
-                                .as_any()
-                                .downcast_ref::<InMemory>()
-                                .expect("Failed to downcast database");
-
-                            let merge_base = in_memory
+                            let merge_base = backend
                                 .find_merge_base(tree.root_id(), "data", &endpoints)
                                 .await
                                 .expect("Failed to find merge base");
@@ -417,7 +406,10 @@ pub fn bench_crdt_merge_operations(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark individual tip validation
+/// Benchmark individual tip validation (InMemory-specific)
+///
+/// Note: is_tip is an InMemory-specific method, so this benchmark
+/// always uses InMemory regardless of TEST_BACKEND.
 pub fn bench_tip_validation(c: &mut Criterion) {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -433,7 +425,8 @@ pub fn bench_tip_validation(c: &mut Criterion) {
                 b.iter_with_setup(
                     || {
                         rt.block_on(async {
-                            let (_instance, _user, tree) = setup_tree_async().await;
+                            // Use InMemory explicitly since is_tip is InMemory-specific
+                            let (_instance, _user, tree) = setup_tree_inmemory().await;
                             let entry_ids = create_linear_chain(&tree, size).await;
                             let last_entry_id = entry_ids.last().unwrap().clone();
                             (_instance, tree, last_entry_id)
@@ -445,7 +438,7 @@ pub fn bench_tip_validation(c: &mut Criterion) {
                             let in_memory = backend
                                 .as_any()
                                 .downcast_ref::<InMemory>()
-                                .expect("Failed to downcast database");
+                                .expect("Failed to downcast to InMemory");
 
                             let is_tip = in_memory.is_tip(tree.root_id(), &last_entry_id).await;
                             black_box(is_tip);

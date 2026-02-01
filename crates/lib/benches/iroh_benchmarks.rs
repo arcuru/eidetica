@@ -1,12 +1,14 @@
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use eidetica::{
     Instance,
-    backend::database::InMemory,
     entry::Entry,
     sync::{Sync, peer_types::Address, transports::iroh::IrohTransport},
 };
 use iroh::RelayMode;
 use std::{hint::black_box, sync::Arc, time::Duration};
+
+mod helpers;
+use helpers::test_backend;
 
 /// Creates a root entry for benchmarking. Content is irrelevant; each call produces a unique entry.
 fn create_root_entry() -> Entry {
@@ -19,12 +21,12 @@ fn create_root_entry() -> Entry {
 async fn setup_iroh_sync_pair() -> (Arc<Instance>, Sync, Arc<Instance>, Sync, Address) {
     // Create databases
     let base_db1 = Arc::new(
-        Instance::open(Box::new(InMemory::new()))
+        Instance::open(test_backend().await)
             .await
             .expect("Benchmark setup failed"),
     );
     let base_db2 = Arc::new(
-        Instance::open(Box::new(InMemory::new()))
+        Instance::open(test_backend().await)
             .await
             .expect("Benchmark setup failed"),
     );

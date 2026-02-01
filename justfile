@@ -438,5 +438,5 @@ container type='docker':
 
 # Run benchmarks and open HTML report
 bench:
-    cargo bench --workspace
+    TEST_BACKEND=sqlite cargo bench --workspace
     xdg-open target/criterion/report/index.html 2>/dev/null || true
