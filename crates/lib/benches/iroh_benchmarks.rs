@@ -2,19 +2,15 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use eidetica::{
     Instance,
     backend::database::InMemory,
-    entry::{Entry, ID},
+    entry::Entry,
     sync::{Sync, peer_types::Address, transports::iroh::IrohTransport},
 };
 use iroh::RelayMode;
 use std::{hint::black_box, sync::Arc, time::Duration};
 
-// Helper function to create test entries
-fn create_entry_with_parents(tree_id: &str, parents: Vec<ID>) -> Entry {
-    let mut builder = Entry::builder(tree_id);
-    if !parents.is_empty() {
-        builder = builder.set_parents(parents);
-    }
-    builder
+/// Creates a root entry for benchmarking. Content is irrelevant; each call produces a unique entry.
+fn create_root_entry() -> Entry {
+    Entry::root_builder()
         .build()
         .expect("Benchmark entry should build successfully")
 }
@@ -76,6 +72,9 @@ async fn setup_iroh_sync_pair() -> (Arc<Instance>, Sync, Arc<Instance>, Sync, Ad
     (base_db1, sync1, base_db2, sync2, Address::iroh(&addr2))
 }
 
+/// Measures Iroh P2P sync round-trip time: sending entries, peer processing, and acknowledgment.
+/// Each entry is an independent root entry; content is irrelevant - this benchmarks transport throughput.
+/// Entry creation is excluded from timing.
 fn bench_iroh_sync_throughput(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
 
@@ -84,51 +83,44 @@ fn bench_iroh_sync_throughput(c: &mut Criterion) {
         rt.block_on(async { setup_iroh_sync_pair().await });
 
     let mut group = c.benchmark_group("iroh_sync_throughput");
+    // Reduce sample size and measurement time for network benchmarks
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(5));
 
     // Test different entry counts to measure throughput scaling
-    for entry_count in [1, 10, 50, 100, 200].iter() {
+    for entry_count in [1, 5, 10].iter() {
         group.throughput(Throughput::Elements(*entry_count as u64));
 
         group.bench_with_input(
             BenchmarkId::new("entries", entry_count),
             entry_count,
             |b, &entry_count| {
-                b.iter_custom(|iters| {
-                    rt.block_on(async {
-                        let mut total_duration = Duration::new(0, 0);
-
-                        for iter in 0..iters {
-                            // Create test entries for this iteration
-                            let mut entries = Vec::new();
-                            for i in 0..entry_count {
-                                let entry = create_entry_with_parents(
-                                    &format!("bench_tree_{iter}_{i}"),
-                                    vec![],
-                                );
+                b.iter_with_setup(
+                    || {
+                        // Setup: create and store entries (not timed)
+                        rt.block_on(async {
+                            let entries: Vec<Entry> =
+                                (0..entry_count).map(|_| create_root_entry()).collect();
+                            for entry in &entries {
                                 base_db1
                                     .backend()
                                     .put_verified(entry.clone())
                                     .await
                                     .unwrap();
-                                entries.push(entry);
                             }
-
-                            // Measure ONLY the sync time, not setup/teardown
-                            let start = std::time::Instant::now();
-                            let result = sync1
+                            entries
+                        })
+                    },
+                    |entries| {
+                        // Routine: only sync is timed
+                        rt.block_on(async {
+                            sync1
                                 .send_entries(black_box(&entries), black_box(&addr2))
-                                .await;
-                            let duration = start.elapsed();
-
-                            // Ensure sync succeeded
-                            assert!(result.is_ok(), "Sync failed: {:?}", result.err());
-
-                            total_duration += duration;
-                        }
-
-                        total_duration
-                    })
-                });
+                                .await
+                                .expect("Sync failed");
+                        });
+                    },
+                );
             },
         );
     }
@@ -142,32 +134,34 @@ fn bench_iroh_sync_throughput(c: &mut Criterion) {
     });
 }
 
+/// Measures time to establish an Iroh P2P connection between two peers.
+/// Includes transport initialization, server startup, and peer registration.
+/// Cleanup is excluded from timing.
 fn bench_iroh_connection_setup(c: &mut Criterion) {
-    c.bench_function("iroh_connection_setup", |b| {
+    let mut group = c.benchmark_group("iroh_connection");
+    // Reduce sample size and measurement time for network benchmarks
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(5));
+
+    group.bench_function("setup", |b| {
         let rt = tokio::runtime::Runtime::new().unwrap();
         b.iter_custom(|iters| {
             rt.block_on(async {
-                let mut total_duration = Duration::new(0, 0);
-
-                for _iter in 0..iters {
+                let mut total = Duration::ZERO;
+                for _ in 0..iters {
                     let start = std::time::Instant::now();
-
-                    // Measure time to set up Iroh P2P connection
-                    let (_base_db1, sync1, _base_db2, sync2, _addr2) =
-                        black_box(setup_iroh_sync_pair().await);
-
-                    let duration = start.elapsed();
-                    total_duration += duration;
-
+                    let (_, sync1, _, sync2, _) = setup_iroh_sync_pair().await;
+                    total += start.elapsed();
                     // Cleanup
                     sync1.stop_server().await.unwrap();
                     sync2.stop_server().await.unwrap();
                 }
-
-                total_duration
+                total
             })
         });
     });
+
+    group.finish();
 }
 
 criterion_group!(
