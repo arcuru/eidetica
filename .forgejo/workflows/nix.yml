@@ -34,6 +34,7 @@ jobs:
 
           cat > ~/.config/nix/nix.conf <<EOF
           experimental-features = nix-command flakes
+          build-dir = /tmp
           substituters = $SUBSTITUTERS
           trusted-public-keys = $TRUSTED_KEYS
           EOF
@@ -83,6 +84,7 @@ jobs:
 
           cat > ~/.config/nix/nix.conf <<EOF
           experimental-features = nix-command flakes
+          build-dir = /tmp
           substituters = $SUBSTITUTERS
           trusted-public-keys = $TRUSTED_KEYS
           EOF
@@ -130,6 +132,7 @@ jobs:
 
           cat > ~/.config/nix/nix.conf <<EOF
           experimental-features = nix-command flakes
+          build-dir = /tmp
           substituters = $SUBSTITUTERS
           trusted-public-keys = $TRUSTED_KEYS
           EOF
@@ -177,6 +180,7 @@ jobs:
 
           cat > ~/.config/nix/nix.conf <<EOF
           experimental-features = nix-command flakes
+          build-dir = /tmp
           substituters = $SUBSTITUTERS
           trusted-public-keys = $TRUSTED_KEYS
           EOF
@@ -227,6 +231,7 @@ jobs:
 
           cat > ~/.config/nix/nix.conf <<EOF
           experimental-features = nix-command flakes
+          build-dir = /tmp
           substituters = $SUBSTITUTERS
           trusted-public-keys = $TRUSTED_KEYS
           EOF
@@ -293,6 +298,7 @@ jobs:
 
           cat > ~/.config/nix/nix.conf <<EOF
           experimental-features = nix-command flakes
+          build-dir = /tmp
           substituters = $SUBSTITUTERS
           trusted-public-keys = $TRUSTED_KEYS
           EOF
@@ -342,6 +348,7 @@ jobs:
 
           cat > ~/.config/nix/nix.conf <<EOF
           experimental-features = nix-command flakes
+          build-dir = /tmp
           substituters = $SUBSTITUTERS
           trusted-public-keys = $TRUSTED_KEYS
           EOF
