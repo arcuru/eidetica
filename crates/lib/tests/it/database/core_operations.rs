@@ -299,7 +299,7 @@ async fn test_atomic_op_scenarios() {
     }
     let _commit3_id = op3.commit().await.expect("Op3: First commit failed");
 
-    // Commiting again won't even compile
+    // Committing again won't even compile
     // let commit3_again = op3.commit();
 }
 

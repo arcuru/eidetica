@@ -341,9 +341,9 @@ pub fn assert_maps_equivalent(map1: &Map, map2: &Map) {
 
 /// Test CRDT merge commutativity: A ⊕ B = B ⊕ A
 pub fn test_merge_commutativity<T: CRDT + PartialEq + std::fmt::Debug>(a: &T, b: &T) -> Result<()> {
-    let merge_ab = a.merge(b)?;
-    let merge_ba = b.merge(a)?;
-    assert_eq!(merge_ab, merge_ba, "Merge is not commutative");
+    let a_merge_b = a.merge(b)?;
+    let b_merge_a = b.merge(a)?;
+    assert_eq!(a_merge_b, b_merge_a, "Merge is not commutative");
     Ok(())
 }
 

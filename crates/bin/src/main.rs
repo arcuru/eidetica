@@ -80,7 +80,7 @@ fn redact_postgres_url(url: &str) -> String {
         redacted.to_string()
     } else {
         // Can't parse URL, just indicate we have a postgres URL
-        "postgres://***@<unparseable-url>".to_string()
+        "postgres://***@<unparsable-url>".to_string()
     }
 }
 

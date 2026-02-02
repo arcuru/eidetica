@@ -251,7 +251,7 @@ During active session:
 ## Future Enhancements
 
 1. **Hardware Security Module Support**: Store keys in HSMs
-2. **Key Derivation Tunning**: Adjust Argon2 parameters based on hardware
+2. **Key Derivation Tuning**: Adjust Argon2 parameters based on hardware
 3. **Key Backup/Recovery**: Secure key recovery mechanisms
 4. **Multi-Device Sync**: Sync encrypted keys across devices
 5. **Biometric Authentication**: Use biometrics instead of passwords where available

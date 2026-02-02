@@ -8,7 +8,9 @@ extend-exclude = [
 ]
 
 [default.extend-words]
-# Project-specific terms (add as needed)
+# Project-specific terms
+ratatui = "ratatui"  # Rust TUI library
+leafs = "leafs"  # Used in function names
 
 [default]
 extend-ignore-re = [
