@@ -194,6 +194,12 @@
 
             # Shell script formatting
             shfmt.enable = true;
+
+            # Spell checking
+            typos = {
+              enable = true;
+              configFile = ".config/typos.toml";
+            };
           };
         };
 

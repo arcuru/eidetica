@@ -31,9 +31,10 @@ pkgs.mkShell {
     deadnix # Find dead Nix code
     statix # Lint Nix code
 
-    # Code formatting
+    # Code formatting and quality
     alejandra # Nix formatter
     nodePackages.prettier # General formatter
+    typos # Spell checker
 
     # Release management
     release-plz # Automated releases

@@ -124,7 +124,7 @@ test *args:
 # =============================================================================
 
 # Run linter(s): clippy, audit, udeps, min-versions, all
-lint +tools='clippy audit':
+lint +tools='clippy audit typos':
     #!/usr/bin/env bash
     set -e
     for tool in {{ tools }}; do
@@ -137,6 +137,10 @@ lint +tools='clippy audit':
                 echo "=== Running audit (cargo-deny) ==="
                 cargo deny check
                 ;;
+            typos)
+                echo "=== Running typos ==="
+                typos --config .config/typos.toml
+                ;;
             udeps)
                 echo "=== Running udeps ==="
                 cargo udeps --workspace --all-targets
@@ -148,11 +152,11 @@ lint +tools='clippy audit':
                 cargo nextest run --workspace --all-features --status-level fail
                 ;;
             all)
-                just lint clippy audit udeps min-versions
+                just lint clippy audit typos udeps min-versions
                 ;;
             *)
                 echo "Unknown linter: $tool"
-                echo "Options: clippy, audit, udeps, min-versions, all"
+                echo "Options: clippy, audit, typos, udeps, min-versions, all"
                 exit 1
                 ;;
         esac
@@ -167,6 +171,7 @@ fmt:
     cargo fmt --all
     alejandra . --quiet
     prettier --write . --log-level warn
+    typos --write-changes --config .config/typos.toml
 
 # =============================================================================
 # Sanitizers (Dynamic Analysis)
