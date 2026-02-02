@@ -8,8 +8,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  lint:
-    name: Lint (${{ matrix.system }})
+  check:
+    name: Check (${{ matrix.system }})
     runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
@@ -29,92 +29,14 @@ jobs:
       - name: Magic Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
 
-      - name: Build lint checks
-        run: |
-          nix build .#lint --no-link
-          nix build ".#checks.${{ matrix.system }}.treefmt" --no-link
-          nix build ".#checks.${{ matrix.system }}.eval-nixos" --no-link
-          nix build ".#checks.${{ matrix.system }}.eval-hm" --no-link
-
-  test:
-    name: Test (${{ matrix.system }})
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      matrix:
-        include:
-          - system: x86_64-linux
-            runner: ubuntu-latest
-          - system: aarch64-linux
-            runner: ubuntu-24.04-arm
-      fail-fast: false
-    steps:
-      - name: Checkout
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
-
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@c5a866b6ab867e88becbed4467b93592bce69f8a # v21
-
-      - name: Magic Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
-
-      - name: Build test checks
-        run: nix build .#test --no-link
-
-  doc:
-    name: Doc (${{ matrix.system }})
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      matrix:
-        include:
-          - system: x86_64-linux
-            runner: ubuntu-latest
-          - system: aarch64-linux
-            runner: ubuntu-24.04-arm
-      fail-fast: false
-    steps:
-      - name: Checkout
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
-
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@c5a866b6ab867e88becbed4467b93592bce69f8a # v21
-
-      - name: Magic Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
-
-      - name: Build doc checks
-        run: nix build .#doc --no-link
-
-  build:
-    name: Build (${{ matrix.system }})
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      matrix:
-        include:
-          - system: x86_64-linux
-            runner: ubuntu-latest
-          - system: aarch64-linux
-            runner: ubuntu-24.04-arm
-      fail-fast: false
-    steps:
-      - name: Checkout
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
-
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@c5a866b6ab867e88becbed4467b93592bce69f8a # v21
-
-      - name: Magic Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
-
-      - name: Build packages
-        run: |
-          nix build .#eidetica --no-link
-          nix build .#eidetica-lib --no-link
+      - name: Run Nix checks
+        run: nix develop --command just nix check
 
   artifacts:
     name: Artifacts (${{ matrix.system }})
     runs-on: ${{ matrix.runner }}
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [lint, test, doc, build]
+    needs: [check]
     strategy:
       matrix:
         include:
