@@ -1,0 +1,72 @@
+name: Benchmarks
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  benchmark-main:
+    name: Benchmark (Main)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository_owner == 'arcuru'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.92.0
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+
+      - name: Install Bencher CLI
+        uses: bencherdev/bencher@886fbed6aad69e12a7852b0fc9ce49c50516c578 # main
+
+      - name: Run Benchmarks
+        run: |
+          bencher run \
+            --project eidetica \
+            --token '${{ secrets.BENCHER_API_TOKEN }}' \
+            --branch main \
+            --testbed ubuntu-latest \
+            --adapter rust_criterion \
+            --err \
+            "cargo bench --workspace"
+
+  benchmark-pr:
+    name: Benchmark (PR)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' && github.repository_owner == 'arcuru'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.92.0
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+
+      - name: Install Bencher CLI
+        uses: bencherdev/bencher@886fbed6aad69e12a7852b0fc9ce49c50516c578 # main
+
+      - name: Run Benchmarks
+        run: |
+          bencher run \
+            --project eidetica \
+            --token '${{ secrets.BENCHER_API_TOKEN }}' \
+            --branch '${{ github.head_ref }}' \
+            --start-point main \
+            --start-point-clone-thresholds \
+            --start-point-reset \
+            --testbed ubuntu-latest \
+            --adapter rust_criterion \
+            --err \
+            --github-actions '${{ secrets.GITHUB_TOKEN }}' \
+            "cargo bench --workspace"

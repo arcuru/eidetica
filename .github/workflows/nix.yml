@@ -68,3 +68,30 @@ jobs:
           nix build .#eidetica-image --no-link --print-out-paths | cachix push eidetica
         env:
           CACHIX_AUTH_TOKEN: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+
+      - name: Install Bencher CLI
+        uses: bencherdev/bencher@886fbed6aad69e12a7852b0fc9ce49c50516c578 # main
+
+      - name: Track Binary Size
+        run: |
+          BINARY_PATH=$(nix build .#eidetica --no-link --print-out-paths)/bin/eidetica
+          bencher run \
+            --project eidetica \
+            --token '${{ secrets.BENCHER_API_TOKEN }}' \
+            --branch main \
+            --testbed '${{ matrix.system }}' \
+            --file-size "$BINARY_PATH" \
+            --adapter json \
+            "echo '{}'"
+
+      - name: Track Container Size
+        run: |
+          IMAGE_PATH=$(nix build .#eidetica-image --no-link --print-out-paths)
+          bencher run \
+            --project eidetica \
+            --token '${{ secrets.BENCHER_API_TOKEN }}' \
+            --branch main \
+            --testbed '${{ matrix.system }}' \
+            --file-size "$IMAGE_PATH" \
+            --adapter json \
+            "echo '{}'"
