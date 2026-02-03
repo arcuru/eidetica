@@ -125,8 +125,8 @@ test *args:
 # Linting (Static Analysis)
 # =============================================================================
 
-# Run linter(s): clippy, audit, typos, statix, deadnix, shellcheck, udeps, min-versions, all
-lint +tools='clippy audit typos statix deadnix shellcheck':
+# Run linter(s): clippy, audit, typos, statix, deadnix, shellcheck, yamllint, udeps, min-versions, all
+lint +tools='clippy audit typos statix deadnix shellcheck yamllint':
     #!/usr/bin/env bash
     set -e
     for tool in {{ tools }}; do
@@ -155,6 +155,10 @@ lint +tools='clippy audit typos statix deadnix shellcheck':
                 echo "=== Running shellcheck ==="
                 find . -name "*.sh" -type f -exec shellcheck {} +
                 ;;
+            yamllint)
+                echo "=== Running yamllint ==="
+                find . \( -name "*.yml" -o -name "*.yaml" \) -type f -exec yamllint -c .config/yamllint.yaml {} +
+                ;;
             udeps)
                 echo "=== Running udeps ==="
                 cargo udeps --workspace --all-targets
@@ -166,11 +170,11 @@ lint +tools='clippy audit typos statix deadnix shellcheck':
                 cargo nextest run --workspace --all-features --status-level fail
                 ;;
             all)
-                just lint clippy audit typos statix deadnix shellcheck udeps min-versions
+                just lint clippy audit typos statix deadnix shellcheck yamllint udeps min-versions
                 ;;
             *)
                 echo "Unknown linter: $tool"
-                echo "Options: clippy, audit, typos, statix, deadnix, shellcheck, udeps, min-versions, all"
+                echo "Options: clippy, audit, typos, statix, deadnix, shellcheck, yamllint, udeps, min-versions, all"
                 exit 1
                 ;;
         esac

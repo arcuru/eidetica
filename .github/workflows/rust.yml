@@ -24,6 +24,8 @@ jobs:
         uses: taiki-e/install-action@0bc4cd8a3e21db4cb9519857377b0c8c5e150de5 # v2
         with:
           tool: just,shellcheck
+      - name: Install yamllint
+        run: pip install yamllint
       - name: Rust Cache
         uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
 
@@ -35,6 +37,9 @@ jobs:
 
       - name: Shellcheck
         run: just lint shellcheck
+
+      - name: Yamllint
+        run: just lint yamllint
 
   build:
     runs-on: ubuntu-latest

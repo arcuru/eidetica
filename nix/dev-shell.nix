@@ -31,6 +31,7 @@ pkgs.mkShell {
     deadnix # Find dead Nix code
     statix # Lint Nix code
     shellcheck # Lint shell scripts
+    yamllint # Lint YAML files
 
     # Code formatting and quality
     alejandra # Nix formatter

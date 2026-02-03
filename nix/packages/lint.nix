@@ -73,6 +73,17 @@
       touch $out
     '';
 
+  # YAML linting with yamllint
+  lint-yamllint =
+    pkgs.runCommand "lint-yamllint" {
+      nativeBuildInputs = [pkgs.yamllint pkgs.findutils];
+      inherit (baseArgs) src;
+    } ''
+      cd $src
+      find . \( -name "*.yml" -o -name "*.yaml" \) -type f -exec yamllint -c .config/yamllint.yaml {} +
+      touch $out
+    '';
+
   # Fast lint checks for CI (clippy + deny + fmt + nix linters, no udeps)
   lintFast = {
     clippy = lint-clippy;
@@ -81,6 +92,7 @@
     statix = lint-statix;
     deadnix = lint-deadnix;
     shellcheck = lint-shellcheck;
+    yamllint = lint-yamllint;
   };
 
   # All lint packages
@@ -92,7 +104,8 @@
     statix = lint-statix;
     deadnix = lint-deadnix;
     shellcheck = lint-shellcheck;
+    yamllint = lint-yamllint;
   };
 in {
-  inherit lint-clippy lint-deny lint-fmt lint-udeps lint-statix lint-deadnix lint-shellcheck lintFast lintPackages;
+  inherit lint-clippy lint-deny lint-fmt lint-udeps lint-statix lint-deadnix lint-shellcheck lint-yamllint lintFast lintPackages;
 }

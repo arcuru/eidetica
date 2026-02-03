@@ -1,0 +1,15 @@
+extends: default
+
+rules:
+  # GitHub Actions uses 'on:' which is flagged as truthy
+  truthy:
+    allowed-values: ["true", "false", "on"]
+  # Allow longer lines for readability (some CI files have long URLs/commands)
+  # TODO: Reduce this limit to 120 to be a little nicer
+  line-length:
+    max: 180
+  # Don't require document start marker
+  document-start: disable
+  # Relaxed comment spacing for inline version pins (common in GitHub Actions)
+  comments:
+    min-spaces-from-content: 1
