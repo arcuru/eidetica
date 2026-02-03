@@ -10,7 +10,7 @@ echo
 
 # Clean up previous test database
 echo "Cleaning up previous test database..."
-rm -f $DB_FILE
+rm -f "$DB_FILE"
 echo
 
 # Test user information functionality first (before any todos)
@@ -77,13 +77,13 @@ echo
 # List all tasks and save output to a temporary file
 echo "Listing all tasks:"
 TASK_LIST=$(mktemp)
-$CMD list | tee $TASK_LIST
+$CMD list | tee "$TASK_LIST"
 echo
 
 # Get the ID of the first task to complete it
 echo "Extracting task ID for completion..."
 # Extract the line containing "Buy groceries" and then extract the ID
-TASK_LINE=$(grep "Buy groceries" $TASK_LIST || echo "")
+TASK_LINE=$(grep "Buy groceries" "$TASK_LIST" || echo "")
 echo "Found task line: $TASK_LINE"
 
 if [ -n "$TASK_LINE" ]; then
@@ -93,7 +93,7 @@ if [ -n "$TASK_LINE" ]; then
 
   if [ -n "$TASK_ID" ]; then
     echo "Completing task with ID: $TASK_ID"
-    $CMD complete $TASK_ID
+    $CMD complete "$TASK_ID"
     echo
 
     echo "Listing tasks after completion:"
@@ -106,7 +106,7 @@ else
 fi
 
 # Clean up temporary file
-rm -f $TASK_LIST
+rm -f "$TASK_LIST"
 
 echo
 

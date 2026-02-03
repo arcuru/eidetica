@@ -125,8 +125,8 @@ test *args:
 # Linting (Static Analysis)
 # =============================================================================
 
-# Run linter(s): clippy, audit, typos, statix, deadnix, udeps, min-versions, all
-lint +tools='clippy audit typos statix deadnix':
+# Run linter(s): clippy, audit, typos, statix, deadnix, shellcheck, udeps, min-versions, all
+lint +tools='clippy audit typos statix deadnix shellcheck':
     #!/usr/bin/env bash
     set -e
     for tool in {{ tools }}; do
@@ -151,6 +151,10 @@ lint +tools='clippy audit typos statix deadnix':
                 echo "=== Running deadnix ==="
                 deadnix --fail .
                 ;;
+            shellcheck)
+                echo "=== Running shellcheck ==="
+                find . -name "*.sh" -type f -exec shellcheck {} +
+                ;;
             udeps)
                 echo "=== Running udeps ==="
                 cargo udeps --workspace --all-targets
@@ -162,11 +166,11 @@ lint +tools='clippy audit typos statix deadnix':
                 cargo nextest run --workspace --all-features --status-level fail
                 ;;
             all)
-                just lint clippy audit typos statix deadnix udeps min-versions
+                just lint clippy audit typos statix deadnix shellcheck udeps min-versions
                 ;;
             *)
                 echo "Unknown linter: $tool"
-                echo "Options: clippy, audit, typos, statix, deadnix, udeps, min-versions, all"
+                echo "Options: clippy, audit, typos, statix, deadnix, shellcheck, udeps, min-versions, all"
                 exit 1
                 ;;
         esac

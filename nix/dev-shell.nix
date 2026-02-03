@@ -30,6 +30,7 @@ pkgs.mkShell {
     # Nix development tools
     deadnix # Find dead Nix code
     statix # Lint Nix code
+    shellcheck # Lint shell scripts
 
     # Code formatting and quality
     alejandra # Nix formatter

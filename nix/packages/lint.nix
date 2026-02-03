@@ -62,6 +62,17 @@
       touch $out
     '';
 
+  # Shell script linting with shellcheck
+  lint-shellcheck =
+    pkgs.runCommand "lint-shellcheck" {
+      nativeBuildInputs = [pkgs.shellcheck pkgs.findutils];
+      inherit (baseArgs) src;
+    } ''
+      cd $src
+      find . -name "*.sh" -type f -exec shellcheck {} +
+      touch $out
+    '';
+
   # Fast lint checks for CI (clippy + deny + fmt + nix linters, no udeps)
   lintFast = {
     clippy = lint-clippy;
@@ -69,6 +80,7 @@
     fmt = lint-fmt;
     statix = lint-statix;
     deadnix = lint-deadnix;
+    shellcheck = lint-shellcheck;
   };
 
   # All lint packages
@@ -79,7 +91,8 @@
     udeps = lint-udeps;
     statix = lint-statix;
     deadnix = lint-deadnix;
+    shellcheck = lint-shellcheck;
   };
 in {
-  inherit lint-clippy lint-deny lint-fmt lint-udeps lint-statix lint-deadnix lintFast lintPackages;
+  inherit lint-clippy lint-deny lint-fmt lint-udeps lint-statix lint-deadnix lint-shellcheck lintFast lintPackages;
 }
