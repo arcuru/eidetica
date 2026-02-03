@@ -66,6 +66,8 @@ jobs:
           nix build .#eidetica --no-link --print-out-paths | cachix push eidetica
           nix build .#eidetica-lib --no-link --print-out-paths | cachix push eidetica
           nix build .#eidetica-image --no-link --print-out-paths | cachix push eidetica
+          nix build .#test-artifacts --no-link --print-out-paths | cachix push eidetica
+          nix build .#bench-artifacts --no-link --print-out-paths | cachix push eidetica
         env:
           CACHIX_AUTH_TOKEN: "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
