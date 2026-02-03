@@ -180,12 +180,24 @@ lint +tools='clippy audit typos statix deadnix shellcheck':
 # Formatting
 # =============================================================================
 
-# Run all formatters
-fmt:
-    cargo fmt --all
-    alejandra . --quiet
-    prettier --write . --log-level warn
-    typos --write-changes --config .config/typos.toml
+# Run formatters: (default), check
+fmt mode='':
+    #!/usr/bin/env bash
+    set -e
+    case "{{ mode }}" in
+        check)
+            cargo fmt --all -- --check
+            alejandra . --check --quiet
+            prettier --check . --log-level warn
+            typos --config .config/typos.toml
+            ;;
+        *)
+            cargo fmt --all
+            alejandra . --quiet
+            prettier --write . --log-level warn
+            typos --write-changes --config .config/typos.toml
+            ;;
+    esac
 
 # =============================================================================
 # Sanitizers (Dynamic Analysis)

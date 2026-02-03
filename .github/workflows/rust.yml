@@ -20,14 +20,21 @@ jobs:
         uses: dtolnay/rust-toolchain@1.92.0
         with:
           components: clippy, rustfmt
+      - name: Install just and shellcheck
+        uses: taiki-e/install-action@0bc4cd8a3e21db4cb9519857377b0c8c5e150de5 # v2
+        with:
+          tool: just,shellcheck
       - name: Rust Cache
         uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
 
       - name: Format
-        run: cargo fmt -- --check
+        run: just fmt check
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: just lint clippy
+
+      - name: Shellcheck
+        run: just lint shellcheck
 
   build:
     runs-on: ubuntu-latest
@@ -36,11 +43,15 @@ jobs:
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.92.0
+      - name: Install just
+        uses: taiki-e/install-action@0bc4cd8a3e21db4cb9519857377b0c8c5e150de5 # v2
+        with:
+          tool: just
       - name: Rust Cache
         uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
 
       - name: Build
-        run: cargo build --workspace --all-targets --all-features
+        run: just build
 
   test:
     runs-on: ubuntu-latest
@@ -52,24 +63,19 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
 
-      - name: Install mdbook and nextest
+      - name: Install tools
         uses: taiki-e/install-action@0bc4cd8a3e21db4cb9519857377b0c8c5e150de5 # v2
         with:
-          tool: cargo-nextest@0.9.115,mdbook@0.4
+          tool: cargo-nextest@0.9.124,mdbook@0.4,just
 
       - name: Test
-        run: cargo nextest run --workspace --all-features
+        run: just test
 
       - name: Test Doc Examples
-        run: cargo test --doc --workspace --all-features
+        run: just test doc
 
       - name: Test Documentation Examples
-        run: |
-          # The book tests require a single copy of libeidetica target/debug/deps
-          # This is a workaround to remove and rebuild only 1
-          rm -f target/debug/deps/libeidetica-*.rlib target/debug/deps/libeidetica-*.rmeta
-          cargo build -p eidetica
-          mdbook test docs -L target/debug/deps
+        run: just doc test
 
   test-minimal:
     name: Test Minimal Features
@@ -84,13 +90,10 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
 
-      - name: Install nextest
+      - name: Install tools
         uses: taiki-e/install-action@0bc4cd8a3e21db4cb9519857377b0c8c5e150de5 # v2
         with:
-          tool: cargo-nextest@0.9.115
+          tool: cargo-nextest@0.9.124,just
 
-      - name: Build with no default features
-        run: cargo build -p eidetica --no-default-features
-
-      - name: Test with no default features
-        run: cargo nextest run -p eidetica --no-default-features --features testing
+      - name: Test minimal features
+        run: just test minimal
