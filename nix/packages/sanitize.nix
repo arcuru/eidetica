@@ -1,9 +1,9 @@
 # Sanitizer packages (miri, asan, lsan)
-# - miri: uses noDepsArgs (interprets MIR, doesn't use compiled artifacts)
+# - miri: uses debugArgs (benefits from cached deps for setup)
 # - asan/lsan: use dedicated deps caches with sanitizer flags
 {
   craneLib,
-  noDepsArgs,
+  debugArgs,
   asanArgs,
   lsanArgs,
   fenixStable,
@@ -11,12 +11,12 @@
   lib,
 }: let
   # Miri: undefined behavior detection via MIR interpretation
-  sanitize-miri = craneLib.mkCargoDerivation (noDepsArgs
+  sanitize-miri = craneLib.mkCargoDerivation (debugArgs
     // {
       pname = "sanitize-miri";
       buildPhaseCargoCommand = "cargo miri test --workspace --all-features";
       nativeBuildInputs =
-        noDepsArgs.nativeBuildInputs
+        debugArgs.nativeBuildInputs
         ++ [
           (fenixStable.withComponents [
             "miri"

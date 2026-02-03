@@ -75,25 +75,24 @@
           rustSrc
           craneLib
           baseArgs
-          cargoArtifacts
-          cargoArtifactsDebug
-          cargoArtifactsAsan
-          cargoArtifactsLsan
+          releaseArgsLib
+          releaseArgsBin
           releaseArgs
+          benchArgs
           debugArgs
           asanArgs
           lsanArgs
-          noDepsArgs
           ;
 
         # Import package groups
-        mainPkgs = import ./nix/packages/main.nix {inherit craneLib releaseArgs;};
+        mainPkgs = import ./nix/packages/main.nix {inherit craneLib releaseArgsLib releaseArgsBin;};
+
         testPkgs = import ./nix/packages/test.nix {inherit craneLib debugArgs baseArgs pkgs lib;};
         coveragePkgs = import ./nix/packages/coverage.nix {inherit craneLib baseArgs fenixStable pkgs lib;};
-        sanitizePkgs = import ./nix/packages/sanitize.nix {inherit craneLib noDepsArgs asanArgs lsanArgs fenixStable pkgs lib;};
-        docPkgs = import ./nix/packages/doc.nix {inherit craneLib debugArgs noDepsArgs pkgs lib;};
-        lintPkgs = import ./nix/packages/lint.nix {inherit craneLib debugArgs noDepsArgs pkgs;};
-        standalonePkgs = import ./nix/packages/standalone.nix {inherit craneLib releaseArgs baseArgs pkgs;};
+        sanitizePkgs = import ./nix/packages/sanitize.nix {inherit craneLib debugArgs asanArgs lsanArgs fenixStable pkgs lib;};
+        docPkgs = import ./nix/packages/doc.nix {inherit craneLib debugArgs pkgs lib;};
+        lintPkgs = import ./nix/packages/lint.nix {inherit craneLib baseArgs debugArgs pkgs;};
+        standalonePkgs = import ./nix/packages/standalone.nix {inherit craneLib releaseArgs benchArgs baseArgs pkgs;};
 
         # Import other modules
         containerPkgs = import ./nix/container.nix {
@@ -119,11 +118,16 @@
         # Hierarchical package structure via legacyPackages
         # Pattern: .#<group> runs fast/CI subset, .#<group>.full runs all, .#<group>.<name> runs specific
         legacyPackages = {
-          # Test group - .#test runs CI tests, .#test.full runs all backends
+          # Test packages - nix build .#test runs CI tests, .#test.full runs all backends
+          # (nix run .#test uses the interactive runner from apps)
           test =
-            mkAll "test" testPkgs.testFast
-            // testPkgs.testPackages
-            // {full = mkAll "test-full" testPkgs.testPackages;};
+            mkAll "test" testPkgs.testCheckFast
+            // testPkgs.testCheckPackages
+            // {full = mkAll "test-full" testPkgs.testCheckPackages;};
+
+          # Bench package - nix build .#bench runs hermetic benchmarks
+          # (nix run .#bench uses the interactive runner from apps)
+          bench = standalonePkgs.bench-check;
 
           # Coverage group - .#coverage runs sqlite, .#coverage.full runs all backends
           coverage =
@@ -154,8 +158,9 @@
           inherit (mainPkgs) eidetica eidetica-lib eidetica-bin;
           inherit (containerPkgs) eidetica-image;
 
-          # Standalone packages
-          inherit (standalonePkgs) bench min-versions;
+          # Build artifacts (cached)
+          inherit (testPkgs) test-artifacts;
+          inherit (standalonePkgs) bench-artifacts min-versions;
 
           # Integration tests (Linux only)
           integration = lib.optionalAttrs pkgs.stdenv.isLinux {
@@ -170,7 +175,7 @@
         checks =
           {inherit (mainPkgs) eidetica eidetica-lib;}
           // lintPkgs.lintFast
-          // testPkgs.testFast
+          // testPkgs.testCheckFast
           // docPkgs.docFast
           // {inherit (nixTests) eval-nixos eval-hm;};
 
@@ -204,14 +209,29 @@
         };
 
         # Application definitions
-        apps = rec {
-          default = eidetica-app;
-          eidetica-app = {
+        apps = let
+          mkApp = program: description: {
             type = "app";
-            program = config.legacyPackages.eidetica;
-            meta.description = "Run the Eidetica database";
+            inherit program;
+            meta = {inherit description;};
           };
-        };
+        in
+          rec {
+            default = eidetica;
+            eidetica = mkApp "${mainPkgs.eidetica}" "Run the Eidetica database";
+
+            # Test runners (use cached test-artifacts)
+            test = mkApp "${testPkgs.test-runner-sqlite}/bin/test-runner-sqlite" "Run tests (sqlite backend)";
+            test-inmemory = mkApp "${testPkgs.test-runner-inmemory}/bin/test-runner-inmemory" "Run tests with inmemory backend";
+            test-sqlite = mkApp "${testPkgs.test-runner-sqlite}/bin/test-runner-sqlite" "Run tests with SQLite backend";
+            test-all = mkApp "${testPkgs.test-runner-all}/bin/test-runner-all" "Run tests with all backends";
+
+            # Benchmark runner (uses cached bench-artifacts)
+            bench = mkApp "${standalonePkgs.bench-runner}/bin/bench-runner" "Run benchmarks";
+          }
+          // lib.optionalAttrs pkgs.stdenv.isLinux {
+            test-postgres = mkApp "${testPkgs.test-runner-postgres}/bin/test-runner-postgres" "Run tests with PostgreSQL backend";
+          };
 
         # Overlay attributes for easy access to packages
         overlayAttrs = {

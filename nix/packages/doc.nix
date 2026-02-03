@@ -2,7 +2,6 @@
 {
   craneLib,
   debugArgs,
-  noDepsArgs,
   pkgs,
   lib,
 }: let
@@ -49,12 +48,11 @@
       mdbook build docs -d $out
     '';
 
-  # Note: Uses noDepsArgs because it deletes and rebuilds deps anyway
-  doc-book-test = craneLib.mkCargoDerivation (noDepsArgs
+  doc-book-test = craneLib.mkCargoDerivation (debugArgs
     // {
       pname = "book-test";
       src = docSrc;
-      nativeBuildInputs = noDepsArgs.nativeBuildInputs ++ [pkgs.mdbook];
+      nativeBuildInputs = debugArgs.nativeBuildInputs ++ [pkgs.mdbook];
       buildPhaseCargoCommand = ''
         rm -f target/debug/deps/libeidetica-*.rlib target/debug/deps/libeidetica-*.rmeta
         cargo build -p eidetica

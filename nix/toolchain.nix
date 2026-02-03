@@ -28,20 +28,69 @@
     ];
   };
 
-  # Build cargo dependencies for release builds
-  # This creates a build cache that can be reused by all release builds
-  cargoArtifacts = craneLib.buildDepsOnly (baseArgs
+  # Separate artifact caches per package to avoid Cargo fingerprint mismatches
+  # (see https://crane.dev/faq/constant-rebuilds.html)
+  # Each package build must use matching -p and --all-features flags
+
+  # Library deps (eidetica)
+  cargoArtifactsLib = craneLib.buildDepsOnly (baseArgs
     // {
-      pname = "release";
+      pname = "release-lib";
       CARGO_PROFILE = "release";
+      cargoExtraArgs = "-p eidetica --all-features";
     });
 
-  # Build cargo dependencies for debug profile (used by book-test)
-  # Separate debug cache needed because debug/release profiles are incompatible
+  # Binary deps (eidetica-bin, which depends on eidetica)
+  cargoArtifactsBin = craneLib.buildDepsOnly (baseArgs
+    // {
+      pname = "release-bin";
+      CARGO_PROFILE = "release";
+      cargoExtraArgs = "-p eidetica-bin --all-features";
+    });
+
+  # Workspace-wide release deps (for min-versions)
+  cargoArtifactsRelease = craneLib.buildDepsOnly (baseArgs
+    // {
+      pname = "release-workspace";
+      CARGO_PROFILE = "release";
+      cargoExtraArgs = "--workspace --all-features";
+    });
+
+  # Bench deps - uses buildDepsOnly with bench stubs injected via dummy hook
+  # The dummy source from crane doesn't include bench files, so we add them
+  cargoArtifactsBench = craneLib.buildDepsOnly (baseArgs
+    // {
+      pname = "bench-deps";
+      cargoBuildCommand = "cargo bench --no-run --workspace --all-features";
+      cargoCheckCommand = "true"; # skip check phase
+      # Inject dummy bench files before build (crane's dummy source lacks bench targets)
+      # Dynamically creates stubs for all [[bench]] targets found in Cargo.toml
+      preBuild = ''
+        echo "=== Creating bench stubs ==="
+        mkdir -p crates/lib/benches
+
+        # Create criterion stub template
+        stub='use criterion::{criterion_group, criterion_main, Criterion};
+        fn bench(_c: &mut Criterion) {}
+        criterion_group!(benches, bench);
+        criterion_main!(benches);'
+
+        # Find all [[bench]] targets and create dummy files for each
+        for name in $(grep -A1 '^\[\[bench\]\]' crates/lib/Cargo.toml | grep 'name = ' | sed 's/.*name = "\([^"]*\)".*/\1/'); do
+          echo "Creating stub for: $name"
+          echo "$stub" > "crates/lib/benches/$name.rs"
+        done
+        echo "=== Done creating bench stubs ==="
+        ls -la crates/lib/benches/
+      '';
+    });
+
+  # Debug deps for tests, lints, docs (workspace-wide)
   cargoArtifactsDebug = craneLib.buildDepsOnly (baseArgs
     // {
       pname = "debug";
       CARGO_PROFILE = "dev";
+      cargoExtraArgs = "--workspace --all-features";
     });
 
   # Build cargo dependencies with AddressSanitizer (Linux only)
@@ -64,12 +113,35 @@
       CARGO_BUILD_TARGET = "x86_64-unknown-linux-gnu";
     });
 
-  # Common arguments for release builds (tests, benchmarks, main packages)
+  # Release arguments for library builds
+  releaseArgsLib =
+    baseArgs
+    // {
+      cargoArtifacts = cargoArtifactsLib;
+      CARGO_PROFILE = "release";
+    };
+
+  # Release arguments for binary builds
+  releaseArgsBin =
+    baseArgs
+    // {
+      cargoArtifacts = cargoArtifactsBin;
+      CARGO_PROFILE = "release";
+    };
+
+  # Release arguments for workspace-wide builds (min-versions)
   releaseArgs =
     baseArgs
     // {
-      inherit cargoArtifacts;
+      cargoArtifacts = cargoArtifactsRelease;
       CARGO_PROFILE = "release";
+    };
+
+  # Bench arguments (uses bench profile artifacts)
+  benchArgs =
+    baseArgs
+    // {
+      cargoArtifacts = cargoArtifactsBench;
     };
 
   # Common arguments for debug builds (analysis tools that don't need runtime performance)
@@ -97,28 +169,25 @@
       RUSTFLAGS = "-Zsanitizer=leak";
       CARGO_BUILD_TARGET = "x86_64-unknown-linux-gnu";
     };
-
-  # Arguments for tools that rebuild everything (sanitizers, coverage, etc.)
-  # Uses dummy artifacts so mkCargoDerivation doesn't require pre-built deps
-  noDepsArgs =
-    baseArgs
-    // {
-      cargoArtifacts = craneLib.mkDummySrc {src = baseArgs.src;};
-    };
 in {
   inherit
     fenixStable
     rustSrc
     craneLib
     baseArgs
-    cargoArtifacts
+    cargoArtifactsLib
+    cargoArtifactsBin
+    cargoArtifactsRelease
+    cargoArtifactsBench
     cargoArtifactsDebug
     cargoArtifactsAsan
     cargoArtifactsLsan
+    releaseArgsLib
+    releaseArgsBin
     releaseArgs
+    benchArgs
     debugArgs
     asanArgs
     lsanArgs
-    noDepsArgs
     ;
 }
