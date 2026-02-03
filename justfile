@@ -393,7 +393,7 @@ nix action='check':
             nix build
             ;;
         check)
-            nix-fast-build --no-link --skip-cached
+            nix-fast-build --no-link --skip-cached ${CI:+--no-nom}
             ;;
         integration)
             nix build .#integration.nixos .#integration.container --print-build-logs --no-link
