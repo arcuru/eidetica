@@ -1,9 +1,4 @@
-use std::{
-    fs,
-    io::Write,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{fs, io::Write, path::Path, sync::Arc};
 
 use tempfile::TempDir;
 
@@ -24,8 +19,8 @@ async fn load_backend(path: &Path) -> Result<InMemory> {
 #[cfg_attr(miri, ignore)] // file I/O not available with Miri isolation enabled
 async fn test_in_memory_backend_save_and_load() {
     // Create a temporary file path
-    let temp_dir = env!("CARGO_MANIFEST_DIR");
-    let file_path = PathBuf::from(temp_dir).join("test_backend_save.json");
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("test_backend_save.json");
 
     // Setup: Create a backend with some data
     {
@@ -51,18 +46,14 @@ async fn test_in_memory_backend_save_and_load() {
     // Verify data was loaded correctly
     let roots = loaded_backend.all_roots().await.unwrap();
     assert_eq!(roots.len(), 1);
-
-    // Cleanup
-    fs::remove_file(file_path).unwrap();
 }
 
 #[tokio::test]
 #[cfg_attr(miri, ignore)] // file I/O not available with Miri isolation enabled
 async fn test_load_non_existent_file() {
-    let path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/test_data/non_existent_file.json");
-    // Ensure file does not exist
-    let _ = fs::remove_file(&path); // Ignore error if it doesn't exist
+    let temp_dir = TempDir::new().unwrap();
+    let path = temp_dir.path().join("non_existent_file.json");
+    // File doesn't exist by default in a new temp dir
 
     // Load
     let backend = load_backend(&path).await;
@@ -74,10 +65,8 @@ async fn test_load_non_existent_file() {
 #[tokio::test]
 #[cfg_attr(miri, ignore)] // file I/O not available with Miri isolation enabled
 async fn test_load_invalid_file() {
-    // Ensure target directory exists
-    let test_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/test_data");
-    fs::create_dir_all(&test_dir).unwrap();
-    let path = test_dir.join("invalid_file.json");
+    let temp_dir = TempDir::new().unwrap();
+    let path = temp_dir.path().join("invalid_file.json");
 
     // Create an invalid JSON file
     {
@@ -90,18 +79,13 @@ async fn test_load_invalid_file() {
 
     // Verify it's an error
     assert!(result.is_err());
-
-    // Clean up
-    fs::remove_file(&path).unwrap();
 }
 
 #[tokio::test]
 #[cfg_attr(miri, ignore)] // file I/O not available with Miri isolation enabled
 async fn test_save_load_with_various_entries() {
-    // Create a temporary file path
-    let test_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/test_data");
-    fs::create_dir_all(&test_dir).unwrap();
-    let file_path = test_dir.join("test_various_entries.json");
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("test_various_entries.json");
 
     // Setup a tree with multiple entries
     let backend = Arc::new(InMemory::new());
@@ -190,9 +174,6 @@ async fn test_save_load_with_various_entries() {
     assert!(loaded_tips.contains(&grandchild_id));
     assert!(loaded_tips.contains(&entry_with_subtree_id));
     assert!(loaded_tips.contains(&child2_id));
-
-    // Cleanup
-    fs::remove_file(file_path).unwrap();
 }
 
 #[tokio::test]
