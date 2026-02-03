@@ -17,9 +17,11 @@ dev:
     just test
     just lint clippy
 
-# Run automatic fixes (clippy fix + format)
+# Run automatic fixes (clippy fix + nix fixes + format)
 fix:
     cargo clippy --workspace --fix --allow-dirty --all-targets --all-features --allow-no-vcs -- -D warnings
+    statix fix .
+    deadnix --edit .
     just fmt
 
 # =============================================================================
@@ -123,8 +125,8 @@ test *args:
 # Linting (Static Analysis)
 # =============================================================================
 
-# Run linter(s): clippy, audit, udeps, min-versions, all
-lint +tools='clippy audit typos':
+# Run linter(s): clippy, audit, typos, statix, deadnix, udeps, min-versions, all
+lint +tools='clippy audit typos statix deadnix':
     #!/usr/bin/env bash
     set -e
     for tool in {{ tools }}; do
@@ -141,6 +143,14 @@ lint +tools='clippy audit typos':
                 echo "=== Running typos ==="
                 typos --config .config/typos.toml
                 ;;
+            statix)
+                echo "=== Running statix ==="
+                statix check .
+                ;;
+            deadnix)
+                echo "=== Running deadnix ==="
+                deadnix --fail .
+                ;;
             udeps)
                 echo "=== Running udeps ==="
                 cargo udeps --workspace --all-targets
@@ -152,11 +162,11 @@ lint +tools='clippy audit typos':
                 cargo nextest run --workspace --all-features --status-level fail
                 ;;
             all)
-                just lint clippy audit typos udeps min-versions
+                just lint clippy audit typos statix deadnix udeps min-versions
                 ;;
             *)
                 echo "Unknown linter: $tool"
-                echo "Options: clippy, audit, typos, udeps, min-versions, all"
+                echo "Options: clippy, audit, typos, statix, deadnix, udeps, min-versions, all"
                 exit 1
                 ;;
         esac

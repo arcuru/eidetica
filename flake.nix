@@ -97,13 +97,13 @@
         # Import other modules
         containerPkgs = import ./nix/container.nix {
           inherit pkgs;
-          eidetica-bin = mainPkgs.eidetica-bin;
+          inherit (mainPkgs) eidetica-bin;
         };
 
         nixTests = import ./nix/tests.nix {
           inherit pkgs lib;
-          eidetica-bin = mainPkgs.eidetica-bin;
-          eidetica-image = containerPkgs.eidetica-image;
+          inherit (mainPkgs) eidetica-bin;
+          inherit (containerPkgs) eidetica-image;
           nixosModule = import ./nix/nixos-module.nix;
           homeManagerModule = import ./nix/home-manager.nix;
         };
@@ -241,7 +241,7 @@
         # Development shell configuration
         devShells.default = import ./nix/dev-shell.nix {
           inherit pkgs rustSrc;
-          checks = config.checks;
+          inherit (config) checks;
           # Additional package groups for inputsFrom (not in checks but need deps in shell)
           extraPackages = coveragePkgs.coverageFast // sanitizePkgs.sanitizeFast;
         };

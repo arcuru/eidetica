@@ -7,7 +7,7 @@
   lib,
 }: let
   # Dummy artifacts for coverage builds (which rebuild everything anyway)
-  dummyArtifacts = craneLib.mkDummySrc {src = baseArgs.src;};
+  dummyArtifacts = craneLib.mkDummySrc {inherit (baseArgs) src;};
 
   coverage-inmemory = craneLib.cargoTarpaulin (baseArgs
     // {

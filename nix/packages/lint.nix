@@ -40,11 +40,35 @@
       '';
     });
 
-  # Fast lint checks for CI (clippy + deny + fmt, no udeps)
+  # Nix linting with statix
+  lint-statix =
+    pkgs.runCommand "lint-statix" {
+      nativeBuildInputs = [pkgs.statix];
+      inherit (baseArgs) src;
+    } ''
+      cd $src
+      statix check .
+      touch $out
+    '';
+
+  # Find dead Nix code with deadnix
+  lint-deadnix =
+    pkgs.runCommand "lint-deadnix" {
+      nativeBuildInputs = [pkgs.deadnix];
+      inherit (baseArgs) src;
+    } ''
+      cd $src
+      deadnix --fail .
+      touch $out
+    '';
+
+  # Fast lint checks for CI (clippy + deny + fmt + nix linters, no udeps)
   lintFast = {
     clippy = lint-clippy;
     deny = lint-deny;
     fmt = lint-fmt;
+    statix = lint-statix;
+    deadnix = lint-deadnix;
   };
 
   # All lint packages
@@ -53,7 +77,9 @@
     deny = lint-deny;
     fmt = lint-fmt;
     udeps = lint-udeps;
+    statix = lint-statix;
+    deadnix = lint-deadnix;
   };
 in {
-  inherit lint-clippy lint-deny lint-fmt lint-udeps lintFast lintPackages;
+  inherit lint-clippy lint-deny lint-fmt lint-udeps lint-statix lint-deadnix lintFast lintPackages;
 }

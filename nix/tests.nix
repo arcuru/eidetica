@@ -15,7 +15,7 @@
 }: let
   # Evaluate NixOS module with service disabled
   nixosEvalDisabled = lib.nixosSystem {
-    system = pkgs.system;
+    inherit (pkgs) system;
     modules = [
       nixosModule
       {
@@ -32,7 +32,7 @@
 
   # Evaluate NixOS module with service enabled
   nixosEvalEnabled = lib.nixosSystem {
-    system = pkgs.system;
+    inherit (pkgs) system;
     modules = [
       nixosModule
       {
@@ -119,7 +119,7 @@ in {
     # Test 1: Service disabled (default)
     echo "Service disabled: ${lib.boolToString nixosDisabledResult}" > $out/disabled.txt
     ${
-      if nixosDisabledResult == false
+      if !nixosDisabledResult
       then "echo '✓ Module evaluates correctly with service disabled'"
       else "echo '✗ Service should be disabled by default' && exit 1"
     }
@@ -130,7 +130,7 @@ in {
     echo "Backend: ${nixosEnabledResult.backend}" >> $out/enabled.txt
     echo "Host: ${nixosEnabledResult.host}" >> $out/enabled.txt
     ${
-      if nixosEnabledResult.enable == true && nixosEnabledResult.port == 8080 && nixosEnabledResult.backend == "sqlite"
+      if nixosEnabledResult.enable && nixosEnabledResult.port == 8080 && nixosEnabledResult.backend == "sqlite"
       then "echo '✓ Module evaluates correctly with service enabled'"
       else "echo '✗ Service configuration mismatch' && exit 1"
     }
@@ -147,7 +147,7 @@ in {
     # Test 1: Service disabled (default)
     echo "Service disabled: ${lib.boolToString hmDisabledResult}" > $out/disabled.txt
     ${
-      if hmDisabledResult == false
+      if !hmDisabledResult
       then "echo '✓ Module evaluates correctly with service disabled'"
       else "echo '✗ Service should be disabled by default' && exit 1"
     }
@@ -157,7 +157,7 @@ in {
     echo "Port: ${toString hmEnabledResult.port}" >> $out/enabled.txt
     echo "Backend: ${hmEnabledResult.backend}" >> $out/enabled.txt
     ${
-      if hmEnabledResult.enable == true && hmEnabledResult.port == 9000 && hmEnabledResult.backend == "sqlite"
+      if hmEnabledResult.enable && hmEnabledResult.port == 9000 && hmEnabledResult.backend == "sqlite"
       then "echo '✓ Module evaluates correctly with service enabled'"
       else "echo '✗ Service configuration mismatch' && exit 1"
     }
@@ -170,7 +170,7 @@ in {
   integration-nixos = pkgs.testers.nixosTest {
     name = "eidetica-nixos-service";
 
-    nodes.machine = {pkgs, ...}: {
+    nodes.machine = _: {
       imports = [nixosModule];
 
       services.eidetica = {
@@ -208,7 +208,7 @@ in {
   integration-container = pkgs.testers.nixosTest {
     name = "eidetica-oci-container";
 
-    nodes.machine = {pkgs, ...}: {
+    nodes.machine = _: {
       virtualisation.podman.enable = true;
     };
 
