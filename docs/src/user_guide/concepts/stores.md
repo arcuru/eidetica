@@ -346,14 +346,14 @@ For operations not covered by the convenience methods, access the underlying Doc
 <!-- Code block ignored: Demonstrates advanced API patterns rather than compilable code -->
 
 ```rust,ignore
-let transaction = database.new_transaction()?;
+let transaction = database.new_transaction().await?;
 let settings_store = transaction.get_settings()?;
 
 // Access underlying DocStore for advanced operations
 let doc_store = settings_store.as_doc_store();
-doc_store.set_path(path!("custom.config.option"), "value")?;
+doc_store.set_path(path!("custom.config.option"), "value").await?;
 
-transaction.commit()?;
+transaction.commit().await?;
 ```
 
 Use cases for `SettingsStore`:
