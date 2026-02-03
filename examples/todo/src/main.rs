@@ -304,7 +304,7 @@ async fn list_todos(database: &Database) -> Result<()> {
         println!("Tasks:");
         // Sort todos by creation date
         let mut sorted_todos = todos_with_ids;
-        sorted_todos.sort_by(|(_, a), (_, b)| a.created_at.cmp(&b.created_at));
+        sorted_todos.sort_by_key(|(_, a)| a.created_at);
 
         for (id, todo) in sorted_todos {
             let status = if todo.completed { "✓" } else { " " };

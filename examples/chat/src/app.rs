@@ -358,7 +358,7 @@ impl App {
             }
 
             // Sort by timestamp
-            messages.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+            messages.sort_by_key(|a| a.timestamp);
 
             self.messages = messages;
             self.update_scroll();
