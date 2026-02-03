@@ -18,7 +18,7 @@ jobs:
     name: Check
     runs-on: ubuntu-latest
     container:
-      image: nixos/nix:latest@sha256:d5cce2440bda1f966357732c06d86cb92368069fb52dfb6b2bae8725eea488a5
+      image: nixos/nix:latest@sha256:c6ebd12d96b3374ee15e3986c15aa43f5e49310634f17afcaaf4dafe4f6732b2
     steps:
       - name: Configure Nix with caches
         run: |
@@ -64,7 +64,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
     container:
-      image: nixos/nix:latest@sha256:d5cce2440bda1f966357732c06d86cb92368069fb52dfb6b2bae8725eea488a5
+      image: nixos/nix:latest@sha256:c6ebd12d96b3374ee15e3986c15aa43f5e49310634f17afcaaf4dafe4f6732b2
     steps:
       - name: Configure Nix with caches
         run: |
@@ -131,7 +131,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
     container:
-      image: nixos/nix:latest@sha256:d5cce2440bda1f966357732c06d86cb92368069fb52dfb6b2bae8725eea488a5
+      image: nixos/nix:latest@sha256:c6ebd12d96b3374ee15e3986c15aa43f5e49310634f17afcaaf4dafe4f6732b2
     steps:
       - name: Configure Nix with caches
         run: |
@@ -181,7 +181,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
     needs: [check]
     container:
-      image: nixos/nix:latest@sha256:d5cce2440bda1f966357732c06d86cb92368069fb52dfb6b2bae8725eea488a5
+      image: nixos/nix:latest@sha256:c6ebd12d96b3374ee15e3986c15aa43f5e49310634f17afcaaf4dafe4f6732b2
     steps:
       - name: Configure Nix with caches
         run: |
