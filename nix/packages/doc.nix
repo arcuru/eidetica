@@ -77,23 +77,23 @@
     // {
       cargoTestExtraArgs = "--doc --workspace --all-features";
     });
-
-  # Fast doc checks for CI (api docs + doc tests + book tests)
-  docFast = {
-    api = doc-api;
-    test = doc-test;
-    book-test = doc-book-test;
-  };
-
-  # All doc packages
-  docPackages = {
+in {
+  packages = {
     api = doc-api;
     api-full = doc-api-full;
     links = doc-links;
-    book = doc-book;
-    book-test = doc-book-test;
     test = doc-test;
+    book =
+      doc-book
+      // {
+        test = doc-book-test;
+      };
   };
-in {
-  inherit doc-api doc-api-full doc-links doc-book doc-book-test doc-test docFast docPackages;
+
+  # Fast doc checks for CI
+  packagesFast = {
+    api = doc-api;
+    test = doc-test;
+    book-test = doc-book-test;
+  };
 }

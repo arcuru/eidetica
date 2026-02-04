@@ -73,5 +73,13 @@
       '';
     });
 in {
-  inherit bench-artifacts bench-runner bench-check min-versions;
+  # Nested bench structure
+  bench = {
+    artifacts = bench-artifacts;
+    runner = bench-runner;
+    check = bench-check;
+  };
+
+  # Minimum version compatibility check (stays flat)
+  inherit min-versions;
 }

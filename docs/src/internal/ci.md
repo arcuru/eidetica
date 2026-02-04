@@ -36,17 +36,19 @@ Binary caching via [Cachix](https://eidetica.cachix.org) speeds up builds by pro
 
 The Nix flake organizes packages into groups with a consistent pattern:
 
-- `.#<group>` — runs the fast/CI-appropriate subset
-- `.#<group>.full` — runs ALL items in the group
+- `.#<group>.default` — runs a sensible default subset
+- `.#<group>.all` — runs ALL items in the group
 - `.#<group>.<name>` — runs a specific item
 
-| Group      | Default (fast)         | Full                    |
-| ---------- | ---------------------- | ----------------------- |
-| `test`     | inmemory + minimal     | all backends            |
-| `doc`      | api + test + book-test | includes api-full, book |
-| `lint`     | clippy + deny + fmt    | includes udeps          |
-| `coverage` | inmemory               | all backends            |
-| `sanitize` | asan + lsan            | includes miri           |
+| Group         | Default                   | All               |
+| ------------- | ------------------------- | ----------------- |
+| `test`        | sqlite                    | all backends      |
+| `doc`         | api + test + book-test    | includes book     |
+| `lint`        | clippy + deny + statix... | includes udeps    |
+| `coverage`    | sqlite                    | all backends      |
+| `sanitize`    | asan + lsan               | includes miri     |
+| `integration` | all                       | nixos + container |
+| `eval`        | all                       | nixos + hm        |
 
 ## Code Coverage
 
@@ -54,10 +56,10 @@ Code coverage runs against all storage backends to ensure comprehensive test cov
 
 | Backend    | CI  | Taskfile                 | Nix                             |
 | ---------- | --- | ------------------------ | ------------------------------- |
-| SQLite     | ✓   | `task coverage`          | `nix build .#coverage`          |
+| SQLite     | ✓   | `task coverage`          | `nix build .#coverage.sqlite`   |
 | InMemory   | ✓   | `task coverage:inmemory` | `nix build .#coverage.inmemory` |
 | PostgreSQL | ✓   | `task coverage:postgres` | `nix build .#coverage.postgres` |
-| All        | —   | `task coverage:all`      | `nix build .#coverage.full`     |
+| All        | —   | `task coverage:all`      | `nix build .#coverage.all`      |
 
 ### Local Coverage Commands
 

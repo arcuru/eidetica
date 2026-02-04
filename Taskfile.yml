@@ -46,8 +46,8 @@ tasks:
   nix:integration:
     desc: Run NixOS VM integration tests (Linux only, slow)
     cmds:
-      - nix build .#integration-nixos --no-link
-      - nix build .#integration-container --no-link
+      - nix build .#integration.nixos --no-link
+      - nix build .#integration.container --no-link
   nix:full:
     desc: Run all Nix checks including VM integration tests
     cmds:
@@ -246,7 +246,7 @@ tasks:
   container:nix:
     desc: Build and load Nix OCI container image
     cmds:
-      - nix build .#eidetica-image
+      - nix build .#eidetica.image
       - docker load < ./result
 
   test:postgres:

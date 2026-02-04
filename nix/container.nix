@@ -65,5 +65,6 @@
     };
   };
 in {
-  inherit eidetica-image;
+  # Export as 'image' for cleaner naming (wired to eidetica.image in flake)
+  image = eidetica-image;
 }

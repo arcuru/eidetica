@@ -67,21 +67,18 @@
         pg_ctl stop || true
       '';
     });
-
-  # Fast coverage (sqlite only)
-  coverageFast = {
-    sqlite = coverage-sqlite;
-  };
-
-  # All coverage packages
-  coveragePackages =
+in {
+  packages =
     {
-      sqlite = coverage-sqlite;
       inmemory = coverage-inmemory;
+      sqlite = coverage-sqlite;
     }
     // lib.optionalAttrs pkgs.stdenv.isLinux {
       postgres = coverage-postgres;
     };
-in {
-  inherit coverage-inmemory coverage-sqlite coverage-postgres coverageFast coveragePackages;
+
+  # Fast coverage (sqlite only, for CI)
+  packagesFast = {
+    sqlite = coverage-sqlite;
+  };
 }

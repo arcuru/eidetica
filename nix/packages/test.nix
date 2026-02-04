@@ -179,46 +179,29 @@
       '';
       cargoNextestExtraArgs = "--workspace --all-features ${nextestCheckArgs}";
     });
-
-  # Fast checks for CI (sqlite + inmemory + minimal)
-  testCheckFast = {
-    inherit test-check-sqlite test-check-inmemory test-check-minimal;
-  };
-
-  # All check packages
-  testCheckPackages =
-    {
-      inherit test-check-sqlite test-check-inmemory test-check-minimal;
-    }
-    // lib.optionalAttrs pkgs.stdenv.isLinux {
-      inherit test-check-postgres;
-    };
-
-  # Interactive runner packages
-  testRunners =
-    {
-      inherit test-runner-inmemory test-runner-sqlite test-runner-all;
-    }
-    // lib.optionalAttrs pkgs.stdenv.isLinux {
-      inherit test-runner-postgres;
-    };
 in {
-  inherit
-    # Build artifacts
-    test-artifacts
-    # Interactive runners
-    test-runner-inmemory
-    test-runner-sqlite
-    test-runner-postgres
-    test-runner-all
-    # CI checks
-    test-check-inmemory
-    test-check-sqlite
-    test-check-minimal
-    test-check-postgres
-    # Groups
-    testCheckFast
-    testCheckPackages
-    testRunners
-    ;
+  # Build artifacts for caching
+  artifacts = test-artifacts;
+
+  # CI check derivations (for nix build .#test.<backend>)
+  checks =
+    {
+      inmemory = test-check-inmemory;
+      sqlite = test-check-sqlite;
+      minimal = test-check-minimal;
+    }
+    // lib.optionalAttrs pkgs.stdenv.isLinux {
+      postgres = test-check-postgres;
+    };
+
+  # Interactive runners (for nix run .#test-<backend>)
+  runners =
+    {
+      inmemory = test-runner-inmemory;
+      sqlite = test-runner-sqlite;
+      all = test-runner-all;
+    }
+    // lib.optionalAttrs pkgs.stdenv.isLinux {
+      postgres = test-runner-postgres;
+    };
 }

@@ -61,20 +61,16 @@
         runHook postInstall
       '';
     });
-
-  # All sanitizer packages (miri excluded from 'all' due to 12+ hour runtime)
-  # Note: all sanitizers only available on x86_64-linux
-  sanitizePackages = lib.optionalAttrs (pkgs.stdenv.isLinux && pkgs.stdenv.isx86_64) {
+in {
+  packages = lib.optionalAttrs (pkgs.stdenv.isLinux && pkgs.stdenv.isx86_64) {
     miri = sanitize-miri;
     asan = sanitize-asan;
     lsan = sanitize-lsan;
   };
 
-  # Fast sanitizers only (for .all aggregate)
-  sanitizeFast = lib.optionalAttrs (pkgs.stdenv.isLinux && pkgs.stdenv.isx86_64) {
+  # Fast sanitizers only (excludes miri due to 12+ hour runtime)
+  packagesFast = lib.optionalAttrs (pkgs.stdenv.isLinux && pkgs.stdenv.isx86_64) {
     asan = sanitize-asan;
     lsan = sanitize-lsan;
   };
-in {
-  inherit sanitize-miri sanitize-asan sanitize-lsan sanitizePackages sanitizeFast;
 }

@@ -17,13 +17,13 @@ jobs:
         uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
 
       - name: Build Coverage
-        run: nix build .#coverage --print-build-logs
+        run: nix build .#coverage.default --print-build-logs
 
       # Extract coverage data from the Nix store
       - name: Extract Coverage Data
         run: |
           mkdir -p coverage
-          cp -r $(nix path-info .#coverage)/* coverage/
+          cp -r $(nix path-info .#coverage.default)/* coverage/
           ls -la coverage/
 
       # Not uploading yet, testing this flow

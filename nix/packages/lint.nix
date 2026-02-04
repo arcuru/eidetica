@@ -18,11 +18,6 @@
       cargoDenyChecks = "bans licenses sources";
     });
 
-  lint-fmt = craneLib.cargoFmt (baseArgs
-    // {
-      cargoExtraArgs = "--all";
-    });
-
   # cargo-udeps: find unused dependencies
   # Note: outputs report to $out/result, does not fail on findings
   # Uses debugArgs - udeps needs to compile code to detect unused deps
@@ -41,6 +36,7 @@
     });
 
   # Nix linting with statix
+  # Note: These lint checks output directories (mkdir $out) for symlinkJoin compatibility
   lint-statix =
     pkgs.runCommand "lint-statix" {
       nativeBuildInputs = [pkgs.statix];
@@ -48,7 +44,7 @@
     } ''
       cd $src
       statix check .
-      touch $out
+      mkdir -p $out
     '';
 
   # Find dead Nix code with deadnix
@@ -59,7 +55,7 @@
     } ''
       cd $src
       deadnix --fail .
-      touch $out
+      mkdir -p $out
     '';
 
   # Shell script linting with shellcheck
@@ -70,7 +66,7 @@
     } ''
       cd $src
       find . -name "*.sh" -type f -exec shellcheck {} +
-      touch $out
+      mkdir -p $out
     '';
 
   # YAML linting with yamllint
@@ -81,31 +77,26 @@
     } ''
       cd $src
       find . \( -name "*.yml" -o -name "*.yaml" \) -type f -exec yamllint -c .config/yamllint.yaml {} +
-      touch $out
+      mkdir -p $out
     '';
-
-  # Fast lint checks for CI (clippy + deny + fmt + nix linters, no udeps)
-  lintFast = {
+in {
+  packages = {
     clippy = lint-clippy;
     deny = lint-deny;
-    fmt = lint-fmt;
-    statix = lint-statix;
-    deadnix = lint-deadnix;
-    shellcheck = lint-shellcheck;
-    yamllint = lint-yamllint;
-  };
-
-  # All lint packages
-  lintPackages = {
-    clippy = lint-clippy;
-    deny = lint-deny;
-    fmt = lint-fmt;
     udeps = lint-udeps;
     statix = lint-statix;
     deadnix = lint-deadnix;
     shellcheck = lint-shellcheck;
     yamllint = lint-yamllint;
   };
-in {
-  inherit lint-clippy lint-deny lint-fmt lint-udeps lint-statix lint-deadnix lint-shellcheck lint-yamllint lintFast lintPackages;
+
+  # Fast lint checks for CI (excludes udeps)
+  packagesFast = {
+    clippy = lint-clippy;
+    deny = lint-deny;
+    statix = lint-statix;
+    deadnix = lint-deadnix;
+    shellcheck = lint-shellcheck;
+    yamllint = lint-yamllint;
+  };
 }

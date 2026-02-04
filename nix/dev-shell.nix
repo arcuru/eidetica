@@ -2,8 +2,7 @@
 {
   pkgs,
   rustSrc,
-  checks,
-  extraPackages ? {},
+  devPackages,
 }:
 pkgs.mkShell {
   name = "eidetica";
@@ -14,10 +13,9 @@ pkgs.mkShell {
     echo ""
   '';
 
-  # Inherit build environments from checks and additional packages
-  # This ensures all build dependencies are available in the dev shell
-  # extraPackages includes coverage/sanitize packages not in checks
-  inputsFrom = builtins.attrValues checks ++ builtins.attrValues extraPackages;
+  # Inherit build environments from all dev packages
+  # This ensures all build dependencies are available
+  inputsFrom = builtins.attrValues devPackages;
 
   # Additional development tools
   packages = with pkgs; [

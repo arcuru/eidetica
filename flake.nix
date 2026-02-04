@@ -103,81 +103,114 @@
         nixTests = import ./nix/tests.nix {
           inherit pkgs lib;
           inherit (mainPkgs) eidetica-bin;
-          inherit (containerPkgs) eidetica-image;
+          eidetica-image = containerPkgs.image;
           nixosModule = import ./nix/nixos-module.nix;
           homeManagerModule = import ./nix/home-manager.nix;
         };
 
-        # Helper to create "all" aggregate package
-        mkAll = name: packages:
+        # Helper to create aggregate packages
+        mkAggregate = name: packages:
           pkgs.symlinkJoin {
-            name = "${name}-all";
+            inherit name;
             paths = builtins.attrValues packages;
           };
+        mkAll = name: mkAggregate "${name}-all";
       in {
         # Hierarchical package structure via legacyPackages
-        # Pattern: .#<group> runs fast/CI subset, .#<group>.full runs all, .#<group>.<name> runs specific
+        # Pattern: nix build .#<group>.<target> for specific targets
+        #          nix build .#<group>.default for sensible default
+        #          nix build .#<group>.all for all targets in group
+        #          nix run .#<group>.<target> for interactive runners (via apps)
         legacyPackages = {
-          # Test packages - nix build .#test runs CI tests, .#test.full runs all backends
-          # (nix run .#test uses the interactive runner from apps)
+          # Test packages - nested structure with .default and .all aggregates
+          # nix build .#test.default (sqlite), .#test.sqlite, .#test.all
           test =
-            mkAll "test" testPkgs.testCheckFast
-            // testPkgs.testCheckPackages
-            // {full = mkAll "test-full" testPkgs.testCheckPackages;};
+            testPkgs.checks
+            // {
+              default = testPkgs.checks.sqlite;
+              all = mkAll "test" testPkgs.checks;
+              inherit (testPkgs) artifacts;
+            };
 
           # Bench package - nix build .#bench runs hermetic benchmarks
           # (nix run .#bench uses the interactive runner from apps)
-          bench = standalonePkgs.bench-check;
+          bench = standalonePkgs.bench.check;
 
-          # Coverage group - .#coverage runs sqlite, .#coverage.full runs all backends
+          # Coverage group - nix build .#coverage.default (sqlite), .#coverage.sqlite, .#coverage.all
           coverage =
-            mkAll "coverage" coveragePkgs.coverageFast
-            // coveragePkgs.coveragePackages
-            // {full = mkAll "coverage-full" coveragePkgs.coveragePackages;};
+            coveragePkgs.packages
+            // {
+              default = coveragePkgs.packages.sqlite;
+              all = mkAll "coverage" coveragePkgs.packages;
+            };
 
-          # Sanitizer group - .#sanitize runs fast (asan/lsan), .#sanitize.full includes miri
+          # Sanitizer group - nix build .#sanitize.default (asan+lsan), .#sanitize.asan, .#sanitize.all
           sanitize =
-            mkAll "sanitize" sanitizePkgs.sanitizeFast
-            // sanitizePkgs.sanitizePackages
-            // {full = mkAll "sanitize-full" sanitizePkgs.sanitizePackages;};
+            sanitizePkgs.packages
+            // lib.optionalAttrs (sanitizePkgs.packages != {}) {
+              default = mkAll "sanitize" sanitizePkgs.packagesFast;
+              all = mkAll "sanitize" sanitizePkgs.packages;
+            };
 
-          # Documentation group - .#doc runs CI checks, .#doc.full includes slow builds
+          # Documentation group - nix build .#doc.default (fast), .#doc.api, .#doc.book, .#doc.book.test
           doc =
-            mkAll "doc" docPkgs.docFast
-            // docPkgs.docPackages
-            // {full = mkAll "doc-full" docPkgs.docPackages;};
+            docPkgs.packages
+            // {
+              default = mkAll "doc" docPkgs.packagesFast;
+              all = mkAll "doc" (removeAttrs docPkgs.packages ["book"]) // {inherit (docPkgs.packages) book;};
+            };
 
-          # Lint group - .#lint runs CI checks, .#lint.full includes udeps
+          # Lint group - nix build .#lint.default (fast), .#lint.clippy, .#lint.all
           lint =
-            mkAll "lint" lintPkgs.lintFast
-            // lintPkgs.lintPackages
-            // {full = mkAll "lint-full" lintPkgs.lintPackages;};
+            lintPkgs.packages
+            // {
+              default = mkAll "lint" lintPkgs.packagesFast;
+              all = mkAll "lint" lintPkgs.packages;
+            };
 
-          # Top-level packages
+          # Main eidetica packages with nested structure
+          # nix build .#eidetica (binary), .#eidetica.lib, .#eidetica.image
+          eidetica =
+            mainPkgs.eidetica
+            // {
+              lib = mainPkgs.eidetica-lib;
+              inherit (containerPkgs) image;
+            };
+
+          # Default package (eidetica binary)
           default = mainPkgs.eidetica;
-          inherit (mainPkgs) eidetica eidetica-lib eidetica-bin;
-          inherit (containerPkgs) eidetica-image;
 
           # Build artifacts (cached)
-          inherit (testPkgs) test-artifacts;
-          inherit (standalonePkgs) bench-artifacts min-versions;
+          inherit (standalonePkgs) min-versions;
 
-          # Integration tests (Linux only)
-          integration = lib.optionalAttrs pkgs.stdenv.isLinux {
-            nixos = nixTests.integration-nixos;
-            container = nixTests.integration-container;
-          };
+          # Integration tests (Linux only) - nix build .#integration.default (all), .#integration.nixos
+          integration = lib.optionalAttrs pkgs.stdenv.isLinux (
+            nixTests.integration
+            // {
+              default = mkAll "integration" nixTests.integration;
+              all = mkAll "integration" nixTests.integration;
+            }
+          );
+
+          # Eval tests - nix build .#eval.default (all), .#eval.nixos, .#eval.hm
+          eval =
+            nixTests.eval
+            // {
+              default = mkAll "eval" nixTests.eval;
+              all = mkAll "eval" nixTests.eval;
+            };
         };
 
         # CI checks - packages that run during `nix flake check`
-        # Composed from fast groups: lint, test, doc, plus main packages and module eval tests
+        # Each check builds the corresponding .default from legacyPackages
         # Excluded for performance: coverage, bench, integration, sanitize
-        checks =
-          {inherit (mainPkgs) eidetica eidetica-lib;}
-          // lintPkgs.lintFast
-          // testPkgs.testCheckFast
-          // docPkgs.docFast
-          // {inherit (nixTests) eval-nixos eval-hm;};
+        checks = {
+          inherit (mainPkgs) eidetica eidetica-lib;
+          test = testPkgs.checks.sqlite;
+          lint = mkAggregate "lint" lintPkgs.packagesFast;
+          doc = mkAggregate "doc" docPkgs.packagesFast;
+          eval = mkAggregate "eval" nixTests.eval;
+        };
 
         # Formatting configuration via treefmt
         treefmt = {
@@ -208,7 +241,9 @@
           };
         };
 
-        # Application definitions
+        # Application definitions (for nix run)
+        # These provide interactive runners that accept arguments
+        # Note: apps must be flat - nested structures go through legacyPackages
         apps = let
           mkApp = program: description: {
             type = "app";
@@ -216,21 +251,22 @@
             meta = {inherit description;};
           };
         in
-          rec {
-            default = eidetica;
+          {
+            default = mkApp "${mainPkgs.eidetica}" "Run the Eidetica binary";
             eidetica = mkApp "${mainPkgs.eidetica}" "Run the Eidetica database";
 
-            # Test runners (use cached test-artifacts)
-            test = mkApp "${testPkgs.test-runner-sqlite}/bin/test-runner-sqlite" "Run tests (sqlite backend)";
-            test-inmemory = mkApp "${testPkgs.test-runner-inmemory}/bin/test-runner-inmemory" "Run tests with inmemory backend";
-            test-sqlite = mkApp "${testPkgs.test-runner-sqlite}/bin/test-runner-sqlite" "Run tests with SQLite backend";
-            test-all = mkApp "${testPkgs.test-runner-all}/bin/test-runner-all" "Run tests with all backends";
-
             # Benchmark runner (uses cached bench-artifacts)
-            bench = mkApp "${standalonePkgs.bench-runner}/bin/bench-runner" "Run benchmarks";
+            bench = mkApp "${standalonePkgs.bench.runner}/bin/bench-runner" "Run benchmarks";
+
+            # Test runners - flat names (nested access via legacyPackages)
+            # nix run .#test (default: sqlite), nix run .#test-inmemory, etc.
+            test = mkApp "${testPkgs.runners.sqlite}/bin/test-runner-sqlite" "Run tests (sqlite backend)";
+            test-inmemory = mkApp "${testPkgs.runners.inmemory}/bin/test-runner-inmemory" "Run tests with inmemory backend";
+            test-sqlite = mkApp "${testPkgs.runners.sqlite}/bin/test-runner-sqlite" "Run tests with SQLite backend";
+            test-all = mkApp "${testPkgs.runners.all}/bin/test-runner-all" "Run tests with all backends";
           }
           // lib.optionalAttrs pkgs.stdenv.isLinux {
-            test-postgres = mkApp "${testPkgs.test-runner-postgres}/bin/test-runner-postgres" "Run tests with PostgreSQL backend";
+            test-postgres = mkApp "${testPkgs.runners.postgres}/bin/test-runner-postgres" "Run tests with PostgreSQL backend";
           };
 
         # Overlay attributes for easy access to packages
@@ -241,9 +277,14 @@
         # Development shell configuration
         devShells.default = import ./nix/dev-shell.nix {
           inherit pkgs rustSrc;
-          inherit (config) checks;
-          # Additional package groups for inputsFrom (not in checks but need deps in shell)
-          extraPackages = coveragePkgs.coverageFast // sanitizePkgs.sanitizeFast;
+          # Pass the full list of packages so the devshell can pickup the dependencies
+          devPackages =
+            {inherit (mainPkgs) eidetica eidetica-lib;}
+            // testPkgs.checks
+            // lintPkgs.packages
+            // docPkgs.packages
+            // coveragePkgs.packages
+            // sanitizePkgs.packages;
         };
       };
     };

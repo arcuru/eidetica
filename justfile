@@ -426,15 +426,11 @@ nix action='check':
             nix-fast-build --no-link --skip-cached ${CI:+--no-nom}
             ;;
         test)
-            # Force re-run hermetic tests (rebuild even if cached)
-            # Note: We rebuild .#test.test-check-sqlite instead of .#test because
-            # .#test is a symlinkJoin aggregate that doesn't actually run tests.
-            # The actual test execution happens in the test-check-* derivations.
-            nix build .#test.test-check-sqlite --rebuild --print-build-logs --no-link
+            nix run .#test
             ;;
         test-all)
             # Force re-run all hermetic test backends
-            nix build .#test.test-check-sqlite .#test.test-check-inmemory .#test.test-check-minimal --rebuild --print-build-logs --no-link
+            nix build .#test.sqlite .#test.inmemory .#test.minimal --rebuild --print-build-logs --no-link
             ;;
         bench)
             # Force re-run hermetic benchmarks (rebuild even if cached)
@@ -467,7 +463,7 @@ container type='docker':
             docker build --tag eidetica:dev .
             ;;
         nix)
-            nix build .#eidetica-image
+            nix build .#eidetica.image
             docker load < ./result
             ;;
         *)

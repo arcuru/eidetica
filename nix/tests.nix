@@ -108,144 +108,148 @@
   nixosEnabledResult = nixosEvalEnabled.config.services.eidetica;
   hmDisabledResult = hmEvalDisabled.config.services.eidetica.enable;
   hmEnabledResult = hmEvalEnabled.config.services.eidetica;
-in {
-  # Fast module evaluation test for NixOS module
-  # Evaluates the module at flake eval time and writes results
-  eval-nixos = pkgs.runCommand "eval-nixos" {} ''
-    mkdir -p $out
+in rec {
+  eval = {
+    # Fast module evaluation test for NixOS module
+    # Evaluates the module at flake eval time and writes results
+    nixos = pkgs.runCommand "eval-nixos" {} ''
+      mkdir -p $out
 
-    echo "NixOS module evaluation test"
+      echo "NixOS module evaluation test"
 
-    # Test 1: Service disabled (default)
-    echo "Service disabled: ${lib.boolToString nixosDisabledResult}" > $out/disabled.txt
-    ${
-      if !nixosDisabledResult
-      then "echo '✓ Module evaluates correctly with service disabled'"
-      else "echo '✗ Service should be disabled by default' && exit 1"
-    }
+      # Test 1: Service disabled (default)
+      echo "Service disabled: ${lib.boolToString nixosDisabledResult}" > $out/disabled.txt
+      ${
+        if !nixosDisabledResult
+        then "echo '✓ Module evaluates correctly with service disabled'"
+        else "echo '✗ Service should be disabled by default' && exit 1"
+      }
 
-    # Test 2: Service enabled with custom config
-    echo "Service enabled: ${lib.boolToString nixosEnabledResult.enable}" > $out/enabled.txt
-    echo "Port: ${toString nixosEnabledResult.port}" >> $out/enabled.txt
-    echo "Backend: ${nixosEnabledResult.backend}" >> $out/enabled.txt
-    echo "Host: ${nixosEnabledResult.host}" >> $out/enabled.txt
-    ${
-      if nixosEnabledResult.enable && nixosEnabledResult.port == 8080 && nixosEnabledResult.backend == "sqlite"
-      then "echo '✓ Module evaluates correctly with service enabled'"
-      else "echo '✗ Service configuration mismatch' && exit 1"
-    }
+      # Test 2: Service enabled with custom config
+      echo "Service enabled: ${lib.boolToString nixosEnabledResult.enable}" > $out/enabled.txt
+      echo "Port: ${toString nixosEnabledResult.port}" >> $out/enabled.txt
+      echo "Backend: ${nixosEnabledResult.backend}" >> $out/enabled.txt
+      echo "Host: ${nixosEnabledResult.host}" >> $out/enabled.txt
+      ${
+        if nixosEnabledResult.enable && nixosEnabledResult.port == 8080 && nixosEnabledResult.backend == "sqlite"
+        then "echo '✓ Module evaluates correctly with service enabled'"
+        else "echo '✗ Service configuration mismatch' && exit 1"
+      }
 
-    echo "All NixOS module evaluation tests passed" > $out/result
-  '';
+      echo "All NixOS module evaluation tests passed" > $out/result
+    '';
 
-  # Fast module evaluation test for Home Manager module
-  eval-hm = pkgs.runCommand "eval-hm" {} ''
-    mkdir -p $out
+    # Fast module evaluation test for Home Manager module
+    hm = pkgs.runCommand "eval-hm" {} ''
+      mkdir -p $out
 
-    echo "Home Manager module evaluation test"
+      echo "Home Manager module evaluation test"
 
-    # Test 1: Service disabled (default)
-    echo "Service disabled: ${lib.boolToString hmDisabledResult}" > $out/disabled.txt
-    ${
-      if !hmDisabledResult
-      then "echo '✓ Module evaluates correctly with service disabled'"
-      else "echo '✗ Service should be disabled by default' && exit 1"
-    }
+      # Test 1: Service disabled (default)
+      echo "Service disabled: ${lib.boolToString hmDisabledResult}" > $out/disabled.txt
+      ${
+        if !hmDisabledResult
+        then "echo '✓ Module evaluates correctly with service disabled'"
+        else "echo '✗ Service should be disabled by default' && exit 1"
+      }
 
-    # Test 2: Service enabled with custom config
-    echo "Service enabled: ${lib.boolToString hmEnabledResult.enable}" > $out/enabled.txt
-    echo "Port: ${toString hmEnabledResult.port}" >> $out/enabled.txt
-    echo "Backend: ${hmEnabledResult.backend}" >> $out/enabled.txt
-    ${
-      if hmEnabledResult.enable && hmEnabledResult.port == 9000 && hmEnabledResult.backend == "sqlite"
-      then "echo '✓ Module evaluates correctly with service enabled'"
-      else "echo '✗ Service configuration mismatch' && exit 1"
-    }
+      # Test 2: Service enabled with custom config
+      echo "Service enabled: ${lib.boolToString hmEnabledResult.enable}" > $out/enabled.txt
+      echo "Port: ${toString hmEnabledResult.port}" >> $out/enabled.txt
+      echo "Backend: ${hmEnabledResult.backend}" >> $out/enabled.txt
+      ${
+        if hmEnabledResult.enable && hmEnabledResult.port == 9000 && hmEnabledResult.backend == "sqlite"
+        then "echo '✓ Module evaluates correctly with service enabled'"
+        else "echo '✗ Service configuration mismatch' && exit 1"
+      }
 
-    echo "All Home Manager module evaluation tests passed" > $out/result
-  '';
-
-  # Full NixOS VM integration test
-  # Boots a VM, starts the service, and verifies it responds
-  integration-nixos = pkgs.testers.nixosTest {
-    name = "eidetica-nixos-service";
-
-    nodes.machine = _: {
-      imports = [nixosModule];
-
-      services.eidetica = {
-        enable = true;
-        package = eidetica-bin;
-        host = "0.0.0.0";
-        backend = "sqlite";
-      };
-
-      # Ensure networking is available
-      networking.firewall.allowedTCPPorts = [3000];
-    };
-
-    testScript = ''
-      machine.start()
-      machine.wait_for_unit("eidetica.service")
-      machine.wait_for_open_port(3000)
-
-      # Verify the service responds (follow redirects since / redirects to /login)
-      result = machine.succeed("curl -fL http://localhost:3000/")
-      machine.log(f"HTTP response: {result}")
-
-      # Verify service is running as correct user
-      machine.succeed("pgrep -u eidetica eidetica")
-
-      # Verify data directory exists
-      machine.succeed("test -d /var/lib/eidetica")
-
-      machine.log("NixOS service integration test passed!")
+      echo "All Home Manager module evaluation tests passed" > $out/result
     '';
   };
 
-  # OCI container integration test
-  # Loads the container image and verifies it starts and responds
-  integration-container = pkgs.testers.nixosTest {
-    name = "eidetica-oci-container";
+  integration = {
+    # Full NixOS VM integration test
+    # Boots a VM, starts the service, and verifies it responds
+    nixos = pkgs.testers.nixosTest {
+      name = "eidetica-nixos-service";
 
-    nodes.machine = _: {
-      virtualisation.podman.enable = true;
+      nodes.machine = _: {
+        imports = [nixosModule];
+
+        services.eidetica = {
+          enable = true;
+          package = eidetica-bin;
+          host = "0.0.0.0";
+          backend = "sqlite";
+        };
+
+        # Ensure networking is available
+        networking.firewall.allowedTCPPorts = [3000];
+      };
+
+      testScript = ''
+        machine.start()
+        machine.wait_for_unit("eidetica.service")
+        machine.wait_for_open_port(3000)
+
+        # Verify the service responds (follow redirects since / redirects to /login)
+        result = machine.succeed("curl -fL http://localhost:3000/")
+        machine.log(f"HTTP response: {result}")
+
+        # Verify service is running as correct user
+        machine.succeed("pgrep -u eidetica eidetica")
+
+        # Verify data directory exists
+        machine.succeed("test -d /var/lib/eidetica")
+
+        machine.log("NixOS service integration test passed!")
+      '';
     };
 
-    testScript = ''
-      machine.start()
-      machine.wait_for_unit("multi-user.target")
+    # OCI container integration test
+    # Loads the container image and verifies it starts and responds
+    container = pkgs.testers.nixosTest {
+      name = "eidetica-oci-container";
 
-      # Load the image (this triggers podman socket activation)
-      machine.succeed("podman load < ${eidetica-image}")
+      nodes.machine = _: {
+        virtualisation.podman.enable = true;
+      };
 
-      # Create data directory with correct ownership for container user (1000:1000)
-      # Use /var/lib instead of /tmp to avoid tmpfs issues with SQLite WAL mode
-      machine.succeed("mkdir -p /var/lib/eidetica-data")
-      machine.succeed("chown 1000:1000 /var/lib/eidetica-data")
-      machine.succeed(
-        "podman run -d --name eidetica-test -p 3000:3000 -v /var/lib/eidetica-data:/data eidetica:dev"
-      )
+      testScript = ''
+        machine.start()
+        machine.wait_for_unit("multi-user.target")
 
-      # Wait for container to start
-      import time
-      time.sleep(3)
+        # Load the image (this triggers podman socket activation)
+        machine.succeed("podman load < ${eidetica-image}")
 
-      # Check container is running
-      machine.succeed("podman ps | grep eidetica-test")
+        # Create data directory with correct ownership for container user (1000:1000)
+        # Use /var/lib instead of /tmp to avoid tmpfs issues with SQLite WAL mode
+        machine.succeed("mkdir -p /var/lib/eidetica-data")
+        machine.succeed("chown 1000:1000 /var/lib/eidetica-data")
+        machine.succeed(
+          "podman run -d --name eidetica-test -p 3000:3000 -v /var/lib/eidetica-data:/data eidetica:dev"
+        )
 
-      # Verify the service responds (follow redirects since / redirects to /login)
-      machine.wait_until_succeeds("curl -fL http://localhost:3000/", timeout=30)
+        # Wait for container to start
+        import time
+        time.sleep(3)
 
-      # Check container logs
-      logs = machine.succeed("podman logs eidetica-test")
-      machine.log(f"Container logs: {logs}")
+        # Check container is running
+        machine.succeed("podman ps | grep eidetica-test")
 
-      # Stop and cleanup
-      machine.succeed("podman stop eidetica-test")
-      machine.succeed("podman rm eidetica-test")
+        # Verify the service responds (follow redirects since / redirects to /login)
+        machine.wait_until_succeeds("curl -fL http://localhost:3000/", timeout=30)
 
-      machine.log("OCI container integration test passed!")
-    '';
+        # Check container logs
+        logs = machine.succeed("podman logs eidetica-test")
+        machine.log(f"Container logs: {logs}")
+
+        # Stop and cleanup
+        machine.succeed("podman stop eidetica-test")
+        machine.succeed("podman rm eidetica-test")
+
+        machine.log("OCI container integration test passed!")
+      '';
+    };
   };
 }
