@@ -47,6 +47,7 @@ if [[ -w /etc/nix/nix.conf ]] || [[ -w /etc/nix ]]; then
   cat >/etc/nix/nix.conf <<EOF
 experimental-features = nix-command flakes
 sandbox = false
+accept-flake-config = true
 build-dir = $BUILD_DIR
 substituters = $SUBSTITUTERS
 trusted-public-keys = $TRUSTED_KEYS
@@ -56,6 +57,7 @@ else
   cat >~/.config/nix/nix.conf <<EOF
 experimental-features = nix-command flakes
 sandbox = false
+accept-flake-config = true
 build-dir = $BUILD_DIR
 substituters = $SUBSTITUTERS
 trusted-public-keys = $TRUSTED_KEYS
