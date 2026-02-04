@@ -134,7 +134,11 @@
 
           # Bench package - nix build .#bench runs hermetic benchmarks
           # (nix run .#bench uses the interactive runner from apps)
-          bench = standalonePkgs.bench.check;
+          bench =
+            standalonePkgs.bench.check
+            // {
+              inherit (standalonePkgs.bench) artifacts;
+            };
 
           # Coverage group - nix build .#coverage.default (sqlite), .#coverage.sqlite, .#coverage.all
           coverage =

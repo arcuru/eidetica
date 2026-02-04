@@ -11,14 +11,13 @@
   # Args for interactive runners (progress bar, only show failures)
   nextestRunnerArgs = "--no-fail-fast --show-progress=bar --status-level fail";
 
-  # Build test artifacts (cached in Nix store)
-  # Creates a nextest archive containing test binaries + metadata
-  # This archive can be used to run tests without recompilation
-  # Reuses testCheckArtifacts to avoid recompiling test binaries
-  test-artifacts = craneLib.mkCargoDerivation (debugArgs
+  # Nextest archive for interactive runners (internal)
+  # Packages pre-built test binaries into a portable archive format
+  # Used by test-runner-* to enable --workspace-remap for local source
+  test-archive = craneLib.mkCargoDerivation (debugArgs
     // {
       cargoArtifacts = testCheckArtifacts;
-      pname = "test-artifacts";
+      pname = "test-archive";
       nativeBuildInputs = baseArgs.nativeBuildInputs ++ [pkgs.cargo-nextest];
       buildPhaseCargoCommand = ''
         cargo nextest archive --archive-file archive.tar.zst --workspace --all-features
@@ -58,7 +57,7 @@
           NEXTEST_WORKSPACE="${baseArgs.src}"
         fi
         cargo nextest run \
-          --archive-file ${test-artifacts}/archive.tar.zst \
+          --archive-file ${test-archive}/archive.tar.zst \
           --workspace-remap "$NEXTEST_WORKSPACE" \
           ${nextestRunnerArgs} \
           "$@"
@@ -182,8 +181,8 @@
       cargoNextestExtraArgs = "--workspace --all-features ${nextestCheckArgs}";
     });
 in {
-  # Build artifacts for caching
-  artifacts = test-artifacts;
+  # Common build artifacts (compiled test binaries, shared by checks and runners)
+  artifacts = testCheckArtifacts;
 
   # CI check derivations (for nix build .#test.<backend>)
   checks =
