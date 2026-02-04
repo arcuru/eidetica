@@ -69,7 +69,7 @@ jobs:
 
       - name: Build and push artifacts
         run: |
-          nix run github:Mic92/nix-fast-build --skip-cached --cachix-cache eidetica --no-nom --no-link \
+          nix run github:Mic92/nix-fast-build -- --skip-cached --cachix-cache eidetica --no-nom --no-link \
             -f '.#eidetica' \
             -f '.#eidetica.lib' \
             -f '.#eidetica.image'
