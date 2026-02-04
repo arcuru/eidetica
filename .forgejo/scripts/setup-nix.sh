@@ -29,8 +29,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Configure Nix substituters
-mkdir -p ~/.config/nix
+# Configure Nix
+BUILD_DIR=${NIX_BUILD_DIR:-$HOME/.cache/nix/build}
+mkdir -p "$BUILD_DIR"
+chmod 700 "$BUILD_DIR"
 SUBSTITUTERS="https://cache.nixos.org?priority=40 https://eidetica.cachix.org?priority=50"
 TRUSTED_KEYS="cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= eidetica.cachix.org-1:EDr+F/9jkD8aeThjJ4W3+4Yj3MH9fPx6slVLxF1HNSs= eidetica:hm/EK+V7LITUUdJi9AxDNic5j6cB1EhSQy0R+z2uoPU="
 
@@ -38,12 +40,27 @@ if [[ -n ${ATTIC_SERVER_URL:-} ]]; then
   SUBSTITUTERS="$ATTIC_SERVER_URL/eidetica?priority=10 $SUBSTITUTERS"
 fi
 
-cat >~/.config/nix/nix.conf <<EOF
+# Write to system nix.conf (works in container where we're root)
+# Falls back to user config if not root
+if [[ -w /etc/nix/nix.conf ]] || [[ -w /etc/nix ]]; then
+  mkdir -p /etc/nix
+  cat >/etc/nix/nix.conf <<EOF
 experimental-features = nix-command flakes
-build-dir = /tmp
+sandbox = false
+build-dir = $BUILD_DIR
 substituters = $SUBSTITUTERS
 trusted-public-keys = $TRUSTED_KEYS
 EOF
+else
+  mkdir -p ~/.config/nix
+  cat >~/.config/nix/nix.conf <<EOF
+experimental-features = nix-command flakes
+sandbox = false
+build-dir = $BUILD_DIR
+substituters = $SUBSTITUTERS
+trusted-public-keys = $TRUSTED_KEYS
+EOF
+fi
 
 # Install tools
 if [[ ${#tools[@]} -gt 0 ]]; then
