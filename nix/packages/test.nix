@@ -14,8 +14,10 @@
   # Build test artifacts (cached in Nix store)
   # Creates a nextest archive containing test binaries + metadata
   # This archive can be used to run tests without recompilation
+  # Reuses testCheckArtifacts to avoid recompiling test binaries
   test-artifacts = craneLib.mkCargoDerivation (debugArgs
     // {
+      cargoArtifacts = testCheckArtifacts;
       pname = "test-artifacts";
       nativeBuildInputs = baseArgs.nativeBuildInputs ++ [pkgs.cargo-nextest];
       buildPhaseCargoCommand = ''
