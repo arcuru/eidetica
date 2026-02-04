@@ -1303,7 +1303,6 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "signal-hook",
  "tokio",
  "tower-cookies",
  "tracing",

@@ -170,7 +170,7 @@ async fn create_backend(
     }
 }
 use serde::Deserialize;
-use signal_hook::flag as signal_flag;
+use tokio::signal::unix::{SignalKind, signal};
 use tower_cookies::{Cookie, CookieManagerLayer, Cookies};
 use tracing_subscriber::EnvFilter;
 
@@ -366,12 +366,6 @@ async fn run_server(args: ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
         .layer(CookieManagerLayer::new())
         .with_state(app_state.clone());
 
-    // Set up graceful shutdown signal handling
-    let term_signal = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    for signal in signal_hook::consts::TERM_SIGNALS {
-        let _ = signal_flag::register(*signal, Arc::clone(&term_signal));
-    }
-
     // Bind server
     let addr = format!("{}:{}", args.host, args.port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
@@ -400,33 +394,39 @@ async fn run_server(args: ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
     println!();
     println!("Press Ctrl+C to shutdown");
 
-    // Clone values for shutdown handler
-    let instance_for_shutdown = app_state.instance.clone();
-    let term_signal_for_shutdown = term_signal.clone();
-    // If the data_dir is not set use the CWD
-    let data_dir_for_shutdown = args.data_dir.clone().unwrap_or_else(|| PathBuf::from("."));
-
     // Start server with graceful shutdown
-    // Convert app to service with ConnectInfo support
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(async move {
-        // Wait for shutdown signal
-        while !term_signal_for_shutdown.load(std::sync::atomic::Ordering::Relaxed) {
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        let mut sigterm =
+            signal(SignalKind::terminate()).expect("failed to set up SIGTERM handler");
+        let mut sigint =
+            signal(SignalKind::interrupt()).expect("failed to set up SIGINT handler");
+
+        tokio::select! {
+            _ = sigterm.recv() => tracing::info!("Received SIGTERM, initiating graceful shutdown..."),
+            _ = sigint.recv() => tracing::info!("Received SIGINT, initiating graceful shutdown..."),
         }
 
-        tracing::info!("Shutdown signal received...");
+        let data_dir = args.data_dir.unwrap_or_else(|| PathBuf::from("."));
+
+        // Flush pending sync operations with timeout
+        let flush_timeout = Duration::from_secs(10);
+        if let Err(e) = tokio::time::timeout(flush_timeout, app_state.instance.flush_sync()).await {
+            tracing::warn!("Sync flush timed out: {e}");
+        }
 
         // Save database on shutdown (only needed for InMemory backend)
-        if let Some(in_memory_backend) = instance_for_shutdown
+        // TODO: saving InMemory should only be done if configured
+        if let Some(in_memory_backend) = app_state
+            .instance
             .backend()
             .as_any()
             .downcast_ref::<InMemory>()
         {
-            let json_path = data_dir_for_shutdown.join("eidetica.json");
+            let json_path = data_dir.join("eidetica.json");
             match in_memory_backend.save_to_file(&json_path).await {
                 Ok(_) => {
                     tracing::info!("Database saved to {}", json_path.display());

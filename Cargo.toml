@@ -31,7 +31,6 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 uuid = { version = "1", features = ["v4"] }
 yrs = "0.25"
-signal-hook = "0.3"
 tempfile = "3"
 criterion = "0.8"
 ctor = "0.6"
@@ -47,6 +46,7 @@ tokio = { version = "1", features = [
     "sync",
     "time",
     "io-util",
+    "signal",
 ] }
 axum = { version = "0.8", default-features = false, features = [
     "http1",
