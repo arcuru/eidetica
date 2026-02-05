@@ -86,7 +86,7 @@ pub struct UserKey {
 }
 ```
 
-**Storage Location**: User database → `keys` subtree → Table<UserKey>
+**Storage Location**: User database → `keys` subtree → `Table<UserKey>`
 
 **Table Key**: The `key_id` field (not stored in struct, used as table key)
 

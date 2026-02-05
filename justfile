@@ -340,7 +340,8 @@ doc action='api':
             ;;
         links)
             just doc book
-            lychee --offline --exclude-path 'rustdoc' docs/book
+            # Exclude 404.html: mdbook generates <base href="/"> which lychee can't resolve offline
+            lychee --offline --exclude-path 'rustdoc' --exclude-path '404.html' docs/book
             ;;
         links-online)
             just doc book
