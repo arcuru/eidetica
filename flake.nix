@@ -143,6 +143,7 @@
             // {
               default = coveragePkgs.packages.sqlite;
               all = mkAll "coverage" coveragePkgs.packages;
+              inherit (coveragePkgs) artifacts;
             };
 
           # Sanitizer group - nix build .#sanitize.default (asan+lsan), .#sanitize.asan, .#sanitize.all

@@ -6,52 +6,51 @@
   pkgs,
   lib,
 }: let
-  # Dummy artifacts for coverage builds (which rebuild everything anyway)
-  dummyArtifacts = craneLibNightly.mkDummySrc {inherit (baseArgsNightly) src;};
+  # Common nativeBuildInputs for coverage (tarpaulin + llvm-tools)
+  coverageNativeBuildInputs =
+    baseArgsNightly.nativeBuildInputs
+    ++ [
+      pkgs.cargo-tarpaulin
+      (fenixNightly.withComponents ["llvm-tools-preview"])
+    ];
 
-  coverage-inmemory = craneLibNightly.cargoTarpaulin (baseArgsNightly
+  # Build instrumented test binaries once (shared by all backends)
+  coverageArtifacts = craneLibNightly.mkCargoDerivation (baseArgsNightly
     // {
-      cargoArtifacts = dummyArtifacts;
-      cargoTarpaulinExtraArgs = "--skip-clean --output-dir $out --out lcov --all-features --engine llvm";
-      nativeBuildInputs =
-        baseArgsNightly.nativeBuildInputs
-        ++ [
-          (fenixNightly.withComponents [
-            "llvm-tools-preview"
-          ])
-        ];
+      pname = "coverage-artifacts";
+      cargoArtifacts = null;
+      buildPhaseCargoCommand = "cargo tarpaulin --no-run --workspace --all-features --engine llvm";
+      nativeBuildInputs = coverageNativeBuildInputs;
+      doInstallCargoArtifacts = true;
     });
 
-  coverage-sqlite = craneLibNightly.cargoTarpaulin (baseArgsNightly
+  # Shared args that reuse instrumented artifacts
+  coverageArgs =
+    baseArgsNightly
+    // {
+      cargoArtifacts = coverageArtifacts;
+      cargoTarpaulinExtraArgs = "--skip-clean --output-dir $out --out lcov --all-features --engine llvm";
+      nativeBuildInputs = coverageNativeBuildInputs;
+    };
+
+  coverage-inmemory = craneLibNightly.cargoTarpaulin (coverageArgs
+    // {
+      pname = "coverage-inmemory";
+      TEST_BACKEND = "inmemory";
+    });
+
+  coverage-sqlite = craneLibNightly.cargoTarpaulin (coverageArgs
     // {
       pname = "coverage-sqlite";
-      cargoArtifacts = dummyArtifacts;
-      cargoTarpaulinExtraArgs = "--skip-clean --output-dir $out --out lcov --all-features --engine llvm";
       TEST_BACKEND = "sqlite";
-      nativeBuildInputs =
-        baseArgsNightly.nativeBuildInputs
-        ++ [
-          (fenixNightly.withComponents [
-            "llvm-tools-preview"
-          ])
-        ];
     });
 
   # PostgreSQL coverage (Linux only)
-  coverage-postgres = craneLibNightly.cargoTarpaulin (baseArgsNightly
+  coverage-postgres = craneLibNightly.cargoTarpaulin (coverageArgs
     // {
       pname = "coverage-postgres";
       TEST_BACKEND = "postgres";
-      cargoArtifacts = dummyArtifacts;
-      cargoTarpaulinExtraArgs = "--skip-clean --output-dir $out --out lcov --all-features --engine llvm";
-      nativeBuildInputs =
-        baseArgsNightly.nativeBuildInputs
-        ++ [
-          pkgs.postgresql
-          (fenixNightly.withComponents [
-            "llvm-tools-preview"
-          ])
-        ];
+      nativeBuildInputs = coverageNativeBuildInputs ++ [pkgs.postgresql];
       preBuild = ''
         export PGDATA="$TMPDIR/pgdata"
         export PGHOST="$TMPDIR"
@@ -68,6 +67,9 @@
       '';
     });
 in {
+  # Shared instrumented artifacts
+  artifacts = coverageArtifacts;
+
   packages =
     {
       inmemory = coverage-inmemory;
