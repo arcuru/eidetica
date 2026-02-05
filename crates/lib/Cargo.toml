@@ -43,6 +43,16 @@ aes-gcm = { workspace = true }
 zeroize = { workspace = true }
 handle_trait = { workspace = true }
 sqlx = { workspace = true, optional = true }
+# Transitive dep version floors (see workspace Cargo.toml for rationale)
+time = { workspace = true }
+postcard = { workspace = true }
+postcard-derive = { workspace = true }
+z32 = { workspace = true }
+instability = { workspace = true }
+
+# Ignore transitive deps that are only here to set version floors
+[package.metadata.cargo-udeps.ignore]
+normal = ["time", "postcard", "postcard-derive", "z32", "instability"]
 
 [dev-dependencies]
 tempfile = { workspace = true }

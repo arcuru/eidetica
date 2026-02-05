@@ -17,7 +17,7 @@ name = "eidetica"
 
 [workspace.dependencies]
 # Shared dependencies
-chrono = "0.4"
+chrono = "0.4.35"  # from_timestamp_millis
 base64ct = { version = "1.8", features = ["std"] }
 ed25519-dalek = { version = "2", default-features = false, features = ["rand_core", "serde"] }
 rand = "0.8"
@@ -67,6 +67,12 @@ url = "2.5"
 # Example-only dependencies
 ratatui = "0.30"
 crossterm = "0.29"
+# Transitive dep version floors (upstream deps specify loose requirements)
+time = "0.3.37"  # Rust 1.80+ compat (0.3.35), Month::length (0.3.37)
+postcard = "1.1.2"  # Uses postcard-derive 0.2.x
+postcard-derive = "0.2.1"  # Uses syn 2.0 (0.2.0 uses syn 1.0)
+z32 = "1.1.1"  # StdError impl for Z32Error
+instability = "0.3.4"  # Impl block support
 
 # Profile configuration for optimizing builds
 [profile.dev]
