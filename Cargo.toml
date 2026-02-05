@@ -65,7 +65,6 @@ sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "postgres", "an
 clap = { version = "4.5", features = ["derive", "env"] }
 url = "2.5"
 # Example-only dependencies
-anyhow = "1.0"
 ratatui = "0.30"
 crossterm = "0.29"
 

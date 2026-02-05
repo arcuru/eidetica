@@ -1405,7 +1405,6 @@ dependencies = [
 name = "example-chat"
 version = "0.2.0"
 dependencies = [
- "anyhow",
  "chrono",
  "clap",
  "crossterm",
@@ -1423,7 +1422,6 @@ dependencies = [
 name = "example-todo"
 version = "0.2.0"
 dependencies = [
- "anyhow",
  "chrono",
  "clap",
  "eidetica",
