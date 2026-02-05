@@ -6,7 +6,42 @@
   baseArgsNightly,
   debugArgs,
   pkgs,
+  lib,
 }: let
+  # Source filters for non-Rust linters
+  # These ensure each linter sees only the files it needs to check,
+  # unlike baseArgs.src which is filtered for Rust/Cargo files only.
+  #
+  # We use lib.cleanSource as the base to exclude .git, editor files, etc.
+  # Then layer our file-type filter on top.
+  # Note: Empty directories may be included but this doesn't affect linter behavior.
+  # Nix files filter for deadnix/statix
+  nixFilter = path: type:
+    (type == "directory") || (builtins.match ".*\\.nix$" path != null);
+  nixSrc = lib.cleanSourceWith {
+    src = lib.cleanSource ../..;
+    filter = nixFilter;
+  };
+
+  # Shell script filter for shellcheck
+  shellFilter = path: type:
+    (type == "directory") || (builtins.match ".*\\.sh$" path != null);
+  shellSrc = lib.cleanSourceWith {
+    src = lib.cleanSource ../..;
+    filter = shellFilter;
+  };
+
+  # YAML filter for yamllint
+  yamlFilter = path: type:
+    (type == "directory") || (builtins.match ".*\\.ya?ml$" path != null);
+  yamlSrc = lib.cleanSourceWith {
+    src = lib.cleanSource ../..;
+    filter = yamlFilter;
+  };
+
+  # Typos uses the full source
+  typosSrc = lib.cleanSource ../..;
+
   # Tools that compile code - benefit from cached deps
   lint-clippy = craneLib.cargoClippy (debugArgs
     // {
@@ -72,7 +107,7 @@
   lint-statix =
     pkgs.runCommand "lint-statix" {
       nativeBuildInputs = [pkgs.statix];
-      inherit (baseArgs) src;
+      src = nixSrc;
     } ''
       cd $src
       statix check .
@@ -83,7 +118,7 @@
   lint-deadnix =
     pkgs.runCommand "lint-deadnix" {
       nativeBuildInputs = [pkgs.deadnix];
-      inherit (baseArgs) src;
+      src = nixSrc;
     } ''
       cd $src
       deadnix --fail .
@@ -94,7 +129,7 @@
   lint-shellcheck =
     pkgs.runCommand "lint-shellcheck" {
       nativeBuildInputs = [pkgs.shellcheck pkgs.findutils];
-      inherit (baseArgs) src;
+      src = shellSrc;
     } ''
       cd $src
       find . -name "*.sh" -type f -exec shellcheck {} +
@@ -105,7 +140,7 @@
   lint-yamllint =
     pkgs.runCommand "lint-yamllint" {
       nativeBuildInputs = [pkgs.yamllint pkgs.findutils];
-      inherit (baseArgs) src;
+      src = yamlSrc;
     } ''
       cd $src
       find . \( -name "*.yml" -o -name "*.yaml" \) -type f -exec yamllint -c .config/yamllint.yaml {} +
@@ -116,7 +151,7 @@
   lint-typos =
     pkgs.runCommand "lint-typos" {
       nativeBuildInputs = [pkgs.typos];
-      inherit (baseArgs) src;
+      src = typosSrc;
     } ''
       cd $src
       typos --config .config/typos.toml

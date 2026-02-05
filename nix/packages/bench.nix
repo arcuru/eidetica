@@ -1,9 +1,7 @@
 # Benchmark packages
 {
   craneLib,
-  releaseArgs,
   benchArgs,
-  pkgs,
 }: let
   # Build bench artifacts (cached in Nix store)
   # Uses cargo bench --no-run to compile without executing
