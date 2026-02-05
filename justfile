@@ -203,11 +203,11 @@ lint +tools='clippy audit typos statix deadnix shellcheck yamllint':
                 ;;
             udeps)
                 echo "=== Running udeps ==="
-                cargo udeps --workspace --all-targets
+                cargo-nightly udeps --workspace --all-targets --all-features
                 ;;
             min-versions)
                 echo "=== Checking minimum dependency versions ==="
-                cargo update -Z minimal-versions
+                cargo-nightly update -Z minimal-versions
                 cargo build --workspace --all-targets --all-features --quiet
                 cargo nextest run --workspace --all-features --status-level fail
                 ;;
@@ -270,28 +270,27 @@ sanitize *targets:
         case "$target" in
             miri)
                 echo "=== Running Miri ==="
-                cargo miri test --workspace --all-features
+                cargo-nightly miri test --workspace --all-features
                 ;;
             careful)
                 echo "=== Running cargo-careful ==="
-                cargo careful test --workspace --all-features
+                cargo-nightly careful test --workspace --all-features
                 ;;
             asan)
                 echo "=== Running AddressSanitizer ==="
-                RUSTFLAGS="-Zsanitizer=address" cargo test --workspace --all-features --lib --bins --tests --examples --target x86_64-unknown-linux-gnu
+                RUSTFLAGS="-Zsanitizer=address" cargo-nightly test --workspace --all-features --lib --bins --tests --examples --target x86_64-unknown-linux-gnu
                 ;;
             tsan)
                 echo "=== Running ThreadSanitizer ==="
                 CARGO_TARGET_DIR=target/tsan \
                 RUSTFLAGS="-Zsanitizer=thread -Zsanitizer-memory-track-origins=1" \
                 TSAN_OPTIONS="suppressions=$(pwd)/.config/tsan" \
-                RUSTC_BOOTSTRAP=1 \
-                cargo test -Zbuild-std --workspace --all-features --lib --bins --tests --examples --target x86_64-unknown-linux-gnu
+                cargo-nightly test -Zbuild-std --workspace --all-features --lib --bins --tests --examples --target x86_64-unknown-linux-gnu
                 ;;
 
             lsan)
                 echo "=== Running LeakSanitizer ==="
-                RUSTFLAGS="-Zsanitizer=leak" cargo test --workspace --all-features --lib --bins --tests --examples --target x86_64-unknown-linux-gnu
+                RUSTFLAGS="-Zsanitizer=leak" cargo-nightly test --workspace --all-features --lib --bins --tests --examples --target x86_64-unknown-linux-gnu
                 ;;
             all)
                 just sanitize careful asan tsan lsan
