@@ -70,9 +70,9 @@ jobs:
       - name: Build and push artifacts
         run: |
           nix run github:Mic92/nix-fast-build -- --skip-cached --cachix-cache eidetica --no-nom --no-link \
-            -f '.#eidetica' \
-            -f '.#eidetica.lib' \
-            -f '.#eidetica.image'
+            -f '.#legacyPackages.${{ matrix.system }}.eidetica' \
+            -f '.#legacyPackages.${{ matrix.system }}.eidetica.lib' \
+            -f '.#legacyPackages.${{ matrix.system }}.eidetica.image'
         env:
           CACHIX_AUTH_TOKEN: "${{ secrets.CACHIX_AUTH_TOKEN }}"
 
