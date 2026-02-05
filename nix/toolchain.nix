@@ -38,7 +38,7 @@
   # Release deps (workspace-wide, used by lib, bin, and min-versions)
   cargoArtifactsRelease = craneLib.buildDepsOnly (baseArgs
     // {
-      pname = "release-workspace";
+      pname = "release";
       CARGO_PROFILE = "release";
       cargoExtraArgs = "--workspace --all-features";
     });
