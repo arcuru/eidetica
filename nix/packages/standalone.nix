@@ -15,32 +15,12 @@
       doInstallCargoArtifacts = true;
     });
 
-  # Interactive benchmark runner (for nix run .#bench)
-  # Runs benchmarks from cached artifacts in the current directory
-  bench-runner = pkgs.writeShellApplication {
-    name = "bench-runner";
-    runtimeInputs = [];
-    text = ''
-      # Determine workspace directory for benchmarks
-      if [[ -f "./Cargo.toml" ]]; then
-        echo "Running benchmarks in $(pwd)..."
-        # Copy cached artifacts to local target directory for cargo to find
-        mkdir -p target
-        if [[ -d "${bench-artifacts}/target" ]]; then
-          cp -rT "${bench-artifacts}/target" target/ 2>/dev/null || true
-        fi
-        exec cargo bench --workspace --all-features "$@"
-      else
-        echo "Error: Must be run from a project directory with Cargo.toml" >&2
-        exit 1
-      fi
-    '';
-  };
-
-  # CI check derivation for benchmarks (hermetic)
-  bench-check = craneLib.mkCargoDerivation (benchArgs
+  # Benchmark derivation (hermetic)
+  # Note: Unlike tests, there's no interactive runner because cargo bench
+  # doesn't support nextest-style archive/remap. Use `cargo bench` locally.
+  bench = craneLib.mkCargoDerivation (benchArgs
     // {
-      pname = "bench-check";
+      pname = "bench";
       cargoArtifacts = bench-artifacts;
       buildPhaseCargoCommand = "cargo bench --workspace --all-features";
       doCheck = false;
@@ -73,12 +53,12 @@
       '';
     });
 in {
-  # Nested bench structure
-  bench = {
-    artifacts = bench-artifacts;
-    runner = bench-runner;
-    check = bench-check;
-  };
+  # Bench: .#bench runs benchmarks, .#bench.artifacts for intermediate compilation artifacts
+  bench =
+    bench
+    // {
+      artifacts = bench-artifacts;
+    };
 
   # Minimum version compatibility check (stays flat)
   inherit min-versions;

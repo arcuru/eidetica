@@ -134,12 +134,8 @@
             };
 
           # Bench package - nix build .#bench runs hermetic benchmarks
-          # (nix run .#bench uses the interactive runner from apps)
-          bench =
-            standalonePkgs.bench.check
-            // {
-              inherit (standalonePkgs.bench) artifacts;
-            };
+          # Use `cargo bench` for local development (no interactive runner available)
+          inherit (standalonePkgs) bench;
 
           # Coverage group - nix build .#coverage.default (sqlite), .#coverage.sqlite, .#coverage.all
           coverage =
@@ -259,9 +255,6 @@
           {
             default = mkApp "${mainPkgs.eidetica}" "Run the Eidetica binary";
             eidetica = mkApp "${mainPkgs.eidetica}" "Run the Eidetica database";
-
-            # Benchmark runner (uses cached bench-artifacts)
-            bench = mkApp "${standalonePkgs.bench.runner}/bin/bench-runner" "Run benchmarks";
 
             # Test runners - flat names (nested access via legacyPackages)
             # nix run .#test (default: sqlite), nix run .#test-inmemory, etc.
