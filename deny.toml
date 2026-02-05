@@ -5,8 +5,6 @@ ignore = [
     "RUSTSEC-2023-0089", # atomic-polyfill unmaintained (via iroh)
     "RUSTSEC-2024-0384", # instant unmaintained (via iroh)
     "RUSTSEC-2024-0436", # paste unmaintained (via iroh)
-
-    "RUSTSEC-2026-0007", # TODO: fix with a cargo update (integer overflow error from dep "bytes")
 ]
 
 [bans]
