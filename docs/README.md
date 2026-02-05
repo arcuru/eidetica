@@ -6,9 +6,9 @@ View the documentation online: https://arcuru.github.io/eidetica/
 
 ## Building and Testing
 
-- **Build docs**: `task book` or `mdbook build docs`
-- **Serve docs**: `task book:serve` or `mdbook serve docs --open`
-- **Test code examples**: `task book:test`
+- **Build docs**: `just doc book` or `mdbook build docs`
+- **Serve docs**: `just doc serve` or `mdbook serve docs --open`
+- **Test code examples**: `just doc test`
 
 ## Code Examples in Documentation
 
@@ -25,14 +25,14 @@ The documentation includes compilable examples using the actual Eidetica API. Th
 The documentation testing system works as follows:
 
 1. Examples use `extern crate eidetica;` to access the real library
-2. `task book:test` builds eidetica with all features enabled
+2. `just doc test` builds eidetica with all features enabled
 3. mdbook uses `-L target/debug/deps` to find compiled dependencies
 4. Build process ensures only one eidetica configuration exists
 
 ### Build Process
 
 ```bash
-task book:test
+just doc test
 ├── rm -f target/debug/deps/libeidetica-*.rlib target/debug/deps/libeidetica-*.rmeta
 ├── cargo build -p eidetica                    # Builds single eidetica configuration
 └── mdbook test docs -L target/debug/deps      # Tests examples against built library
@@ -49,7 +49,7 @@ This allows testing critical examples while showing complex scenarios for illust
 
 Documentation examples are validated in:
 
-- Local development via `task test`
+- Local development via `just test`
 - GitHub Actions CI for all pull requests
 - Nix flake checks
 - Documentation deployment
@@ -134,9 +134,9 @@ Document the current architecture, APIs, and behavior patterns without historica
 
 ### Testing Changes
 
-- Test all examples: `task book:test`
-- Test during development: `task test` (includes book tests)
-- Local preview: `task book:serve`
+- Test all examples: `just doc test`
+- Test during development: `just test` (includes book tests)
+- Local preview: `just doc serve`
 - CI validation: Examples tested automatically in pull requests
 
 ### Troubleshooting
@@ -145,7 +145,7 @@ If book tests fail:
 
 1. Check imports use valid module paths from the eidetica crate
 2. Verify examples have proper `extern crate` declarations
-3. Run `task book:test` separately to isolate issues
+3. Run `just doc test` separately to isolate issues
 4. Some features may require specific feature flags
 
 Tested examples use the real API directly, ensuring documentation stays accurate as the codebase evolves.

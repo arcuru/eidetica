@@ -5,7 +5,6 @@
 
 # Development tooling
 /.direnv
-/.task
 /.vscode
 /.idea
 
@@ -18,7 +17,7 @@
 !README.md
 *.nix
 flake.lock
-Taskfile.yml
+justfile
 .envrc
 docs/
 benches/

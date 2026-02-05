@@ -21,7 +21,6 @@ pkgs.mkShell {
   packages = with pkgs; [
     # CI/CD tools
     act # Run GitHub Actions locally
-    go-task # Task runner
     just # Task runner
     nix-fast-build # Fast parallel Nix builds
 

@@ -54,23 +54,23 @@ The Nix flake organizes packages into groups with a consistent pattern:
 
 Code coverage runs against all storage backends to ensure comprehensive test coverage:
 
-| Backend    | CI  | Taskfile                 | Nix                             |
+| Backend    | CI  | just                     | Nix                             |
 | ---------- | --- | ------------------------ | ------------------------------- |
-| SQLite     | ✓   | `task coverage`          | `nix build .#coverage.sqlite`   |
-| InMemory   | ✓   | `task coverage:inmemory` | `nix build .#coverage.inmemory` |
-| PostgreSQL | ✓   | `task coverage:postgres` | `nix build .#coverage.postgres` |
-| All        | —   | `task coverage:all`      | `nix build .#coverage.all`      |
+| SQLite     | ✓   | `just coverage`          | `nix build .#coverage.sqlite`   |
+| InMemory   | ✓   | `just coverage inmemory` | `nix build .#coverage.inmemory` |
+| PostgreSQL | ✓   | `just coverage postgres` | `nix build .#coverage.postgres` |
+| All        | —   | `just coverage all`      | `nix build .#coverage.all`      |
 
 ### Local Coverage Commands
 
 ```bash
-task coverage           # SQLite backend (default)
-task coverage:inmemory  # InMemory backend
-task coverage:postgres  # PostgreSQL (starts a container automatically)
-task coverage:all       # All backends, merged into coverage/lcov.info
+just coverage            # SQLite backend (default)
+just coverage inmemory   # InMemory backend
+just coverage postgres   # PostgreSQL (starts a container automatically)
+just coverage all        # All backends, merged into coverage/lcov.info
 ```
 
-The `coverage:all` task runs all three backends sequentially and merges the LCOV reports using `lcov`. Individual reports are saved as `coverage/lcov-{backend}.info`.
+The `coverage all` command runs all three backends sequentially and merges the LCOV reports using `lcov`. Individual reports are saved as `coverage/lcov-{backend}.info`.
 
 ### CI Coverage
 

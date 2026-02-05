@@ -10,33 +10,33 @@ The Nix flake provides pinned versions of all development tools: Rust toolchain,
 If you want to skip Nix, a standard Rust toolchain should be sufficient.
 The main project is structured as a Cargo workspace.
 
-## Task Runner
+## Command Runner
 
-[Taskfile](https://taskfile.dev/) provides convenient commands for common workflows.
-Tasks wrap cargo, nix, and other tools as needed.
+[just](https://github.com/casey/just) provides convenient commands for common workflows.
+Commands wrap cargo, nix, and other tools as needed.
 
 ```bash
-task --list   # See all available tasks
+just   # See all available commands
 ```
 
 ### Common Commands
 
-| Command         | Description                  |
-| --------------- | ---------------------------- |
-| `task build`    | Fast incremental build       |
-| `task test`     | Run tests with cargo nextest |
-| `task clippy`   | Strict linting               |
-| `task fmt`      | Multi-language formatting    |
-| `task ci:local` | Full local CI pipeline       |
-| `task ci:nix`   | Nix CI pipeline              |
+| Command       | Description                   |
+| ------------- | ----------------------------- |
+| `just build`  | Fast incremental build        |
+| `just test`   | Run tests with cargo nextest  |
+| `just lint`   | Linting (clippy, audit, etc.) |
+| `just fmt`    | Multi-language formatting     |
+| `just ci`     | Full local CI pipeline        |
+| `just ci nix` | Nix CI pipeline               |
 
 ### Testing
 
-| Command          | Description                            |
-| ---------------- | -------------------------------------- |
-| `task test`      | Unit and integration tests via nextest |
-| `task test:doc`  | Code examples in `///` doc comments    |
-| `task book:test` | Code examples in mdbook documentation  |
+| Command         | Description                            |
+| --------------- | -------------------------------------- |
+| `just test`     | Unit and integration tests via nextest |
+| `just test doc` | Code examples in `///` doc comments    |
+| `just doc test` | Code examples in mdbook documentation  |
 
 ## Nix Commands
 
@@ -61,11 +61,11 @@ Binary caching via [Cachix](https://eidetica.cachix.org) speeds up builds by pro
 
 1. Enter the dev shell: `nix develop` or use direnv
 2. Make changes
-3. Build: `task build`
-4. Test: `task test`
-5. Lint: `task clippy`
-6. Format: `task fmt`
-7. Run full CI locally before pushing: `task ci:local`
+3. Build: `just build`
+4. Test: `just test`
+5. Lint: `just lint`
+6. Format: `just fmt`
+7. Run full CI locally before pushing: `just ci`
 
 ## CI Integration
 

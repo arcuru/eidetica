@@ -15,7 +15,7 @@ The module structure in `tests/it/` mirrors `src/`. Each module has:
 ## Running Tests
 
 ```bash
-task test              # Run all tests with nextest
+just test              # Run all tests with nextest
 cargo test --test it   # Run integration tests
 cargo test auth::      # Run specific module tests
 ```
