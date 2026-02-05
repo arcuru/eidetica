@@ -1,24 +1,23 @@
 # Sanitizer packages (miri, asan, lsan)
-# - miri: uses debugArgs (benefits from cached deps for setup)
-# - asan/lsan: use dedicated deps caches with sanitizer flags
+# All sanitizers require nightly toolchain for -Z flags and miri component
 {
-  craneLib,
-  debugArgs,
+  craneLibNightly,
+  debugArgsNightly,
   asanArgs,
   lsanArgs,
-  fenixStable,
+  fenixNightly,
   pkgs,
   lib,
 }: let
   # Miri: undefined behavior detection via MIR interpretation
-  sanitize-miri = craneLib.mkCargoDerivation (debugArgs
+  sanitize-miri = craneLibNightly.mkCargoDerivation (debugArgsNightly
     // {
       pname = "sanitize-miri";
       buildPhaseCargoCommand = "cargo miri test --workspace --all-features";
       nativeBuildInputs =
-        debugArgs.nativeBuildInputs
+        debugArgsNightly.nativeBuildInputs
         ++ [
-          (fenixStable.withComponents [
+          (fenixNightly.withComponents [
             "miri"
             "rust-src"
           ])
@@ -34,7 +33,7 @@
 
   # AddressSanitizer: memory errors, use-after-free, buffer overflows (Linux only)
   # Uses asanArgs which includes pre-built deps with sanitizer flags
-  sanitize-asan = craneLib.mkCargoDerivation (asanArgs
+  sanitize-asan = craneLibNightly.mkCargoDerivation (asanArgs
     // {
       pname = "sanitize-asan";
       buildPhaseCargoCommand = "cargo test --workspace --all-features --lib --bins --tests --examples --target x86_64-unknown-linux-gnu";
@@ -49,7 +48,7 @@
 
   # LeakSanitizer: memory leak detection (Linux only)
   # Uses lsanArgs which includes pre-built deps with sanitizer flags
-  sanitize-lsan = craneLib.mkCargoDerivation (lsanArgs
+  sanitize-lsan = craneLibNightly.mkCargoDerivation (lsanArgs
     // {
       pname = "sanitize-lsan";
       buildPhaseCargoCommand = "cargo test --workspace --all-features --lib --bins --tests --examples --target x86_64-unknown-linux-gnu";

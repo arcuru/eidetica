@@ -4,15 +4,19 @@
   system,
   pkgs,
 }: let
-  # Rust toolchain configuration using fenix
-  # Using fenix instead of rust-overlay for better llvm-tools support (needed for coverage)
-  fenixStable = inputs.fenix.packages.${system}.complete;
-  rustSrc = fenixStable.rust-src;
-  toolChain = fenixStable.toolchain;
+  # Stable Rust toolchain for main builds (tests, linting, docs)
+  fenixStable = inputs.fenix.packages.${system}.stable;
+  toolChainStable = fenixStable.toolchain;
+  craneLibStable = (inputs.crane.mkLib pkgs).overrideToolchain toolChainStable;
 
-  # Crane library with custom Rust toolchain
-  # Crane provides efficient Rust builds with Nix
-  craneLib = (inputs.crane.mkLib pkgs).overrideToolchain toolChain;
+  # Nightly Rust toolchain for coverage (llvm-tools-preview) and sanitizers (miri, -Z flags)
+  fenixNightly = inputs.fenix.packages.${system}.complete;
+  toolChainNightly = fenixNightly.toolchain;
+  craneLibNightly = (inputs.crane.mkLib pkgs).overrideToolchain toolChainNightly;
+
+  # Default to stable for main builds
+  craneLib = craneLibStable;
+  rustSrc = fenixStable.rust-src;
 
   # Base arguments for cargo derivations
   # These are shared by all builds
@@ -76,9 +80,29 @@
       cargoExtraArgs = "--workspace --all-features";
     });
 
-  # Build cargo dependencies with AddressSanitizer (Linux only)
+  # Nightly base args for sanitizer builds (need -Z flags)
+  baseArgsNightly = {
+    src = craneLibNightly.cleanCargoSource ../.;
+    strictDeps = true;
+    nativeBuildInputs = with pkgs; [
+      pkg-config
+    ];
+    buildInputs = with pkgs; [
+      openssl
+    ];
+  };
+
+  # Debug deps for nightly builds (miri needs nightly debug artifacts)
+  cargoArtifactsDebugNightly = craneLibNightly.buildDepsOnly (baseArgsNightly
+    // {
+      pname = "debug-nightly";
+      CARGO_PROFILE = "dev";
+      cargoExtraArgs = "--workspace --all-features";
+    });
+
+  # Build cargo dependencies with AddressSanitizer (Linux only, nightly)
   # Uses dev profile to match test builds
-  cargoArtifactsAsan = craneLib.buildDepsOnly (baseArgs
+  cargoArtifactsAsan = craneLibNightly.buildDepsOnly (baseArgsNightly
     // {
       pname = "asan";
       CARGO_PROFILE = "dev";
@@ -86,9 +110,9 @@
       CARGO_BUILD_TARGET = "x86_64-unknown-linux-gnu";
     });
 
-  # Build cargo dependencies with LeakSanitizer (Linux only)
+  # Build cargo dependencies with LeakSanitizer (Linux only, nightly)
   # Uses dev profile to match test builds
-  cargoArtifactsLsan = craneLib.buildDepsOnly (baseArgs
+  cargoArtifactsLsan = craneLibNightly.buildDepsOnly (baseArgsNightly
     // {
       pname = "lsan";
       CARGO_PROFILE = "dev";
@@ -119,37 +143,50 @@
       CARGO_PROFILE = "dev";
     };
 
-  # Arguments for AddressSanitizer builds (Linux only)
+  # Arguments for AddressSanitizer builds (Linux only, nightly)
   asanArgs =
-    baseArgs
+    baseArgsNightly
     // {
       cargoArtifacts = cargoArtifactsAsan;
       RUSTFLAGS = "-Zsanitizer=address";
       CARGO_BUILD_TARGET = "x86_64-unknown-linux-gnu";
     };
 
-  # Arguments for LeakSanitizer builds (Linux only)
+  # Arguments for LeakSanitizer builds (Linux only, nightly)
   lsanArgs =
-    baseArgs
+    baseArgsNightly
     // {
       cargoArtifacts = cargoArtifactsLsan;
       RUSTFLAGS = "-Zsanitizer=leak";
       CARGO_BUILD_TARGET = "x86_64-unknown-linux-gnu";
     };
+
+  # Debug arguments for nightly builds (miri)
+  debugArgsNightly =
+    baseArgsNightly
+    // {
+      cargoArtifacts = cargoArtifactsDebugNightly;
+      CARGO_PROFILE = "dev";
+    };
 in {
   inherit
     fenixStable
+    fenixNightly
     rustSrc
     craneLib
+    craneLibNightly
     baseArgs
+    baseArgsNightly
     cargoArtifactsRelease
     cargoArtifactsBench
     cargoArtifactsDebug
+    cargoArtifactsDebugNightly
     cargoArtifactsAsan
     cargoArtifactsLsan
     releaseArgs
     benchArgs
     debugArgs
+    debugArgsNightly
     asanArgs
     lsanArgs
     ;

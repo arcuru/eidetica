@@ -1,54 +1,54 @@
-# Code coverage packages
+# Code coverage packages (requires nightly for llvm-tools-preview)
 {
-  craneLib,
-  baseArgs,
-  fenixStable,
+  craneLibNightly,
+  baseArgsNightly,
+  fenixNightly,
   pkgs,
   lib,
 }: let
   # Dummy artifacts for coverage builds (which rebuild everything anyway)
-  dummyArtifacts = craneLib.mkDummySrc {inherit (baseArgs) src;};
+  dummyArtifacts = craneLibNightly.mkDummySrc {inherit (baseArgsNightly) src;};
 
-  coverage-inmemory = craneLib.cargoTarpaulin (baseArgs
+  coverage-inmemory = craneLibNightly.cargoTarpaulin (baseArgsNightly
     // {
       cargoArtifacts = dummyArtifacts;
       cargoTarpaulinExtraArgs = "--skip-clean --output-dir $out --out lcov --all-features --engine llvm";
       nativeBuildInputs =
-        baseArgs.nativeBuildInputs
+        baseArgsNightly.nativeBuildInputs
         ++ [
-          (fenixStable.withComponents [
+          (fenixNightly.withComponents [
             "llvm-tools-preview"
           ])
         ];
     });
 
-  coverage-sqlite = craneLib.cargoTarpaulin (baseArgs
+  coverage-sqlite = craneLibNightly.cargoTarpaulin (baseArgsNightly
     // {
       pname = "coverage-sqlite";
       cargoArtifacts = dummyArtifacts;
       cargoTarpaulinExtraArgs = "--skip-clean --output-dir $out --out lcov --all-features --engine llvm";
       TEST_BACKEND = "sqlite";
       nativeBuildInputs =
-        baseArgs.nativeBuildInputs
+        baseArgsNightly.nativeBuildInputs
         ++ [
-          (fenixStable.withComponents [
+          (fenixNightly.withComponents [
             "llvm-tools-preview"
           ])
         ];
     });
 
   # PostgreSQL coverage (Linux only)
-  coverage-postgres = craneLib.cargoTarpaulin (baseArgs
+  coverage-postgres = craneLibNightly.cargoTarpaulin (baseArgsNightly
     // {
       pname = "coverage-postgres";
       TEST_BACKEND = "postgres";
       cargoArtifacts = dummyArtifacts;
       cargoTarpaulinExtraArgs = "--skip-clean --output-dir $out --out lcov --all-features --engine llvm";
       nativeBuildInputs =
-        baseArgs.nativeBuildInputs
+        baseArgsNightly.nativeBuildInputs
         ++ [
           pkgs.postgresql
-          (fenixStable.withComponents [
+          (fenixNightly.withComponents [
             "llvm-tools-preview"
           ])
         ];

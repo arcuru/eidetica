@@ -71,13 +71,16 @@
         toolchain = import ./nix/toolchain.nix {inherit inputs system pkgs;};
         inherit
           (toolchain)
-          fenixStable
+          fenixNightly
           rustSrc
           craneLib
+          craneLibNightly
           baseArgs
+          baseArgsNightly
           releaseArgs
           benchArgs
           debugArgs
+          debugArgsNightly
           asanArgs
           lsanArgs
           ;
@@ -86,8 +89,8 @@
         mainPkgs = import ./nix/packages/main.nix {inherit craneLib releaseArgs;};
 
         testPkgs = import ./nix/packages/test.nix {inherit craneLib debugArgs baseArgs pkgs lib;};
-        coveragePkgs = import ./nix/packages/coverage.nix {inherit craneLib baseArgs fenixStable pkgs lib;};
-        sanitizePkgs = import ./nix/packages/sanitize.nix {inherit craneLib debugArgs asanArgs lsanArgs fenixStable pkgs lib;};
+        coveragePkgs = import ./nix/packages/coverage.nix {inherit craneLibNightly baseArgsNightly fenixNightly pkgs lib;};
+        sanitizePkgs = import ./nix/packages/sanitize.nix {inherit craneLibNightly debugArgsNightly asanArgs lsanArgs fenixNightly pkgs lib;};
         docPkgs = import ./nix/packages/doc.nix {inherit craneLib debugArgs pkgs lib;};
         lintPkgs = import ./nix/packages/lint.nix {inherit craneLib baseArgs debugArgs pkgs;};
         standalonePkgs = import ./nix/packages/standalone.nix {inherit craneLib releaseArgs benchArgs baseArgs pkgs;};
