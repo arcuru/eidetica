@@ -93,7 +93,7 @@
         sanitizePkgs = import ./nix/packages/sanitize.nix {inherit craneLibNightly debugArgsNightly asanArgs lsanArgs fenixNightly pkgs lib;};
         docPkgs = import ./nix/packages/doc.nix {inherit craneLib debugArgs pkgs lib;};
         lintPkgs = import ./nix/packages/lint.nix {inherit craneLib craneLibNightly baseArgs baseArgsNightly debugArgs pkgs;};
-        standalonePkgs = import ./nix/packages/standalone.nix {inherit craneLib releaseArgs benchArgs baseArgs pkgs;};
+        benchPkgs = import ./nix/packages/bench.nix {inherit craneLib releaseArgs benchArgs pkgs;};
 
         # Import other modules
         containerPkgs = import ./nix/container.nix {
@@ -135,7 +135,7 @@
 
           # Bench package - nix build .#bench runs hermetic benchmarks
           # Use `cargo bench` for local development (no interactive runner available)
-          inherit (standalonePkgs) bench;
+          inherit (benchPkgs) bench;
 
           # Coverage group - nix build .#coverage.default (sqlite), .#coverage.sqlite, .#coverage.all
           coverage =
@@ -181,9 +181,6 @@
 
           # Default package (eidetica binary)
           default = mainPkgs.eidetica;
-
-          # Build artifacts (cached)
-          inherit (standalonePkgs) min-versions;
 
           # Integration tests (Linux only) - nix build .#integration.default (all), .#integration.nixos
           integration = lib.optionalAttrs pkgs.stdenv.isLinux (

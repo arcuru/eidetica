@@ -40,6 +40,33 @@
       '';
     });
 
+  # Minimum version compatibility check
+  # Requires nightly toolchain for -Z minimal-versions flag
+  # Validates that minimum versions in Cargo.toml actually work
+  lint-minversions = craneLibNightly.mkCargoDerivation (baseArgsNightly
+    // {
+      pname = "minversions";
+      cargoArtifacts = null; # No caching - builds with different Cargo.lock
+      nativeBuildInputs = baseArgsNightly.nativeBuildInputs ++ [pkgs.cargo-nextest];
+      buildPhaseCargoCommand = ''
+        cargo update -Z minimal-versions
+        cargo build --workspace --all-targets --all-features --quiet
+      '';
+      doCheck = true;
+      checkPhase = ''
+        runHook preCheck
+        cargo nextest run --workspace --all-features --status-level fail --show-progress=none
+        runHook postCheck
+      '';
+      doInstallCargoArtifacts = false;
+      installPhase = ''
+        runHook preInstall
+        mkdir -p $out
+        echo "Minimum version compatibility verified" > $out/result
+        runHook postInstall
+      '';
+    });
+
   # Nix linting with statix
   # Note: These lint checks output directories (mkdir $out) for symlinkJoin compatibility
   lint-statix =
@@ -100,6 +127,7 @@ in {
     clippy = lint-clippy;
     deny = lint-deny;
     udeps = lint-udeps;
+    minversions = lint-minversions;
     statix = lint-statix;
     deadnix = lint-deadnix;
     shellcheck = lint-shellcheck;
@@ -107,7 +135,7 @@ in {
     typos = lint-typos;
   };
 
-  # Fast lint checks for CI (excludes udeps)
+  # Fast lint checks for CI (excludes udeps and minversions)
   packagesFast = {
     clippy = lint-clippy;
     deny = lint-deny;
