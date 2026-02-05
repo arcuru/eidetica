@@ -1,4 +1,9 @@
 # Linting and code quality packages
+#
+# This module provides:
+# - Source filtering helpers for non-Rust linters
+# - A declarative linter builder (mkSimpleLinter)
+# - All lint packages organized by type
 {
   craneLib,
   craneLibNightly,
@@ -8,176 +13,174 @@
   pkgs,
   lib,
 }: let
-  # Source filters for non-Rust linters
-  # These ensure each linter sees only the files it needs to check,
-  # unlike baseArgs.src which is filtered for Rust/Cargo files only.
-  #
-  # We use lib.cleanSource as the base to exclude .git, editor files, etc.
-  # Then layer our file-type filter on top.
-  # Note: Empty directories may be included but this doesn't affect linter behavior.
-  # Nix files filter for deadnix/statix
-  nixFilter = path: type:
-    (type == "directory") || (builtins.match ".*\\.nix$" path != null);
-  nixSrc = lib.cleanSourceWith {
-    src = lib.cleanSource ../..;
-    filter = nixFilter;
+  # =============================================================================
+  # Library: Source filtering helpers
+  # =============================================================================
+  # Base source with gitignore applied
+  cleanSrc = lib.cleanSource ../..;
+
+  # Create a source filtered to specific file extensions
+  # Usage: sourceWithExts ["nix"] or sourceWithExts ["yml" "yaml"]
+  sourceWithExts = exts:
+    lib.cleanSourceWith {
+      src = cleanSrc;
+      filter = path: type:
+        (type == "directory")
+        || (lib.any (ext: lib.hasSuffix ".${ext}" path) exts);
+    };
+
+  # Pre-defined filtered sources for common file types
+  sources = {
+    nix = sourceWithExts ["nix"];
+    shell = sourceWithExts ["sh"];
+    yaml = sourceWithExts ["yml" "yaml"];
+    all = cleanSrc;
   };
 
-  # Shell script filter for shellcheck
-  shellFilter = path: type:
-    (type == "directory") || (builtins.match ".*\\.sh$" path != null);
-  shellSrc = lib.cleanSourceWith {
-    src = lib.cleanSource ../..;
-    filter = shellFilter;
+  # =============================================================================
+  # Library: Linter builders
+  # =============================================================================
+
+  # Build a simple linter that runs a command on filtered source
+  # Usage:
+  #   mkSimpleLinter {
+  #     name = "deadnix";
+  #     packages = [ pkgs.deadnix ];
+  #     src = sources.nix;
+  #     command = "deadnix --fail .";
+  #   }
+  mkSimpleLinter = {
+    name,
+    packages ? [],
+    src ? cleanSrc,
+    command,
+  }:
+    pkgs.runCommand "lint-${name}" {
+      nativeBuildInputs = packages;
+      inherit src;
+    } ''
+      cd $src
+      ${command}
+      mkdir -p $out
+    '';
+
+  # =============================================================================
+  # Linter definitions: Simple (non-Rust) linters
+  # =============================================================================
+
+  simpleLinters = {
+    statix = mkSimpleLinter {
+      name = "statix";
+      packages = [pkgs.statix];
+      src = sources.nix;
+      command = "statix check .";
+    };
+
+    deadnix = mkSimpleLinter {
+      name = "deadnix";
+      packages = [pkgs.deadnix];
+      src = sources.nix;
+      command = "deadnix --fail .";
+    };
+
+    shellcheck = mkSimpleLinter {
+      name = "shellcheck";
+      packages = [pkgs.shellcheck pkgs.findutils];
+      src = sources.shell;
+      command = ''find . -name "*.sh" -type f -exec shellcheck {} +'';
+    };
+
+    yamllint = mkSimpleLinter {
+      name = "yamllint";
+      packages = [pkgs.yamllint pkgs.findutils];
+      src = sources.yaml;
+      command = ''find . \( -name "*.yml" -o -name "*.yaml" \) -type f -exec yamllint -c .config/yamllint.yaml {} +'';
+    };
+
+    typos = mkSimpleLinter {
+      name = "typos";
+      packages = [pkgs.typos];
+      src = sources.all;
+      command = "typos --config .config/typos.toml";
+    };
   };
 
-  # YAML filter for yamllint
-  yamlFilter = path: type:
-    (type == "directory") || (builtins.match ".*\\.ya?ml$" path != null);
-  yamlSrc = lib.cleanSourceWith {
-    src = lib.cleanSource ../..;
-    filter = yamlFilter;
+  # =============================================================================
+  # Linter definitions: Rust linters (use crane)
+  # =============================================================================
+
+  rustLinters = {
+    clippy = craneLib.cargoClippy (debugArgs
+      // {
+        cargoClippyExtraArgs = "--workspace --all-targets --all-features -- -D warnings";
+      });
+
+    deny = craneLib.cargoDeny (baseArgs
+      // {
+        cargoDenyExtraArgs = "--workspace --all-features";
+        cargoDenyChecks = "bans licenses sources";
+      });
+
+    # cargo-udeps: find unused dependencies
+    # Requires nightly toolchain for -Z flags
+    # Note: No cached artifacts - must perform its own instrumented build
+    udeps = craneLibNightly.mkCargoDerivation (baseArgsNightly
+      // {
+        pname = "udeps";
+        cargoArtifacts = null;
+        buildPhaseCargoCommand = "cargo udeps --workspace --all-targets --all-features";
+        nativeBuildInputs = baseArgsNightly.nativeBuildInputs ++ [pkgs.cargo-udeps];
+        doInstallCargoArtifacts = false;
+        installPhase = ''
+          runHook preInstall
+          mkdir -p $out
+          echo "No unused dependencies found" > $out/result
+          runHook postInstall
+        '';
+      });
+
+    # Minimum version compatibility check
+    # Validates that minimum versions in Cargo.toml actually work
+    minversions = craneLibNightly.mkCargoDerivation (baseArgsNightly
+      // {
+        pname = "minversions";
+        cargoArtifacts = null;
+        nativeBuildInputs = baseArgsNightly.nativeBuildInputs ++ [pkgs.cargo-nextest];
+        buildPhaseCargoCommand = ''
+          cargo update -Z minimal-versions
+          cargo build --workspace --all-targets --all-features --quiet
+        '';
+        doCheck = true;
+        checkPhase = ''
+          runHook preCheck
+          cargo nextest run --workspace --all-features --status-level fail --show-progress=none
+          runHook postCheck
+        '';
+        doInstallCargoArtifacts = false;
+        installPhase = ''
+          runHook preInstall
+          mkdir -p $out
+          echo "Minimum version compatibility verified" > $out/result
+          runHook postInstall
+        '';
+      });
   };
 
-  # Typos uses the full source
-  typosSrc = lib.cleanSource ../..;
+  # =============================================================================
+  # Package groups
+  # =============================================================================
 
-  # Tools that compile code - benefit from cached deps
-  lint-clippy = craneLib.cargoClippy (debugArgs
-    // {
-      cargoClippyExtraArgs = "--workspace --all-targets --all-features -- -D warnings";
-    });
+  allLinters = simpleLinters // rustLinters;
 
-  # Tools that don't compile - use baseArgs (no cached deps needed)
-  lint-deny = craneLib.cargoDeny (baseArgs
-    // {
-      cargoDenyExtraArgs = "--workspace --all-features";
-      cargoDenyChecks = "bans licenses sources";
-    });
-
-  # cargo-udeps: find unused dependencies
-  # Requires nightly toolchain for -Z flags
-  # Fails build if unused dependencies are found
-  # Note: Uses baseArgsNightly (no cached artifacts) because cargo-udeps
-  # must perform its own instrumented build to track dependency usage
-  lint-udeps = craneLibNightly.mkCargoDerivation (baseArgsNightly
-    // {
-      pname = "udeps";
-      cargoArtifacts = null;
-      buildPhaseCargoCommand = "cargo udeps --workspace --all-targets --all-features";
-      nativeBuildInputs = baseArgsNightly.nativeBuildInputs ++ [pkgs.cargo-udeps];
-      doInstallCargoArtifacts = false;
-      installPhase = ''
-        runHook preInstall
-        mkdir -p $out
-        echo "No unused dependencies found" > $out/result
-        runHook postInstall
-      '';
-    });
-
-  # Minimum version compatibility check
-  # Requires nightly toolchain for -Z minimal-versions flag
-  # Validates that minimum versions in Cargo.toml actually work
-  lint-minversions = craneLibNightly.mkCargoDerivation (baseArgsNightly
-    // {
-      pname = "minversions";
-      cargoArtifacts = null; # No caching - builds with different Cargo.lock
-      nativeBuildInputs = baseArgsNightly.nativeBuildInputs ++ [pkgs.cargo-nextest];
-      buildPhaseCargoCommand = ''
-        cargo update -Z minimal-versions
-        cargo build --workspace --all-targets --all-features --quiet
-      '';
-      doCheck = true;
-      checkPhase = ''
-        runHook preCheck
-        cargo nextest run --workspace --all-features --status-level fail --show-progress=none
-        runHook postCheck
-      '';
-      doInstallCargoArtifacts = false;
-      installPhase = ''
-        runHook preInstall
-        mkdir -p $out
-        echo "Minimum version compatibility verified" > $out/result
-        runHook postInstall
-      '';
-    });
-
-  # Nix linting with statix
-  # Note: These lint checks output directories (mkdir $out) for symlinkJoin compatibility
-  lint-statix =
-    pkgs.runCommand "lint-statix" {
-      nativeBuildInputs = [pkgs.statix];
-      src = nixSrc;
-    } ''
-      cd $src
-      statix check .
-      mkdir -p $out
-    '';
-
-  # Find dead Nix code with deadnix
-  lint-deadnix =
-    pkgs.runCommand "lint-deadnix" {
-      nativeBuildInputs = [pkgs.deadnix];
-      src = nixSrc;
-    } ''
-      cd $src
-      deadnix --fail .
-      mkdir -p $out
-    '';
-
-  # Shell script linting with shellcheck
-  lint-shellcheck =
-    pkgs.runCommand "lint-shellcheck" {
-      nativeBuildInputs = [pkgs.shellcheck pkgs.findutils];
-      src = shellSrc;
-    } ''
-      cd $src
-      find . -name "*.sh" -type f -exec shellcheck {} +
-      mkdir -p $out
-    '';
-
-  # YAML linting with yamllint
-  lint-yamllint =
-    pkgs.runCommand "lint-yamllint" {
-      nativeBuildInputs = [pkgs.yamllint pkgs.findutils];
-      src = yamlSrc;
-    } ''
-      cd $src
-      find . \( -name "*.yml" -o -name "*.yaml" \) -type f -exec yamllint -c .config/yamllint.yaml {} +
-      mkdir -p $out
-    '';
-
-  # Typo checking
-  lint-typos =
-    pkgs.runCommand "lint-typos" {
-      nativeBuildInputs = [pkgs.typos];
-      src = typosSrc;
-    } ''
-      cd $src
-      typos --config .config/typos.toml
-      mkdir -p $out
-    '';
+  # Fast linters for CI (excludes slow: udeps, minversions)
+  fastLinters = builtins.removeAttrs allLinters ["udeps" "minversions"];
 in {
-  packages = {
-    clippy = lint-clippy;
-    deny = lint-deny;
-    udeps = lint-udeps;
-    minversions = lint-minversions;
-    statix = lint-statix;
-    deadnix = lint-deadnix;
-    shellcheck = lint-shellcheck;
-    yamllint = lint-yamllint;
-    typos = lint-typos;
-  };
+  # Exported packages
+  packages = allLinters;
+  packagesFast = fastLinters;
 
-  # Fast lint checks for CI (excludes udeps and minversions)
-  packagesFast = {
-    clippy = lint-clippy;
-    deny = lint-deny;
-    statix = lint-statix;
-    deadnix = lint-deadnix;
-    shellcheck = lint-shellcheck;
-    yamllint = lint-yamllint;
-    typos = lint-typos;
+  # Export library for potential reuse
+  lib = {
+    inherit sourceWithExts mkSimpleLinter sources cleanSrc;
   };
 }
