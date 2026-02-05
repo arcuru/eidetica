@@ -47,7 +47,7 @@
   # The dummy source from crane doesn't include bench files, so we add them
   cargoArtifactsBench = craneLib.buildDepsOnly (baseArgs
     // {
-      pname = "bench-deps";
+      pname = "bench";
       cargoBuildCommand = "cargo bench --no-run --workspace --all-features";
       cargoCheckCommand = "true"; # skip check phase
       # Inject dummy bench files before build (crane's dummy source lacks bench targets)
