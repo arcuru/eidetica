@@ -75,8 +75,6 @@
           rustSrc
           craneLib
           baseArgs
-          releaseArgsLib
-          releaseArgsBin
           releaseArgs
           benchArgs
           debugArgs
@@ -85,7 +83,7 @@
           ;
 
         # Import package groups
-        mainPkgs = import ./nix/packages/main.nix {inherit craneLib releaseArgsLib releaseArgsBin;};
+        mainPkgs = import ./nix/packages/main.nix {inherit craneLib releaseArgs;};
 
         testPkgs = import ./nix/packages/test.nix {inherit craneLib debugArgs baseArgs pkgs lib;};
         coveragePkgs = import ./nix/packages/coverage.nix {inherit craneLib baseArgs fenixStable pkgs lib;};

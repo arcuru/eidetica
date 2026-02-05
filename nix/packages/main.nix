@@ -1,12 +1,11 @@
 # Core eidetica packages (library and binary)
 {
   craneLib,
-  releaseArgsLib,
-  releaseArgsBin,
+  releaseArgs,
 }: let
   # Library crate build
-  # Uses releaseArgsLib with matching -p eidetica --all-features
-  eidetica-lib = craneLib.buildPackage (releaseArgsLib
+  # Uses workspace-wide release artifacts, package-specific flags added here
+  eidetica-lib = craneLib.buildPackage (releaseArgs
     // {
       pname = "eidetica";
       cargoExtraArgs = "-p eidetica --all-features";
@@ -17,8 +16,8 @@
     });
 
   # Binary crate build
-  # Uses releaseArgsBin with matching -p eidetica-bin --all-features
-  eidetica-bin = craneLib.buildPackage (releaseArgsBin
+  # Uses workspace-wide release artifacts, package-specific flags added here
+  eidetica-bin = craneLib.buildPackage (releaseArgs
     // {
       pname = "eidetica-bin";
       cargoExtraArgs = "-p eidetica-bin --all-features";

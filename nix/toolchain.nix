@@ -28,27 +28,10 @@
     ];
   };
 
-  # Separate artifact caches per package to avoid Cargo fingerprint mismatches
-  # (see https://crane.dev/faq/constant-rebuilds.html)
-  # Each package build must use matching -p and --all-features flags
+  # Workspace-wide artifact caches per unique build configuration
+  # One artifact per profile is sufficient - package-specific flags are added at build time
 
-  # Library deps (eidetica)
-  cargoArtifactsLib = craneLib.buildDepsOnly (baseArgs
-    // {
-      pname = "release-lib";
-      CARGO_PROFILE = "release";
-      cargoExtraArgs = "-p eidetica --all-features";
-    });
-
-  # Binary deps (eidetica-bin, which depends on eidetica)
-  cargoArtifactsBin = craneLib.buildDepsOnly (baseArgs
-    // {
-      pname = "release-bin";
-      CARGO_PROFILE = "release";
-      cargoExtraArgs = "-p eidetica-bin --all-features";
-    });
-
-  # Workspace-wide release deps (for min-versions)
+  # Release deps (workspace-wide, used by lib, bin, and min-versions)
   cargoArtifactsRelease = craneLib.buildDepsOnly (baseArgs
     // {
       pname = "release-workspace";
@@ -113,23 +96,7 @@
       CARGO_BUILD_TARGET = "x86_64-unknown-linux-gnu";
     });
 
-  # Release arguments for library builds
-  releaseArgsLib =
-    baseArgs
-    // {
-      cargoArtifacts = cargoArtifactsLib;
-      CARGO_PROFILE = "release";
-    };
-
-  # Release arguments for binary builds
-  releaseArgsBin =
-    baseArgs
-    // {
-      cargoArtifacts = cargoArtifactsBin;
-      CARGO_PROFILE = "release";
-    };
-
-  # Release arguments for workspace-wide builds (min-versions)
+  # Release arguments for all release builds (lib, bin, min-versions)
   releaseArgs =
     baseArgs
     // {
@@ -175,15 +142,11 @@ in {
     rustSrc
     craneLib
     baseArgs
-    cargoArtifactsLib
-    cargoArtifactsBin
     cargoArtifactsRelease
     cargoArtifactsBench
     cargoArtifactsDebug
     cargoArtifactsAsan
     cargoArtifactsLsan
-    releaseArgsLib
-    releaseArgsBin
     releaseArgs
     benchArgs
     debugArgs
