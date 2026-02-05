@@ -92,7 +92,7 @@
         coveragePkgs = import ./nix/packages/coverage.nix {inherit craneLibNightly baseArgsNightly fenixNightly pkgs lib;};
         sanitizePkgs = import ./nix/packages/sanitize.nix {inherit craneLibNightly debugArgsNightly asanArgs lsanArgs fenixNightly pkgs lib;};
         docPkgs = import ./nix/packages/doc.nix {inherit craneLib debugArgs pkgs lib;};
-        lintPkgs = import ./nix/packages/lint.nix {inherit craneLib baseArgs debugArgs pkgs;};
+        lintPkgs = import ./nix/packages/lint.nix {inherit craneLib craneLibNightly baseArgs baseArgsNightly debugArgs pkgs;};
         standalonePkgs = import ./nix/packages/standalone.nix {inherit craneLib releaseArgs benchArgs baseArgs pkgs;};
 
         # Import other modules

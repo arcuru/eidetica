@@ -1,7 +1,9 @@
 # Linting and code quality packages
 {
   craneLib,
+  craneLibNightly,
   baseArgs,
+  baseArgsNightly,
   debugArgs,
   pkgs,
 }: let
@@ -19,18 +21,21 @@
     });
 
   # cargo-udeps: find unused dependencies
-  # Note: outputs report to $out/result, does not fail on findings
-  # Uses debugArgs - udeps needs to compile code to detect unused deps
-  lint-udeps = craneLib.mkCargoDerivation (debugArgs
+  # Requires nightly toolchain for -Z flags
+  # Fails build if unused dependencies are found
+  # Note: Uses baseArgsNightly (no cached artifacts) because cargo-udeps
+  # must perform its own instrumented build to track dependency usage
+  lint-udeps = craneLibNightly.mkCargoDerivation (baseArgsNightly
     // {
       pname = "udeps";
-      buildPhaseCargoCommand = "cargo udeps --workspace --all-targets --all-features 2>&1 | tee udeps-report.txt || true";
-      nativeBuildInputs = debugArgs.nativeBuildInputs ++ [pkgs.cargo-udeps];
+      cargoArtifacts = null;
+      buildPhaseCargoCommand = "cargo udeps --workspace --all-targets --all-features";
+      nativeBuildInputs = baseArgsNightly.nativeBuildInputs ++ [pkgs.cargo-udeps];
       doInstallCargoArtifacts = false;
       installPhase = ''
         runHook preInstall
         mkdir -p $out
-        cp udeps-report.txt $out/result
+        echo "No unused dependencies found" > $out/result
         runHook postInstall
       '';
     });
