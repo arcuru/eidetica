@@ -7,6 +7,7 @@
   "enabledManagers": ["cargo", "github-actions"],
   "schedule": ["* 0-3 1 * *"],
   "prConcurrentLimit": 5,
+  "prCreation": "not-pending",
   "minimumReleaseAge": "14 days",
   "commitMessagePrefix": "chore(deps):",
   "commitMessageAction": "update",
