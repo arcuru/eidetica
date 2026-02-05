@@ -34,9 +34,25 @@
     } ''
       cd $src
       mdbook build docs -d $TMPDIR/book
-      lychee --offline --exclude-path 'rustdoc' $TMPDIR/book
+      # --exclude-path: don't check files in these directories
+      # --exclude: don't check links pointing to rustdoc (not built in this derivation)
+      lychee --offline --exclude-path 'rustdoc' --exclude-path '404.html' --exclude 'rustdoc/' $TMPDIR/book
       mkdir -p $out
       echo "Link check passed" > $out/result
+    '';
+
+  doc-links-online =
+    pkgs.runCommand "doc-links-online" {
+      nativeBuildInputs = [pkgs.mdbook pkgs.mdbook-mermaid pkgs.lychee pkgs.cacert];
+      src = docSrc;
+    } ''
+      cd $src
+      mdbook build docs -d $TMPDIR/book
+      # --exclude-path: don't check files in these directories
+      # --exclude: don't check links pointing to rustdoc (not built in this derivation)
+      lychee --exclude-path 'rustdoc' --exclude-path 'fonts' --exclude 'rustdoc/' $TMPDIR/book
+      mkdir -p $out
+      echo "Online link check passed" > $out/result
     '';
 
   doc-book =
@@ -82,6 +98,7 @@ in {
     api = doc-api;
     api-full = doc-api-full;
     links = doc-links;
+    links-online = doc-links-online;
     test = doc-test;
     book =
       doc-book
@@ -95,5 +112,6 @@ in {
     api = doc-api;
     test = doc-test;
     book-test = doc-book-test;
+    links = doc-links;
   };
 }

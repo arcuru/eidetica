@@ -79,6 +79,17 @@
       find . \( -name "*.yml" -o -name "*.yaml" \) -type f -exec yamllint -c .config/yamllint.yaml {} +
       mkdir -p $out
     '';
+
+  # Typo checking
+  lint-typos =
+    pkgs.runCommand "lint-typos" {
+      nativeBuildInputs = [pkgs.typos];
+      inherit (baseArgs) src;
+    } ''
+      cd $src
+      typos --config .config/typos.toml
+      mkdir -p $out
+    '';
 in {
   packages = {
     clippy = lint-clippy;
@@ -88,6 +99,7 @@ in {
     deadnix = lint-deadnix;
     shellcheck = lint-shellcheck;
     yamllint = lint-yamllint;
+    typos = lint-typos;
   };
 
   # Fast lint checks for CI (excludes udeps)
@@ -98,5 +110,6 @@ in {
     deadnix = lint-deadnix;
     shellcheck = lint-shellcheck;
     yamllint = lint-yamllint;
+    typos = lint-typos;
   };
 }

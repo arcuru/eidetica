@@ -108,7 +108,7 @@
   nixosEnabledResult = nixosEvalEnabled.config.services.eidetica;
   hmDisabledResult = hmEvalDisabled.config.services.eidetica.enable;
   hmEnabledResult = hmEvalEnabled.config.services.eidetica;
-in rec {
+in {
   eval = {
     # Fast module evaluation test for NixOS module
     # Evaluates the module at flake eval time and writes results
