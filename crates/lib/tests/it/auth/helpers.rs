@@ -72,7 +72,7 @@ pub async fn setup_user_and_tree_with_key(
 
 /// Create an AuthKey with commonly used defaults
 pub fn auth_key(permission: Permission, status: KeyStatus) -> AuthKey {
-    AuthKey::new(None::<String>, permission, status)
+    AuthKey::new(None, permission, status)
 }
 
 /// Create a user with multiple keys pre-configured for testing using User API

@@ -6,7 +6,7 @@
 
 use eidetica::{
     Database,
-    auth::{AuthSettings, Permission, generate_keypair, types::AuthKey},
+    auth::{Permission, generate_keypair, types::AuthKey},
     crdt::Doc,
     store::DocStore,
     sync::{
@@ -18,6 +18,7 @@ use eidetica::{
 };
 
 use super::helpers;
+use crate::helpers::add_auth_key;
 
 /// Test that bootstrap requests are rejected for databases without sync enabled.
 #[tokio::test]
@@ -137,23 +138,19 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
     let mut settings = Doc::new();
     settings.set("name", "test_database");
 
-    let mut auth_settings = AuthSettings::new();
-    auth_settings
-        .add_key(
-            &server_key_id,
-            AuthKey::active(Some("admin"), Permission::Admin(0)),
-        )
-        .unwrap();
-    auth_settings
-        .add_key("*", AuthKey::active(Some("*"), Permission::Read))
-        .unwrap();
-    settings.set("auth", auth_settings.as_doc().clone());
-
     let server_database = server_user
         .create_database(settings, &server_key_id)
         .await
         .unwrap();
     let tree_id = server_database.root_id().clone();
+
+    // Add wildcard "*" permission
+    add_auth_key(
+        &server_database,
+        "*",
+        AuthKey::active(Some("*"), Permission::Read),
+    )
+    .await;
 
     // Add database with sync ENABLED initially
     server_user
@@ -310,23 +307,19 @@ async fn test_sync_succeeds_when_enabled() {
     let mut settings = Doc::new();
     settings.set("name", "test_database");
 
-    let mut auth_settings = AuthSettings::new();
-    auth_settings
-        .add_key(
-            &server_key_id,
-            AuthKey::active(Some("admin"), Permission::Admin(0)),
-        )
-        .unwrap();
-    auth_settings
-        .add_key("*", AuthKey::active(Some("*"), Permission::Read))
-        .unwrap();
-    settings.set("auth", auth_settings.as_doc().clone());
-
     let server_database = server_user
         .create_database(settings, &server_key_id)
         .await
         .unwrap();
     let tree_id = server_database.root_id().clone();
+
+    // Add wildcard "*" permission
+    add_auth_key(
+        &server_database,
+        "*",
+        AuthKey::active(Some("*"), Permission::Read),
+    )
+    .await;
 
     // Add test data
     {

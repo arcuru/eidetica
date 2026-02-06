@@ -81,7 +81,7 @@ impl App {
         // Global permission uses "*" as the pubkey, with no name
         let tx = database.new_transaction().await?;
         let settings_store = tx.get_settings()?;
-        let global_key = AuthKey::active(None::<String>, Permission::Write(0));
+        let global_key = AuthKey::active(None, Permission::Write(0));
         settings_store.set_auth_key("*", global_key).await?;
         tx.commit().await?;
 

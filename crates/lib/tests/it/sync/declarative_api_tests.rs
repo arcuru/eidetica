@@ -22,7 +22,7 @@ async fn test_register_sync_peer_tracks_relationship_immediately() -> Result<()>
     // Create a test database
     let settings = Doc::new();
     let (signing_key, _) = generate_keypair();
-    let db = Database::create(settings, &instance, signing_key, "test_key".to_string()).await?;
+    let db = Database::create(&instance, signing_key, settings).await?;
     let tree_id = db.root_id().clone();
 
     // Generate a fake peer pubkey
@@ -68,7 +68,7 @@ async fn test_sync_handle_methods() -> Result<()> {
 
     let settings = Doc::new();
     let (signing_key, _) = generate_keypair();
-    let db = Database::create(settings, &instance, signing_key, "test_key".to_string()).await?;
+    let db = Database::create(&instance, signing_key, settings).await?;
     let tree_id = db.root_id().clone();
 
     let (_, peer_verifying_key) = generate_keypair();
@@ -106,7 +106,7 @@ async fn test_sync_handle_add_address() -> Result<()> {
 
     let settings = Doc::new();
     let (signing_key, _) = generate_keypair();
-    let db = Database::create(settings, &instance, signing_key, "test_key".to_string()).await?;
+    let db = Database::create(&instance, signing_key, settings).await?;
 
     let (_, peer_verifying_key) = generate_keypair();
     let peer_pubkey = format_public_key(&peer_verifying_key);
@@ -159,7 +159,7 @@ async fn test_get_sync_status() -> Result<()> {
 
     let settings = Doc::new();
     let (signing_key, _) = generate_keypair();
-    let db = Database::create(settings, &instance, signing_key, "test_key".to_string()).await?;
+    let db = Database::create(&instance, signing_key, settings).await?;
 
     // Database::create() creates root entry, so should have local data
     let status = sync.get_sync_status(db.root_id(), "fake_peer").await?;

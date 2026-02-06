@@ -15,7 +15,7 @@ use eidetica::{
     store::DocStore,
 };
 
-use crate::helpers::{test_instance, test_instance_with_user_and_key};
+use crate::helpers::{add_auth_key, test_instance, test_instance_with_user_and_key};
 
 /// Test SigKey with empty delegation path
 #[tokio::test]
@@ -44,18 +44,18 @@ async fn test_direct_key_name_hint() -> Result<()> {
     let (instance, mut user, key_id) =
         test_instance_with_user_and_key("test_user", Some("test_name")).await;
 
-    // Create tree with the key_id as auth entry (required for User API)
-    let mut auth_settings = AuthSettings::new();
-    auth_settings.add_key(
+    // Create tree (signing key becomes Admin(0) with no name)
+    let tree = user.create_database(Doc::new(), &key_id).await?;
+
+    // Overwrite the bootstrapped key entry (same pubkey) to add the display
+    // name "test_name" — set_auth_key replaces existing entries keyed by pubkey.
+    // FIXME: consider adding a set_name method to AuthSettings/SettingsStore
+    add_auth_key(
+        &tree,
         &key_id,
         AuthKey::active(Some("test_name"), Permission::Admin(0)),
-    )?;
-
-    let mut settings = Doc::new();
-    settings.set("auth", auth_settings.as_doc().clone());
-
-    // This should work
-    let tree = user.create_database(settings, &key_id).await?;
+    )
+    .await;
 
     // Test resolving by name hint - should find key with matching name
     let name_key = SigKey::from_name("test_name");
@@ -261,16 +261,8 @@ async fn test_circular_delegation_simple() -> Result<()> {
     let (instance, mut user, key_id) =
         test_instance_with_user_and_key("test_user", Some("admin")).await;
 
-    // Create a tree that delegates to itself
-    let mut auth_settings = AuthSettings::new();
-    auth_settings.add_key(
-        &key_id,
-        AuthKey::active(Some("admin"), Permission::Admin(0)),
-    )?;
-
-    let mut settings = Doc::new();
-    settings.set("auth", auth_settings.as_doc().clone());
-    let tree = user.create_database(settings, &key_id).await?;
+    // Create a tree (signing key becomes Admin(0))
+    let tree = user.create_database(Doc::new(), &key_id).await?;
     let tree_tips = tree.get_tips().await?;
 
     // Create delegation path that references the same tree

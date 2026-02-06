@@ -15,7 +15,6 @@ use crate::{
     Database, Instance, Result,
     auth::{
         crypto::{format_public_key, generate_keypair},
-        settings::AuthSettings,
         types::{AuthKey, Permission},
     },
     constants::{DATABASES, INSTANCE, USERS},
@@ -26,136 +25,71 @@ use crate::{
 /// Create the _instance system database
 ///
 /// This database stores Instance-level configuration and metadata.
-/// It is authenticated with the Instance's admin.
+/// Auth is bootstrapped by `Database::create` with the device key as Admin(0).
 ///
 /// # Arguments
 /// * `instance` - The Instance handle
 /// * `device_signing_key` - The device's Ed25519 signing key
-/// * `device_pubkey` - The public key for admin (used as admin)
 ///
 /// # Returns
 /// The _instance Database
 pub async fn create_instance_database(
     instance: &Instance,
     device_signing_key: &ed25519_dalek::SigningKey,
-    device_pubkey: &str,
 ) -> Result<Database> {
-    // Create database settings
     let mut settings = Doc::new();
     settings.set("name", INSTANCE);
     settings.set("type", "system");
     settings.set("description", "Instance configuration and management");
 
-    // Set up auth with device key as admin
-    // Keys are stored by pubkey, with name as optional metadata
-    let mut auth_settings = AuthSettings::new();
-    auth_settings.add_key(
-        device_pubkey,
-        AuthKey::active(Some("admin"), Permission::Admin(0)),
-    )?;
-    settings.set("auth", auth_settings.as_doc().clone());
-
-    // Create the database with device signing key provided directly
-    let database = Database::create(
-        settings,
-        instance,
-        device_signing_key.clone(),
-        device_pubkey.to_string(),
-    )
-    .await?;
-
-    Ok(database)
+    Database::create(instance, device_signing_key.clone(), settings).await
 }
 
 /// Create the _users system database
 ///
-/// This database stores the user directory mapping user_id → UserInfo.
-/// It is authenticated with the Instance's admin.
+/// This database stores the user directory mapping user_id -> UserInfo.
+/// Auth is bootstrapped by `Database::create` with the device key as Admin(0).
 ///
 /// # Arguments
 /// * `instance` - The Instance handle
 /// * `device_signing_key` - The device's Ed25519 signing key
-/// * `device_pubkey` - The public key for admin (used as admin)
 ///
 /// # Returns
 /// The created _users Database
 pub async fn create_users_database(
     instance: &Instance,
     device_signing_key: &ed25519_dalek::SigningKey,
-    device_pubkey: &str,
 ) -> Result<Database> {
-    // Create settings for _users database
     let mut settings = Doc::new();
     settings.set("name", USERS);
     settings.set("type", "system");
     settings.set("description", "User directory database");
 
-    // Create auth settings with device key as admin
-    // Keys are stored by pubkey, with name as optional metadata
-    let mut auth_settings = AuthSettings::new();
-    auth_settings.add_key(
-        device_pubkey,
-        AuthKey::active(Some("admin"), Permission::Admin(0)),
-    )?;
-
-    settings.set("auth", auth_settings.as_doc().clone());
-
-    // Create the database with device signing key provided directly
-    let database = Database::create(
-        settings,
-        instance,
-        device_signing_key.clone(),
-        device_pubkey.to_string(),
-    )
-    .await?;
-
-    Ok(database)
+    Database::create(instance, device_signing_key.clone(), settings).await
 }
 
 /// Create the _databases tracking database
 ///
 /// This database stores the database tracking information mapping
-/// database_id → DatabaseTracking.
-/// It is authenticated with the Instance's admin.
+/// database_id -> DatabaseTracking.
+/// Auth is bootstrapped by `Database::create` with the device key as Admin(0).
 ///
 /// # Arguments
 /// * `instance` - The Instance handle
 /// * `device_signing_key` - The device's Ed25519 signing key
-/// * `device_pubkey` - The public key for admin (used as admin)
 ///
 /// # Returns
 /// The created _databases Database
 pub async fn create_databases_tracking(
     instance: &Instance,
     device_signing_key: &ed25519_dalek::SigningKey,
-    device_pubkey: &str,
 ) -> Result<Database> {
-    // Create settings for _databases database
     let mut settings = Doc::new();
     settings.set("name", DATABASES);
     settings.set("type", "system");
     settings.set("description", "Database tracking and registry");
 
-    // Create auth settings with device key as admin
-    // Keys are stored by pubkey, with name as optional metadata
-    let mut auth_settings = AuthSettings::new();
-    auth_settings.add_key(
-        device_pubkey,
-        AuthKey::active(Some("admin"), Permission::Admin(0)),
-    )?;
-
-    settings.set("auth", auth_settings.as_doc().clone());
-
-    // Create the database with device signing key provided directly
-    let database = Database::create(
-        settings,
-        instance,
-        device_signing_key.clone(),
-        device_pubkey.to_string(),
-    )
-    .await?;
-
-    Ok(database)
+    Database::create(instance, device_signing_key.clone(), settings).await
 }
 
 /// Create a new user account
@@ -213,42 +147,31 @@ pub async fn create_user(
     let (user_private_key, user_public_key) = generate_keypair();
     let user_public_key_str = format_public_key(&user_public_key);
 
-    // 3. Create user database with authentication for both admin and user's key
+    // 3. Create user database with the user's key in auth (device key added automatically)
     let mut user_db_settings = Doc::new();
     user_db_settings.set("name", format!("_user_{username}"));
     user_db_settings.set("type", "user");
     user_db_settings.set("description", format!("User database for {username}"));
 
-    // Get device key for auth settings and database creation
+    // Get device key for database creation (used as the signing key)
     let device_private_key = instance.device_key().clone();
-    let device_pubkey = device_private_key.verifying_key();
-    let device_pubkey_str = format_public_key(&device_pubkey);
 
-    // Set up authentication with both keys
-    // Keys are stored by pubkey, with name as optional metadata
-    let mut auth_settings = AuthSettings::new();
-    // TODO: Is it possible for the device key to only have Read permission?
-    // Then the device can read it to let the user login but that's it
-    // (Though at the moment it wouldn't need explicit read access, every local DB is readable)
-    auth_settings.add_key(
-        &device_pubkey_str,
-        AuthKey::active(Some("device"), Permission::Admin(0)),
-    )?;
-    auth_settings.add_key(
-        &user_public_key_str,
-        AuthKey::active(Some("user"), Permission::Admin(0)),
-    )?;
-    user_db_settings.set("auth", auth_settings.as_doc().clone());
-
-    // Create database using device_key directly
-    let user_database = Database::create(
-        user_db_settings,
-        instance,
-        device_private_key,
-        device_pubkey_str.clone(),
-    )
-    .await?;
+    // Create database using device_key as the signing key.
+    // Database::create bootstraps auth with device key as Admin(0).
+    let user_database = Database::create(instance, device_private_key, user_db_settings).await?;
     let user_database_id = user_database.root_id().clone();
+
+    // Add user's key as an equal owner
+    // FIXME: can we restrict the Device ID's ownership?
+    let txn = user_database.new_transaction().await?;
+    let settings = txn.get_settings()?;
+    settings
+        .set_auth_key(
+            &user_public_key_str,
+            AuthKey::active(Some("user"), Permission::Admin(0)),
+        )
+        .await?;
+    txn.commit().await?;
 
     // 4. Store user's private key (encrypted or unencrypted based on password)
     let user_key = match (password, &password_salt) {
@@ -496,7 +419,7 @@ mod tests {
     /// Test helper: Create Instance with device key initialized
     ///
     /// Uses FixedClock for controllable timestamps.
-    async fn setup_instance() -> (Instance, ed25519_dalek::SigningKey, String) {
+    async fn setup_instance() -> (Instance, ed25519_dalek::SigningKey) {
         use crate::clock::FixedClock;
 
         let backend = Arc::new(InMemory::new());
@@ -508,16 +431,15 @@ mod tests {
 
         // Get the device key from the instance
         let device_key = instance.device_key().clone();
-        let pubkey_str = instance.device_id_string();
 
-        (instance, device_key, pubkey_str)
+        (instance, device_key)
     }
 
     #[tokio::test]
     async fn test_create_instance_database() {
-        let (instance, device_key, pubkey_str) = setup_instance().await;
+        let (instance, device_key) = setup_instance().await;
 
-        let instance_db = create_instance_database(&instance, &device_key, &pubkey_str)
+        let instance_db = create_instance_database(&instance, &device_key)
             .await
             .unwrap();
 
@@ -533,21 +455,20 @@ mod tests {
         let name = doc_store.get_string("name").await.unwrap();
         assert_eq!(name, INSTANCE);
 
-        // Verify auth settings - key is stored by pubkey with name "admin"
+        // Verify auth settings - key is stored by pubkey
+        let pubkey_str = instance.device_id_string();
         let settings_store = SettingsStore::new(&transaction).unwrap();
         let auth_settings = settings_store.get_auth_settings().await.unwrap();
         let device_key = auth_settings.get_key_by_pubkey(&pubkey_str).unwrap();
         assert_eq!(device_key.permissions(), &Permission::Admin(0));
-        assert_eq!(device_key.name(), Some("admin"));
+        assert_eq!(device_key.name(), None);
     }
 
     #[tokio::test]
     async fn test_create_users_database() {
-        let (instance, device_key, pubkey_str) = setup_instance().await;
+        let (instance, device_key) = setup_instance().await;
 
-        let users_db = create_users_database(&instance, &device_key, &pubkey_str)
-            .await
-            .unwrap();
+        let users_db = create_users_database(&instance, &device_key).await.unwrap();
 
         // Verify database was created
         assert!(!users_db.root_id().to_string().is_empty());
@@ -564,9 +485,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_databases_tracking() {
-        let (instance, device_key, pubkey_str) = setup_instance().await;
+        let (instance, device_key) = setup_instance().await;
 
-        let databases_db = create_databases_tracking(&instance, &device_key, &pubkey_str)
+        let databases_db = create_databases_tracking(&instance, &device_key)
             .await
             .unwrap();
 
@@ -585,29 +506,26 @@ mod tests {
 
     #[tokio::test]
     async fn test_system_databases_haveadmin_auth() {
-        let (instance, device_key, pubkey_str) = setup_instance().await;
+        let (instance, device_key) = setup_instance().await;
 
-        let users_db = create_users_database(&instance, &device_key, &pubkey_str)
-            .await
-            .unwrap();
+        let users_db = create_users_database(&instance, &device_key).await.unwrap();
 
-        // Verify admin has admin access - key is stored by pubkey
+        // Verify device key has admin access - key is stored by pubkey
+        let pubkey_str = instance.device_id_string();
         let transaction = users_db.new_transaction().await.unwrap();
         let settings_store = SettingsStore::new(&transaction).unwrap();
         let auth_settings = settings_store.get_auth_settings().await.unwrap();
         let device_key = auth_settings.get_key_by_pubkey(&pubkey_str).unwrap();
 
         assert_eq!(device_key.permissions(), &Permission::Admin(0));
-        assert_eq!(device_key.name(), Some("admin"));
+        assert_eq!(device_key.name(), None);
     }
 
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // Uses Argon2 password hashing and SystemTime
     async fn test_create_user() {
-        let (instance, device_key, pubkey_str) = setup_instance().await;
-        let users_db = create_users_database(&instance, &device_key, &pubkey_str)
-            .await
-            .unwrap();
+        let (instance, device_key) = setup_instance().await;
+        let users_db = create_users_database(&instance, &device_key).await.unwrap();
 
         // Create a user with password
         let (user_uuid, user_info) =
@@ -633,10 +551,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_user_passwordless() {
-        let (instance, device_key, pubkey_str) = setup_instance().await;
-        let users_db = create_users_database(&instance, &device_key, &pubkey_str)
-            .await
-            .unwrap();
+        let (instance, device_key) = setup_instance().await;
+        let users_db = create_users_database(&instance, &device_key).await.unwrap();
 
         // Create a passwordless user
         let (user_uuid, user_info) = create_user(&users_db, &instance, "bob", None)
@@ -662,10 +578,8 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // Uses Argon2 password hashing and SystemTime
     async fn test_create_duplicate_user() {
-        let (instance, device_key, pubkey_str) = setup_instance().await;
-        let users_db = create_users_database(&instance, &device_key, &pubkey_str)
-            .await
-            .unwrap();
+        let (instance, device_key) = setup_instance().await;
+        let users_db = create_users_database(&instance, &device_key).await.unwrap();
 
         // Create first user
         create_user(&users_db, &instance, "alice", Some("password123"))
@@ -680,10 +594,8 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // Uses Argon2 password hashing and SystemTime
     async fn test_login_user() {
-        let (instance, device_key, pubkey_str) = setup_instance().await;
-        let users_db = create_users_database(&instance, &device_key, &pubkey_str)
-            .await
-            .unwrap();
+        let (instance, device_key) = setup_instance().await;
+        let users_db = create_users_database(&instance, &device_key).await.unwrap();
 
         // Create a user with password
         create_user(&users_db, &instance, "bob", Some("bobpassword"))
@@ -709,10 +621,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_login_user_passwordless() {
-        let (instance, device_key, pubkey_str) = setup_instance().await;
-        let users_db = create_users_database(&instance, &device_key, &pubkey_str)
-            .await
-            .unwrap();
+        let (instance, device_key) = setup_instance().await;
+        let users_db = create_users_database(&instance, &device_key).await.unwrap();
 
         // Create a passwordless user
         create_user(&users_db, &instance, "charlie", None)
@@ -739,10 +649,8 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // Uses Argon2 password hashing and SystemTime
     async fn test_login_wrong_password() {
-        let (instance, device_key, pubkey_str) = setup_instance().await;
-        let users_db = create_users_database(&instance, &device_key, &pubkey_str)
-            .await
-            .unwrap();
+        let (instance, device_key) = setup_instance().await;
+        let users_db = create_users_database(&instance, &device_key).await.unwrap();
 
         // Create a user
         create_user(&users_db, &instance, "dave", Some("correct_password"))
@@ -757,10 +665,8 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // Uses Argon2 password hashing and SystemTime
     async fn test_login_password_mismatch() {
-        let (instance, device_key, pubkey_str) = setup_instance().await;
-        let users_db = create_users_database(&instance, &device_key, &pubkey_str)
-            .await
-            .unwrap();
+        let (instance, device_key) = setup_instance().await;
+        let users_db = create_users_database(&instance, &device_key).await.unwrap();
 
         // Create a passwordless user
         create_user(&users_db, &instance, "eve", None)
@@ -783,10 +689,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_login_nonexistent_user() {
-        let (instance, device_key, pubkey_str) = setup_instance().await;
-        let users_db = create_users_database(&instance, &device_key, &pubkey_str)
-            .await
-            .unwrap();
+        let (instance, device_key) = setup_instance().await;
+        let users_db = create_users_database(&instance, &device_key).await.unwrap();
 
         // Try to login user that doesn't exist
         let result = login_user(&users_db, &instance, "nonexistent", Some("password")).await;
@@ -796,10 +700,8 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // Uses Argon2 password hashing and SystemTime
     async fn test_list_users() {
-        let (instance, device_key, pubkey_str) = setup_instance().await;
-        let users_db = create_users_database(&instance, &device_key, &pubkey_str)
-            .await
-            .unwrap();
+        let (instance, device_key) = setup_instance().await;
+        let users_db = create_users_database(&instance, &device_key).await.unwrap();
 
         // Initially no users
         let users = list_users(&users_db).await.unwrap();

@@ -3,8 +3,7 @@
 use eidetica::{
     Database, Result,
     auth::{
-        crypto::{format_public_key, generate_keypair},
-        settings::AuthSettings,
+        crypto::generate_keypair,
         types::{AuthKey, Permission},
     },
     crdt::Doc,
@@ -12,6 +11,7 @@ use eidetica::{
 };
 
 use super::helpers::{login_user, setup_instance};
+use crate::helpers::add_auth_key;
 
 /// Test tracking a database
 #[tokio::test]
@@ -25,21 +25,15 @@ async fn test_track_database() -> Result<()> {
     let user_key = user.get_default_key()?;
 
     // Create a database with global Write permission
-    let (alice_key, alice_pubkey) = generate_keypair();
-    let alice_pubkey_str = format_public_key(&alice_pubkey);
+    let (alice_key, _) = generate_keypair();
 
     let mut db_settings = Doc::new();
     db_settings.set("name", "shared_db");
 
-    let mut auth_settings = AuthSettings::new();
-    auth_settings.add_key(
-        &alice_pubkey_str,
-        AuthKey::active(Some("alice"), Permission::Admin(1)),
-    )?;
-    auth_settings.add_key("*", AuthKey::active(None::<String>, Permission::Write(10)))?;
-    db_settings.set("auth", auth_settings.as_doc().clone());
+    let db = Database::create(&instance, alice_key, db_settings).await?;
 
-    let db = Database::create(db_settings, &instance, alice_key, alice_pubkey_str.clone()).await?;
+    // Add global Write permission (signing key is already Admin(0))
+    add_auth_key(&db, "*", AuthKey::active(None, Permission::Write(10))).await;
     let db_id = db.root_id().clone();
 
     // Track the database
@@ -77,21 +71,12 @@ async fn test_track_database_no_sigkey_error() -> Result<()> {
     let user_key = user.get_default_key()?;
 
     // Create a database without global permissions (user has no access)
-    let (alice_key, alice_pubkey) = generate_keypair();
-    let alice_pubkey_str = format_public_key(&alice_pubkey);
+    let (alice_key, _) = generate_keypair();
 
     let mut db_settings = Doc::new();
     db_settings.set("name", "private_db");
 
-    let mut auth_settings = AuthSettings::new();
-    // Only Alice has access, no global permission
-    auth_settings.add_key(
-        &alice_pubkey_str,
-        AuthKey::active(Some("alice"), Permission::Admin(1)),
-    )?;
-    db_settings.set("auth", auth_settings.as_doc().clone());
-
-    let db = Database::create(db_settings, &instance, alice_key, alice_pubkey_str.clone()).await?;
+    let db = Database::create(&instance, alice_key, db_settings).await?;
     let db_id = db.root_id().clone();
 
     let prefs = TrackedDatabase {
@@ -121,22 +106,15 @@ async fn test_list_databases() -> Result<()> {
 
     // Create and add multiple databases
     for i in 0..3 {
-        let (alice_key, alice_pubkey) = generate_keypair();
-        let alice_pubkey_str = format_public_key(&alice_pubkey);
+        let (alice_key, _) = generate_keypair();
 
         let mut db_settings = Doc::new();
         db_settings.set("name", format!("db_{i}"));
 
-        let mut auth_settings = AuthSettings::new();
-        auth_settings.add_key(
-            &alice_pubkey_str,
-            AuthKey::active(Some(&format!("alice_{i}")), Permission::Admin(1)),
-        )?;
-        auth_settings.add_key("*", AuthKey::active(None::<String>, Permission::Write(10)))?;
-        db_settings.set("auth", auth_settings.as_doc().clone());
+        let db = Database::create(&instance, alice_key, db_settings).await?;
 
-        let db =
-            Database::create(db_settings, &instance, alice_key, alice_pubkey_str.clone()).await?;
+        // Add global Write permission (signing key is already Admin(0))
+        add_auth_key(&db, "*", AuthKey::active(None, Permission::Write(10))).await;
 
         let prefs = TrackedDatabase {
             database_id: db.root_id().clone(),
@@ -164,22 +142,16 @@ async fn test_get_tracked_database() -> Result<()> {
     let user_key = user.get_default_key()?;
 
     // Create database
-    let (alice_key, alice_pubkey) = generate_keypair();
-    let alice_pubkey_str = format_public_key(&alice_pubkey);
+    let (alice_key, _) = generate_keypair();
 
     let mut db_settings = Doc::new();
     db_settings.set("name", "test_db");
 
-    let mut auth_settings = AuthSettings::new();
-    auth_settings.add_key(
-        &alice_pubkey_str,
-        AuthKey::active(Some("alice"), Permission::Admin(1)),
-    )?;
-    auth_settings.add_key("*", AuthKey::active(None::<String>, Permission::Write(10)))?;
-    db_settings.set("auth", auth_settings.as_doc().clone());
-
-    let db = Database::create(db_settings, &instance, alice_key, alice_pubkey_str.clone()).await?;
+    let db = Database::create(&instance, alice_key, db_settings).await?;
     let db_id = db.root_id().clone();
+
+    // Add global Write permission (signing key is already Admin(0))
+    add_auth_key(&db, "*", AuthKey::active(None, Permission::Write(10))).await;
 
     // Add database
     let prefs = TrackedDatabase {
@@ -216,22 +188,16 @@ async fn test_update_tracked_database() -> Result<()> {
     let user_key = user.get_default_key()?;
 
     // Create database
-    let (alice_key, alice_pubkey) = generate_keypair();
-    let alice_pubkey_str = format_public_key(&alice_pubkey);
+    let (alice_key, _) = generate_keypair();
 
     let mut db_settings = Doc::new();
     db_settings.set("name", "test_db");
 
-    let mut auth_settings = AuthSettings::new();
-    auth_settings.add_key(
-        &alice_pubkey_str,
-        AuthKey::active(Some("alice"), Permission::Admin(1)),
-    )?;
-    auth_settings.add_key("*", AuthKey::active(None::<String>, Permission::Write(10)))?;
-    db_settings.set("auth", auth_settings.as_doc().clone());
-
-    let db = Database::create(db_settings, &instance, alice_key, alice_pubkey_str.clone()).await?;
+    let db = Database::create(&instance, alice_key, db_settings).await?;
     let db_id = db.root_id().clone();
+
+    // Add global Write permission (signing key is already Admin(0))
+    add_auth_key(&db, "*", AuthKey::active(None, Permission::Write(10))).await;
 
     // Add database with initial settings
     let initial_prefs = TrackedDatabase {
@@ -280,22 +246,16 @@ async fn test_untrack_database() -> Result<()> {
     let user_key = user.get_default_key()?;
 
     // Create database
-    let (alice_key, alice_pubkey) = generate_keypair();
-    let alice_pubkey_str = format_public_key(&alice_pubkey);
+    let (alice_key, _) = generate_keypair();
 
     let mut db_settings = Doc::new();
     db_settings.set("name", "test_db");
 
-    let mut auth_settings = AuthSettings::new();
-    auth_settings.add_key(
-        &alice_pubkey_str,
-        AuthKey::active(Some("alice"), Permission::Admin(1)),
-    )?;
-    auth_settings.add_key("*", AuthKey::active(None::<String>, Permission::Write(10)))?;
-    db_settings.set("auth", auth_settings.as_doc().clone());
-
-    let db = Database::create(db_settings, &instance, alice_key, alice_pubkey_str.clone()).await?;
+    let db = Database::create(&instance, alice_key, db_settings).await?;
     let db_id = db.root_id().clone();
+
+    // Add global Write permission (signing key is already Admin(0))
+    add_auth_key(&db, "*", AuthKey::active(None, Permission::Write(10))).await;
 
     // Add database
     let prefs = TrackedDatabase {
@@ -328,22 +288,16 @@ async fn test_load_tracked_database() -> Result<()> {
     let user_key = user.get_default_key()?;
 
     // Create database with global permission
-    let (alice_key, alice_pubkey) = generate_keypair();
-    let alice_pubkey_str = format_public_key(&alice_pubkey);
+    let (alice_key, _) = generate_keypair();
 
     let mut db_settings = Doc::new();
     db_settings.set("name", "test_db");
 
-    let mut auth_settings = AuthSettings::new();
-    auth_settings.add_key(
-        &alice_pubkey_str,
-        AuthKey::active(Some("alice"), Permission::Admin(1)),
-    )?;
-    auth_settings.add_key("*", AuthKey::active(None::<String>, Permission::Write(10)))?;
-    db_settings.set("auth", auth_settings.as_doc().clone());
-
-    let db = Database::create(db_settings, &instance, alice_key, alice_pubkey_str.clone()).await?;
+    let db = Database::create(&instance, alice_key, db_settings).await?;
     let db_id = db.root_id().clone();
+
+    // Add global Write permission (signing key is already Admin(0))
+    add_auth_key(&db, "*", AuthKey::active(None, Permission::Write(10))).await;
 
     // Add to user's tracked databases
     let prefs = TrackedDatabase {
@@ -375,22 +329,16 @@ async fn test_update_tracked_valid_key_change() -> Result<()> {
     let key2 = user.add_private_key(Some("Second Key")).await?;
 
     // Create database with global permission
-    let (alice_key, alice_pubkey) = generate_keypair();
-    let alice_pubkey_str = format_public_key(&alice_pubkey);
+    let (alice_key, _) = generate_keypair();
 
     let mut db_settings = Doc::new();
     db_settings.set("name", "test_db");
 
-    let mut auth_settings = AuthSettings::new();
-    auth_settings.add_key(
-        &alice_pubkey_str,
-        AuthKey::active(Some("alice"), Permission::Admin(1)),
-    )?;
-    auth_settings.add_key("*", AuthKey::active(None::<String>, Permission::Write(10)))?;
-    db_settings.set("auth", auth_settings.as_doc().clone());
-
-    let db = Database::create(db_settings, &instance, alice_key, alice_pubkey_str.clone()).await?;
+    let db = Database::create(&instance, alice_key, db_settings).await?;
     let db_id = db.root_id().clone();
+
+    // Add global Write permission (signing key is already Admin(0))
+    add_auth_key(&db, "*", AuthKey::active(None, Permission::Write(10))).await;
 
     // Add database with key1
     let prefs = TrackedDatabase {
@@ -433,22 +381,16 @@ async fn test_update_tracked_nonexistent_key_fails() -> Result<()> {
     let user_key = user.get_default_key()?;
 
     // Create database with global permission
-    let (alice_key, alice_pubkey) = generate_keypair();
-    let alice_pubkey_str = format_public_key(&alice_pubkey);
+    let (alice_key, _) = generate_keypair();
 
     let mut db_settings = Doc::new();
     db_settings.set("name", "test_db");
 
-    let mut auth_settings = AuthSettings::new();
-    auth_settings.add_key(
-        &alice_pubkey_str,
-        AuthKey::active(Some("alice"), Permission::Admin(1)),
-    )?;
-    auth_settings.add_key("*", AuthKey::active(None::<String>, Permission::Write(10)))?;
-    db_settings.set("auth", auth_settings.as_doc().clone());
-
-    let db = Database::create(db_settings, &instance, alice_key, alice_pubkey_str.clone()).await?;
+    let db = Database::create(&instance, alice_key, db_settings).await?;
     let db_id = db.root_id().clone();
+
+    // Add global Write permission (signing key is already Admin(0))
+    add_auth_key(&db, "*", AuthKey::active(None, Permission::Write(10))).await;
 
     // Add database
     let prefs = TrackedDatabase {
@@ -486,27 +428,12 @@ async fn test_update_tracked_no_access_fails() -> Result<()> {
     let key2 = user.add_private_key(Some("Second Key")).await?;
 
     // Create database WITHOUT global permission - only alice has access
-    let (alice_key, alice_pubkey) = generate_keypair();
-    let alice_pubkey_str = format_public_key(&alice_pubkey);
+    let (alice_key, _) = generate_keypair();
 
     let mut db_settings = Doc::new();
     db_settings.set("name", "private_db");
 
-    let mut auth_settings = AuthSettings::new();
-    // Only alice has access - no global permission
-    auth_settings.add_key(
-        &alice_pubkey_str,
-        AuthKey::active(Some("alice"), Permission::Admin(1)),
-    )?;
-    db_settings.set("auth", auth_settings.as_doc().clone());
-
-    let db = Database::create(
-        db_settings,
-        &instance,
-        alice_key.clone(),
-        alice_pubkey_str.clone(),
-    )
-    .await?;
+    let db = Database::create(&instance, alice_key.clone(), db_settings).await?;
     let db_id = db.root_id().clone();
 
     // Give key1 explicit access by adding it to the database
@@ -556,22 +483,16 @@ async fn test_update_tracked_auto_creates_mapping() -> Result<()> {
     let key2 = user.add_private_key(Some("Second Key")).await?;
 
     // Create database with global permission (both keys can access)
-    let (alice_key, alice_pubkey) = generate_keypair();
-    let alice_pubkey_str = format_public_key(&alice_pubkey);
+    let (alice_key, _) = generate_keypair();
 
     let mut db_settings = Doc::new();
     db_settings.set("name", "test_db");
 
-    let mut auth_settings = AuthSettings::new();
-    auth_settings.add_key(
-        &alice_pubkey_str,
-        AuthKey::active(Some("alice"), Permission::Admin(1)),
-    )?;
-    auth_settings.add_key("*", AuthKey::active(None::<String>, Permission::Write(10)))?;
-    db_settings.set("auth", auth_settings.as_doc().clone());
-
-    let db = Database::create(db_settings, &instance, alice_key, alice_pubkey_str.clone()).await?;
+    let db = Database::create(&instance, alice_key, db_settings).await?;
     let db_id = db.root_id().clone();
+
+    // Add global Write permission (signing key is already Admin(0))
+    add_auth_key(&db, "*", AuthKey::active(None, Permission::Write(10))).await;
 
     // Add database with key1 (creates mapping: key1 -> "*")
     let prefs = TrackedDatabase {

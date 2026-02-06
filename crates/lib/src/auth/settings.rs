@@ -493,7 +493,7 @@ mod tests {
         assert_eq!(settings.get_global_permission(), None);
 
         // Add global Write(10) permission
-        let global_key = AuthKey::active(None::<String>, Permission::Write(10));
+        let global_key = AuthKey::active(None, Permission::Write(10));
         settings.add_key("*", global_key).unwrap();
 
         // Global permission should now be detected
@@ -556,7 +556,7 @@ mod tests {
 
         // Add global permission
         settings
-            .add_key("*", AuthKey::active(None::<String>, Permission::Write(10)))
+            .add_key("*", AuthKey::active(None, Permission::Write(10)))
             .unwrap();
 
         let actual_pubkey = generate_public_key();
@@ -591,7 +591,7 @@ mod tests {
 
         // Add global permission
         settings
-            .add_key("*", AuthKey::active(None::<String>, Permission::Write(10)))
+            .add_key("*", AuthKey::active(None, Permission::Write(10)))
             .unwrap();
 
         let results = settings.find_all_sigkeys_for_pubkey(&pubkey);
@@ -650,7 +650,7 @@ mod tests {
 
         // Add global permission
         settings
-            .add_key("*", AuthKey::active(None::<String>, Permission::Read))
+            .add_key("*", AuthKey::active(None, Permission::Read))
             .unwrap();
 
         // Other key should now have read access via global

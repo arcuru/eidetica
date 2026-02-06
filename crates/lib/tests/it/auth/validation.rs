@@ -143,19 +143,9 @@ async fn test_multiple_authenticated_entries() {
         .await
         .expect("Failed to add key");
 
-    // Create a tree with authentication enabled
-    let mut settings = Doc::new();
-    let mut auth_settings = AuthSettings::new();
-    auth_settings
-        .add_key(
-            &key_id,
-            AuthKey::active(Some("TEST_KEY"), Permission::Admin(0)),
-        )
-        .unwrap();
-    settings.set("auth", auth_settings.as_doc().clone());
-
+    // Create a tree with authentication enabled (signing key becomes Admin(0))
     let tree = user
-        .create_database(settings, &key_id)
+        .create_database(Doc::new(), &key_id)
         .await
         .expect("Failed to create tree");
 
@@ -326,13 +316,11 @@ async fn test_entry_validation_cache_behavior() {
 
     let auth_key = AuthKey::active(Some("TEST_KEY"), Permission::Write(10));
 
-    // Create settings with the key
-    let mut settings = Doc::new();
+    // Create auth settings with the key for validation testing
     let mut auth_settings = AuthSettings::new();
     auth_settings
         .add_key(&pubkey_str, auth_key.clone())
         .unwrap();
-    settings.set("auth", auth_settings.as_doc().clone());
 
     // Create a signed entry
     let mut entry = Entry::root_builder()
@@ -344,16 +332,8 @@ async fn test_entry_validation_cache_behavior() {
     let signature = sign_entry(&entry, &signing_key).unwrap();
     entry.sig.sig = Some(signature);
 
-    // Extract AuthSettings from Doc
-    let auth_settings_from_doc = match settings.get("auth") {
-        Some(Value::Doc(auth_doc)) => AuthSettings::from(auth_doc.clone()),
-        _ => AuthSettings::new(),
-    };
-
     // Validate the entry - should work
-    let result1 = validator
-        .validate_entry(&entry, &auth_settings_from_doc, None)
-        .await;
+    let result1 = validator.validate_entry(&entry, &auth_settings, None).await;
     assert!(result1.unwrap(), "First validation should succeed");
 
     // Modify the key to be revoked
@@ -375,9 +355,7 @@ async fn test_entry_validation_cache_behavior() {
     );
 
     // Validate with original settings again - should work (no stale cache)
-    let result3 = validator
-        .validate_entry(&entry, &auth_settings_from_doc, None)
-        .await;
+    let result3 = validator.validate_entry(&entry, &auth_settings, None).await;
     assert!(
         result3.unwrap(),
         "Validation should work again with active key"

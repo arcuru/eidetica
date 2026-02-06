@@ -7,12 +7,11 @@
 //! - database_operations_tests: Database CRUD operations
 
 use super::helpers::*;
-use crate::helpers::test_instance;
+use crate::helpers::{add_auth_keys, test_instance};
 use eidetica::{
     Database,
     auth::{
         Permission,
-        settings::AuthSettings,
         types::{AuthKey, SigKey},
     },
     crdt::Doc,
@@ -280,30 +279,19 @@ async fn test_collaborative_database_with_global_permissions() {
     let mut alice_db_settings = Doc::new();
     alice_db_settings.set("name", "Team Workspace");
 
-    // Configure auth settings with global Write permission
-    let mut auth_settings = AuthSettings::new();
-
-    // Add Alice's admin key
-    auth_settings
-        .add_key(
-            &alice_key,
-            AuthKey::active(Some("alice"), Permission::Admin(1)),
-        )
-        .unwrap();
-
-    // Add global Write(10) permission - anyone can access with Write permission
-    auth_settings
-        .add_key("*", AuthKey::active(Some("*"), Permission::Write(10)))
-        .unwrap();
-
-    alice_db_settings.set("auth", auth_settings.as_doc().clone());
-
     // Create the new database with alice_key as the owner
     let alice_db = alice
         .create_database(alice_db_settings, &alice_key)
         .await
         .expect("Alice creates database");
     let db_id = alice_db.root_id().clone();
+
+    // Add global Write permission (signing key is already Admin(0))
+    add_auth_keys(
+        &alice_db,
+        &[("*", AuthKey::active(Some("*"), Permission::Write(10)))],
+    )
+    .await;
 
     // Alice writes initial data
     {
@@ -470,29 +458,19 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
     let mut alice_db_settings = Doc::new();
     alice_db_settings.set("name", "Team Workspace");
 
-    let mut auth_settings = AuthSettings::new();
-
-    // Add Alice's admin key
-    auth_settings
-        .add_key(
-            &alice_key,
-            AuthKey::active(Some("alice"), Permission::Admin(1)),
-        )
-        .unwrap();
-
-    // Add global Write(10) permission - anyone can access
-    auth_settings
-        .add_key("*", AuthKey::active(Some("*"), Permission::Write(10)))
-        .unwrap();
-
-    alice_db_settings.set("auth", auth_settings.as_doc().clone());
-
     // Create the new database with alice_key as the owner
     let alice_db = alice
         .create_database(alice_db_settings, &alice_key)
         .await
         .expect("Alice creates database");
     let db_id = alice_db.root_id().clone();
+
+    // Add global Write permission (signing key is already Admin(0))
+    add_auth_keys(
+        &alice_db,
+        &[("*", AuthKey::active(Some("*"), Permission::Write(10)))],
+    )
+    .await;
 
     // Alice writes initial data
     {

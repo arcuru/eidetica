@@ -209,8 +209,7 @@ impl User {
             .clone();
 
         // Create the database with the provided key directly
-        let database =
-            Database::create(settings, &self.instance, signing_key, key_id.to_string()).await?;
+        let database = Database::create(&self.instance, signing_key, settings).await?;
 
         // Store the mapping in UserKey and track the database
         let tx = self.user_database.new_transaction().await?;

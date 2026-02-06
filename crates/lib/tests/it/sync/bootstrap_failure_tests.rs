@@ -5,10 +5,10 @@
 //! expect secure behavior and will fail until proper security is implemented.
 
 use super::helpers::*;
-use crate::helpers::test_instance_with_user_and_key;
+use crate::helpers::{add_auth_key, add_auth_keys, test_instance_with_user_and_key};
 use eidetica::{
     auth::{
-        AuthSettings, Permission,
+        Permission,
         types::{AuthKey, KeyStatus},
     },
     crdt::{Doc, doc::Value},
@@ -36,32 +36,20 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
     let mut settings = Doc::new();
     settings.set("name", "Restricted Database");
 
-    // Set strict auth policy - only server_admin has permission to manage auth
-    let mut auth_settings = AuthSettings::new();
-    auth_settings
-        .add_key(
-            &server_admin_key_id,
-            AuthKey::active(Some("admin"), Permission::Admin(0)),
-        )
-        .expect("Failed to add server admin auth");
-
-    // Add device key to auth settings for sync handler operations
-    let device_pubkey = server_instance.device_id_string();
-
-    auth_settings
-        .add_key(
-            &device_pubkey,
-            AuthKey::active(Some("device"), Permission::Admin(0)),
-        )
-        .expect("Failed to add device key auth");
-
-    settings.set("auth", auth_settings.as_doc().clone());
-
     // Create the database
     let server_database = server_user
         .create_database(settings, &server_admin_key_id)
         .await
         .expect("Failed to create restricted database");
+
+    // Add device key for sync handler operations
+    let device_pubkey = server_instance.device_id_string();
+    add_auth_key(
+        &server_database,
+        &device_pubkey,
+        AuthKey::active(Some("device"), Permission::Admin(0)),
+    )
+    .await;
 
     let restricted_tree_id = server_database.root_id().clone();
     println!("🔐 Created restricted database with ID: {restricted_tree_id}");
@@ -379,37 +367,27 @@ async fn test_bootstrap_with_revoked_key() {
     let mut settings = Doc::new();
     settings.set("name", "Database With Revoked Key");
 
-    let mut auth_settings = AuthSettings::new();
-    auth_settings
-        .add_key(
-            &server_admin_key_id,
-            AuthKey::active(Some("admin"), Permission::Admin(0)),
-        )
-        .expect("Failed to add server admin auth");
-
-    auth_settings
-        .add_key(
-            &revoked_client_key_id,
-            AuthKey::new(Some("revoked"), Permission::Write(10), KeyStatus::Revoked),
-        )
-        .expect("Failed to add revoked client auth");
-
-    // Add device key to auth settings for sync handler operations
-    let device_pubkey = server_instance.device_id_string();
-
-    auth_settings
-        .add_key(
-            &device_pubkey,
-            AuthKey::active(Some("device"), Permission::Admin(0)),
-        )
-        .expect("Failed to add device key auth");
-
-    settings.set("auth", auth_settings.as_doc().clone());
-
     let server_database = server_user
         .create_database(settings, &server_admin_key_id)
         .await
         .expect("Failed to create database");
+
+    // Add revoked client key and device key via follow-up transaction
+    let device_pubkey = server_instance.device_id_string();
+    add_auth_keys(
+        &server_database,
+        &[
+            (
+                &revoked_client_key_id,
+                AuthKey::new(Some("revoked"), Permission::Write(10), KeyStatus::Revoked),
+            ),
+            (
+                &device_pubkey,
+                AuthKey::active(Some("device"), Permission::Admin(0)),
+            ),
+        ],
+    )
+    .await;
 
     let tree_id = server_database.root_id().clone();
 
@@ -489,31 +467,21 @@ async fn test_bootstrap_exceeds_granted_permissions() {
     let mut settings = Doc::new();
     settings.set("name", "Restrictive Permission Database");
 
-    let mut auth_settings = AuthSettings::new();
-    auth_settings
-        .add_key(
-            &server_admin_key_id,
-            AuthKey::active(Some("admin"), Permission::Admin(0)),
-        )
-        .expect("Failed to add server admin auth");
-
-    // Add device key to auth settings for sync handler operations
-    let device_pubkey = server_instance.device_id_string();
-
-    auth_settings
-        .add_key(
-            &device_pubkey,
-            AuthKey::active(Some("device"), Permission::Admin(0)),
-        )
-        .expect("Failed to add device key auth");
-
     // TODO: Add policy configuration that limits new client permissions to Read only
-    settings.set("auth", auth_settings.as_doc().clone());
 
     let server_database = server_user
         .create_database(settings, &server_admin_key_id)
         .await
         .expect("Failed to create database");
+
+    // Add device key for sync handler operations
+    let device_pubkey = server_instance.device_id_string();
+    add_auth_key(
+        &server_database,
+        &device_pubkey,
+        AuthKey::active(Some("device"), Permission::Admin(0)),
+    )
+    .await;
 
     let tree_id = server_database.root_id().clone();
 

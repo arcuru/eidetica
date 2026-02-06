@@ -13,7 +13,6 @@ use tokio::{
 use tracing::{Instrument, debug, info, info_span, trace};
 
 use super::{
-    ADMIN_KEY_NAME,
     error::SyncError,
     handler::SyncHandlerImpl,
     peer_manager::PeerManager,
@@ -208,14 +207,9 @@ impl BackgroundSync {
         // Load sync tree with the device key
         let instance = self.instance()?;
         let signing_key = instance.device_key().clone();
+        let sigkey = instance.device_id_string();
 
-        Database::open(
-            instance,
-            &self.sync_tree_id,
-            signing_key,
-            ADMIN_KEY_NAME.to_string(),
-        )
-        .await
+        Database::open(instance, &self.sync_tree_id, signing_key, sigkey).await
     }
 
     /// Get the minimum sync interval from all tracked databases

@@ -3,10 +3,6 @@
 use super::*;
 use crate::{
     Clock, SystemClock,
-    auth::{
-        settings::AuthSettings,
-        types::{AuthKey, Permission},
-    },
     backend::database::InMemory,
     crdt::Doc,
     user::{
@@ -26,28 +22,14 @@ async fn create_test_user_session() -> User {
 
     // Get device key from instance
     let device_key = instance.device_key().clone();
-    let device_pubkey_str = instance.device_id_string();
 
     let mut db_settings = Doc::new();
     db_settings.set("name", "test_user_db");
 
-    let mut auth_settings = AuthSettings::new();
-    auth_settings
-        .add_key(
-            &device_pubkey_str,
-            AuthKey::active(Some("admin"), Permission::Admin(0)),
-        )
+    // Database::create bootstraps auth with device key as Admin(0)
+    let user_database = Database::create(&instance, device_key.clone(), db_settings)
+        .await
         .unwrap();
-    db_settings.set("auth", auth_settings.as_doc().clone());
-
-    let user_database = Database::create(
-        db_settings,
-        &instance,
-        device_key.clone(),
-        device_pubkey_str.clone(),
-    )
-    .await
-    .unwrap();
 
     // Create user info
     let password = "test_password";

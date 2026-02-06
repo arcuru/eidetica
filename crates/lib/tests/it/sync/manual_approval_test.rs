@@ -14,7 +14,7 @@ fn generate_public_key() -> String {
 use eidetica::{
     Database, Entry,
     auth::{
-        AuthSettings, Permission as AuthPermission,
+        Permission as AuthPermission,
         crypto::{format_public_key, generate_keypair},
         types::{AuthKey, KeyStatus, SigKey},
     },
@@ -505,27 +505,18 @@ async fn test_bootstrap_with_global_permission_auto_approval() {
     let mut settings = Doc::new();
     settings.set("name", "Test Global Permission DB");
 
-    let mut auth_settings = AuthSettings::new();
-
-    // Add admin key for database creation
-    auth_settings
-        .add_key(
-            &server_key_id,
-            AuthKey::active(Some("admin"), AuthPermission::Admin(10)),
-        )
-        .unwrap();
-
-    // Add global '*' permission with Write(10) access
-    auth_settings
-        .add_key("*", AuthKey::active(Some("*"), AuthPermission::Write(10)))
-        .unwrap();
-
-    settings.set("auth", auth_settings.as_doc().clone());
-
     let database = server_user
         .create_database(settings, &server_key_id)
         .await
         .unwrap();
+
+    // Add global '*' permission
+    crate::helpers::add_auth_key(
+        &database,
+        "*",
+        AuthKey::active(Some("*"), AuthPermission::Write(10)),
+    )
+    .await;
     let tree_id = database.root_id().clone();
 
     // Setup sync
@@ -639,34 +630,28 @@ async fn test_global_permission_overrides_manual_policy() {
     let mut settings = Doc::new();
     settings.set("name", "Test Manual Policy with Global Permission");
 
-    let mut auth_settings = AuthSettings::new();
-
-    // Add admin key for database creation
-    auth_settings
-        .add_key(
-            &server_key_id,
-            AuthKey::active(Some("admin"), AuthPermission::Admin(10)),
-        )
-        .unwrap();
-
-    // Add global '*' permission with Write(10) access
-    auth_settings
-        .add_key("*", AuthKey::active(Some("*"), AuthPermission::Write(10)))
-        .unwrap();
-
-    // Explicitly set bootstrap policy to require manual approval (false)
-    let mut policy_doc = Doc::new();
-    policy_doc
-        .set_json("bootstrap_auto_approve", false)
-        .unwrap();
-    auth_settings.as_doc_mut().set("policy", policy_doc);
-
-    settings.set("auth", auth_settings.as_doc().clone());
-
     let database = server_user
         .create_database(settings, &server_key_id)
         .await
         .unwrap();
+
+    // Add global permission AND set bootstrap policy to require manual approval
+    let txn = database.new_transaction().await.unwrap();
+    let settings_store = txn.get_settings().unwrap();
+    let mut policy_doc = Doc::new();
+    policy_doc
+        .set_json("bootstrap_auto_approve", false)
+        .unwrap();
+    settings_store
+        .as_doc_store()
+        .set("auth.policy", policy_doc)
+        .await
+        .unwrap();
+    settings_store
+        .set_auth_key("*", AuthKey::active(Some("*"), AuthPermission::Write(10)))
+        .await
+        .unwrap();
+    txn.commit().await.unwrap();
     let tree_id = database.root_id().clone();
 
     // Setup sync
@@ -761,30 +746,18 @@ async fn test_bootstrap_with_existing_specific_key_permission() {
     let mut settings = Doc::new();
     settings.set("name", "Test Existing Key DB");
 
-    let mut auth_settings = AuthSettings::new();
-
-    // Add admin key for database creation
-    auth_settings
-        .add_key(
-            &server_key_id,
-            AuthKey::active(Some("admin"), AuthPermission::Admin(1)),
-        )
-        .unwrap();
-
-    // Add the test key with Write(5) permission
-    auth_settings
-        .add_key(
-            &test_key,
-            AuthKey::active(Some("existing_laptop"), AuthPermission::Write(5)),
-        )
-        .unwrap();
-
-    settings.set("auth", auth_settings.as_doc().clone());
-
     let database = server_user
         .create_database(settings, &server_key_id)
         .await
         .unwrap();
+
+    // Add the test key with Write(5) permission
+    crate::helpers::add_auth_key(
+        &database,
+        &test_key,
+        AuthKey::active(Some("existing_laptop"), AuthPermission::Write(5)),
+    )
+    .await;
     let tree_id = database.root_id().clone();
 
     // Set up sync system
@@ -859,27 +832,18 @@ async fn test_bootstrap_with_existing_global_permission_no_duplicate() {
     let mut settings = Doc::new();
     settings.set("name", "Test Global Permission No Duplicate DB");
 
-    let mut auth_settings = AuthSettings::new();
-
-    // Add admin key for database creation
-    auth_settings
-        .add_key(
-            &server_key_id,
-            AuthKey::active(Some("admin"), AuthPermission::Admin(1)),
-        )
-        .unwrap();
-
-    // Add global '*' permission with Write(5)
-    auth_settings
-        .add_key("*", AuthKey::active(Some("*"), AuthPermission::Write(5)))
-        .unwrap();
-
-    settings.set("auth", auth_settings.as_doc().clone());
-
     let database = server_user
         .create_database(settings, &server_key_id)
         .await
         .unwrap();
+
+    // Add global '*' permission
+    crate::helpers::add_auth_key(
+        &database,
+        "*",
+        AuthKey::active(Some("*"), AuthPermission::Write(5)),
+    )
+    .await;
     let tree_id = database.root_id().clone();
 
     // Set up sync system
@@ -972,26 +936,18 @@ async fn test_bootstrap_global_permission_client_cannot_create_entries_bug() {
     let mut settings = Doc::new();
     settings.set("name", "Global Permission Bug Test DB");
 
-    let mut auth_settings = AuthSettings::new();
-
-    // Add admin key
-    auth_settings
-        .add_key(
-            &server_key_id,
-            AuthKey::active(Some("admin"), AuthPermission::Admin(1)),
-        )
-        .unwrap();
-
-    // Add global '*' permission
-    auth_settings
-        .add_key("*", AuthKey::active(Some("*"), AuthPermission::Write(5)))
-        .unwrap();
-
-    settings.set("auth", auth_settings.as_doc().clone());
     let database = server_user
         .create_database(settings, &server_key_id)
         .await
         .unwrap();
+
+    // Add global '*' permission
+    crate::helpers::add_auth_key(
+        &database,
+        "*",
+        AuthKey::active(Some("*"), AuthPermission::Write(5)),
+    )
+    .await;
     let tree_id = database.root_id().clone();
 
     // Setup client instance
@@ -1066,31 +1022,26 @@ async fn test_global_permission_enables_transactions() {
         crate::helpers::test_instance_with_user_and_key("server_user", Some("server_admin")).await;
     server_instance.enable_sync().await.unwrap();
 
-    // Create database with global Write(10) permission
+    // Create database (signing key bootstrapped as Admin(0))
     let mut settings = Doc::new();
     settings.set("name", "Test Global Permission Transactions");
-
-    let mut auth_settings = AuthSettings::new();
-
-    // Add admin key for database creation
-    auth_settings
-        .add_key(
-            &server_key_id,
-            AuthKey::active(Some("admin"), AuthPermission::Admin(10)),
-        )
-        .unwrap();
-
-    // Add global '*' permission with Write(10) access
-    auth_settings
-        .add_key("*", AuthKey::active(Some("*"), AuthPermission::Write(10)))
-        .unwrap();
-
-    settings.set("auth", auth_settings.as_doc().clone());
 
     let database = server_user
         .create_database(settings, &server_key_id)
         .await
         .unwrap();
+
+    // Add extra keys via follow-up transaction
+    let txn = database.new_transaction().await.unwrap();
+    let settings_store = txn.get_settings().unwrap();
+
+    // Add global '*' permission
+    settings_store
+        .set_auth_key("*", AuthKey::active(Some("*"), AuthPermission::Write(10)))
+        .await
+        .unwrap();
+
+    txn.commit().await.unwrap();
     let tree_id = database.root_id().clone();
 
     // Setup sync
@@ -1154,13 +1105,15 @@ async fn test_global_permission_enables_transactions() {
     println!("🔍 Testing transaction commit with global permission");
 
     // Test 2: Client can commit transactions using global permission
-    // First, copy the root entry from server to client backend so client can load the database
-    let root_entry = server_instance.backend().get(&tree_id).await.unwrap();
-    client_instance
-        .backend()
-        .put(VerificationStatus::Verified, root_entry)
-        .await
-        .unwrap();
+    // Copy all tree entries from server to client so client can see the full auth settings
+    let tree_entries = server_instance.backend().get_tree(&tree_id).await.unwrap();
+    for entry in tree_entries {
+        client_instance
+            .backend()
+            .put(VerificationStatus::Verified, entry)
+            .await
+            .unwrap();
+    }
 
     // Load the database on client side with the client's signing key
     // When using User API, keys are stored in the User's key manager, not the Instance backend

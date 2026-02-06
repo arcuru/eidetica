@@ -320,13 +320,12 @@ impl Instance {
         clock: Arc<dyn Clock>,
     ) -> Result<Self> {
         use crate::{
-            auth::crypto::{format_public_key, generate_keypair},
+            auth::crypto::generate_keypair,
             user::system_databases::{create_databases_tracking, create_users_database},
         };
 
         // 1. Generate device key
-        let (device_key, device_pubkey) = generate_keypair();
-        let device_pubkey_str = format_public_key(&device_pubkey);
+        let (device_key, _device_pubkey) = generate_keypair();
 
         // 2. Create system databases with device_key passed directly
         // Create a temporary Instance for database creation (databases will store full IDs later)
@@ -350,10 +349,8 @@ impl Instance {
                 global_write_callbacks: Mutex::new(HashMap::new()),
             }),
         };
-        let users_db =
-            create_users_database(&temp_instance, &device_key, &device_pubkey_str).await?;
-        let databases_db =
-            create_databases_tracking(&temp_instance, &device_key, &device_pubkey_str).await?;
+        let users_db = create_users_database(&temp_instance, &device_key).await?;
+        let databases_db = create_databases_tracking(&temp_instance, &device_key).await?;
 
         // 3. Save metadata (marks instance as initialized)
         let metadata = InstanceMetadata {
@@ -446,7 +443,7 @@ impl Instance {
             self.clone(),
             &self.inner.users_db_id,
             self.inner.device_key.clone(),
-            "admin".to_string(),
+            self.device_id_string(),
         )
         .await
     }

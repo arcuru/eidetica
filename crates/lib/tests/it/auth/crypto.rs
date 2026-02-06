@@ -3,7 +3,6 @@
 use eidetica::{
     Database,
     auth::{
-        AuthSettings,
         crypto::{format_public_key, parse_public_key},
         types::{AuthKey, Permission, SigKey},
     },
@@ -155,29 +154,28 @@ async fn test_multi_key_authentication() {
         .expect("Failed to add second key");
     let _public_key2 = parse_public_key(&key_id2).expect("Failed to parse key");
 
-    // Set up authentication settings with both keys
-    // Note: First key needs admin permission to create tree with auth settings
-    let mut settings = Doc::new();
-    let mut auth_settings = AuthSettings::new();
-    auth_settings
-        .add_key(
-            &key_id1,
-            AuthKey::active(Some("TEST_KEY"), Permission::Admin(0)),
-        )
-        .unwrap();
-    auth_settings
-        .add_key(
+    // Create database with first key (signing key becomes Admin(0))
+    let tree = user
+        .create_database(Doc::new(), &key_id1)
+        .await
+        .expect("Failed to create tree");
+
+    // Add second key via transaction
+    let txn = tree
+        .new_transaction()
+        .await
+        .expect("Failed to create transaction");
+    let settings_store = txn.get_settings().expect("Failed to get settings store");
+    settings_store
+        .set_auth_key(
             &key_id2,
             AuthKey::active(Some("SECOND_KEY"), Permission::Write(20)),
         )
-        .unwrap();
-    settings.set("auth", auth_settings.as_doc().clone());
-
-    // Create database with first key (admin key)
-    let tree = user
-        .create_database(settings, &key_id1)
         .await
-        .expect("Failed to create tree");
+        .expect("Failed to add second key");
+    txn.commit()
+        .await
+        .expect("Failed to commit auth key addition");
 
     // Create an entry with first key (tree is already loaded with key_id1)
     let txn = tree

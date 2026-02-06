@@ -2,8 +2,7 @@
 
 use super::*;
 use crate::{
-    Instance, auth::crypto::generate_keypair, backend::database::InMemory, crdt::Doc,
-    store::DocStore,
+    Instance, auth::crypto::generate_keypair, backend::database::InMemory, store::DocStore,
 };
 
 /// Test that corrupted auth configuration prevents commit
@@ -17,7 +16,7 @@ async fn test_prevent_auth_corruption() {
     let (private_key, _) = generate_keypair();
 
     // Create database with the test key
-    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+    let database = Database::create(&instance, private_key, Doc::new())
         .await
         .unwrap();
 

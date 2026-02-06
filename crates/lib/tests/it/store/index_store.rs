@@ -2,7 +2,7 @@
 
 use eidetica::{
     Database, Registered,
-    auth::crypto::generate_keypair,
+    auth::crypto::{format_public_key, generate_keypair},
     crdt::{Doc, doc::Value},
     store::{DocStore, Table},
 };
@@ -35,7 +35,7 @@ async fn test_index_store_register_subtree() {
     let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+    let database = Database::create(&instance, private_key, Doc::new())
         .await
         .unwrap();
 
@@ -77,7 +77,7 @@ async fn test_index_store_get_subtree_info() {
     let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+    let database = Database::create(&instance, private_key, Doc::new())
         .await
         .unwrap();
 
@@ -107,7 +107,7 @@ async fn test_index_store_contains_subtree() {
     let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+    let database = Database::create(&instance, private_key, Doc::new())
         .await
         .unwrap();
 
@@ -130,7 +130,7 @@ async fn test_index_store_list_subtrees() {
     let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+    let database = Database::create(&instance, private_key, Doc::new())
         .await
         .unwrap();
 
@@ -160,7 +160,7 @@ async fn test_index_store_update_existing() {
     let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+    let database = Database::create(&instance, private_key, Doc::new())
         .await
         .unwrap();
 
@@ -203,7 +203,7 @@ async fn test_auto_register_on_first_access_docstore() {
     let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+    let database = Database::create(&instance, private_key, Doc::new())
         .await
         .unwrap();
 
@@ -227,7 +227,7 @@ async fn test_no_auto_register_for_system_subtrees() {
     let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+    let database = Database::create(&instance, private_key, Doc::new())
         .await
         .unwrap();
 
@@ -254,7 +254,7 @@ async fn test_second_access_uses_existing_registration() {
     let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+    let database = Database::create(&instance, private_key, Doc::new())
         .await
         .unwrap();
 
@@ -292,7 +292,7 @@ async fn test_index_update_includes_target_subtree() {
     let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+    let database = Database::create(&instance, private_key, Doc::new())
         .await
         .unwrap();
 
@@ -332,7 +332,7 @@ async fn test_auto_dummy_write_on_index_update() {
     let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+    let database = Database::create(&instance, private_key, Doc::new())
         .await
         .unwrap();
 
@@ -368,7 +368,7 @@ async fn test_entry_has_both_index_and_subtree_nodes() {
     let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+    let database = Database::create(&instance, private_key, Doc::new())
         .await
         .unwrap();
 
@@ -399,7 +399,7 @@ async fn test_manual_index_update_with_subtree_modification() {
     let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+    let database = Database::create(&instance, private_key, Doc::new())
         .await
         .unwrap();
 
@@ -445,7 +445,7 @@ async fn test_multi_store_database_index_complete() {
     let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+    let database = Database::create(&instance, private_key, Doc::new())
         .await
         .unwrap();
 
@@ -492,7 +492,7 @@ async fn test_index_persists_across_transactions() {
     let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+    let database = Database::create(&instance, private_key, Doc::new())
         .await
         .unwrap();
 
@@ -524,14 +524,9 @@ async fn test_read_index_from_viewer() {
     let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database = Database::create(
-        Doc::new(),
-        &instance,
-        private_key.clone(),
-        "test_key".to_string(),
-    )
-    .await
-    .unwrap();
+    let database = Database::create(&instance, private_key.clone(), Doc::new())
+        .await
+        .unwrap();
 
     // Create some subtrees
     let tx = database.new_transaction().await.unwrap();
@@ -558,17 +553,13 @@ async fn test_read_index_from_viewer() {
 #[tokio::test]
 async fn test_index_survives_database_reload() {
     let instance = test_instance().await;
-    let (private_key, _) = generate_keypair();
+    let (private_key, public_key) = generate_keypair();
+    let pubkey_str = format_public_key(&public_key);
 
     // Create database and add subtrees
-    let database = Database::create(
-        Doc::new(),
-        &instance,
-        private_key.clone(),
-        "test_key".to_string(),
-    )
-    .await
-    .unwrap();
+    let database = Database::create(&instance, private_key.clone(), Doc::new())
+        .await
+        .unwrap();
 
     let root_id = database.root_id().clone();
 
@@ -582,14 +573,9 @@ async fn test_index_survives_database_reload() {
 
     // Reload database from same instance to test persistence
     // Reopen with the same key that was used to create
-    let database = Database::open(
-        instance.clone(),
-        &root_id,
-        private_key,
-        "test_key".to_string(),
-    )
-    .await
-    .unwrap();
+    let database = Database::open(instance.clone(), &root_id, private_key, pubkey_str)
+        .await
+        .unwrap();
 
     // Verify index is intact using viewer (read-only)
     let viewer = database
@@ -611,7 +597,7 @@ async fn test_get_nonexistent_subtree_info() {
     let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+    let database = Database::create(&instance, private_key, Doc::new())
         .await
         .unwrap();
 
@@ -628,7 +614,7 @@ async fn test_index_with_empty_database() {
     let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+    let database = Database::create(&instance, private_key, Doc::new())
         .await
         .unwrap();
 
@@ -645,7 +631,7 @@ async fn test_concurrent_index_updates() {
     let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+    let database = Database::create(&instance, private_key, Doc::new())
         .await
         .unwrap();
 
@@ -687,7 +673,7 @@ async fn test_empty_config_is_valid() {
     let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+    let database = Database::create(&instance, private_key, Doc::new())
         .await
         .unwrap();
 
@@ -714,7 +700,7 @@ async fn test_index_modification_forces_subtree_in_entry() {
     let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+    let database = Database::create(&instance, private_key, Doc::new())
         .await
         .unwrap();
 
@@ -758,7 +744,7 @@ async fn test_auto_registration_includes_both_subtrees() {
     let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+    let database = Database::create(&instance, private_key, Doc::new())
         .await
         .unwrap();
 
@@ -790,7 +776,7 @@ async fn test_accessing_store_registers_in_index() {
     let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+    let database = Database::create(&instance, private_key, Doc::new())
         .await
         .unwrap();
 
@@ -820,7 +806,7 @@ async fn test_multiple_stores_registered_on_access() {
     let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+    let database = Database::create(&instance, private_key, Doc::new())
         .await
         .unwrap();
 
@@ -867,7 +853,7 @@ async fn test_type_mismatch_docstore_as_table() {
     let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+    let database = Database::create(&instance, private_key, Doc::new())
         .await
         .unwrap();
 
@@ -906,7 +892,7 @@ async fn test_type_mismatch_table_as_docstore() {
     let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+    let database = Database::create(&instance, private_key, Doc::new())
         .await
         .unwrap();
 
@@ -943,7 +929,7 @@ async fn test_correct_type_access_succeeds() {
     let instance = test_instance().await;
     let (private_key, _) = generate_keypair();
 
-    let database = Database::create(Doc::new(), &instance, private_key, "test_key".to_string())
+    let database = Database::create(&instance, private_key, Doc::new())
         .await
         .unwrap();
 

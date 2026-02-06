@@ -351,58 +351,39 @@ async fn test_complete_delegation_workflow() {
         .await
         .expect("Failed to create test instance");
 
-    // Use the device key for testing
-    let main_key = instance.device_id();
-    let main_pubkey = format_public_key(&main_key);
-    // For delegated key, we'll use the same device key for simplicity in tests
-    let delegated_key = main_key;
-    let delegated_pubkey = format_public_key(&delegated_key);
+    // Generate a separate key for the delegated user role
+    let (_, delegated_verifying_key) = generate_keypair();
+    let delegated_pubkey = format_public_key(&delegated_verifying_key);
 
-    // Create the delegated tree with its own auth configuration
-    let mut delegated_settings = Doc::new();
-    let mut delegated_auth = AuthSettings::new();
-    delegated_auth
-        .add_key(
+    // Create the delegated tree — device key bootstrapped as Admin(0), untouched
+    let delegated_tree = Database::create(&instance, instance.device_key().clone(), Doc::new())
+        .await
+        .unwrap();
+
+    // Add the delegated user key at Admin(5)
+    let txn = delegated_tree.new_transaction().await.unwrap();
+    let settings = txn.get_settings().unwrap();
+    settings
+        .set_auth_key(
             &delegated_pubkey,
             AuthKey::active(Some("delegated_user"), Permission::Admin(5)),
         )
+        .await
         .unwrap();
-    // Add admin to auth config so we can create the database with it
-    // Note: main_pubkey == delegated_pubkey in this test, so we overwrite
-    delegated_auth
-        .overwrite_key(
-            &main_pubkey,
-            AuthKey::active(Some("admin"), Permission::Admin(0)),
-        )
-        .unwrap();
-    delegated_settings.set("auth", delegated_auth.as_doc().clone());
-
-    let delegated_tree = Database::create(
-        delegated_settings,
-        &instance,
-        instance.device_key().clone(),
-        main_pubkey.clone(),
-    )
-    .await
-    .unwrap();
-
-    // Create the main tree with delegation configuration
-    let mut main_settings = Doc::new();
-    let mut main_auth = AuthSettings::new();
-
-    // Add direct key to main tree
-    main_auth
-        .add_key(
-            &main_pubkey,
-            AuthKey::active(Some("main_admin"), Permission::Admin(0)),
-        )
-        .unwrap();
+    txn.commit().await.unwrap();
 
     // Get the actual tips from the delegated tree
     let delegated_tips = delegated_tree.get_tips().await.unwrap();
 
-    // Add delegation reference
-    main_auth
+    // Create the main tree — signing key bootstrapped as Admin(0)
+    let main_tree = Database::create(&instance, instance.device_key().clone(), Doc::new())
+        .await
+        .unwrap();
+
+    // Add delegation reference via follow-up transaction
+    let txn = main_tree.new_transaction().await.unwrap();
+    let settings = txn.get_settings().unwrap();
+    settings
         .add_delegated_tree(DelegatedTreeRef {
             permission_bounds: PermissionBounds {
                 max: Permission::Write(10),
@@ -413,17 +394,9 @@ async fn test_complete_delegation_workflow() {
                 tips: delegated_tips.clone(),
             },
         })
+        .await
         .unwrap();
-
-    main_settings.set("auth", main_auth.as_doc().clone());
-    let main_tree = Database::create(
-        main_settings,
-        &instance,
-        instance.device_key().clone(),
-        main_pubkey.clone(),
-    )
-    .await
-    .unwrap();
+    txn.commit().await.unwrap();
 
     // Test delegation resolution
     let mut validator = AuthValidator::new();
@@ -473,35 +446,20 @@ async fn test_delegated_tree_requires_tips() {
         .await
         .expect("Failed to create test instance");
 
-    // Use the device key for testing
-    let main_key = instance.device_id();
-    let main_pubkey = format_public_key(&main_key);
-
     // Create a simple delegated tree
-    let delegated_settings = Doc::new();
-    let delegated_tree = Database::create(
-        delegated_settings,
-        &instance,
-        instance.device_key().clone(),
-        main_pubkey.clone(),
-    )
-    .await
-    .unwrap();
-
-    // Create the main tree with delegation configuration
-    let mut main_settings = Doc::new();
-    let mut main_auth = AuthSettings::new();
-
-    // Add direct key to main tree
-    main_auth
-        .add_key(
-            &main_pubkey,
-            AuthKey::active(Some("main_admin"), Permission::Admin(0)),
-        )
+    let delegated_tree = Database::create(&instance, instance.device_key().clone(), Doc::new())
+        .await
         .unwrap();
 
-    // Add delegation reference
-    main_auth
+    // Create the main tree — signing key bootstrapped as Admin(0)
+    let main_tree = Database::create(&instance, instance.device_key().clone(), Doc::new())
+        .await
+        .unwrap();
+
+    // Add delegation reference via follow-up transaction
+    let txn = main_tree.new_transaction().await.unwrap();
+    let settings = txn.get_settings().unwrap();
+    settings
         .add_delegated_tree(DelegatedTreeRef {
             permission_bounds: PermissionBounds {
                 max: Permission::Write(10),
@@ -509,12 +467,21 @@ async fn test_delegated_tree_requires_tips() {
             },
             tree: TreeReference {
                 root: delegated_tree.root_id().clone(),
-                tips: vec![ID::new("some_tip")], // This will be ignored due to empty tips in auth_id
+                tips: vec![ID::new("some_tip")],
             },
         })
+        .await
         .unwrap();
+    txn.commit().await.unwrap();
 
-    main_settings.set("auth", main_auth.as_doc().clone());
+    // Build main_auth from the stored settings for the validator test
+    let main_auth = main_tree
+        .get_settings()
+        .await
+        .unwrap()
+        .get_auth_settings()
+        .await
+        .unwrap();
 
     // Create validator and test with empty tips
     let mut validator = AuthValidator::new();
@@ -555,47 +522,39 @@ async fn test_nested_delegation_with_permission_clamping() {
         .await
         .expect("Failed to create test instance");
 
-    // Use the device key for all operations
-    let main_key = instance.device_id();
-    let main_pubkey = format_public_key(&main_key);
+    // Generate a separate key for the delegated user
+    let (_, user_verifying_key) = generate_keypair();
+    let user_pubkey = format_public_key(&user_verifying_key);
 
     // 1. Create the final user tree (deepest level)
-    let mut user_settings = Doc::new();
-    let mut user_auth = AuthSettings::new();
-    user_auth
-        .add_key(
-            &main_pubkey,
-            AuthKey::active(
-                Some("final_user"),
-                Permission::Admin(3), // High privilege at source
-            ),
-        )
+    // Device key bootstrapped as Admin(0), untouched
+    let user_tree = Database::create(&instance, instance.device_key().clone(), Doc::new())
+        .await
         .unwrap();
-    user_settings.set("auth", user_auth.as_doc().clone());
-    let user_tree = Database::create(
-        user_settings,
-        &instance,
-        instance.device_key().clone(),
-        main_pubkey.clone(),
-    )
-    .await
-    .unwrap();
+
+    // Add the delegated user key at Admin(3)
+    let txn = user_tree.new_transaction().await.unwrap();
+    let settings = txn.get_settings().unwrap();
+    settings
+        .set_auth_key(
+            &user_pubkey,
+            AuthKey::active(Some("final_user"), Permission::Admin(3)),
+        )
+        .await
+        .unwrap();
+    txn.commit().await.unwrap();
+
     let user_tips = user_tree.get_tips().await.unwrap();
 
     // 2. Create intermediate delegated tree that delegates to user tree
-    let mut intermediate_settings = Doc::new();
-    let mut intermediate_auth = AuthSettings::new();
-
-    // Add direct key to intermediate tree
-    intermediate_auth
-        .add_key(
-            &main_pubkey,
-            AuthKey::active(Some("intermediate_admin"), Permission::Admin(2)),
-        )
+    let intermediate_tree = Database::create(&instance, instance.device_key().clone(), Doc::new())
+        .await
         .unwrap();
 
-    // Add delegation to user tree with bounds Write(8) max, Read min
-    intermediate_auth
+    // Add delegation to user tree (no key overwrite needed)
+    let txn = intermediate_tree.new_transaction().await.unwrap();
+    let settings = txn.get_settings().unwrap();
+    settings
         .add_delegated_tree(DelegatedTreeRef {
             permission_bounds: PermissionBounds {
                 max: Permission::Write(8), // Clamp Admin(3) to Write(8)
@@ -606,34 +565,22 @@ async fn test_nested_delegation_with_permission_clamping() {
                 tips: user_tips.clone(),
             },
         })
+        .await
         .unwrap();
+    txn.commit().await.unwrap();
 
-    intermediate_settings.set("auth", intermediate_auth.as_doc().clone());
-    let intermediate_tree = Database::create(
-        intermediate_settings,
-        &instance,
-        instance.device_key().clone(),
-        main_pubkey.clone(),
-    )
-    .await
-    .unwrap();
     let intermediate_tips = intermediate_tree.get_tips().await.unwrap();
 
     // 3. Create main tree that delegates to intermediate tree
-    let mut main_settings = Doc::new();
-    let mut main_auth = AuthSettings::new();
-
-    // Add direct key to main tree
-    main_auth
-        .add_key(
-            &main_pubkey,
-            AuthKey::active(Some("main_admin"), Permission::Admin(0)),
-        )
+    // Signing key stays at Admin(0) — matches original test intent.
+    let main_tree = Database::create(&instance, instance.device_key().clone(), Doc::new())
+        .await
         .unwrap();
 
-    // Add delegation to intermediate tree with bounds Write(5) max, Read min
-    // This should be less restrictive than the intermediate tree's Write(8)
-    main_auth
+    // Add delegation to intermediate tree via follow-up transaction
+    let txn = main_tree.new_transaction().await.unwrap();
+    let settings = txn.get_settings().unwrap();
+    settings
         .add_delegated_tree(DelegatedTreeRef {
             permission_bounds: PermissionBounds {
                 max: Permission::Write(5), // Less restrictive than Write(8)
@@ -644,17 +591,9 @@ async fn test_nested_delegation_with_permission_clamping() {
                 tips: intermediate_tips.clone(),
             },
         })
+        .await
         .unwrap();
-
-    main_settings.set("auth", main_auth.as_doc().clone());
-    let main_tree = Database::create(
-        main_settings,
-        &instance,
-        instance.device_key().clone(),
-        main_pubkey.clone(),
-    )
-    .await
-    .unwrap();
+    txn.commit().await.unwrap();
 
     // 4. Test nested delegation resolution: Main -> Intermediate -> User
     let mut validator = AuthValidator::new();
@@ -681,7 +620,7 @@ async fn test_nested_delegation_with_permission_clamping() {
                 tips: user_tips,
             },
         ],
-        hint: KeyHint::from_pubkey(&main_pubkey),
+        hint: KeyHint::from_pubkey(&user_pubkey),
     };
 
     let result = validator
@@ -749,7 +688,7 @@ async fn test_global_permission_with_pubkey_hint() {
     let actual_pubkey = format_public_key(&verifying_key);
 
     // Create settings with global "*" permission
-    let global_auth_key = AuthKey::active(None::<String>, Permission::Write(10));
+    let global_auth_key = AuthKey::active(None, Permission::Write(10));
 
     let settings = create_test_auth_with_key("*", &global_auth_key);
 
@@ -783,7 +722,7 @@ async fn test_global_permission_without_pubkey_fails() {
     let (signing_key, _) = generate_keypair();
 
     // Create settings with global "*" permission
-    let global_auth_key = AuthKey::active(None::<String>, Permission::Write(10));
+    let global_auth_key = AuthKey::active(None, Permission::Write(10));
 
     let settings = create_test_auth_with_key("*", &global_auth_key);
 
@@ -816,7 +755,7 @@ async fn test_global_permission_resolver() {
     let actual_pubkey = format_public_key(&verifying_key);
 
     // Create settings with global "*" permission
-    let global_auth_key = AuthKey::active(None::<String>, Permission::Write(10));
+    let global_auth_key = AuthKey::active(None, Permission::Write(10));
 
     let settings = create_test_auth_with_key("*", &global_auth_key);
 
@@ -845,7 +784,7 @@ async fn test_global_permission_insufficient_perms() {
 
     // Create settings with global "*" permission but only Read access
     let global_auth_key = AuthKey::active(
-        None::<String>,
+        None,
         Permission::Read, // Only read permission
     );
 
@@ -895,7 +834,7 @@ async fn test_global_permission_vs_specific_key() {
     auth_settings.add_key(&pubkey1, specific_key).unwrap();
 
     // Add global permission
-    let global_key = AuthKey::active(None::<String>, Permission::Write(10));
+    let global_key = AuthKey::active(None, Permission::Write(10));
     auth_settings.add_key("*", global_key).unwrap();
 
     // Test 1: Entry signed with specific key should work normally

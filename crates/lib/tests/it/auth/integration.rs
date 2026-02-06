@@ -2,7 +2,7 @@
 
 use eidetica::{
     Database,
-    auth::{AuthSettings, types::AuthKey, types::Permission, types::SigKey},
+    auth::{types::AuthKey, types::Permission, types::SigKey},
     crdt::Doc,
     store::DocStore,
 };
@@ -91,19 +91,9 @@ async fn test_validation_pipeline_with_concurrent_settings_changes() {
         .await
         .expect("Failed to add key2");
 
-    // Create initial tree with KEY1 only
-    let mut settings = Doc::new();
-    let mut auth_settings = AuthSettings::new();
-    auth_settings
-        .add_key(
-            &key1_id,
-            AuthKey::active(Some("KEY1"), Permission::Admin(1)),
-        )
-        .unwrap();
-    settings.set("auth", auth_settings.as_doc().clone());
-
+    // Create initial tree with KEY1 (signing key becomes Admin(0))
     let tree = user
-        .create_database(settings, &key1_id)
+        .create_database(Doc::new(), &key1_id)
         .await
         .expect("Failed to create tree");
 
@@ -180,19 +170,9 @@ async fn test_prevent_auth_corruption() {
         .await
         .expect("Failed to add key");
 
-    // Create tree with valid auth settings
-    let mut settings = Doc::new();
-    let mut auth_settings = AuthSettings::new();
-    auth_settings
-        .add_key(
-            &valid_key_id,
-            AuthKey::active(Some("VALID_KEY"), Permission::Admin(1)),
-        )
-        .unwrap();
-    settings.set("auth", auth_settings.as_doc().clone());
-
+    // Create tree with valid key (signing key becomes Admin(0))
     let tree = user
-        .create_database(settings, &valid_key_id)
+        .create_database(Doc::new(), &valid_key_id)
         .await
         .expect("Failed to create tree");
 

@@ -43,13 +43,9 @@ impl AuthKey {
     ///     KeyStatus::Active
     /// );
     /// ```
-    pub fn new(
-        name: Option<impl Into<String>>,
-        permissions: Permission,
-        status: KeyStatus,
-    ) -> Self {
+    pub fn new(name: Option<&str>, permissions: Permission, status: KeyStatus) -> Self {
         Self {
-            name: name.map(|n| n.into()),
+            name: name.map(|n| n.to_owned()),
             permissions,
             status,
         }
@@ -70,7 +66,7 @@ impl AuthKey {
     ///     Permission::Admin(1)
     /// );
     /// ```
-    pub fn active(name: Option<impl Into<String>>, permissions: Permission) -> Self {
+    pub fn active(name: Option<&str>, permissions: Permission) -> Self {
         Self::new(name, permissions, KeyStatus::Active)
     }
 
@@ -100,8 +96,8 @@ impl AuthKey {
     }
 
     /// Set the name
-    pub fn set_name(&mut self, name: Option<String>) {
-        self.name = name;
+    pub fn set_name(&mut self, name: Option<&str>) {
+        self.name = name.map(|s| s.to_owned());
     }
 }
 

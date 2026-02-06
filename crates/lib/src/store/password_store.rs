@@ -480,7 +480,7 @@ impl Encryptor for PasswordEncryptor {
 /// # let backend = InMemory::new();
 /// # let instance = Instance::open(Box::new(backend)).await?;
 /// # let (private_key, _) = generate_keypair();
-/// # let db = Database::create(Doc::new(), &instance, private_key, "key".to_string()).await?;
+/// # let db = Database::create(&instance, private_key, Doc::new()).await?;
 /// let tx = db.new_transaction().await?;
 /// let mut encrypted = tx.get_store::<PasswordStore<DocStore>>("secrets").await?;
 /// encrypted.initialize("my_password", Doc::new()).await?;
@@ -502,7 +502,7 @@ impl Encryptor for PasswordEncryptor {
 /// # let backend = InMemory::new();
 /// # let instance = Instance::open(Box::new(backend)).await?;
 /// # let (private_key, _) = generate_keypair();
-/// # let db = Database::create(Doc::new(), &instance, private_key, "key".to_string()).await?;
+/// # let db = Database::create(&instance, private_key, Doc::new()).await?;
 /// let tx = db.new_transaction().await?;
 /// let mut store = tx.get_store::<PasswordStore<DocStore>>("secrets").await?;
 /// store.open("my_password")?;
@@ -673,7 +673,7 @@ impl<S: Store> PasswordStore<S> {
     /// # let backend = InMemory::new();
     /// # let instance = Instance::open(Box::new(backend)).await?;
     /// # let (private_key, _) = generate_keypair();
-    /// # let db = Database::create(Doc::new(), &instance, private_key, "key".to_string()).await?;
+    /// # let db = Database::create(&instance, private_key, Doc::new()).await?;
     /// let tx = db.new_transaction().await?;
     /// let mut encrypted = tx.get_store::<PasswordStore<DocStore>>("secrets").await?;
     /// encrypted.initialize("my_password", Doc::new()).await?;
@@ -989,7 +989,7 @@ impl<S: Store> PasswordStore<S> {
     /// # let backend = InMemory::new();
     /// # let instance = Instance::open(Box::new(backend)).await?;
     /// # let (private_key, _) = generate_keypair();
-    /// # let db = Database::create(Doc::new(), &instance, private_key, "key".to_string()).await?;
+    /// # let db = Database::create(&instance, private_key, Doc::new()).await?;
     /// # let tx = db.new_transaction().await?;
     /// # let mut encrypted = tx.get_store::<PasswordStore<DocStore>>("test").await?;
     /// # encrypted.initialize("pass", Doc::new()).await?;

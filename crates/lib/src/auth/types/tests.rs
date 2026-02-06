@@ -364,7 +364,7 @@ fn test_auth_key_with_and_without_name() {
     assert_eq!(key_with_name.status(), &KeyStatus::Active);
 
     // Test key without name
-    let key_without_name = AuthKey::active(None::<String>, Permission::Admin(5));
+    let key_without_name = AuthKey::active(None, Permission::Admin(5));
     assert_eq!(key_without_name.name(), None);
     assert_eq!(key_without_name.permissions(), &Permission::Admin(5));
     assert_eq!(key_without_name.status(), &KeyStatus::Active);
@@ -383,7 +383,7 @@ fn test_auth_key_mutators() {
     assert_eq!(key.permissions(), &Permission::Admin(5));
 
     // Test name modification
-    key.set_name(Some("new_name".to_string()));
+    key.set_name(Some("new_name"));
     assert_eq!(key.name(), Some("new_name"));
 
     key.set_name(None);

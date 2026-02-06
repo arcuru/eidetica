@@ -142,10 +142,6 @@ const TRANSPORTS_SUBTREE: &str = "transports";
 /// Private constant for the transport state store name (persisted identity/state per transport instance)
 const TRANSPORT_STATE_STORE: &str = "transport_state";
 
-/// Constant for the admin key identifier used in database authentication.
-/// The instance's device key is configured as "admin" in system database auth settings.
-const ADMIN_KEY_NAME: &str = "admin";
-
 /// Authentication parameters for sync operations.
 #[derive(Debug, Clone)]
 pub struct AuthParams {
@@ -300,13 +296,7 @@ impl Sync {
         sync_settings.set("name", "_sync");
         sync_settings.set("type", "sync_settings");
 
-        let sync_tree = Database::create(
-            sync_settings,
-            &instance,
-            signing_key,
-            ADMIN_KEY_NAME.to_string(),
-        )
-        .await?;
+        let sync_tree = Database::create(&instance, signing_key, sync_settings).await?;
 
         let sync = Self {
             background_tx: OnceLock::new(),
@@ -332,13 +322,9 @@ impl Sync {
     pub async fn load(instance: Instance, sync_tree_root_id: &ID) -> Result<Self> {
         let device_key = instance.device_key().clone();
 
-        let sync_tree = Database::open(
-            instance.handle(),
-            sync_tree_root_id,
-            device_key,
-            ADMIN_KEY_NAME.to_string(),
-        )
-        .await?;
+        let sigkey = instance.device_id_string();
+        let sync_tree =
+            Database::open(instance.handle(), sync_tree_root_id, device_key, sigkey).await?;
 
         let sync = Self {
             background_tx: OnceLock::new(),

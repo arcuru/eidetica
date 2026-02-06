@@ -9,7 +9,7 @@
 
 use eidetica::{
     Result,
-    auth::{AuthSettings, Permission, types::AuthKey},
+    auth::{Permission, types::AuthKey},
     crdt::Doc,
     store::Table,
     sync::transports::http::HttpTransport,
@@ -18,7 +18,7 @@ use eidetica::{
 use serde::{Deserialize, Serialize};
 
 use super::helpers::enable_sync_for_instance_database;
-use crate::helpers::test_instance_with_user_and_key;
+use crate::helpers::{add_auth_keys, test_instance_with_user_and_key};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ChatMessage {
@@ -70,37 +70,30 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     let mut settings = Doc::new();
     settings.set("name", "Bidirectional Test Room");
 
-    // Enable automatic bootstrap approval via global wildcard permission
-    let mut auth_settings = AuthSettings::new();
-
-    // Include device1 admin key for initial database creation
-    auth_settings
-        .add_key(
-            &device1_key_id,
-            AuthKey::active(Some("admin"), Permission::Admin(10)),
-        )
-        .expect("Failed to add admin auth");
-
-    // Add device key to auth settings for sync handler operations
+    // Get device key for auth settings
     let device1_device_pubkey = device1_instance.device_id_string();
-
-    auth_settings
-        .add_key(
-            &device1_device_pubkey,
-            AuthKey::active(Some("device"), Permission::Admin(10)),
-        )
-        .expect("Failed to add device key auth");
-    // Add global wildcard permission for automatic bootstrap approval
-    auth_settings
-        .add_key("*", AuthKey::active(Some("*"), Permission::Admin(10)))
-        .expect("Failed to add global wildcard permission");
-
-    settings.set("auth", auth_settings.as_doc().clone());
 
     let device1_database = device1_user
         .create_database(settings, &device1_key_id)
         .await
         .expect("Failed to create database on device1");
+
+    // Add auth keys: user's key, device key for sync handler, and global wildcard permission
+    add_auth_keys(
+        &device1_database,
+        &[
+            (
+                &device1_key_id,
+                AuthKey::active(Some("admin"), Permission::Admin(10)),
+            ),
+            (
+                &device1_device_pubkey,
+                AuthKey::active(Some("device"), Permission::Admin(10)),
+            ),
+            ("*", AuthKey::active(Some("*"), Permission::Admin(10))),
+        ],
+    )
+    .await;
 
     let room_id = device1_database.root_id().clone();
 

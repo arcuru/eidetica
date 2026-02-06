@@ -8,7 +8,7 @@ use std::{sync::Arc, time::Duration};
 use async_trait::async_trait;
 use eidetica::{
     Database, Entry, Error, Instance, Result,
-    auth::{AuthKey, AuthSettings, Permission as AuthPermission},
+    auth::{AuthKey, Permission as AuthPermission},
     crdt::Doc,
     entry::ID,
     path,
@@ -224,29 +224,25 @@ pub async fn setup_manual_approval_server() -> (Instance, User, String, Database
     let mut settings = Doc::new();
     settings.set("name", "Bootstrap Test Database");
 
-    let mut auth = AuthSettings::new();
-
-    // Add user's key to auth settings (stored by pubkey under "keys.")
-    auth.overwrite_key(
-        &key_id,
-        AuthKey::active(Some("server_admin"), AuthPermission::Admin(0)),
-    )
-    .expect("Failed to set user key auth");
-
-    // Add device key to auth settings for sync handler operations
     let device_pubkey = instance.device_id_string();
-    auth.overwrite_key(
-        &device_pubkey,
-        AuthKey::active(Some("admin"), AuthPermission::Admin(0)),
-    )
-    .expect("Failed to set device key auth");
-
-    settings.set("auth", Doc::from(auth));
 
     let database = user
         .create_database(settings, &key_id)
         .await
         .expect("Failed to create database");
+
+    // Add device key for sync handler operations
+    let txn = database.new_transaction().await.unwrap();
+    let settings_store = txn.get_settings().unwrap();
+    settings_store
+        .set_auth_key(
+            &device_pubkey,
+            AuthKey::active(Some("admin"), AuthPermission::Admin(0)),
+        )
+        .await
+        .unwrap();
+    txn.commit().await.unwrap();
+
     let tree_id = database.root_id().clone();
 
     // Create sync instance
@@ -280,36 +276,33 @@ pub async fn setup_global_wildcard_server() -> (Instance, User, String, Database
     let mut settings = Doc::new();
     settings.set("name", "Bootstrap Test Database");
 
-    let mut auth = AuthSettings::new();
-
-    // Add user's key to auth settings (stored by pubkey under "keys.")
-    auth.overwrite_key(
-        &key_id,
-        AuthKey::active(Some("server_admin"), AuthPermission::Admin(0)),
-    )
-    .expect("Failed to set user key auth");
-
-    // Add device key to auth settings for sync handler operations
     let device_pubkey = instance.device_id_string();
-    auth.overwrite_key(
-        &device_pubkey,
-        AuthKey::active(Some("admin"), AuthPermission::Admin(0)),
-    )
-    .expect("Failed to set device key auth");
-
-    // Add global wildcard permission for automatic bootstrap approval
-    auth.add_key(
-        "*",
-        AuthKey::active(None::<String>, AuthPermission::Admin(0)),
-    )
-    .expect("Failed to set global wildcard permission");
-
-    settings.set("auth", Doc::from(auth));
 
     let database = user
         .create_database(settings, &key_id)
         .await
         .expect("Failed to create database");
+
+    // Add device key and global wildcard permission via follow-up transaction
+    let txn = database.new_transaction().await.unwrap();
+    let settings_store = txn.get_settings().unwrap();
+
+    // Add device key for sync handler operations
+    settings_store
+        .set_auth_key(
+            &device_pubkey,
+            AuthKey::active(Some("admin"), AuthPermission::Admin(0)),
+        )
+        .await
+        .unwrap();
+
+    // Add global wildcard permission
+    settings_store
+        .set_auth_key("*", AuthKey::active(None, AuthPermission::Admin(0)))
+        .await
+        .unwrap();
+
+    txn.commit().await.unwrap();
     let tree_id = database.root_id().clone();
 
     // Create sync instance
@@ -624,7 +617,7 @@ pub async fn set_global_wildcard_permission_with_level(
     let tx = database.new_transaction().await?;
     let db_settings = tx.get_settings()?;
     db_settings
-        .set_auth_key("*", AuthKey::active(None::<String>, permission))
+        .set_auth_key("*", AuthKey::active(None, permission))
         .await?;
     tx.commit().await?;
     Ok(())
@@ -771,11 +764,12 @@ pub async fn enable_sync_for_instance_database(sync: &Sync, database_id: &ID) ->
     let instance = sync.instance()?;
     let signing_key = instance.device_key().clone();
 
+    let sigkey = instance.device_id_string();
     let sync_database = Database::open(
         instance.clone(),
         sync.sync_tree_root_id(),
         signing_key,
-        "admin".to_string(),
+        sigkey,
     )
     .await?;
 
@@ -827,38 +821,30 @@ pub async fn setup_public_sync_enabled_server(
     let mut settings = Doc::new();
     settings.set("name", db_name);
 
-    // Add auth config with wildcard permission for unauthenticated access
-    let mut auth_settings = AuthSettings::new();
-
     let device_pubkey = server_instance.device_id_string();
-
-    // Add device key for database operations (keyed by pubkey, name is "admin")
-    auth_settings
-        .add_key(
-            &device_pubkey,
-            AuthKey::active(Some("admin"), AuthPermission::Admin(0)),
-        )
-        .unwrap();
-
-    // Add user's key (server_key_id is already the formatted public key)
-    auth_settings
-        .add_key(
-            &server_key_id,
-            AuthKey::active(None::<String>, AuthPermission::Admin(0)),
-        )
-        .unwrap();
-
-    // Add wildcard "*" permission to allow unauthenticated read access
-    auth_settings
-        .add_key("*", AuthKey::active(None::<String>, AuthPermission::Read))
-        .unwrap();
-
-    settings.set("auth", auth_settings.as_doc().clone());
 
     let server_database = server_user
         .create_database(settings, &server_key_id)
         .await
         .unwrap();
+
+    // Add auth keys: device key, user's key, and wildcard permission
+    crate::helpers::add_auth_keys(
+        &server_database,
+        &[
+            (
+                &device_pubkey,
+                AuthKey::active(Some("admin"), AuthPermission::Admin(0)),
+            ),
+            (
+                &server_key_id,
+                AuthKey::active(None, AuthPermission::Admin(0)),
+            ),
+            ("*", AuthKey::active(None, AuthPermission::Read)),
+        ],
+    )
+    .await;
+
     let tree_id = server_database.root_id().clone();
 
     // Enable sync for this database

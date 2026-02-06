@@ -160,7 +160,7 @@ async fn grant_user_permission_on_database(
     let tx = database.new_transaction().await?;
     let settings_store = tx.get_settings()?;
     settings_store
-        .set_auth_key(&pubkey, AuthKey::active(None::<String>, permission))
+        .set_auth_key(&pubkey, AuthKey::active(None, permission))
         .await?;
     tx.commit().await?;
 

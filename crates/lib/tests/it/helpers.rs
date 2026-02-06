@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use eidetica::{
     Database, Error, FixedClock, Instance,
+    auth::types::AuthKey,
     backend::BackendImpl,
     backend::database::InMemory,
     crdt::{Doc, doc::Value},
@@ -266,4 +267,26 @@ pub fn assert_key_not_found(result: Result<Value, Error>) {
         Err(ref err) if err.is_not_found() => (), // Expected
         other => panic!("Expected NotFound error, got {other:?}"),
     }
+}
+
+// ==========================
+// AUTH KEY HELPERS
+// ==========================
+
+/// Add or overwrite an auth key on a database via a settings transaction.
+pub async fn add_auth_key(db: &Database, pubkey: &str, key: AuthKey) {
+    let txn = db.new_transaction().await.unwrap();
+    let settings = txn.get_settings().unwrap();
+    settings.set_auth_key(pubkey, key).await.unwrap();
+    txn.commit().await.unwrap();
+}
+
+/// Add or overwrite multiple auth keys on a database in a single transaction.
+pub async fn add_auth_keys(db: &Database, keys: &[(&str, AuthKey)]) {
+    let txn = db.new_transaction().await.unwrap();
+    let settings = txn.get_settings().unwrap();
+    for (pubkey, key) in keys {
+        settings.set_auth_key(pubkey, key.clone()).await.unwrap();
+    }
+    txn.commit().await.unwrap();
 }

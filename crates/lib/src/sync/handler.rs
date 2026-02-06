@@ -8,7 +8,6 @@ use async_trait::async_trait;
 use tracing::{Instrument, debug, error, info, info_span, trace, warn};
 
 use super::{
-    ADMIN_KEY_NAME,
     bootstrap_request_manager::{BootstrapRequest, BootstrapRequestManager, RequestStatus},
     peer_manager::PeerManager,
     peer_types::Address,
@@ -85,14 +84,9 @@ impl SyncHandlerImpl {
         // Load sync tree with the device key
         let instance = self.instance()?;
         let signing_key = instance.device_key().clone();
+        let sigkey = instance.device_id_string();
 
-        Database::open(
-            self.instance()?,
-            &self.sync_tree_id,
-            signing_key,
-            ADMIN_KEY_NAME.to_string(),
-        )
-        .await
+        Database::open(instance, &self.sync_tree_id, signing_key, sigkey).await
     }
 
     /// Store a bootstrap request in the sync database for manual approval.
@@ -343,18 +337,13 @@ impl SyncHandlerImpl {
         };
 
         let signing_key = instance.device_key().clone();
+        let sigkey = instance.device_id_string();
 
-        let sync_database = match Database::open(
-            instance.clone(),
-            &self.sync_tree_id,
-            signing_key,
-            ADMIN_KEY_NAME.to_string(),
-        )
-        .await
-        {
-            Ok(db) => db,
-            Err(_) => return false, // Fail closed
-        };
+        let sync_database =
+            match Database::open(instance.clone(), &self.sync_tree_id, signing_key, sigkey).await {
+                Ok(db) => db,
+                Err(_) => return false, // Fail closed
+            };
 
         let transaction = match sync_database.new_transaction().await {
             Ok(tx) => tx,

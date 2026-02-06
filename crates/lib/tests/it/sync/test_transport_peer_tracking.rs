@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use eidetica::{
-    auth::{AuthKey, AuthSettings, Permission},
+    auth::{AuthKey, Permission},
     crdt::Doc,
     sync::{
         Address,
@@ -17,7 +17,7 @@ use eidetica::{
 };
 
 use super::helpers::*;
-use crate::helpers::setup_empty_db;
+use crate::helpers::{add_auth_key, setup_empty_db};
 
 /// Test automatic peer tracking: when client syncs with server, server should
 /// automatically track the tree/peer relationship WITHOUT manual setup.
@@ -45,22 +45,19 @@ async fn test_server_automatically_tracks_peers_that_sync_trees() {
     let mut db_settings = Doc::new();
     db_settings.set("name", "test_database");
 
-    let mut auth_settings = AuthSettings::new();
-    auth_settings
-        .add_key(
-            &server_key_id,
-            AuthKey::active(Some("admin"), Permission::Admin(0)),
-        )
-        .unwrap();
-    auth_settings
-        .add_key("*", AuthKey::active(Some("*"), Permission::Read))
-        .unwrap();
-    db_settings.set("auth", auth_settings.as_doc().clone());
-
     let server_db = server_user
         .create_database(db_settings, &server_key_id)
         .await
         .unwrap();
+
+    // Add wildcard "*" permission
+    add_auth_key(
+        &server_db,
+        "*",
+        AuthKey::active(Some("*"), Permission::Read),
+    )
+    .await;
+
     let tree_id = server_db.root_id().clone();
 
     // Enable sync for this database
