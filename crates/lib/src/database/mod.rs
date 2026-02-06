@@ -62,19 +62,24 @@ impl Database {
     /// meaning transactions will use the provided key directly rather than looking it up
     /// from backend storage.
     ///
-    /// # Key Management Models
+    /// # Auth Bootstrapping
     ///
-    /// - **Backend-managed keys** (legacy): Use `Database::new()` - keys stored in backend
-    /// - **User-managed keys** (recommended): Use this method - keys managed by UserKeyManager
+    /// The signing key is always guaranteed to be in the database's auth settings:
+    /// - If `initial_settings` contains no auth config, auth is bootstrapped with the
+    ///   signing key as `Admin(0)`.
+    /// - If `initial_settings` contains auth config, the signing key is merged in as
+    ///   `Admin(0)` if not already present. Existing entries for the signing key are
+    ///   left unchanged.
+    ///
+    /// This ensures the database creator can never be locked out of their own database.
     ///
     /// # Arguments
     /// * `initial_settings` - A `Doc` CRDT containing the initial settings for the database.
-    ///   If no auth configuration is provided, it will be bootstrapped with the provided key.
     /// * `instance` - Instance handle for storage and coordination
     /// * `signing_key` - The signing key to use for the initial commit and subsequent operations.
     ///   This key should already be decrypted and ready to use.
-    /// * `sigkey` - The SigKey identifier to use in the database's auth settings.
-    ///   This is typically the public key string but can be any identifier.
+    /// * `key_id` - The public key string (e.g., `"ed25519:ABC..."`) identifying the signing key.
+    ///   Used as the key identifier in auth settings and as the `sigkey` in `KeySource`.
     ///
     /// # Returns
     /// A `Result` containing the new `Database` instance configured with `KeySource`.
@@ -89,7 +94,7 @@ impl Database {
     /// # async fn main() -> Result<()> {
     /// let instance = Instance::open(Box::new(InMemory::new())).await?;
     /// let (signing_key, public_key) = generate_keypair();
-    /// let sigkey = format_public_key(&public_key);
+    /// let key_id = format_public_key(&public_key);
     ///
     /// let mut settings = Doc::new();
     /// settings.set("name", "my_database");
@@ -99,7 +104,7 @@ impl Database {
     ///     settings,
     ///     &instance,
     ///     signing_key,
-    ///     sigkey,
+    ///     key_id,
     /// ).await?;
     ///
     /// // All transactions automatically use the provided key
@@ -111,38 +116,44 @@ impl Database {
         initial_settings: Doc,
         instance: &Instance,
         signing_key: SigningKey,
-        sigkey: String,
+        key_id: String,
     ) -> Result<Self> {
-        // Check if auth is configured in the initial settings
-        let auth_configured = matches!(initial_settings.get("auth"), Some(Value::Doc(auth_map)) if !auth_map.is_empty());
+        let public_key = signing_key.verifying_key();
+        let pubkey_str = format_public_key(&public_key);
 
-        // FIXME: this should merge the provided settings and the added signing key should be added as root
-
-        let final_database_settings = if auth_configured {
-            // Auth settings are already provided - use them as-is with the provided signing key
-            initial_settings
-        } else {
-            // No auth config provided - bootstrap auth configuration with the provided key
-            let public_key = signing_key.verifying_key();
-            let pubkey_str = format_public_key(&public_key);
-
-            // Create auth settings with the provided key
-            // Keys are stored by pubkey, with optional name metadata
-            let mut auth_settings_handler = AuthSettings::new();
-            let super_user_auth_key = AuthKey::active(
-                Some(&sigkey),        // Use sigkey as the optional name
-                Permission::Admin(0), // Highest priority
+        // Ensure the signing key is present in auth settings.
+        // If auth is already configured, merge the signing key in (if not already present).
+        // If no auth is configured, bootstrap with the signing key as root.
+        let final_database_settings = {
+            let auth_configured = matches!(
+                initial_settings.get("auth"),
+                Some(Value::Doc(auth_map)) if !auth_map.is_empty()
             );
-            auth_settings_handler.add_key(&pubkey_str, super_user_auth_key)?;
 
-            // Prepare final database settings for the initial commit
-            let mut final_database_settings = initial_settings.clone();
-            final_database_settings.set("auth", auth_settings_handler.as_doc().clone());
+            let mut auth_settings = if auth_configured {
+                let auth_doc = match initial_settings.get("auth") {
+                    Some(Value::Doc(doc)) => doc.clone(),
+                    _ => Doc::new(),
+                };
+                AuthSettings::from_doc(auth_doc)
+            } else {
+                AuthSettings::new()
+            };
 
-            final_database_settings
+            // Add signing key as Admin(0) root if not already present
+            if auth_settings.get_key_by_pubkey(&pubkey_str).is_err() {
+                auth_settings.add_key(
+                    &pubkey_str,
+                    AuthKey::active(Some(&key_id), Permission::Admin(0)),
+                )?;
+            }
+
+            let mut settings = initial_settings;
+            settings.set("auth", auth_settings.as_doc().clone());
+            settings
         };
 
-        // Create the initial root entry using a temporary Database and Transaction
+        // Create the initial root entry using a temporary Database and Transaction.
         // This placeholder ID should not exist in the backend, so get_tips will be empty.
         let bootstrap_placeholder_id = format!(
             "bootstrap_root_{}",
@@ -153,14 +164,14 @@ impl Database {
                 .collect::<String>()
         );
 
-        // Create temporary database for bootstrap with KeySource
-        // This allows the bootstrap transaction to use the provided key directly
+        // Create temporary database for bootstrap with KeySource.
+        // This allows the bootstrap transaction to use the provided key directly.
         let temp_database_for_bootstrap = Database {
             root: bootstrap_placeholder_id.clone().into(),
             instance: instance.downgrade(),
             key_source: Some(KeySource {
                 signing_key: Box::new(signing_key.clone()),
-                sigkey: sigkey.clone(),
+                sigkey: key_id.clone(),
             }),
         };
 
@@ -189,7 +200,7 @@ impl Database {
             instance: instance.downgrade(),
             key_source: Some(KeySource {
                 signing_key: Box::new(signing_key),
-                sigkey,
+                sigkey: key_id,
             }),
         })
     }

@@ -446,7 +446,7 @@ impl Instance {
             self.clone(),
             &self.inner.users_db_id,
             self.inner.device_key.clone(),
-            "admin".to_string(),
+            self.device_id_string(),
         )
         .await
     }

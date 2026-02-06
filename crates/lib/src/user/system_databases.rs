@@ -26,12 +26,12 @@ use crate::{
 /// Create the _instance system database
 ///
 /// This database stores Instance-level configuration and metadata.
-/// It is authenticated with the Instance's admin.
+/// Auth is bootstrapped by `Database::create` with the device key as Admin(0).
 ///
 /// # Arguments
 /// * `instance` - The Instance handle
 /// * `device_signing_key` - The device's Ed25519 signing key
-/// * `device_pubkey` - The public key for admin (used as admin)
+/// * `device_pubkey` - The public key string identifying the device key
 ///
 /// # Returns
 /// The _instance Database
@@ -40,42 +40,29 @@ pub async fn create_instance_database(
     device_signing_key: &ed25519_dalek::SigningKey,
     device_pubkey: &str,
 ) -> Result<Database> {
-    // Create database settings
     let mut settings = Doc::new();
     settings.set("name", INSTANCE);
     settings.set("type", "system");
     settings.set("description", "Instance configuration and management");
 
-    // Set up auth with device key as admin
-    // Keys are stored by pubkey, with name as optional metadata
-    let mut auth_settings = AuthSettings::new();
-    auth_settings.add_key(
-        device_pubkey,
-        AuthKey::active(Some("admin"), Permission::Admin(0)),
-    )?;
-    settings.set("auth", auth_settings.as_doc().clone());
-
-    // Create the database with device signing key provided directly
-    let database = Database::create(
+    Database::create(
         settings,
         instance,
         device_signing_key.clone(),
         device_pubkey.to_string(),
     )
-    .await?;
-
-    Ok(database)
+    .await
 }
 
 /// Create the _users system database
 ///
-/// This database stores the user directory mapping user_id → UserInfo.
-/// It is authenticated with the Instance's admin.
+/// This database stores the user directory mapping user_id -> UserInfo.
+/// Auth is bootstrapped by `Database::create` with the device key as Admin(0).
 ///
 /// # Arguments
 /// * `instance` - The Instance handle
 /// * `device_signing_key` - The device's Ed25519 signing key
-/// * `device_pubkey` - The public key for admin (used as admin)
+/// * `device_pubkey` - The public key string identifying the device key
 ///
 /// # Returns
 /// The created _users Database
@@ -84,44 +71,30 @@ pub async fn create_users_database(
     device_signing_key: &ed25519_dalek::SigningKey,
     device_pubkey: &str,
 ) -> Result<Database> {
-    // Create settings for _users database
     let mut settings = Doc::new();
     settings.set("name", USERS);
     settings.set("type", "system");
     settings.set("description", "User directory database");
 
-    // Create auth settings with device key as admin
-    // Keys are stored by pubkey, with name as optional metadata
-    let mut auth_settings = AuthSettings::new();
-    auth_settings.add_key(
-        device_pubkey,
-        AuthKey::active(Some("admin"), Permission::Admin(0)),
-    )?;
-
-    settings.set("auth", auth_settings.as_doc().clone());
-
-    // Create the database with device signing key provided directly
-    let database = Database::create(
+    Database::create(
         settings,
         instance,
         device_signing_key.clone(),
         device_pubkey.to_string(),
     )
-    .await?;
-
-    Ok(database)
+    .await
 }
 
 /// Create the _databases tracking database
 ///
 /// This database stores the database tracking information mapping
-/// database_id → DatabaseTracking.
-/// It is authenticated with the Instance's admin.
+/// database_id -> DatabaseTracking.
+/// Auth is bootstrapped by `Database::create` with the device key as Admin(0).
 ///
 /// # Arguments
 /// * `instance` - The Instance handle
 /// * `device_signing_key` - The device's Ed25519 signing key
-/// * `device_pubkey` - The public key for admin (used as admin)
+/// * `device_pubkey` - The public key string identifying the device key
 ///
 /// # Returns
 /// The created _databases Database
@@ -130,32 +103,18 @@ pub async fn create_databases_tracking(
     device_signing_key: &ed25519_dalek::SigningKey,
     device_pubkey: &str,
 ) -> Result<Database> {
-    // Create settings for _databases database
     let mut settings = Doc::new();
     settings.set("name", DATABASES);
     settings.set("type", "system");
     settings.set("description", "Database tracking and registry");
 
-    // Create auth settings with device key as admin
-    // Keys are stored by pubkey, with name as optional metadata
-    let mut auth_settings = AuthSettings::new();
-    auth_settings.add_key(
-        device_pubkey,
-        AuthKey::active(Some("admin"), Permission::Admin(0)),
-    )?;
-
-    settings.set("auth", auth_settings.as_doc().clone());
-
-    // Create the database with device signing key provided directly
-    let database = Database::create(
+    Database::create(
         settings,
         instance,
         device_signing_key.clone(),
         device_pubkey.to_string(),
     )
-    .await?;
-
-    Ok(database)
+    .await
 }
 
 /// Create a new user account
@@ -213,34 +172,27 @@ pub async fn create_user(
     let (user_private_key, user_public_key) = generate_keypair();
     let user_public_key_str = format_public_key(&user_public_key);
 
-    // 3. Create user database with authentication for both admin and user's key
+    // 3. Create user database with the user's key in auth (device key added automatically)
     let mut user_db_settings = Doc::new();
     user_db_settings.set("name", format!("_user_{username}"));
     user_db_settings.set("type", "user");
     user_db_settings.set("description", format!("User database for {username}"));
 
-    // Get device key for auth settings and database creation
+    // Get device key for database creation (used as the signing key)
     let device_private_key = instance.device_key().clone();
     let device_pubkey = device_private_key.verifying_key();
     let device_pubkey_str = format_public_key(&device_pubkey);
 
-    // Set up authentication with both keys
-    // Keys are stored by pubkey, with name as optional metadata
+    // Set up auth with the user's key. The device key (signing key) is
+    // automatically added as Admin(0) by Database::create.
     let mut auth_settings = AuthSettings::new();
-    // TODO: Is it possible for the device key to only have Read permission?
-    // Then the device can read it to let the user login but that's it
-    // (Though at the moment it wouldn't need explicit read access, every local DB is readable)
-    auth_settings.add_key(
-        &device_pubkey_str,
-        AuthKey::active(Some("device"), Permission::Admin(0)),
-    )?;
     auth_settings.add_key(
         &user_public_key_str,
         AuthKey::active(Some("user"), Permission::Admin(0)),
     )?;
     user_db_settings.set("auth", auth_settings.as_doc().clone());
 
-    // Create database using device_key directly
+    // Create database using device_key as the signing key
     let user_database = Database::create(
         user_db_settings,
         instance,
@@ -533,12 +485,12 @@ mod tests {
         let name = doc_store.get_string("name").await.unwrap();
         assert_eq!(name, INSTANCE);
 
-        // Verify auth settings - key is stored by pubkey with name "admin"
+        // Verify auth settings - key is stored by pubkey, name is the pubkey string
         let settings_store = SettingsStore::new(&transaction).unwrap();
         let auth_settings = settings_store.get_auth_settings().await.unwrap();
         let device_key = auth_settings.get_key_by_pubkey(&pubkey_str).unwrap();
         assert_eq!(device_key.permissions(), &Permission::Admin(0));
-        assert_eq!(device_key.name(), Some("admin"));
+        assert_eq!(device_key.name(), Some(pubkey_str.as_str()));
     }
 
     #[tokio::test]
@@ -591,14 +543,14 @@ mod tests {
             .await
             .unwrap();
 
-        // Verify admin has admin access - key is stored by pubkey
+        // Verify device key has admin access - key is stored by pubkey
         let transaction = users_db.new_transaction().await.unwrap();
         let settings_store = SettingsStore::new(&transaction).unwrap();
         let auth_settings = settings_store.get_auth_settings().await.unwrap();
         let device_key = auth_settings.get_key_by_pubkey(&pubkey_str).unwrap();
 
         assert_eq!(device_key.permissions(), &Permission::Admin(0));
-        assert_eq!(device_key.name(), Some("admin"));
+        assert_eq!(device_key.name(), Some(pubkey_str.as_str()));
     }
 
     #[tokio::test]

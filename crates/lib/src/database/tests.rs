@@ -1,7 +1,10 @@
 //! Tests for the database module.
 
 use super::*;
-use crate::{auth::crypto::generate_keypair, backend::database::InMemory};
+use crate::{
+    auth::crypto::generate_keypair,
+    backend::database::InMemory,
+};
 
 #[tokio::test]
 async fn test_find_sigkeys_returns_sorted_by_permission() -> Result<()> {
@@ -59,6 +62,68 @@ async fn test_find_sigkeys_returns_sorted_by_permission() -> Result<()> {
         "First should be direct pubkey hint"
     );
     assert!(results[1].0.is_global(), "Second should be global hint");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_create_merges_signing_key_into_preconfigured_auth() -> Result<()> {
+    let instance = Instance::open(Box::new(InMemory::new())).await?;
+
+    // Generate two separate keypairs: one for signing, one pre-configured in auth
+    let (signing_key, signing_pubkey) = generate_keypair();
+    let signing_pubkey_str = format_public_key(&signing_pubkey);
+
+    let (_, other_pubkey) = generate_keypair();
+    let other_pubkey_str = format_public_key(&other_pubkey);
+
+    // Pre-configure auth with ONLY the other key (not the signing key)
+    let mut settings = Doc::new();
+    settings.set("name", "test_merge");
+
+    let mut auth_settings = AuthSettings::new();
+    auth_settings.add_key(
+        &other_pubkey_str,
+        AuthKey::active(Some("other_user"), Permission::Write(5)),
+    )?;
+    settings.set("auth", auth_settings.as_doc().clone());
+
+    // Create database -- signing key is NOT in the pre-configured auth
+    let db = Database::create(
+        settings,
+        &instance,
+        signing_key,
+        signing_pubkey_str.clone(),
+    )
+    .await?;
+
+    // Verify the signing key was auto-added as Admin(0)
+    let signing_key_results =
+        Database::find_sigkeys(&instance, db.root_id(), &signing_pubkey_str).await?;
+    assert_eq!(
+        signing_key_results.len(),
+        1,
+        "Signing key should be present in auth"
+    );
+    assert_eq!(
+        signing_key_results[0].1,
+        Permission::Admin(0),
+        "Signing key should be Admin(0)"
+    );
+
+    // Verify the pre-configured key is still present and unchanged
+    let other_key_results =
+        Database::find_sigkeys(&instance, db.root_id(), &other_pubkey_str).await?;
+    assert_eq!(
+        other_key_results.len(),
+        1,
+        "Pre-configured key should still be present"
+    );
+    assert_eq!(
+        other_key_results[0].1,
+        Permission::Write(5),
+        "Pre-configured key should retain its original permission"
+    );
 
     Ok(())
 }
