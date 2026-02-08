@@ -23,7 +23,7 @@ jobs:
       - name: Extract Coverage Data
         run: |
           mkdir -p coverage
-          cp -r $(nix path-info .#coverage.default)/* coverage/
+          cp -r "$(nix path-info .#coverage.default)"/* coverage/
           ls -la coverage/
 
       # Not uploading yet, testing this flow

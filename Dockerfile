@@ -3,9 +3,11 @@
 FROM rust:1-slim AS builder
 
 # Install build dependencies
-RUN apt-get update && apt-get install -y \
+# hadolint ignore=DL3008
+RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     libssl-dev \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
@@ -22,9 +24,11 @@ RUN cargo build --release -p eidetica-bin
 FROM debian:bookworm-slim
 
 # Install runtime dependencies
-RUN apt-get update && apt-get install -y \
+# hadolint ignore=DL3008
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     libssl3 \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 # Create a non-root user

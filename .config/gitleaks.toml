@@ -1,0 +1,35 @@
+# Gitleaks configuration
+# Extends the default ruleset with project-specific allowlists
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Build and generated directories (mirrors .gitignore)"
+paths = [
+  '''(^|/)target/''',
+  '''(^|/)\.direnv/''',
+  '''(^|/)\.task/''',
+  '''(^|/)coverage/''',
+  '''(^|/)\.vscode/''',
+  '''(^|/)\.idea/''',
+  '''(^|/)docs/book/''',
+  '''(^|/)result$''',
+  '''(^|/)\.jj/''',
+  '''(^|/)\.git/''',
+]
+
+[[allowlists]]
+description = "Cargo.lock files (crate names trigger false positives)"
+paths = [
+  '''Cargo\.lock$''',
+  '''examples/.*/Cargo\.lock$''',
+]
+
+[[allowlists]]
+description = "Example/placeholder secrets in documentation"
+regexTarget = "match"
+regexes = [
+  '''sk-secret-*''',
+  '''msk-secret-*''',
+]

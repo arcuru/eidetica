@@ -37,11 +37,15 @@ in
         just # Task runner
         nix-fast-build # Fast parallel Nix builds
 
-        # Nix development tools
+        # Linting tools
         deadnix # Find dead Nix code
         statix # Lint Nix code
         shellcheck # Lint shell scripts
         yamllint # Lint YAML files
+        actionlint # Lint GitHub Actions workflows
+        hadolint # Lint Dockerfiles
+        markdownlint-cli # Lint Markdown files
+        gitleaks # Detect secrets in code
 
         # Code formatting and quality
         alejandra # Nix formatter

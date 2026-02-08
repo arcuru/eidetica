@@ -35,6 +35,18 @@ jobs:
       - name: Yamllint
         run: nix develop --command just lint yamllint
 
+      - name: Actionlint
+        run: nix develop --command just lint actionlint
+
+      - name: Hadolint
+        run: nix develop --command just lint hadolint
+
+      - name: Markdownlint
+        run: nix develop --command just lint markdownlint
+
+      - name: Gitleaks
+        run: nix develop --command just lint gitleaks
+
   build:
     runs-on: ubuntu-latest
     steps:

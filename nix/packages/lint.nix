@@ -34,6 +34,25 @@
     nix = sourceWithExts ["nix"];
     shell = sourceWithExts ["sh"];
     yaml = sourceWithExts ["yml" "yaml"];
+    markdown = lib.cleanSourceWith {
+      src = cleanSrc;
+      filter = path: type:
+        (type == "directory")
+        || (lib.hasSuffix ".md" path)
+        || (builtins.baseNameOf path == "markdownlint.yaml");
+    };
+    github-actions = lib.cleanSourceWith {
+      src = cleanSrc;
+      filter = path: type:
+        (type == "directory")
+        || (lib.hasSuffix ".yml" path && lib.hasInfix ".github/workflows" path);
+    };
+    dockerfile = lib.cleanSourceWith {
+      src = cleanSrc;
+      filter = path: type:
+        (type == "directory")
+        || (builtins.baseNameOf path == "Dockerfile");
+    };
     all = cleanSrc;
   };
 
@@ -102,6 +121,34 @@
       packages = [pkgs.typos];
       src = sources.all;
       command = "typos --config .config/typos.toml";
+    };
+
+    actionlint = mkSimpleLinter {
+      name = "actionlint";
+      packages = [pkgs.actionlint pkgs.shellcheck pkgs.findutils];
+      src = sources.github-actions;
+      command = ''find .github/workflows -name "*.yml" -exec actionlint {} +'';
+    };
+
+    hadolint = mkSimpleLinter {
+      name = "hadolint";
+      packages = [pkgs.hadolint];
+      src = sources.dockerfile;
+      command = "hadolint Dockerfile";
+    };
+
+    markdownlint = mkSimpleLinter {
+      name = "markdownlint";
+      packages = [pkgs.markdownlint-cli pkgs.findutils];
+      src = sources.markdown;
+      command = ''find . -name "*.md" -type f -exec markdownlint --config .config/markdownlint.yaml {} +'';
+    };
+
+    gitleaks = mkSimpleLinter {
+      name = "gitleaks";
+      packages = [pkgs.gitleaks pkgs.git];
+      src = sources.all;
+      command = "gitleaks detect --source . --no-git --verbose --config .config/gitleaks.toml";
     };
   };
 

@@ -1,0 +1,35 @@
+# Markdownlint configuration
+default: true
+
+# Line length - disabled (prettier handles wrapping)
+MD013: false
+
+# Heading increment - disabled (docs use heading level skips)
+MD001: false
+
+# No duplicate headings - disabled (docs have intentional duplicate section names)
+MD024: false
+
+# Multiple top-level headings - disabled (mdbook SUMMARY.md uses multiple h1s)
+MD025: false
+
+# List marker spacing - disabled (project uses 2-space convention)
+MD030: false
+
+# Inline HTML - allow (mdbook uses HTML in places)
+MD033: false
+
+# Bare URLs - allow
+MD034: false
+
+# Emphasis as heading - disabled (used intentionally in examples)
+MD036: false
+
+# Fenced code block language - disabled (some blocks are pseudocode)
+MD040: false
+
+# First line heading - disabled (mdbook SUMMARY.md, etc.)
+MD041: false
+
+# Link fragments - disabled (mdbook handles fragments differently)
+MD051: false

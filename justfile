@@ -167,8 +167,8 @@ test *args:
 # Linting (Static Analysis)
 # =============================================================================
 
-# Run linter(s): clippy, audit, typos, statix, deadnix, shellcheck, yamllint, udeps, min-versions, all
-lint +tools='clippy audit typos statix deadnix shellcheck yamllint':
+# Run linter(s): clippy, audit, typos, statix, deadnix, shellcheck, yamllint, actionlint, hadolint, markdownlint, gitleaks, udeps, min-versions, all
+lint +tools='clippy audit typos statix deadnix shellcheck yamllint actionlint hadolint markdownlint gitleaks':
     #!/usr/bin/env bash
     set -e
     for tool in {{ tools }}; do
@@ -201,6 +201,22 @@ lint +tools='clippy audit typos statix deadnix shellcheck yamllint':
                 echo "=== Running yamllint ==="
                 find . \( -name "*.yml" -o -name "*.yaml" \) -type f -exec yamllint -c .config/yamllint.yaml {} +
                 ;;
+            actionlint)
+                echo "=== Running actionlint ==="
+                actionlint
+                ;;
+            hadolint)
+                echo "=== Running hadolint ==="
+                hadolint Dockerfile
+                ;;
+            markdownlint)
+                echo "=== Running markdownlint ==="
+                find . -name "*.md" -not -path "./target/*" -type f -exec markdownlint --config .config/markdownlint.yaml {} +
+                ;;
+            gitleaks)
+                echo "=== Running gitleaks ==="
+                gitleaks detect --source . --no-git --verbose --config .config/gitleaks.toml
+                ;;
             udeps)
                 echo "=== Running udeps ==="
                 cargo-nightly udeps --workspace --all-targets --all-features
@@ -212,11 +228,11 @@ lint +tools='clippy audit typos statix deadnix shellcheck yamllint':
                 cargo nextest run --workspace --all-features --status-level fail
                 ;;
             all)
-                just lint clippy audit typos statix deadnix shellcheck yamllint udeps min-versions
+                just lint clippy audit typos statix deadnix shellcheck yamllint actionlint hadolint markdownlint gitleaks udeps min-versions
                 ;;
             *)
                 echo "Unknown linter: $tool"
-                echo "Options: clippy, audit, typos, statix, deadnix, shellcheck, yamllint, udeps, min-versions, all"
+                echo "Options: clippy, audit, typos, statix, deadnix, shellcheck, yamllint, actionlint, hadolint, markdownlint, gitleaks, udeps, min-versions, all"
                 exit 1
                 ;;
         esac
