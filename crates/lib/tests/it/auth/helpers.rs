@@ -129,9 +129,9 @@ pub async fn configure_database_auth(
     database: &Database,
     auth_config: &[(&str, &str, Permission, KeyStatus)],
 ) -> Result<()> {
-    let op = database.new_transaction().await?;
+    let txn = database.new_transaction().await?;
     {
-        let settings = op.get_settings()?;
+        let settings = txn.get_settings()?;
         settings
             .update_auth_settings(|auth| {
                 for (display_name, key_id, permission, status) in auth_config {
@@ -146,7 +146,7 @@ pub async fn configure_database_auth(
             })
             .await?;
     }
-    op.commit().await?;
+    txn.commit().await?;
     Ok(())
 }
 
@@ -372,11 +372,11 @@ impl DelegationChain {
 
 /// Test that an operation succeeds
 pub async fn test_operation_succeeds(tree: &Database, subtree_name: &str, test_name: &str) {
-    let op = tree
+    let txn = tree
         .new_transaction()
         .await
-        .expect("Failed to create operation");
-    let store = op
+        .expect("Failed to create transaction");
+    let store = txn
         .get_store::<DocStore>(subtree_name)
         .await
         .expect("Failed to get subtree");
@@ -385,17 +385,17 @@ pub async fn test_operation_succeeds(tree: &Database, subtree_name: &str, test_n
         .await
         .expect("Failed to set value");
 
-    let result = op.commit().await;
+    let result = txn.commit().await;
     assert!(result.is_ok(), "{test_name}: Operation should succeed");
 }
 
 /// Test that an operation fails
 pub async fn test_operation_fails(tree: &Database, subtree_name: &str, test_name: &str) {
-    let op = tree
+    let txn = tree
         .new_transaction()
         .await
-        .expect("Failed to create operation");
-    let store = op
+        .expect("Failed to create transaction");
+    let store = txn
         .get_store::<DocStore>(subtree_name)
         .await
         .expect("Failed to get subtree");
@@ -404,7 +404,7 @@ pub async fn test_operation_fails(tree: &Database, subtree_name: &str, test_name
         .await
         .expect("Failed to set value");
 
-    let result = op.commit().await;
+    let result = txn.commit().await;
     assert!(result.is_err(), "{test_name}: Operation should fail");
 }
 
@@ -466,11 +466,11 @@ pub async fn assert_operation_permissions(
     should_succeed: bool,
     test_description: &str,
 ) {
-    let op = tree
+    let txn = tree
         .new_transaction()
         .await
-        .expect("Failed to create operation");
-    let store = op
+        .expect("Failed to create transaction");
+    let store = txn
         .get_store::<DocStore>(subtree_name)
         .await
         .expect("Failed to get subtree");
@@ -479,7 +479,7 @@ pub async fn assert_operation_permissions(
         .await
         .expect("Failed to set value");
 
-    let result = op.commit().await;
+    let result = txn.commit().await;
     if should_succeed {
         assert!(
             result.is_ok(),

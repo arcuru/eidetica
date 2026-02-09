@@ -54,16 +54,16 @@ async fn test_table_complex_data_merging() {
 async fn test_mixed_subtree_operations() {
     let ctx = TestContext::new().with_database().await;
 
-    // Create operations that use multiple subtree types in one operation
-    let op = ctx
+    // Create operations that use multiple subtree types in one transaction
+    let txn = ctx
         .database()
         .new_transaction()
         .await
-        .expect("Failed to start operation");
+        .expect("Failed to start transaction");
 
     let table_key = {
         // Use Table subtree
-        let table = op
+        let table = txn
             .get_store::<Table<TestRecord>>("records")
             .await
             .expect("Failed to get Table");
@@ -77,7 +77,7 @@ async fn test_mixed_subtree_operations() {
         let key = table.insert(record).await.expect("Failed to insert record");
 
         // Use Doc subtree in same operation
-        let dict = op
+        let dict = txn
             .get_store::<DocStore>("config")
             .await
             .expect("Failed to get Doc");
@@ -91,7 +91,9 @@ async fn test_mixed_subtree_operations() {
         key
     };
 
-    op.commit().await.expect("Failed to commit mixed operation");
+    txn.commit()
+        .await
+        .expect("Failed to commit mixed transaction");
 
     // Verify both subtrees persist correctly
     let table_viewer = ctx
@@ -122,69 +124,69 @@ async fn test_subtree_persistence_across_operations() {
     let ctx = TestContext::new().with_database().await;
 
     // Operation 1: Create data in multiple subtrees
-    let op1 = ctx
+    let txn1 = ctx
         .database()
         .new_transaction()
         .await
-        .expect("Op1: Failed to start");
+        .expect("Txn1: Failed to start");
     let table_key = {
-        let table = op1
+        let table = txn1
             .get_store::<Table<SimpleRecord>>("data")
             .await
-            .expect("Op1: Failed to get Table");
-        let dict = op1
+            .expect("Txn1: Failed to get Table");
+        let dict = txn1
             .get_store::<DocStore>("metadata")
             .await
-            .expect("Op1: Failed to get Doc");
+            .expect("Txn1: Failed to get Doc");
 
         let record = SimpleRecord { value: 100 };
-        let key = table.insert(record).await.expect("Op1: Failed to insert");
+        let key = table.insert(record).await.expect("Txn1: Failed to insert");
 
         dict.set("created_by", "test")
             .await
-            .expect("Op1: Failed to set");
+            .expect("Txn1: Failed to set");
         dict.set("timestamp", "2023-01-01")
             .await
-            .expect("Op1: Failed to set");
+            .expect("Txn1: Failed to set");
 
         key
     };
-    op1.commit().await.expect("Op1: Failed to commit");
+    txn1.commit().await.expect("Txn1: Failed to commit");
 
     // Operation 2: Update existing data and add new data
-    let op2 = ctx
+    let txn2 = ctx
         .database()
         .new_transaction()
         .await
-        .expect("Op2: Failed to start");
+        .expect("Txn2: Failed to start");
     {
-        let table = op2
+        let table = txn2
             .get_store::<Table<SimpleRecord>>("data")
             .await
-            .expect("Op2: Failed to get Table");
-        let dict = op2
+            .expect("Txn2: Failed to get Table");
+        let dict = txn2
             .get_store::<DocStore>("metadata")
             .await
-            .expect("Op2: Failed to get Doc");
+            .expect("Txn2: Failed to get Doc");
 
         // Update existing record
         let updated_record = SimpleRecord { value: 200 };
         table
             .set(&table_key, updated_record)
             .await
-            .expect("Op2: Failed to update");
+            .expect("Txn2: Failed to update");
 
         // Add new metadata
         dict.set("updated_by", "test2")
             .await
-            .expect("Op2: Failed to set");
-        dict.set("version", "2").await.expect("Op2: Failed to set");
+            .expect("Txn2: Failed to set");
+        dict.set("version", "2").await.expect("Txn2: Failed to set");
 
         // Verify we can read the original metadata within this operation
         assert_dict_value(&dict, "created_by", "test").await;
         assert_dict_value(&dict, "timestamp", "2023-01-01").await;
     }
-    op2.commit().await.expect("Op2: Failed to commit");
+    txn2.commit().await.expect("Txn2: Failed to commit");
 
     // Verify final state
     let table_viewer = ctx
@@ -217,17 +219,17 @@ async fn test_subtree_concurrent_access_patterns() {
     let ctx = TestContext::new().with_database().await;
 
     // Create base entry with both Doc and Table data
-    let op_base = ctx
+    let txn_base = ctx
         .database()
         .new_transaction()
         .await
         .expect("Base: Failed to start");
     let base_table_key = {
-        let table = op_base
+        let table = txn_base
             .get_store::<Table<TestRecord>>("shared_data")
             .await
             .expect("Base: Failed to get Table");
-        let dict = op_base
+        let dict = txn_base
             .get_store::<DocStore>("shared_config")
             .await
             .expect("Base: Failed to get Doc");
@@ -248,7 +250,7 @@ async fn test_subtree_concurrent_access_patterns() {
 
         key
     };
-    let base_entry_id = op_base.commit().await.expect("Base: Failed to commit");
+    let base_entry_id = txn_base.commit().await.expect("Base: Failed to commit");
 
     // Branch A: Modify Table data
     let op_branch_a = ctx

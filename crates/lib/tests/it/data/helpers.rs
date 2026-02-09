@@ -31,8 +31,8 @@ pub async fn setup_db_and_tree() -> Result<(Instance, Database)> {
 }
 
 /// Setup a Doc subtree for testing
-pub async fn setup_dict_subtree(op: &Transaction, subtree_name: &str) -> Result<DocStore> {
-    op.get_store::<DocStore>(subtree_name).await
+pub async fn setup_dict_subtree(txn: &Transaction, subtree_name: &str) -> Result<DocStore> {
+    txn.get_store::<DocStore>(subtree_name).await
 }
 
 /// Create a complete test environment with DB, tree, operation, and Doc
@@ -40,9 +40,9 @@ pub async fn setup_complete_test_env(
     subtree_name: &str,
 ) -> Result<(Instance, Database, Transaction, DocStore)> {
     let (db, tree) = setup_db_and_tree().await?;
-    let op = tree.new_transaction().await?;
-    let dict = setup_dict_subtree(&op, subtree_name).await?;
-    Ok((db, tree, op, dict))
+    let txn = tree.new_transaction().await?;
+    let dict = setup_dict_subtree(&txn, subtree_name).await?;
+    Ok((db, tree, txn, dict))
 }
 
 // ===== MAP CREATION HELPERS =====
@@ -180,8 +180,8 @@ pub fn assert_map_contains(value: &Value, expected_keys: &[&str]) {
 // ===== VALUE EDITOR HELPERS =====
 
 /// Setup a Doc for path operation tests
-pub async fn setup_path_test_dict(op: &Transaction) -> Result<DocStore> {
-    setup_dict_subtree(op, "path_test_store").await
+pub async fn setup_path_test_dict(txn: &Transaction) -> Result<DocStore> {
+    setup_dict_subtree(txn, "path_test_store").await
 }
 
 /// Test value editor basic functionality

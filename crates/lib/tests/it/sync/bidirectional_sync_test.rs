@@ -118,10 +118,10 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     println!("💬 Device 1 adding: {}", message_a.content);
 
     {
-        let op = device1_database.new_transaction().await?;
-        let messages_store = op.get_store::<Table<ChatMessage>>("messages").await?;
+        let txn = device1_database.new_transaction().await?;
+        let messages_store = txn.get_store::<Table<ChatMessage>>("messages").await?;
         messages_store.insert(message_a.clone()).await?;
-        op.commit().await?;
+        txn.commit().await?;
     }
 
     // Start server on device 1
@@ -200,8 +200,8 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
 
     // Check device 2 has message A
     {
-        let op = device2_database.new_transaction().await?;
-        let messages_store = op.get_store::<Table<ChatMessage>>("messages").await?;
+        let txn = device2_database.new_transaction().await?;
+        let messages_store = txn.get_store::<Table<ChatMessage>>("messages").await?;
         let messages: Vec<(String, ChatMessage)> = messages_store.search(|_| true).await?;
         let messages: Vec<ChatMessage> = messages.into_iter().map(|(_, msg)| msg).collect();
         println!(
@@ -229,10 +229,10 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     println!("💬 Device 2 adding: {}", message_b.content);
 
     {
-        let op = device2_database.new_transaction().await?;
-        let messages_store = op.get_store::<Table<ChatMessage>>("messages").await?;
+        let txn = device2_database.new_transaction().await?;
+        let messages_store = txn.get_store::<Table<ChatMessage>>("messages").await?;
         messages_store.insert(message_b.clone()).await?;
-        op.commit().await?;
+        txn.commit().await?;
     }
 
     // === STEP 4: Device 2 syncs back to Device 1 ===
@@ -257,8 +257,8 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
 
     // Verify device 1 now has both messages
     {
-        let op = device1_database.new_transaction().await?;
-        let messages_store = op.get_store::<Table<ChatMessage>>("messages").await?;
+        let txn = device1_database.new_transaction().await?;
+        let messages_store = txn.get_store::<Table<ChatMessage>>("messages").await?;
         let messages: Vec<(String, ChatMessage)> = messages_store.search(|_| true).await?;
         let messages: Vec<ChatMessage> = messages.into_iter().map(|(_, msg)| msg).collect();
         println!(
@@ -329,11 +329,11 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
 
     // This is where the "no common ancestor" error should occur
     let add_result = {
-        let op = device1_database.new_transaction().await?;
-        let messages_store = op.get_store::<Table<ChatMessage>>("messages").await?;
+        let txn = device1_database.new_transaction().await?;
+        let messages_store = txn.get_store::<Table<ChatMessage>>("messages").await?;
         let insert_result = messages_store.insert(message_c.clone()).await;
         match insert_result {
-            Ok(_primary_key) => match op.commit().await {
+            Ok(_primary_key) => match txn.commit().await {
                 Ok(_commit_id) => {
                     println!("✅ Message C added successfully (no error occurred)");
                     Ok(())
@@ -355,8 +355,8 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
             println!("🎉 SUCCESS: No common ancestor error did not occur - BUG IS FIXED!");
 
             // Check final message count
-            let op = device1_database.new_transaction().await?;
-            let messages_store = op.get_store::<Table<ChatMessage>>("messages").await?;
+            let txn = device1_database.new_transaction().await?;
+            let messages_store = txn.get_store::<Table<ChatMessage>>("messages").await?;
             let messages: Vec<(String, ChatMessage)> = messages_store.search(|_| true).await?;
             let messages: Vec<ChatMessage> = messages.into_iter().map(|(_, msg)| msg).collect();
             println!("📋 Device 1 final messages: {} messages", messages.len());

@@ -14,12 +14,12 @@ use eidetica::{
 
 /// Create operation and add data to specific subtree
 pub async fn add_data_to_subtree(tree: &Database, subtree_name: &str, data: &[(&str, &str)]) -> ID {
-    let op = tree
+    let txn = tree
         .new_transaction()
         .await
-        .expect("Failed to create operation");
+        .expect("Failed to create transaction");
     {
-        let store = op
+        let store = txn
             .get_store::<DocStore>(subtree_name)
             .await
             .expect("Failed to get subtree");
@@ -27,7 +27,7 @@ pub async fn add_data_to_subtree(tree: &Database, subtree_name: &str, data: &[(&
             store.set(*key, *value).await.expect("Failed to set data");
         }
     }
-    op.commit().await.expect("Failed to commit")
+    txn.commit().await.expect("Failed to commit")
 }
 
 /// Create transaction and add data
@@ -36,12 +36,12 @@ pub async fn add_authenticated_data(
     subtree_name: &str,
     data: &[(&str, &str)],
 ) -> ID {
-    let op = tree
+    let txn = tree
         .new_transaction()
         .await
-        .expect("Failed to create operation");
+        .expect("Failed to create transaction");
     {
-        let store = op
+        let store = txn
             .get_store::<DocStore>(subtree_name)
             .await
             .expect("Failed to get subtree");
@@ -49,7 +49,7 @@ pub async fn add_authenticated_data(
             store.set(*key, *value).await.expect("Failed to set data");
         }
     }
-    op.commit().await.expect("Failed to commit")
+    txn.commit().await.expect("Failed to commit")
 }
 
 /// Create branch from specific entry
@@ -59,12 +59,12 @@ pub async fn create_branch_from_entry(
     subtree_name: &str,
     data: &[(&str, &str)],
 ) -> ID {
-    let op = tree
+    let txn = tree
         .new_transaction_with_tips(std::slice::from_ref(entry_id))
         .await
         .expect("Failed to create branch operation");
     {
-        let store = op
+        let store = txn
             .get_store::<DocStore>(subtree_name)
             .await
             .expect("Failed to get subtree");
@@ -72,7 +72,7 @@ pub async fn create_branch_from_entry(
             store.set(*key, *value).await.expect("Failed to set data");
         }
     }
-    op.commit().await.expect("Failed to commit branch")
+    txn.commit().await.expect("Failed to commit branch")
 }
 
 // ===== VERIFICATION HELPERS =====
@@ -171,12 +171,12 @@ pub async fn create_diamond_pattern(
 
     // Create merge entry (D) from both branches
     let merge_tips = vec![branch_b_id.clone(), branch_c_id.clone()];
-    let op = tree
+    let txn = tree
         .new_transaction_with_tips(&merge_tips)
         .await
         .expect("Failed to create merge operation");
     {
-        let store = op
+        let store = txn
             .get_store::<DocStore>("data")
             .await
             .expect("Failed to get data store");
@@ -189,7 +189,7 @@ pub async fn create_diamond_pattern(
             .await
             .expect("Failed to set final data");
     }
-    let merge_id = op.commit().await.expect("Failed to commit merge");
+    let merge_id = txn.commit().await.expect("Failed to commit merge");
 
     (base_id, branch_b_id, branch_c_id, merge_id)
 }

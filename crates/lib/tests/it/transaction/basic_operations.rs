@@ -58,7 +58,7 @@ async fn test_transaction_multiple_subtrees() {
     // Commit the operation
     operation.commit().await.unwrap();
 
-    // Create a new operation to read the data
+    // Create a new transaction to read the data
     let read_op = ctx.database().new_transaction().await.unwrap();
     let store1_read = read_op.get_store::<DocStore>("store1").await.unwrap();
     let store2_read = read_op.get_store::<DocStore>("store2").await.unwrap();
@@ -86,7 +86,7 @@ async fn test_transaction_empty_subtree_removal() {
     // Commit the operation - should remove the empty subtree
     operation.commit().await.unwrap();
 
-    // Create a new operation to check if subtrees exist
+    // Create a new transaction to check if subtrees exist
     let read_op = ctx.database().new_transaction().await.unwrap();
 
     // Try to access both subtrees
@@ -111,21 +111,21 @@ async fn test_transaction_parent_relationships() {
     // Create a backend and a tree
     let ctx = TestContext::new().with_database().await;
 
-    // Create first operation and set data
-    let op1 = ctx.database().new_transaction().await.unwrap();
-    let store1 = op1.get_store::<DocStore>("data").await.unwrap();
+    // Create first transaction and set data
+    let txn1 = ctx.database().new_transaction().await.unwrap();
+    let store1 = txn1.get_store::<DocStore>("data").await.unwrap();
     store1.set("first", "entry").await.unwrap();
-    op1.commit().await.unwrap();
+    txn1.commit().await.unwrap();
 
-    // Create second operation that will use the first as parent
-    let op2 = ctx.database().new_transaction().await.unwrap();
-    let store2 = op2.get_store::<DocStore>("data").await.unwrap();
+    // Create second transaction that will use the first as parent
+    let txn2 = ctx.database().new_transaction().await.unwrap();
+    let store2 = txn2.get_store::<DocStore>("data").await.unwrap();
     store2.set("second", "entry").await.unwrap();
-    op2.commit().await.unwrap();
+    txn2.commit().await.unwrap();
 
-    // Create a third operation to read all entries
-    let op3 = ctx.database().new_transaction().await.unwrap();
-    let store3 = op3.get_store::<DocStore>("data").await.unwrap();
+    // Create a third transaction to read all entries
+    let txn3 = ctx.database().new_transaction().await.unwrap();
+    let store3 = txn3.get_store::<DocStore>("data").await.unwrap();
 
     // Get all data - should include both entries due to CRDT merge
     let all_data = get_dict_data(&store3).await;

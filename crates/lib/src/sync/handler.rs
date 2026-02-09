@@ -113,8 +113,8 @@ impl SyncHandlerImpl {
         requested_permission: &Permission,
     ) -> Result<String> {
         let sync_tree = self.get_sync_tree().await?;
-        let op = sync_tree.new_transaction().await?;
-        let manager = BootstrapRequestManager::new(&op);
+        let txn = sync_tree.new_transaction().await?;
+        let manager = BootstrapRequestManager::new(&txn);
 
         let request = BootstrapRequest {
             tree_id: tree_id.clone(),
@@ -132,7 +132,7 @@ impl SyncHandlerImpl {
         };
 
         let request_id = manager.store_request(request).await?;
-        op.commit().await?;
+        txn.commit().await?;
 
         Ok(request_id)
     }
@@ -390,8 +390,8 @@ impl SyncHandlerImpl {
         remote_address: &Option<Address>,
     ) -> Result<()> {
         let sync_tree = self.get_sync_tree().await?;
-        let op = sync_tree.new_transaction().await?;
-        let peer_manager = PeerManager::new(&op);
+        let txn = sync_tree.new_transaction().await?;
+        let peer_manager = PeerManager::new(&txn);
 
         // Try to register the peer (ignore if already exists)
         match peer_manager.register_peer(peer_pubkey, display_name).await {
@@ -418,7 +418,7 @@ impl SyncHandlerImpl {
             warn!(peer_pubkey = %peer_pubkey, address = ?addr, error = %e, "Failed to add remote address");
         }
 
-        op.commit().await?;
+        txn.commit().await?;
         Ok(())
     }
 
@@ -436,12 +436,12 @@ impl SyncHandlerImpl {
     /// Result indicating success or failure
     async fn track_tree_sync_relationship(&self, tree_id: &ID, peer_pubkey: &str) -> Result<()> {
         let sync_tree = self.get_sync_tree().await?;
-        let op = sync_tree.new_transaction().await?;
-        let peer_manager = PeerManager::new(&op);
+        let txn = sync_tree.new_transaction().await?;
+        let peer_manager = PeerManager::new(&txn);
 
         // Add the tree sync relationship
         peer_manager.add_tree_sync(peer_pubkey, tree_id).await?;
-        op.commit().await?;
+        txn.commit().await?;
 
         debug!(tree_id = %tree_id, peer_pubkey = %peer_pubkey, "Tracked tree/peer sync relationship");
         Ok(())

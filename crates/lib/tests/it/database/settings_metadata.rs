@@ -24,10 +24,10 @@ async fn test_settings_tips_in_metadata() {
     let tree = user.create_database(settings, &key_id).await.unwrap();
 
     // Create an operation to add some data
-    let op1 = tree.new_transaction().await.unwrap();
-    let kv = op1.get_store::<DocStore>("data").await.unwrap();
+    let txn1 = tree.new_transaction().await.unwrap();
+    let kv = txn1.get_store::<DocStore>("data").await.unwrap();
     kv.set("key1", "value1").await.unwrap();
-    let entry1_id = op1.commit().await.unwrap();
+    let entry1_id = txn1.commit().await.unwrap();
 
     // Get the entry and check metadata
     let entry1 = tree.get_entry(&entry1_id).await.unwrap();
@@ -44,19 +44,19 @@ async fn test_settings_tips_in_metadata() {
     );
 
     // Create another operation to modify settings
-    let op2 = tree.new_transaction().await.unwrap();
-    let settings_store = op2.get_store::<DocStore>("_settings").await.unwrap();
+    let txn2 = tree.new_transaction().await.unwrap();
+    let settings_store = txn2.get_store::<DocStore>("_settings").await.unwrap();
     settings_store
         .set("description", "A test tree")
         .await
         .unwrap();
-    let entry2_id = op2.commit().await.unwrap();
+    let entry2_id = txn2.commit().await.unwrap();
 
     // Create a third operation that doesn't modify settings
-    let op3 = tree.new_transaction().await.unwrap();
-    let kv3 = op3.get_store::<DocStore>("data").await.unwrap();
+    let txn3 = tree.new_transaction().await.unwrap();
+    let kv3 = txn3.get_store::<DocStore>("data").await.unwrap();
     kv3.set("key2", "value2").await.unwrap();
-    let entry3_id = op3.commit().await.unwrap();
+    let entry3_id = txn3.commit().await.unwrap();
 
     // Get the entries and verify settings tips
     let entry2 = tree.get_entry(&entry2_id).await.unwrap();
@@ -128,9 +128,9 @@ async fn test_entry_get_settings_from_subtree() {
     }
 
     // Transaction should be able to get settings properly
-    let op = tree.new_transaction().await.unwrap();
-    let op_settings = op.get_settings().unwrap();
-    let name = op_settings.get_name().await.unwrap();
+    let txn = tree.new_transaction().await.unwrap();
+    let txn_settings = txn.get_settings().unwrap();
+    let name = txn_settings.get_name().await.unwrap();
     assert_eq!(name, "test_tree");
 }
 
@@ -144,22 +144,22 @@ async fn test_settings_tips_propagation() {
     let tree = user.create_database(settings, &key_id).await.unwrap();
 
     // Create a chain of entries
-    let op1 = tree.new_transaction().await.unwrap();
-    let kv = op1.get_store::<DocStore>("data").await.unwrap();
+    let txn1 = tree.new_transaction().await.unwrap();
+    let kv = txn1.get_store::<DocStore>("data").await.unwrap();
     kv.set("entry", "1").await.unwrap();
-    let entry1_id = op1.commit().await.unwrap();
+    let entry1_id = txn1.commit().await.unwrap();
 
     // Modify settings
-    let op2 = tree.new_transaction().await.unwrap();
-    let settings_store = op2.get_store::<DocStore>("_settings").await.unwrap();
+    let txn2 = tree.new_transaction().await.unwrap();
+    let settings_store = txn2.get_store::<DocStore>("_settings").await.unwrap();
     settings_store.set("updated", "true").await.unwrap();
-    let entry2_id = op2.commit().await.unwrap();
+    let entry2_id = txn2.commit().await.unwrap();
 
     // Create another entry after settings change
-    let op3 = tree.new_transaction().await.unwrap();
-    let kv = op3.get_store::<DocStore>("data").await.unwrap();
+    let txn3 = tree.new_transaction().await.unwrap();
+    let kv = txn3.get_store::<DocStore>("data").await.unwrap();
     kv.set("entry", "3").await.unwrap();
-    let entry3_id = op3.commit().await.unwrap();
+    let entry3_id = txn3.commit().await.unwrap();
 
     // Get all entries
     let entry1 = tree.get_entry(&entry1_id).await.unwrap();
@@ -223,14 +223,14 @@ async fn test_settings_metadata_with_complex_operations() {
     // Create several data operations
     let mut data_entry_ids = Vec::new();
     for i in 0..3 {
-        let op = tree.new_transaction().await.unwrap();
-        let data_store = op.get_store::<DocStore>("data").await.unwrap();
+        let txn = tree.new_transaction().await.unwrap();
+        let data_store = txn.get_store::<DocStore>("data").await.unwrap();
         data_store.set("counter", i.to_string()).await.unwrap();
         data_store
             .set(format!("data_{i}"), format!("value_{i}"))
             .await
             .unwrap();
-        let entry_id = op.commit().await.unwrap();
+        let entry_id = txn.commit().await.unwrap();
         data_entry_ids.push(entry_id);
     }
 
@@ -250,14 +250,14 @@ async fn test_settings_metadata_with_complex_operations() {
     // Create more data operations after settings update
     let mut post_settings_entry_ids = Vec::new();
     for i in 3..6 {
-        let op = tree.new_transaction().await.unwrap();
-        let data_store = op.get_store::<DocStore>("data").await.unwrap();
+        let txn = tree.new_transaction().await.unwrap();
+        let data_store = txn.get_store::<DocStore>("data").await.unwrap();
         data_store.set("counter", i.to_string()).await.unwrap();
         data_store
             .set(format!("data_{i}"), format!("value_{i}"))
             .await
             .unwrap();
-        let entry_id = op.commit().await.unwrap();
+        let entry_id = txn.commit().await.unwrap();
         post_settings_entry_ids.push(entry_id);
     }
 

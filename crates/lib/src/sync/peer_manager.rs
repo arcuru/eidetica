@@ -18,15 +18,15 @@ pub(super) const TREES_SUBTREE: &str = "trees"; // Maps tree ID -> list of peer 
 /// Internal peer manager for the sync module.
 ///
 /// This struct manages all peer-related operations for the sync module,
-/// operating on an Transaction to stage changes.
+/// operating on a Transaction to stage changes.
 pub(super) struct PeerManager<'a> {
-    op: &'a Transaction,
+    txn: &'a Transaction,
 }
 
 impl<'a> PeerManager<'a> {
     /// Create a new PeerManager that operates on the given Transaction.
-    pub(super) fn new(op: &'a Transaction) -> Self {
-        Self { op }
+    pub(super) fn new(txn: &'a Transaction) -> Self {
+        Self { txn }
     }
 
     /// Register a new remote peer in the sync network.
@@ -43,9 +43,9 @@ impl<'a> PeerManager<'a> {
         display_name: Option<&str>,
     ) -> Result<()> {
         let pubkey = pubkey.into();
-        let now = self.op.now_rfc3339()?;
+        let now = self.txn.now_rfc3339()?;
         let peer_info = PeerInfo::new_at(&pubkey, display_name, now);
-        let peers = self.op.get_store::<DocStore>(PEERS_SUBTREE).await?;
+        let peers = self.txn.get_store::<DocStore>(PEERS_SUBTREE).await?;
 
         debug!(peer = %pubkey, display_name = ?display_name, "Registering new peer");
 
@@ -112,7 +112,7 @@ impl<'a> PeerManager<'a> {
         pubkey: impl AsRef<str>,
         peer_info: PeerInfo,
     ) -> Result<()> {
-        let peers = self.op.get_store::<DocStore>(PEERS_SUBTREE).await?;
+        let peers = self.txn.get_store::<DocStore>(PEERS_SUBTREE).await?;
 
         // Check if peer exists
         if !peers.contains_path_str(pubkey.as_ref()).await {
@@ -218,7 +218,7 @@ impl<'a> PeerManager<'a> {
         pubkey: impl AsRef<str>,
         status: PeerStatus,
     ) -> Result<()> {
-        let peers = self.op.get_store::<DocStore>(PEERS_SUBTREE).await?;
+        let peers = self.txn.get_store::<DocStore>(PEERS_SUBTREE).await?;
 
         // Check if peer exists
         if !peers.contains_path_str(pubkey.as_ref()).await {
@@ -238,7 +238,7 @@ impl<'a> PeerManager<'a> {
             .await?;
 
         // Update last_seen timestamp
-        let now = self.op.now_rfc3339()?;
+        let now = self.txn.now_rfc3339()?;
         peers
             .set_path(path!(pubkey.as_ref(), "last_seen"), now)
             .await?;
@@ -254,7 +254,7 @@ impl<'a> PeerManager<'a> {
     /// # Returns
     /// The peer information if found, None otherwise.
     pub(super) async fn get_peer_info(&self, pubkey: impl AsRef<str>) -> Result<Option<PeerInfo>> {
-        let peers = self.op.get_store::<DocStore>(PEERS_SUBTREE).await?;
+        let peers = self.txn.get_store::<DocStore>(PEERS_SUBTREE).await?;
 
         // Check if peer exists using path-based check
         if !peers.contains_path_str(pubkey.as_ref()).await {
@@ -371,7 +371,7 @@ impl<'a> PeerManager<'a> {
     /// # Returns
     /// A vector of all registered peer information.
     pub(super) async fn list_peers(&self) -> Result<Vec<PeerInfo>> {
-        let peers = self.op.get_store::<DocStore>(PEERS_SUBTREE).await?;
+        let peers = self.txn.get_store::<DocStore>(PEERS_SUBTREE).await?;
         let all_peers = peers.get_all().await?;
         let mut peer_list = Vec::new();
 
@@ -396,7 +396,7 @@ impl<'a> PeerManager<'a> {
     /// # Returns
     /// A Result indicating success or an error.
     pub(super) async fn remove_peer(&self, pubkey: impl AsRef<str>) -> Result<()> {
-        let peers = self.op.get_store::<DocStore>(PEERS_SUBTREE).await?;
+        let peers = self.txn.get_store::<DocStore>(PEERS_SUBTREE).await?;
 
         // Mark peer as blocked instead of removing (using path-based access)
         if peers.contains_path_str(pubkey.as_ref()).await {
@@ -406,7 +406,7 @@ impl<'a> PeerManager<'a> {
         }
 
         // Remove peer from all tree sync lists using path-based access
-        let trees = self.op.get_store::<DocStore>(TREES_SUBTREE).await?;
+        let trees = self.txn.get_store::<DocStore>(TREES_SUBTREE).await?;
         let all_keys = trees.get_all().await?.keys().cloned().collect::<Vec<_>>();
         for tree_id in all_keys {
             let peer_list_path = path!(&tree_id, "peer_pubkeys");
@@ -447,14 +447,14 @@ impl<'a> PeerManager<'a> {
         tree_root_id: impl AsRef<str>,
     ) -> Result<()> {
         // First check if peer exists using path-based check
-        let peers = self.op.get_store::<DocStore>(PEERS_SUBTREE).await?;
+        let peers = self.txn.get_store::<DocStore>(PEERS_SUBTREE).await?;
         if !peers.contains_path_str(peer_pubkey.as_ref()).await {
             return Err(Error::Sync(SyncError::PeerNotFound(
                 peer_pubkey.as_ref().to_string(),
             )));
         }
 
-        let trees = self.op.get_store::<DocStore>(TREES_SUBTREE).await?;
+        let trees = self.txn.get_store::<DocStore>(TREES_SUBTREE).await?;
 
         // Get existing peer list for this tree, or create empty list
         let peer_list_path = path!(tree_root_id.as_ref(), "peer_pubkeys");
@@ -500,7 +500,7 @@ impl<'a> PeerManager<'a> {
         tree_root_id: impl AsRef<str>,
     ) -> Result<()> {
         info!(peer = %peer_pubkey.as_ref(), tree = %tree_root_id.as_ref(), "Removing tree sync relationship");
-        let trees = self.op.get_store::<DocStore>(TREES_SUBTREE).await?;
+        let trees = self.txn.get_store::<DocStore>(TREES_SUBTREE).await?;
 
         // Get existing peer list for this tree
         let peer_list_path = path!(tree_root_id.as_ref(), "peer_pubkeys");
@@ -535,7 +535,7 @@ impl<'a> PeerManager<'a> {
     /// # Returns
     /// A vector of tree root IDs synced with this peer.
     pub(super) async fn get_peer_trees(&self, peer_pubkey: impl AsRef<str>) -> Result<Vec<String>> {
-        let trees = self.op.get_store::<DocStore>(TREES_SUBTREE).await?;
+        let trees = self.txn.get_store::<DocStore>(TREES_SUBTREE).await?;
         let all_trees = trees.get_all().await?;
         let mut synced_trees = Vec::new();
 
@@ -563,7 +563,7 @@ impl<'a> PeerManager<'a> {
         &self,
         tree_root_id: impl AsRef<str>,
     ) -> Result<Vec<PeerId>> {
-        let trees = self.op.get_store::<DocStore>(TREES_SUBTREE).await?;
+        let trees = self.txn.get_store::<DocStore>(TREES_SUBTREE).await?;
         let peer_list_path = path!(tree_root_id.as_ref(), "peer_pubkeys");
         let peer_list_result = trees.get_path_as::<String>(&peer_list_path).await;
         let string_vec: Vec<String> = peer_list_result
@@ -586,7 +586,7 @@ impl<'a> PeerManager<'a> {
         peer_pubkey: impl AsRef<str>,
         tree_root_id: impl AsRef<str>,
     ) -> Result<bool> {
-        let trees = self.op.get_store::<DocStore>(TREES_SUBTREE).await?;
+        let trees = self.txn.get_store::<DocStore>(TREES_SUBTREE).await?;
         let peer_list_path = path!(tree_root_id.as_ref(), "peer_pubkeys");
         match trees.get_path_as::<String>(&peer_list_path).await {
             Ok(peer_list_json) => {
@@ -615,7 +615,7 @@ impl<'a> PeerManager<'a> {
         peer_pubkey: impl AsRef<str>,
         address: Address,
     ) -> Result<()> {
-        let peers = self.op.get_store::<DocStore>(PEERS_SUBTREE).await?;
+        let peers = self.txn.get_store::<DocStore>(PEERS_SUBTREE).await?;
 
         // Check if peer exists
         if !peers.contains_path_str(peer_pubkey.as_ref()).await {
@@ -644,7 +644,7 @@ impl<'a> PeerManager<'a> {
                 .await?;
 
             // Update last_seen timestamp
-            let now = self.op.now_rfc3339()?;
+            let now = self.txn.now_rfc3339()?;
             peers
                 .set_path(path!(peer_pubkey.as_ref(), "last_seen"), now)
                 .await?;
@@ -666,7 +666,7 @@ impl<'a> PeerManager<'a> {
         peer_pubkey: impl AsRef<str>,
         address: &Address,
     ) -> Result<bool> {
-        let peers = self.op.get_store::<DocStore>(PEERS_SUBTREE).await?;
+        let peers = self.txn.get_store::<DocStore>(PEERS_SUBTREE).await?;
 
         // Check if peer exists
         if !peers.contains_path_str(peer_pubkey.as_ref()).await {
@@ -696,7 +696,7 @@ impl<'a> PeerManager<'a> {
                 .await?;
 
             // Update last_seen timestamp
-            let now = self.op.now_rfc3339()?;
+            let now = self.txn.now_rfc3339()?;
             peers
                 .set_path(path!(peer_pubkey.as_ref(), "last_seen"), now)
                 .await?;

@@ -13,10 +13,10 @@ async fn test_transaction_diamond_pattern() {
     let ctx = TestContext::new().with_database().await;
 
     // Create base entry
-    let op_base = ctx.database().new_transaction().await.unwrap();
-    let store_base = op_base.get_store::<DocStore>("data").await.unwrap();
+    let txn_base = ctx.database().new_transaction().await.unwrap();
+    let store_base = txn_base.get_store::<DocStore>("data").await.unwrap();
     store_base.set("base", "initial").await.unwrap();
-    let base_id = op_base.commit().await.unwrap();
+    let base_id = txn_base.commit().await.unwrap();
 
     // Create two branches from base
     let op_left = ctx
@@ -341,12 +341,12 @@ async fn test_correct_lca_and_path_sorting() {
     // The critical test: verify that the sorting ensures deterministic results
     // Run the same operation multiple times and verify consistent results
     for _i in 0..5 {
-        let op_test = ctx
+        let txn_test = ctx
             .database()
             .new_transaction_with_tips([merge_id.clone(), other_id.clone()])
             .await
             .unwrap();
-        let store_test = op_test.get_store::<DocStore>("data").await.unwrap();
+        let store_test = txn_test.get_store::<DocStore>("data").await.unwrap();
         let test_state = store_test.get_all().await.unwrap();
 
         // Results should be identical due to deterministic sorting
@@ -417,28 +417,28 @@ async fn test_complex_path_finding_scenario() {
 
     let mut branch_ids = Vec::new();
     for (step, data) in branches {
-        let op = ctx
+        let txn = ctx
             .database()
             .new_transaction_with_tips([root_id.clone()])
             .await
             .unwrap();
-        let store = op.get_store::<DocStore>("data").await.unwrap();
+        let store = txn.get_store::<DocStore>("data").await.unwrap();
         store.set("branch", *step).await.unwrap();
         store.set("unique", *data).await.unwrap();
-        branch_ids.push(op.commit().await.unwrap());
+        branch_ids.push(txn.commit().await.unwrap());
     }
 
     // Extend each branch
     let mut extended_ids = Vec::new();
     for (i, branch_id) in branch_ids.iter().enumerate() {
-        let op = ctx
+        let txn = ctx
             .database()
             .new_transaction_with_tips([branch_id.clone()])
             .await
             .unwrap();
-        let store = op.get_store::<DocStore>("data").await.unwrap();
+        let store = txn.get_store::<DocStore>("data").await.unwrap();
         store.set("extended", format!("ext_{i}")).await.unwrap();
-        extended_ids.push(op.commit().await.unwrap());
+        extended_ids.push(txn.commit().await.unwrap());
     }
 
     // Create two merges

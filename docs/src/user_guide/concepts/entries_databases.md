@@ -43,14 +43,14 @@ You interact with Databases through Transactions:
 #
 # async fn example(database: Database) -> Result<()> {
 #     // Create a new transaction
-#     let op = database.new_transaction().await?;
+#     let txn = database.new_transaction().await?;
 #
 #     // Access stores and perform actions
-#     let settings = op.get_store::<DocStore>("settings").await?;
+#     let settings = txn.get_store::<DocStore>("settings").await?;
 #     settings.set("version", "1.2.0").await?;
 #
 #     // Commit the changes, creating a new Entry
-#     let new_entry_id = op.commit().await?;
+#     let new_entry_id = txn.commit().await?;
 #
 #     Ok(())
 # }

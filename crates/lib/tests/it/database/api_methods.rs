@@ -96,11 +96,11 @@ async fn test_tree_validation_rejects_foreign_entries() {
         .expect("Failed to create tree2");
 
     // Create an entry in tree1
-    let op1 = tree1
+    let txn1 = tree1
         .new_transaction()
         .await
-        .expect("Failed to create operation in tree1");
-    let store1 = op1
+        .expect("Failed to create transaction in tree1");
+    let store1 = txn1
         .get_store::<DocStore>("data")
         .await
         .expect("Failed to get subtree in tree1");
@@ -108,17 +108,17 @@ async fn test_tree_validation_rejects_foreign_entries() {
         .set("key", "value1")
         .await
         .expect("Failed to set value in tree1");
-    let entry1_id = op1
+    let entry1_id = txn1
         .commit()
         .await
-        .expect("Failed to commit operation in tree1");
+        .expect("Failed to commit transaction in tree1");
 
     // Create an entry in tree2
-    let op2 = tree2
+    let txn2 = tree2
         .new_transaction()
         .await
-        .expect("Failed to create operation in tree2");
-    let store2 = op2
+        .expect("Failed to create transaction in tree2");
+    let store2 = txn2
         .get_store::<DocStore>("data")
         .await
         .expect("Failed to get subtree in tree2");
@@ -126,10 +126,10 @@ async fn test_tree_validation_rejects_foreign_entries() {
         .set("key", "value2")
         .await
         .expect("Failed to set value in tree2");
-    let entry2_id = op2
+    let entry2_id = txn2
         .commit()
         .await
-        .expect("Failed to commit operation in tree2");
+        .expect("Failed to commit transaction in tree2");
 
     // Verify tree1 can access its own entry
     assert!(tree1.get_entry(&entry1_id).await.is_ok());
@@ -174,11 +174,11 @@ async fn test_tree_validation_get_entries() {
     // Create entries in tree1
     let mut tree1_entries = Vec::new();
     for i in 0..2 {
-        let op = tree1
+        let txn = tree1
             .new_transaction()
             .await
-            .expect("Failed to create operation in tree1");
-        let store = op
+            .expect("Failed to create transaction in tree1");
+        let store = txn
             .get_store::<DocStore>("data")
             .await
             .expect("Failed to get subtree in tree1");
@@ -186,19 +186,19 @@ async fn test_tree_validation_get_entries() {
             .set("key", format!("value1_{i}"))
             .await
             .expect("Failed to set value in tree1");
-        let entry_id = op
+        let entry_id = txn
             .commit()
             .await
-            .expect("Failed to commit operation in tree1");
+            .expect("Failed to commit transaction in tree1");
         tree1_entries.push(entry_id);
     }
 
     // Create an entry in tree2
-    let op2 = tree2
+    let txn2 = tree2
         .new_transaction()
         .await
-        .expect("Failed to create operation in tree2");
-    let store2 = op2
+        .expect("Failed to create transaction in tree2");
+    let store2 = txn2
         .get_store::<DocStore>("data")
         .await
         .expect("Failed to get subtree in tree2");
@@ -206,10 +206,10 @@ async fn test_tree_validation_get_entries() {
         .set("key", "value2")
         .await
         .expect("Failed to set value in tree2");
-    let entry2_id = op2
+    let entry2_id = txn2
         .commit()
         .await
-        .expect("Failed to commit operation in tree2");
+        .expect("Failed to commit transaction in tree2");
 
     // Verify tree1 can get all its own entries
     let entries = tree1
@@ -382,11 +382,11 @@ async fn test_tree_queries() {
     // Create a few entries
     let mut entry_ids = Vec::new();
     for i in 0..3 {
-        let op = tree
+        let txn = tree
             .new_transaction()
             .await
-            .expect("Failed to create operation");
-        let store = op
+            .expect("Failed to create transaction");
+        let store = txn
             .get_store::<DocStore>("data")
             .await
             .expect("Failed to get subtree");
@@ -394,7 +394,7 @@ async fn test_tree_queries() {
             .set("key", format!("value_{i}"))
             .await
             .expect("Failed to set value");
-        let entry_id = op.commit().await.expect("Failed to commit operation");
+        let entry_id = txn.commit().await.expect("Failed to commit transaction");
         entry_ids.push(entry_id);
     }
 
@@ -420,11 +420,11 @@ async fn test_batch_vs_individual_retrieval() {
     // Create multiple entries
     let mut entry_ids = Vec::new();
     for i in 0..5 {
-        let op = tree
+        let txn = tree
             .new_transaction()
             .await
-            .expect("Failed to create operation");
-        let store = op
+            .expect("Failed to create transaction");
+        let store = txn
             .get_store::<DocStore>("data")
             .await
             .expect("Failed to get subtree");
@@ -432,7 +432,7 @@ async fn test_batch_vs_individual_retrieval() {
             .set("key", format!("value_{i}"))
             .await
             .expect("Failed to set value");
-        let entry_id = op.commit().await.expect("Failed to commit operation");
+        let entry_id = txn.commit().await.expect("Failed to commit transaction");
         entry_ids.push(entry_id);
     }
 

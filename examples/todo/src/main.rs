@@ -231,10 +231,10 @@ async fn load_or_create_todo_database(user: &mut User) -> Result<Database> {
 
 async fn add_todo(database: &Database, title: String) -> Result<()> {
     // Start an atomic transaction
-    let op = database.new_transaction().await?;
+    let txn = database.new_transaction().await?;
 
     // Get a handle to the 'todos' Table store
-    let todos_store = op.get_store::<Table<Todo>>("todos").await?;
+    let todos_store = txn.get_store::<Table<Todo>>("todos").await?;
 
     // Create a new todo
     let todo = Todo::new(title);
@@ -244,7 +244,7 @@ async fn add_todo(database: &Database, title: String) -> Result<()> {
     let todo_id = todos_store.insert(todo).await?;
 
     // Commit the transaction
-    op.commit().await?;
+    txn.commit().await?;
 
     println!("Added todo with ID: {todo_id}");
 
@@ -253,10 +253,10 @@ async fn add_todo(database: &Database, title: String) -> Result<()> {
 
 async fn complete_todo(database: &Database, id: &str) -> Result<()> {
     // Start an atomic transaction
-    let op = database.new_transaction().await?;
+    let txn = database.new_transaction().await?;
 
     // Get a handle to the 'todos' Table store
-    let todos_store = op.get_store::<Table<Todo>>("todos").await?;
+    let todos_store = txn.get_store::<Table<Todo>>("todos").await?;
 
     // Get the todo from the Table
     let mut todo = match todos_store.get(id).await {
@@ -282,17 +282,17 @@ async fn complete_todo(database: &Database, id: &str) -> Result<()> {
     todos_store.set(id, todo).await?;
 
     // Commit the transaction
-    op.commit().await?;
+    txn.commit().await?;
 
     Ok(())
 }
 
 async fn list_todos(database: &Database) -> Result<()> {
     // Start an atomic transaction
-    let op = database.new_transaction().await?;
+    let txn = database.new_transaction().await?;
 
     // Get a handle to the 'todos' Table store
-    let todos_store = op.get_store::<Table<Todo>>("todos").await?;
+    let todos_store = txn.get_store::<Table<Todo>>("todos").await?;
 
     // Search for all todos (predicate always returns true)
     let todos_with_ids = todos_store.search(|_| true).await?;
@@ -322,10 +322,10 @@ async fn set_user_info(
     bio: Option<&String>,
 ) -> Result<()> {
     // Start an atomic transaction
-    let op = database.new_transaction().await?;
+    let txn = database.new_transaction().await?;
 
     // Get a handle to the 'user_info' YDoc store
-    let user_info_store = op.get_store::<YDoc>("user_info").await?;
+    let user_info_store = txn.get_store::<YDoc>("user_info").await?;
 
     // Update user information using the Y-CRDT document
     user_info_store
@@ -348,17 +348,17 @@ async fn set_user_info(
         .await?;
 
     // Commit the transaction
-    op.commit().await?;
+    txn.commit().await?;
 
     Ok(())
 }
 
 async fn show_user_info(database: &Database) -> Result<()> {
     // Start an atomic transaction
-    let op = database.new_transaction().await?;
+    let txn = database.new_transaction().await?;
 
     // Get a handle to the 'user_info' YDoc store
-    let user_info_store = op.get_store::<YDoc>("user_info").await?;
+    let user_info_store = txn.get_store::<YDoc>("user_info").await?;
 
     // Read user information from the Y-CRDT document
     user_info_store
@@ -392,10 +392,10 @@ async fn show_user_info(database: &Database) -> Result<()> {
 
 async fn set_user_preference(database: &Database, key: String, value: String) -> Result<()> {
     // Start an atomic transaction
-    let op = database.new_transaction().await?;
+    let txn = database.new_transaction().await?;
 
     // Get a handle to the 'user_prefs' YDoc store
-    let user_prefs_store = op.get_store::<YDoc>("user_prefs").await?;
+    let user_prefs_store = txn.get_store::<YDoc>("user_prefs").await?;
 
     // Update user preference using the Y-CRDT document
     user_prefs_store
@@ -408,17 +408,17 @@ async fn set_user_preference(database: &Database, key: String, value: String) ->
         .await?;
 
     // Commit the transaction
-    op.commit().await?;
+    txn.commit().await?;
 
     Ok(())
 }
 
 async fn show_user_preferences(database: &Database) -> Result<()> {
     // Start an atomic transaction (for read-only)
-    let op = database.new_transaction().await?;
+    let txn = database.new_transaction().await?;
 
     // Get a handle to the 'user_prefs' YDoc store
-    let user_prefs_store = op.get_store::<YDoc>("user_prefs").await?;
+    let user_prefs_store = txn.get_store::<YDoc>("user_prefs").await?;
 
     // Read user preferences from the Y-CRDT document
     user_prefs_store

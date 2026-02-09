@@ -56,8 +56,8 @@ async fn test_delegation_nonexistent_tree() -> Result<()> {
     .await;
 
     // Add delegation to non-existent tree using operations
-    let op = tree.new_transaction().await?;
-    let settings_store = op.get_store::<DocStore>("_settings").await?;
+    let txn = tree.new_transaction().await?;
+    let settings_store = txn.get_store::<DocStore>("_settings").await?;
 
     let nonexistent_root_id = ID::from("nonexistent_root");
     let nonexistent_delegation = DelegatedTreeRef {
@@ -77,7 +77,7 @@ async fn test_delegation_nonexistent_tree() -> Result<()> {
     settings_store
         .set_value("auth", Value::Doc(new_auth_settings))
         .await?;
-    op.commit().await?;
+    txn.commit().await?;
 
     // Try to resolve delegation to non-existent tree
     let delegation_path = create_delegation_path(

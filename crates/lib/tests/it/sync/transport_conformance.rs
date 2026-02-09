@@ -160,17 +160,17 @@ where
     .await?;
 
     // Create entries in DB1 - these should automatically sync via hooks
-    let op1 = tree1.new_transaction().await?;
-    let docstore1 = op1.get_store::<DocStore>("data").await?;
+    let txn1 = tree1.new_transaction().await?;
+    let docstore1 = txn1.get_store::<DocStore>("data").await?;
     docstore1.set("name", "Alice").await?;
     docstore1.set("age", "30").await?;
-    let entry_id1 = op1.commit().await?;
+    let entry_id1 = txn1.commit().await?;
 
-    let op2 = tree1.new_transaction().await?;
-    let docstore1_2 = op2.get_store::<DocStore>("data").await?;
+    let txn2 = tree1.new_transaction().await?;
+    let docstore1_2 = txn2.get_store::<DocStore>("data").await?;
     docstore1_2.set("name", "Bob").await?;
     docstore1_2.set("age", "25").await?;
-    let entry_id2 = op2.commit().await?;
+    let entry_id2 = txn2.commit().await?;
 
     println!("Created entries in DB1 (with sync hooks): {entry_id1} and {entry_id2}");
 
@@ -244,16 +244,16 @@ where
     .await?;
 
     // Create entry in DB1
-    let op1 = tree1.new_transaction().await?;
-    let docstore1 = op1.get_store::<DocStore>("data").await?;
+    let txn1 = tree1.new_transaction().await?;
+    let docstore1 = txn1.get_store::<DocStore>("data").await?;
     docstore1.set("origin", "db1").await?;
-    let entry_from_db1 = op1.commit().await?;
+    let entry_from_db1 = txn1.commit().await?;
 
     // Create entry in DB2
-    let op2 = tree2.new_transaction().await?;
-    let docstore2 = op2.get_store::<DocStore>("data").await?;
+    let txn2 = tree2.new_transaction().await?;
+    let docstore2 = txn2.get_store::<DocStore>("data").await?;
     docstore2.set("origin", "db2").await?;
-    let entry_from_db2 = op2.commit().await?;
+    let entry_from_db2 = txn2.commit().await?;
 
     // Flush both sync queues for bidirectional sync
     sync1.flush().await?;

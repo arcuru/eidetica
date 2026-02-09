@@ -57,8 +57,8 @@ The `DocStore` store provides a document-oriented interface for storing and retr
 # let default_key = user.get_default_key()?;
 # let database = user.create_database(settings, &default_key).await?;
 // Get a DocStore store
-let op = database.new_transaction().await?;
-let store = op.get_store::<DocStore>("app_data").await?;
+let txn = database.new_transaction().await?;
+let store = txn.get_store::<DocStore>("app_data").await?;
 
 // Set simple values
 store.set("version", "1.0.0").await?;
@@ -73,7 +73,7 @@ store.set_path(path!("database.port"), "5432").await?;
 let version = store.get("version").await?; // Returns a Value
 let host = store.get_path(path!("database.host")).await?; // Returns Value
 
-op.commit().await?;
+txn.commit().await?;
 # Ok(())
 # }
 ```
@@ -97,8 +97,8 @@ When using `set_path("a.b.c", value)`, DocStore creates **nested maps**, not fla
 # settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;
 # let database = user.create_database(settings, &default_key).await?;
-# let op = database.new_transaction().await?;
-# let store = op.get_store::<DocStore>("app_data").await?;
+# let txn = database.new_transaction().await?;
+# let store = txn.get_store::<DocStore>("app_data").await?;
 // This code:
 store.set_path(path!("user.profile.name"), "Bob").await?;
 
@@ -112,7 +112,7 @@ store.set_path(path!("user.profile.name"), "Bob").await?;
 // }
 
 // NOT: { "user.profile.name": "Bob" } ❌
-# op.commit().await?;
+# txn.commit().await?;
 # Ok(())
 # }
 ```
@@ -155,8 +155,8 @@ struct User {
 }
 
 // Get a Table store
-let op = database.new_transaction().await?;
-let users = op.get_store::<Table<User>>("users").await?;
+let txn = database.new_transaction().await?;
+let users = txn.get_store::<Table<User>>("users").await?;
 
 // Insert items (returns a generated UUID)
 let user = User {
@@ -188,7 +188,7 @@ let active_users = users.search(|user| user.active).await?;
 for (id, user) in active_users {
     println!("Active user: {} (ID: {})", user.name, id);
 }
-# op.commit().await?;
+# txn.commit().await?;
 # Ok(())
 # }
 ```
@@ -387,8 +387,8 @@ The `YDoc` store provides integration with Y-CRDT (Yjs) for real-time collaborat
 # let database = user.create_database(settings, &default_key).await?;
 #
 // Get a YDoc store
-let op = database.new_transaction().await?;
-let doc_store = op.get_store::<YDoc>("document").await?;
+let txn = database.new_transaction().await?;
+let doc_store = txn.get_store::<YDoc>("document").await?;
 
 // Work with Y-CRDT structures
 doc_store.with_doc_mut(|doc| {
@@ -407,7 +407,7 @@ doc_store.with_doc_mut(|doc| {
     Ok(())
 }).await?;
 
-op.commit().await?;
+txn.commit().await?;
 # Ok(())
 # }
 ```
@@ -579,7 +579,7 @@ The `Store` trait defines the minimal interface:
 
 ```rust,ignore
 pub trait Store: Sized {
-    fn new(op: &Transaction, store_name: &str) -> Result<Self>;
+    fn new(txn: &Transaction, store_name: &str) -> Result<Self>;
     fn name(&self) -> &str;
 }
 ```

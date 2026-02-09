@@ -368,10 +368,10 @@ impl Sync {
         key: impl Into<String>,
         value: impl Into<String>,
     ) -> Result<()> {
-        let op = self.sync_tree.new_transaction().await?;
-        let sync_settings = op.get_store::<DocStore>(SETTINGS_SUBTREE).await?;
+        let txn = self.sync_tree.new_transaction().await?;
+        let sync_settings = txn.get_store::<DocStore>(SETTINGS_SUBTREE).await?;
         sync_settings.set(key, Value::Text(value.into())).await?;
-        op.commit().await?;
+        txn.commit().await?;
         Ok(())
     }
 

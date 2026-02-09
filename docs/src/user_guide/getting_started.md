@@ -174,17 +174,17 @@ All operations in Eidetica happen within an atomic **Transaction**:
 # let database = user.create_database(settings, &default_key).await?;
 #
 // Start an authenticated transaction
-let op = database.new_transaction().await?;
+let txn = database.new_transaction().await?;
 
 // Get or create a Table store
-let people = op.get_store::<Table<Person>>("people").await?;
+let people = txn.get_store::<Table<Person>>("people").await?;
 
 // Insert a person and get their ID
 let person = Person { name: "Alice".to_string(), age: 30 };
 let _id = people.insert(person).await?;
 
 // Commit the changes (automatically signed with the user's key)
-op.commit().await?;
+txn.commit().await?;
 # Ok(())
 # }
 ```
@@ -214,14 +214,14 @@ op.commit().await?;
 # let default_key = user.get_default_key()?;
 # let database = user.create_database(settings, &default_key).await?;
 # // Insert some test data
-# let op = database.new_transaction().await?;
-# let people = op.get_store::<Table<Person>>("people").await?;
+# let txn = database.new_transaction().await?;
+# let people = txn.get_store::<Table<Person>>("people").await?;
 # let test_id = people.insert(Person { name: "Alice".to_string(), age: 30 }).await?;
-# op.commit().await?;
+# txn.commit().await?;
 # let id = &test_id;
 #
-let op = database.new_transaction().await?;
-let people = op.get_store::<Table<Person>>("people").await?;
+let txn = database.new_transaction().await?;
+let people = txn.get_store::<Table<Person>>("people").await?;
 
 // Get a single person by ID
 if let Ok(person) = people.get(id).await {
@@ -262,14 +262,14 @@ for (id, person) in all_people {
 # let default_key = user.get_default_key()?;
 # let database = user.create_database(settings, &default_key).await?;
 # // Insert some test data
-# let op_setup = database.new_transaction().await?;
-# let people_setup = op_setup.get_store::<Table<Person>>("people").await?;
+# let txn_setup = database.new_transaction().await?;
+# let people_setup = txn_setup.get_store::<Table<Person>>("people").await?;
 # let test_id = people_setup.insert(Person { name: "Alice".to_string(), age: 30 }).await?;
-# op_setup.commit().await?;
+# txn_setup.commit().await?;
 # let id = &test_id;
 #
-let op = database.new_transaction().await?;
-let people = op.get_store::<Table<Person>>("people").await?;
+let txn = database.new_transaction().await?;
+let people = txn.get_store::<Table<Person>>("people").await?;
 
 // Get, modify, and update
 if let Ok(mut person) = people.get(id).await {
@@ -277,7 +277,7 @@ if let Ok(mut person) = people.get(id).await {
     people.set(id, person).await?;
 }
 
-op.commit().await?;
+txn.commit().await?;
 # Ok(())
 # }
 ```
@@ -308,13 +308,13 @@ op.commit().await?;
 # let database = user.create_database(settings, &default_key).await?;
 # let _id = "test_id";
 #
-let op = database.new_transaction().await?;
-let people = op.get_store::<Table<Person>>("people").await?;
+let txn = database.new_transaction().await?;
+let people = txn.get_store::<Table<Person>>("people").await?;
 
 // FIXME: Table doesn't currently support deletion
 // You can overwrite with a "deleted" marker or use other approaches
 
-op.commit().await?;
+txn.commit().await?;
 # Ok(())
 # }
 ```

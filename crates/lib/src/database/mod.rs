@@ -165,23 +165,23 @@ impl Database {
         };
 
         // Create the transaction - it will use the provided key automatically
-        let op = temp_database_for_bootstrap.new_transaction().await?;
+        let txn = temp_database_for_bootstrap.new_transaction().await?;
 
         // IMPORTANT: For the root entry, we need to set the database root to empty string
         // so that is_root() returns true and all_roots() can find it
-        op.set_entry_root("")?;
+        txn.set_entry_root("")?;
 
         // Populate the SETTINGS and ROOT subtrees for the very first entry
-        op.update_subtree(SETTINGS, &serde_json::to_string(&final_database_settings)?)
+        txn.update_subtree(SETTINGS, &serde_json::to_string(&final_database_settings)?)
             .await?;
-        op.update_subtree(ROOT, &serde_json::to_string(&"".to_string())?)
+        txn.update_subtree(ROOT, &serde_json::to_string(&"".to_string())?)
             .await?; // Standard practice for root entry's _root
 
         // Add entropy to the entry metadata to ensure unique database IDs even with identical settings
-        op.set_metadata_entropy(rand::thread_rng().next_u64())?;
+        txn.set_metadata_entropy(rand::thread_rng().next_u64())?;
 
         // Commit the initial entry
-        let new_root_id = op.commit().await?;
+        let new_root_id = txn.commit().await?;
 
         // Now create the real database with the new_root_id and KeySource
         Ok(Self {
@@ -604,7 +604,7 @@ impl Database {
     /// # Returns
     /// A `Result<Transaction>` containing the new atomic transaction
     pub async fn new_transaction_with_tips(&self, tips: impl AsRef<[ID]>) -> Result<Transaction> {
-        let mut op = Transaction::new_with_tips(self, tips.as_ref()).await?;
+        let mut txn = Transaction::new_with_tips(self, tips.as_ref()).await?;
 
         // Set provided signing key (all databases use KeySource now)
         if let Some(KeySource {
@@ -612,10 +612,10 @@ impl Database {
             sigkey,
         }) = &self.key_source
         {
-            op.set_provided_key(*signing_key.clone(), sigkey.clone());
+            txn.set_provided_key(*signing_key.clone(), sigkey.clone());
         }
 
-        Ok(op)
+        Ok(txn)
     }
 
     /// Insert an entry into the database without modifying it.
@@ -640,8 +640,8 @@ impl Database {
     where
         T: Store,
     {
-        let op = self.new_transaction().await?;
-        T::new(&op, name.into()).await
+        let txn = self.new_transaction().await?;
+        T::new(&txn, name.into()).await
     }
 
     /// Get the current tips (leaf entries) of the main database branch.
@@ -697,8 +697,8 @@ impl Database {
     /// # let mut user = instance.login_user("test", None).await?;
     /// # let key_id = user.add_private_key(None).await?;
     /// # let tree = user.create_database(Doc::new(), &key_id).await?;
-    /// # let op = tree.new_transaction().await?;
-    /// let entry_id = op.commit().await?;
+    /// # let txn = tree.new_transaction().await?;
+    /// let entry_id = txn.commit().await?;
     /// let entry = tree.get_entry(&entry_id).await?;           // Using &String
     /// let entry = tree.get_entry("some_entry_id").await?;     // Using &str
     /// let entry = tree.get_entry(entry_id.clone()).await?;    // Using String

@@ -226,15 +226,15 @@ impl BackgroundSync {
             Err(_) => return None,
         };
 
-        let op = match sync_tree.new_transaction().await {
-            Ok(op) => op,
+        let txn = match sync_tree.new_transaction().await {
+            Ok(txn) => txn,
             Err(_) => return None,
         };
 
-        let user_mgr = super::user_sync_manager::UserSyncManager::new(&op);
+        let user_mgr = super::user_sync_manager::UserSyncManager::new(&txn);
 
         // Get all tracked database IDs from the DATABASE_USERS_SUBTREE
-        let database_users = match op
+        let database_users = match txn
             .get_store::<DocStore>(super::user_sync_manager::DATABASE_USERS_SUBTREE)
             .await
         {
@@ -451,11 +451,11 @@ impl BackgroundSync {
     ///
     /// Failed sends are automatically added to the retry queue with exponential backoff.
     async fn send_to_peer(&self, peer: &PeerId, entries: Vec<Entry>) -> Result<()> {
-        // Get peer address from sync tree (extract and drop operation before await)
+        // Get peer address from sync tree (extract and drop transaction before await)
         let address = {
             let sync_tree = self.get_sync_tree().await?;
-            let op = sync_tree.new_transaction().await?;
-            let peer_info = PeerManager::new(&op)
+            let txn = sync_tree.new_transaction().await?;
+            let peer_info = PeerManager::new(&txn)
                 .get_peer_info(&peer)
                 .await?
                 .ok_or_else(|| SyncError::PeerNotFound(peer.to_string()))?;
@@ -465,7 +465,7 @@ impl BackgroundSync {
                 .first()
                 .ok_or_else(|| SyncError::Network("No addresses found for peer".to_string()))?
                 .clone()
-        }; // Operation is dropped here
+        }; // Transaction is dropped here
 
         let request = SyncRequest::SendEntries(entries);
         let response = self
@@ -625,7 +625,7 @@ impl BackgroundSync {
         // Get all peers from sync tree
         let peers = match self.get_sync_tree().await {
             Ok(sync_tree) => match sync_tree.new_transaction().await {
-                Ok(op) => match PeerManager::new(&op).list_peers().await {
+                Ok(txn) => match PeerManager::new(&txn).list_peers().await {
                     Ok(peers) => {
                         // Extract peer list and drop the operation before awaiting
                         peers
@@ -636,7 +636,7 @@ impl BackgroundSync {
                     }
                 },
                 Err(_) => {
-                    // Skip sync if we can't create operation
+                    // Skip sync if we can't create transaction
                     return;
                 }
             },
@@ -646,7 +646,7 @@ impl BackgroundSync {
             }
         };
 
-        // Now sync with peers (operation is dropped, so no Send issues)
+        // Now sync with peers (transaction is dropped, so no Send issues)
         for peer_info in peers {
             if peer_info.status == PeerStatus::Active
                 && let Err(e) = self.sync_with_peer(&peer_info.id).await
@@ -662,11 +662,11 @@ impl BackgroundSync {
         async move {
             info!(peer = %peer_id, "Starting peer synchronization");
 
-            // Get peer info and tree list from sync tree (extract and drop operation before await)
+            // Get peer info and tree list from sync tree (extract and drop transaction before await)
             let (address, sync_trees) = {
                 let sync_tree = self.get_sync_tree().await?;
-                let op = sync_tree.new_transaction().await?;
-                let peer_manager = PeerManager::new(&op);
+                let txn = sync_tree.new_transaction().await?;
+                let peer_manager = PeerManager::new(&txn);
 
                 let peer_info = peer_manager
                     .get_peer_info(peer_id)
@@ -683,7 +683,7 @@ impl BackgroundSync {
                 let sync_trees = peer_manager.get_peer_trees(peer_id).await?;
 
                 (address, sync_trees)
-            }; // Operation is dropped here
+            }; // Transaction is dropped here
 
             if sync_trees.is_empty() {
                 debug!(peer = %peer_id, "No trees configured for sync with peer");

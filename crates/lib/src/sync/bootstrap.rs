@@ -162,8 +162,8 @@ impl Sync {
     /// # Returns
     /// A vector of (request_id, bootstrap_request) pairs for pending requests.
     pub async fn pending_bootstrap_requests(&self) -> Result<Vec<(String, BootstrapRequest)>> {
-        let op = self.sync_tree.new_transaction().await?;
-        let manager = BootstrapRequestManager::new(&op);
+        let txn = self.sync_tree.new_transaction().await?;
+        let manager = BootstrapRequestManager::new(&txn);
         manager.pending_requests().await
     }
 
@@ -172,8 +172,8 @@ impl Sync {
     /// # Returns
     /// A vector of (request_id, bootstrap_request) pairs for approved requests.
     pub async fn approved_bootstrap_requests(&self) -> Result<Vec<(String, BootstrapRequest)>> {
-        let op = self.sync_tree.new_transaction().await?;
-        let manager = BootstrapRequestManager::new(&op);
+        let txn = self.sync_tree.new_transaction().await?;
+        let manager = BootstrapRequestManager::new(&txn);
         manager.approved_requests().await
     }
 
@@ -182,8 +182,8 @@ impl Sync {
     /// # Returns
     /// A vector of (request_id, bootstrap_request) pairs for rejected requests.
     pub async fn rejected_bootstrap_requests(&self) -> Result<Vec<(String, BootstrapRequest)>> {
-        let op = self.sync_tree.new_transaction().await?;
-        let manager = BootstrapRequestManager::new(&op);
+        let txn = self.sync_tree.new_transaction().await?;
+        let manager = BootstrapRequestManager::new(&txn);
         manager.rejected_requests().await
     }
 
@@ -198,8 +198,8 @@ impl Sync {
         &self,
         request_id: &str,
     ) -> Result<Option<(String, BootstrapRequest)>> {
-        let op = self.sync_tree.new_transaction().await?;
-        let manager = BootstrapRequestManager::new(&op);
+        let txn = self.sync_tree.new_transaction().await?;
+        let manager = BootstrapRequestManager::new(&txn);
 
         match manager.get_request(request_id).await? {
             Some(request) => Ok(Some((request_id.to_string(), request))),

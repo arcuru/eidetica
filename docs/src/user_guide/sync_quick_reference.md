@@ -245,10 +245,10 @@ let database = user.create_database(settings, &default_key).await?;
 let tree_id = database.root_id();
 
 // Add some initial data
-let op = database.new_transaction().await?;
-let store = op.get_store::<DocStore>("messages").await?;
+let txn = database.new_transaction().await?;
+let store = txn.get_store::<DocStore>("messages").await?;
 store.set("welcome", "Welcome to the room!").await?;
-op.commit().await?;
+txn.commit().await?;
 
 // Share the tree_id with others
 println!("Room ID: {}", tree_id);
@@ -267,8 +267,8 @@ sync.sync_with_peer("peer.example.com:8080", Some(&room_id)).await?;
 
 // You now have the full database locally
 let database = db.load_database(&room_id).await?;
-let op = database.new_transaction().await?;
-let store = op.get_store::<DocStore>("messages").await?;
+let txn = database.new_transaction().await?;
+let store = txn.get_store::<DocStore>("messages").await?;
 println!("Welcome message: {}", store.get_string("welcome").await?);
 ```
 
@@ -278,10 +278,10 @@ println!("Welcome message: {}", store.get_string("welcome").await?);
 
 ```rust,ignore
 // All changes automatically sync after bootstrap
-let op = database.new_transaction().await?;
-let store = op.get_store::<DocStore>("messages").await?;
+let txn = database.new_transaction().await?;
+let store = txn.get_store::<DocStore>("messages").await?;
 store.set("my_message", "Hello everyone!").await?;
-op.commit().await?; // Automatically syncs to all connected peers
+txn.commit().await?; // Automatically syncs to all connected peers
 
 // Manually sync to get latest changes
 sync.sync_with_peer("peer.example.com:8080", Some(&tree_id)).await?;
@@ -315,15 +315,15 @@ sync.remove_tree_sync(&peer_key, &tree_id)?;
 use eidetica::store::DocStore;
 
 // Any database operation automatically triggers sync
-let op = database.new_transaction().await?;
-let store = op.get_store::<DocStore>("data").await?;
+let txn = database.new_transaction().await?;
+let store = txn.get_store::<DocStore>("data").await?;
 
 store.set("message", "Hello World").await?;
 store.set_path("user.name", "Alice").await?;
 store.set_path("user.age", 30).await?;
 
 // Commit triggers sync callbacks automatically
-op.commit().await?; // Entries queued for sync to all configured peers
+txn.commit().await?; // Entries queued for sync to all configured peers
 ```
 
 ### Bulk Operations
@@ -332,15 +332,15 @@ op.commit().await?; // Entries queued for sync to all configured peers
 
 ```rust,ignore
 // Multiple operations in single commit
-let op = database.new_transaction().await?;
-let store = op.get_store::<DocStore>("data").await?;
+let txn = database.new_transaction().await?;
+let store = txn.get_store::<DocStore>("data").await?;
 
 for i in 0..100 {
     store.set(&format!("item_{}", i), &format!("value_{}", i)).await?;
 }
 
 // Single commit, single sync entry
-op.commit().await?;
+txn.commit().await?;
 ```
 
 ## Monitoring and Diagnostics
@@ -373,8 +373,8 @@ sync.stop_server_async().await?;
 
 ```rust,ignore
 // Get sync state manager
-let op = db.sync()?.sync_tree().new_transaction().await?;
-let state_manager = SyncStateManager::new(&op);
+let txn = db.sync()?.sync_tree().new_transaction().await?;
+let state_manager = SyncStateManager::new(&txn);
 
 // Get sync cursor for peer-database relationship
 let cursor = state_manager.get_sync_cursor(&peer_key, &tree_id).await?;
@@ -398,9 +398,9 @@ if let Some(meta) = metadata {
 ```rust,ignore
 use eidetica::sync::state::SyncStateManager;
 
-// Get sync database operation
-let op = sync.sync_tree().new_transaction().await?;
-let state_manager = SyncStateManager::new(&op);
+// Get sync database transaction
+let txn = sync.sync_tree().new_transaction().await?;
+let state_manager = SyncStateManager::new(&txn);
 
 // Check sync cursor
 let cursor = state_manager.get_sync_cursor(&peer_key, &tree_id).await?;
@@ -632,10 +632,10 @@ async fn test_sync_between_peers() -> Result<()> {
     instance2.sync()?.add_tree_sync(&peer1_key, &tree1.root_id().to_string())?;
 
     // Test sync
-    let op1 = tree1.new_transaction().await?;
-    let store1 = op1.get_store::<DocStore>("data").await?;
+    let txn1 = tree1.new_transaction().await?;
+    let store1 = txn1.get_store::<DocStore>("data").await?;
     store1.set("test", "value").await?;
-    op1.commit().await?;
+    txn1.commit().await?;
 
     // Wait for sync
     tokio::time::sleep(Duration::from_secs(2)).await;

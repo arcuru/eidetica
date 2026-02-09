@@ -17,21 +17,21 @@ async fn test_transaction_with_delete() {
     let ctx = TestContext::new().with_database().await;
 
     // Create an operation and add some data
-    let op1 = ctx.database().new_transaction().await.unwrap();
-    let store1 = op1.get_store::<DocStore>("data").await.unwrap();
+    let txn1 = ctx.database().new_transaction().await.unwrap();
+    let store1 = txn1.get_store::<DocStore>("data").await.unwrap();
     store1.set("key1", "value1").await.unwrap();
     store1.set("key2", "value2").await.unwrap();
-    op1.commit().await.unwrap();
+    txn1.commit().await.unwrap();
 
     // Create another operation to delete a key
-    let op2 = ctx.database().new_transaction().await.unwrap();
-    let store2 = op2.get_store::<DocStore>("data").await.unwrap();
+    let txn2 = ctx.database().new_transaction().await.unwrap();
+    let store2 = txn2.get_store::<DocStore>("data").await.unwrap();
     store2.delete("key1").await.unwrap();
-    op2.commit().await.unwrap();
+    txn2.commit().await.unwrap();
 
     // Verify with a third operation
-    let op3 = ctx.database().new_transaction().await.unwrap();
-    let store3 = op3.get_store::<DocStore>("data").await.unwrap();
+    let txn3 = ctx.database().new_transaction().await.unwrap();
+    let store3 = txn3.get_store::<DocStore>("data").await.unwrap();
 
     // key1 should be deleted
     assert_key_not_found(store3.get("key1").await);
@@ -51,8 +51,8 @@ async fn test_transaction_nested_values() {
     let (_instance, tree, _key_id) = setup_tree_with_user_key().await;
 
     // Create an operation
-    let op1 = tree.new_transaction().await.unwrap();
-    let store1 = op1.get_store::<DocStore>("data").await.unwrap();
+    let txn1 = tree.new_transaction().await.unwrap();
+    let store1 = txn1.get_store::<DocStore>("data").await.unwrap();
 
     // Set a regular string value
     store1.set("string_key", "string_value").await.unwrap();
@@ -66,11 +66,11 @@ async fn test_transaction_nested_values() {
     store1.set_value("map_key", nested).await.unwrap();
 
     // Commit the operation
-    op1.commit().await.unwrap();
+    txn1.commit().await.unwrap();
 
     // Verify with a new operation
-    let op2 = tree.new_transaction().await.unwrap();
-    let store2 = op2.get_store::<DocStore>("data").await.unwrap();
+    let txn2 = tree.new_transaction().await.unwrap();
+    let store2 = txn2.get_store::<DocStore>("data").await.unwrap();
 
     // Check the string value
     match store2.get("string_key").await.unwrap() {
@@ -99,18 +99,18 @@ async fn test_transaction_staged_data_isolation() {
     let ctx = TestContext::new().with_database().await;
 
     // Create initial data
-    let op1 = ctx.database().new_transaction().await.unwrap();
-    let store1 = op1.get_store::<DocStore>("data").await.unwrap();
+    let txn1 = ctx.database().new_transaction().await.unwrap();
+    let store1 = txn1.get_store::<DocStore>("data").await.unwrap();
     store1.set("key1", "committed_value").await.unwrap();
-    let entry1_id = op1.commit().await.unwrap();
+    let entry1_id = txn1.commit().await.unwrap();
 
     // Create operation from entry1
-    let op2 = ctx
+    let txn2 = ctx
         .database()
         .new_transaction_with_tips(std::slice::from_ref(&entry1_id))
         .await
         .unwrap();
-    let store2 = op2.get_store::<DocStore>("data").await.unwrap();
+    let store2 = txn2.get_store::<DocStore>("data").await.unwrap();
 
     // Initially should see committed data
     assert_dict_value(&store2, "key1", "committed_value").await;
@@ -124,27 +124,27 @@ async fn test_transaction_staged_data_isolation() {
     assert_dict_value(&store2, "key2", "new_staged").await;
 
     // Create another operation from same tip - should not see staged data
-    let op3 = ctx
+    let txn3 = ctx
         .database()
         .new_transaction_with_tips([entry1_id])
         .await
         .unwrap();
-    let store3 = op3.get_store::<DocStore>("data").await.unwrap();
+    let store3 = txn3.get_store::<DocStore>("data").await.unwrap();
 
     // Should see original committed data, not staged data from op2
     assert_dict_value(&store3, "key1", "committed_value").await;
     assert_key_not_found(store3.get("key2").await);
 
     // Commit op2
-    let entry2_id = op2.commit().await.unwrap();
+    let entry2_id = txn2.commit().await.unwrap();
 
     // Create operation from entry2 - should see committed staged data
-    let op4 = ctx
+    let txn4 = ctx
         .database()
         .new_transaction_with_tips([entry2_id])
         .await
         .unwrap();
-    let store4 = op4.get_store::<DocStore>("data").await.unwrap();
+    let store4 = txn4.get_store::<DocStore>("data").await.unwrap();
 
     assert_dict_value(&store4, "key1", "staged_value").await;
     assert_dict_value(&store4, "key2", "new_staged").await;

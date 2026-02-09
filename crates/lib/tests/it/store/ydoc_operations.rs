@@ -100,16 +100,16 @@ async fn test_ydoc_multiple_operations_with_diffs() {
     let ctx = TestContext::new().with_database().await;
 
     // Operation 1: Create initial state
-    let op1 = ctx
+    let txn1 = ctx
         .database()
         .new_transaction()
         .await
-        .expect("Op1: Failed to start");
+        .expect("Txn1: Failed to start");
     {
-        let ydoc = op1
+        let ydoc = txn1
             .get_store::<YDoc>("yrs_multi")
             .await
-            .expect("Op1: Failed to get YDoc");
+            .expect("Txn1: Failed to get YDoc");
 
         ydoc.with_doc_mut(|doc| {
             let map = doc.get_or_insert_map("data");
@@ -121,21 +121,21 @@ async fn test_ydoc_multiple_operations_with_diffs() {
             Ok(())
         })
         .await
-        .expect("Op1: Failed to perform operations");
+        .expect("Txn1: Failed to perform operations");
     }
-    op1.commit().await.expect("Op1: Failed to commit");
+    txn1.commit().await.expect("Txn1: Failed to commit");
 
     // Operation 2: Update existing data
-    let op2 = ctx
+    let txn2 = ctx
         .database()
         .new_transaction()
         .await
-        .expect("Op2: Failed to start");
+        .expect("Txn2: Failed to start");
     {
-        let ydoc = op2
+        let ydoc = txn2
             .get_store::<YDoc>("yrs_multi")
             .await
-            .expect("Op2: Failed to get YDoc");
+            .expect("Txn2: Failed to get YDoc");
 
         ydoc.with_doc_mut(|doc| {
             let map = doc.get_or_insert_map("data");
@@ -149,21 +149,21 @@ async fn test_ydoc_multiple_operations_with_diffs() {
             Ok(())
         })
         .await
-        .expect("Op2: Failed to perform operations");
+        .expect("Txn2: Failed to perform operations");
     }
-    op2.commit().await.expect("Op2: Failed to commit");
+    txn2.commit().await.expect("Txn2: Failed to commit");
 
     // Operation 3: Add more data
-    let op3 = ctx
+    let txn3 = ctx
         .database()
         .new_transaction()
         .await
-        .expect("Op3: Failed to start");
+        .expect("Txn3: Failed to start");
     {
-        let ydoc = op3
+        let ydoc = txn3
             .get_store::<YDoc>("yrs_multi")
             .await
-            .expect("Op3: Failed to get YDoc");
+            .expect("Txn3: Failed to get YDoc");
 
         ydoc.with_doc_mut(|doc| {
             let map = doc.get_or_insert_map("data");
@@ -173,9 +173,9 @@ async fn test_ydoc_multiple_operations_with_diffs() {
             Ok(())
         })
         .await
-        .expect("Op3: Failed to perform operations");
+        .expect("Txn3: Failed to perform operations");
     }
-    op3.commit().await.expect("Op3: Failed to commit");
+    txn3.commit().await.expect("Txn3: Failed to commit");
 
     // Verify final state
     let viewer = ctx
@@ -222,13 +222,13 @@ async fn test_ydoc_apply_external_update() {
     let external_update = create_external_ydoc_update("External change");
 
     // Apply the external update to our YDoc
-    let op = ctx
+    let txn = ctx
         .database()
         .new_transaction()
         .await
-        .expect("Failed to start operation");
+        .expect("Failed to start transaction");
     {
-        let ydoc = op
+        let ydoc = txn
             .get_store::<YDoc>("yrs_external")
             .await
             .expect("Failed to get YDoc");
@@ -237,7 +237,7 @@ async fn test_ydoc_apply_external_update() {
             .await
             .expect("Failed to apply external update");
     }
-    op.commit().await.expect("Failed to commit operation");
+    txn.commit().await.expect("Failed to commit transaction");
 
     // Verify the external update was applied
     let viewer = ctx

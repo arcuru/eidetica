@@ -22,7 +22,7 @@ pub(super) const BOOTSTRAP_REQUESTS_SUBTREE: &str = "bootstrap_requests";
 /// This struct manages all bootstrap request operations for the sync module,
 /// operating on a Transaction to stage changes.
 pub(super) struct BootstrapRequestManager<'a> {
-    op: &'a Transaction,
+    txn: &'a Transaction,
 }
 
 /// A bootstrap request awaiting manual approval
@@ -67,8 +67,8 @@ pub enum RequestStatus {
 
 impl<'a> BootstrapRequestManager<'a> {
     /// Create a new BootstrapRequestManager that operates on the given Transaction.
-    pub(super) fn new(op: &'a Transaction) -> Self {
-        Self { op }
+    pub(super) fn new(txn: &'a Transaction) -> Self {
+        Self { txn }
     }
 
     /// Store a new bootstrap request in the sync database.
@@ -80,7 +80,7 @@ impl<'a> BootstrapRequestManager<'a> {
     /// The generated UUID for the request.
     pub(super) async fn store_request(&self, request: BootstrapRequest) -> Result<String> {
         let requests = self
-            .op
+            .txn
             .get_store::<Table<BootstrapRequest>>(BOOTSTRAP_REQUESTS_SUBTREE)
             .await?;
 
@@ -102,7 +102,7 @@ impl<'a> BootstrapRequestManager<'a> {
     /// The bootstrap request if found, None otherwise.
     pub(super) async fn get_request(&self, request_id: &str) -> Result<Option<BootstrapRequest>> {
         let requests = self
-            .op
+            .txn
             .get_store::<Table<BootstrapRequest>>(BOOTSTRAP_REQUESTS_SUBTREE)
             .await?;
 
@@ -119,7 +119,7 @@ impl<'a> BootstrapRequestManager<'a> {
         status_filter: &RequestStatus,
     ) -> Result<Vec<(String, BootstrapRequest)>> {
         let requests = self
-            .op
+            .txn
             .get_store::<Table<BootstrapRequest>>(BOOTSTRAP_REQUESTS_SUBTREE)
             .await?;
 
@@ -178,7 +178,7 @@ impl<'a> BootstrapRequestManager<'a> {
         new_status: RequestStatus,
     ) -> Result<()> {
         let requests = self
-            .op
+            .txn
             .get_store::<Table<BootstrapRequest>>(BOOTSTRAP_REQUESTS_SUBTREE)
             .await?;
 
@@ -245,8 +245,8 @@ mod tests {
     #[tokio::test]
     async fn test_store_and_get_request() {
         let (_instance, sync_tree, clock) = create_test_sync_tree().await;
-        let op = sync_tree.new_transaction().await.unwrap();
-        let manager = BootstrapRequestManager::new(&op);
+        let txn = sync_tree.new_transaction().await.unwrap();
+        let manager = BootstrapRequestManager::new(&txn);
 
         let request = create_test_request(&clock);
 
@@ -266,8 +266,8 @@ mod tests {
     #[tokio::test]
     async fn test_list_requests() {
         let (_instance, sync_tree, clock) = create_test_sync_tree().await;
-        let op = sync_tree.new_transaction().await.unwrap();
-        let manager = BootstrapRequestManager::new(&op);
+        let txn = sync_tree.new_transaction().await.unwrap();
+        let manager = BootstrapRequestManager::new(&txn);
 
         // Store multiple requests
         let request1 = create_test_request(&clock);
@@ -303,8 +303,8 @@ mod tests {
     #[tokio::test]
     async fn test_update_status() {
         let (_instance, sync_tree, clock) = create_test_sync_tree().await;
-        let op = sync_tree.new_transaction().await.unwrap();
-        let manager = BootstrapRequestManager::new(&op);
+        let txn = sync_tree.new_transaction().await.unwrap();
+        let manager = BootstrapRequestManager::new(&txn);
 
         let request = create_test_request(&clock);
 
@@ -329,8 +329,8 @@ mod tests {
     #[tokio::test]
     async fn test_get_nonexistent_request() {
         let (_instance, sync_tree, _clock) = create_test_sync_tree().await;
-        let op = sync_tree.new_transaction().await.unwrap();
-        let manager = BootstrapRequestManager::new(&op);
+        let txn = sync_tree.new_transaction().await.unwrap();
+        let manager = BootstrapRequestManager::new(&txn);
 
         let result = manager.get_request("nonexistent").await.unwrap();
         assert!(result.is_none());

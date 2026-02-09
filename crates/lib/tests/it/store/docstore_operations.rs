@@ -23,12 +23,12 @@ async fn test_dict_set_and_get_via_op() {
     create_dict_operation(ctx.database(), "my_kv", initial_data).await;
 
     // Test operation-level modifications
-    let op = ctx
+    let txn = ctx
         .database()
         .new_transaction()
         .await
-        .expect("Failed to start operation");
-    let dict = op
+        .expect("Failed to start transaction");
+    let dict = txn
         .get_store::<DocStore>("my_kv")
         .await
         .expect("Failed to get Doc");
@@ -60,7 +60,7 @@ async fn test_dict_set_and_get_via_op() {
     // Test non-existent key
     assert_key_not_found(dict.get("non_existent").await);
 
-    op.commit().await.expect("Failed to commit operation");
+    txn.commit().await.expect("Failed to commit transaction");
 
     // Verify final state using helper
     let expected_final = &[("key1", "value1_updated"), ("key2", "value2")];
@@ -118,14 +118,14 @@ async fn test_dict_get_all_empty() {
 #[tokio::test]
 async fn test_dict_delete() {
     let ctx = TestContext::new().with_database().await;
-    let op = ctx
+    let txn = ctx
         .database()
         .new_transaction()
         .await
-        .expect("Failed to start operation");
+        .expect("Failed to start transaction");
 
     {
-        let dict = op
+        let dict = txn
             .get_store::<DocStore>("my_kv")
             .await
             .expect("Failed to get Doc");
@@ -149,7 +149,7 @@ async fn test_dict_delete() {
     }
 
     // Commit the operation
-    op.commit().await.expect("Failed to commit operation");
+    txn.commit().await.expect("Failed to commit transaction");
 
     // Verify the deletion persisted
     let viewer = ctx
@@ -198,14 +198,14 @@ async fn test_dict_list_basic_operations() {
 #[tokio::test]
 async fn test_dict_list_nonexistent_key() {
     let ctx = TestContext::new().with_database().await;
-    let op = ctx
+    let txn = ctx
         .database()
         .new_transaction()
         .await
-        .expect("Failed to start operation");
+        .expect("Failed to start transaction");
 
     {
-        let dict = op
+        let dict = txn
             .get_store::<DocStore>("my_kv")
             .await
             .expect("Failed to get Doc");
@@ -242,14 +242,14 @@ async fn test_dict_list_nonexistent_key() {
 async fn test_dict_list_persistence() {
     let ctx = TestContext::new().with_database().await;
 
-    // Create list in first operation
-    let op1 = ctx
+    // Create list in first transaction
+    let txn1 = ctx
         .database()
         .new_transaction()
         .await
         .expect("Failed to start op1");
     {
-        let dict = op1
+        let dict = txn1
             .get_store::<DocStore>("my_kv")
             .await
             .expect("Failed to get Doc");
@@ -262,16 +262,16 @@ async fn test_dict_list_persistence() {
             .await
             .expect("Failed to set colors list");
     }
-    op1.commit().await.expect("Failed to commit op1");
+    txn1.commit().await.expect("Failed to commit op1");
 
-    // Modify list in second operation
-    let op2 = ctx
+    // Modify list in second transaction
+    let txn2 = ctx
         .database()
         .new_transaction()
         .await
         .expect("Failed to start op2");
     {
-        let dict = op2
+        let dict = txn2
             .get_store::<DocStore>("my_kv")
             .await
             .expect("Failed to get Doc");
@@ -294,7 +294,7 @@ async fn test_dict_list_persistence() {
             .await
             .expect("Failed to update colors list");
     }
-    op2.commit().await.expect("Failed to commit op2");
+    txn2.commit().await.expect("Failed to commit op2");
 
     // Verify final state
     assert_dict_list_data(ctx.database(), "my_kv", "colors", &["green", "blue"]).await;
@@ -305,37 +305,37 @@ async fn test_dict_update_nested_value() {
     let ctx = TestContext::new().with_database().await;
 
     // First operation: Create initial nested structure
-    let op1 = ctx
+    let txn1 = ctx
         .database()
         .new_transaction()
         .await
-        .expect("Op1: Failed to start");
+        .expect("Txn1: Failed to start");
     {
-        let dict = op1
+        let dict = txn1
             .get_store::<DocStore>("nested_test")
             .await
-            .expect("Op1: Failed to get Doc");
+            .expect("Txn1: Failed to get Doc");
 
         // Create level1 -> level2_str structure
         let mut l1_map = Doc::new();
         l1_map.set("level2_str", "initial_value");
         dict.set_value("level1", l1_map)
             .await
-            .expect("Op1: Failed to set level1");
+            .expect("Txn1: Failed to set level1");
     }
-    op1.commit().await.expect("Op1: Failed to commit");
+    txn1.commit().await.expect("Txn1: Failed to commit");
 
     // Second operation: Update with another structure
-    let op2 = ctx
+    let txn2 = ctx
         .database()
         .new_transaction()
         .await
-        .expect("Op2: Failed to start");
+        .expect("Txn2: Failed to start");
     {
-        let dict = op2
+        let dict = txn2
             .get_store::<DocStore>("nested_test")
             .await
-            .expect("Op2: Failed to get Doc");
+            .expect("Txn2: Failed to get Doc");
 
         // Create an entirely new map structure that will replace the old one
         let mut l2_map = Doc::new();
@@ -347,7 +347,7 @@ async fn test_dict_update_nested_value() {
         // Completely replace the previous value at level1
         dict.set_value("level1", new_l1_map.clone())
             .await
-            .expect("Op2: Failed to overwrite level1");
+            .expect("Txn2: Failed to overwrite level1");
 
         // Verify the update within the same operation
         match dict.get("level1").await.expect("Failed to get level1") {
@@ -364,7 +364,7 @@ async fn test_dict_update_nested_value() {
             _ => panic!("Expected 'level1' to be a map"),
         }
     }
-    op2.commit().await.expect("Op2: Failed to commit");
+    txn2.commit().await.expect("Txn2: Failed to commit");
 
     // Verify the update persists after commit
     let viewer = ctx
@@ -396,14 +396,14 @@ async fn test_dict_update_nested_value() {
 #[tokio::test]
 async fn test_dict_comprehensive_operations() {
     let ctx = TestContext::new().with_database().await;
-    let op = ctx
+    let txn = ctx
         .database()
         .new_transaction()
         .await
-        .expect("Failed to start operation");
+        .expect("Failed to start transaction");
 
     {
-        let dict = op
+        let dict = txn
             .get_store::<DocStore>("test_store")
             .await
             .expect("Failed to get Doc");
@@ -426,7 +426,7 @@ async fn test_dict_comprehensive_operations() {
     }
 
     // Commit the operation
-    op.commit().await.expect("Failed to commit operation");
+    txn.commit().await.expect("Failed to commit transaction");
 
     // Get a viewer to check the subtree
     let viewer = ctx
@@ -474,12 +474,12 @@ async fn test_docstore_path_based_access() {
     let ctx = TestContext::new().with_database().await;
 
     // Create operation and set up nested data structure
-    let op = ctx
+    let txn = ctx
         .database()
         .new_transaction()
         .await
-        .expect("Failed to start operation");
-    let dict = op
+        .expect("Failed to start transaction");
+    let dict = txn
         .get_store::<DocStore>("path_test")
         .await
         .expect("Failed to get DocStore");
@@ -607,7 +607,7 @@ async fn test_docstore_path_based_access() {
     assert!(type_mismatch.is_err());
 
     // Commit and verify persistence
-    op.commit().await.expect("Failed to commit operation");
+    txn.commit().await.expect("Failed to commit transaction");
 
     // Test via viewer (read-only access)
     let viewer = ctx
@@ -644,12 +644,12 @@ async fn test_docstore_path_mixed_with_staging() {
 
     // Create initial committed data
     {
-        let op = ctx
+        let txn = ctx
             .database()
             .new_transaction()
             .await
-            .expect("Failed to start operation");
-        let dict = op
+            .expect("Failed to start transaction");
+        let dict = txn
             .get_store::<DocStore>("staging_test")
             .await
             .expect("Failed to get DocStore");
@@ -662,16 +662,16 @@ async fn test_docstore_path_mixed_with_staging() {
             .await
             .expect("Failed to set config");
 
-        op.commit().await.expect("Failed to commit initial data");
+        txn.commit().await.expect("Failed to commit initial data");
     }
 
     // Now test staging behavior with paths
-    let op = ctx
+    let txn = ctx
         .database()
         .new_transaction()
         .await
-        .expect("Failed to start operation");
-    let dict = op
+        .expect("Failed to start transaction");
+    let dict = txn
         .get_store::<DocStore>("staging_test")
         .await
         .expect("Failed to get DocStore");
@@ -752,12 +752,12 @@ async fn test_docstore_path_mixed_with_staging() {
 async fn test_docstore_set_path() {
     let ctx = TestContext::new().with_database().await;
 
-    let op = ctx
+    let txn = ctx
         .database()
         .new_transaction()
         .await
-        .expect("Failed to start operation");
-    let dict = op
+        .expect("Failed to start transaction");
+    let dict = txn
         .get_store::<DocStore>("set_path_test")
         .await
         .expect("Failed to get DocStore");
@@ -842,7 +842,7 @@ async fn test_docstore_set_path() {
     assert!(email_result.is_err());
 
     // Commit and verify persistence
-    op.commit().await.expect("Failed to commit operation");
+    txn.commit().await.expect("Failed to commit transaction");
 
     let viewer = ctx
         .database()
@@ -871,12 +871,12 @@ async fn test_docstore_set_path() {
 async fn test_docstore_modify_path() {
     let ctx = TestContext::new().with_database().await;
 
-    let op = ctx
+    let txn = ctx
         .database()
         .new_transaction()
         .await
-        .expect("Failed to start operation");
-    let dict = op
+        .expect("Failed to start transaction");
+    let dict = txn
         .get_store::<DocStore>("modify_path_test")
         .await
         .expect("Failed to get DocStore");
@@ -941,7 +941,7 @@ async fn test_docstore_modify_path() {
     assert!(result.is_err());
 
     // Commit and verify persistence
-    op.commit().await.expect("Failed to commit operation");
+    txn.commit().await.expect("Failed to commit transaction");
 
     let viewer = ctx
         .database()
@@ -976,12 +976,12 @@ async fn test_docstore_modify_path() {
 async fn test_docstore_get_or_insert_path() {
     let ctx = TestContext::new().with_database().await;
 
-    let op = ctx
+    let txn = ctx
         .database()
         .new_transaction()
         .await
-        .expect("Failed to start operation");
-    let dict = op
+        .expect("Failed to start transaction");
+    let dict = txn
         .get_store::<DocStore>("get_or_insert_path_test")
         .await
         .expect("Failed to get DocStore");
@@ -1054,7 +1054,7 @@ async fn test_docstore_get_or_insert_path() {
     );
 
     // Commit and verify persistence
-    op.commit().await.expect("Failed to commit operation");
+    txn.commit().await.expect("Failed to commit transaction");
 
     let viewer = ctx
         .database()
@@ -1088,12 +1088,12 @@ async fn test_docstore_get_or_insert_path() {
 async fn test_docstore_modify_or_insert_path() {
     let ctx = TestContext::new().with_database().await;
 
-    let op = ctx
+    let txn = ctx
         .database()
         .new_transaction()
         .await
-        .expect("Failed to start operation");
-    let dict = op
+        .expect("Failed to start transaction");
+    let dict = txn
         .get_store::<DocStore>("modify_or_insert_path_test")
         .await
         .expect("Failed to get DocStore");
@@ -1193,7 +1193,7 @@ async fn test_docstore_modify_or_insert_path() {
     );
 
     // Commit and verify persistence
-    op.commit().await.expect("Failed to commit operation");
+    txn.commit().await.expect("Failed to commit transaction");
 
     let viewer = ctx
         .database()
@@ -1235,12 +1235,12 @@ async fn test_docstore_modify_or_insert_path() {
 async fn test_docstore_path_mutation_interoperability() {
     let ctx = TestContext::new().with_database().await;
 
-    let op = ctx
+    let txn = ctx
         .database()
         .new_transaction()
         .await
-        .expect("Failed to start operation");
-    let dict = op
+        .expect("Failed to start transaction");
+    let dict = txn
         .get_store::<DocStore>("interop_test")
         .await
         .expect("Failed to get DocStore");
@@ -1334,7 +1334,7 @@ async fn test_docstore_path_mutation_interoperability() {
     );
 
     // Commit and verify all operations persisted correctly
-    op.commit().await.expect("Failed to commit operation");
+    txn.commit().await.expect("Failed to commit transaction");
 
     let viewer = ctx
         .database()
@@ -1374,12 +1374,12 @@ async fn test_docstore_path_mutation_interoperability() {
 async fn test_docstore_contains_key() {
     let ctx = TestContext::new().with_database().await;
 
-    let op = ctx
+    let txn = ctx
         .database()
         .new_transaction()
         .await
-        .expect("Failed to start operation");
-    let dict = op
+        .expect("Failed to start transaction");
+    let dict = txn
         .get_store::<DocStore>("contains_key_test")
         .await
         .expect("Failed to get DocStore");
@@ -1409,7 +1409,7 @@ async fn test_docstore_contains_key() {
     assert!(dict.contains_key("age").await); // Other keys should still exist
 
     // Commit and test persistence
-    op.commit().await.expect("Failed to commit operation");
+    txn.commit().await.expect("Failed to commit transaction");
 
     // Test with committed data
     let viewer = ctx
@@ -1423,12 +1423,12 @@ async fn test_docstore_contains_key() {
     assert!(viewer.contains_key("user").await); // Nested structure in committed data
 
     // Test with new operation on committed data
-    let op2 = ctx
+    let txn2 = ctx
         .database()
         .new_transaction()
         .await
         .expect("Failed to start second operation");
-    let dict2 = op2
+    let dict2 = txn2
         .get_store::<DocStore>("contains_key_test")
         .await
         .expect("Failed to get DocStore");
@@ -1460,12 +1460,12 @@ async fn test_docstore_contains_key() {
 async fn test_docstore_contains_path() {
     let ctx = TestContext::new().with_database().await;
 
-    let op = ctx
+    let txn = ctx
         .database()
         .new_transaction()
         .await
-        .expect("Failed to start operation");
-    let dict = op
+        .expect("Failed to start transaction");
+    let dict = txn
         .get_store::<DocStore>("contains_path_test")
         .await
         .expect("Failed to get DocStore");
@@ -1536,7 +1536,7 @@ async fn test_docstore_contains_path() {
     assert!(!dict.contains_path(path!("temp.value")).await); // No longer accessible
 
     // Commit and test persistence
-    op.commit().await.expect("Failed to commit operation");
+    txn.commit().await.expect("Failed to commit transaction");
 
     let viewer = ctx
         .database()
@@ -1558,12 +1558,12 @@ async fn test_docstore_contains_path() {
     assert!(!viewer.contains_path(path!("temp.value")).await); // Should not exist
 
     // Test with new operation adding more paths
-    let op2 = ctx
+    let txn2 = ctx
         .database()
         .new_transaction()
         .await
         .expect("Failed to start second operation");
-    let dict2 = op2
+    let dict2 = txn2
         .get_store::<DocStore>("contains_path_test")
         .await
         .expect("Failed to get DocStore");
@@ -1598,12 +1598,12 @@ async fn test_docstore_contains_path() {
 async fn test_docstore_contains_methods_consistency() {
     let ctx = TestContext::new().with_database().await;
 
-    let op = ctx
+    let txn = ctx
         .database()
         .new_transaction()
         .await
-        .expect("Failed to start operation");
-    let dict = op
+        .expect("Failed to start transaction");
+    let dict = txn
         .get_store::<DocStore>("consistency_test")
         .await
         .expect("Failed to get DocStore");

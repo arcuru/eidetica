@@ -347,8 +347,8 @@ impl App {
 
     pub async fn load_messages(&mut self) -> Result<()> {
         if let Some(database) = &self.current_room {
-            let op = database.new_transaction().await?;
-            let store = op.get_store::<Table<ChatMessage>>("messages").await?;
+            let txn = database.new_transaction().await?;
+            let store = txn.get_store::<Table<ChatMessage>>("messages").await?;
 
             let entries = store.search(|_| true).await?;
             let mut messages = Vec::new();
@@ -376,10 +376,10 @@ impl App {
 
         if let Some(database) = &self.current_room {
             // Database from User API has auth configured automatically
-            let op = database.new_transaction().await?;
-            let store = op.get_store::<Table<ChatMessage>>("messages").await?;
+            let txn = database.new_transaction().await?;
+            let store = txn.get_store::<Table<ChatMessage>>("messages").await?;
             store.insert(message.clone()).await?;
-            op.commit().await?;
+            txn.commit().await?;
             // Note: commit() triggers sync callbacks which queue entries in background
 
             self.messages.push(message);

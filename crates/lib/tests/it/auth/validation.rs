@@ -43,11 +43,11 @@ async fn test_authentication_validation_revoked_key() {
     .await
     .expect("Failed to load tree with revoked key");
 
-    let op = tree_with_revoked_key
+    let txn = tree_with_revoked_key
         .new_transaction()
         .await
-        .expect("Failed to create operation");
-    let store = op
+        .expect("Failed to create transaction");
+    let store = txn
         .get_store::<DocStore>("data")
         .await
         .expect("Failed to get subtree");
@@ -56,7 +56,7 @@ async fn test_authentication_validation_revoked_key() {
         .await
         .expect("Failed to set value");
 
-    let result = op.commit().await;
+    let result = txn.commit().await;
     assert!(result.is_err(), "Revoked key test: Operation should fail");
 }
 
@@ -160,11 +160,11 @@ async fn test_multiple_authenticated_entries() {
         .expect("Failed to create tree");
 
     // Create multiple signed entries (should all succeed)
-    let op1 = tree
+    let txn1 = tree
         .new_transaction()
         .await
-        .expect("Failed to create operation");
-    let store1 = op1
+        .expect("Failed to create transaction");
+    let store1 = txn1
         .get_store::<DocStore>("data")
         .await
         .expect("Failed to get subtree");
@@ -172,13 +172,13 @@ async fn test_multiple_authenticated_entries() {
         .set("entry", "first")
         .await
         .expect("Failed to set value");
-    let entry_id1 = op1.commit().await.expect("Failed to commit first entry");
+    let entry_id1 = txn1.commit().await.expect("Failed to commit first entry");
 
-    let op2 = tree
+    let txn2 = tree
         .new_transaction()
         .await
-        .expect("Failed to create operation");
-    let store2 = op2
+        .expect("Failed to create transaction");
+    let store2 = txn2
         .get_store::<DocStore>("data")
         .await
         .expect("Failed to get subtree");
@@ -186,7 +186,7 @@ async fn test_multiple_authenticated_entries() {
         .set("entry", "second")
         .await
         .expect("Failed to set value");
-    let entry_id2 = op2.commit().await.expect("Failed to commit second entry");
+    let entry_id2 = txn2.commit().await.expect("Failed to commit second entry");
 
     // Verify both entries were stored correctly
     let entry1 = tree

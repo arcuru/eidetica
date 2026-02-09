@@ -26,7 +26,7 @@ use async_trait::async_trait;
 ///   [`modify_or_insert_path`](Self::modify_or_insert_path)
 pub struct DocStore {
     pub(crate) name: String,
-    pub(crate) atomic_op: Transaction,
+    pub(crate) txn: Transaction,
 }
 
 impl Registered for DocStore {
@@ -37,10 +37,10 @@ impl Registered for DocStore {
 
 #[async_trait]
 impl Store for DocStore {
-    async fn new(op: &Transaction, subtree_name: String) -> Result<Self> {
+    async fn new(txn: &Transaction, subtree_name: String) -> Result<Self> {
         Ok(Self {
             name: subtree_name,
-            atomic_op: op.clone(),
+            txn: txn.clone(),
         })
     }
 
@@ -49,7 +49,7 @@ impl Store for DocStore {
     }
 
     fn transaction(&self) -> &Transaction {
-        &self.atomic_op
+        &self.txn
     }
 }
 
@@ -68,8 +68,8 @@ impl DocStore {
     /// A `Result` containing the MapValue if found, or `Error::NotFound`.
     pub async fn get(&self, key: impl AsRef<str>) -> Result<Value> {
         let key = key.as_ref();
-        // First check if there's any data in the atomic op itself
-        let local_data: Result<Doc> = self.atomic_op.get_local_data(&self.name);
+        // First check if there's any data in the transaction itself
+        let local_data: Result<Doc> = self.txn.get_local_data(&self.name);
 
         // If there's local data, try to get the key from it
         if let Ok(data) = local_data {
@@ -89,7 +89,7 @@ impl DocStore {
         }
 
         // Otherwise, get the full state from the backend
-        let data: Doc = self.atomic_op.get_full_state(&self.name).await?;
+        let data: Doc = self.txn.get_full_state(&self.name).await?;
 
         // Return the value from the full state
         match data.get(key) {
@@ -130,10 +130,10 @@ impl DocStore {
     /// A `Result` containing the MapValue if found, or `Error::NotFound`.
     pub async fn get_result(&self, key: impl AsRef<str>) -> Result<Value> {
         let key = key.as_ref();
-        // First check if there's any data in the atomic op itself
-        let local_data: Result<Doc> = self.atomic_op.get_local_data(&self.name);
+        // First check if there's any data in the transaction itself
+        let local_data: Result<Doc> = self.txn.get_local_data(&self.name);
 
-        // If there's data in the operation and it contains the key, return that
+        // If there's data in the transaction and it contains the key, return that
         if let Ok(data) = local_data
             && let Some(value) = data.get(key)
         {
@@ -141,7 +141,7 @@ impl DocStore {
         }
 
         // Otherwise, get the full state from the backend
-        let data: Doc = self.atomic_op.get_full_state(&self.name).await?;
+        let data: Doc = self.txn.get_full_state(&self.name).await?;
 
         // Get the value
         match data.get(key) {
@@ -210,18 +210,18 @@ impl DocStore {
         let key = key.into();
         let value = value.into();
 
-        // Get current data from the atomic op, or create new if not existing
+        // Get current data from the transaction, or create new if not existing
         let mut data = self
-            .atomic_op
+            .txn
             .get_local_data::<Doc>(&self.name)
             .unwrap_or_default();
 
         // Update the data using unified path interface
         data.set(&key, value);
 
-        // Serialize and update the atomic op
+        // Serialize and update the transaction
         let serialized = serde_json::to_string(&data)?;
-        self.atomic_op.update_subtree(&self.name, &serialized).await
+        self.txn.update_subtree(&self.name, &serialized).await
     }
 
     /// Sets a key-value pair (HashMap-like API).
@@ -239,9 +239,9 @@ impl DocStore {
         let key = key.into();
         let value = value.into();
 
-        // Get current data from the atomic op, or create new if not existing
+        // Get current data from the transaction, or create new if not existing
         let mut data = self
-            .atomic_op
+            .txn
             .get_local_data::<Doc>(&self.name)
             .unwrap_or_default();
 
@@ -254,10 +254,10 @@ impl DocStore {
         // Update the data
         data.set(&key, value);
 
-        // Serialize and update the atomic op
+        // Serialize and update the transaction
         let serialized =
             serde_json::to_string(&data).expect("Failed to serialize data during insert operation");
-        self.atomic_op
+        self.txn
             .update_subtree(&self.name, &serialized)
             .await
             .expect("Failed to update subtree during insert operation");
@@ -281,18 +281,18 @@ impl DocStore {
         let key = key.into();
         let value = value.into();
 
-        // Get current data from the atomic op, or create new if not existing
+        // Get current data from the transaction, or create new if not existing
         let mut data = self
-            .atomic_op
+            .txn
             .get_local_data::<Doc>(&self.name)
             .unwrap_or_default();
 
         // Update the data
         data.set(&key, value);
 
-        // Serialize and update the atomic op
+        // Serialize and update the transaction
         let serialized = serde_json::to_string(&data)?;
-        self.atomic_op.update_subtree(&self.name, &serialized).await
+        self.txn.update_subtree(&self.name, &serialized).await
     }
 
     /// Convenience method to set a string value.
@@ -380,8 +380,8 @@ impl DocStore {
     /// # use eidetica::store::DocStore;
     /// # use eidetica::crdt::doc::path;
     /// # async fn example(database: Database) -> eidetica::Result<()> {
-    /// let op = database.new_transaction().await?;
-    /// let store = op.get_store::<DocStore>("data").await?;
+    /// let txn = database.new_transaction().await?;
+    /// let store = txn.get_store::<DocStore>("data").await?;
     ///
     /// store.set_path(path!("user.profile.name"), "Alice").await?;
     ///
@@ -395,7 +395,7 @@ impl DocStore {
     /// A `Result<Value>` containing the value if found, or an error if not found.
     pub async fn get_path(&self, path: impl AsRef<Path>) -> Result<Value> {
         // First check if there's any local staged data
-        let local_data: Result<Doc> = self.atomic_op.get_local_data(&self.name);
+        let local_data: Result<Doc> = self.txn.get_local_data(&self.name);
 
         // If there's local data, try to get the path from it
         if let Ok(data) = local_data
@@ -405,7 +405,7 @@ impl DocStore {
         }
 
         // Otherwise, get the full state from the backend
-        let data: Doc = self.atomic_op.get_full_state(&self.name).await?;
+        let data: Doc = self.txn.get_full_state(&self.name).await?;
 
         // Get the path from the full state
         match data.get(&path) {
@@ -454,8 +454,8 @@ impl DocStore {
     /// # use eidetica::Database;
     /// # use eidetica::store::DocStore;
     /// # async fn example(database: Database) -> eidetica::Result<()> {
-    /// let op = database.new_transaction().await?;
-    /// let store = op.get_store::<DocStore>("data").await?;
+    /// let txn = database.new_transaction().await?;
+    /// let store = txn.get_store::<DocStore>("data").await?;
     ///
     /// store.set("name", "Alice").await?;
     /// store.set("age", 30).await?;
@@ -490,8 +490,8 @@ impl DocStore {
     /// # use eidetica::store::DocStore;
     /// # use eidetica::crdt::doc::path;
     /// # async fn example(database: Database) -> eidetica::Result<()> {
-    /// let op = database.new_transaction().await?;
-    /// let store = op.get_store::<DocStore>("data").await?;
+    /// let txn = database.new_transaction().await?;
+    /// let store = txn.get_store::<DocStore>("data").await?;
     ///
     /// // Assuming nested structure exists
     /// // Type inference with path access
@@ -535,8 +535,8 @@ impl DocStore {
     /// # use eidetica::Database;
     /// # use eidetica::store::DocStore;
     /// # async fn example(database: Database) -> eidetica::Result<()> {
-    /// let op = database.new_transaction().await?;
-    /// let store = op.get_store::<DocStore>("data").await?;
+    /// let txn = database.new_transaction().await?;
+    /// let store = txn.get_store::<DocStore>("data").await?;
     ///
     /// // Key doesn't exist - will set default
     /// let count1: i64 = store.get_or_insert("counter", 0).await?;
@@ -591,8 +591,8 @@ impl DocStore {
     /// # use eidetica::Database;
     /// # use eidetica::store::DocStore;
     /// # async fn example(database: Database) -> eidetica::Result<()> {
-    /// let op = database.new_transaction().await?;
-    /// let store = op.get_store::<DocStore>("data").await?;
+    /// let txn = database.new_transaction().await?;
+    /// let store = txn.get_store::<DocStore>("data").await?;
     ///
     /// store.set("count", 5).await?;
     /// store.set("text", "hello").await?;
@@ -640,8 +640,8 @@ impl DocStore {
     /// # use eidetica::Database;
     /// # use eidetica::store::DocStore;
     /// # async fn example(database: Database) -> eidetica::Result<()> {
-    /// let op = database.new_transaction().await?;
-    /// let store = op.get_store::<DocStore>("data").await?;
+    /// let txn = database.new_transaction().await?;
+    /// let store = txn.get_store::<DocStore>("data").await?;
     ///
     /// // Key doesn't exist - will create with default then modify
     /// store.modify_or_insert::<i64, _>("counter", 0, |count| {
@@ -689,8 +689,8 @@ impl DocStore {
     /// # use eidetica::store::DocStore;
     /// # use eidetica::crdt::doc::path;
     /// # async fn example(database: Database) -> eidetica::Result<()> {
-    /// let op = database.new_transaction().await?;
-    /// let store = op.get_store::<DocStore>("data").await?;
+    /// let txn = database.new_transaction().await?;
+    /// let store = txn.get_store::<DocStore>("data").await?;
     ///
     /// // Path doesn't exist - will create structure and set default
     /// let count1: i64 = store.get_or_insert_path(path!("user.stats.score"), 0).await?;
@@ -739,8 +739,8 @@ impl DocStore {
     /// # use eidetica::store::DocStore;
     /// # use eidetica::crdt::doc::path;
     /// # async fn example(database: Database) -> eidetica::Result<()> {
-    /// let op = database.new_transaction().await?;
-    /// let store = op.get_store::<DocStore>("data").await?;
+    /// let txn = database.new_transaction().await?;
+    /// let store = txn.get_store::<DocStore>("data").await?;
     ///
     /// // Path doesn't exist - will create structure with default then modify
     /// store.modify_or_insert_path::<i64, _>(path!("user.stats.score"), 0, |score| {
@@ -821,8 +821,8 @@ impl DocStore {
     /// # use eidetica::crdt::doc::path;
     /// # use eidetica::crdt::doc::Value;
     /// # async fn example(database: Database) -> eidetica::Result<()> {
-    /// let op = database.new_transaction().await?;
-    /// let store = op.get_store::<DocStore>("data").await?;
+    /// let txn = database.new_transaction().await?;
+    /// let store = txn.get_store::<DocStore>("data").await?;
     ///
     /// // Set nested values, creating structure as needed
     /// store.set_path(path!("user.profile.name"), "Alice").await?;
@@ -861,18 +861,18 @@ impl DocStore {
     pub async fn set_path(&self, path: impl AsRef<Path>, value: impl Into<Value>) -> Result<()> {
         let value = value.into();
 
-        // Get current data from the atomic op, or create new if not existing
+        // Get current data from the transaction, or create new if not existing
         let mut data = self
-            .atomic_op
+            .txn
             .get_local_data::<Doc>(&self.name)
             .unwrap_or_default();
 
         // Use Doc's set method to handle the path logic
         data.set(&path, value);
 
-        // Serialize and update the atomic op
+        // Serialize and update the transaction
         let serialized = serde_json::to_string(&data)?;
-        self.atomic_op.update_subtree(&self.name, &serialized).await
+        self.txn.update_subtree(&self.name, &serialized).await
     }
 
     /// Sets a value at the given path with string paths for runtime normalization
@@ -901,8 +901,8 @@ impl DocStore {
     /// # use eidetica::store::DocStore;
     /// # use eidetica::crdt::doc::path;
     /// # async fn example(database: Database) -> eidetica::Result<()> {
-    /// let op = database.new_transaction().await?;
-    /// let store = op.get_store::<DocStore>("data").await?;
+    /// let txn = database.new_transaction().await?;
+    /// let store = txn.get_store::<DocStore>("data").await?;
     ///
     /// store.set_path(path!("user.score"), 100).await?;
     ///
@@ -956,8 +956,8 @@ impl DocStore {
     /// # use eidetica::Database;
     /// # use eidetica::store::DocStore;
     /// # async fn example(database: Database) -> eidetica::Result<()> {
-    /// let op = database.new_transaction().await?;
-    /// let store = op.get_store::<DocStore>("my_data").await?;
+    /// let txn = database.new_transaction().await?;
+    /// let store = txn.get_store::<DocStore>("my_data").await?;
     ///
     /// // First set a value
     /// store.set("user1", "Alice").await?;
@@ -991,20 +991,18 @@ impl DocStore {
             return Ok(false); // Key doesn't exist, no-op
         }
 
-        // Get current data from the atomic op, or create new if not existing
+        // Get current data from the transaction, or create new if not existing
         let mut data = self
-            .atomic_op
+            .txn
             .get_local_data::<Doc>(&self.name)
             .unwrap_or_default();
 
         // Remove the key (creates a tombstone)
         data.remove(key_str);
 
-        // Serialize and update the atomic op
+        // Serialize and update the transaction
         let serialized = serde_json::to_string(&data)?;
-        self.atomic_op
-            .update_subtree(&self.name, &serialized)
-            .await?;
+        self.txn.update_subtree(&self.name, &serialized).await?;
         Ok(true)
     }
 
@@ -1012,7 +1010,7 @@ impl DocStore {
     ///
     /// This method combines the data staged within the current `Transaction` with the
     /// fully merged historical state from the backend, providing a complete view
-    /// of the document as it would appear if the operation were committed.
+    /// of the document as it would appear if the transaction were committed.
     /// The staged data takes precedence in case of conflicts (overwrites).
     ///
     /// # Important: Understanding Nested Structure
@@ -1027,8 +1025,8 @@ impl DocStore {
     /// # use eidetica::crdt::doc::path;
     /// # use eidetica::crdt::doc::Value;
     /// # async fn example(database: Database) -> eidetica::Result<()> {
-    /// let op = database.new_transaction().await?;
-    /// let store = op.get_store::<DocStore>("data").await?;
+    /// let txn = database.new_transaction().await?;
+    /// let store = txn.get_store::<DocStore>("data").await?;
     ///
     /// // Using set_path creates nested structure
     /// store.set_path(path!("user.name"), "Alice").await?;
@@ -1056,11 +1054,11 @@ impl DocStore {
     /// # Returns
     /// A `Result` containing the merged `Doc` data structure with nested maps for path-based data.
     pub async fn get_all(&self) -> Result<Doc> {
-        // First get the local data directly from the atomic op
-        let local_data = self.atomic_op.get_local_data::<Doc>(&self.name);
+        // First get the local data directly from the transaction
+        let local_data = self.txn.get_local_data::<Doc>(&self.name);
 
         // Get the full state from the backend
-        let mut data = self.atomic_op.get_full_state::<Doc>(&self.name).await?;
+        let mut data = self.txn.get_full_state::<Doc>(&self.name).await?;
 
         // If there's also local data, merge it with the full state
         if let Ok(local) = local_data {
@@ -1085,8 +1083,8 @@ impl DocStore {
     /// # use eidetica::Database;
     /// # use eidetica::store::DocStore;
     /// # async fn example(database: Database) -> eidetica::Result<()> {
-    /// let op = database.new_transaction().await?;
-    /// let store = op.get_store::<DocStore>("data").await?;
+    /// let txn = database.new_transaction().await?;
+    /// let store = txn.get_store::<DocStore>("data").await?;
     ///
     /// assert!(!store.contains_key("missing").await); // Key doesn't exist
     ///
@@ -1102,14 +1100,14 @@ impl DocStore {
         let key = key.as_ref();
 
         // Check local staged data first
-        if let Ok(local_data) = self.atomic_op.get_local_data::<Doc>(&self.name)
+        if let Ok(local_data) = self.txn.get_local_data::<Doc>(&self.name)
             && local_data.contains_key(key)
         {
             return true;
         }
 
         // Check backend data
-        if let Ok(backend_data) = self.atomic_op.get_full_state::<Doc>(&self.name).await {
+        if let Ok(backend_data) = self.txn.get_full_state::<Doc>(&self.name).await {
             backend_data.contains_key(key)
         } else {
             false
@@ -1137,8 +1135,8 @@ impl DocStore {
     /// # use eidetica::store::DocStore;
     /// # use eidetica::crdt::doc::path;
     /// # async fn example(database: Database) -> eidetica::Result<()> {
-    /// let op = database.new_transaction().await?;
-    /// let store = op.get_store::<DocStore>("data").await?;
+    /// let txn = database.new_transaction().await?;
+    /// let store = txn.get_store::<DocStore>("data").await?;
     ///
     /// assert!(!store.contains_path(path!("user.name")).await); // Path doesn't exist
     ///
@@ -1152,14 +1150,14 @@ impl DocStore {
     /// ```
     pub async fn contains_path(&self, path: impl AsRef<Path>) -> bool {
         // Check local staged data first
-        if let Ok(local_data) = self.atomic_op.get_local_data::<Doc>(&self.name)
+        if let Ok(local_data) = self.txn.get_local_data::<Doc>(&self.name)
             && local_data.get(&path).is_some()
         {
             return true;
         }
 
         // Check backend data
-        if let Ok(backend_data) = self.atomic_op.get_full_state::<Doc>(&self.name).await {
+        if let Ok(backend_data) = self.txn.get_full_state::<Doc>(&self.name).await {
             backend_data.get(&path).is_some()
         } else {
             false

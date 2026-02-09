@@ -26,13 +26,13 @@ async fn test_table_basic_crud_operations() {
     .await;
     let primary_key = &keys[0];
 
-    // Test CRUD operations within an operation
-    let op = ctx
+    // Test CRUD operations within a transaction
+    let txn = ctx
         .database()
         .new_transaction()
         .await
-        .expect("Failed to start operation");
-    let table = op
+        .expect("Failed to start transaction");
+    let table = txn
         .get_store::<Table<TestRecord>>("test_records")
         .await
         .expect("Failed to get Table");
@@ -78,7 +78,7 @@ async fn test_table_basic_crud_operations() {
     let retrieved_new = table.get(&new_pk).await.expect("Failed to get new record");
     assert_eq!(retrieved_new, new_record);
 
-    op.commit().await.expect("Failed to commit operation");
+    txn.commit().await.expect("Failed to commit transaction");
 
     // Verify persistence using helper
     assert_table_record(ctx.database(), "test_records", primary_key, &updated_record).await;
@@ -245,14 +245,14 @@ async fn test_table_multiple_operations() {
 #[tokio::test]
 async fn test_table_empty_search() {
     let ctx = TestContext::new().with_database().await;
-    let op = ctx
+    let txn = ctx
         .database()
         .new_transaction()
         .await
-        .expect("Failed to start operation");
+        .expect("Failed to start transaction");
 
     {
-        let table = op
+        let table = txn
             .get_store::<Table<SimpleRecord>>("empty_search_test")
             .await
             .expect("Failed to get Table");
@@ -265,7 +265,7 @@ async fn test_table_empty_search() {
         assert_eq!(results.len(), 0);
     }
 
-    op.commit().await.expect("Failed to commit operation");
+    txn.commit().await.expect("Failed to commit transaction");
 
     // Search in empty store after commit
     let viewer = ctx
@@ -323,14 +323,14 @@ async fn test_table_delete_basic() {
     ];
     let keys = create_table_operation(ctx.database(), "delete_test", &initial_records).await;
 
-    // Delete one record within an operation
-    let op = ctx
+    // Delete one record within a transaction
+    let txn = ctx
         .database()
         .new_transaction()
         .await
-        .expect("Failed to start operation");
+        .expect("Failed to start transaction");
     {
-        let table = op
+        let table = txn
             .get_store::<Table<TestRecord>>("delete_test")
             .await
             .expect("Failed to get Table");
@@ -361,7 +361,7 @@ async fn test_table_delete_basic() {
             .expect("Record 3 should still exist");
         assert_eq!(record3.name, "User 3");
     }
-    op.commit().await.expect("Failed to commit operation");
+    txn.commit().await.expect("Failed to commit transaction");
 
     // Verify deletion persisted using helper
     assert_table_record_deleted(ctx.database(), "delete_test", &keys[1]).await;
@@ -388,13 +388,13 @@ async fn test_table_delete_nonexistent() {
     )
     .await;
 
-    let op = ctx
+    let txn = ctx
         .database()
         .new_transaction()
         .await
-        .expect("Failed to start operation");
+        .expect("Failed to start transaction");
     {
-        let table = op
+        let table = txn
             .get_store::<Table<TestRecord>>("delete_nonexistent")
             .await
             .expect("Failed to get Table");
@@ -416,7 +416,7 @@ async fn test_table_delete_nonexistent() {
             .expect("Existing record should remain");
         assert_eq!(existing.name, "Existing User");
     }
-    op.commit().await.expect("Failed to commit operation");
+    txn.commit().await.expect("Failed to commit transaction");
 
     // Verify existing record persisted
     assert_table_record(ctx.database(), "delete_nonexistent", &keys[0], &record).await;
@@ -441,13 +441,13 @@ async fn test_table_delete_and_reinsert() {
     let original_key = &keys[0];
 
     // Delete the record
-    let op1 = ctx
+    let txn1 = ctx
         .database()
         .new_transaction()
         .await
-        .expect("Failed to start operation");
+        .expect("Failed to start transaction");
     {
-        let table = op1
+        let table = txn1
             .get_store::<Table<TestRecord>>("delete_reinsert")
             .await
             .expect("Failed to get Table");
@@ -457,19 +457,19 @@ async fn test_table_delete_and_reinsert() {
             .await
             .expect("Failed to delete record");
     }
-    op1.commit().await.expect("Failed to commit deletion");
+    txn1.commit().await.expect("Failed to commit deletion");
 
     // Verify deletion
     assert_table_record_deleted(ctx.database(), "delete_reinsert", original_key).await;
 
     // Re-insert with the same key
-    let op2 = ctx
+    let txn2 = ctx
         .database()
         .new_transaction()
         .await
-        .expect("Failed to start operation");
+        .expect("Failed to start transaction");
     {
-        let table = op2
+        let table = txn2
             .get_store::<Table<TestRecord>>("delete_reinsert")
             .await
             .expect("Failed to get Table");
@@ -492,7 +492,7 @@ async fn test_table_delete_and_reinsert() {
             .expect("Re-inserted record should be retrievable");
         assert_eq!(retrieved, new_record);
     }
-    op2.commit().await.expect("Failed to commit re-insertion");
+    txn2.commit().await.expect("Failed to commit re-insertion");
 
     // Verify new record persisted with same key
     let new_record = TestRecord {
@@ -521,13 +521,13 @@ async fn test_table_search_after_delete() {
     .await;
 
     // Delete one of the age=25 records
-    let op = ctx
+    let txn = ctx
         .database()
         .new_transaction()
         .await
-        .expect("Failed to start operation");
+        .expect("Failed to start transaction");
     {
-        let table = op
+        let table = txn
             .get_store::<Table<TestRecord>>("search_after_delete")
             .await
             .expect("Failed to get Table");
@@ -537,7 +537,7 @@ async fn test_table_search_after_delete() {
             .await
             .expect("Failed to delete record");
     }
-    op.commit().await.expect("Failed to commit deletion");
+    txn.commit().await.expect("Failed to commit deletion");
 
     // Verify search count decreased
     assert_table_search_count(
@@ -571,14 +571,14 @@ async fn test_table_delete_multiple() {
     let values = &[10, 20, 30, 40, 50];
     let keys = create_simple_table_operation(ctx.database(), "delete_multiple", values).await;
 
-    // Delete multiple records in one operation
-    let op = ctx
+    // Delete multiple records in one transaction
+    let txn = ctx
         .database()
         .new_transaction()
         .await
-        .expect("Failed to start operation");
+        .expect("Failed to start transaction");
     {
-        let table = op
+        let table = txn
             .get_store::<Table<SimpleRecord>>("delete_multiple")
             .await
             .expect("Failed to get Table");
@@ -614,7 +614,7 @@ async fn test_table_delete_multiple() {
             50
         );
     }
-    op.commit().await.expect("Failed to commit deletions");
+    txn.commit().await.expect("Failed to commit deletions");
 
     // Verify search returns only non-deleted records
     let viewer = ctx
@@ -641,13 +641,13 @@ async fn test_table_delete_concurrent_modifications() {
     let ctx = TestContext::new().with_database().await;
 
     // Create base record
-    let op_base = ctx
+    let txn_base = ctx
         .database()
         .new_transaction()
         .await
-        .expect("Failed to start operation");
+        .expect("Failed to start transaction");
     let key1 = {
-        let table = op_base
+        let table = txn_base
             .get_store::<Table<TestRecord>>("concurrent_delete")
             .await
             .expect("Failed to get Table");
@@ -661,7 +661,7 @@ async fn test_table_delete_concurrent_modifications() {
             .await
             .expect("Failed to insert base record")
     };
-    let base_entry_id = op_base.commit().await.expect("Failed to commit base");
+    let base_entry_id = txn_base.commit().await.expect("Failed to commit base");
 
     // Branch A: Delete the record
     let op_branch_a = ctx

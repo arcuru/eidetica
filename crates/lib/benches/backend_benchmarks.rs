@@ -11,15 +11,15 @@ async fn create_linear_chain(tree: &Database, length: usize) -> Vec<ID> {
     let mut entry_ids = Vec::with_capacity(length);
 
     for i in 0..length {
-        let op = tree.new_transaction().await.expect("Failed to create op");
-        let kv = op
+        let txn = tree.new_transaction().await.expect("Failed to create txn");
+        let kv = txn
             .get_store::<DocStore>("data")
             .await
             .expect("Failed to get DocStore");
         kv.set(format!("key{i}"), format!("value{i}"))
             .await
             .expect("Failed to set value");
-        let entry_id = op.commit().await.expect("Failed to commit");
+        let entry_id = txn.commit().await.expect("Failed to commit");
         entry_ids.push(entry_id);
     }
 
@@ -29,42 +29,42 @@ async fn create_linear_chain(tree: &Database, length: usize) -> Vec<ID> {
 /// Create a diamond pattern for testing merge scenarios
 async fn create_diamond_pattern(tree: &Database) -> (Vec<ID>, ID) {
     // Create root A
-    let op_a = tree.new_transaction().await.expect("Failed to create op");
-    let kv_a = op_a
+    let txn_a = tree.new_transaction().await.expect("Failed to create txn");
+    let kv_a = txn_a
         .get_store::<DocStore>("data")
         .await
         .expect("Failed to get DocStore");
     kv_a.set("key_a", "value_a")
         .await
         .expect("Failed to set value");
-    let entry_a = op_a.commit().await.expect("Failed to commit");
+    let entry_a = txn_a.commit().await.expect("Failed to commit");
 
     // Create B and C from A
-    let op_b = tree
+    let txn_b = tree
         .new_transaction_with_tips(std::slice::from_ref(&entry_a))
         .await
-        .expect("Failed to create op");
-    let kv_b = op_b
+        .expect("Failed to create txn");
+    let kv_b = txn_b
         .get_store::<DocStore>("data")
         .await
         .expect("Failed to get DocStore");
     kv_b.set("key_b", "value_b")
         .await
         .expect("Failed to set value");
-    let entry_b = op_b.commit().await.expect("Failed to commit");
+    let entry_b = txn_b.commit().await.expect("Failed to commit");
 
-    let op_c = tree
+    let txn_c = tree
         .new_transaction_with_tips(std::slice::from_ref(&entry_a))
         .await
-        .expect("Failed to create op");
-    let kv_c = op_c
+        .expect("Failed to create txn");
+    let kv_c = txn_c
         .get_store::<DocStore>("data")
         .await
         .expect("Failed to get DocStore");
     kv_c.set("key_c", "value_c")
         .await
         .expect("Failed to set value");
-    let entry_c = op_c.commit().await.expect("Failed to commit");
+    let entry_c = txn_c.commit().await.expect("Failed to commit");
 
     // Return B and C for merge base testing (merge base should be A)
     (vec![entry_b, entry_c], entry_a)
@@ -94,18 +94,18 @@ async fn create_branching_tree(
         let mut current_tip = root_entry.clone();
 
         for entry_idx in 0..entries_per_branch {
-            let op = tree
+            let txn = tree
                 .new_transaction_with_tips([current_tip])
                 .await
-                .expect("Failed to create op");
-            let kv = op
+                .expect("Failed to create txn");
+            let kv = txn
                 .get_store::<DocStore>("data")
                 .await
                 .expect("Failed to get DocStore");
             kv.set(format!("branch_{branch_idx}_entry_{entry_idx}"), "value")
                 .await
                 .expect("Failed to set value");
-            let entry_id = op.commit().await.expect("Failed to commit");
+            let entry_id = txn.commit().await.expect("Failed to commit");
             branch_entries.push(entry_id.clone());
             current_tip = entry_id; // Update tip for next entry in this branch
         }
@@ -123,15 +123,15 @@ async fn create_large_tree(tree: &Database, num_entries: usize, structure: &str)
     match structure {
         "linear" => {
             for i in 0..num_entries {
-                let op = tree.new_transaction().await.expect("Failed to create op");
-                let kv = op
+                let txn = tree.new_transaction().await.expect("Failed to create txn");
+                let kv = txn
                     .get_store::<DocStore>("data")
                     .await
                     .expect("Failed to get DocStore");
                 kv.set(format!("key_{i}"), format!("value_{i}"))
                     .await
                     .expect("Failed to set value");
-                let entry_id = op.commit().await.expect("Failed to commit");
+                let entry_id = txn.commit().await.expect("Failed to commit");
                 entry_ids.push(entry_id);
             }
         }
@@ -150,18 +150,18 @@ async fn create_large_tree(tree: &Database, num_entries: usize, structure: &str)
                 .id();
 
             for i in 0..num_entries {
-                let op = tree
+                let txn = tree
                     .new_transaction_with_tips(std::slice::from_ref(&root_entry))
                     .await
-                    .expect("Failed to create op");
-                let kv = op
+                    .expect("Failed to create txn");
+                let kv = txn
                     .get_store::<DocStore>("data")
                     .await
                     .expect("Failed to get DocStore");
                 kv.set(format!("key_{i}"), format!("value_{i}"))
                     .await
                     .expect("Failed to set value");
-                let entry_id = op.commit().await.expect("Failed to commit");
+                let entry_id = txn.commit().await.expect("Failed to commit");
                 entry_ids.push(entry_id);
             }
         }
@@ -169,15 +169,15 @@ async fn create_large_tree(tree: &Database, num_entries: usize, structure: &str)
         _ => {
             // Default to linear
             for i in 0..num_entries {
-                let op = tree.new_transaction().await.expect("Failed to create op");
-                let kv = op
+                let txn = tree.new_transaction().await.expect("Failed to create txn");
+                let kv = txn
                     .get_store::<DocStore>("data")
                     .await
                     .expect("Failed to get DocStore");
                 kv.set(format!("key_{i}"), format!("value_{i}"))
                     .await
                     .expect("Failed to set value");
-                let entry_id = op.commit().await.expect("Failed to commit");
+                let entry_id = txn.commit().await.expect("Failed to commit");
                 entry_ids.push(entry_id);
             }
         }
@@ -381,11 +381,11 @@ pub fn bench_crdt_merge_operations(c: &mut Criterion) {
                     },
                     |(_instance, tree, tip_entry)| {
                         rt.block_on(async {
-                            let op = tree
+                            let txn = tree
                                 .new_transaction_with_tips([tip_entry])
                                 .await
-                                .expect("Failed to create op");
-                            let kv = op
+                                .expect("Failed to create txn");
+                            let kv = txn
                                 .get_store::<DocStore>("data")
                                 .await
                                 .expect("Failed to get DocStore");
@@ -394,7 +394,7 @@ pub fn bench_crdt_merge_operations(c: &mut Criterion) {
                             kv.set("test_key", "test_value")
                                 .await
                                 .expect("Failed to set value");
-                            let result = op.commit().await.expect("Failed to commit");
+                            let result = txn.commit().await.expect("Failed to commit");
                             black_box(result);
                         });
                     },

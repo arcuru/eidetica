@@ -132,10 +132,10 @@ The `add_todo()` function shows how to insert data into a `Table` store:
 ```rust,ignore
 async fn add_todo(database: &Database, title: String) -> Result<()> {
     // Start an atomic transaction (uses default auth key)
-    let op = database.new_transaction().await?;
+    let txn = database.new_transaction().await?;
 
     // Get a handle to the 'todos' Table store
-    let todos_store = op.get_store::<Table<Todo>>("todos").await?;
+    let todos_store = txn.get_store::<Table<Todo>>("todos").await?;
 
     // Create a new todo
     let todo = Todo::new(title);
@@ -145,7 +145,7 @@ async fn add_todo(database: &Database, title: String) -> Result<()> {
     let todo_id = todos_store.insert(todo).await?;
 
     // Commit the transaction
-    op.commit().await?;
+    txn.commit().await?;
 
     println!("Added todo with ID: {todo_id}");
 
@@ -160,10 +160,10 @@ The `complete_todo()` function demonstrates reading and updating data:
 ```rust,ignore
 async fn complete_todo(database: &Database, id: &str) -> Result<()> {
     // Start an atomic transaction (uses default auth key)
-    let op = database.new_transaction().await?;
+    let txn = database.new_transaction().await?;
 
     // Get a handle to the 'todos' Table store
-    let todos_store = op.get_store::<Table<Todo>>("todos").await?;
+    let todos_store = txn.get_store::<Table<Todo>>("todos").await?;
 
     // Get the todo from the Table
     let mut todo = todos_store.get(id).await?;
@@ -175,7 +175,7 @@ async fn complete_todo(database: &Database, id: &str) -> Result<()> {
     todos_store.set(id, todo).await?;
 
     // Commit the transaction
-    op.commit().await?;
+    txn.commit().await?;
 
     Ok(())
 }
@@ -195,10 +195,10 @@ async fn set_user_info(
     bio: Option<&String>,
 ) -> Result<()> {
     // Start an atomic transaction (uses default auth key)
-    let op = database.new_transaction().await?;
+    let txn = database.new_transaction().await?;
 
     // Get a handle to the 'user_info' YDoc store
-    let user_info_store = op.get_store::<YDoc>("user_info").await?;
+    let user_info_store = txn.get_store::<YDoc>("user_info").await?;
 
     // Update user information using the Y-CRDT document
     user_info_store.with_doc_mut(|doc| {
@@ -219,7 +219,7 @@ async fn set_user_info(
     }).await?;
 
     // Commit the transaction
-    op.commit().await?;
+    txn.commit().await?;
     Ok(())
 }
 ```

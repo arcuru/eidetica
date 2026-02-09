@@ -57,11 +57,11 @@ async fn test_key_management() {
         .create_database(Doc::new(), &key_id)
         .await
         .expect("Failed to create tree");
-    let op = tree
+    let txn = tree
         .new_transaction()
         .await
-        .expect("Failed to create operation");
-    let store = op
+        .expect("Failed to create transaction");
+    let store = txn
         .get_store::<DocStore>("data")
         .await
         .expect("Failed to get subtree");
@@ -70,7 +70,7 @@ async fn test_key_management() {
         .await
         .expect("Failed to set value");
 
-    let entry_id = op.commit().await.expect("Failed to commit");
+    let entry_id = txn.commit().await.expect("Failed to commit");
 
     // Verify the entry was signed correctly
     let entry = tree
@@ -110,11 +110,11 @@ async fn test_generated_key_can_sign() {
         .create_database(Doc::new(), &key_id)
         .await
         .expect("Failed to create tree");
-    let op = tree
+    let txn = tree
         .new_transaction()
         .await
-        .expect("Failed to create operation");
-    let store = op
+        .expect("Failed to create transaction");
+    let store = txn
         .get_store::<DocStore>("data")
         .await
         .expect("Failed to get subtree");
@@ -123,7 +123,7 @@ async fn test_generated_key_can_sign() {
         .await
         .expect("Failed to set value");
 
-    let entry_id = op.commit().await.expect("Failed to commit");
+    let entry_id = txn.commit().await.expect("Failed to commit");
 
     // Verify the entry was signed correctly
     let entry = tree
@@ -180,11 +180,11 @@ async fn test_multi_key_authentication() {
         .expect("Failed to create tree");
 
     // Create an entry with first key (tree is already loaded with key_id1)
-    let op = tree
+    let txn = tree
         .new_transaction()
         .await
-        .expect("Failed to create operation");
-    let store = op
+        .expect("Failed to create transaction");
+    let store = txn
         .get_store::<DocStore>("data")
         .await
         .expect("Failed to get subtree");
@@ -193,7 +193,7 @@ async fn test_multi_key_authentication() {
         .await
         .expect("Failed to set value");
 
-    let entry_id = op.commit().await.expect("Failed to commit");
+    let entry_id = txn.commit().await.expect("Failed to commit");
 
     // Verify entry can be retrieved and is properly signed
     let entry = tree
@@ -222,11 +222,11 @@ async fn test_multi_key_authentication() {
     .await
     .expect("Failed to load database with key2");
 
-    let op2 = tree_with_key2
+    let txn2 = tree_with_key2
         .new_transaction()
         .await
-        .expect("Failed to create operation");
-    let store2 = op2
+        .expect("Failed to create transaction");
+    let store2 = txn2
         .get_store::<DocStore>("data")
         .await
         .expect("Failed to get subtree");
@@ -235,7 +235,7 @@ async fn test_multi_key_authentication() {
         .await
         .expect("Failed to set value");
 
-    let entry_id2 = op2.commit().await.expect("Failed to commit");
+    let entry_id2 = txn2.commit().await.expect("Failed to commit");
 
     // Verify second entry (can verify from either tree instance)
     let entry2 = tree
@@ -285,11 +285,11 @@ async fn test_keys_have_unique_identity() {
         .create_database(Doc::new(), &key_id1)
         .await
         .expect("Failed to create tree");
-    let op = tree
+    let txn = tree
         .new_transaction()
         .await
-        .expect("Failed to create operation");
-    let store = op
+        .expect("Failed to create transaction");
+    let store = txn
         .get_store::<DocStore>("data")
         .await
         .expect("Failed to get subtree");
@@ -298,7 +298,7 @@ async fn test_keys_have_unique_identity() {
         .await
         .expect("Failed to set value");
 
-    let entry_id = op.commit().await.expect("Failed to commit");
+    let entry_id = txn.commit().await.expect("Failed to commit");
 
     // Verify with tree's auth configuration
     assert!(

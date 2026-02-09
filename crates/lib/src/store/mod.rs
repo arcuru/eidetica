@@ -42,7 +42,7 @@ pub use ydoc::{YDoc, YrsBinary};
 ///
 /// Users typically interact with `Store` implementations obtained either via:
 /// 1. `Database::get_store_viewer`: For read-only access to the current merged state.
-/// 2. `Transaction::get_store`: For staging modifications within an atomic operation.
+/// 2. `Transaction::get_store`: For staging modifications within a transaction.
 ///
 /// Store types must also implement [`Registered`] to provide their type identifier.
 #[async_trait]
@@ -52,12 +52,12 @@ pub trait Store: Sized + Registered + Send + Sync {
     /// This constructor is typically called internally by `Transaction::get_store` or
     /// `Database::get_store_viewer`. The resulting `Store` instance provides methods
     /// to interact with the data of the specified `subtree_name`, potentially staging
-    /// changes within the provided `op`.
+    /// changes within the provided `txn`.
     ///
     /// # Arguments
-    /// * `op` - The `Transaction` this `Store` instance will read from and potentially write to.
+    /// * `txn` - The `Transaction` this `Store` instance will read from and potentially write to.
     /// * `subtree_name` - The name identifying this specific data partition within the `Database`.
-    async fn new(op: &Transaction, subtree_name: String) -> Result<Self>;
+    async fn new(txn: &Transaction, subtree_name: String) -> Result<Self>;
 
     /// Returns the name of this subtree.
     fn name(&self) -> &str;
@@ -101,13 +101,13 @@ pub trait Store: Sized + Registered + Send + Sync {
     /// Store implementations can override this to customize initialization behavior.
     ///
     /// # Arguments
-    /// * `op` - The `Transaction` this `Store` instance will operate within.
+    /// * `txn` - The `Transaction` this `Store` instance will operate within.
     /// * `subtree_name` - The name identifying this specific data partition.
     ///
     /// # Returns
     /// A `Result<Self>` containing the initialized Store.
-    async fn init(op: &Transaction, subtree_name: String) -> Result<Self> {
-        let store = Self::new(op, subtree_name).await?;
+    async fn init(txn: &Transaction, subtree_name: String) -> Result<Self> {
+        let store = Self::new(txn, subtree_name).await?;
         store.set_config(Self::default_config()).await?;
         Ok(store)
     }

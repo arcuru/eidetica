@@ -1,6 +1,6 @@
 //! Y-CRDT integration for Eidetica
 //!
-//! This module provides seamless integration between Eidetica's atomic operation system
+//! This module provides seamless integration between Eidetica's transaction system
 //! and Y-CRDT (Yjs) for real-time collaborative editing. The main component is `YDoc`,
 //! which implements differential saving to minimize storage overhead while maintaining
 //! full compatibility with Y-CRDT's conflict resolution algorithms.
@@ -9,7 +9,7 @@
 //!
 //! - **Differential Saving**: Only stores incremental changes, not full document state
 //! - **Efficient Caching**: Caches expensive backend data retrieval operations
-//! - **Seamless Integration**: Works with Eidetica's atomic operation and viewer model
+//! - **Seamless Integration**: Works with Eidetica's transaction and viewer model
 //! - **Full Y-CRDT API**: Exposes the complete yrs library functionality
 //!
 //! # Performance Considerations
@@ -150,10 +150,10 @@ impl YrsBinary {
 ///
 /// ## Architecture
 ///
-/// The `YDoc` integrates with Eidetica's atomic operation system to provide:
+/// The `YDoc` integrates with Eidetica's transaction system to provide:
 /// - **Differential Updates**: Only saves incremental changes, not full document state
 /// - **Efficient Caching**: Caches expensive backend data retrieval operations
-/// - **Operation/Viewer Model**: Compatible with Eidetica's transaction patterns
+/// - **Transaction/Viewer Model**: Compatible with Eidetica's transaction patterns
 /// - **Full Y-CRDT API**: Direct access to the complete yrs library functionality
 ///
 /// ## Caching Strategy
@@ -172,7 +172,7 @@ impl YrsBinary {
 ///
 /// The `YDoc` exposes the underlying Y-CRDT document directly, allowing users
 /// to work with the full yrs API. Changes are automatically captured and stored
-/// when the atomic operation is committed.
+/// when the transaction is committed.
 ///
 /// ```rust,no_run
 /// use eidetica::store::YDoc;
@@ -194,10 +194,10 @@ impl YrsBinary {
 /// # }
 /// ```
 pub struct YDoc {
-    /// The name identifier for this subtree within the atomic operation
+    /// The name identifier for this subtree within the transaction
     name: String,
-    /// Reference to the atomic operation for backend data access
-    atomic_op: Transaction,
+    /// Reference to the Transaction for data access
+    txn: Transaction,
     /// Cached backend data to avoid expensive get_full_state() calls
     /// This contains the merged historical state as Y-CRDT binary data
     cached_backend_data: Mutex<Option<YrsBinary>>,
@@ -211,10 +211,10 @@ impl Registered for YDoc {
 
 #[async_trait]
 impl Store for YDoc {
-    async fn new(op: &Transaction, subtree_name: String) -> Result<Self> {
+    async fn new(txn: &Transaction, subtree_name: String) -> Result<Self> {
         Ok(Self {
             name: subtree_name,
-            atomic_op: op.clone(),
+            txn: txn.clone(),
             cached_backend_data: Mutex::new(None),
         })
     }
@@ -224,7 +224,7 @@ impl Store for YDoc {
     }
 
     fn transaction(&self) -> &Transaction {
-        &self.atomic_op
+        &self.txn
     }
 }
 
@@ -233,7 +233,7 @@ impl YDoc {
     ///
     /// This method reconstructs the current state of the Y-CRDT document by:
     /// 1. Loading the full historical state from the backend (cached)
-    /// 2. Applying any local changes from the current atomic operation
+    /// 2. Applying any local changes from the current transaction
     /// 3. Returning a Y-Doc that can be used for reading and further modifications
     ///
     /// ## Performance
@@ -251,7 +251,7 @@ impl YDoc {
 
         // Apply local changes if they exist
         let local_data = self
-            .atomic_op
+            .txn
             .get_local_data::<YrsBinary>(&self.name)
             .unwrap_or_default();
 
@@ -310,7 +310,7 @@ impl YDoc {
     ///
     /// This is the preferred way to make changes to the document as it
     /// ensures all changes are captured using differential saving and staged
-    /// in the atomic operation for later commit.
+    /// in the transaction for later commit.
     ///
     /// ## Differential Saving
     ///
@@ -413,10 +413,10 @@ impl YDoc {
         Ok(update)
     }
 
-    /// Saves the complete document state to the atomic operation.
+    /// Saves the complete document state to the transaction.
     ///
     /// This method captures the entire current state of the document and stages it
-    /// in the atomic operation. Unlike `save_doc()`, this saves the full document
+    /// in the transaction. Unlike `save_doc()`, this saves the full document
     /// state rather than just the incremental changes.
     ///
     /// ## When to Use
@@ -439,13 +439,13 @@ impl YDoc {
 
         let yrs_binary = YrsBinary::new(update);
         let serialized = serde_json::to_string(&yrs_binary)?;
-        self.atomic_op.update_subtree(&self.name, &serialized).await
+        self.txn.update_subtree(&self.name, &serialized).await
     }
 
     /// Saves the document state using efficient differential encoding.
     ///
     /// This method captures only the changes since the current backend state and
-    /// stages them in the atomic operation. This is the preferred saving method
+    /// stages them in the transaction. This is the preferred saving method
     /// as it significantly reduces storage overhead for incremental changes.
     ///
     /// ## Differential Encoding
@@ -482,9 +482,7 @@ impl YDoc {
         if !diff_update.is_empty() {
             let yrs_binary = YrsBinary::new(diff_update);
             let serialized = serde_json::to_string(&yrs_binary)?;
-            self.atomic_op
-                .update_subtree(&self.name, &serialized)
-                .await?;
+            self.txn.update_subtree(&self.name, &serialized).await?;
         }
 
         Ok(())
@@ -584,7 +582,7 @@ impl YDoc {
     /// Retrieves backend data with caching to avoid expensive repeated `get_full_state()` calls.
     ///
     /// This is the core caching mechanism for `YDoc`. The first call performs the
-    /// expensive `atomic_op.get_full_state()` operation and caches the result. All
+    /// expensive `txn.get_full_state()` operation and caches the result. All
     /// subsequent calls return the cached data immediately.
     ///
     /// ## Performance Impact
@@ -592,15 +590,15 @@ impl YDoc {
     /// The `get_full_state()` operation can be expensive as it involves reading and
     /// merging potentially large amounts of historical data from the backend storage.
     /// By caching this data, we avoid repeating this expensive operation multiple times
-    /// within the same atomic operation scope.
+    /// within the same transaction scope.
     ///
     /// ## Cache Lifetime
     ///
     /// The cache is tied to the lifetime of the `YDoc` instance, which typically
-    /// corresponds to a single atomic operation. This ensures that:
-    /// - Data is cached for the duration of the operation
-    /// - Fresh data is loaded for each new operation
-    /// - Memory usage is bounded to the operation scope
+    /// corresponds to a single transaction. This ensures that:
+    /// - Data is cached for the duration of the transaction
+    /// - Fresh data is loaded for each new transaction
+    /// - Memory usage is bounded to the transaction scope
     ///
     /// ## Returns
     /// A `Result` containing the cached `YrsBinary` backend data.
@@ -614,10 +612,7 @@ impl YDoc {
         }
 
         // Perform the expensive operation once
-        let backend_data = self
-            .atomic_op
-            .get_full_state::<YrsBinary>(&self.name)
-            .await?;
+        let backend_data = self.txn.get_full_state::<YrsBinary>(&self.name).await?;
 
         // Cache it for future use
         *self.cached_backend_data.lock().unwrap() = Some(backend_data.clone());

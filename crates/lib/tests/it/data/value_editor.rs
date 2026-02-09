@@ -113,7 +113,7 @@ async fn test_value_editor_get_non_existent_path() -> Result<()> {
 async fn test_value_editor_set_deeply_nested_creates_path() -> Result<()> {
     let (_, _, _op, dict) = setup_complete_test_env("editor_test_store").await?;
 
-    // Test deep nesting in one operation
+    // Test deep nesting in one transaction
     test_nested_editor_operations(
         &dict,
         &["a", "b", "c"],
@@ -189,7 +189,7 @@ async fn test_value_editor_set_string_on_editor_path() -> Result<()> {
 
 #[tokio::test]
 async fn test_value_editor_root_operations() -> Result<()> {
-    let (_db, tree, op, dict) = setup_complete_test_env("editor_test_store").await?;
+    let (_db, tree, txn, dict) = setup_complete_test_env("editor_test_store").await?;
 
     // Set some values at the top level
     dict.set("key1", "value1").await?;
@@ -227,11 +227,11 @@ async fn test_value_editor_root_operations() -> Result<()> {
     // Verify deletion
     assert_not_found_error(root_editor.get_value("key1").await);
 
-    op.commit().await?;
+    txn.commit().await?;
 
     // Verify after commit
-    let viewer_op = tree.new_transaction().await?;
-    let viewer_dict = setup_dict_subtree(&viewer_op, "editor_test_store").await?;
+    let txn_viewer = tree.new_transaction().await?;
+    let viewer_dict = setup_dict_subtree(&txn_viewer, "editor_test_store").await?;
     assert_not_found_error(viewer_dict.get("key1").await);
     assert_eq!(viewer_dict.get_string("key2").await?, "value2");
 
@@ -240,7 +240,7 @@ async fn test_value_editor_root_operations() -> Result<()> {
 
 #[tokio::test]
 async fn test_value_editor_delete_methods() -> Result<()> {
-    let (_db, tree, op, dict) = setup_complete_test_env("editor_test_store").await?;
+    let (_db, tree, txn, dict) = setup_complete_test_env("editor_test_store").await?;
 
     // Set up a nested structure
     let mut user_profile = Doc::new();
@@ -280,11 +280,11 @@ async fn test_value_editor_delete_methods() -> Result<()> {
         other => panic!("Expected user map to still exist, got {other:?}"),
     }
 
-    op.commit().await?;
+    txn.commit().await?;
 
     // Verify after commit
-    let viewer_op = tree.new_transaction().await?;
-    let viewer_dict = setup_dict_subtree(&viewer_op, "editor_test_store").await?;
+    let txn_viewer = tree.new_transaction().await?;
+    let viewer_dict = setup_dict_subtree(&txn_viewer, "editor_test_store").await?;
 
     // User exists but has no role or profile
     match viewer_dict.get("user").await? {

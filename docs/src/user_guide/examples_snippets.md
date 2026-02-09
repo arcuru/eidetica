@@ -84,11 +84,11 @@ println!("Using Database with root ID: {}", database.root_id());
 # let database = user.create_database(settings, &default_key).await?;
 #
 // Start an authenticated transaction (automatically uses the database's default key)
-let op = database.new_transaction().await?;
+let txn = database.new_transaction().await?;
 
 {
     // Get the DocStore store handle (scoped)
-    let config_store = op.get_store::<DocStore>("configuration").await?;
+    let config_store = txn.get_store::<DocStore>("configuration").await?;
 
     // Set some values
     config_store.set("api_key", "secret-key-123").await?;
@@ -102,7 +102,7 @@ let op = database.new_transaction().await?;
 }
 
 // Commit the changes atomically
-let entry_id = op.commit().await?;
+let entry_id = txn.commit().await?;
 println!("DocStore changes committed in entry: {}", entry_id);
 # Ok(())
 # }
@@ -134,12 +134,12 @@ struct Task {
 # let database = user.create_database(settings, &default_key).await?;
 #
 // Start an authenticated transaction (automatically uses the database's default key)
-let op = database.new_transaction().await?;
+let txn = database.new_transaction().await?;
 let inserted_id;
 
 {
     // Get the Table handle
-    let tasks_store = op.get_store::<Table<Task>>("tasks").await?;
+    let tasks_store = txn.get_store::<Table<Task>>("tasks").await?;
 
     // Insert a new task
     let task1 = Task { description: "Buy milk".to_string(), completed: false };
@@ -164,7 +164,7 @@ let inserted_id;
 }
 
 // Commit all inserts/updates/deletes
-let entry_id = op.commit().await?;
+let entry_id = txn.commit().await?;
 println!("Table changes committed in entry: {}", entry_id);
 # Ok(())
 # }
@@ -235,10 +235,10 @@ match config_viewer.get("retry_count").await {
 # settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;
 # let database = user.create_database(settings, &default_key).await?;
-# let op = database.new_transaction().await?;
-# let tasks_store = op.get_store::<Table<Task>>("tasks").await?;
+# let txn = database.new_transaction().await?;
+# let tasks_store = txn.get_store::<Table<Task>>("tasks").await?;
 # let id_to_find = tasks_store.insert(Task { description: "Test task".to_string(), completed: false }).await?;
-# op.commit().await?;
+# txn.commit().await?;
 #
 // Get a read-only viewer
 let tasks_viewer = database.get_store_viewer::<Table<Task>>("tasks").await?;
@@ -282,10 +282,10 @@ match tasks_viewer.search(|_| true).await {
 # let default_key = user.get_default_key()?;
 # let database = user.create_database(settings, &default_key).await?;
 // Start an authenticated transaction (automatically uses the database's default key)
-let op = database.new_transaction().await?;
+let txn = database.new_transaction().await?;
 
 // Get the DocStore store handle
-let user_store = op.get_store::<DocStore>("users").await?;
+let user_store = txn.get_store::<DocStore>("users").await?;
 
 // Using path-based operations to create and modify nested structures
 // Set profile information using paths - creates nested structure automatically
@@ -302,12 +302,12 @@ user_store.set_path(path!("config.database.host"), "localhost").await?;
 user_store.set_path(path!("config.database.port"), "5432").await?;
 
 // Commit the changes
-let entry_id = op.commit().await?;
+let entry_id = txn.commit().await?;
 println!("Nested data changes committed in entry: {}", entry_id);
 
 // Read back the nested data using path operations
-let viewer_op = database.new_transaction().await?;
-let viewer_store = viewer_op.get_store::<DocStore>("users").await?;
+let txn_viewer = database.new_transaction().await?;
+let viewer_store = txn_viewer.get_store::<DocStore>("users").await?;
 
 // Get individual values using path operations
 let _name_value = viewer_store.get_path(path!("user123.profile.name")).await?;
@@ -353,10 +353,10 @@ The `YDoc` store provides access to Y-CRDT (Yrs) documents for collaborative dat
 # let database = user.create_database(settings, &default_key).await?;
 #
 // Start an authenticated transaction (automatically uses the database's default key)
-let op = database.new_transaction().await?;
+let txn = database.new_transaction().await?;
 
 // Get the YDoc store handle
-let user_info_store = op.get_store::<YDoc>("user_info").await?;
+let user_info_store = txn.get_store::<YDoc>("user_info").await?;
 
 // Writing to Y-CRDT document
 user_info_store.with_doc_mut(|doc| {
@@ -371,7 +371,7 @@ user_info_store.with_doc_mut(|doc| {
 }).await?;
 
 // Commit the transaction
-let entry_id = op.commit().await?;
+let entry_id = txn.commit().await?;
 println!("YDoc changes committed in entry: {}", entry_id);
 
 // Reading from Y-CRDT document
@@ -589,14 +589,14 @@ impl ChatMessage {
 // Send a message to the chat room
 let message = ChatMessage::new("alice".to_string(), "Hello, world!".to_string());
 
-let op = database.new_transaction()?;
-let messages_store = op.get_store::<Table<ChatMessage>>("messages")?;
+let txn = database.new_transaction()?;
+let messages_store = txn.get_store::<Table<ChatMessage>>("messages")?;
 messages_store.insert(message)?;
-op.commit()?;
+txn.commit()?;
 
 // Read all messages
-let viewer_op = database.new_transaction()?;
-let viewer_store = viewer_op.get_store::<Table<ChatMessage>>("messages")?;
+let txn_viewer = database.new_transaction()?;
+let viewer_store = txn_viewer.get_store::<Table<ChatMessage>>("messages")?;
 let all_messages = viewer_store.search(|_| true)?;
 
 for (_, msg) in all_messages {

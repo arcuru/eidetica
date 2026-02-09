@@ -33,7 +33,7 @@ where
     T: Serialize + for<'de> Deserialize<'de> + Clone,
 {
     name: String,
-    atomic_op: Transaction,
+    txn: Transaction,
     phantom: PhantomData<T>,
 }
 
@@ -51,10 +51,10 @@ impl<T> Store for Table<T>
 where
     T: Serialize + for<'de> Deserialize<'de> + Clone + Send + Sync,
 {
-    async fn new(op: &Transaction, subtree_name: String) -> Result<Self> {
+    async fn new(txn: &Transaction, subtree_name: String) -> Result<Self> {
         Ok(Self {
             name: subtree_name,
-            atomic_op: op.clone(),
+            txn: txn.clone(),
             phantom: PhantomData,
         })
     }
@@ -64,7 +64,7 @@ where
     }
 
     fn transaction(&self) -> &Transaction {
-        &self.atomic_op
+        &self.txn
     }
 }
 
@@ -74,7 +74,7 @@ where
 {
     /// Retrieves a row from the Table by its primary key.
     ///
-    /// This method first checks for the record in the current atomic operation's
+    /// This method first checks for the record in the current transaction's
     /// local changes, and if not found, retrieves it from the persistent state.
     ///
     /// # Arguments
@@ -91,8 +91,8 @@ where
     pub async fn get(&self, key: impl AsRef<str>) -> Result<T> {
         let key = key.as_ref();
 
-        // Get local data from the atomic op if it exists
-        let local_data: Result<Doc> = self.atomic_op.get_local_data(&self.name);
+        // Get local data from the transaction if it exists
+        let local_data: Result<Doc> = self.txn.get_local_data(&self.name);
 
         // If there's a tombstone in local data, the record is deleted
         if let Ok(ref data) = local_data
@@ -120,7 +120,7 @@ where
         }
 
         // Otherwise, get the full state from the backend
-        let data: Doc = self.atomic_op.get_full_state(&self.name).await?;
+        let data: Doc = self.txn.get_full_state(&self.name).await?;
 
         // Get the value
         match data.get(key).and_then(|v| v.as_text()) {
@@ -144,7 +144,7 @@ where
     /// This method:
     /// 1. Generates a new UUIDv4 as the primary key
     /// 2. Serializes the record
-    /// 3. Stores it in the local atomic operation
+    /// 3. Stores it in the local transaction
     ///
     /// # Arguments
     /// * `row` - The record to insert
@@ -158,9 +158,9 @@ where
         // Generate a UUIDv4 for the primary key
         let primary_key = Uuid::new_v4().to_string();
 
-        // Get current data from the atomic op, or create new if not existing
+        // Get current data from the transaction, or create new if not existing
         let mut data = self
-            .atomic_op
+            .txn
             .get_local_data::<Doc>(&self.name)
             .unwrap_or_default();
 
@@ -174,13 +174,13 @@ where
         // Update the data with the new row
         data.set(primary_key.clone(), serialized_row);
 
-        // Serialize and update the atomic op
+        // Serialize and update the transaction
         let serialized_data =
             serde_json::to_string(&data).map_err(|e| StoreError::SerializationFailed {
                 store: self.name.clone(),
                 reason: format!("Failed to serialize subtree data: {e}"),
             })?;
-        self.atomic_op
+        self.txn
             .update_subtree(&self.name, &serialized_data)
             .await?;
 
@@ -204,9 +204,9 @@ where
     /// Returns an error if there's a serialization error or the operation fails
     pub async fn set(&self, key: impl AsRef<str>, row: T) -> Result<()> {
         let key_str = key.as_ref();
-        // Get current data from the atomic op, or create new if not existing
+        // Get current data from the transaction, or create new if not existing
         let mut data = self
-            .atomic_op
+            .txn
             .get_local_data::<Doc>(&self.name)
             .unwrap_or_default();
 
@@ -220,15 +220,13 @@ where
         // Update the data
         data.set(key_str, serialized_row);
 
-        // Serialize and update the atomic op
+        // Serialize and update the transaction
         let serialized_data =
             serde_json::to_string(&data).map_err(|e| StoreError::SerializationFailed {
                 store: self.name.clone(),
                 reason: format!("Failed to serialize subtree data: {e}"),
             })?;
-        self.atomic_op
-            .update_subtree(&self.name, &serialized_data)
-            .await
+        self.txn.update_subtree(&self.name, &serialized_data).await
     }
 
     /// Deletes a row from the Table by its primary key.
@@ -256,22 +254,22 @@ where
             return Ok(false);
         }
 
-        // Get current data from the atomic op, or create new if not existing
+        // Get current data from the transaction, or create new if not existing
         let mut data = self
-            .atomic_op
+            .txn
             .get_local_data::<Doc>(&self.name)
             .unwrap_or_default();
 
         // Remove the key (creates tombstone for CRDT semantics)
         data.remove(key_str);
 
-        // Serialize and update the atomic op
+        // Serialize and update the transaction
         let serialized_data =
             serde_json::to_string(&data).map_err(|e| StoreError::SerializationFailed {
                 store: self.name.clone(),
                 reason: format!("Failed to serialize subtree data: {e}"),
             })?;
-        self.atomic_op
+        self.txn
             .update_subtree(&self.name, &serialized_data)
             .await?;
 
@@ -293,11 +291,11 @@ where
         // Get the full state combining local and backend data
         let mut result = Vec::new();
 
-        // Get data from the atomic op if it exists
-        let local_data = self.atomic_op.get_local_data::<Doc>(&self.name);
+        // Get data from the transaction if it exists
+        let local_data = self.txn.get_local_data::<Doc>(&self.name);
 
         // Get the full state from the backend
-        let mut data = self.atomic_op.get_full_state::<Doc>(&self.name).await?;
+        let mut data = self.txn.get_full_state::<Doc>(&self.name).await?;
 
         // If there's also local data, merge it with the full state
         if let Ok(local) = local_data {

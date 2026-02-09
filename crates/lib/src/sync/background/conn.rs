@@ -99,8 +99,8 @@ impl BackgroundSync {
 
                 // Add peer to sync tree
                 let sync_tree = self.get_sync_tree().await?;
-                let op = sync_tree.new_transaction().await?;
-                let peer_manager = PeerManager::new(&op);
+                let txn = sync_tree.new_transaction().await?;
+                let peer_manager = PeerManager::new(&txn);
 
                 // Try to register peer, but ignore if already exists
                 match peer_manager
@@ -111,7 +111,7 @@ impl BackgroundSync {
                     .await
                 {
                     Ok(_) => {
-                        op.commit().await?;
+                        txn.commit().await?;
                     }
                     Err(Error::Sync(SyncError::PeerAlreadyExists(_))) => {
                         // Peer already exists, that's fine - just continue with handshake result

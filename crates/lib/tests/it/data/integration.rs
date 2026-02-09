@@ -10,7 +10,7 @@ use eidetica::crdt::doc::Value;
 
 #[tokio::test]
 async fn test_end_to_end_data_workflow() -> Result<()> {
-    let (db, tree, op, dict) = setup_complete_test_env("integration_test").await?;
+    let (db, tree, txn, dict) = setup_complete_test_env("integration_test").await?;
 
     // Test 1: Create nested data using path operations
     dict.set_at_path(
@@ -63,11 +63,11 @@ async fn test_end_to_end_data_workflow() -> Result<()> {
     );
     assert_text_value(&dict.get_at_path(&["user", "profile", "age"]).await?, "25");
 
-    op.commit().await?;
+    txn.commit().await?;
 
     // Test 8: Verify persistence after commit
-    let viewer_op = tree.new_transaction().await?;
-    let viewer_dict = setup_dict_subtree(&viewer_op, "integration_test").await?;
+    let txn_viewer = tree.new_transaction().await?;
+    let viewer_dict = setup_dict_subtree(&txn_viewer, "integration_test").await?;
     assert_text_value(
         &viewer_dict
             .get_at_path(&["user", "profile", "name"])
@@ -85,7 +85,7 @@ async fn test_end_to_end_data_workflow() -> Result<()> {
 
 #[tokio::test]
 async fn test_mixed_operations_consistency() -> Result<()> {
-    let (_, _, op, dict) = setup_complete_test_env("consistency_test").await?;
+    let (_, _, txn, dict) = setup_complete_test_env("consistency_test").await?;
 
     // Mix path operations and value editor operations
 
@@ -134,7 +134,7 @@ async fn test_mixed_operations_consistency() -> Result<()> {
 
 #[tokio::test]
 async fn test_merge_operations_with_editors() -> Result<()> {
-    let (_, _, op, dict) = setup_complete_test_env("merge_test").await?;
+    let (_, _, txn, dict) = setup_complete_test_env("merge_test").await?;
 
     // Create initial structure using helpers
     let (map1, map2) = build_complex_merge_data();
@@ -173,7 +173,7 @@ async fn test_merge_operations_with_editors() -> Result<()> {
 
 #[tokio::test]
 async fn test_error_handling_across_apis() -> Result<()> {
-    let (_, _, op, dict) = setup_complete_test_env("error_test").await?;
+    let (_, _, txn, dict) = setup_complete_test_env("error_test").await?;
 
     // Test 1: Path operations error handling
     assert_not_found_error(dict.get_at_path(&["nonexistent", "path"]).await);
@@ -206,7 +206,7 @@ async fn test_error_handling_across_apis() -> Result<()> {
 
 #[tokio::test]
 async fn test_performance_with_deep_nesting() -> Result<()> {
-    let (_, _, op, dict) = setup_complete_test_env("performance_test").await?;
+    let (_, _, txn, dict) = setup_complete_test_env("performance_test").await?;
 
     // Create a deeply nested structure (10 levels deep)
     let mut path = Vec::new();

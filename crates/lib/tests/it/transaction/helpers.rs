@@ -67,10 +67,10 @@ pub async fn setup_tree_with_data(
 /// Create a diamond pattern: base -> (left, right) -> merge
 pub async fn create_diamond_pattern(tree: &Database) -> DiamondIds {
     // Create base
-    let base_op = tree.new_transaction().await.unwrap();
-    let base_store = base_op.get_store::<DocStore>("data").await.unwrap();
+    let txn_base = tree.new_transaction().await.unwrap();
+    let base_store = txn_base.get_store::<DocStore>("data").await.unwrap();
     base_store.set("base", "initial").await.unwrap();
-    let base_id = base_op.commit().await.unwrap();
+    let base_id = txn_base.commit().await.unwrap();
 
     // Create left branch
     let left_op = tree
@@ -151,10 +151,10 @@ pub fn assert_map_data(map: &Map, expected_data: &[(&str, &str)]) {
 
 /// Create operation that deletes a key and verify tombstone behavior
 pub async fn test_delete_operation(tree: &Database, subtree_name: &str, key_to_delete: &str) -> ID {
-    let op = tree.new_transaction().await.unwrap();
-    let dict = op.get_store::<DocStore>(subtree_name).await.unwrap();
+    let txn = tree.new_transaction().await.unwrap();
+    let dict = txn.get_store::<DocStore>(subtree_name).await.unwrap();
     dict.delete(key_to_delete).await.unwrap();
-    op.commit().await.unwrap()
+    txn.commit().await.unwrap()
 }
 
 /// Verify that a map contains a tombstone for a deleted key
@@ -191,8 +191,8 @@ pub fn create_nested_map(data: &[(&str, &str)]) -> Value {
 
 /// Setup operation with nested Map values
 pub async fn create_operation_with_nested_data(tree: &Database) -> ID {
-    let op = tree.new_transaction().await.unwrap();
-    let store = op.get_store::<DocStore>("data").await.unwrap();
+    let txn = tree.new_transaction().await.unwrap();
+    let store = txn.get_store::<DocStore>("data").await.unwrap();
 
     // Set regular string value
     store.set("string_key", "string_value").await.unwrap();
@@ -201,7 +201,7 @@ pub async fn create_operation_with_nested_data(tree: &Database) -> ID {
     let nested = create_nested_map(&[("inner1", "value1"), ("inner2", "value2")]);
     store.set_value("map_key", nested).await.unwrap();
 
-    op.commit().await.unwrap()
+    txn.commit().await.unwrap()
 }
 
 /// Verify nested data structure in a DocStore
@@ -288,8 +288,8 @@ pub struct LcaTestIds {
 
 /// Verify that LCA path finding includes all expected data
 pub async fn assert_lca_path_completeness(tree: &Database, tips: &[ID], expected_keys: &[&str]) {
-    let op = tree.new_transaction_with_tips(tips).await.unwrap();
-    let store = op.get_store::<DocStore>("data").await.unwrap();
+    let txn = tree.new_transaction_with_tips(tips).await.unwrap();
+    let store = txn.get_store::<DocStore>("data").await.unwrap();
     let state = store.get_all().await.unwrap();
 
     for key in expected_keys {
@@ -307,8 +307,8 @@ pub async fn test_deterministic_operations(tree: &Database, tips: &[ID], iterati
     let mut results = Vec::new();
 
     for _i in 0..iterations {
-        let op = tree.new_transaction_with_tips(tips).await.unwrap();
-        let store = op.get_store::<DocStore>("data").await.unwrap();
+        let txn = tree.new_transaction_with_tips(tips).await.unwrap();
+        let store = txn.get_store::<DocStore>("data").await.unwrap();
         let state = store.get_all().await.unwrap();
         results.push(state);
     }

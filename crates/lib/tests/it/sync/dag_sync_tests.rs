@@ -562,11 +562,11 @@ async fn test_sync_protocol_implementation() {
 
     // Add test data to tree1
     let test_entry_id = {
-        let op = tree1.new_transaction().await.unwrap();
-        let doc_store = op.get_store::<DocStore>("data").await.unwrap();
+        let txn = tree1.new_transaction().await.unwrap();
+        let doc_store = txn.get_store::<DocStore>("data").await.unwrap();
         doc_store.set("test_key", "test_value").await.unwrap();
         doc_store.set("protocol", "implemented").await.unwrap();
-        op.commit().await.unwrap()
+        txn.commit().await.unwrap()
     };
 
     // Verify data exists in db1 but not in db2 yet
@@ -630,14 +630,14 @@ async fn test_sync_protocol_implementation() {
 
     // Now add MORE data to tree1 and sync again to truly test the sync protocol
     let second_entry_id = {
-        let op = tree1.new_transaction().await.unwrap();
-        let doc_store = op.get_store::<DocStore>("data").await.unwrap();
+        let txn = tree1.new_transaction().await.unwrap();
+        let doc_store = txn.get_store::<DocStore>("data").await.unwrap();
         doc_store.set("second_key", "second_value").await.unwrap();
         doc_store
             .set("sync_test", "actually_working")
             .await
             .unwrap();
-        op.commit().await.unwrap()
+        txn.commit().await.unwrap()
     };
 
     // Verify second entry exists in db1 but not in db2

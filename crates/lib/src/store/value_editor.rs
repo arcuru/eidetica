@@ -245,10 +245,7 @@ impl DocStore {
             // The value must be a node.
             if let Value::Doc(node) = value {
                 let serialized_data = serde_json::to_string(&node)?;
-                return self
-                    .atomic_op
-                    .update_subtree(&self.name, &serialized_data)
-                    .await;
+                return self.txn.update_subtree(&self.name, &serialized_data).await;
             } else {
                 return Err(StoreError::TypeMismatch {
                     store: self.name.clone(),
@@ -260,7 +257,7 @@ impl DocStore {
         }
 
         let mut subtree_data = self
-            .atomic_op
+            .txn
             .get_local_data::<Doc>(&self.name)
             .unwrap_or_default();
 
@@ -278,8 +275,6 @@ impl DocStore {
         subtree_data.set(&path_str, value);
 
         let serialized_data = serde_json::to_string(&subtree_data)?;
-        self.atomic_op
-            .update_subtree(&self.name, &serialized_data)
-            .await
+        self.txn.update_subtree(&self.name, &serialized_data).await
     }
 }

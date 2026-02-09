@@ -222,12 +222,12 @@ pub async fn setup_tree_with_settings(settings: &[(&str, &str)]) -> (Instance, D
         .expect("Failed to create tree");
 
     // Add the user settings through an operation
-    let op = tree
+    let txn = tree
         .new_transaction()
         .await
-        .expect("Failed to create operation");
+        .expect("Failed to create transaction");
     {
-        let settings_store = op
+        let settings_store = txn
             .get_store::<DocStore>("_settings")
             .await
             .expect("Failed to get settings subtree");
@@ -239,7 +239,7 @@ pub async fn setup_tree_with_settings(settings: &[(&str, &str)]) -> (Instance, D
                 .expect("Failed to set setting");
         }
     }
-    op.commit().await.expect("Failed to commit settings");
+    txn.commit().await.expect("Failed to commit settings");
 
     (instance, tree)
 }

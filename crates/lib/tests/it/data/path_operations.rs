@@ -11,7 +11,7 @@ use super::helpers::*;
 
 #[tokio::test]
 async fn test_dict_set_at_path_and_get_at_path_simple() -> Result<()> {
-    let (_db, tree, op, dict) = setup_complete_test_env("path_test_store").await?;
+    let (_db, tree, txn, dict) = setup_complete_test_env("path_test_store").await?;
 
     let path = ["simple_key"];
     let value = Value::Text("simple_value".to_string());
@@ -21,11 +21,11 @@ async fn test_dict_set_at_path_and_get_at_path_simple() -> Result<()> {
     // Verify with regular get as well
     assert_text_value(&dict.get("simple_key").await?, "simple_value");
 
-    op.commit().await?;
+    txn.commit().await?;
 
     // Verify after commit
-    let viewer_op = tree.new_transaction().await?;
-    let viewer_dict = setup_path_test_dict(&viewer_op).await?;
+    let txn_viewer = tree.new_transaction().await?;
+    let viewer_dict = setup_path_test_dict(&txn_viewer).await?;
     assert_eq!(viewer_dict.get_at_path(path).await?, value);
     assert_text_value(&viewer_dict.get("simple_key").await?, "simple_value");
 
@@ -34,7 +34,7 @@ async fn test_dict_set_at_path_and_get_at_path_simple() -> Result<()> {
 
 #[tokio::test]
 async fn test_dict_set_at_path_and_get_at_path_nested() -> Result<()> {
-    let (_db, tree, op, dict) = setup_complete_test_env("path_test_store").await?;
+    let (_db, tree, txn, dict) = setup_complete_test_env("path_test_store").await?;
 
     let path = ["user", "profile", "email"];
     let value = Value::Text("test@example.com".to_string());
@@ -50,11 +50,11 @@ async fn test_dict_set_at_path_and_get_at_path_nested() -> Result<()> {
         _ => panic!("Expected user.profile to be a map"),
     }
 
-    op.commit().await?;
+    txn.commit().await?;
 
     // Verify after commit
-    let viewer_op = tree.new_transaction().await?;
-    let viewer_dict = setup_path_test_dict(&viewer_op).await?;
+    let txn_viewer = tree.new_transaction().await?;
+    let viewer_dict = setup_path_test_dict(&txn_viewer).await?;
     assert_eq!(viewer_dict.get_at_path(path).await?, value);
 
     Ok(())

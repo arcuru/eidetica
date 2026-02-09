@@ -83,7 +83,7 @@ pub enum Error {
     #[error(transparent)]
     Store(store::StoreError),
 
-    /// Structured atomic operation errors from the transaction module
+    /// Structured transaction errors from the transaction module
     #[error(transparent)]
     Transaction(transaction::TransactionError),
 

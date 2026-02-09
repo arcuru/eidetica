@@ -395,8 +395,8 @@ impl Transaction {
     /// ```rust,no_run
     /// # use eidetica::Database;
     /// # async fn example(database: Database) -> eidetica::Result<()> {
-    /// let op = database.new_transaction().await?;
-    /// let settings = op.get_settings()?;
+    /// let txn = database.new_transaction().await?;
+    /// let settings = txn.get_settings()?;
     ///
     /// // Read a setting
     /// if let Ok(name) = settings.get_name().await {

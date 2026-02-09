@@ -283,8 +283,8 @@ async fn test_circular_delegation_simple() -> Result<()> {
     };
 
     // Add self-referencing delegation to the tree
-    let op = tree.new_transaction().await?.with_auth(&key_id);
-    let _dict = op.get_store::<DocStore>("_settings").await?;
+    let txn = tree.new_transaction().await?.with_auth(&key_id);
+    let _dict = txn.get_store::<DocStore>("_settings").await?;
 
     // This should be detectable as a potential circular reference
     // For now, we just test that it doesn't crash

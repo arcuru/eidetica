@@ -410,9 +410,9 @@ impl Registered for PasswordStore {
 
 #[async_trait]
 impl Store for PasswordStore {
-    async fn new(op: &Transaction, subtree_name: String) -> Result<Self> {
+    async fn new(txn: &Transaction, subtree_name: String) -> Result<Self> {
         // Try to load config from _index to determine state
-        let index_store = op.get_index().await?;
+        let index_store = txn.get_index().await?;
         let info = index_store.get_entry(&subtree_name).await?;
 
         // Type validation
@@ -430,7 +430,7 @@ impl Store for PasswordStore {
         if info.config == "{}" || info.config.is_empty() {
             Ok(Self {
                 name: subtree_name,
-                transaction: op.clone(),
+                transaction: txn.clone(),
                 config: None,
                 cached_password: None,
                 wrapped_info: None,
@@ -466,7 +466,7 @@ impl Store for PasswordStore {
 
             Ok(Self {
                 name: subtree_name,
-                transaction: op.clone(),
+                transaction: txn.clone(),
                 config: Some(config),
                 cached_password: None,
                 wrapped_info: None,
@@ -474,16 +474,16 @@ impl Store for PasswordStore {
         }
     }
 
-    async fn init(op: &Transaction, subtree_name: String) -> Result<Self> {
+    async fn init(txn: &Transaction, subtree_name: String) -> Result<Self> {
         // Register in _index with empty config (marks as uninitialized)
-        let index_store = op.get_index().await?;
+        let index_store = txn.get_index().await?;
         index_store
             .set_entry(&subtree_name, Self::type_id(), Self::default_config())
             .await?;
 
         Ok(Self {
             name: subtree_name,
-            transaction: op.clone(),
+            transaction: txn.clone(),
             config: None,
             cached_password: None,
             wrapped_info: None,

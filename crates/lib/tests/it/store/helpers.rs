@@ -42,20 +42,20 @@ pub async fn create_dict_operation(
     subtree_name: &str,
     data: &[(&str, &str)],
 ) -> ID {
-    let op = tree.new_transaction().await.unwrap();
-    let dict = op.get_store::<DocStore>(subtree_name).await.unwrap();
+    let txn = tree.new_transaction().await.unwrap();
+    let dict = txn.get_store::<DocStore>(subtree_name).await.unwrap();
 
     for (key, value) in data {
         dict.set(*key, *value).await.unwrap();
     }
 
-    op.commit().await.unwrap()
+    txn.commit().await.unwrap()
 }
 
 /// Create Doc operation with nested Map values
 pub async fn create_dict_with_nested_map(tree: &Database, subtree_name: &str) -> ID {
-    let op = tree.new_transaction().await.unwrap();
-    let dict = op.get_store::<DocStore>(subtree_name).await.unwrap();
+    let txn = tree.new_transaction().await.unwrap();
+    let dict = txn.get_store::<DocStore>(subtree_name).await.unwrap();
 
     // Set regular string
     dict.set("key1", "value1").await.unwrap();
@@ -65,13 +65,13 @@ pub async fn create_dict_with_nested_map(tree: &Database, subtree_name: &str) ->
     nested.set("inner", "nested_value");
     dict.set_value("key2", Value::Doc(nested)).await.unwrap();
 
-    op.commit().await.unwrap()
+    txn.commit().await.unwrap()
 }
 
 /// Create Doc operation with List values
 pub async fn create_dict_with_list(tree: &Database, subtree_name: &str, list_items: &[&str]) -> ID {
-    let op = tree.new_transaction().await.unwrap();
-    let dict = op.get_store::<DocStore>(subtree_name).await.unwrap();
+    let txn = tree.new_transaction().await.unwrap();
+    let dict = txn.get_store::<DocStore>(subtree_name).await.unwrap();
 
     let mut fruits = List::new();
     for item in list_items {
@@ -79,30 +79,30 @@ pub async fn create_dict_with_list(tree: &Database, subtree_name: &str, list_ite
     }
 
     dict.set_list("fruits", fruits).await.unwrap();
-    op.commit().await.unwrap()
+    txn.commit().await.unwrap()
 }
 
 /// Test multiple Doc operations across commits
 pub async fn test_dict_persistence(tree: &Database, subtree_name: &str) -> Vec<ID> {
     let mut entry_ids = Vec::new();
 
-    // Op 1: Initial data
-    let op1 = tree.new_transaction().await.unwrap();
+    // Txn 1: Initial data
+    let txn1 = tree.new_transaction().await.unwrap();
     {
-        let dict = op1.get_store::<DocStore>(subtree_name).await.unwrap();
+        let dict = txn1.get_store::<DocStore>(subtree_name).await.unwrap();
         dict.set("key_a", "val_a").await.unwrap();
         dict.set("key_b", "val_b").await.unwrap();
     }
-    entry_ids.push(op1.commit().await.unwrap());
+    entry_ids.push(txn1.commit().await.unwrap());
 
-    // Op 2: Update one, add another
-    let op2 = tree.new_transaction().await.unwrap();
+    // Txn 2: Update one, add another
+    let txn2 = tree.new_transaction().await.unwrap();
     {
-        let dict = op2.get_store::<DocStore>(subtree_name).await.unwrap();
+        let dict = txn2.get_store::<DocStore>(subtree_name).await.unwrap();
         dict.set("key_b", "val_b_updated").await.unwrap();
         dict.set("key_c", "val_c").await.unwrap();
     }
-    entry_ids.push(op2.commit().await.unwrap());
+    entry_ids.push(txn2.commit().await.unwrap());
 
     entry_ids
 }
@@ -177,8 +177,8 @@ pub async fn create_ydoc_text_operation(
     subtree_name: &str,
     text_content: &str,
 ) -> ID {
-    let op = tree.new_transaction().await.unwrap();
-    let ydoc = op.get_store::<YDoc>(subtree_name).await.unwrap();
+    let txn = tree.new_transaction().await.unwrap();
+    let ydoc = txn.get_store::<YDoc>(subtree_name).await.unwrap();
 
     ydoc.with_doc_mut(|doc| {
         let text = doc.get_or_insert_text("document");
@@ -189,7 +189,7 @@ pub async fn create_ydoc_text_operation(
     .await
     .unwrap();
 
-    op.commit().await.unwrap()
+    txn.commit().await.unwrap()
 }
 
 #[cfg(feature = "y-crdt")]
@@ -199,8 +199,8 @@ pub async fn create_ydoc_map_operation(
     subtree_name: &str,
     map_data: &[(&str, &str)],
 ) -> ID {
-    let op = tree.new_transaction().await.unwrap();
-    let ydoc = op.get_store::<YDoc>(subtree_name).await.unwrap();
+    let txn = tree.new_transaction().await.unwrap();
+    let ydoc = txn.get_store::<YDoc>(subtree_name).await.unwrap();
 
     ydoc.with_doc_mut(|doc| {
         let map = doc.get_or_insert_map("root");
@@ -213,16 +213,16 @@ pub async fn create_ydoc_map_operation(
     .await
     .unwrap();
 
-    op.commit().await.unwrap()
+    txn.commit().await.unwrap()
 }
 
 #[cfg(feature = "y-crdt")]
 /// Test incremental YDoc updates and verify diff sizes
 pub async fn test_ydoc_incremental_updates(tree: &Database, subtree_name: &str) -> (usize, usize) {
     // Large initial content
-    let op1 = tree.new_transaction().await.unwrap();
+    let txn1 = tree.new_transaction().await.unwrap();
     let first_diff_size = {
-        let ydoc = op1.get_store::<YDoc>(subtree_name).await.unwrap();
+        let ydoc = txn1.get_store::<YDoc>(subtree_name).await.unwrap();
         ydoc.with_doc_mut(|doc| {
             let text = doc.get_or_insert_text("document");
             let mut txn = doc.transact_mut();
@@ -234,15 +234,15 @@ pub async fn test_ydoc_incremental_updates(tree: &Database, subtree_name: &str) 
         .await
         .unwrap();
 
-        let local_diff: YrsBinary = op1.get_local_data(subtree_name).unwrap();
+        let local_diff: YrsBinary = txn1.get_local_data(subtree_name).unwrap();
         local_diff.as_bytes().len()
     };
-    op1.commit().await.unwrap();
+    txn1.commit().await.unwrap();
 
     // Small incremental change
-    let op2 = tree.new_transaction().await.unwrap();
+    let txn2 = tree.new_transaction().await.unwrap();
     let second_diff_size = {
-        let ydoc = op2.get_store::<YDoc>(subtree_name).await.unwrap();
+        let ydoc = txn2.get_store::<YDoc>(subtree_name).await.unwrap();
         ydoc.with_doc_mut(|doc| {
             let text = doc.get_or_insert_text("document");
             let mut txn = doc.transact_mut();
@@ -252,10 +252,10 @@ pub async fn test_ydoc_incremental_updates(tree: &Database, subtree_name: &str) 
         .await
         .unwrap();
 
-        let local_diff: YrsBinary = op2.get_local_data(subtree_name).unwrap();
+        let local_diff: YrsBinary = txn2.get_local_data(subtree_name).unwrap();
         local_diff.as_bytes().len()
     };
-    op2.commit().await.unwrap();
+    txn2.commit().await.unwrap();
 
     (first_diff_size, second_diff_size)
 }
@@ -322,8 +322,8 @@ pub async fn create_table_operation(
     subtree_name: &str,
     records: &[TestRecord],
 ) -> Vec<String> {
-    let op = tree.new_transaction().await.unwrap();
-    let table = op
+    let txn = tree.new_transaction().await.unwrap();
+    let table = txn
         .get_store::<Table<TestRecord>>(subtree_name)
         .await
         .unwrap();
@@ -334,7 +334,7 @@ pub async fn create_table_operation(
         keys.push(key);
     }
 
-    op.commit().await.unwrap();
+    txn.commit().await.unwrap();
     keys
 }
 
@@ -344,8 +344,8 @@ pub async fn create_simple_table_operation(
     subtree_name: &str,
     values: &[i32],
 ) -> Vec<String> {
-    let op = tree.new_transaction().await.unwrap();
-    let table = op
+    let txn = tree.new_transaction().await.unwrap();
+    let table = txn
         .get_store::<Table<SimpleRecord>>(subtree_name)
         .await
         .unwrap();
@@ -357,7 +357,7 @@ pub async fn create_simple_table_operation(
         keys.push(key);
     }
 
-    op.commit().await.unwrap();
+    txn.commit().await.unwrap();
     keys
 }
 
@@ -366,10 +366,10 @@ pub async fn test_table_multi_operations(
     tree: &Database,
     subtree_name: &str,
 ) -> (String, String, String) {
-    // Op 1: Insert initial records
-    let op1 = tree.new_transaction().await.unwrap();
+    // Txn 1: Insert initial records
+    let txn1 = tree.new_transaction().await.unwrap();
     let (key1, key2) = {
-        let table = op1
+        let table = txn1
             .get_store::<Table<TestRecord>>(subtree_name)
             .await
             .unwrap();
@@ -389,12 +389,12 @@ pub async fn test_table_multi_operations(
         let k2 = table.insert(record2).await.unwrap();
         (k1, k2)
     };
-    op1.commit().await.unwrap();
+    txn1.commit().await.unwrap();
 
-    // Op 2: Update and add
-    let op2 = tree.new_transaction().await.unwrap();
+    // Txn 2: Update and add
+    let txn2 = tree.new_transaction().await.unwrap();
     let key3 = {
-        let table = op2
+        let table = txn2
             .get_store::<Table<TestRecord>>(subtree_name)
             .await
             .unwrap();
@@ -415,7 +415,7 @@ pub async fn test_table_multi_operations(
         };
         table.insert(record3).await.unwrap()
     };
-    op2.commit().await.unwrap();
+    txn2.commit().await.unwrap();
 
     (key1, key2, key3)
 }
@@ -513,9 +513,9 @@ pub async fn test_table_concurrent_modifications(
     subtree_name: &str,
 ) -> (String, TestRecord) {
     // Create base entry
-    let op_base = tree.new_transaction().await.unwrap();
+    let txn_base = tree.new_transaction().await.unwrap();
     let key1 = {
-        let table = op_base
+        let table = txn_base
             .get_store::<Table<TestRecord>>(subtree_name)
             .await
             .unwrap();
@@ -526,7 +526,7 @@ pub async fn test_table_concurrent_modifications(
         };
         table.insert(record).await.unwrap()
     };
-    let base_entry_id = op_base.commit().await.unwrap();
+    let base_entry_id = txn_base.commit().await.unwrap();
 
     // Branch A: Concurrent modification
     let op_branch_a = tree

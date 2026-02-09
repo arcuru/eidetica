@@ -19,11 +19,11 @@ async fn setup_tree_with_entries_async(entry_count: usize) -> (Instance, User, D
     let (instance, user, tree) = setup_tree_async().await;
 
     for i in 0..entry_count {
-        let op = tree
+        let txn = tree
             .new_transaction()
             .await
-            .expect("Failed to start operation");
-        let doc_store = op
+            .expect("Failed to start transaction");
+        let doc_store = txn
             .get_store::<DocStore>("data")
             .await
             .expect("Failed to get DocStore");
@@ -33,7 +33,7 @@ async fn setup_tree_with_entries_async(entry_count: usize) -> (Instance, User, D
             .await
             .expect("Failed to set value");
 
-        op.commit().await.expect("Failed to commit operation");
+        txn.commit().await.expect("Failed to commit transaction");
     }
 
     (instance, user, tree)
@@ -62,11 +62,11 @@ fn bench_add_entries(c: &mut Criterion) {
                     || setup_tree_with_entries(&rt, tree_size),
                     |(_instance, _user, tree)| {
                         rt.block_on(async {
-                            let op = tree
+                            let txn = tree
                                 .new_transaction()
                                 .await
-                                .expect("Failed to start operation");
-                            let doc_store = op
+                                .expect("Failed to start transaction");
+                            let doc_store = txn
                                 .get_store::<DocStore>("data")
                                 .await
                                 .expect("Failed to get DocStore");
@@ -79,7 +79,7 @@ fn bench_add_entries(c: &mut Criterion) {
                                 .await
                                 .expect("Failed to set value");
 
-                            op.commit().await.expect("Failed to commit operation");
+                            txn.commit().await.expect("Failed to commit transaction");
                         });
                     },
                 );
@@ -90,8 +90,8 @@ fn bench_add_entries(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmarks batch insertion of multiple key-value pairs within a single operation
-/// Tests atomic operation overhead vs per-KV-pair costs
+/// Benchmarks batch insertion of multiple key-value pairs within a single transaction
+/// Tests transaction overhead vs per-KV-pair costs
 /// Throughput metrics allow comparing efficiency per key-value pair
 fn bench_batch_add_entries(c: &mut Criterion) {
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -110,11 +110,11 @@ fn bench_batch_add_entries(c: &mut Criterion) {
                     || setup_tree(&rt),
                     |(_instance, _user, tree)| {
                         rt.block_on(async {
-                            let op = tree
+                            let txn = tree
                                 .new_transaction()
                                 .await
-                                .expect("Failed to start operation");
-                            let doc_store = op
+                                .expect("Failed to start transaction");
+                            let doc_store = txn
                                 .get_store::<DocStore>("data")
                                 .await
                                 .expect("Failed to get DocStore");
@@ -129,7 +129,7 @@ fn bench_batch_add_entries(c: &mut Criterion) {
                                     .expect("Failed to set value");
                             }
 
-                            op.commit().await.expect("Failed to commit operation");
+                            txn.commit().await.expect("Failed to commit transaction");
                         });
                     },
                 );
@@ -161,11 +161,11 @@ fn bench_incremental_add_entries(c: &mut Criterion) {
 
                 b.iter(|| {
                     rt.block_on(async {
-                        let op = tree
+                        let txn = tree
                             .new_transaction()
                             .await
-                            .expect("Failed to start operation");
-                        let doc_store = op
+                            .expect("Failed to start transaction");
+                        let doc_store = txn
                             .get_store::<DocStore>("data")
                             .await
                             .expect("Failed to get DocStore");
@@ -178,7 +178,7 @@ fn bench_incremental_add_entries(c: &mut Criterion) {
                             .await
                             .expect("Failed to set value");
 
-                        op.commit().await.expect("Failed to commit operation");
+                        txn.commit().await.expect("Failed to commit transaction");
                         counter += 1;
                     });
                 });
@@ -209,11 +209,11 @@ fn bench_access_entries(c: &mut Criterion) {
 
                 b.iter(|| {
                     rt.block_on(async {
-                        let op = tree
+                        let txn = tree
                             .new_transaction()
                             .await
-                            .expect("Failed to start operation");
-                        let doc_store = op
+                            .expect("Failed to start transaction");
+                        let doc_store = txn
                             .get_store::<DocStore>("data")
                             .await
                             .expect("Failed to get DocStore");
@@ -232,8 +232,8 @@ fn bench_access_entries(c: &mut Criterion) {
 }
 
 /// Benchmarks core tree infrastructure operations
-/// Measures overhead of tree creation and operation initialization
-/// Tests how operation creation scales with tree size
+/// Measures overhead of tree creation and transaction initialization
+/// Tests how transaction creation scales with tree size
 fn bench_tree_operations(c: &mut Criterion) {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -271,17 +271,17 @@ fn bench_tree_operations(c: &mut Criterion) {
 
     for tree_size in [0, 10, 100].iter() {
         group.bench_with_input(
-            BenchmarkId::new("create_operation", tree_size),
+            BenchmarkId::new("create_transaction", tree_size),
             tree_size,
             |b, &tree_size| {
                 let (_instance, _user, tree) = setup_tree_with_entries(&rt, tree_size);
 
                 b.iter(|| {
                     rt.block_on(async {
-                        let _op = black_box(
+                        let _txn = black_box(
                             tree.new_transaction()
                                 .await
-                                .expect("Failed to start operation"),
+                                .expect("Failed to start transaction"),
                         );
                     });
                 });

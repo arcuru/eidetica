@@ -13,18 +13,18 @@ async fn test_insert_into_tree() {
     let (_instance, tree) = setup_tree().await;
 
     // Create and commit first entry using an atomic operation
-    let op1 = tree
+    let txn1 = tree
         .new_transaction()
         .await
-        .expect("Failed to create operation");
-    let id1 = op1.commit().await.expect("Failed to commit operation");
+        .expect("Failed to create transaction");
+    let id1 = txn1.commit().await.expect("Failed to commit transaction");
 
     // Create and commit second entry
-    let op2 = tree
+    let txn2 = tree
         .new_transaction()
         .await
-        .expect("Failed to create operation");
-    let id2 = op2.commit().await.expect("Failed to commit operation");
+        .expect("Failed to create transaction");
+    let id2 = txn2.commit().await.expect("Failed to commit transaction");
 
     // Verify tips include id2
     let tips = tree.get_tips().await.expect("Failed to get tips");
@@ -62,17 +62,17 @@ async fn test_subtree_operations() {
     let (_instance, tree) = setup_tree().await;
 
     // Create and commit the initial data with operation
-    let op1 = tree
+    let txn1 = tree
         .new_transaction()
         .await
-        .expect("Failed to create operation");
+        .expect("Failed to create transaction");
     {
-        let users_store = op1
+        let users_store = txn1
             .get_store::<DocStore>("users")
             .await
             .expect("Failed to get users store");
 
-        let posts_store = op1
+        let posts_store = txn1
             .get_store::<DocStore>("posts")
             .await
             .expect("Failed to get posts store");
@@ -87,7 +87,7 @@ async fn test_subtree_operations() {
             .await
             .expect("Failed to set post data");
     }
-    op1.commit().await.expect("Failed to commit operation");
+    txn1.commit().await.expect("Failed to commit transaction");
 
     // --- Verify initial data with viewers ---
     let users_viewer1 = tree
@@ -114,12 +114,12 @@ async fn test_subtree_operations() {
     );
 
     // --- Create another operation modifying only the users subtree ---
-    let op2 = tree
+    let txn2 = tree
         .new_transaction()
         .await
-        .expect("Failed to create operation 2");
+        .expect("Failed to create transaction 2");
     {
-        let users_store2 = op2
+        let users_store2 = txn2
             .get_store::<DocStore>("users")
             .await
             .expect("Failed to get users store (2)");
@@ -129,8 +129,8 @@ async fn test_subtree_operations() {
             .expect("Failed to set second user data");
     }
 
-    // Commit the second operation
-    op2.commit()
+    // Commit the second transaction
+    txn2.commit()
         .await
         .expect("Failed to commit second operation");
 
@@ -178,21 +178,21 @@ async fn test_get_name_from_settings() {
     assert_eq!(name, "TestTree");
 
     // Update the name using an operation
-    let op = tree
+    let txn = tree
         .new_transaction()
         .await
-        .expect("Failed to create operation");
+        .expect("Failed to create transaction");
     {
-        let settings_store = op
+        let settings_store = txn
             .get_store::<DocStore>(SETTINGS)
             .await
-            .expect("Failed to get settings store in op");
+            .expect("Failed to get settings store in transaction");
         settings_store
             .set("name", "UpdatedTreeName")
             .await
-            .expect("Failed to update name in op");
+            .expect("Failed to update name in transaction");
     }
-    op.commit()
+    txn.commit()
         .await
         .expect("Failed to commit name update operation");
 
@@ -205,44 +205,44 @@ async fn test_get_name_from_settings() {
 }
 
 #[tokio::test]
-async fn test_atomic_op_scenarios() {
+async fn test_txn_scenarios() {
     let (_instance, tree) = setup_tree().await;
 
-    // --- 1. Modify multiple subtrees in one op and read staged data ---
-    let op1 = tree.new_transaction().await.expect("Op1: Failed to start");
+    // --- 1. Modify multiple subtrees in one transaction and read staged data ---
+    let txn1 = tree.new_transaction().await.expect("Txn1: Failed to start");
     let initial_tip = tree.get_tips().await.unwrap()[0].clone();
     {
-        let store_a = op1
+        let store_a = txn1
             .get_store::<DocStore>("sub_a")
             .await
-            .expect("Op1: Failed get A");
+            .expect("Txn1: Failed get A");
         store_a
             .set("key_a", "val_a1")
             .await
-            .expect("Op1: Failed set A");
+            .expect("Txn1: Failed set A");
 
-        let store_b = op1
+        let store_b = txn1
             .get_store::<DocStore>("sub_b")
             .await
-            .expect("Op1: Failed get B");
+            .expect("Txn1: Failed get B");
         store_b
             .set("key_b", "val_b1")
             .await
-            .expect("Op1: Failed set B");
+            .expect("Txn1: Failed set B");
 
-        // Read staged data within the op
+        // Read staged data within the transaction
         assert_eq!(
             store_a
                 .get_string("key_a")
                 .await
-                .expect("Op1: Failed read staged A"),
+                .expect("Txn1: Failed read staged A"),
             "val_a1"
         );
         assert_eq!(
             store_b
                 .get_string("key_b")
                 .await
-                .expect("Op1: Failed read staged B"),
+                .expect("Txn1: Failed read staged B"),
             "val_b1"
         );
 
@@ -250,8 +250,11 @@ async fn test_atomic_op_scenarios() {
         assert!(store_a.get("non_existent").await.is_err());
         assert_key_not_found(store_a.get("non_existent").await);
     }
-    let commit1_id = op1.commit().await.expect("Op1: Failed to commit");
-    assert_ne!(commit1_id, initial_tip, "Op1: Commit should create new tip");
+    let commit1_id = txn1.commit().await.expect("Txn1: Failed to commit");
+    assert_ne!(
+        commit1_id, initial_tip,
+        "Txn1: Commit should create new tip"
+    );
 
     // Verify commit with viewers
     let viewer_a1 = tree
@@ -285,22 +288,22 @@ async fn test_atomic_op_scenarios() {
         "Empty commit should still be a tip"
     );
 
-    // --- 3. Attempt to commit the same op twice ---
-    let op3 = tree.new_transaction().await.expect("Op3: Failed to start");
+    // --- 3. Attempt to commit the same transaction twice ---
+    let txn3 = tree.new_transaction().await.expect("Txn3: Failed to start");
     {
-        let store_a = op3
+        let store_a = txn3
             .get_store::<DocStore>("sub_a")
             .await
-            .expect("Op3: Failed get A");
+            .expect("Txn3: Failed get A");
         store_a
             .set("key_a", "val_a3")
             .await
-            .expect("Op3: Failed set A");
+            .expect("Txn3: Failed set A");
     }
-    let _commit3_id = op3.commit().await.expect("Op3: First commit failed");
+    let _commit3_id = txn3.commit().await.expect("Txn3: First commit failed");
 
     // Committing again won't even compile
-    // let commit3_again = op3.commit();
+    // let commit3_again = txn3.commit();
 }
 
 #[tokio::test]
@@ -308,15 +311,15 @@ async fn test_get_store_viewer() {
     let (_instance, tree) = setup_tree().await;
 
     // --- Initial state ---
-    let op1 = tree.new_transaction().await.expect("Op1: Failed start");
+    let txn1 = tree.new_transaction().await.expect("Txn1: Failed start");
     {
-        let store = op1
+        let store = txn1
             .get_store::<DocStore>("my_data")
             .await
-            .expect("Op1: Failed get");
-        store.set("key1", "value1").await.expect("Op1: Failed set");
+            .expect("Txn1: Failed get");
+        store.set("key1", "value1").await.expect("Txn1: Failed set");
     }
-    op1.commit().await.expect("Op1: Failed commit");
+    txn1.commit().await.expect("Txn1: Failed commit");
 
     // --- Get viewer 1 (sees initial state) ---
     let viewer1 = tree
@@ -336,22 +339,22 @@ async fn test_get_store_viewer() {
     );
 
     // --- Second operation ---
-    let op2 = tree.new_transaction().await.expect("Op2: Failed start");
+    let txn2 = tree.new_transaction().await.expect("Txn2: Failed start");
     {
-        let store = op2
+        let store = txn2
             .get_store::<DocStore>("my_data")
             .await
-            .expect("Op2: Failed get");
+            .expect("Txn2: Failed get");
         store
             .set("key1", "value1_updated")
             .await
-            .expect("Op2: Failed update key1"); // Update existing
+            .expect("Txn2: Failed update key1"); // Update existing
         store
             .set("key2", "value2")
             .await
-            .expect("Op2: Failed set key2"); // Add new
+            .expect("Txn2: Failed set key2"); // Add new
     }
-    op2.commit().await.expect("Op2: Failed commit");
+    txn2.commit().await.expect("Txn2: Failed commit");
 
     // --- Get viewer 2 (sees updated state) ---
     let viewer2 = tree

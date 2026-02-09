@@ -28,9 +28,9 @@ let default_key = user.get_default_key()?;
 let database = user.create_database(settings, &default_key).await?;
 
 // All operations are now authenticated
-let op = database.new_transaction().await?;
+let txn = database.new_transaction().await?;
 // ... make changes ...
-op.commit().await?;  // Automatically signed
+txn.commit().await?;  // Automatically signed
 # Ok(())
 # }
 ```
@@ -515,9 +515,9 @@ let delegation_path = SigKey::Delegation {
     hint: eidetica::auth::KeyHint::from_name("alice_laptop"),
 };
 
-// Use the delegation path to create an authenticated operation
+// Use the delegation path to create an authenticated transaction
 // Note: This requires the actual signing key to be available
-// project_database.new_operation_with_sig_key(delegation_path)?;
+// project_database.new_transaction_with_sig_key(delegation_path)?;
 # Ok(())
 # }
 ```

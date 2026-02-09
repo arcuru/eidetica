@@ -115,11 +115,11 @@ async fn test_parent_merge_semantics() {
     let (_instance, tree) = setup_tree().await;
 
     // Create base entry with shared data
-    let op_base = tree.new_transaction().await.unwrap();
-    let subtree_base = op_base.get_store::<DocStore>("data").await.unwrap();
+    let txn_base = tree.new_transaction().await.unwrap();
+    let subtree_base = txn_base.get_store::<DocStore>("data").await.unwrap();
     subtree_base.set("base_field", "base_value").await.unwrap();
     subtree_base.set("shared_field", "original").await.unwrap();
-    op_base.commit().await.unwrap();
+    txn_base.commit().await.unwrap();
 
     // Create child entry that updates shared field and adds new field
     let op_child = tree.new_transaction().await.unwrap();
@@ -161,14 +161,14 @@ async fn test_deep_chain_performance() {
     const CHAIN_LENGTH: u32 = 50;
 
     for i in 1..=CHAIN_LENGTH {
-        let op = tree.new_transaction().await.unwrap();
-        let subtree = op.get_store::<DocStore>("data").await.unwrap();
+        let txn = tree.new_transaction().await.unwrap();
+        let subtree = txn.get_store::<DocStore>("data").await.unwrap();
         subtree.set("step", i.to_string()).await.unwrap();
         subtree
             .set(format!("step_{i}"), format!("value_{i}"))
             .await
             .unwrap();
-        op.commit().await.unwrap();
+        txn.commit().await.unwrap();
     }
 
     // Read the final state - this should not stack overflow
@@ -198,17 +198,17 @@ async fn test_multiple_reads_consistency() {
     let (_instance, tree) = setup_tree().await;
 
     // Create some test data
-    let op1 = tree.new_transaction().await.unwrap();
-    let subtree1 = op1.get_store::<DocStore>("data").await.unwrap();
+    let txn1 = tree.new_transaction().await.unwrap();
+    let subtree1 = txn1.get_store::<DocStore>("data").await.unwrap();
     subtree1.set("key1", "value1").await.unwrap();
     subtree1.set("key2", "value2").await.unwrap();
-    op1.commit().await.unwrap();
+    txn1.commit().await.unwrap();
 
-    let op2 = tree.new_transaction().await.unwrap();
-    let subtree2 = op2.get_store::<DocStore>("data").await.unwrap();
+    let txn2 = tree.new_transaction().await.unwrap();
+    let subtree2 = txn2.get_store::<DocStore>("data").await.unwrap();
     subtree2.set("key1", "updated1").await.unwrap();
     subtree2.set("key3", "value3").await.unwrap();
-    op2.commit().await.unwrap();
+    txn2.commit().await.unwrap();
 
     // Read the data multiple times
     let mut results = Vec::new();
@@ -255,35 +255,35 @@ async fn test_incorrect_parent_merging_would_fail() {
 
     // Create a sequence of operations that build up a complex state
     // Step 1: Initial state with multiple fields
-    let op1 = tree.new_transaction().await.unwrap();
-    let subtree1 = op1.get_store::<DocStore>("data").await.unwrap();
+    let txn1 = tree.new_transaction().await.unwrap();
+    let subtree1 = txn1.get_store::<DocStore>("data").await.unwrap();
     subtree1.set("count", "1").await.unwrap();
     subtree1.set("name", "initial").await.unwrap();
     subtree1.set("status", "active").await.unwrap();
-    op1.commit().await.unwrap();
+    txn1.commit().await.unwrap();
 
     // Step 2: Update some fields, add new ones
-    let op2 = tree.new_transaction().await.unwrap();
-    let subtree2 = op2.get_store::<DocStore>("data").await.unwrap();
+    let txn2 = tree.new_transaction().await.unwrap();
+    let subtree2 = txn2.get_store::<DocStore>("data").await.unwrap();
     subtree2.set("count", "2").await.unwrap(); // Update existing
     subtree2.set("category", "type_a").await.unwrap(); // Add new
-    op2.commit().await.unwrap();
+    txn2.commit().await.unwrap();
 
     // Step 3: More updates with overlapping and new fields
-    let op3 = tree.new_transaction().await.unwrap();
-    let subtree3 = op3.get_store::<DocStore>("data").await.unwrap();
+    let txn3 = tree.new_transaction().await.unwrap();
+    let subtree3 = txn3.get_store::<DocStore>("data").await.unwrap();
     subtree3.set("count", "3").await.unwrap(); // Update again
     subtree3.set("name", "updated").await.unwrap(); // Update existing
     subtree3.set("priority", "high").await.unwrap(); // Add new
-    op3.commit().await.unwrap();
+    txn3.commit().await.unwrap();
 
     // Step 4: Final operation with more field changes
-    let op4 = tree.new_transaction().await.unwrap();
-    let subtree4 = op4.get_store::<DocStore>("data").await.unwrap();
+    let txn4 = tree.new_transaction().await.unwrap();
+    let subtree4 = txn4.get_store::<DocStore>("data").await.unwrap();
     subtree4.set("count", "4").await.unwrap(); // Final count update
     subtree4.set("status", "completed").await.unwrap(); // Update status
     subtree4.set("result", "success").await.unwrap(); // Add final field
-    op4.commit().await.unwrap();
+    txn4.commit().await.unwrap();
 
     // Clear cache to force computation
     tree.backend()
@@ -687,10 +687,10 @@ async fn test_find_merge_base_shallow_divergence() {
     let (_instance, tree) = setup_tree().await;
 
     // Create base entry (merge base)
-    let op_base = tree.new_transaction().await.unwrap();
-    let subtree_base = op_base.get_store::<DocStore>("data").await.unwrap();
+    let txn_base = tree.new_transaction().await.unwrap();
+    let subtree_base = txn_base.get_store::<DocStore>("data").await.unwrap();
     subtree_base.set("base", "root").await.unwrap();
-    let base_id = op_base.commit().await.unwrap();
+    let base_id = txn_base.commit().await.unwrap();
 
     // Build two chains of 50 entries each from the base
     const CHAIN_DEPTH: usize = 50;
@@ -698,25 +698,25 @@ async fn test_find_merge_base_shallow_divergence() {
     // Chain A: 50 entries from base
     let mut chain_a_tip = base_id.clone();
     for i in 0..CHAIN_DEPTH {
-        let op = tree
+        let txn = tree
             .new_transaction_with_tips(std::slice::from_ref(&chain_a_tip))
             .await
             .unwrap();
-        let subtree = op.get_store::<DocStore>("data").await.unwrap();
+        let subtree = txn.get_store::<DocStore>("data").await.unwrap();
         subtree.set("chain_a_step", i.to_string()).await.unwrap();
-        chain_a_tip = op.commit().await.unwrap();
+        chain_a_tip = txn.commit().await.unwrap();
     }
 
     // Chain B: 50 entries from base (creates diamond)
     let mut chain_b_tip = base_id.clone();
     for i in 0..CHAIN_DEPTH {
-        let op = tree
+        let txn = tree
             .new_transaction_with_tips(std::slice::from_ref(&chain_b_tip))
             .await
             .unwrap();
-        let subtree = op.get_store::<DocStore>("data").await.unwrap();
+        let subtree = txn.get_store::<DocStore>("data").await.unwrap();
         subtree.set("chain_b_step", i.to_string()).await.unwrap();
-        chain_b_tip = op.commit().await.unwrap();
+        chain_b_tip = txn.commit().await.unwrap();
     }
 
     // Create merge operation from both tips
@@ -766,10 +766,10 @@ async fn test_find_merge_base_deep_divergence() {
     let (_instance, tree) = setup_tree().await;
 
     // Create base entry (merge base)
-    let op_base = tree.new_transaction().await.unwrap();
-    let subtree_base = op_base.get_store::<DocStore>("data").await.unwrap();
+    let txn_base = tree.new_transaction().await.unwrap();
+    let subtree_base = txn_base.get_store::<DocStore>("data").await.unwrap();
     subtree_base.set("base", "deep_root").await.unwrap();
-    let base_id = op_base.commit().await.unwrap();
+    let base_id = txn_base.commit().await.unwrap();
 
     // Build two chains of 150 entries each from the base (exceeds 100 batch limit)
     const CHAIN_DEPTH: usize = 150;
@@ -777,25 +777,25 @@ async fn test_find_merge_base_deep_divergence() {
     // Chain A: 150 entries from base
     let mut chain_a_tip = base_id.clone();
     for i in 0..CHAIN_DEPTH {
-        let op = tree
+        let txn = tree
             .new_transaction_with_tips(std::slice::from_ref(&chain_a_tip))
             .await
             .unwrap();
-        let subtree = op.get_store::<DocStore>("data").await.unwrap();
+        let subtree = txn.get_store::<DocStore>("data").await.unwrap();
         subtree.set("chain_a_step", i.to_string()).await.unwrap();
-        chain_a_tip = op.commit().await.unwrap();
+        chain_a_tip = txn.commit().await.unwrap();
     }
 
     // Chain B: 150 entries from base (creates deep diamond)
     let mut chain_b_tip = base_id.clone();
     for i in 0..CHAIN_DEPTH {
-        let op = tree
+        let txn = tree
             .new_transaction_with_tips(std::slice::from_ref(&chain_b_tip))
             .await
             .unwrap();
-        let subtree = op.get_store::<DocStore>("data").await.unwrap();
+        let subtree = txn.get_store::<DocStore>("data").await.unwrap();
         subtree.set("chain_b_step", i.to_string()).await.unwrap();
-        chain_b_tip = op.commit().await.unwrap();
+        chain_b_tip = txn.commit().await.unwrap();
     }
 
     // Create merge operation from both tips
@@ -845,10 +845,10 @@ async fn test_find_merge_base_very_deep_chains() {
     let (_instance, tree) = setup_tree().await;
 
     // Create base entry (merge base)
-    let op_base = tree.new_transaction().await.unwrap();
-    let subtree_base = op_base.get_store::<DocStore>("data").await.unwrap();
+    let txn_base = tree.new_transaction().await.unwrap();
+    let subtree_base = txn_base.get_store::<DocStore>("data").await.unwrap();
     subtree_base.set("base", "very_deep_root").await.unwrap();
-    let base_id = op_base.commit().await.unwrap();
+    let base_id = txn_base.commit().await.unwrap();
 
     // Build two chains of 250 entries each from the base (requires 3 batches)
     const CHAIN_DEPTH: usize = 250;
@@ -856,25 +856,25 @@ async fn test_find_merge_base_very_deep_chains() {
     // Chain A: 250 entries from base
     let mut chain_a_tip = base_id.clone();
     for i in 0..CHAIN_DEPTH {
-        let op = tree
+        let txn = tree
             .new_transaction_with_tips(std::slice::from_ref(&chain_a_tip))
             .await
             .unwrap();
-        let subtree = op.get_store::<DocStore>("data").await.unwrap();
+        let subtree = txn.get_store::<DocStore>("data").await.unwrap();
         subtree.set("chain_a_step", i.to_string()).await.unwrap();
-        chain_a_tip = op.commit().await.unwrap();
+        chain_a_tip = txn.commit().await.unwrap();
     }
 
     // Chain B: 250 entries from base (creates very deep diamond)
     let mut chain_b_tip = base_id.clone();
     for i in 0..CHAIN_DEPTH {
-        let op = tree
+        let txn = tree
             .new_transaction_with_tips(std::slice::from_ref(&chain_b_tip))
             .await
             .unwrap();
-        let subtree = op.get_store::<DocStore>("data").await.unwrap();
+        let subtree = txn.get_store::<DocStore>("data").await.unwrap();
         subtree.set("chain_b_step", i.to_string()).await.unwrap();
-        chain_b_tip = op.commit().await.unwrap();
+        chain_b_tip = txn.commit().await.unwrap();
     }
 
     // Create merge operation from both tips
@@ -925,10 +925,10 @@ async fn test_find_merge_base_actually_called() {
     let (_instance, tree) = setup_tree().await;
 
     // Create base entry (merge base)
-    let op_base = tree.new_transaction().await.unwrap();
-    let subtree_base = op_base.get_store::<DocStore>("data").await.unwrap();
+    let txn_base = tree.new_transaction().await.unwrap();
+    let subtree_base = txn_base.get_store::<DocStore>("data").await.unwrap();
     subtree_base.set("base", "root").await.unwrap();
-    let base_id = op_base.commit().await.unwrap();
+    let base_id = txn_base.commit().await.unwrap();
 
     // Build two chains that exceed the batch limit (100)
     const CHAIN_DEPTH: usize = 150;
@@ -936,25 +936,25 @@ async fn test_find_merge_base_actually_called() {
     // Chain A
     let mut chain_a_tip = base_id.clone();
     for i in 0..CHAIN_DEPTH {
-        let op = tree
+        let txn = tree
             .new_transaction_with_tips(std::slice::from_ref(&chain_a_tip))
             .await
             .unwrap();
-        let subtree = op.get_store::<DocStore>("data").await.unwrap();
+        let subtree = txn.get_store::<DocStore>("data").await.unwrap();
         subtree.set("chain_a", i.to_string()).await.unwrap();
-        chain_a_tip = op.commit().await.unwrap();
+        chain_a_tip = txn.commit().await.unwrap();
     }
 
     // Chain B
     let mut chain_b_tip = base_id.clone();
     for i in 0..CHAIN_DEPTH {
-        let op = tree
+        let txn = tree
             .new_transaction_with_tips(std::slice::from_ref(&chain_b_tip))
             .await
             .unwrap();
-        let subtree = op.get_store::<DocStore>("data").await.unwrap();
+        let subtree = txn.get_store::<DocStore>("data").await.unwrap();
         subtree.set("chain_b", i.to_string()).await.unwrap();
-        chain_b_tip = op.commit().await.unwrap();
+        chain_b_tip = txn.commit().await.unwrap();
     }
 
     // Create merge transaction with BOTH tips

@@ -19,15 +19,15 @@ pub(super) const USER_TRACKING_SUBTREE: &str = "user_tracking"; // Maps user_uui
 /// Internal user sync manager for the sync module.
 ///
 /// This struct manages all user sync coordination operations for the sync module,
-/// operating on an Transaction to stage changes.
+/// operating on a Transaction to stage changes.
 pub(super) struct UserSyncManager<'a> {
-    op: &'a Transaction,
+    txn: &'a Transaction,
 }
 
 impl<'a> UserSyncManager<'a> {
     /// Create a new UserSyncManager that operates on the given Transaction.
-    pub(super) fn new(op: &'a Transaction) -> Self {
-        Self { op }
+    pub(super) fn new(txn: &'a Transaction) -> Self {
+        Self { txn }
     }
 
     /// Track a user's preferences database for sync monitoring.
@@ -46,7 +46,10 @@ impl<'a> UserSyncManager<'a> {
         user_uuid: impl AsRef<str>,
         preferences_db_id: &ID,
     ) -> Result<()> {
-        let user_tracking = self.op.get_store::<DocStore>(USER_TRACKING_SUBTREE).await?;
+        let user_tracking = self
+            .txn
+            .get_store::<DocStore>(USER_TRACKING_SUBTREE)
+            .await?;
 
         // Check if the user is already registered
         if user_tracking
@@ -91,7 +94,10 @@ impl<'a> UserSyncManager<'a> {
         &self,
         user_uuid: impl AsRef<str>,
     ) -> Result<Option<(ID, Vec<ID>)>> {
-        let user_tracking = self.op.get_store::<DocStore>(USER_TRACKING_SUBTREE).await?;
+        let user_tracking = self
+            .txn
+            .get_store::<DocStore>(USER_TRACKING_SUBTREE)
+            .await?;
 
         // Check if user exists
         if !user_tracking.contains_path_str(user_uuid.as_ref()).await {
@@ -140,7 +146,10 @@ impl<'a> UserSyncManager<'a> {
         user_uuid: impl AsRef<str>,
         new_tips: &[ID],
     ) -> Result<()> {
-        let user_tracking = self.op.get_store::<DocStore>(USER_TRACKING_SUBTREE).await?;
+        let user_tracking = self
+            .txn
+            .get_store::<DocStore>(USER_TRACKING_SUBTREE)
+            .await?;
 
         // Convert tips to strings for JSON serialization
         let tips_strings: Vec<String> = new_tips.iter().map(|id| id.to_string()).collect();
@@ -170,7 +179,7 @@ impl<'a> UserSyncManager<'a> {
         user_uuid: impl AsRef<str>,
     ) -> Result<()> {
         let database_users = self
-            .op
+            .txn
             .get_store::<DocStore>(DATABASE_USERS_SUBTREE)
             .await?;
         let db_id_str = database_id.to_string();
@@ -221,7 +230,7 @@ impl<'a> UserSyncManager<'a> {
         user_uuid: impl AsRef<str>,
     ) -> Result<()> {
         let database_users = self
-            .op
+            .txn
             .get_store::<DocStore>(DATABASE_USERS_SUBTREE)
             .await?;
         let db_id_str = database_id.to_string();
@@ -270,7 +279,7 @@ impl<'a> UserSyncManager<'a> {
     /// A vector of user UUIDs
     pub(super) async fn get_linked_users(&self, database_id: &ID) -> Result<Vec<String>> {
         let database_users = self
-            .op
+            .txn
             .get_store::<DocStore>(DATABASE_USERS_SUBTREE)
             .await?;
         let db_id_str = database_id.to_string();
@@ -301,7 +310,7 @@ impl<'a> UserSyncManager<'a> {
     /// A vector of database IDs
     pub(super) async fn get_linked_databases(&self, user_uuid: impl AsRef<str>) -> Result<Vec<ID>> {
         let database_users = self
-            .op
+            .txn
             .get_store::<DocStore>(DATABASE_USERS_SUBTREE)
             .await?;
         let all_databases = database_users.get_all().await?;
@@ -347,7 +356,7 @@ impl<'a> UserSyncManager<'a> {
         settings: &SyncSettings,
     ) -> Result<()> {
         let database_users = self
-            .op
+            .txn
             .get_store::<DocStore>(DATABASE_USERS_SUBTREE)
             .await?;
         let db_id_str = database_id.to_string();
@@ -378,7 +387,7 @@ impl<'a> UserSyncManager<'a> {
         database_id: &ID,
     ) -> Result<Option<SyncSettings>> {
         let database_users = self
-            .op
+            .txn
             .get_store::<DocStore>(DATABASE_USERS_SUBTREE)
             .await?;
         let db_id_str = database_id.to_string();

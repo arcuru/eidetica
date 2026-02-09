@@ -42,7 +42,7 @@ impl SettingsStore {
         // This avoids the async requirement for this simple internal construction.
         let inner = DocStore {
             name: "_settings".to_string(),
-            atomic_op: transaction.clone(),
+            txn: transaction.clone(),
         };
         Ok(Self { inner })
     }

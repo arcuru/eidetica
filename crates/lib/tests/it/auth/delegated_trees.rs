@@ -52,8 +52,8 @@ async fn test_delegated_tree_basic_validation() -> Result<()> {
     .await;
 
     // Add delegation to main tree auth settings
-    let op = main_tree.new_transaction().await?;
-    let settings = op.get_settings()?;
+    let txn = main_tree.new_transaction().await?;
+    let settings = txn.get_settings()?;
 
     let delegation_ref = create_delegation_ref(
         &delegated_tree,
@@ -64,7 +64,7 @@ async fn test_delegated_tree_basic_validation() -> Result<()> {
     settings
         .update_auth_settings(|auth| auth.add_delegated_tree(delegation_ref))
         .await?;
-    op.commit().await?;
+    txn.commit().await?;
 
     // Test delegated tree validation
     let mut validator = AuthValidator::new();
@@ -113,14 +113,14 @@ async fn test_delegated_tree_permission_clamping() -> Result<()> {
     .await;
 
     // Add read-only delegation
-    let op = main_tree.new_transaction().await?;
-    let settings = op.get_settings()?;
+    let txn = main_tree.new_transaction().await?;
+    let settings = txn.get_settings()?;
 
     let delegation_ref = create_delegation_ref(&delegated_tree, Permission::Read, None).await?;
     settings
         .update_auth_settings(|auth| auth.add_delegated_tree(delegation_ref))
         .await?;
-    op.commit().await?;
+    txn.commit().await?;
 
     // Test permission clamping
     let mut validator = AuthValidator::new();
@@ -182,9 +182,9 @@ async fn test_nested_delegation() -> Result<()> {
     // Add delegation to user tree
     let user_tips = user_tree.get_tips().await?;
     let user_tree_root = user_tree.root_id().clone();
-    let op = org_tree.new_transaction().await?;
+    let txn = org_tree.new_transaction().await?;
     {
-        let settings = op.get_settings()?;
+        let settings = txn.get_settings()?;
         let delegation_ref = create_delegation_ref(&user_tree, Permission::Write(20), None).await?;
         settings
             .update_auth_settings(|auth| {
@@ -193,7 +193,7 @@ async fn test_nested_delegation() -> Result<()> {
             })
             .await?;
     }
-    op.commit().await?;
+    txn.commit().await?;
 
     // Create main tree (top level) that delegates to org tree using SettingsStore API
     let main_tree = user.create_database(Doc::new(), &main_admin_key).await?;
@@ -211,9 +211,9 @@ async fn test_nested_delegation() -> Result<()> {
     // Add delegation to org tree
     let org_tips = org_tree.get_tips().await?;
     let org_tree_root = org_tree.root_id().clone();
-    let op = main_tree.new_transaction().await?;
+    let txn = main_tree.new_transaction().await?;
     {
-        let settings = op.get_settings()?;
+        let settings = txn.get_settings()?;
         let delegation_ref =
             create_delegation_ref(&org_tree, Permission::Write(15), Some(Permission::Read)).await?;
         settings
@@ -223,7 +223,7 @@ async fn test_nested_delegation() -> Result<()> {
             })
             .await?;
     }
-    op.commit().await?;
+    txn.commit().await?;
 
     // Test nested delegation: main -> org -> user
     let mut validator = AuthValidator::new();
@@ -298,9 +298,9 @@ async fn test_delegated_tree_with_revoked_keys() -> Result<()> {
     // Add delegation to delegated tree
     let delegated_tips = delegated_tree.get_tips().await?;
     let delegated_tree_root = delegated_tree.root_id().clone();
-    let op = main_tree.new_transaction().await?;
+    let txn = main_tree.new_transaction().await?;
     {
-        let settings = op.get_settings()?;
+        let settings = txn.get_settings()?;
         let delegation_ref =
             create_delegation_ref(&delegated_tree, Permission::Write(10), None).await?;
         settings
@@ -310,7 +310,7 @@ async fn test_delegated_tree_with_revoked_keys() -> Result<()> {
             })
             .await?;
     }
-    op.commit().await?;
+    txn.commit().await?;
 
     // Test with active key - should work
     let mut validator = AuthValidator::new();
@@ -334,9 +334,9 @@ async fn test_delegated_tree_with_revoked_keys() -> Result<()> {
     assert_eq!(resolved_auth.key_status, KeyStatus::Active);
 
     // Now revoke the key in the delegated tree using SettingsStore API
-    let op = delegated_tree.new_transaction().await?;
+    let txn = delegated_tree.new_transaction().await?;
     {
-        let settings = op.get_settings()?;
+        let settings = txn.get_settings()?;
         settings
             .update_auth_settings(|auth| {
                 // Update the existing key to be revoked (store by pubkey)
@@ -350,7 +350,7 @@ async fn test_delegated_tree_with_revoked_keys() -> Result<()> {
             })
             .await?;
     }
-    op.commit().await?;
+    txn.commit().await?;
 
     // Test validation against revoked key
     let revoked_auth_settings = delegated_tree
@@ -400,9 +400,9 @@ async fn test_delegation_depth_limits() -> Result<()> {
     // Add delegation to delegated tree
     let delegated_tips = delegated_tree.get_tips().await?;
     let delegated_tree_root = delegated_tree.root_id().clone();
-    let op = main_tree.new_transaction().await?;
+    let txn = main_tree.new_transaction().await?;
     {
-        let settings = op.get_settings()?;
+        let settings = txn.get_settings()?;
         let delegation_ref =
             create_delegation_ref(&delegated_tree, Permission::Write(10), None).await?;
         settings
@@ -412,7 +412,7 @@ async fn test_delegation_depth_limits() -> Result<()> {
             })
             .await?;
     }
-    op.commit().await?;
+    txn.commit().await?;
 
     // Create a deeply nested delegation that should exceed the limit
     // We'll create a chain with 12 levels (exceeds MAX_DELEGATION_DEPTH of 10)
@@ -494,9 +494,9 @@ async fn test_delegated_tree_min_bound_upgrade() -> Result<()> {
 
     // Add delegation with bounds using SettingsStore API
     let delegated_tree_root = delegated_tree.root_id().clone();
-    let op = main_tree.new_transaction().await?;
+    let txn = main_tree.new_transaction().await?;
     {
-        let settings = op.get_settings()?;
+        let settings = txn.get_settings()?;
         let delegation_ref = create_delegation_ref(
             &delegated_tree,
             Permission::Write(0),       // max: Highest possible Write permission
@@ -510,7 +510,7 @@ async fn test_delegated_tree_min_bound_upgrade() -> Result<()> {
             })
             .await?;
     }
-    op.commit().await?;
+    txn.commit().await?;
 
     // Validate
     let mut validator = AuthValidator::new();
@@ -585,9 +585,9 @@ async fn test_delegated_tree_priority_preservation() -> Result<()> {
 
     // Add delegation using SettingsStore API
     let delegated_tree_root = delegated_tree.root_id().clone();
-    let op = main_tree.new_transaction().await?;
+    let txn = main_tree.new_transaction().await?;
     {
-        let settings = op.get_settings()?;
+        let settings = txn.get_settings()?;
         let delegation_ref =
             create_delegation_ref(&delegated_tree, Permission::Write(8), None).await?;
         settings
@@ -597,7 +597,7 @@ async fn test_delegated_tree_priority_preservation() -> Result<()> {
             })
             .await?;
     }
-    op.commit().await?;
+    txn.commit().await?;
 
     // Validate
     let mut validator = AuthValidator::new();
@@ -718,9 +718,9 @@ async fn test_delegated_tree_invalid_tips() -> Result<()> {
 
     // Add delegation with bogus tips using SettingsStore API
     let delegated_tree_root = delegated_tree.root_id().clone();
-    let op = main_tree.new_transaction().await?;
+    let txn = main_tree.new_transaction().await?;
     {
-        let settings = op.get_settings()?;
+        let settings = txn.get_settings()?;
         // Manually create delegation ref with bogus tips
         let delegation_ref = DelegatedTreeRef {
             permission_bounds: PermissionBounds {
@@ -739,7 +739,7 @@ async fn test_delegated_tree_invalid_tips() -> Result<()> {
             })
             .await?;
     }
-    op.commit().await?;
+    txn.commit().await?;
 
     let mut validator = AuthValidator::new();
     let main_auth_settings = main_tree.get_settings().await?.get_auth_settings().await?;
