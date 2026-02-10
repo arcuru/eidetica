@@ -66,7 +66,12 @@
     };
 
   # Interactive test runners (for nix run .#test-runner-*)
-  test-runner-inmemory = mkTestRunner {name = "test-runner-inmemory";};
+  test-runner-default = mkTestRunner {name = "test-runner-default";};
+
+  test-runner-inmemory = mkTestRunner {
+    name = "test-runner-inmemory";
+    backend = "inmemory";
+  };
 
   test-runner-sqlite = mkTestRunner {
     name = "test-runner-sqlite";
@@ -138,6 +143,7 @@
   test-check-inmemory = craneLib.cargoNextest (testCheckArgs
     // {
       pname = "test-check-inmemory";
+      TEST_BACKEND = "inmemory";
       cargoNextestExtraArgs = "--workspace --all-features ${nextestCheckArgs}";
     });
 
@@ -181,11 +187,11 @@
       cargoNextestExtraArgs = "--workspace --all-features ${nextestCheckArgs}";
     });
 in {
-  # Common build artifacts (compiled test binaries, shared by checks and runners)
+  # Common build artifacts (compiled test binaries, shared by builds and runners)
   artifacts = testCheckArtifacts;
 
-  # CI check derivations (for nix build .#test.<backend>)
-  checks =
+  # CI build derivations (for nix build .#test.<backend>)
+  builds =
     {
       inmemory = test-check-inmemory;
       sqlite = test-check-sqlite;
@@ -195,9 +201,15 @@ in {
       postgres = test-check-postgres;
     };
 
+  # Default subset for nix flake check / nix build .#test.default
+  defaults = {
+    sqlite = test-check-sqlite;
+  };
+
   # Interactive runners (for nix run .#test-<backend>)
   runners =
     {
+      default = test-runner-default;
       inmemory = test-runner-inmemory;
       sqlite = test-runner-sqlite;
       all = test-runner-all;

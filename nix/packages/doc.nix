@@ -94,7 +94,7 @@
       cargoTestExtraArgs = "--doc --workspace --all-features";
     });
 in {
-  packages = {
+  builds = {
     api = doc-api;
     api-full = doc-api-full;
     links = doc-links;
@@ -105,7 +105,7 @@ in {
   };
 
   # Fast doc checks for CI
-  packagesFast = {
+  defaults = {
     api = doc-api;
     test = doc-test;
     booktest = doc-book-test;

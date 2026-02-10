@@ -50,6 +50,22 @@ The Nix flake organizes packages into groups with a consistent pattern:
 | `integration` | all                           | nixos + container           |
 | `eval`        | all                           | nixos + hm                  |
 
+## Interactive Runners
+
+Interactive runners execute commands with live output, accepting additional arguments:
+
+| Command                   | Description                                              |
+| ------------------------- | -------------------------------------------------------- |
+| `nix run`                 | Run the eidetica binary                                  |
+| `nix run .#fix`           | Auto-fix linting issues and format code                  |
+| `nix run .#bench`         | Run benchmarks interactively                             |
+| `nix run .#coverage`      | Run coverage interactively                               |
+| `nix run .#test`          | Run tests (no backend set, override with `TEST_BACKEND`) |
+| `nix run .#test-sqlite`   | Run tests with sqlite backend                            |
+| `nix run .#test-inmemory` | Run tests with inmemory backend                          |
+| `nix run .#test-postgres` | Run tests with postgres backend (Linux)                  |
+| `nix run .#test-all`      | Run tests with all backends sequentially                 |
+
 ## Code Coverage
 
 Code coverage runs against all storage backends to ensure comprehensive test coverage:

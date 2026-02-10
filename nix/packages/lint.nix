@@ -10,6 +10,8 @@
   baseArgs,
   baseArgsNightly,
   debugArgs,
+  eidLib,
+  treefmtWrapper,
   pkgs,
   lib,
 }: let
@@ -84,6 +86,11 @@
         ${command}
         mkdir -p $out
       '';
+    runner = pkgs.writeShellApplication {
+      name = "fix-${name}";
+      runtimeInputs = packages;
+      text = fixCommand;
+    };
   in
     if fixCommand == null
     then check
@@ -92,10 +99,7 @@
         passthru =
           (old.passthru or {})
           // {
-            fix = {
-              inherit packages name;
-              command = fixCommand;
-            };
+            fixRunner = runner;
           };
       });
 
@@ -183,9 +187,8 @@
       passthru =
         (old.passthru or {})
         // {
-          fix = {
-            name = "clippy";
-            packages = [];
+          fixRunner = eidLib.mkCargoRunner {
+            name = "fix-clippy";
             command = "cargo clippy --workspace --fix --allow-dirty --all-targets --all-features --allow-no-vcs -- -D warnings";
           };
         };
@@ -250,10 +253,42 @@
 
   # Fast linters for CI (excludes slow: udeps, minversions)
   fastLinters = builtins.removeAttrs allLinters ["udeps" "minversions"];
+
+  # Collect individual fix runners from linters that support auto-fixing
+  individualFixRunners = lib.pipe allLinters [
+    (lib.filterAttrs (_: drv: (drv.passthru or {}) ? fixRunner))
+    (lib.mapAttrs (_: drv: drv.passthru.fixRunner))
+  ];
+
+  # Aggregate fix runner: calls each individual fix runner, then treefmt
+  fixRunner = let
+    fixScript = lib.concatStringsSep "\n" (lib.mapAttrsToList (name: runner: ''
+        echo "=== Fixing: ${name} ==="
+        ${runner}/bin/fix-${name}
+      '')
+      individualFixRunners);
+  in
+    pkgs.writeShellApplication {
+      name = "eidetica-fix";
+      runtimeInputs = [treefmtWrapper];
+      text = ''
+        ${fixScript}
+
+        echo "=== Running treefmt ==="
+        treefmt
+      '';
+    };
 in {
-  # Exported packages
-  packages = allLinters;
-  packagesFast = fastLinters;
+  # All lint build targets
+  builds = allLinters;
+
+  # Fast subset for CI / nix flake check
+  defaults = fastLinters;
+
+  # Interactive runners
+  runners = {
+    fix = fixRunner;
+  };
 
   # Export library for potential reuse
   lib = {

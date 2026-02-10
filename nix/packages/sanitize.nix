@@ -61,14 +61,14 @@
       '';
     });
 in {
-  packages = lib.optionalAttrs (pkgs.stdenv.isLinux && pkgs.stdenv.isx86_64) {
+  builds = lib.optionalAttrs (pkgs.stdenv.isLinux && pkgs.stdenv.isx86_64) {
     miri = sanitize-miri;
     asan = sanitize-asan;
     lsan = sanitize-lsan;
   };
 
   # Fast sanitizers only (excludes miri due to 12+ hour runtime)
-  packagesFast = lib.optionalAttrs (pkgs.stdenv.isLinux && pkgs.stdenv.isx86_64) {
+  defaults = lib.optionalAttrs (pkgs.stdenv.isLinux && pkgs.stdenv.isx86_64) {
     asan = sanitize-asan;
     lsan = sanitize-lsan;
   };

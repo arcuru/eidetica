@@ -3,6 +3,7 @@
   craneLibNightly,
   baseArgsNightly,
   fenixNightly,
+  eidLib,
   pkgs,
   lib,
 }: let
@@ -66,11 +67,22 @@
         pg_ctl stop || true
       '';
     });
+
+  # Interactive coverage runner (uses nightly toolchain)
+  coverage-runner = eidLib.mkCargoRunner {
+    name = "coverage-runner";
+    inherit (fenixNightly) toolchain;
+    extraInputs = [
+      (fenixNightly.withComponents ["llvm-tools-preview"])
+      pkgs.cargo-tarpaulin
+    ];
+    command = "cargo tarpaulin --workspace --all-features --engine llvm";
+  };
 in {
   # Shared instrumented artifacts
   artifacts = coverageArtifacts;
 
-  packages =
+  builds =
     {
       inmemory = coverage-inmemory;
       sqlite = coverage-sqlite;
@@ -80,7 +92,11 @@ in {
     };
 
   # Fast coverage (sqlite only, for CI)
-  packagesFast = {
+  defaults = {
     sqlite = coverage-sqlite;
+  };
+
+  runners = {
+    default = coverage-runner;
   };
 }

@@ -2,6 +2,7 @@
 {
   craneLib,
   benchArgs,
+  eidLib,
 }: let
   # Build bench artifacts (cached in Nix store)
   # Uses cargo bench --no-run to compile without executing
@@ -13,8 +14,6 @@
     });
 
   # Benchmark derivation (hermetic)
-  # Note: Unlike tests, there's no interactive runner because cargo bench
-  # doesn't support nextest-style archive/remap. Use `cargo bench` locally.
   bench = craneLib.mkCargoDerivation (benchArgs
     // {
       pname = "bench";
@@ -25,11 +24,20 @@
         description = "Eidetica benchmark execution";
       };
     });
+
+  # Interactive benchmark runner
+  bench-runner = eidLib.mkCargoRunner {
+    name = "bench-runner";
+    command = "cargo bench --workspace --all-features";
+  };
 in {
-  # Bench: .#bench runs benchmarks, .#bench.artifacts for intermediate compilation artifacts
-  bench =
-    bench
-    // {
-      artifacts = bench-artifacts;
-    };
+  builds = {
+    default = bench;
+  };
+
+  runners = {
+    default = bench-runner;
+  };
+
+  artifacts = bench-artifacts;
 }

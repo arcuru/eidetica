@@ -86,15 +86,24 @@
           lsanArgs
           ;
 
+        # Shared helpers for package definitions
+        eidLib = import ./nix/lib.nix {
+          inherit pkgs lib;
+          defaultToolchain = fenixStable.toolchain;
+        };
+
         # Import package groups
         mainPkgs = import ./nix/packages/main.nix {inherit craneLib releaseArgs;};
 
         testPkgs = import ./nix/packages/test.nix {inherit craneLib debugArgs baseArgs pkgs lib;};
-        coveragePkgs = import ./nix/packages/coverage.nix {inherit craneLibNightly baseArgsNightly fenixNightly pkgs lib;};
+        coveragePkgs = import ./nix/packages/coverage.nix {inherit craneLibNightly baseArgsNightly fenixNightly eidLib pkgs lib;};
         sanitizePkgs = import ./nix/packages/sanitize.nix {inherit craneLibNightly debugArgsNightly asanArgs lsanArgs fenixNightly pkgs lib;};
         docPkgs = import ./nix/packages/doc.nix {inherit craneLib debugArgs pkgs lib;};
-        lintPkgs = import ./nix/packages/lint.nix {inherit craneLib craneLibNightly baseArgs baseArgsNightly debugArgs pkgs lib;};
-        benchPkgs = import ./nix/packages/bench.nix {inherit craneLib benchArgs;};
+        lintPkgs = import ./nix/packages/lint.nix {
+          inherit craneLib craneLibNightly baseArgs baseArgsNightly debugArgs eidLib pkgs lib;
+          treefmtWrapper = config.treefmt.build.wrapper;
+        };
+        benchPkgs = import ./nix/packages/bench.nix {inherit craneLib benchArgs eidLib;};
 
         # Import other modules
         containerPkgs = import ./nix/container.nix {
@@ -117,40 +126,6 @@
             paths = builtins.attrValues packages;
           };
         mkAll = name: mkAggregate "${name}-all";
-
-        # Fix runner: aggregates fix commands from linters + treefmt
-        fixRunner = let
-          treefmtWrapper = config.treefmt.build.wrapper;
-          fixEntries = lib.pipe lintPkgs.packages [
-            (lib.filterAttrs (_: drv: (drv.passthru or {}) ? fix))
-            (lib.mapAttrsToList (_: drv: drv.passthru.fix))
-          ];
-          fixPackages = lib.concatMap (f: f.packages) fixEntries;
-          fixScript = lib.concatStringsSep "\n" (map (f: ''
-              echo "=== Fixing: ${f.name} ==="
-              ${f.command}
-            '')
-            fixEntries);
-        in
-          pkgs.writeShellApplication {
-            name = "eidetica-fix";
-            runtimeInputs =
-              [
-                fenixStable.toolchain
-                pkgs.pkg-config
-                pkgs.openssl
-                treefmtWrapper
-              ]
-              ++ fixPackages;
-            text = ''
-              export PKG_CONFIG_PATH="${lib.makeSearchPath "lib/pkgconfig" [pkgs.openssl.dev]}''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
-
-              ${fixScript}
-
-              echo "=== Running treefmt ==="
-              treefmt
-            '';
-          };
       in {
         # Hierarchical package structure via legacyPackages
         # Pattern: nix build .#<group>.<target> for specific targets
@@ -161,48 +136,52 @@
           # Test packages - nested structure with .default and .all aggregates
           # nix build .#test.default (sqlite), .#test.sqlite, .#test.all
           test =
-            testPkgs.checks
+            testPkgs.builds
             // {
-              default = testPkgs.checks.sqlite;
-              all = mkAll "test" testPkgs.checks;
+              default = testPkgs.builds.sqlite;
+              all = mkAll "test" testPkgs.builds;
               inherit (testPkgs) artifacts;
             };
 
           # Bench package - nix build .#bench runs hermetic benchmarks
-          # Use `cargo bench` for local development (no interactive runner available)
-          inherit (benchPkgs) bench;
+          # nix run .#bench for interactive benchmarks
+          bench =
+            benchPkgs.builds.default
+            // {
+              inherit (benchPkgs) artifacts;
+            };
 
           # Coverage group - nix build .#coverage.default (sqlite), .#coverage.sqlite, .#coverage.all
           coverage =
-            coveragePkgs.packages
+            coveragePkgs.builds
             // {
-              default = mkAll "coverage" coveragePkgs.packagesFast;
-              all = mkAll "coverage" coveragePkgs.packages;
+              default = mkAll "coverage" coveragePkgs.defaults;
+              all = mkAll "coverage" coveragePkgs.builds;
               inherit (coveragePkgs) artifacts;
             };
 
           # Sanitizer group - nix build .#sanitize.default (asan+lsan), .#sanitize.asan, .#sanitize.all
           sanitize =
-            sanitizePkgs.packages
-            // lib.optionalAttrs (sanitizePkgs.packages != {}) {
-              default = mkAll "sanitize" sanitizePkgs.packagesFast;
-              all = mkAll "sanitize" sanitizePkgs.packages;
+            sanitizePkgs.builds
+            // lib.optionalAttrs (sanitizePkgs.builds != {}) {
+              default = mkAll "sanitize" sanitizePkgs.defaults;
+              all = mkAll "sanitize" sanitizePkgs.builds;
             };
 
           # Documentation group - nix build .#doc.default (fast), .#doc.api, .#doc.book, .#doc.booktest
           doc =
-            docPkgs.packages
+            docPkgs.builds
             // {
-              default = mkAll "doc" docPkgs.packagesFast;
-              all = mkAll "doc" docPkgs.packages;
+              default = mkAll "doc" docPkgs.defaults;
+              all = mkAll "doc" docPkgs.builds;
             };
 
           # Lint group - nix build .#lint.default (fast), .#lint.clippy, .#lint.all
           lint =
-            lintPkgs.packages
+            lintPkgs.builds
             // {
-              default = mkAll "lint" lintPkgs.packagesFast;
-              all = mkAll "lint" lintPkgs.packages;
+              default = mkAll "lint" lintPkgs.defaults;
+              all = mkAll "lint" lintPkgs.builds;
             };
 
           # Main eidetica packages - nix build .#eidetica.{bin,image}
@@ -243,9 +222,9 @@
         # Excluded for performance: coverage, bench, integration, sanitize
         checks = {
           eidetica = mainPkgs.eidetica-bin;
-          test = testPkgs.checks.sqlite;
-          lint = mkAggregate "lint" lintPkgs.packagesFast;
-          doc = mkAggregate "doc" docPkgs.packagesFast;
+          test = testPkgs.builds.sqlite;
+          lint = mkAggregate "lint" lintPkgs.defaults;
+          doc = mkAggregate "doc" docPkgs.defaults;
           eval = mkAggregate "eval" nixTests.eval;
         };
 
@@ -291,11 +270,13 @@
           {
             default = mkApp "${mainPkgs.eidetica-bin}/bin/eidetica" "Run the Eidetica binary";
             eidetica = mkApp "${mainPkgs.eidetica-bin}/bin/eidetica" "Run the Eidetica database";
-            fix = mkApp "${fixRunner}/bin/eidetica-fix" "Run auto-fixes and format code";
+            fix = mkApp "${lintPkgs.runners.fix}/bin/eidetica-fix" "Run auto-fixes and format code";
+            bench = mkApp "${benchPkgs.runners.default}/bin/bench-runner" "Run benchmarks interactively";
+            coverage = mkApp "${coveragePkgs.runners.default}/bin/coverage-runner" "Run coverage interactively";
 
             # Test runners - flat names (nested access via legacyPackages)
-            # nix run .#test (default: sqlite), nix run .#test-inmemory, etc.
-            test = mkApp "${testPkgs.runners.sqlite}/bin/test-runner-sqlite" "Run tests (sqlite backend)";
+            # nix run .#test (default: no backend set), nix run .#test-sqlite, etc.
+            test = mkApp "${testPkgs.runners.default}/bin/test-runner-default" "Run tests (override backend with TEST_BACKEND)";
             test-inmemory = mkApp "${testPkgs.runners.inmemory}/bin/test-runner-inmemory" "Run tests with inmemory backend";
             test-sqlite = mkApp "${testPkgs.runners.sqlite}/bin/test-runner-sqlite" "Run tests with SQLite backend";
             test-all = mkApp "${testPkgs.runners.all}/bin/test-runner-all" "Run tests with all backends";
@@ -315,11 +296,11 @@
           # Pass the full list of packages so the devshell can pickup the dependencies
           devPackages =
             {inherit (mainPkgs) eidetica-bin;}
-            // testPkgs.checks
-            // lintPkgs.packages
-            // docPkgs.packages
-            // coveragePkgs.packages
-            // sanitizePkgs.packages;
+            // testPkgs.builds
+            // lintPkgs.builds
+            // docPkgs.builds
+            // coveragePkgs.builds
+            // sanitizePkgs.builds;
         };
       };
     };
