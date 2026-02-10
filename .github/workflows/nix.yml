@@ -70,8 +70,7 @@ jobs:
       - name: Build and push artifacts
         run: |
           nix run github:Mic92/nix-fast-build -- --skip-cached --cachix-cache eidetica --no-nom --no-link \
-            -f '.#legacyPackages.${{ matrix.system }}.eidetica' \
-            -f '.#legacyPackages.${{ matrix.system }}.eidetica.lib' \
+            -f '.#legacyPackages.${{ matrix.system }}.eidetica.bin' \
             -f '.#legacyPackages.${{ matrix.system }}.eidetica.image'
         env:
           CACHIX_AUTH_TOKEN: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -81,7 +80,7 @@ jobs:
 
       - name: Track Binary Size
         run: |
-          BINARY_PATH=$(nix build .#eidetica --no-link --print-out-paths)/bin/eidetica
+          BINARY_PATH=$(nix build .#eidetica.bin --no-link --print-out-paths)/bin/eidetica
           bencher run \
             --project eidetica \
             --token '${{ secrets.BENCHER_API_TOKEN }}' \

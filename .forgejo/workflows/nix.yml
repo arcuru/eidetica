@@ -129,7 +129,7 @@ jobs:
 
       - name: Build and push artifacts
         run: |
-          for pkg in eidetica eidetica.lib eidetica.image test.artifacts bench; do
+          for pkg in eidetica.bin eidetica.image test.artifacts bench; do
             echo "Building $pkg..."
             PATHS=$(nix build .#$pkg --no-link --print-out-paths)
 
