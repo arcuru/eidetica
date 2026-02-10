@@ -73,15 +73,31 @@
     packages ? [],
     src ? cleanSrc,
     command,
-  }:
-    pkgs.runCommand "lint-${name}" {
-      nativeBuildInputs = packages;
-      inherit src;
-    } ''
-      cd $src
-      ${command}
-      mkdir -p $out
-    '';
+    fixCommand ? null,
+  }: let
+    check =
+      pkgs.runCommand "lint-${name}" {
+        nativeBuildInputs = packages;
+        inherit src;
+      } ''
+        cd $src
+        ${command}
+        mkdir -p $out
+      '';
+  in
+    if fixCommand == null
+    then check
+    else
+      check.overrideAttrs (old: {
+        passthru =
+          (old.passthru or {})
+          // {
+            fix = {
+              inherit packages name;
+              command = fixCommand;
+            };
+          };
+      });
 
   # =============================================================================
   # Linter definitions: Simple (non-Rust) linters
@@ -93,6 +109,7 @@
       packages = [pkgs.statix];
       src = sources.nix;
       command = "statix check .";
+      fixCommand = "statix fix .";
     };
 
     deadnix = mkSimpleLinter {
@@ -100,6 +117,7 @@
       packages = [pkgs.deadnix];
       src = sources.nix;
       command = "deadnix --fail .";
+      fixCommand = "deadnix --edit .";
     };
 
     shellcheck = mkSimpleLinter {
@@ -142,6 +160,7 @@
       packages = [pkgs.markdownlint-cli pkgs.findutils];
       src = sources.markdown;
       command = ''find . -name "*.md" -type f -exec markdownlint --config .config/markdownlint.yaml {} +'';
+      fixCommand = ''find . -name "*.md" -not -path "./target/*" -type f -exec markdownlint --fix --config .config/markdownlint.yaml {} +'';
     };
 
     gitleaks = mkSimpleLinter {
@@ -157,10 +176,20 @@
   # =============================================================================
 
   rustLinters = {
-    clippy = craneLib.cargoClippy (debugArgs
+    clippy = (craneLib.cargoClippy (debugArgs
       // {
         cargoClippyExtraArgs = "--workspace --all-targets --all-features -- -D warnings";
-      });
+      })).overrideAttrs (old: {
+      passthru =
+        (old.passthru or {})
+        // {
+          fix = {
+            name = "clippy";
+            packages = [];
+            command = "cargo clippy --workspace --fix --allow-dirty --all-targets --all-features --allow-no-vcs -- -D warnings";
+          };
+        };
+    });
 
     deny = craneLib.cargoDeny (baseArgs
       // {

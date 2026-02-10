@@ -71,6 +71,7 @@
         toolchain = import ./nix/toolchain.nix {inherit inputs system pkgs;};
         inherit
           (toolchain)
+          fenixStable
           fenixNightly
           rustSrc
           craneLib
@@ -116,6 +117,40 @@
             paths = builtins.attrValues packages;
           };
         mkAll = name: mkAggregate "${name}-all";
+
+        # Fix runner: aggregates fix commands from linters + treefmt
+        fixRunner = let
+          treefmtWrapper = config.treefmt.build.wrapper;
+          fixEntries = lib.pipe lintPkgs.packages [
+            (lib.filterAttrs (_: drv: (drv.passthru or {}) ? fix))
+            (lib.mapAttrsToList (_: drv: drv.passthru.fix))
+          ];
+          fixPackages = lib.concatMap (f: f.packages) fixEntries;
+          fixScript = lib.concatStringsSep "\n" (map (f: ''
+              echo "=== Fixing: ${f.name} ==="
+              ${f.command}
+            '')
+            fixEntries);
+        in
+          pkgs.writeShellApplication {
+            name = "eidetica-fix";
+            runtimeInputs =
+              [
+                fenixStable.toolchain
+                pkgs.pkg-config
+                pkgs.openssl
+                treefmtWrapper
+              ]
+              ++ fixPackages;
+            text = ''
+              export PKG_CONFIG_PATH="${lib.makeSearchPath "lib/pkgconfig" [pkgs.openssl.dev]}''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+
+              ${fixScript}
+
+              echo "=== Running treefmt ==="
+              treefmt
+            '';
+          };
       in {
         # Hierarchical package structure via legacyPackages
         # Pattern: nix build .#<group>.<target> for specific targets
@@ -256,6 +291,7 @@
           {
             default = mkApp "${mainPkgs.eidetica-bin}/bin/eidetica" "Run the Eidetica binary";
             eidetica = mkApp "${mainPkgs.eidetica-bin}/bin/eidetica" "Run the Eidetica database";
+            fix = mkApp "${fixRunner}/bin/eidetica-fix" "Run auto-fixes and format code";
 
             # Test runners - flat names (nested access via legacyPackages)
             # nix run .#test (default: sqlite), nix run .#test-inmemory, etc.
