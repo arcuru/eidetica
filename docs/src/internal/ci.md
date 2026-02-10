@@ -40,15 +40,15 @@ The Nix flake organizes packages into groups with a consistent pattern:
 - `.#<group>.all` — runs ALL items in the group
 - `.#<group>.<name>` — runs a specific item
 
-| Group         | Default                   | All               |
-| ------------- | ------------------------- | ----------------- |
-| `test`        | sqlite                    | all backends      |
-| `doc`         | api + test + book-test    | includes book     |
-| `lint`        | clippy + deny + statix... | includes udeps    |
-| `coverage`    | sqlite                    | all backends      |
-| `sanitize`    | asan + lsan               | includes miri     |
-| `integration` | all                       | nixos + container |
-| `eval`        | all                       | nixos + hm        |
+| Group         | Default                       | All                         |
+| ------------- | ----------------------------- | --------------------------- |
+| `test`        | sqlite                        | all backends                |
+| `doc`         | api + test + booktest + links | includes book               |
+| `lint`        | all except udeps, minversions | includes udeps, minversions |
+| `coverage`    | sqlite                        | all backends                |
+| `sanitize`    | asan + lsan                   | includes miri               |
+| `integration` | all                           | nixos + container           |
+| `eval`        | all                           | nixos + hm                  |
 
 ## Code Coverage
 

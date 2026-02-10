@@ -141,7 +141,7 @@
           coverage =
             coveragePkgs.packages
             // {
-              default = coveragePkgs.packages.sqlite;
+              default = mkAll "coverage" coveragePkgs.packagesFast;
               all = mkAll "coverage" coveragePkgs.packages;
               inherit (coveragePkgs) artifacts;
             };
@@ -154,12 +154,12 @@
               all = mkAll "sanitize" sanitizePkgs.packages;
             };
 
-          # Documentation group - nix build .#doc.default (fast), .#doc.api, .#doc.book, .#doc.book.test
+          # Documentation group - nix build .#doc.default (fast), .#doc.api, .#doc.book, .#doc.booktest
           doc =
             docPkgs.packages
             // {
               default = mkAll "doc" docPkgs.packagesFast;
-              all = mkAll "doc" (removeAttrs docPkgs.packages ["book"]) // {inherit (docPkgs.packages) book;};
+              all = mkAll "doc" docPkgs.packages;
             };
 
           # Lint group - nix build .#lint.default (fast), .#lint.clippy, .#lint.all
@@ -170,17 +170,14 @@
               all = mkAll "lint" lintPkgs.packages;
             };
 
-          # Main eidetica packages with nested structure
-          # nix build .#eidetica (binary), .#eidetica.lib, .#eidetica.image
-          eidetica =
-            mainPkgs.eidetica
-            // {
-              lib = mainPkgs.eidetica-lib;
-              inherit (containerPkgs) image;
-            };
+          # Main eidetica packages - nix build .#eidetica.{bin,image}
+          eidetica = {
+            bin = mainPkgs.eidetica-bin;
+            inherit (containerPkgs) image;
+          };
 
           # Default package (eidetica binary)
-          default = mainPkgs.eidetica;
+          default = mainPkgs.eidetica-bin;
 
           # Integration tests (Linux only) - nix build .#integration.default (all), .#integration.nixos
           integration = lib.optionalAttrs pkgs.stdenv.isLinux (
@@ -200,11 +197,17 @@
             };
         };
 
+        # Standard packages output for `nix build` (bare) and `nix build .#eidetica-bin`
+        packages = {
+          default = mainPkgs.eidetica-bin;
+          inherit (mainPkgs) eidetica-bin;
+        };
+
         # CI checks - packages that run during `nix flake check`
         # Each check builds the corresponding .default from legacyPackages
         # Excluded for performance: coverage, bench, integration, sanitize
         checks = {
-          inherit (mainPkgs) eidetica eidetica-lib;
+          eidetica = mainPkgs.eidetica-bin;
           test = testPkgs.checks.sqlite;
           lint = mkAggregate "lint" lintPkgs.packagesFast;
           doc = mkAggregate "doc" docPkgs.packagesFast;
@@ -251,8 +254,8 @@
           };
         in
           {
-            default = mkApp "${mainPkgs.eidetica}" "Run the Eidetica binary";
-            eidetica = mkApp "${mainPkgs.eidetica}" "Run the Eidetica database";
+            default = mkApp "${mainPkgs.eidetica-bin}/bin/eidetica" "Run the Eidetica binary";
+            eidetica = mkApp "${mainPkgs.eidetica-bin}/bin/eidetica" "Run the Eidetica database";
 
             # Test runners - flat names (nested access via legacyPackages)
             # nix run .#test (default: sqlite), nix run .#test-inmemory, etc.
@@ -275,7 +278,7 @@
           inherit pkgs rustSrc fenixNightly;
           # Pass the full list of packages so the devshell can pickup the dependencies
           devPackages =
-            {inherit (mainPkgs) eidetica eidetica-lib;}
+            {inherit (mainPkgs) eidetica-bin;}
             // testPkgs.checks
             // lintPkgs.packages
             // docPkgs.packages

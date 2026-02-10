@@ -100,18 +100,15 @@ in {
     links = doc-links;
     links-online = doc-links-online;
     test = doc-test;
-    book =
-      doc-book
-      // {
-        test = doc-book-test;
-      };
+    book = doc-book;
+    booktest = doc-book-test;
   };
 
   # Fast doc checks for CI
   packagesFast = {
     api = doc-api;
     test = doc-test;
-    book-test = doc-book-test;
+    booktest = doc-book-test;
     links = doc-links;
   };
 }
