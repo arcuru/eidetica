@@ -18,19 +18,29 @@
   craneLib = craneLibStable;
   rustSrc = fenixStable.rust-src;
 
+  inherit (pkgs) lib;
+
+  # Mold linker for faster link times (Linux only)
+  moldBuildInputs = lib.optionals pkgs.stdenv.isLinux [pkgs.mold];
+  moldFlags = lib.optionalString pkgs.stdenv.isLinux " -C link-arg=-fuse-ld=mold";
+
   # Base arguments for cargo derivations
   # These are shared by all builds
-  baseArgs = {
-    # Clean source to include only Rust-relevant files
-    src = craneLib.cleanCargoSource ../.;
-    strictDeps = true;
-    nativeBuildInputs = with pkgs; [
-      pkg-config # Required for OpenSSL linking
-    ];
-    buildInputs = with pkgs; [
-      openssl
-    ];
-  };
+  baseArgs =
+    {
+      # Clean source to include only Rust-relevant files
+      src = craneLib.cleanCargoSource ../.;
+      strictDeps = true;
+      nativeBuildInputs =
+        [pkgs.pkg-config]
+        ++ moldBuildInputs;
+      buildInputs = with pkgs; [
+        openssl
+      ];
+    }
+    // lib.optionalAttrs pkgs.stdenv.isLinux {
+      RUSTFLAGS = "-C link-arg=-fuse-ld=mold";
+    };
 
   # Workspace-wide artifact caches per unique build configuration
   # One artifact per profile is sufficient - package-specific flags are added at build time
@@ -81,16 +91,20 @@
     });
 
   # Nightly base args for sanitizer builds (need -Z flags)
-  baseArgsNightly = {
-    src = craneLibNightly.cleanCargoSource ../.;
-    strictDeps = true;
-    nativeBuildInputs = with pkgs; [
-      pkg-config
-    ];
-    buildInputs = with pkgs; [
-      openssl
-    ];
-  };
+  baseArgsNightly =
+    {
+      src = craneLibNightly.cleanCargoSource ../.;
+      strictDeps = true;
+      nativeBuildInputs =
+        [pkgs.pkg-config]
+        ++ moldBuildInputs;
+      buildInputs = with pkgs; [
+        openssl
+      ];
+    }
+    // lib.optionalAttrs pkgs.stdenv.isLinux {
+      RUSTFLAGS = "-C link-arg=-fuse-ld=mold";
+    };
 
   # Debug deps for nightly builds (miri needs nightly debug artifacts)
   cargoArtifactsDebugNightly = craneLibNightly.buildDepsOnly (baseArgsNightly
@@ -106,7 +120,7 @@
     // {
       pname = "asan";
       CARGO_PROFILE = "dev";
-      RUSTFLAGS = "-Zsanitizer=address";
+      RUSTFLAGS = "-Zsanitizer=address${moldFlags}";
       CARGO_BUILD_TARGET = "x86_64-unknown-linux-gnu";
     });
 
@@ -116,7 +130,7 @@
     // {
       pname = "lsan";
       CARGO_PROFILE = "dev";
-      RUSTFLAGS = "-Zsanitizer=leak";
+      RUSTFLAGS = "-Zsanitizer=leak${moldFlags}";
       CARGO_BUILD_TARGET = "x86_64-unknown-linux-gnu";
     });
 
@@ -148,7 +162,7 @@
     baseArgsNightly
     // {
       cargoArtifacts = cargoArtifactsAsan;
-      RUSTFLAGS = "-Zsanitizer=address";
+      RUSTFLAGS = "-Zsanitizer=address${moldFlags}";
       CARGO_BUILD_TARGET = "x86_64-unknown-linux-gnu";
     };
 
@@ -157,7 +171,7 @@
     baseArgsNightly
     // {
       cargoArtifacts = cargoArtifactsLsan;
-      RUSTFLAGS = "-Zsanitizer=leak";
+      RUSTFLAGS = "-Zsanitizer=leak${moldFlags}";
       CARGO_BUILD_TARGET = "x86_64-unknown-linux-gnu";
     };
 

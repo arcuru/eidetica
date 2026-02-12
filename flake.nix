@@ -292,7 +292,7 @@
 
         # Development shell configuration
         devShells.default = import ./nix/dev-shell.nix {
-          inherit pkgs rustSrc fenixNightly;
+          inherit pkgs lib rustSrc fenixNightly;
           # Pass the full list of packages so the devshell can pickup the dependencies
           devPackages =
             {inherit (mainPkgs) eidetica-bin;}

@@ -1,6 +1,7 @@
 # Development shell configuration
 {
   pkgs,
+  lib,
   rustSrc,
   fenixNightly,
   devPackages,
@@ -81,4 +82,7 @@ in
 
     # Default logging level for development
     RUST_LOG = "eidetica=debug";
+  }
+  // lib.optionalAttrs pkgs.stdenv.isLinux {
+    RUSTFLAGS = "-C link-arg=-fuse-ld=mold";
   }
