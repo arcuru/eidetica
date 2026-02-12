@@ -9,7 +9,7 @@ use super::{
     crypto::{derive_encryption_key, encrypt_private_key, hash_password},
     errors::UserError,
     key_manager::UserKeyManager,
-    types::{KeyEncryption, UserInfo, UserKey, UserStatus},
+    types::{KeyStorage, UserInfo, UserKey, UserStatus},
 };
 use crate::{
     Database, Instance, Result,
@@ -179,12 +179,15 @@ pub async fn create_user(
         (Some(pwd), Some(salt)) => {
             // Password-protected: encrypt the key
             let encryption_key = derive_encryption_key(pwd, salt)?;
-            let (encrypted_key, nonce) = encrypt_private_key(&user_private_key, &encryption_key)?;
+            let (ciphertext, nonce) = encrypt_private_key(&user_private_key, &encryption_key)?;
 
             UserKey {
                 key_id: user_public_key_str.clone(),
-                private_key_bytes: encrypted_key,
-                encryption: KeyEncryption::Encrypted { nonce },
+                storage: KeyStorage::Encrypted {
+                    algorithm: "aes-256-gcm".to_string(),
+                    ciphertext,
+                    nonce,
+                },
                 display_name: Some("Default Key".to_string()),
                 created_at: instance.clock().now_secs(),
                 last_used: None,
@@ -196,8 +199,9 @@ pub async fn create_user(
             // Passwordless: store unencrypted
             UserKey {
                 key_id: user_public_key_str.clone(),
-                private_key_bytes: user_private_key.to_bytes().to_vec(),
-                encryption: KeyEncryption::Unencrypted,
+                storage: KeyStorage::Unencrypted {
+                    key: user_private_key,
+                },
                 display_name: Some("Default Key".to_string()),
                 created_at: instance.clock().now_secs(),
                 last_used: None,

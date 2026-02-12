@@ -531,7 +531,7 @@ impl User {
     pub async fn add_private_key(&mut self, display_name: Option<&str>) -> Result<String> {
         use crate::auth::crypto::{format_public_key, generate_keypair};
         use crate::store::Table;
-        use crate::user::types::{KeyEncryption, UserKey};
+        use crate::user::types::{KeyStorage, UserKey};
 
         // Generate new keypair
         let (private_key, public_key) = generate_keypair();
@@ -544,12 +544,15 @@ impl User {
         let user_key = if let Some(encryption_key) = self.key_manager.encryption_key() {
             // Password-protected user: encrypt the key
             use crate::user::crypto::encrypt_private_key;
-            let (encrypted_bytes, nonce) = encrypt_private_key(&private_key, encryption_key)?;
+            let (ciphertext, nonce) = encrypt_private_key(&private_key, encryption_key)?;
 
             UserKey {
                 key_id: key_id.clone(),
-                private_key_bytes: encrypted_bytes,
-                encryption: KeyEncryption::Encrypted { nonce },
+                storage: KeyStorage::Encrypted {
+                    algorithm: "aes-256-gcm".to_string(),
+                    ciphertext,
+                    nonce,
+                },
                 display_name: display_name.map(|s| s.to_string()),
                 created_at: timestamp,
                 last_used: None,
@@ -560,8 +563,7 @@ impl User {
             // Passwordless user: store unencrypted
             UserKey {
                 key_id: key_id.clone(),
-                private_key_bytes: private_key.to_bytes().to_vec(),
-                encryption: KeyEncryption::Unencrypted,
+                storage: KeyStorage::Unencrypted { key: private_key },
                 display_name: display_name.map(|s| s.to_string()),
                 created_at: timestamp,
                 last_used: None,

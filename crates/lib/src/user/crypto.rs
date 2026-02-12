@@ -133,8 +133,9 @@ pub fn encrypt_private_key(
         .into());
     }
 
-    // Serialize private key to bytes
-    let mut key_bytes = private_key.to_bytes();
+    // Encode private key as prefixed string (e.g. "ed25519:base64...")
+    // This preserves the algorithm tag without a JSON wrapper.
+    let serialized = private_key.to_prefixed_string();
 
     // Create cipher
     let cipher =
@@ -145,16 +146,13 @@ pub fn encrypt_private_key(
     // Generate random nonce
     let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
 
-    // Encrypt
-    let ciphertext = cipher.encrypt(&nonce, key_bytes.as_ref()).map_err(|e| {
-        key_bytes.zeroize();
-        UserError::EncryptionFailed {
-            reason: format!("Encryption failed: {e}"),
-        }
-    })?;
-
-    // Zeroize the plaintext key bytes
-    key_bytes.zeroize();
+    // Encrypt (serialized is Zeroizing<String>, auto-zeroized on drop)
+    let ciphertext =
+        cipher
+            .encrypt(&nonce, serialized.as_bytes())
+            .map_err(|e| UserError::EncryptionFailed {
+                reason: format!("Encryption failed: {e}"),
+            })?;
 
     Ok((ciphertext, nonce.to_vec()))
 }
@@ -213,27 +211,30 @@ pub fn decrypt_private_key(
     let nonce = Nonce::from(nonce_array);
 
     // Decrypt
-    let mut plaintext =
+    let plaintext =
         cipher
             .decrypt(&nonce, ciphertext)
             .map_err(|e| UserError::DecryptionFailed {
                 reason: format!("Decryption failed: {e}"),
             })?;
 
-    // Reconstruct PrivateKey (default to ed25519 for backwards compat)
-    let key = PrivateKey::from_bytes("ed25519", &plaintext).map_err(|_| {
-        plaintext.zeroize();
+    // Convert to string and zeroize the raw bytes immediately
+    let mut prefixed = String::from_utf8(plaintext).map_err(|e| {
+        let mut bytes = e.into_bytes();
+        bytes.zeroize();
         UserError::DecryptionFailed {
-            reason: format!(
-                "Invalid key length after decryption: expected 32, got {}",
-                plaintext.len()
-            ),
+            reason: "Decrypted key is not valid UTF-8".to_string(),
         }
     })?;
 
-    // Zeroize the temporary plaintext
-    plaintext.zeroize();
+    let key = PrivateKey::from_prefixed_string(&prefixed).map_err(|e| {
+        prefixed.zeroize();
+        UserError::DecryptionFailed {
+            reason: format!("Failed to parse decrypted private key: {e}"),
+        }
+    })?;
 
+    prefixed.zeroize();
     Ok(key)
 }
 

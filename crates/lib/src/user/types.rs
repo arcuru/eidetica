@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::entry::ID;
+use crate::{auth::crypto::PrivateKey, entry::ID};
 
 /// User information stored in _users database
 ///
@@ -69,17 +69,27 @@ pub struct UserPreferences {
     pub properties: HashMap<String, String>,
 }
 
-/// Key encryption metadata
+/// How a user's private key is stored
+///
+/// Encrypted keys store AES-256-GCM ciphertext of a prefixed-string-encoded `PrivateKey`.
+/// Unencrypted keys store the `PrivateKey` directly (passwordless users only).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
-pub enum KeyEncryption {
-    /// Key is encrypted with password-derived key
+pub enum KeyStorage {
+    /// Key is encrypted with a password-derived key (AES-256-GCM)
     Encrypted {
+        /// Encryption algorithm identifier
+        algorithm: String,
+        /// Encrypted prefixed-string-encoded PrivateKey
+        ciphertext: Vec<u8>,
         /// Encryption nonce/IV (12 bytes for AES-GCM)
         nonce: Vec<u8>,
     },
     /// Key is stored unencrypted (passwordless users only)
-    Unencrypted,
+    Unencrypted {
+        /// PrivateKey stored directly — serde carries the signing algorithm tag
+        key: PrivateKey,
+    },
 }
 
 /// User's private key with database mappings
@@ -91,11 +101,8 @@ pub struct UserKey {
     /// Local key identifier (user-chosen name or auto-generated)
     pub key_id: String,
 
-    /// Private key bytes (encrypted or unencrypted based on encryption field)
-    pub private_key_bytes: Vec<u8>,
-
-    /// Encryption metadata
-    pub encryption: KeyEncryption,
+    /// Key storage (encrypted ciphertext or plaintext PrivateKey)
+    pub storage: KeyStorage,
 
     /// Display name for this key
     pub display_name: Option<String>,

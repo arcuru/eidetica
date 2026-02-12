@@ -10,7 +10,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 use super::{
     crypto::{decrypt_private_key, derive_encryption_key, encrypt_private_key},
     errors::UserError,
-    types::{KeyEncryption, UserKey},
+    types::{KeyStorage, UserKey},
 };
 use crate::{
     Result,
@@ -75,7 +75,7 @@ impl UserKeyManager {
     /// Keys are stored and loaded unencrypted for performance.
     ///
     /// # Arguments
-    /// * `keys` - Vec of UserKey entries with unencrypted private_key_bytes
+    /// * `keys` - Vec of UserKey entries with unencrypted keys
     ///
     /// # Returns
     /// A UserKeyManager with all keys ready for use
@@ -123,16 +123,27 @@ impl UserKeyManager {
     /// Use `serialize_keys()` to get updated keys for storage.
     ///
     /// # Arguments
-    /// * `metadata` - The UserKey metadata with private_key_bytes and encryption info
+    /// * `metadata` - The UserKey metadata with storage info
     ///
     /// # Returns
     /// Ok(()) if the key was successfully added
     pub fn add_key(&mut self, metadata: UserKey) -> Result<()> {
         let key_id = metadata.key_id.clone();
 
-        // Decrypt or deserialize the key based on encryption status
-        let signing_key = match &metadata.encryption {
-            KeyEncryption::Encrypted { nonce } => {
+        // Decrypt or extract the key based on storage type
+        let signing_key = match &metadata.storage {
+            KeyStorage::Encrypted {
+                algorithm,
+                ciphertext,
+                nonce,
+            } => {
+                // Validate encryption algorithm
+                if algorithm != "aes-256-gcm" {
+                    return Err(UserError::DecryptionFailed {
+                        reason: format!("Unsupported encryption algorithm: {algorithm}"),
+                    }
+                    .into());
+                }
                 // Encrypted key - needs decryption
                 let encryption_key =
                     self.encryption_key
@@ -140,15 +151,11 @@ impl UserKeyManager {
                         .ok_or_else(|| UserError::PasswordRequired {
                             operation: "decrypt encrypted key".to_string(),
                         })?;
-                decrypt_private_key(&metadata.private_key_bytes, nonce, encryption_key)?
+                decrypt_private_key(ciphertext, nonce, encryption_key)?
             }
-            KeyEncryption::Unencrypted => {
-                // Unencrypted key - direct deserialization
-                PrivateKey::from_bytes("ed25519", &metadata.private_key_bytes).map_err(|_| {
-                    UserError::InvalidKeyFormat {
-                        reason: "Invalid key length".to_string(),
-                    }
-                })?
+            KeyStorage::Unencrypted { key } => {
+                // Unencrypted key - use directly
+                key.clone()
             }
         };
 
@@ -167,7 +174,7 @@ impl UserKeyManager {
     /// Keys are returned in sorted order by key_id for deterministic output.
     ///
     /// # Returns
-    /// Vec of UserKey with updated private_key_bytes and encryption info, sorted by key_id
+    /// Vec of UserKey with updated storage, sorted by key_id
     pub fn serialize_keys(&self) -> Result<Vec<UserKey>> {
         let mut serialized = Vec::new();
 
@@ -180,29 +187,34 @@ impl UserKeyManager {
                     key_id: key_id.clone(),
                 })?;
 
-            // Encrypt or serialize based on encryption status
-            let (private_key_bytes, encryption) = match &metadata.encryption {
-                KeyEncryption::Encrypted { .. } => {
+            // Build storage based on current storage type
+            let storage = match &metadata.storage {
+                KeyStorage::Encrypted { algorithm, .. } => {
                     // Re-encrypt the key
                     let encryption_key = self.encryption_key.as_ref().ok_or_else(|| {
                         UserError::PasswordRequired {
                             operation: "encrypt key".to_string(),
                         }
                     })?;
-                    let (encrypted_key, nonce) = encrypt_private_key(signing_key, encryption_key)?;
-                    (encrypted_key, KeyEncryption::Encrypted { nonce })
+                    let (ciphertext, nonce) = encrypt_private_key(signing_key, encryption_key)?;
+                    KeyStorage::Encrypted {
+                        algorithm: algorithm.clone(),
+                        ciphertext,
+                        nonce,
+                    }
                 }
-                KeyEncryption::Unencrypted => {
-                    // Serialize unencrypted
-                    (signing_key.to_bytes().to_vec(), KeyEncryption::Unencrypted)
+                KeyStorage::Unencrypted { .. } => {
+                    // Store key directly
+                    KeyStorage::Unencrypted {
+                        key: signing_key.clone(),
+                    }
                 }
             };
 
             // Create updated UserKey
             let updated_key = UserKey {
                 key_id: key_id.clone(),
-                private_key_bytes,
-                encryption,
+                storage,
                 display_name: metadata.display_name.clone(),
                 created_at: metadata.created_at,
                 last_used: metadata.last_used,
@@ -327,12 +339,15 @@ mod tests {
         signing_key: &PrivateKey,
         encryption_key: &[u8],
     ) -> UserKey {
-        let (encrypted_key, nonce) = encrypt_private_key(signing_key, encryption_key).unwrap();
+        let (ciphertext, nonce) = encrypt_private_key(signing_key, encryption_key).unwrap();
 
         UserKey {
             key_id: key_id.to_string(),
-            private_key_bytes: encrypted_key,
-            encryption: KeyEncryption::Encrypted { nonce },
+            storage: KeyStorage::Encrypted {
+                algorithm: "aes-256-gcm".to_string(),
+                ciphertext,
+                nonce,
+            },
             display_name: Some(format!("Test key {key_id}")),
             created_at: SystemClock.now_secs(),
             last_used: None,
@@ -440,8 +455,7 @@ mod tests {
 
         let user_key1 = UserKey {
             key_id: "key1".to_string(),
-            private_key_bytes: key1.to_bytes().to_vec(),
-            encryption: KeyEncryption::Unencrypted,
+            storage: KeyStorage::Unencrypted { key: key1.clone() },
             display_name: Some("Key 1".to_string()),
             created_at: SystemClock.now_secs(),
             last_used: None,
@@ -451,8 +465,7 @@ mod tests {
 
         let user_key2 = UserKey {
             key_id: "key2".to_string(),
-            private_key_bytes: key2.to_bytes().to_vec(),
-            encryption: KeyEncryption::Unencrypted,
+            storage: KeyStorage::Unencrypted { key: key2.clone() },
             display_name: Some("Key 2".to_string()),
             created_at: SystemClock.now_secs(),
             last_used: None,
@@ -531,14 +544,15 @@ mod tests {
         let serialized_key = &serialized[0];
         assert_eq!(serialized_key.key_id, "key1");
 
-        // Extract nonce from encryption metadata
-        let nonce = match &serialized_key.encryption {
-            KeyEncryption::Encrypted { nonce } => nonce,
-            KeyEncryption::Unencrypted => panic!("Expected encrypted key"),
+        // Extract ciphertext and nonce from storage
+        let (ciphertext, nonce) = match &serialized_key.storage {
+            KeyStorage::Encrypted {
+                ciphertext, nonce, ..
+            } => (ciphertext, nonce),
+            KeyStorage::Unencrypted { .. } => panic!("Expected encrypted key"),
         };
 
-        let decrypted =
-            decrypt_private_key(&serialized_key.private_key_bytes, nonce, &encryption_key).unwrap();
+        let decrypted = decrypt_private_key(ciphertext, nonce, &encryption_key).unwrap();
         assert_eq!(decrypted.to_bytes(), key1.to_bytes());
     }
 
@@ -627,15 +641,18 @@ mod tests {
         let (key_old, _) = generate_keypair();
         let (key_mid, _) = generate_keypair();
 
-        let (encrypted_new, nonce_new) = encrypt_private_key(&key_new, &encryption_key).unwrap();
-        let (encrypted_old, nonce_old) = encrypt_private_key(&key_old, &encryption_key).unwrap();
-        let (encrypted_mid, nonce_mid) = encrypt_private_key(&key_mid, &encryption_key).unwrap();
+        let (ct_new, nonce_new) = encrypt_private_key(&key_new, &encryption_key).unwrap();
+        let (ct_old, nonce_old) = encrypt_private_key(&key_old, &encryption_key).unwrap();
+        let (ct_mid, nonce_mid) = encrypt_private_key(&key_mid, &encryption_key).unwrap();
 
         // Create keys with explicit timestamps (old, middle, new)
         let user_key_old = UserKey {
             key_id: "key_old".to_string(),
-            private_key_bytes: encrypted_old,
-            encryption: KeyEncryption::Encrypted { nonce: nonce_old },
+            storage: KeyStorage::Encrypted {
+                algorithm: "aes-256-gcm".to_string(),
+                ciphertext: ct_old,
+                nonce: nonce_old,
+            },
             display_name: Some("Old Key".to_string()),
             created_at: 1000, // Oldest
             last_used: None,
@@ -645,8 +662,11 @@ mod tests {
 
         let user_key_mid = UserKey {
             key_id: "key_mid".to_string(),
-            private_key_bytes: encrypted_mid,
-            encryption: KeyEncryption::Encrypted { nonce: nonce_mid },
+            storage: KeyStorage::Encrypted {
+                algorithm: "aes-256-gcm".to_string(),
+                ciphertext: ct_mid,
+                nonce: nonce_mid,
+            },
             display_name: Some("Mid Key".to_string()),
             created_at: 2000, // Middle
             last_used: None,
@@ -656,8 +676,11 @@ mod tests {
 
         let user_key_new = UserKey {
             key_id: "key_new".to_string(),
-            private_key_bytes: encrypted_new,
-            encryption: KeyEncryption::Encrypted { nonce: nonce_new },
+            storage: KeyStorage::Encrypted {
+                algorithm: "aes-256-gcm".to_string(),
+                ciphertext: ct_new,
+                nonce: nonce_new,
+            },
             display_name: Some("New Key".to_string()),
             created_at: 3000, // Newest
             last_used: None,
@@ -721,5 +744,36 @@ mod tests {
                 Error::User(UserError::DecryptionFailed { .. })
             ));
         }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // Argon2 is extremely slow under Miri
+    fn test_key_manager_rejects_unknown_encryption_algorithm() {
+        let password = "test_password";
+        let (_, salt) = hash_password(password).unwrap();
+        let encryption_key = derive_encryption_key(password, &salt).unwrap();
+
+        let (key1, _) = generate_keypair();
+        let mut user_key = create_test_user_key("key1", &key1, &encryption_key);
+
+        // Tamper with the algorithm field
+        if let KeyStorage::Encrypted {
+            ref mut algorithm, ..
+        } = user_key.storage
+        {
+            *algorithm = "aes-128-gcm".to_string();
+        }
+
+        let Err(err) = UserKeyManager::new(password, &salt, vec![user_key]) else {
+            panic!("Expected error for unsupported algorithm");
+        };
+        assert!(matches!(
+            err,
+            Error::User(UserError::DecryptionFailed { .. })
+        ));
+        assert!(
+            err.to_string().contains("Unsupported encryption algorithm"),
+            "error message was: {err}"
+        );
     }
 }

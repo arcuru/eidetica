@@ -7,7 +7,7 @@ use crate::{
     crdt::Doc,
     user::{
         crypto::{derive_encryption_key, encrypt_private_key, hash_password},
-        types::{KeyEncryption, UserKey, UserStatus},
+        types::{KeyStorage, UserKey, UserStatus},
     },
 };
 use std::{collections::HashMap, sync::Arc};
@@ -50,8 +50,11 @@ async fn create_test_user_session() -> User {
 
     let user_key = UserKey {
         key_id: "admin".to_string(),
-        private_key_bytes: encrypted_key,
-        encryption: KeyEncryption::Encrypted { nonce },
+        storage: KeyStorage::Encrypted {
+            algorithm: "aes-256-gcm".to_string(),
+            ciphertext: encrypted_key,
+            nonce,
+        },
         display_name: Some("Device Key".to_string()),
         created_at: SystemClock.now_secs(),
         last_used: None,
