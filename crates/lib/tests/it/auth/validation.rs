@@ -4,7 +4,10 @@ use eidetica::{
     Database, Entry,
     auth::{
         AuthSettings,
-        crypto::{format_public_key, generate_keypair, sign_entry, verify_entry_signature},
+        crypto::{
+            PrivateKey, PublicKey, format_public_key, generate_keypair, sign_entry,
+            verify_entry_signature,
+        },
         types::{AuthKey, DelegationStep, KeyHint, KeyStatus, Permission, SigInfo, SigKey},
         validation::AuthValidator,
     },
@@ -482,7 +485,7 @@ async fn test_entry_validation_unsigned_entry_detection() {
 async fn test_entry_validation_with_invalid_signatures() {
     let mut validator = AuthValidator::new();
     let (signing_key, verifying_key) = generate_keypair();
-    let (_wrong_signing_key, wrong_verifying_key) = generate_keypair();
+    let wrong_pubkey = PrivateKey::generate().public_key();
     let pubkey_str = format_public_key(&verifying_key);
 
     // Create settings with the correct public key
@@ -521,9 +524,11 @@ async fn test_entry_validation_with_invalid_signatures() {
     );
 
     // Test signature verification function directly
-    assert!(verify_entry_signature(&correct_entry, &verifying_key).expect("Failed to verify"));
+    let pubkey = PublicKey::Ed25519(verifying_key);
+    verify_entry_signature(&correct_entry, &pubkey).expect("Valid signature should verify");
     assert!(
-        !verify_entry_signature(&correct_entry, &wrong_verifying_key).expect("Failed to verify")
+        verify_entry_signature(&correct_entry, &wrong_pubkey).is_err(),
+        "Wrong key should fail verification"
     );
 }
 
@@ -534,9 +539,8 @@ async fn test_entry_validation_with_invalid_signatures() {
 #[tokio::test]
 async fn test_sigkey_tampering_invalidates_signature() {
     let (signing_key, verifying_key) = generate_keypair();
-    let (_, other_verifying_key) = generate_keypair();
+    let other_pubkey_str = PrivateKey::generate().public_key().to_prefixed_string();
     let pubkey_str = format_public_key(&verifying_key);
-    let other_pubkey_str = format_public_key(&other_verifying_key);
 
     // Create and sign an entry with a pubkey hint
     let mut entry = Entry::root_builder()
@@ -549,16 +553,14 @@ async fn test_sigkey_tampering_invalidates_signature() {
     entry.sig.sig = Some(signature);
 
     // Original entry should verify with the correct key
-    assert!(
-        verify_entry_signature(&entry, &verifying_key).expect("Failed to verify"),
-        "Original entry should verify successfully"
-    );
+    let pubkey = PublicKey::Ed25519(verifying_key);
+    verify_entry_signature(&entry, &pubkey).expect("Original entry should verify successfully");
 
     // Tamper with pubkey hint - should fail verification
     let mut tampered_pubkey = entry.clone();
     tampered_pubkey.sig.key = SigKey::from_pubkey(&other_pubkey_str);
     assert!(
-        !verify_entry_signature(&tampered_pubkey, &verifying_key).expect("Failed to verify"),
+        verify_entry_signature(&tampered_pubkey, &pubkey).is_err(),
         "Tampering with pubkey hint should invalidate signature"
     );
 
@@ -566,7 +568,7 @@ async fn test_sigkey_tampering_invalidates_signature() {
     let mut tampered_name = entry.clone();
     tampered_name.sig.key = SigKey::from_name("tampered_name");
     assert!(
-        !verify_entry_signature(&tampered_name, &verifying_key).expect("Failed to verify"),
+        verify_entry_signature(&tampered_name, &pubkey).is_err(),
         "Tampering with name hint should invalidate signature"
     );
 
@@ -580,7 +582,7 @@ async fn test_sigkey_tampering_invalidates_signature() {
         hint: KeyHint::from_pubkey(&pubkey_str),
     };
     assert!(
-        !verify_entry_signature(&tampered_delegation, &verifying_key).expect("Failed to verify"),
+        verify_entry_signature(&tampered_delegation, &pubkey).is_err(),
         "Changing SigKey variant should invalidate signature"
     );
 }

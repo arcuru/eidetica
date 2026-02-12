@@ -1,7 +1,7 @@
 use std::cmp::{max, min};
 
 use eidetica::auth::{
-    crypto::{format_public_key, generate_keypair},
+    crypto::{PrivateKey, format_public_key, generate_keypair},
     settings::AuthSettings,
     types::{
         KeyStatus, Permission,
@@ -159,21 +159,21 @@ fn test_permission_hierarchical_key_modification() {
 
     // Create resolved auth for super admin
     let super_resolved = ResolvedAuth {
-        public_key: generate_keypair().1,
+        public_key: PrivateKey::generate().public_key(),
         effective_permission: super_admin.permissions().clone(),
         key_status: super_admin.status().clone(),
     };
 
     // Create resolved auth for low admin
     let low_admin_resolved = ResolvedAuth {
-        public_key: generate_keypair().1,
+        public_key: PrivateKey::generate().public_key(),
         effective_permission: low_admin.permissions().clone(),
         key_status: low_admin.status().clone(),
     };
 
     // Create resolved auth for write key
     let write_resolved = ResolvedAuth {
-        public_key: generate_keypair().1,
+        public_key: PrivateKey::generate().public_key(),
         effective_permission: high_write.permissions().clone(),
         key_status: high_write.status().clone(),
     };

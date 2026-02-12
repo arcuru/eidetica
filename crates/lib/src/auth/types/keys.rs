@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::permissions::{KeyStatus, Permission};
+use crate::auth::crypto::PublicKey;
 use crate::crdt::{CRDTError, Doc, doc::Value};
 use crate::entry::ID;
 
@@ -538,7 +539,7 @@ impl SigInfoBuilder {
 #[derive(Debug, Clone)]
 pub struct ResolvedAuth {
     /// The actual public key used for signing
-    pub public_key: ed25519_dalek::VerifyingKey,
+    pub public_key: PublicKey,
     /// Effective permission after clamping
     pub effective_permission: Permission,
     /// Current status of the key

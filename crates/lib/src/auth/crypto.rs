@@ -328,41 +328,23 @@ pub fn sign_entry(entry: &Entry, signing_key: &SigningKey) -> Result<String, Err
     Ok(Base64::encode_string(&signature.to_bytes()))
 }
 
-/// Verify an Ed25519 signature for an entry
+/// Verify an entry's signature using an algorithm-agnostic `PublicKey`.
 ///
-/// # Arguments
-/// * `entry` - The entry that was signed (with signature field set)
-/// * `verifying_key` - Public key for verification
-pub fn verify_entry_signature(
-    entry: &Entry,
-    verifying_key: &VerifyingKey,
-) -> Result<bool, AuthError> {
+/// Returns `Ok(())` if the signature is valid, or `Err(AuthError)` if
+/// verification fails (missing signature, malformed data, or wrong key).
+pub fn verify_entry_signature(entry: &Entry, public_key: &PublicKey) -> Result<(), AuthError> {
     let signature_base64 = entry.sig.sig.as_ref().ok_or(AuthError::InvalidSignature)?;
 
     let signature_bytes =
         Base64::decode_vec(signature_base64).map_err(|_| AuthError::InvalidSignature)?;
 
-    if signature_bytes.len() != ED25519_SIGNATURE_SIZE {
-        return Err(AuthError::InvalidSignature);
-    }
-
-    let signature_array: [u8; ED25519_SIGNATURE_SIZE] = signature_bytes
-        .try_into()
-        .map_err(|_| AuthError::InvalidSignature)?;
-
-    let signature = Signature::from_bytes(&signature_array);
-
-    // Get the canonical signing bytes (without signature)
     let signing_bytes = entry
         .signing_bytes()
         .map_err(|e| AuthError::InvalidAuthConfiguration {
             reason: format!("Failed to get signing bytes: {e}"),
         })?;
 
-    match verifying_key.verify(&signing_bytes, &signature) {
-        Ok(()) => Ok(true),
-        Err(_) => Ok(false),
-    }
+    public_key.verify(&signing_bytes, &signature_bytes)
 }
 
 /// Sign data with an Ed25519 private key
@@ -540,12 +522,13 @@ mod tests {
         // Set the signature on the entry
         entry.sig.sig = Some(signature);
 
-        // Verify the signature
-        assert!(verify_entry_signature(&entry, &verifying_key).unwrap());
+        // Verify the signature using algorithm-agnostic PublicKey
+        let pubkey = PublicKey::Ed25519(verifying_key);
+        verify_entry_signature(&entry, &pubkey).unwrap();
 
         // Test with wrong key
-        let (_, wrong_key) = generate_keypair();
-        assert!(!verify_entry_signature(&entry, &wrong_key).unwrap());
+        let wrong_pubkey = PrivateKey::generate().public_key();
+        assert!(verify_entry_signature(&entry, &wrong_pubkey).is_err());
     }
 
     #[test]

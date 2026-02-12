@@ -1,5 +1,5 @@
 use eidetica::auth::{
-    crypto::{format_public_key, generate_keypair},
+    crypto::{PrivateKey, format_public_key, generate_keypair},
     settings::AuthSettings,
     types::{AuthKey, KeyStatus, Permission, ResolvedAuth},
 };
@@ -27,7 +27,7 @@ fn test_admin_hierarchy_enforcement() {
         .unwrap();
 
     let low_priority_resolved = ResolvedAuth {
-        public_key: generate_keypair().1,
+        public_key: PrivateKey::generate().public_key(),
         effective_permission: low_admin.permissions().clone(),
         key_status: low_admin.status().clone(),
     };
@@ -88,7 +88,7 @@ fn test_admin_hierarchy_complete_enforcement() {
         .unwrap();
 
     let junior_resolved = ResolvedAuth {
-        public_key: generate_keypair().1,
+        public_key: PrivateKey::generate().public_key(),
         effective_permission: junior_admin.permissions().clone(),
         key_status: junior_admin.status().clone(),
     };
@@ -153,7 +153,7 @@ fn test_privilege_escalation_prevention() {
         .unwrap();
 
     let write_resolved = ResolvedAuth {
-        public_key: generate_keypair().1,
+        public_key: PrivateKey::generate().public_key(),
         effective_permission: write_user.permissions().clone(),
         key_status: write_user.status().clone(),
     };
@@ -191,7 +191,7 @@ fn test_key_creation_privilege_escalation_prevention() {
         .unwrap();
 
     let low_admin_resolved = ResolvedAuth {
-        public_key: generate_keypair().1,
+        public_key: PrivateKey::generate().public_key(),
         effective_permission: low_admin.permissions().clone(),
         key_status: low_admin.status().clone(),
     };

@@ -12,7 +12,7 @@ use super::errors::AuthError;
 use crate::{
     Result,
     auth::{
-        crypto::parse_public_key,
+        crypto::{PublicKey, parse_public_key},
         types::{AuthKey, DelegatedTreeRef, KeyHint, KeyStatus, Permission, ResolvedAuth, SigKey},
     },
     crdt::{Doc, doc::Value},
@@ -249,7 +249,7 @@ impl AuthSettings {
             // Return ResolvedAuth with actual pubkey and global permission
             // There is only 1 global, no need to look for others
             return Ok(vec![ResolvedAuth {
-                public_key: parse_public_key(actual_pubkey)?,
+                public_key: PublicKey::from_prefixed_string(actual_pubkey)?,
                 effective_permission: global_key.permissions().clone(),
                 key_status: global_key.status().clone(),
             }]);
@@ -259,7 +259,7 @@ impl AuthSettings {
         if let Some(pubkey) = &hint.pubkey {
             return match self.get_key_by_pubkey(pubkey) {
                 Ok(key) => Ok(vec![ResolvedAuth {
-                    public_key: parse_public_key(pubkey)?,
+                    public_key: PublicKey::from_prefixed_string(pubkey)?,
                     effective_permission: key.permissions().clone(),
                     key_status: key.status().clone(),
                 }]),
@@ -280,7 +280,7 @@ impl AuthSettings {
             let mut results = Vec::with_capacity(matches.len());
             for (pubkey, auth_key) in matches {
                 results.push(ResolvedAuth {
-                    public_key: parse_public_key(&pubkey)?,
+                    public_key: PublicKey::from_prefixed_string(&pubkey)?,
                     effective_permission: auth_key.permissions().clone(),
                     key_status: auth_key.status().clone(),
                 });
@@ -526,7 +526,7 @@ mod tests {
         let hint = KeyHint::from_pubkey(&pubkey);
         let matches = settings.resolve_hint(&hint).unwrap();
         assert_eq!(matches.len(), 1);
-        assert_eq!(format_public_key(&matches[0].public_key), pubkey);
+        assert_eq!(matches[0].public_key.to_prefixed_string(), pubkey);
         assert_eq!(matches[0].effective_permission, Permission::Write(10));
     }
 
@@ -546,7 +546,7 @@ mod tests {
         let hint = KeyHint::from_name("laptop");
         let matches = settings.resolve_hint(&hint).unwrap();
         assert_eq!(matches.len(), 1);
-        assert_eq!(format_public_key(&matches[0].public_key), pubkey);
+        assert_eq!(matches[0].public_key.to_prefixed_string(), pubkey);
         assert_eq!(matches[0].effective_permission, Permission::Write(10));
     }
 
@@ -564,7 +564,7 @@ mod tests {
         let matches = settings.resolve_hint(&hint).unwrap();
 
         assert_eq!(matches.len(), 1);
-        assert_eq!(format_public_key(&matches[0].public_key), actual_pubkey);
+        assert_eq!(matches[0].public_key.to_prefixed_string(), actual_pubkey);
         assert_eq!(matches[0].effective_permission, Permission::Write(10));
     }
 

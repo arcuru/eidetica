@@ -115,7 +115,7 @@ impl AuthValidator {
             }
 
             // Try to verify the signature with this key
-            if verify_entry_signature(entry, &resolved_auth.public_key).unwrap_or(false) {
+            if verify_entry_signature(entry, &resolved_auth.public_key).is_ok() {
                 debug!("Signature verified, checking permissions");
                 // Signature verified - now check permissions
                 if self.check_permissions(&resolved_auth, &operation)? {

@@ -8,7 +8,7 @@ use super::entry::AuthValidator;
 use crate::{
     Database, Entry, Error,
     auth::{
-        crypto::{format_public_key, generate_keypair, sign_entry},
+        crypto::{PrivateKey, format_public_key, generate_keypair, sign_entry},
         settings::AuthSettings,
         types::{
             AuthKey, DelegationStep, KeyHint, KeyStatus, Operation, Permission, ResolvedAuth,
@@ -65,19 +65,19 @@ async fn test_permission_levels() {
     let validator = AuthValidator::new();
 
     let admin_auth = ResolvedAuth {
-        public_key: generate_keypair().1,
+        public_key: PrivateKey::generate().public_key(),
         effective_permission: Permission::Admin(5),
         key_status: KeyStatus::Active,
     };
 
     let write_auth = ResolvedAuth {
-        public_key: generate_keypair().1,
+        public_key: PrivateKey::generate().public_key(),
         effective_permission: Permission::Write(10),
         key_status: KeyStatus::Active,
     };
 
     let read_auth = ResolvedAuth {
-        public_key: generate_keypair().1,
+        public_key: PrivateKey::generate().public_key(),
         effective_permission: Permission::Read,
         key_status: KeyStatus::Active,
     };
@@ -751,8 +751,8 @@ async fn test_global_permission_without_pubkey_fails() {
 #[tokio::test]
 async fn test_global_permission_resolver() {
     let mut validator = AuthValidator::new();
-    let (_, verifying_key) = generate_keypair();
-    let actual_pubkey = format_public_key(&verifying_key);
+    let public_key = PrivateKey::generate().public_key();
+    let actual_pubkey = public_key.to_prefixed_string();
 
     // Create settings with global "*" permission
     let global_auth_key = AuthKey::active(None, Permission::Write(10));
@@ -772,7 +772,7 @@ async fn test_global_permission_resolver() {
     );
     let resolved = result.unwrap();
     assert_eq!(resolved.len(), 1);
-    assert_eq!(resolved[0].public_key, verifying_key);
+    assert_eq!(resolved[0].public_key, public_key);
     assert_eq!(resolved[0].effective_permission, Permission::Write(10));
 }
 
