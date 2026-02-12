@@ -39,6 +39,7 @@ use crate::{
     Database, Error, Instance, Result, Transaction,
     auth::{self, Permission, SigKey, crypto::format_public_key},
     crdt::Doc,
+    database::DatabaseKey,
     entry::ID,
     instance::{InstanceError, backend::Backend},
     store::Table,
@@ -297,8 +298,9 @@ impl User {
             }
         })?;
 
-        // Create Database with user-provided key
-        Database::open(self.instance.handle(), root_id, signing_key.clone(), sigkey).await
+        // Create Database with user-provided key (legacy bridge for string-based sigkey mappings)
+        let key = DatabaseKey::from_legacy_sigkey(signing_key.clone(), &sigkey);
+        Database::open(self.instance.handle(), root_id, key).await
     }
 
     /// Find databases by name among the user's tracked databases.
@@ -697,7 +699,8 @@ impl User {
 
         // Delegate to Sync layer with the user-provided key
         // The Sync layer will validate permissions when committing the transaction
-        sync.approve_bootstrap_request_with_key(request_id, signing_key, approving_key_id)
+        let key = DatabaseKey::new(signing_key.clone());
+        sync.approve_bootstrap_request_with_key(request_id, &key)
             .await?;
 
         Ok(())
@@ -737,7 +740,8 @@ impl User {
 
         // Delegate to Sync layer with the user-provided key
         // The Sync layer will validate Admin permission on the target database
-        sync.reject_bootstrap_request_with_key(request_id, signing_key, rejecting_key_id)
+        let key = DatabaseKey::new(signing_key.clone());
+        sync.reject_bootstrap_request_with_key(request_id, &key)
             .await?;
 
         Ok(())

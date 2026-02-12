@@ -33,8 +33,8 @@ use crate::{
     Database, Result, Store,
     auth::{
         AuthSettings,
-        crypto::{format_public_key, sign_entry},
-        types::{KeyHint, SigInfo, SigKey},
+        crypto::sign_entry,
+        types::{SigInfo, SigKey},
         validation::AuthValidator,
     },
     backend::VerificationStatus,
@@ -157,11 +157,8 @@ pub struct Transaction {
     entry_builder: Arc<Mutex<Option<EntryBuilder>>>,
     /// The database this transaction belongs to
     db: Database,
-    /// Optional authentication key name for backend lookup
-    auth_key_name: Option<String>,
-    /// Optional provided signing key when key is already decrypted
-    /// Tuple contains (SigningKey, SigKey identifier)
-    provided_signing_key: Option<(ed25519_dalek::SigningKey, String)>,
+    /// Provided signing key paired with its auth identity
+    provided_signing_key: Option<(ed25519_dalek::SigningKey, SigKey)>,
     /// Registered encryptors for transparent encryption/decryption of specific subtrees
     /// Maps subtree name -> encryptor implementation
     /// When an encryptor is registered, the transaction automatically encrypts writes
@@ -221,34 +218,9 @@ impl Transaction {
         Ok(Self {
             entry_builder: Arc::new(Mutex::new(Some(builder))),
             db: database.clone(),
-            auth_key_name: None,
             provided_signing_key: None,
             encryptors: Arc::new(Mutex::new(HashMap::new())),
         })
-    }
-
-    /// Set the authentication key ID for signing entries created by this transaction.
-    ///
-    /// If set, the transaction will attempt to sign the entry with the specified
-    /// private key during commit. The private key must be available in the backend's
-    /// local key storage.
-    ///
-    /// # Arguments
-    /// * `key_name` - The identifier of the private key to use for signing
-    ///
-    /// # Returns
-    /// Self for method chaining
-    pub fn with_auth(mut self, key_name: impl Into<String>) -> Self {
-        self.auth_key_name = Some(key_name.into());
-        self
-    }
-
-    /// Set the authentication key ID for this transaction (mutable version).
-    ///
-    /// # Arguments
-    /// * `key_name` - The identifier of the private key to use for signing
-    pub fn set_auth_key(&mut self, key_name: impl Into<String>) {
-        self.auth_key_name = Some(key_name.into());
     }
 
     /// Set signing key directly for user context (internal API).
@@ -259,19 +231,13 @@ impl Transaction {
     ///
     /// # Arguments
     /// * `signing_key` - The decrypted signing key from UserKeyManager
-    /// * `sigkey` - The SigKey identifier used in database auth settings
+    /// * `identity` - The SigKey identity used in database auth settings
     pub(crate) fn set_provided_key(
         &mut self,
         signing_key: ed25519_dalek::SigningKey,
-        sigkey: String,
+        identity: SigKey,
     ) {
-        self.auth_key_name = Some(sigkey.clone());
-        self.provided_signing_key = Some((signing_key, sigkey));
-    }
-
-    /// Get the current authentication key ID for this transaction.
-    pub fn auth_key_name(&self) -> Option<&str> {
-        self.auth_key_name.as_deref()
+        self.provided_signing_key = Some((signing_key, identity));
     }
 
     /// Get current time as RFC3339 string.
@@ -1138,36 +1104,22 @@ impl Transaction {
         // All entries must now be authenticated - fail if no auth key is configured
 
         // Use provided signing key
-        let (signing_key, _sigkey_identifier) =
-            if let Some((ref provided_key, ref sigkey)) = self.provided_signing_key {
-                // Use provided signing key directly (already decrypted from UserKeyManager or device key)
-                let key_clone = provided_key.clone();
+        let signing_key = if let Some((ref provided_key, ref identity)) = self.provided_signing_key
+        {
+            // Use provided signing key directly (already decrypted from UserKeyManager or device key)
+            let key_clone = provided_key.clone();
 
-                // Build SigInfo - sigkey already validated at Database::open time
-                // Determine the appropriate KeyHint based on the sigkey format
-                let hint = if sigkey == "*" {
-                    // Global permission - include actual pubkey in hint
-                    let public_key = provided_key.verifying_key();
-                    let pubkey_string = format_public_key(&public_key);
-                    KeyHint::global(pubkey_string)
-                } else if sigkey.starts_with("ed25519:") {
-                    // Direct pubkey hint
-                    KeyHint::from_pubkey(sigkey.clone())
-                } else {
-                    // Name hint
-                    KeyHint::from_name(sigkey.clone())
-                };
+            // Build SigInfo from the already-typed SigKey identity
+            let sig_builder = SigInfo::builder().key(identity.clone());
 
-                let sig_builder = SigInfo::builder().key(SigKey::Direct(hint));
+            // Set auth ID on the entry builder (without signature initially)
+            builder.set_sig_mut(sig_builder.build());
 
-                // Set auth ID on the entry builder (without signature initially)
-                builder.set_sig_mut(sig_builder.build());
-
-                (Some(key_clone), sigkey.clone())
-            } else {
-                // No authentication key configured
-                return Err(TransactionError::AuthenticationRequired.into());
-            };
+            Some(key_clone)
+        } else {
+            // No authentication key configured
+            return Err(TransactionError::AuthenticationRequired.into());
+        };
         // Encrypt subtree data if encryptors are registered
         // This must happen before building the entry to ensure encrypted data is persisted
         {

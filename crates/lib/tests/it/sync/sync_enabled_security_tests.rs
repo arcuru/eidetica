@@ -8,6 +8,7 @@ use eidetica::{
     Database,
     auth::{Permission, generate_keypair, types::AuthKey},
     crdt::Doc,
+    database::DatabaseKey,
     store::DocStore,
     sync::{
         handler::SyncHandler,
@@ -211,8 +212,7 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
     let client_db = Database::open(
         client_instance.clone(),
         &tree_id,
-        reader_key,
-        "*".to_string(),
+        DatabaseKey::global(reader_key),
     )
     .await
     .unwrap();
@@ -381,8 +381,7 @@ async fn test_sync_succeeds_when_enabled() {
     let client_db = Database::open(
         client_instance.clone(),
         &tree_id,
-        reader_key,
-        "*".to_string(),
+        DatabaseKey::global(reader_key),
     )
     .await
     .unwrap();

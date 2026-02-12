@@ -358,6 +358,23 @@ impl SigKey {
         self.hint().is_global()
     }
 
+    /// Human-readable identifier string for display and audit trails.
+    ///
+    /// Returns `"*"` for global, the pubkey string for pubkey-based,
+    /// the name for name-based, or `"unknown"` if no hint is set.
+    pub fn display_id(&self) -> &str {
+        let hint = self.hint();
+        if hint.is_global() {
+            "*"
+        } else if let Some(pubkey) = &hint.pubkey {
+            pubkey
+        } else if let Some(name) = &hint.name {
+            name
+        } else {
+            "unknown"
+        }
+    }
+
     /// Check if this SigKey uses a specific pubkey hint
     pub fn has_pubkey_hint(&self, pubkey: &str) -> bool {
         self.hint().pubkey.as_deref() == Some(pubkey)

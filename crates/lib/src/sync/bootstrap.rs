@@ -11,6 +11,7 @@ use super::{
 use crate::{
     Database, Result,
     auth::{Permission, crypto::parse_public_key, types::AuthKey},
+    database::DatabaseKey,
     entry::ID,
 };
 
@@ -207,15 +208,14 @@ impl Sync {
         }
     }
 
-    /// Approve a bootstrap request using a user-provided signing key.
+    /// Approve a bootstrap request using a `DatabaseKey`.
     ///
     /// This variant allows approval using keys that are not stored in the backend,
     /// such as user keys managed in memory.
     ///
     /// # Arguments
     /// * `request_id` - The unique identifier of the request to approve
-    /// * `approving_signing_key` - The signing key to use for the transaction
-    /// * `approving_sigkey` - The sigkey identifier for audit trail
+    /// * `key` - The `DatabaseKey` to use for the transaction and audit trail
     ///
     /// # Returns
     /// Result indicating success or failure of the approval operation.
@@ -226,8 +226,7 @@ impl Sync {
     pub async fn approve_bootstrap_request_with_key(
         &self,
         request_id: &str,
-        approving_signing_key: &ed25519_dalek::SigningKey,
-        approving_sigkey: &str,
+        key: &DatabaseKey,
     ) -> Result<()> {
         // Load the request from sync database
         let sync_op = self.sync_tree.new_transaction().await?;
@@ -249,13 +248,7 @@ impl Sync {
         }
 
         // Load the existing database with the user's signing key
-        let database = Database::open(
-            self.instance()?,
-            &request.tree_id,
-            approving_signing_key.clone(),
-            approving_sigkey.to_string(),
-        )
-        .await?;
+        let database = Database::open(self.instance()?, &request.tree_id, key.clone()).await?;
 
         // Explicitly check that the approving user has Admin permission
         // This provides clear error messages and fails fast before modifying the database
@@ -293,6 +286,7 @@ impl Sync {
         tx.commit().await?;
 
         // Update request status to approved
+        let approver_id = key.identity().display_id();
         let approval_time = self
             .instance
             .upgrade()
@@ -303,7 +297,7 @@ impl Sync {
             .update_status(
                 request_id,
                 RequestStatus::Approved {
-                    approved_by: approving_sigkey.to_string(),
+                    approved_by: approver_id.to_string(),
                     approval_time,
                 },
             )
@@ -313,14 +307,14 @@ impl Sync {
         info!(
             request_id = %request_id,
             tree_id = %request.tree_id,
-            approved_by = %approving_sigkey,
+            approved_by = %approver_id,
             "Bootstrap request approved and key added to database using user-provided key"
         );
 
         Ok(())
     }
 
-    /// Reject a bootstrap request using a user-provided signing key with Admin permission validation.
+    /// Reject a bootstrap request using a `DatabaseKey` with Admin permission validation.
     ///
     /// This variant allows rejection using keys that are not stored in the backend,
     /// such as user keys managed in memory. It validates that the rejecting user has
@@ -328,8 +322,7 @@ impl Sync {
     ///
     /// # Arguments
     /// * `request_id` - The unique identifier of the request to reject
-    /// * `rejecting_signing_key` - The signing key to use for permission validation
-    /// * `rejecting_sigkey` - The sigkey identifier for audit trail
+    /// * `key` - The `DatabaseKey` to use for permission validation and audit trail
     ///
     /// # Returns
     /// Result indicating success or failure of the rejection operation.
@@ -340,8 +333,7 @@ impl Sync {
     pub async fn reject_bootstrap_request_with_key(
         &self,
         request_id: &str,
-        rejecting_signing_key: &ed25519_dalek::SigningKey,
-        rejecting_sigkey: &str,
+        key: &DatabaseKey,
     ) -> Result<()> {
         // Load the request from sync database
         let sync_op = self.sync_tree.new_transaction().await?;
@@ -363,13 +355,7 @@ impl Sync {
         }
 
         // Load the existing database with the user's signing key to validate permissions
-        let database = Database::open(
-            self.instance()?,
-            &request.tree_id,
-            rejecting_signing_key.clone(),
-            rejecting_sigkey.to_string(),
-        )
-        .await?;
+        let database = Database::open(self.instance()?, &request.tree_id, key.clone()).await?;
 
         // Check that the rejecting user has Admin permission
         let permission = database.current_permission().await?;
@@ -383,6 +369,7 @@ impl Sync {
         }
 
         // User has Admin permission, proceed with rejection
+        let rejecter_id = key.identity().display_id();
         let rejection_time = self
             .instance
             .upgrade()
@@ -393,7 +380,7 @@ impl Sync {
             .update_status(
                 request_id,
                 RequestStatus::Rejected {
-                    rejected_by: rejecting_sigkey.to_string(),
+                    rejected_by: rejecter_id.to_string(),
                     rejection_time,
                 },
             )
@@ -403,7 +390,7 @@ impl Sync {
         info!(
             request_id = %request_id,
             tree_id = %request.tree_id,
-            rejected_by = %rejecting_sigkey,
+            rejected_by = %rejecter_id,
             "Bootstrap request rejected by user with Admin permission"
         );
 

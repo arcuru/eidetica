@@ -9,6 +9,7 @@ use eidetica::{
         validation::AuthValidator,
     },
     crdt::{Doc, doc::Value},
+    database::DatabaseKey,
     store::DocStore,
 };
 
@@ -37,8 +38,7 @@ async fn test_authentication_validation_revoked_key() {
     let tree_with_revoked_key = Database::open(
         instance.clone(),
         tree.root_id(),
-        revoked_signing_key,
-        "REVOKED_KEY".to_string(),
+        DatabaseKey::with_name(revoked_signing_key, "REVOKED_KEY"),
     )
     .await
     .expect("Failed to load tree with revoked key");
@@ -83,8 +83,7 @@ async fn test_permission_checking_admin_operations() {
     let tree_with_write_key = Database::open(
         instance.clone(),
         tree.root_id(),
-        write_signing_key,
-        "WRITE_KEY".to_string(),
+        DatabaseKey::with_name(write_signing_key, "WRITE_KEY"),
     )
     .await
     .expect("Failed to load tree with write key");
@@ -105,8 +104,7 @@ async fn test_permission_checking_admin_operations() {
     let tree_with_secondary_admin_key = Database::open(
         instance.clone(),
         tree.root_id(),
-        secondary_admin_signing_key,
-        "SECONDARY_ADMIN_KEY".to_string(),
+        DatabaseKey::with_name(secondary_admin_signing_key, "SECONDARY_ADMIN_KEY"),
     )
     .await
     .expect("Failed to load tree with secondary admin key");
@@ -270,8 +268,7 @@ async fn test_entry_validation_with_mixed_key_states() {
     let tree_with_active_key = Database::open(
         instance.clone(),
         tree.root_id(),
-        active_signing_key,
-        "ACTIVE_KEY".to_string(),
+        DatabaseKey::with_name(active_signing_key, "ACTIVE_KEY"),
     )
     .await
     .expect("Failed to load tree with active key");
@@ -293,8 +290,7 @@ async fn test_entry_validation_with_mixed_key_states() {
     let tree_with_revoked_key = Database::open(
         instance.clone(),
         tree.root_id(),
-        revoked_signing_key,
-        "REVOKED_KEY".to_string(),
+        DatabaseKey::with_name(revoked_signing_key, "REVOKED_KEY"),
     )
     .await
     .expect("Failed to load tree with revoked key");

@@ -34,7 +34,7 @@ pub mod user;
 pub use clock::{Clock, SystemClock};
 #[cfg(any(test, feature = "testing"))]
 pub use clock::{ClockHold, FixedClock};
-pub use database::Database;
+pub use database::{Database, DatabaseKey};
 pub use entry::Entry;
 pub use height::HeightStrategy;
 pub use instance::{Instance, WeakInstance};

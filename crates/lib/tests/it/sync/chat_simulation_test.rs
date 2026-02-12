@@ -22,6 +22,7 @@ use eidetica::{
     Database,
     auth::{Permission, generate_keypair, types::SigKey},
     crdt::Doc,
+    database::DatabaseKey,
     store::Table,
     sync::transports::http::HttpTransport,
 };
@@ -168,8 +169,7 @@ async fn test_chat_app_authenticated_bootstrap() {
     let client_database = Database::open(
         client_instance.clone(),
         &tree_id,
-        client_signing_key,
-        sigkey_str,
+        DatabaseKey::from_legacy_sigkey(client_signing_key, &sigkey_str),
     )
     .await
     .expect("Client should load database");
@@ -292,8 +292,7 @@ async fn test_global_key_bootstrap() {
     let client_database = Database::open(
         client_instance.clone(),
         &tree_id,
-        client_signing_key,
-        sigkey_str,
+        DatabaseKey::from_legacy_sigkey(client_signing_key, &sigkey_str),
     )
     .await
     .expect("Client should load database");
@@ -415,8 +414,7 @@ async fn test_multiple_databases_sync() {
         let database = Database::open(
             client_instance.clone(),
             room_id,
-            reader_key,
-            "*".to_string(),
+            DatabaseKey::global(reader_key),
         )
         .await
         .unwrap_or_else(|e| panic!("Failed to load room {}: {e}", i + 1));

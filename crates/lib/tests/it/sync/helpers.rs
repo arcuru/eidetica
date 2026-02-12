@@ -10,6 +10,7 @@ use eidetica::{
     Database, Entry, Error, Instance, Result,
     auth::{AuthKey, Permission as AuthPermission},
     crdt::Doc,
+    database::DatabaseKey,
     entry::ID,
     path,
     store::DocStore,
@@ -569,9 +570,13 @@ pub async fn request_and_map_database_access(
     // Wait for sync to complete
     tokio::time::sleep(Duration::from_millis(sync_delay_ms)).await;
 
-    // Establish database-key mapping
-    // Use the same key_id as the SigKey identifier (common pattern)
-    user.map_key(key_id, tree_id, key_id).await?;
+    // Track the database, which discovers the correct sigkey from auth settings
+    user.track_database(TrackedDatabase {
+        database_id: tree_id.clone(),
+        key_id: key_id.to_string(),
+        sync_settings: Default::default(),
+    })
+    .await?;
 
     Ok(())
 }
@@ -764,12 +769,10 @@ pub async fn enable_sync_for_instance_database(sync: &Sync, database_id: &ID) ->
     let instance = sync.instance()?;
     let signing_key = instance.device_key().clone();
 
-    let sigkey = instance.device_id_string();
     let sync_database = Database::open(
         instance.clone(),
         sync.sync_tree_root_id(),
-        signing_key,
-        sigkey,
+        DatabaseKey::new(signing_key),
     )
     .await?;
 

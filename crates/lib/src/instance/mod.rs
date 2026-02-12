@@ -18,6 +18,7 @@ use crate::{
     Clock, Database, Entry, Result, SystemClock,
     auth::crypto::format_public_key,
     backend::{BackendImpl, InstanceMetadata},
+    database::DatabaseKey,
     entry::ID,
     sync::Sync,
     user::User,
@@ -442,8 +443,7 @@ impl Instance {
         Database::open(
             self.clone(),
             &self.inner.users_db_id,
-            self.inner.device_key.clone(),
-            self.device_id_string(),
+            DatabaseKey::new(self.inner.device_key.clone()),
         )
         .await
     }

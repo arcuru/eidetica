@@ -671,7 +671,7 @@ The user accesses databases through the `User.open_database()` method, which han
 3. System retrieves decrypted SigningKey from UserKeyManager
 4. System gets SigKey mapping via `key_mapping()`
 5. System loads Database with `Database::open()`
-   - Database stores KeySource::Provided with signing key and sigkey
+   - Database stores `DatabaseKey` with signing key and auth identity
 6. User creates transactions normally: `database.new_transaction()`
    - Transaction automatically receives provided key from Database
    - No backend key lookup required

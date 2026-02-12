@@ -4,6 +4,7 @@ use eidetica::{
     Database,
     auth::{types::AuthKey, types::Permission, types::SigKey},
     crdt::Doc,
+    database::DatabaseKey,
     store::DocStore,
 };
 
@@ -19,9 +20,6 @@ async fn test_authenticated_operations() {
         .new_transaction()
         .await
         .expect("Failed to create transaction");
-
-    // The operation should have the correct auth key ID
-    assert_eq!(txn.auth_key_name(), Some(test_key.as_str()));
 
     // Test that we can use the operation
     let store = txn
@@ -50,7 +48,7 @@ async fn test_authenticated_operations() {
 
 #[tokio::test]
 async fn test_mandatory_authentication() {
-    let (_instance, _user, tree, test_key) =
+    let (_instance, _user, tree, _test_key) =
         setup_user_and_tree_with_key("test_user", "TEST_KEY").await;
 
     // Create an operation - should automatically get the default auth key
@@ -58,9 +56,6 @@ async fn test_mandatory_authentication() {
         .new_transaction()
         .await
         .expect("Failed to create transaction");
-
-    // Should have the default auth key ID set automatically
-    assert_eq!(txn.auth_key_name(), Some(test_key.as_str()));
 
     // Should be able to use it normally
     let store = txn
@@ -125,8 +120,7 @@ async fn test_validation_pipeline_with_concurrent_settings_changes() {
     let tree_with_key2 = Database::open(
         instance.clone(),
         tree.root_id(),
-        key2_signing_key,
-        key2_id.clone(),
+        DatabaseKey::from_legacy_sigkey(key2_signing_key, &key2_id),
     )
     .await
     .expect("Failed to reload database with KEY2");

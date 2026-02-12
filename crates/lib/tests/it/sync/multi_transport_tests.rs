@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use eidetica::{
     Database, Result,
+    database::DatabaseKey,
     store::DocStore,
     sync::{
         peer_types::Address,
@@ -200,8 +201,7 @@ async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
     let http_client_db = Database::open(
         http_client_instance.clone(),
         &tree_id,
-        http_client_instance.device_key().clone(),
-        "*".to_string(), // Use wildcard permission
+        DatabaseKey::global(http_client_instance.device_key().clone()),
     )
     .await?;
 

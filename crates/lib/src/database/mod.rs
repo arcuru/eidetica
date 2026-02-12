@@ -29,13 +29,87 @@ use crate::{
 #[cfg(test)]
 mod tests;
 
-/// Specifies the signing key for database operations
+/// A signing key bound to its identity in a database's auth settings.
+///
+/// Pairs the cryptographic signing key with information about how to look up
+/// permissions in the database's auth configuration. The identity determines
+/// which entry in `_settings.auth` this key maps to.
 #[derive(Clone, Debug)]
-pub struct KeySource {
-    /// The signing key, already decrypted and ready to use (from UserKeyManager)
-    pub signing_key: Box<SigningKey>,
-    /// The SigKey identifier used in the database's auth settings
-    pub sigkey: String,
+pub struct DatabaseKey {
+    signing_key: Box<SigningKey>,
+    identity: SigKey,
+}
+
+impl DatabaseKey {
+    /// Identity = pubkey derived from signing key. Most common case.
+    pub fn new(signing_key: SigningKey) -> Self {
+        let pubkey_str = format_public_key(&signing_key.verifying_key());
+        Self {
+            signing_key: Box::new(signing_key),
+            identity: SigKey::from_pubkey(pubkey_str),
+        }
+    }
+
+    /// Identity = explicit SigKey (name, global, delegation, etc.)
+    pub fn with_identity(signing_key: SigningKey, identity: SigKey) -> Self {
+        Self {
+            signing_key: Box::new(signing_key),
+            identity,
+        }
+    }
+
+    /// Identity = global ("*") with actual pubkey embedded for verification.
+    pub fn global(signing_key: SigningKey) -> Self {
+        let pubkey_str = format_public_key(&signing_key.verifying_key());
+        Self {
+            signing_key: Box::new(signing_key),
+            identity: SigKey::global(pubkey_str),
+        }
+    }
+
+    /// Identity = key name lookup.
+    pub fn with_name(signing_key: SigningKey, name: impl Into<String>) -> Self {
+        Self {
+            signing_key: Box::new(signing_key),
+            identity: SigKey::from_name(name),
+        }
+    }
+
+    /// Bridge constructor for legacy `String`-based sigkey mappings.
+    ///
+    /// Converts an untyped sigkey string to the appropriate `SigKey` variant:
+    /// - `"*"` or `"*:<pubkey>"` → global identity with actual pubkey
+    /// - Starts with `"ed25519:"` → direct pubkey identity
+    /// - Otherwise → name-based identity
+    pub fn from_legacy_sigkey(signing_key: SigningKey, sigkey_str: &str) -> Self {
+        let identity = if sigkey_str == "*" || sigkey_str.starts_with("*:") {
+            let pubkey_str = format_public_key(&signing_key.verifying_key());
+            SigKey::global(pubkey_str)
+        } else if sigkey_str.starts_with("ed25519:") {
+            SigKey::from_pubkey(sigkey_str)
+        } else {
+            SigKey::from_name(sigkey_str)
+        };
+        Self {
+            signing_key: Box::new(signing_key),
+            identity,
+        }
+    }
+
+    /// Get the signing key.
+    pub fn signing_key(&self) -> &SigningKey {
+        &self.signing_key
+    }
+
+    /// Get the identity used for auth settings lookup.
+    pub fn identity(&self) -> &SigKey {
+        &self.identity
+    }
+
+    /// Consume self and return the parts.
+    pub fn into_parts(self) -> (SigningKey, SigKey) {
+        (*self.signing_key, self.identity)
+    }
 }
 
 /// Represents a collection of related entries, like a traditional database or a branch in a version control system.
@@ -46,8 +120,8 @@ pub struct KeySource {
 pub struct Database {
     root: ID,
     instance: WeakInstance,
-    /// Key source for operations on this database
-    key_source: Option<KeySource>,
+    /// Signing key bound to its auth identity for this database
+    key: Option<DatabaseKey>,
 }
 
 impl Database {
@@ -58,7 +132,7 @@ impl Database {
     /// This is the preferred method for creating databases in a User context where keys
     /// are managed separately from the backend.
     ///
-    /// The created database will use `KeySource` for all subsequent operations,
+    /// The created database will use a `DatabaseKey` for all subsequent operations,
     /// meaning transactions will use the provided key directly rather than looking it up
     /// from backend storage.
     ///
@@ -72,12 +146,12 @@ impl Database {
     /// * `instance` - Instance handle for storage and coordination
     /// * `signing_key` - The signing key to use for the initial commit and subsequent operations.
     ///   This key should already be decrypted and ready to use. The public key is derived
-    ///   automatically and used as the key identifier in auth settings and `KeySource`.
+    ///   automatically and used as the key identifier in auth settings.
     /// * `initial_settings` - `Doc` CRDT containing the initial settings for the database.
     ///   Use `Doc::new()` for an empty settings document.
     ///
     /// # Returns
-    /// A `Result` containing the new `Database` instance configured with `KeySource`.
+    /// A `Result` containing the new `Database` instance configured with a `DatabaseKey`.
     ///
     /// # Example
     /// ```rust,no_run
@@ -135,15 +209,12 @@ impl Database {
                 .collect::<String>()
         );
 
-        // Create temporary database for bootstrap with KeySource.
+        // Create temporary database for bootstrap with DatabaseKey.
         // This allows the bootstrap transaction to use the provided key directly.
         let temp_database_for_bootstrap = Database {
             root: bootstrap_placeholder_id.clone().into(),
             instance: instance.downgrade(),
-            key_source: Some(KeySource {
-                signing_key: Box::new(signing_key.clone()),
-                sigkey: pubkey_str.clone(),
-            }),
+            key: Some(DatabaseKey::new(signing_key.clone())),
         };
 
         // Create the transaction - it will use the provided key automatically
@@ -165,14 +236,11 @@ impl Database {
         // Commit the initial entry
         let new_root_id = txn.commit().await?;
 
-        // Now create the real database with the new_root_id and KeySource
+        // Now create the real database with the new_root_id and DatabaseKey
         Ok(Self {
             root: new_root_id,
             instance: instance.downgrade(),
-            key_source: Some(KeySource {
-                signing_key: Box::new(signing_key),
-                sigkey: pubkey_str,
-            }),
+            key: Some(DatabaseKey::new(signing_key)),
         })
     }
 
@@ -204,21 +272,21 @@ impl Database {
         Ok(Self {
             root: id,
             instance: instance.downgrade(),
-            key_source: None,
+            key: None,
         })
     }
 
-    /// Opens an existing `Database` with a user-provided signing key.
+    /// Opens an existing `Database` with a `DatabaseKey`.
     ///
     /// This constructor opens an existing database by its root ID and configures it to use
-    /// a user-provided signing key for all subsequent operations. This is used in the User
+    /// a `DatabaseKey` for all subsequent operations. This is used in the User
     /// context where keys are managed by UserKeyManager and already decrypted in memory.
     ///
     /// # Key Management
     ///
     /// This constructor uses **user-managed keys**:
     /// - The key is provided directly (e.g., from UserKeyManager)
-    /// - Uses `KeySource` for all subsequent operations
+    /// - Uses `DatabaseKey` for all subsequent operations
     /// - No backend key storage needed
     ///
     /// Note: To **create** a new database with user-managed keys, use `create()`.
@@ -229,91 +297,121 @@ impl Database {
     /// # Arguments
     /// * `instance` - Instance handle for storage and coordination
     /// * `root_id` - The root entry ID of the existing database to open
-    /// * `signing_key` - Decrypted signing key from UserKeyManager
-    /// * `sigkey` - SigKey identifier string (use `find_sigkeys()` to discover available options)
+    /// * `key` - A `DatabaseKey` combining signing key and auth identity
     ///
     /// # Returns
-    /// A `Result` containing the `Database` instance configured with `KeySource`
+    /// A `Result` containing the `Database` instance configured with the `DatabaseKey`
     ///
     /// # Example
     /// ```rust,no_run
     /// # use eidetica::*;
+    /// # use eidetica::database::DatabaseKey;
     /// # use eidetica::backend::database::InMemory;
-    /// # use eidetica::auth::crypto::{generate_keypair, format_public_key};
-    /// # use eidetica::auth::types::SigKey;
+    /// # use eidetica::auth::crypto::generate_keypair;
     /// # #[tokio::main]
     /// # async fn main() -> Result<()> {
     /// # let instance = Instance::open(Box::new(InMemory::new())).await?;
-    /// # let (signing_key, verifying_key) = generate_keypair();
+    /// # let (signing_key, _verifying_key) = generate_keypair();
     /// # let root_id = "existing_database_root_id".into();
-    /// // Find all SigKeys this public key can use
-    /// let pubkey = format_public_key(&verifying_key);
-    /// let sigkeys = Database::find_sigkeys(&instance, &root_id, &pubkey).await?;
+    /// // Open database with pubkey identity (most common)
+    /// let key = DatabaseKey::new(signing_key);
+    /// let database = Database::open(instance, &root_id, key).await?;
     ///
-    /// // Use the first available SigKey
-    /// if let Some((sigkey, _permission)) = sigkeys.first() {
-    ///     // Extract pubkey or name from the KeyHint
-    ///     let sigkey_str = sigkey.hint().pubkey.clone()
-    ///         .or_else(|| sigkey.hint().name.clone())
-    ///         .expect("Expected pubkey or name hint");
-    ///
-    ///     // Open database with the resolved SigKey
-    ///     let database = Database::open(instance, &root_id, signing_key, sigkey_str).await?;
-    ///
-    ///     // All transactions automatically use the provided key
-    ///     let tx = database.new_transaction().await?;
-    /// }
+    /// // All transactions automatically use the provided key
+    /// let tx = database.new_transaction().await?;
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn open(
-        instance: Instance,
-        root_id: &ID,
-        signing_key: SigningKey,
-        sigkey: String,
-    ) -> Result<Self> {
-        // Load auth settings to validate/resolve sigkey
+    pub async fn open(instance: Instance, root_id: &ID, key: DatabaseKey) -> Result<Self> {
         let temp_db = Self::open_unauthenticated(root_id.clone(), &instance)?;
-        let settings_store = temp_db.get_settings().await?;
-        let auth_settings = settings_store.get_auth_settings().await?;
-
-        // Determine effective sigkey
-        // Check if sigkey resolves either as a pubkey or as a name
-        let sigkey_resolves = auth_settings.get_key_by_pubkey(&sigkey).is_ok()
-            || !auth_settings.find_keys_by_name(&sigkey).is_empty();
-
-        let effective_sigkey = if sigkey == "*" {
-            // Explicit global - verify it exists
-            if auth_settings.get_global_permission().is_none() {
-                return Err(Error::Auth(AuthError::InvalidAuthConfiguration {
-                    reason: "Global '*' permission not configured".to_string(),
-                }));
-            }
-            "*".to_string()
-        } else if sigkey_resolves {
-            // Key found in settings (by pubkey or name) - use it
-            sigkey
-        } else if auth_settings.get_global_permission().is_some() {
-            // Key not found but global exists - switch to "*"
-            "*".to_string()
-        } else {
-            // Key not found and no global - error
-            return Err(Error::Auth(AuthError::InvalidAuthConfiguration {
-                reason: format!(
-                    "Key '{}' not found in auth settings and no global permission",
-                    sigkey
-                ),
-            }));
-        };
+        temp_db.validate_key(&key).await?;
 
         Ok(Self {
             root: root_id.clone(),
             instance: instance.downgrade(),
-            key_source: Some(KeySource {
-                signing_key: Box::new(signing_key),
-                sigkey: effective_sigkey,
-            }),
+            key: Some(key),
         })
+    }
+
+    /// Validate a `DatabaseKey` against this database's auth settings.
+    ///
+    /// Checks that:
+    /// 1. The signing key derives to the public key claimed by the identity
+    /// 2. The identity exists in the database's auth settings
+    ///
+    /// Returns the effective permission for the validated key.
+    ///
+    /// Used by `Database::open` (on an unauthenticated temp db) to fail fast
+    /// on invalid keys, and by `current_permission` to look up permissions.
+    async fn validate_key(&self, key: &DatabaseKey) -> Result<Permission> {
+        let settings_store = self.get_settings().await?;
+        let auth_settings = settings_store.get_auth_settings().await?;
+
+        // Derive actual pubkey from the signing key
+        let actual_pubkey = format_public_key(&key.signing_key().verifying_key());
+
+        match key.identity() {
+            SigKey::Direct(hint) if hint.is_global() => {
+                // Verify the embedded pubkey matches the actual signing key
+                if let Some(embedded_pubkey) = hint.global_actual_pubkey()
+                    && embedded_pubkey != actual_pubkey
+                {
+                    return Err(Error::Auth(AuthError::SigningKeyMismatch {
+                        reason: format!(
+                            "signing key derives pubkey '{actual_pubkey}' \
+                                 but global identity claims '{embedded_pubkey}'"
+                        ),
+                    }));
+                }
+                auth_settings.get_global_permission().ok_or_else(|| {
+                    Error::Auth(AuthError::InvalidAuthConfiguration {
+                        reason: "Global '*' permission not configured".to_string(),
+                    })
+                })
+            }
+            SigKey::Direct(hint) => match (&hint.pubkey, &hint.name) {
+                (Some(pubkey), _) => {
+                    // Verify the claimed pubkey matches the actual signing key
+                    if *pubkey != actual_pubkey {
+                        return Err(Error::Auth(AuthError::SigningKeyMismatch {
+                            reason: format!(
+                                "signing key derives pubkey '{actual_pubkey}' \
+                                 but identity claims '{pubkey}'"
+                            ),
+                        }));
+                    }
+                    let auth_key = auth_settings.get_key_by_pubkey(pubkey)?;
+                    Ok(auth_key.permissions().clone())
+                }
+                (_, Some(name)) => {
+                    let matches = auth_settings.find_keys_by_name(name);
+                    if matches.is_empty() {
+                        return Err(Error::Auth(AuthError::KeyNotFound {
+                            key_name: name.clone(),
+                        }));
+                    }
+                    // Find the named key whose pubkey matches our actual signing key
+                    let (_, auth_key) = matches
+                        .iter()
+                        .find(|(pk, _)| *pk == actual_pubkey)
+                        .ok_or_else(|| {
+                            Error::Auth(AuthError::SigningKeyMismatch {
+                                reason: format!(
+                                    "signing key derives pubkey '{actual_pubkey}' \
+                                     but no key named '{name}' has that pubkey"
+                                ),
+                            })
+                        })?;
+                    Ok(auth_key.permissions().clone())
+                }
+                _ => Err(Error::Auth(AuthError::InvalidAuthConfiguration {
+                    reason: "DatabaseKey has empty identity hint".to_string(),
+                })),
+            },
+            SigKey::Delegation { .. } => Err(Error::Auth(AuthError::InvalidAuthConfiguration {
+                reason: "Delegation identities are not yet supported".to_string(),
+            })),
+        }
     }
 
     /// Find all SigKeys that a public key can use to access a database.
@@ -347,6 +445,7 @@ impl Database {
     /// # Example
     /// ```rust,no_run
     /// # use eidetica::*;
+    /// # use eidetica::database::DatabaseKey;
     /// # use eidetica::backend::database::InMemory;
     /// # use eidetica::auth::crypto::{generate_keypair, format_public_key};
     /// # use eidetica::auth::types::SigKey;
@@ -363,11 +462,8 @@ impl Database {
     ///
     /// // Use the first available SigKey (highest permission)
     /// if let Some((sigkey, _permission)) = sigkeys.first() {
-    ///     // Extract pubkey or name from the KeyHint
-    ///     let sigkey_str = sigkey.hint().pubkey.clone()
-    ///         .or_else(|| sigkey.hint().name.clone())
-    ///         .expect("Expected pubkey or name hint");
-    ///     let database = Database::open(instance, &root_id, signing_key, sigkey_str).await?;
+    ///     let key = DatabaseKey::with_identity(signing_key, sigkey.clone());
+    ///     let database = Database::open(instance, &root_id, key).await?;
     /// }
     /// # Ok(())
     /// # }
@@ -388,9 +484,9 @@ impl Database {
         Ok(auth_settings.find_all_sigkeys_for_pubkey(pubkey))
     }
 
-    /// Get the default authentication key ID for this database.
-    pub fn default_auth_key(&self) -> Option<&str> {
-        self.key_source.as_ref().map(|ks| ks.sigkey.as_str())
+    /// Get the auth identity for this database's configured key.
+    pub fn auth_identity(&self) -> Option<&SigKey> {
+        self.key.as_ref().map(|k| &k.identity)
     }
 
     /// Register an Instance-wide callback to be invoked when entries are written locally to this database.
@@ -590,13 +686,9 @@ impl Database {
     pub async fn new_transaction_with_tips(&self, tips: impl AsRef<[ID]>) -> Result<Transaction> {
         let mut txn = Transaction::new_with_tips(self, tips.as_ref()).await?;
 
-        // Set provided signing key (all databases use KeySource now)
-        if let Some(KeySource {
-            signing_key,
-            sigkey,
-        }) = &self.key_source
-        {
-            txn.set_provided_key(*signing_key.clone(), sigkey.clone());
+        // Set provided signing key from DatabaseKey
+        if let Some(key) = &self.key {
+            txn.set_provided_key(*key.signing_key.clone(), key.identity.clone());
         }
 
         Ok(txn)
@@ -810,8 +902,8 @@ impl Database {
     /// Get the permission level for this database's configured signing key.
     ///
     /// Returns the effective permission for the key that was configured when opening
-    /// or creating this database. This uses the already-resolved sigkey stored in
-    /// the database's `KeySource`, ensuring consistency with `Database::open`.
+    /// or creating this database. This uses the already-resolved identity stored in
+    /// the database's `DatabaseKey`, ensuring consistency with `Database::open`.
     ///
     /// # Returns
     /// The effective Permission for the configured signing key.
@@ -842,44 +934,13 @@ impl Database {
     /// # }
     /// ```
     pub async fn current_permission(&self) -> Result<Permission> {
-        // Get the configured sigkey - this was already resolved during Database::open/create
-        let sigkey = self
-            .key_source
+        let key = self
+            .key
             .as_ref()
-            .map(|ks| ks.sigkey.as_str())
-            .ok_or_else(|| AuthError::InvalidAuthConfiguration {
+            .ok_or(AuthError::InvalidAuthConfiguration {
                 reason: "No signing key configured for this database".to_string(),
             })?;
-
-        // Get auth settings
-        let settings_store = self.get_settings().await?;
-        let auth_settings = settings_store.get_auth_settings().await?;
-
-        // Handle global "*" permission specially
-        if sigkey == "*" {
-            return auth_settings.get_global_permission().ok_or_else(|| {
-                AuthError::InvalidAuthConfiguration {
-                    reason: "Global '*' permission no longer configured".to_string(),
-                }
-                .into()
-            });
-        }
-
-        // Try to resolve as pubkey first (most common case after Database::open)
-        if let Ok(auth_key) = auth_settings.get_key_by_pubkey(sigkey) {
-            return Ok(auth_key.permissions().clone());
-        }
-
-        // Fall back to name lookup
-        let matches = auth_settings.find_keys_by_name(sigkey);
-        if let Some((_, auth_key)) = matches.first() {
-            return Ok(auth_key.permissions().clone());
-        }
-
-        Err(AuthError::KeyNotFound {
-            key_name: sigkey.to_string(),
-        }
-        .into())
+        self.validate_key(key).await
     }
 
     /// Get the authentication settings that were valid when a specific entry was created.

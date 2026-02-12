@@ -183,6 +183,13 @@ pub enum AuthError {
         /// The public key of the new key
         new_pubkey: String,
     },
+
+    /// Signing key does not match the claimed identity in a DatabaseKey.
+    #[error("Signing key mismatch: {reason}")]
+    SigningKeyMismatch {
+        /// Description of the mismatch
+        reason: String,
+    },
 }
 
 impl AuthError {

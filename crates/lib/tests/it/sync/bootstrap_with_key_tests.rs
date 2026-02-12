@@ -13,6 +13,7 @@ use eidetica::{
         types::KeyStatus,
     },
     crdt::Doc,
+    database::DatabaseKey,
     entry::ID,
     store::DocStore,
     sync::transports::http::HttpTransport,
@@ -525,8 +526,7 @@ async fn test_full_e2e_bootstrap_with_database_instances() {
     let client_database = Database::open(
         client_instance.clone(),
         &tree_id,
-        reader_key,
-        "*".to_string(),
+        DatabaseKey::global(reader_key),
     )
     .await
     .expect("Client should be able to load the database after bootstrap");

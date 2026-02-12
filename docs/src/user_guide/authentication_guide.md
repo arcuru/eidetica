@@ -168,35 +168,22 @@ transaction.commit().await?;
 <!-- Code block ignored: Requires existing database with collaborative permissions setup -->
 
 ```rust,ignore
-use eidetica::{Instance, Database, backend::database::Sqlite};
-use eidetica::auth::crypto::{generate_keypair, format_public_key};
-use eidetica::auth::types::SigKey;
+use eidetica::{Instance, backend::database::Sqlite};
 
 let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
-let (signing_key, verifying_key) = generate_keypair();
+
+// Log in as an existing user
+let mut user = instance.login_user("bob", None).await?;
+
 let database_root_id = /* ID from existing collaborative database */;
 
-// Get your public key
-let pubkey = format_public_key(&verifying_key);
+// Open the database — the User resolves the signing key automatically
+let database = user.open_database(&database_root_id).await?;
 
-// Discover all SigKeys this public key can use
-let sigkeys = Database::find_sigkeys(&instance, &database_root_id, &pubkey).await?;
-
-// Use the first available SigKey (will be "*" for global permissions)
-if let Some((sigkey, _permission)) = sigkeys.first() {
-    // Extract pubkey or name hint from the SigKey
-    let sigkey_str = sigkey.hint().pubkey.clone()
-        .or_else(|| sigkey.hint().name.clone())
-        .expect("Expected pubkey or name hint");
-
-    // Open the database with the discovered SigKey
-    let database = Database::open(instance, &database_root_id, signing_key, sigkey_str).await?;
-
-    // Create transactions as usual
-    let txn = database.new_transaction().await?;
-    // ... make changes ...
-    txn.commit().await?;
-}
+// Create transactions as usual — automatically signed with the user's key
+let txn = database.new_transaction().await?;
+// ... make changes ...
+txn.commit().await?;
 ```
 
 This is ideal for:

@@ -19,6 +19,7 @@ use crate::{
     },
     constants::{DATABASES, INSTANCE, USERS},
     crdt::Doc,
+    database::DatabaseKey,
     store::Table,
 };
 
@@ -347,7 +348,7 @@ pub async fn login_user(
     };
 
     // 6. Re-open user database with the user's default key using open()
-    // This configures the database to use KeySource with the user's key
+    // This configures the database to use DatabaseKey with the user's key
     // so all operations work without needing keys in the backend
     let default_key_id = key_manager
         .get_default_key_id()
@@ -362,8 +363,7 @@ pub async fn login_user(
     let user_database = Database::open(
         instance.handle(),
         &user_info.user_database_id,
-        default_signing_key,
-        default_key_id,
+        DatabaseKey::new(default_signing_key),
     )
     .await?;
 

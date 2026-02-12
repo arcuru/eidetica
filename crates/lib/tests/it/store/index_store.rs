@@ -2,8 +2,9 @@
 
 use eidetica::{
     Database, Registered,
-    auth::crypto::{format_public_key, generate_keypair},
+    auth::crypto::generate_keypair,
     crdt::{Doc, doc::Value},
+    database::DatabaseKey,
     store::{DocStore, Table},
 };
 
@@ -553,8 +554,7 @@ async fn test_read_index_from_viewer() {
 #[tokio::test]
 async fn test_index_survives_database_reload() {
     let instance = test_instance().await;
-    let (private_key, public_key) = generate_keypair();
-    let pubkey_str = format_public_key(&public_key);
+    let (private_key, _public_key) = generate_keypair();
 
     // Create database and add subtrees
     let database = Database::create(&instance, private_key.clone(), Doc::new())
@@ -573,7 +573,7 @@ async fn test_index_survives_database_reload() {
 
     // Reload database from same instance to test persistence
     // Reopen with the same key that was used to create
-    let database = Database::open(instance.clone(), &root_id, private_key, pubkey_str)
+    let database = Database::open(instance.clone(), &root_id, DatabaseKey::new(private_key))
         .await
         .unwrap();
 

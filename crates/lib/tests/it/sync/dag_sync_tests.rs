@@ -8,6 +8,7 @@ use std::{collections::HashSet, time::Duration};
 use eidetica::{
     Database,
     auth::generate_keypair,
+    database::DatabaseKey,
     entry::{Entry, ID},
     store::DocStore,
     sync::{
@@ -672,9 +673,13 @@ async fn test_sync_protocol_implementation() {
     // Reload the tree to get the latest state
     // Use global "*" permission (public database with Permission::Read)
     let (reader_key, _) = generate_keypair();
-    let tree2 = Database::open(base_db2.clone(), &tree_root_id, reader_key, "*".to_string())
-        .await
-        .unwrap();
+    let tree2 = Database::open(
+        base_db2.clone(),
+        &tree_root_id,
+        DatabaseKey::global(reader_key),
+    )
+    .await
+    .unwrap();
 
     // Verify ALL synced data is correct
     {

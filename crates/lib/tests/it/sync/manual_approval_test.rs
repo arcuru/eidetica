@@ -20,6 +20,7 @@ use eidetica::{
     },
     backend::VerificationStatus,
     crdt::{Doc, doc::Value},
+    database::DatabaseKey,
     store::Table,
     sync::{
         RequestStatus, Sync,
@@ -1145,8 +1146,7 @@ async fn test_global_permission_enables_transactions() {
     let client_db = Database::open(
         client_instance.clone(),
         &tree_id,
-        client_signing_key,
-        sigkey_str,
+        DatabaseKey::from_legacy_sigkey(client_signing_key, &sigkey_str),
     )
     .await
     .expect("Client should be able to load database");

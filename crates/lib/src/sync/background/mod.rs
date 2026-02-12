@@ -23,6 +23,7 @@ use super::{
 };
 use crate::{
     Database, Error, Instance, Result, WeakInstance,
+    database::DatabaseKey,
     entry::{Entry, ID},
     store::DocStore,
 };
@@ -207,9 +208,8 @@ impl BackgroundSync {
         // Load sync tree with the device key
         let instance = self.instance()?;
         let signing_key = instance.device_key().clone();
-        let sigkey = instance.device_id_string();
 
-        Database::open(instance, &self.sync_tree_id, signing_key, sigkey).await
+        Database::open(instance, &self.sync_tree_id, DatabaseKey::new(signing_key)).await
     }
 
     /// Get the minimum sync interval from all tracked databases
