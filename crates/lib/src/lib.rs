@@ -31,6 +31,7 @@ pub mod sync;
 pub mod transaction;
 pub mod user;
 
+pub use auth::crypto::{PrivateKey, PublicKey};
 pub use clock::{Clock, SystemClock};
 #[cfg(any(test, feature = "testing"))]
 pub use clock::{ClockHold, FixedClock};

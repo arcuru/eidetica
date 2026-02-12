@@ -12,7 +12,7 @@ use super::errors::AuthError;
 use crate::{
     Result,
     auth::{
-        crypto::{PublicKey, parse_public_key},
+        crypto::PublicKey,
         types::{AuthKey, DelegatedTreeRef, KeyHint, KeyStatus, Permission, ResolvedAuth, SigKey},
     },
     crdt::{Doc, doc::Value},
@@ -70,7 +70,7 @@ impl AuthSettings {
 
         // Validate pubkey format (allow "*" for global)
         if pubkey != "*" {
-            parse_public_key(&pubkey)?;
+            PublicKey::from_prefixed_string(&pubkey)?;
         }
 
         // Check if key already exists
@@ -88,7 +88,7 @@ impl AuthSettings {
 
         // Validate pubkey format (allow "*" for global)
         if pubkey != "*" {
-            parse_public_key(&pubkey)?;
+            PublicKey::from_prefixed_string(&pubkey)?;
         }
 
         self.inner.set(format!("keys.{pubkey}"), key);

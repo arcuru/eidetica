@@ -264,43 +264,7 @@ impl<'de> Deserialize<'de> for PrivateKey {
     }
 }
 
-// ==================== Legacy Free Functions ====================
-
-/// Parse a public key from string format
-///
-/// Expected format: "ed25519:<base64_encoded_key>"
-/// The prefix "ed25519:" is required for crypto-agility
-pub fn parse_public_key(key_str: impl AsRef<str>) -> Result<VerifyingKey, AuthError> {
-    let key_str = key_str.as_ref();
-    if !key_str.starts_with("ed25519:") {
-        return Err(AuthError::InvalidKeyFormat {
-            reason: "Key must start with 'ed25519:' prefix".to_string(),
-        });
-    }
-
-    let key_data = &key_str[8..]; // Skip "ed25519:" prefix
-
-    let key_bytes = Base64::decode_vec(key_data).map_err(|e| AuthError::InvalidKeyFormat {
-        reason: format!("Invalid base64 for key: {e}"),
-    })?;
-
-    if key_bytes.len() != ED25519_PUBLIC_KEY_SIZE {
-        return Err(AuthError::InvalidKeyFormat {
-            reason: format!("Ed25519 public key must be {ED25519_PUBLIC_KEY_SIZE} bytes"),
-        });
-    }
-
-    let key_array: [u8; ED25519_PUBLIC_KEY_SIZE] =
-        key_bytes
-            .try_into()
-            .map_err(|_| AuthError::InvalidKeyFormat {
-                reason: "Invalid key length after base64 decoding".to_string(),
-            })?;
-
-    VerifyingKey::from_bytes(&key_array).map_err(|e| AuthError::KeyParsingFailed {
-        reason: e.to_string(),
-    })
-}
+// ==================== Free Functions ====================
 
 /// Format a public key as a prefixed string.
 ///
@@ -349,36 +313,6 @@ pub fn verify_entry_signature(entry: &Entry, public_key: &PublicKey) -> Result<(
 pub fn sign_data(data: impl AsRef<[u8]>, signing_key: &PrivateKey) -> String {
     let sig_bytes = signing_key.sign(data.as_ref());
     Base64::encode_string(&sig_bytes)
-}
-
-/// Verify an Ed25519 signature
-///
-/// # Arguments
-/// * `data` - The data that was signed
-/// * `signature_base64` - Base64-encoded signature
-/// * `verifying_key` - Public key for verification
-pub fn verify_signature(
-    data: impl AsRef<[u8]>,
-    signature_base64: impl AsRef<str>,
-    verifying_key: &VerifyingKey,
-) -> Result<bool, AuthError> {
-    let signature_bytes =
-        Base64::decode_vec(signature_base64.as_ref()).map_err(|_| AuthError::InvalidSignature)?;
-
-    if signature_bytes.len() != ED25519_SIGNATURE_SIZE {
-        return Err(AuthError::InvalidSignature);
-    }
-
-    let signature_array: [u8; ED25519_SIGNATURE_SIZE] = signature_bytes
-        .try_into()
-        .map_err(|_| AuthError::InvalidSignature)?;
-
-    let signature = Signature::from_bytes(&signature_array);
-
-    match verifying_key.verify(data.as_ref(), &signature) {
-        Ok(()) => Ok(true),
-        Err(_) => Ok(false),
-    }
 }
 
 /// Generate random challenge bytes for authentication
@@ -431,14 +365,9 @@ pub fn create_challenge_response(challenge: impl AsRef<[u8]>, signing_key: &Priv
 /// * `response` - The signature bytes to verify
 /// * `public_key_str` - Public key in "ed25519:base64" format
 ///
-/// # Returns
-/// * `Ok(true)` - The signature is cryptographically valid
-/// * `Ok(false)` - The signature is invalid (wrong signature or key mismatch)
-/// * `Err(AuthError)` - Failed to parse the public key format or other structural errors
-///
 /// # Errors
 /// Returns `AuthError::InvalidKeyFormat` if the public key string cannot be parsed.
-/// Returns `AuthError::InvalidSignature` if the signature bytes are malformed.
+/// Returns `AuthError::InvalidSignature` if the signature is malformed or does not match.
 ///
 /// # Example
 /// ```rust,ignore
@@ -449,19 +378,17 @@ pub fn create_challenge_response(challenge: impl AsRef<[u8]>, signing_key: &Priv
 /// let public_key = "ed25519:base64_encoded_key";
 ///
 /// match verify_challenge_response(&challenge, &response, public_key) {
-///     Ok(true) => println!("Signature verified"),
-///     Ok(false) => println!("Invalid signature"),
-///     Err(e) => println!("Parse error: {}", e),
+///     Ok(()) => println!("Signature verified"),
+///     Err(e) => println!("Verification failed: {}", e),
 /// }
 /// ```
 pub fn verify_challenge_response(
     challenge: impl AsRef<[u8]>,
     response: impl AsRef<[u8]>,
     public_key_str: impl AsRef<str>,
-) -> Result<bool, AuthError> {
-    let verifying_key = parse_public_key(public_key_str)?;
-    let signature_b64 = Base64::encode_string(response.as_ref());
-    verify_signature(challenge, signature_b64, &verifying_key)
+) -> Result<(), AuthError> {
+    let public_key = PublicKey::from_prefixed_string(public_key_str.as_ref())?;
+    public_key.verify(challenge.as_ref(), response.as_ref())
 }
 
 #[cfg(test)]
@@ -476,14 +403,13 @@ mod tests {
         // Test signing and verification
         let test_data = b"hello world";
         let signature = sign_data(test_data, &signing_key);
+        let sig_bytes = Base64::decode_vec(&signature).unwrap();
 
-        // verify_signature still takes a concrete VerifyingKey, so extract from PublicKey
-        let PublicKey::Ed25519(vk) = &verifying_key;
-        assert!(verify_signature(test_data, &signature, vk).unwrap());
+        verifying_key.verify(test_data, &sig_bytes).unwrap();
 
         // Test with wrong data
         let wrong_data = b"goodbye world";
-        assert!(!verify_signature(wrong_data, &signature, vk).unwrap());
+        assert!(verifying_key.verify(wrong_data, &sig_bytes).is_err());
     }
 
     #[test]
@@ -553,16 +479,16 @@ mod tests {
         assert_eq!(response.len(), ED25519_SIGNATURE_SIZE);
 
         // Should verify correctly
-        assert!(verify_challenge_response(&challenge, &response, &public_key_str).unwrap());
+        assert!(verify_challenge_response(&challenge, &response, &public_key_str).is_ok());
 
         // Should fail with wrong challenge
         let wrong_challenge = generate_challenge();
-        assert!(!verify_challenge_response(&wrong_challenge, &response, &public_key_str).unwrap());
+        assert!(verify_challenge_response(&wrong_challenge, &response, &public_key_str).is_err());
 
         // Should fail with wrong key
         let (_, wrong_pubkey) = generate_keypair();
         let wrong_public_key_str = format_public_key(&wrong_pubkey);
-        assert!(!verify_challenge_response(&challenge, &response, &wrong_public_key_str).unwrap());
+        assert!(verify_challenge_response(&challenge, &response, &wrong_public_key_str).is_err());
     }
 
     // ==================== PublicKey / PrivateKey Enum Tests ====================

@@ -10,7 +10,7 @@ use super::{
 };
 use crate::{
     Database, Result,
-    auth::{Permission, crypto::parse_public_key, types::AuthKey},
+    auth::{Permission, crypto::PublicKey, types::AuthKey},
     database::DatabaseKey,
     entry::ID,
 };
@@ -61,8 +61,10 @@ impl Sync {
         }
 
         // Validate public key format by attempting to parse it
-        parse_public_key(&requesting_public_key).map_err(|e| SyncError::InvalidPublicKey {
-            reason: format!("Invalid public key format: {e}"),
+        PublicKey::from_prefixed_string(&requesting_public_key).map_err(|e| {
+            SyncError::InvalidPublicKey {
+                reason: format!("Invalid public key format: {e}"),
+            }
         })?;
 
         // Validate key name is not empty

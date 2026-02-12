@@ -79,23 +79,9 @@ impl BackgroundSync {
                     &handshake_resp.public_key,
                 );
 
-                match verification_result {
-                    Ok(true) => {
-                        // Signature verified successfully
-                    }
-                    Ok(false) => {
-                        return Err(SyncError::HandshakeFailed(
-                            "Invalid signature in handshake response".to_string(),
-                        )
-                        .into());
-                    }
-                    Err(e) => {
-                        return Err(SyncError::HandshakeFailed(format!(
-                            "Signature verification failed: {e}"
-                        ))
-                        .into());
-                    }
-                }
+                verification_result.map_err(|e| {
+                    SyncError::HandshakeFailed(format!("Signature verification failed: {e}"))
+                })?;
 
                 // Add peer to sync tree
                 let sync_tree = self.get_sync_tree().await?;

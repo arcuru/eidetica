@@ -7,7 +7,7 @@
 use crate::{
     Result, Transaction,
     auth::{
-        crypto::parse_public_key,
+        crypto::PublicKey,
         settings::AuthSettings,
         types::{AuthKey, DelegatedTreeRef, KeyStatus},
     },
@@ -179,7 +179,7 @@ impl SettingsStore {
     /// Result indicating success or failure
     pub async fn set_auth_key(&self, pubkey: &str, key: AuthKey) -> Result<()> {
         if pubkey != "*" {
-            parse_public_key(pubkey)?;
+            PublicKey::from_prefixed_string(pubkey)?;
         }
         self.inner.set(format!("auth.keys.{pubkey}"), key).await
     }

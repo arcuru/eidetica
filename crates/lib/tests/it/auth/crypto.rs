@@ -3,7 +3,7 @@
 use eidetica::{
     Database,
     auth::{
-        crypto::parse_public_key,
+        crypto::PublicKey,
         types::{AuthKey, Permission, SigKey},
     },
     crdt::Doc,
@@ -26,7 +26,7 @@ async fn test_key_management() {
         .add_private_key(Some("TEST_KEY"))
         .await
         .expect("Failed to add key");
-    let _public_key = parse_public_key(&key_id).expect("Failed to parse key");
+    let _public_key = PublicKey::from_prefixed_string(&key_id).expect("Failed to parse key");
 
     // List keys should now show two keys (default_key + TEST_KEY)
     let keys = user.list_keys().expect("Failed to list keys");
@@ -38,7 +38,7 @@ async fn test_key_management() {
         .add_private_key(Some("TEST_KEY_2"))
         .await
         .expect("Failed to add second key");
-    let _public_key2 = parse_public_key(&key_id2).expect("Failed to parse key");
+    let _public_key2 = PublicKey::from_prefixed_string(&key_id2).expect("Failed to parse key");
 
     // List keys should now show three keys (default_key + TEST_KEY + TEST_KEY_2)
     let keys = user.list_keys().expect("Failed to list keys");
@@ -144,13 +144,13 @@ async fn test_multi_key_authentication() {
         .add_private_key(Some("TEST_KEY"))
         .await
         .expect("Failed to add key");
-    let _public_key1 = parse_public_key(&key_id1).expect("Failed to parse key");
+    let _public_key1 = PublicKey::from_prefixed_string(&key_id1).expect("Failed to parse key");
 
     let key_id2 = user
         .add_private_key(Some("SECOND_KEY"))
         .await
         .expect("Failed to add second key");
-    let _public_key2 = parse_public_key(&key_id2).expect("Failed to parse key");
+    let _public_key2 = PublicKey::from_prefixed_string(&key_id2).expect("Failed to parse key");
 
     // Create database with first key (signing key becomes Admin(0))
     let tree = user
@@ -256,14 +256,14 @@ async fn test_keys_have_unique_identity() {
         .add_private_key(Some("TEST_KEY"))
         .await
         .expect("Failed to add key");
-    let public_key1 = parse_public_key(&key_id1).expect("Failed to parse key");
+    let public_key1 = PublicKey::from_prefixed_string(&key_id1).expect("Failed to parse key");
 
     // Add another key with different name
     let key_id2 = user
         .add_private_key(Some("TEST_KEY_2"))
         .await
         .expect("Failed to add another key");
-    let public_key2 = parse_public_key(&key_id2).expect("Failed to parse key");
+    let public_key2 = PublicKey::from_prefixed_string(&key_id2).expect("Failed to parse key");
 
     // Should be different keys
     assert_ne!(public_key1, public_key2);
