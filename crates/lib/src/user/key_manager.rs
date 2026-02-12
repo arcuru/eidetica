@@ -5,7 +5,6 @@
 
 use std::collections::HashMap;
 
-use ed25519_dalek::{SigningKey, VerifyingKey};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use super::{
@@ -13,7 +12,10 @@ use super::{
     errors::UserError,
     types::{KeyEncryption, UserKey},
 };
-use crate::Result;
+use crate::{
+    Result,
+    auth::crypto::{PrivateKey, PublicKey},
+};
 
 /// Internal key manager that holds decrypted keys during user session
 ///
@@ -25,8 +27,8 @@ use crate::Result;
 ///
 /// All sensitive data is zeroized when the struct is dropped.
 pub struct UserKeyManager {
-    /// Decrypted keys (key_id → SigningKey)
-    decrypted_keys: HashMap<String, SigningKey>,
+    /// Decrypted keys (key_id → PrivateKey)
+    decrypted_keys: HashMap<String, PrivateKey>,
 
     /// Key metadata (loaded from user database)
     key_metadata: HashMap<String, UserKey>,
@@ -100,19 +102,19 @@ impl UserKeyManager {
     ///
     /// # Returns
     /// A reference to the SigningKey if found
-    pub fn get_signing_key(&self, key_id: &str) -> Option<&SigningKey> {
+    pub fn get_signing_key(&self, key_id: &str) -> Option<&PrivateKey> {
         self.decrypted_keys.get(key_id)
     }
 
-    /// Get the public key (VerifyingKey) for a given key ID
+    /// Get the public key for a given key ID.
     ///
     /// # Arguments
     /// * `key_id` - The key identifier
     ///
     /// # Returns
-    /// The VerifyingKey (public key) if the signing key is found
-    pub fn get_public_key(&self, key_id: &str) -> Option<VerifyingKey> {
-        self.decrypted_keys.get(key_id).map(|sk| sk.verifying_key())
+    /// The `PublicKey` if the signing key is found
+    pub fn get_public_key(&self, key_id: &str) -> Option<PublicKey> {
+        self.decrypted_keys.get(key_id).map(|sk| sk.public_key())
     }
 
     /// Add a key to the manager from metadata
@@ -142,11 +144,11 @@ impl UserKeyManager {
             }
             KeyEncryption::Unencrypted => {
                 // Unencrypted key - direct deserialization
-                SigningKey::from_bytes(metadata.private_key_bytes.as_slice().try_into().map_err(
-                    |_| UserError::InvalidKeyFormat {
+                PrivateKey::from_bytes("ed25519", &metadata.private_key_bytes).map_err(|_| {
+                    UserError::InvalidKeyFormat {
                         reason: "Invalid key length".to_string(),
-                    },
-                )?)
+                    }
+                })?
             }
         };
 
@@ -303,7 +305,7 @@ impl Zeroize for UserKeyManager {
             key.zeroize();
         }
 
-        // Clear the HashMap - this drops all SigningKeys (which zeroizes via ed25519_dalek's Drop)
+        // Clear the HashMap - this drops all PrivateKeys (which zeroize via Zeroize impl)
         self.decrypted_keys.clear();
 
         // Clear metadata (contains no plaintext sensitive data)
@@ -322,7 +324,7 @@ mod tests {
 
     fn create_test_user_key(
         key_id: &str,
-        signing_key: &SigningKey,
+        signing_key: &PrivateKey,
         encryption_key: &[u8],
     ) -> UserKey {
         let (encrypted_key, nonce) = encrypt_private_key(signing_key, encryption_key).unwrap();
@@ -481,8 +483,8 @@ mod tests {
         let signing_key = manager.get_signing_key("key1").unwrap();
         let public_key = manager.get_public_key("key1").unwrap();
 
-        // Verify public key matches the signing key's verifying key
-        assert_eq!(signing_key.verifying_key(), public_key);
+        // Verify public key matches the signing key's public key
+        assert_eq!(signing_key.public_key(), public_key);
         assert_eq!(public_key, pub_key1);
     }
 

@@ -5,14 +5,13 @@
 //! the history and relationships between entries. Database holds a weak reference to its
 //! parent Instance, accessing storage and coordination services through that handle.
 
-use ed25519_dalek::SigningKey;
 use rand::{Rng, RngCore, distributions::Alphanumeric};
 use serde_json;
 
 use crate::{
     Error, Instance, Result, Transaction, WeakInstance,
     auth::{
-        crypto::format_public_key,
+        crypto::{PrivateKey, format_public_key},
         errors::AuthError,
         settings::AuthSettings,
         types::{AuthKey, Permission, SigKey},
@@ -36,14 +35,14 @@ mod tests;
 /// which entry in `_settings.auth` this key maps to.
 #[derive(Clone, Debug)]
 pub struct DatabaseKey {
-    signing_key: Box<SigningKey>,
+    signing_key: Box<PrivateKey>,
     identity: SigKey,
 }
 
 impl DatabaseKey {
     /// Identity = pubkey derived from signing key. Most common case.
-    pub fn new(signing_key: SigningKey) -> Self {
-        let pubkey_str = format_public_key(&signing_key.verifying_key());
+    pub fn new(signing_key: PrivateKey) -> Self {
+        let pubkey_str = format_public_key(&signing_key.public_key());
         Self {
             signing_key: Box::new(signing_key),
             identity: SigKey::from_pubkey(pubkey_str),
@@ -51,7 +50,7 @@ impl DatabaseKey {
     }
 
     /// Identity = explicit SigKey (name, global, delegation, etc.)
-    pub fn with_identity(signing_key: SigningKey, identity: SigKey) -> Self {
+    pub fn with_identity(signing_key: PrivateKey, identity: SigKey) -> Self {
         Self {
             signing_key: Box::new(signing_key),
             identity,
@@ -59,8 +58,8 @@ impl DatabaseKey {
     }
 
     /// Identity = global ("*") with actual pubkey embedded for verification.
-    pub fn global(signing_key: SigningKey) -> Self {
-        let pubkey_str = format_public_key(&signing_key.verifying_key());
+    pub fn global(signing_key: PrivateKey) -> Self {
+        let pubkey_str = format_public_key(&signing_key.public_key());
         Self {
             signing_key: Box::new(signing_key),
             identity: SigKey::global(pubkey_str),
@@ -68,7 +67,7 @@ impl DatabaseKey {
     }
 
     /// Identity = key name lookup.
-    pub fn with_name(signing_key: SigningKey, name: impl Into<String>) -> Self {
+    pub fn with_name(signing_key: PrivateKey, name: impl Into<String>) -> Self {
         Self {
             signing_key: Box::new(signing_key),
             identity: SigKey::from_name(name),
@@ -81,9 +80,9 @@ impl DatabaseKey {
     /// - `"*"` or `"*:<pubkey>"` → global identity with actual pubkey
     /// - Starts with `"ed25519:"` → direct pubkey identity
     /// - Otherwise → name-based identity
-    pub fn from_legacy_sigkey(signing_key: SigningKey, sigkey_str: &str) -> Self {
+    pub fn from_legacy_sigkey(signing_key: PrivateKey, sigkey_str: &str) -> Self {
         let identity = if sigkey_str == "*" || sigkey_str.starts_with("*:") {
-            let pubkey_str = format_public_key(&signing_key.verifying_key());
+            let pubkey_str = format_public_key(&signing_key.public_key());
             SigKey::global(pubkey_str)
         } else if sigkey_str.starts_with("ed25519:") {
             SigKey::from_pubkey(sigkey_str)
@@ -97,7 +96,7 @@ impl DatabaseKey {
     }
 
     /// Get the signing key.
-    pub fn signing_key(&self) -> &SigningKey {
+    pub fn signing_key(&self) -> &PrivateKey {
         &self.signing_key
     }
 
@@ -107,7 +106,7 @@ impl DatabaseKey {
     }
 
     /// Consume self and return the parts.
-    pub fn into_parts(self) -> (SigningKey, SigKey) {
+    pub fn into_parts(self) -> (PrivateKey, SigKey) {
         (*self.signing_key, self.identity)
     }
 }
@@ -177,12 +176,11 @@ impl Database {
     /// ```
     pub async fn create(
         instance: &Instance,
-        signing_key: SigningKey,
+        signing_key: PrivateKey,
         initial_settings: Doc,
     ) -> Result<Self> {
         let mut initial_settings = initial_settings;
-        let public_key = signing_key.verifying_key();
-        let pubkey_str = format_public_key(&public_key);
+        let pubkey_str = format_public_key(&signing_key.public_key());
 
         // Reject preconfigured auth — Database::create owns auth bootstrapping entirely.
         if initial_settings.get("auth").is_some() {
@@ -348,7 +346,7 @@ impl Database {
         let auth_settings = settings_store.get_auth_settings().await?;
 
         // Derive actual pubkey from the signing key
-        let actual_pubkey = format_public_key(&key.signing_key().verifying_key());
+        let actual_pubkey = format_public_key(&key.signing_key().public_key());
 
         match key.identity() {
             SigKey::Direct(hint) if hint.is_global() => {
@@ -511,12 +509,12 @@ impl Database {
     /// # use eidetica::*;
     /// # use eidetica::crdt::Doc;
     /// # use eidetica::backend::database::InMemory;
-    /// # use ed25519_dalek::SigningKey;
+    /// # use eidetica::auth::crypto::PrivateKey;
     /// # #[tokio::main]
     /// # async fn main() -> Result<()> {
     /// let instance = Instance::open(Box::new(InMemory::new())).await?;
     /// # let settings = eidetica::crdt::Doc::new();
-    /// # let signing_key = SigningKey::from_bytes(&[0u8; 32]);
+    /// # let signing_key = PrivateKey::generate();
     /// # let database = Database::create(&instance, signing_key, Doc::new()).await?;
     ///
     /// database.on_local_write(|entry, db, _instance| {
@@ -563,12 +561,12 @@ impl Database {
     /// # use eidetica::*;
     /// # use eidetica::crdt::Doc;
     /// # use eidetica::backend::database::InMemory;
-    /// # use ed25519_dalek::SigningKey;
+    /// # use eidetica::auth::crypto::PrivateKey;
     /// # #[tokio::main]
     /// # async fn main() -> Result<()> {
     /// let instance = Instance::open(Box::new(InMemory::new())).await?;
     /// # let settings = eidetica::crdt::Doc::new();
-    /// # let signing_key = SigningKey::from_bytes(&[0u8; 32]);
+    /// # let signing_key = PrivateKey::generate();
     /// # let database = Database::create(&instance, signing_key, Doc::new()).await?;
     ///
     /// database.on_remote_write(|entry, db, _instance| {

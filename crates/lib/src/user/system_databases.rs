@@ -14,7 +14,7 @@ use super::{
 use crate::{
     Database, Instance, Result,
     auth::{
-        crypto::{format_public_key, generate_keypair},
+        crypto::{PrivateKey, format_public_key, generate_keypair},
         types::{AuthKey, Permission},
     },
     constants::{DATABASES, INSTANCE, USERS},
@@ -36,7 +36,7 @@ use crate::{
 /// The _instance Database
 pub async fn create_instance_database(
     instance: &Instance,
-    device_signing_key: &ed25519_dalek::SigningKey,
+    device_signing_key: &PrivateKey,
 ) -> Result<Database> {
     let mut settings = Doc::new();
     settings.set("name", INSTANCE);
@@ -59,7 +59,7 @@ pub async fn create_instance_database(
 /// The created _users Database
 pub async fn create_users_database(
     instance: &Instance,
-    device_signing_key: &ed25519_dalek::SigningKey,
+    device_signing_key: &PrivateKey,
 ) -> Result<Database> {
     let mut settings = Doc::new();
     settings.set("name", USERS);
@@ -83,7 +83,7 @@ pub async fn create_users_database(
 /// The created _databases Database
 pub async fn create_databases_tracking(
     instance: &Instance,
-    device_signing_key: &ed25519_dalek::SigningKey,
+    device_signing_key: &PrivateKey,
 ) -> Result<Database> {
     let mut settings = Doc::new();
     settings.set("name", DATABASES);
@@ -419,7 +419,7 @@ mod tests {
     /// Test helper: Create Instance with device key initialized
     ///
     /// Uses FixedClock for controllable timestamps.
-    async fn setup_instance() -> (Instance, ed25519_dalek::SigningKey) {
+    async fn setup_instance() -> (Instance, PrivateKey) {
         use crate::clock::FixedClock;
 
         let backend = Arc::new(InMemory::new());

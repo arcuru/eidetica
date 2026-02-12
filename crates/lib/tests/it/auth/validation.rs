@@ -5,8 +5,7 @@ use eidetica::{
     auth::{
         AuthSettings,
         crypto::{
-            PrivateKey, PublicKey, format_public_key, generate_keypair, sign_entry,
-            verify_entry_signature,
+            PrivateKey, format_public_key, generate_keypair, sign_entry, verify_entry_signature,
         },
         types::{AuthKey, DelegationStep, KeyHint, KeyStatus, Permission, SigInfo, SigKey},
         validation::AuthValidator,
@@ -524,8 +523,7 @@ async fn test_entry_validation_with_invalid_signatures() {
     );
 
     // Test signature verification function directly
-    let pubkey = PublicKey::Ed25519(verifying_key);
-    verify_entry_signature(&correct_entry, &pubkey).expect("Valid signature should verify");
+    verify_entry_signature(&correct_entry, &verifying_key).expect("Valid signature should verify");
     assert!(
         verify_entry_signature(&correct_entry, &wrong_pubkey).is_err(),
         "Wrong key should fail verification"
@@ -553,14 +551,14 @@ async fn test_sigkey_tampering_invalidates_signature() {
     entry.sig.sig = Some(signature);
 
     // Original entry should verify with the correct key
-    let pubkey = PublicKey::Ed25519(verifying_key);
-    verify_entry_signature(&entry, &pubkey).expect("Original entry should verify successfully");
+    verify_entry_signature(&entry, &verifying_key)
+        .expect("Original entry should verify successfully");
 
     // Tamper with pubkey hint - should fail verification
     let mut tampered_pubkey = entry.clone();
     tampered_pubkey.sig.key = SigKey::from_pubkey(&other_pubkey_str);
     assert!(
-        verify_entry_signature(&tampered_pubkey, &pubkey).is_err(),
+        verify_entry_signature(&tampered_pubkey, &verifying_key).is_err(),
         "Tampering with pubkey hint should invalidate signature"
     );
 
@@ -568,7 +566,7 @@ async fn test_sigkey_tampering_invalidates_signature() {
     let mut tampered_name = entry.clone();
     tampered_name.sig.key = SigKey::from_name("tampered_name");
     assert!(
-        verify_entry_signature(&tampered_name, &pubkey).is_err(),
+        verify_entry_signature(&tampered_name, &verifying_key).is_err(),
         "Tampering with name hint should invalidate signature"
     );
 
@@ -582,7 +580,7 @@ async fn test_sigkey_tampering_invalidates_signature() {
         hint: KeyHint::from_pubkey(&pubkey_str),
     };
     assert!(
-        verify_entry_signature(&tampered_delegation, &pubkey).is_err(),
+        verify_entry_signature(&tampered_delegation, &verifying_key).is_err(),
         "Changing SigKey variant should invalidate signature"
     );
 }

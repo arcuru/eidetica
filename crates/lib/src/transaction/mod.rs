@@ -33,7 +33,7 @@ use crate::{
     Database, Result, Store,
     auth::{
         AuthSettings,
-        crypto::sign_entry,
+        crypto::{PrivateKey, sign_entry},
         types::{SigInfo, SigKey},
         validation::AuthValidator,
     },
@@ -158,7 +158,7 @@ pub struct Transaction {
     /// The database this transaction belongs to
     db: Database,
     /// Provided signing key paired with its auth identity
-    provided_signing_key: Option<(ed25519_dalek::SigningKey, SigKey)>,
+    provided_signing_key: Option<(PrivateKey, SigKey)>,
     /// Registered encryptors for transparent encryption/decryption of specific subtrees
     /// Maps subtree name -> encryptor implementation
     /// When an encryptor is registered, the transaction automatically encrypts writes
@@ -232,11 +232,7 @@ impl Transaction {
     /// # Arguments
     /// * `signing_key` - The decrypted signing key from UserKeyManager
     /// * `identity` - The SigKey identity used in database auth settings
-    pub(crate) fn set_provided_key(
-        &mut self,
-        signing_key: ed25519_dalek::SigningKey,
-        identity: SigKey,
-    ) {
+    pub(crate) fn set_provided_key(&mut self, signing_key: PrivateKey, identity: SigKey) {
         self.provided_signing_key = Some((signing_key, identity));
     }
 

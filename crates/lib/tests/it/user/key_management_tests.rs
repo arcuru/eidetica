@@ -163,11 +163,14 @@ async fn test_get_signing_key() {
         .expect("Should get signing key");
 
     // Verify it's a valid signing key
-    let verifying_key = signing_key.verifying_key();
-    assert!(
-        verifying_key.as_bytes().len() == 32,
-        "Should be valid Ed25519 key"
-    );
+    let public_key = signing_key.public_key();
+    // Extract the concrete VerifyingKey from the PublicKey enum to check bytes
+    match public_key {
+        eidetica::auth::crypto::PublicKey::Ed25519(vk) => {
+            assert!(vk.as_bytes().len() == 32, "Should be valid Ed25519 key");
+        }
+        _ => panic!("Unexpected key type"),
+    }
 }
 
 #[tokio::test]
@@ -184,11 +187,14 @@ async fn test_get_default_signing_key() {
         .expect("Should get default signing key");
 
     // Verify it's a valid signing key
-    let verifying_key = signing_key.verifying_key();
-    assert!(
-        verifying_key.as_bytes().len() == 32,
-        "Should be valid Ed25519 key"
-    );
+    let public_key = signing_key.public_key();
+    // Extract the concrete VerifyingKey from the PublicKey enum to check bytes
+    match public_key {
+        eidetica::auth::crypto::PublicKey::Ed25519(vk) => {
+            assert!(vk.as_bytes().len() == 32, "Should be valid Ed25519 key");
+        }
+        _ => panic!("Unexpected key type"),
+    }
 }
 
 #[tokio::test]
@@ -221,7 +227,7 @@ async fn test_get_public_key() {
     let public_key = user.get_public_key(&key_id).expect("Should get public key");
 
     // Verify the public key matches the signing key's verifying key
-    let expected_pubkey = format_public_key(&signing_key.verifying_key());
+    let expected_pubkey = format_public_key(&signing_key.public_key());
     assert_eq!(
         public_key, expected_pubkey,
         "Public key should match the signing key's verifying key"
@@ -291,7 +297,7 @@ async fn test_get_public_key_multiple_keys() {
 
     // Verify each matches its corresponding signing key
     let signing_key1 = user.get_signing_key(&key1_id).expect("Get signing key 1");
-    let expected_pubkey1 = format_public_key(&signing_key1.verifying_key());
+    let expected_pubkey1 = format_public_key(&signing_key1.public_key());
     assert_eq!(
         pubkey1, expected_pubkey1,
         "Public key 1 should match signing key 1"

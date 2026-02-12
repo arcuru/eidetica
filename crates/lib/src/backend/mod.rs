@@ -11,11 +11,11 @@
 use std::any::Any;
 
 use async_trait::async_trait;
-use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     Result,
+    auth::crypto::PrivateKey,
     entry::{Entry, ID},
 };
 
@@ -30,11 +30,11 @@ use crate::{
 /// A backend without metadata is treated as uninitialized and may trigger instance creation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstanceMetadata {
-    /// Device signing key (Ed25519) - the instance's cryptographic identity.
+    /// Device signing key - the instance's cryptographic identity.
     ///
     /// This key is generated once during instance creation and persists for the lifetime
     /// of the instance. It is used to sign system database entries and for sync identity.
-    pub device_key: SigningKey,
+    pub device_key: PrivateKey,
 
     /// Root ID of the _users system database.
     ///

@@ -473,8 +473,7 @@ impl User {
                 })?;
 
         // Get public key for SigKey discovery
-        let verifying_key = signing_key.verifying_key();
-        let public_key = auth::format_public_key(&verifying_key);
+        let public_key = auth::format_public_key(&signing_key.public_key());
 
         // Discover available SigKeys for this public key
         let available_sigkeys =
@@ -618,7 +617,7 @@ impl User {
     /// # Returns
     /// The SigningKey if found
     #[cfg(any(test, feature = "testing"))]
-    pub fn get_signing_key(&self, key_id: &str) -> Result<ed25519_dalek::SigningKey> {
+    pub fn get_signing_key(&self, key_id: &str) -> Result<crate::auth::crypto::PrivateKey> {
         self.key_manager
             .get_signing_key(key_id)
             .cloned()
@@ -803,8 +802,7 @@ impl User {
         })?;
 
         // Derive the public key from the signing key
-        let verifying_key = signing_key.verifying_key();
-        let public_key = format_public_key(&verifying_key);
+        let public_key = format_public_key(&signing_key.public_key());
 
         // Delegate to Sync layer with the public key
         sync.sync_with_peer_for_bootstrap_with_key(

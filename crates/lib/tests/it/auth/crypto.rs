@@ -3,7 +3,7 @@
 use eidetica::{
     Database,
     auth::{
-        crypto::{format_public_key, parse_public_key},
+        crypto::parse_public_key,
         types::{AuthKey, Permission, SigKey},
     },
     crdt::Doc,
@@ -26,7 +26,7 @@ async fn test_key_management() {
         .add_private_key(Some("TEST_KEY"))
         .await
         .expect("Failed to add key");
-    let public_key = parse_public_key(&key_id).expect("Failed to parse key");
+    let _public_key = parse_public_key(&key_id).expect("Failed to parse key");
 
     // List keys should now show two keys (default_key + TEST_KEY)
     let keys = user.list_keys().expect("Failed to list keys");
@@ -38,7 +38,7 @@ async fn test_key_management() {
         .add_private_key(Some("TEST_KEY_2"))
         .await
         .expect("Failed to add second key");
-    let public_key2 = parse_public_key(&key_id2).expect("Failed to parse key");
+    let _public_key2 = parse_public_key(&key_id2).expect("Failed to parse key");
 
     // List keys should now show three keys (default_key + TEST_KEY + TEST_KEY_2)
     let keys = user.list_keys().expect("Failed to list keys");
@@ -46,11 +46,8 @@ async fn test_key_management() {
     assert!(keys.contains(&key_id));
     assert!(keys.contains(&key_id2));
 
-    // Keys should be different
-    assert_ne!(
-        format_public_key(&public_key),
-        format_public_key(&public_key2)
-    );
+    // Keys should be different (compare the key_id strings directly, they're the full pubkeys right now)
+    assert_ne!(key_id, key_id2);
 
     // Test signing and verification
     let tree = user

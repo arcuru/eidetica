@@ -137,6 +137,7 @@ impl<'de> Deserialize<'de> for PublicKey {
 /// Secret material is volatile-zeroed on drop via the inner key types'
 /// [`ZeroizeOnDrop`] implementations.
 #[non_exhaustive]
+#[derive(Clone)]
 pub enum PrivateKey {
     /// Ed25519 signing key (32 bytes)
     Ed25519(SigningKey),
@@ -177,14 +178,14 @@ impl PrivateKey {
     ///
     /// The returned buffer is wrapped in [`Zeroizing`] so the key material
     /// is automatically cleared from memory when dropped.
-    fn to_bytes(&self) -> Zeroizing<Vec<u8>> {
+    pub fn to_bytes(&self) -> Zeroizing<Vec<u8>> {
         match self {
             PrivateKey::Ed25519(key) => Zeroizing::new(key.to_bytes().to_vec()),
         }
     }
 
     /// Reconstruct a private key from raw bytes and an algorithm identifier.
-    fn from_bytes(algorithm: &str, bytes: &[u8]) -> Result<Self, AuthError> {
+    pub fn from_bytes(algorithm: &str, bytes: &[u8]) -> Result<Self, AuthError> {
         match algorithm {
             "ed25519" => {
                 let key_array: [u8; ED25519_PRIVATE_KEY_SIZE] =
@@ -301,31 +302,28 @@ pub fn parse_public_key(key_str: impl AsRef<str>) -> Result<VerifyingKey, AuthEr
     })
 }
 
-/// Format a public key as string
+/// Format a public key as a prefixed string.
 ///
-/// Returns format: "ed25519:<base64_encoded_key>"
-pub fn format_public_key(key: &VerifyingKey) -> String {
-    let key_bytes = key.to_bytes();
-    let encoded = Base64::encode_string(&key_bytes);
-    format!("ed25519:{encoded}")
+/// Returns format: `"ed25519:<base64_encoded_key>"`
+pub fn format_public_key(key: &PublicKey) -> String {
+    key.to_prefixed_string()
 }
 
-/// Generate an Ed25519 key pair
+/// Generate a new keypair using the default algorithm (Ed25519).
 ///
-/// Uses cryptographically secure random number generation
-pub fn generate_keypair() -> (SigningKey, VerifyingKey) {
-    let signing_key = SigningKey::generate(&mut OsRng);
-    let verifying_key = signing_key.verifying_key();
-    (signing_key, verifying_key)
+/// Returns a `(PrivateKey, PublicKey)` tuple. Uses the operating system's
+/// cryptographically secure random number generator.
+pub fn generate_keypair() -> (PrivateKey, PublicKey) {
+    let key = PrivateKey::generate();
+    let pubkey = key.public_key();
+    (key, pubkey)
 }
 
-/// Sign an entry with an Ed25519 private key
+/// Sign an entry and return a base64-encoded signature string.
 ///
-/// Returns base64-encoded signature string
-pub fn sign_entry(entry: &Entry, signing_key: &SigningKey) -> Result<String, Error> {
-    let signing_bytes = entry.signing_bytes()?;
-    let signature = signing_key.sign(&signing_bytes);
-    Ok(Base64::encode_string(&signature.to_bytes()))
+/// Accepts the algorithm-agnostic `PrivateKey` enum.
+pub fn sign_entry(entry: &Entry, signing_key: &PrivateKey) -> Result<String, Error> {
+    Ok(sign_data(entry.signing_bytes()?, signing_key))
 }
 
 /// Verify an entry's signature using an algorithm-agnostic `PublicKey`.
@@ -347,12 +345,10 @@ pub fn verify_entry_signature(entry: &Entry, public_key: &PublicKey) -> Result<(
     public_key.verify(&signing_bytes, &signature_bytes)
 }
 
-/// Sign data with an Ed25519 private key
-///
-/// Returns base64-encoded signature
-pub fn sign_data(data: impl AsRef<[u8]>, signing_key: &SigningKey) -> String {
-    let signature = signing_key.sign(data.as_ref());
-    Base64::encode_string(&signature.to_bytes())
+/// Sign data and return a base64-encoded signature.
+pub fn sign_data(data: impl AsRef<[u8]>, signing_key: &PrivateKey) -> String {
+    let sig_bytes = signing_key.sign(data.as_ref());
+    Base64::encode_string(&sig_bytes)
 }
 
 /// Verify an Ed25519 signature
@@ -421,9 +417,8 @@ pub fn generate_challenge() -> Vec<u8> {
 ///
 /// # Returns
 /// Raw signature bytes (not base64 encoded)
-pub fn create_challenge_response(challenge: impl AsRef<[u8]>, signing_key: &SigningKey) -> Vec<u8> {
-    let signature = signing_key.sign(challenge.as_ref());
-    signature.to_bytes().to_vec()
+pub fn create_challenge_response(challenge: impl AsRef<[u8]>, signing_key: &PrivateKey) -> Vec<u8> {
+    signing_key.sign(challenge.as_ref())
 }
 
 /// Verify a challenge response
@@ -482,11 +477,13 @@ mod tests {
         let test_data = b"hello world";
         let signature = sign_data(test_data, &signing_key);
 
-        assert!(verify_signature(test_data, &signature, &verifying_key).unwrap());
+        // verify_signature still takes a concrete VerifyingKey, so extract from PublicKey
+        let PublicKey::Ed25519(vk) = &verifying_key;
+        assert!(verify_signature(test_data, &signature, vk).unwrap());
 
         // Test with wrong data
         let wrong_data = b"goodbye world";
-        assert!(!verify_signature(wrong_data, &signature, &verifying_key).unwrap());
+        assert!(!verify_signature(wrong_data, &signature, vk).unwrap());
     }
 
     #[test]
@@ -497,7 +494,7 @@ mod tests {
         assert!(formatted.starts_with("ed25519:"));
 
         // Should be able to parse it back
-        let parsed = parse_public_key(&formatted);
+        let parsed = PublicKey::from_prefixed_string(&formatted);
         assert!(parsed.is_ok());
         assert_eq!(parsed.unwrap(), verifying_key);
     }
@@ -523,12 +520,11 @@ mod tests {
         entry.sig.sig = Some(signature);
 
         // Verify the signature using algorithm-agnostic PublicKey
-        let pubkey = PublicKey::Ed25519(verifying_key);
-        verify_entry_signature(&entry, &pubkey).unwrap();
+        verify_entry_signature(&entry, &verifying_key).unwrap();
 
         // Test with wrong key
-        let wrong_pubkey = PrivateKey::generate().public_key();
-        assert!(verify_entry_signature(&entry, &wrong_pubkey).is_err());
+        let (_, wrong_key) = generate_keypair();
+        assert!(verify_entry_signature(&entry, &wrong_key).is_err());
     }
 
     #[test]
@@ -564,8 +560,8 @@ mod tests {
         assert!(!verify_challenge_response(&wrong_challenge, &response, &public_key_str).unwrap());
 
         // Should fail with wrong key
-        let (_, wrong_verifying_key) = generate_keypair();
-        let wrong_public_key_str = format_public_key(&wrong_verifying_key);
+        let (_, wrong_pubkey) = generate_keypair();
+        let wrong_public_key_str = format_public_key(&wrong_pubkey);
         assert!(!verify_challenge_response(&challenge, &response, &wrong_public_key_str).unwrap());
     }
 
@@ -747,27 +743,22 @@ mod tests {
     fn test_public_key_compat_with_legacy_format() {
         // PublicKey.to_prefixed_string() should produce the same format as format_public_key()
         let (_, verifying_key) = generate_keypair();
-        let legacy = format_public_key(&verifying_key);
-        let pubkey = PublicKey::Ed25519(verifying_key);
-        assert_eq!(pubkey.to_prefixed_string(), legacy);
+        let formatted = format_public_key(&verifying_key);
+        assert_eq!(verifying_key.to_prefixed_string(), formatted);
     }
 
     #[test]
-    fn test_private_key_compat_with_legacy_keypair() {
-        // PrivateKey should produce the same signatures as raw SigningKey
+    fn test_private_key_sign_and_verify_roundtrip() {
         let (signing_key, verifying_key) = generate_keypair();
-        let private_key = PrivateKey::Ed25519(signing_key.clone());
 
         let data = b"test data for signing";
-        let legacy_sig = sign_data(data, &signing_key);
-        let enum_sig = private_key.sign(data);
+        let sig_b64 = sign_data(data, &signing_key);
+        let sig_bytes = signing_key.sign(data);
 
-        // The enum produces raw bytes; legacy produces base64.
-        // Verify that the enum signature verifies with both old and new APIs.
-        assert!(verify_signature(data, Base64::encode_string(&enum_sig), &verifying_key).unwrap());
-        private_key
-            .public_key()
-            .verify(data, &Base64::decode_vec(&legacy_sig).unwrap())
+        // Verify via PublicKey enum
+        verifying_key
+            .verify(data, &Base64::decode_vec(&sig_b64).unwrap())
             .unwrap();
+        verifying_key.verify(data, &sig_bytes).unwrap();
     }
 }

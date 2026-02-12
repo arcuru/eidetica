@@ -61,7 +61,7 @@ async fn setup_user_with_database() -> Result<(Instance, User, Database, Sync, I
     // Add admin to the database's auth configuration so sync handler can modify the database
     let device_key_name = "admin";
     let device_signing_key = instance.device_key().clone();
-    let device_pubkey = format_public_key(&device_signing_key.verifying_key());
+    let device_pubkey = format_public_key(&device_signing_key.public_key());
 
     // Add admin as Admin to the database (keyed by pubkey, name is device_key_name)
     let tx = database
@@ -104,7 +104,7 @@ async fn setup_user_with_database() -> Result<(Instance, User, Database, Sync, I
 }
 
 /// Create a client keypair and formatted public key
-fn create_client_key() -> (ed25519_dalek::SigningKey, String) {
+fn create_client_key() -> (eidetica::auth::crypto::PrivateKey, String) {
     let (signing_key, verifying_key) = generate_keypair();
     let pubkey = format_public_key(&verifying_key);
     (signing_key, pubkey)
@@ -521,7 +521,7 @@ async fn test_multiple_users() {
     // Add admin to Alice's database for sync
     let device_key_name = "admin";
     let device_signing_key = instance.device_key().clone();
-    let device_pubkey = format_public_key(&device_signing_key.verifying_key());
+    let device_pubkey = format_public_key(&device_signing_key.public_key());
     let alice_tx = alice_db
         .new_transaction()
         .await
@@ -737,7 +737,7 @@ async fn test_user_without_admin_cannot_modify() {
     // Add admin to Alice's database for sync
     let device_key_name = "admin";
     let device_signing_key = instance.device_key().clone();
-    let device_pubkey = format_public_key(&device_signing_key.verifying_key());
+    let device_pubkey = format_public_key(&device_signing_key.public_key());
     let alice_tx = alice_db
         .new_transaction()
         .await

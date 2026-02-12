@@ -11,12 +11,11 @@ use std::{
     sync::{Arc, Mutex, Weak},
 };
 
-use ed25519_dalek::{SigningKey, VerifyingKey};
 use handle_trait::Handle;
 
 use crate::{
     Clock, Database, Entry, Result, SystemClock,
-    auth::crypto::format_public_key,
+    auth::crypto::{PrivateKey, PublicKey, format_public_key},
     backend::{BackendImpl, InstanceMetadata},
     database::DatabaseKey,
     entry::ID,
@@ -87,7 +86,7 @@ pub(crate) struct InstanceInternal {
     /// Root ID of the _databases system database
     databases_db_id: ID,
     /// Device signing key - the instance's cryptographic identity
-    device_key: SigningKey,
+    device_key: PrivateKey,
     /// Per-database callbacks keyed by (WriteSource, tree_id)
     write_callbacks: Mutex<HashMap<CallbackKey, CallbackVec>>,
     /// Global callbacks keyed by WriteSource (triggered regardless of database)
@@ -518,7 +517,7 @@ impl Instance {
     /// Similar to `Database::open_unauthenticated`, this is a controlled escape hatch
     /// for internal library operations. Use with care - prefer User API for normal operations.
     #[cfg(not(any(test, feature = "testing")))]
-    pub(crate) fn device_key(&self) -> &SigningKey {
+    pub(crate) fn device_key(&self) -> &PrivateKey {
         &self.inner.device_key
     }
 
@@ -526,7 +525,7 @@ impl Instance {
     ///
     /// This is exposed for testing purposes only. In production, use the User API.
     #[cfg(any(test, feature = "testing"))]
-    pub fn device_key(&self) -> &SigningKey {
+    pub fn device_key(&self) -> &PrivateKey {
         &self.inner.device_key
     }
 
@@ -534,8 +533,8 @@ impl Instance {
     ///
     /// # Returns
     /// The device's public key (device ID).
-    pub fn device_id(&self) -> VerifyingKey {
-        self.inner.device_key.verifying_key()
+    pub fn device_id(&self) -> PublicKey {
+        self.inner.device_key.public_key()
     }
 
     /// Get the device ID as a formatted string.
@@ -546,7 +545,7 @@ impl Instance {
     /// # Returns
     /// The formatted device ID string.
     pub fn device_id_string(&self) -> String {
-        format_public_key(&self.inner.device_key.verifying_key())
+        format_public_key(&self.inner.device_key.public_key())
     }
 
     // === Synchronization Management ===

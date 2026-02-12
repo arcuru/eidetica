@@ -12,11 +12,10 @@ use argon2::{
     Argon2,
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core},
 };
-use ed25519_dalek::SigningKey;
 use zeroize::Zeroize;
 
 use super::errors::UserError;
-use crate::Result;
+use crate::{Result, auth::crypto::PrivateKey};
 
 /// Salt string length for Argon2 (base64 encoded, 22 chars)
 pub const SALT_LENGTH: usize = 22;
@@ -108,10 +107,10 @@ pub fn derive_encryption_key(password: impl AsRef<str>, salt: impl AsRef<str>) -
     Ok(key)
 }
 
-/// Encrypt a private key with a password-derived encryption key
+/// Encrypt a private key with a password-derived encryption key.
 ///
 /// # Arguments
-/// * `private_key` - The Ed25519 signing key to encrypt
+/// * `private_key` - The signing key to encrypt
 /// * `encryption_key` - The 32-byte encryption key
 ///
 /// # Returns
@@ -119,7 +118,7 @@ pub fn derive_encryption_key(password: impl AsRef<str>, salt: impl AsRef<str>) -
 /// - ciphertext is the encrypted private key
 /// - nonce is the 12-byte nonce used for encryption
 pub fn encrypt_private_key(
-    private_key: &SigningKey,
+    private_key: &PrivateKey,
     encryption_key: impl AsRef<[u8]>,
 ) -> Result<(Vec<u8>, Vec<u8>)> {
     let encryption_key = encryption_key.as_ref();
@@ -160,7 +159,7 @@ pub fn encrypt_private_key(
     Ok((ciphertext, nonce.to_vec()))
 }
 
-/// Decrypt a private key
+/// Decrypt a private key.
 ///
 /// # Arguments
 /// * `ciphertext` - The encrypted private key
@@ -168,12 +167,12 @@ pub fn encrypt_private_key(
 /// * `encryption_key` - The 32-byte encryption key
 ///
 /// # Returns
-/// The decrypted SigningKey
+/// The decrypted `PrivateKey`
 pub fn decrypt_private_key(
     ciphertext: impl AsRef<[u8]>,
     nonce: impl AsRef<[u8]>,
     encryption_key: impl AsRef<[u8]>,
-) -> Result<SigningKey> {
+) -> Result<PrivateKey> {
     let encryption_key = encryption_key.as_ref();
     let nonce_bytes = nonce.as_ref();
     let ciphertext = ciphertext.as_ref();
@@ -221,33 +220,21 @@ pub fn decrypt_private_key(
                 reason: format!("Decryption failed: {e}"),
             })?;
 
-    // Convert to SigningKey
-    if plaintext.len() != 32 {
-        // Zero out the plaintext before returning error
+    // Reconstruct PrivateKey (default to ed25519 for backwards compat)
+    let key = PrivateKey::from_bytes("ed25519", &plaintext).map_err(|_| {
         plaintext.zeroize();
-        return Err(UserError::DecryptionFailed {
+        UserError::DecryptionFailed {
             reason: format!(
                 "Invalid key length after decryption: expected 32, got {}",
                 plaintext.len()
             ),
         }
-        .into());
-    }
+    })?;
 
-    let mut key_bytes: [u8; 32] =
-        plaintext
-            .try_into()
-            .map_err(|_| UserError::DecryptionFailed {
-                reason: "Failed to convert plaintext to key bytes".to_string(),
-            })?;
+    // Zeroize the temporary plaintext
+    plaintext.zeroize();
 
-    // Create SigningKey (copies the bytes internally)
-    let signing_key = SigningKey::from_bytes(&key_bytes);
-
-    // Zeroize the temporary key bytes
-    key_bytes.zeroize();
-
-    Ok(signing_key)
+    Ok(key)
 }
 
 #[cfg(test)]

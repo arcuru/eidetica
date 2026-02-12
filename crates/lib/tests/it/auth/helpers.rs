@@ -1,7 +1,7 @@
 use eidetica::{
     Database, Instance, Result,
     auth::{
-        crypto::{format_public_key, parse_public_key},
+        crypto::{PublicKey, format_public_key},
         settings::AuthSettings,
         types::{
             AuthKey, DelegatedTreeRef, DelegationStep, KeyHint, KeyStatus, Permission,
@@ -133,7 +133,7 @@ pub async fn configure_database_auth(
     {
         let settings = txn.get_settings()?;
         for (display_name, key_id, permission, status) in auth_config {
-            let public_key = parse_public_key(key_id)?;
+            let public_key = PublicKey::from_prefixed_string(key_id)?;
             let pubkey_str = format_public_key(&public_key);
             let auth_key = AuthKey::new(Some(*display_name), permission.clone(), status.clone());
             settings.set_auth_key(&pubkey_str, auth_key).await?;

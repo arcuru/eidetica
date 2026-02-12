@@ -479,8 +479,7 @@ impl SyncHandlerImpl {
             let signing_key = instance.device_key().clone();
 
             // Generate device ID and public key from signing key
-            let verifying_key = signing_key.verifying_key();
-            let public_key = format_public_key(&verifying_key);
+            let public_key = format_public_key(&signing_key.public_key());
             let device_id = public_key.clone(); // Device ID is the public key
 
             // Sign the challenge with our device key to prove identity
