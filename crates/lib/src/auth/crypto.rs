@@ -1,11 +1,15 @@
 //! Cryptographic operations for Eidetica authentication
 //!
-//! This module provides Ed25519 signature generation and verification
-//! for authenticating entries in the database.
+//! This module provides signature generation and verification for authenticating
+//! entries in the database. The `PublicKey` and `PrivateKey` enums enable
+//! crypto-agility by dispatching to algorithm-specific implementations.
 
 use base64ct::{Base64, Encoding};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
-use rand;
+use rand::Rng;
+use rand::rngs::OsRng;
+use serde::{Deserialize, Serialize};
+use zeroize::{ZeroizeOnDrop, Zeroizing};
 
 use super::errors::AuthError;
 use crate::{Entry, Error};
@@ -21,6 +25,245 @@ pub const ED25519_SIGNATURE_SIZE: usize = 64;
 
 /// Size of authentication challenges in bytes
 pub const CHALLENGE_SIZE: usize = 32;
+
+// ==================== Algorithm-Agnostic Key Types ====================
+
+/// Algorithm-agnostic public key for signature verification.
+///
+/// Wraps algorithm-specific verifying key types in a single enum,
+/// enabling crypto-agility while maintaining zero-cost dispatch for
+/// the common Ed25519 case.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum PublicKey {
+    /// Ed25519 public key (32 bytes)
+    Ed25519(VerifyingKey),
+}
+
+impl PublicKey {
+    /// Verify a signature over the given data.
+    ///
+    /// Returns `Ok(())` if the signature is valid, or `Err` if verification
+    /// fails for any reason (malformed signature, wrong key, etc.).
+    pub fn verify(&self, data: &[u8], signature: &[u8]) -> Result<(), AuthError> {
+        match self {
+            PublicKey::Ed25519(key) => {
+                let sig_array: [u8; ED25519_SIGNATURE_SIZE] = signature
+                    .try_into()
+                    .map_err(|_| AuthError::InvalidSignature)?;
+                let sig = Signature::from_bytes(&sig_array);
+                key.verify(data, &sig)
+                    .map_err(|_| AuthError::InvalidSignature)
+            }
+        }
+    }
+
+    /// Format the public key as a prefixed string (e.g. `"ed25519:base64..."`).
+    pub fn to_prefixed_string(&self) -> String {
+        match self {
+            PublicKey::Ed25519(key) => {
+                let encoded = Base64::encode_string(&key.to_bytes());
+                format!("ed25519:{encoded}")
+            }
+        }
+    }
+
+    /// Parse a public key from a prefixed string (e.g. `"ed25519:base64..."`).
+    pub fn from_prefixed_string(s: &str) -> Result<Self, AuthError> {
+        let (prefix, key_data) = s
+            .split_once(':')
+            .ok_or_else(|| AuthError::InvalidKeyFormat {
+                reason: "Expected 'algorithm:key' format".to_string(),
+            })?;
+        match prefix {
+            "ed25519" => {
+                let key_bytes =
+                    Base64::decode_vec(key_data).map_err(|e| AuthError::InvalidKeyFormat {
+                        reason: format!("Invalid base64 for key: {e}"),
+                    })?;
+                let key_array: [u8; ED25519_PUBLIC_KEY_SIZE] = key_bytes.try_into().map_err(
+                    |v: Vec<u8>| AuthError::InvalidKeyFormat {
+                        reason: format!(
+                            "Ed25519 public key must be {ED25519_PUBLIC_KEY_SIZE} bytes, got {}",
+                            v.len()
+                        ),
+                    },
+                )?;
+                let verifying_key = VerifyingKey::from_bytes(&key_array).map_err(|e| {
+                    AuthError::KeyParsingFailed {
+                        reason: e.to_string(),
+                    }
+                })?;
+                Ok(PublicKey::Ed25519(verifying_key))
+            }
+            _ => Err(AuthError::InvalidKeyFormat {
+                reason: format!("Unknown key algorithm prefix: '{prefix}'"),
+            }),
+        }
+    }
+
+    /// Get the algorithm name for this key.
+    pub fn algorithm(&self) -> &'static str {
+        match self {
+            PublicKey::Ed25519(_) => "ed25519",
+        }
+    }
+}
+
+impl std::fmt::Display for PublicKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.to_prefixed_string())
+    }
+}
+
+/// Serializes as the prefixed string format (e.g. `"ed25519:base64..."`).
+impl Serialize for PublicKey {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_prefixed_string())
+    }
+}
+
+/// Deserializes from the prefixed string format (e.g. `"ed25519:base64..."`).
+impl<'de> Deserialize<'de> for PublicKey {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        PublicKey::from_prefixed_string(&s).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Algorithm-agnostic signing key for creating signatures.
+///
+/// Wraps algorithm-specific signing key types in a single enum.
+/// Secret material is volatile-zeroed on drop via the inner key types'
+/// [`ZeroizeOnDrop`] implementations.
+#[non_exhaustive]
+pub enum PrivateKey {
+    /// Ed25519 signing key (32 bytes)
+    Ed25519(SigningKey),
+}
+
+impl std::fmt::Debug for PrivateKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PrivateKey::Ed25519(_) => f.write_str("PrivateKey::Ed25519([REDACTED])"),
+        }
+    }
+}
+
+impl PrivateKey {
+    /// Sign the given data and return the raw signature bytes.
+    pub fn sign(&self, data: &[u8]) -> Vec<u8> {
+        match self {
+            PrivateKey::Ed25519(key) => {
+                let signature: Signature = key.sign(data);
+                signature.to_bytes().to_vec()
+            }
+        }
+    }
+
+    /// Derive the corresponding public key.
+    pub fn public_key(&self) -> PublicKey {
+        match self {
+            PrivateKey::Ed25519(key) => PublicKey::Ed25519(key.verifying_key()),
+        }
+    }
+
+    /// Generate a new key using the default algorithm (Ed25519).
+    pub fn generate() -> Self {
+        PrivateKey::Ed25519(SigningKey::generate(&mut OsRng))
+    }
+
+    /// Export the raw key bytes (for encryption/storage).
+    ///
+    /// The returned buffer is wrapped in [`Zeroizing`] so the key material
+    /// is automatically cleared from memory when dropped.
+    fn to_bytes(&self) -> Zeroizing<Vec<u8>> {
+        match self {
+            PrivateKey::Ed25519(key) => Zeroizing::new(key.to_bytes().to_vec()),
+        }
+    }
+
+    /// Reconstruct a private key from raw bytes and an algorithm identifier.
+    fn from_bytes(algorithm: &str, bytes: &[u8]) -> Result<Self, AuthError> {
+        match algorithm {
+            "ed25519" => {
+                let key_array: [u8; ED25519_PRIVATE_KEY_SIZE] =
+                    bytes.try_into().map_err(|_| AuthError::InvalidKeyFormat {
+                        reason: format!(
+                            "Ed25519 private key must be {ED25519_PRIVATE_KEY_SIZE} bytes, got {}",
+                            bytes.len()
+                        ),
+                    })?;
+                Ok(PrivateKey::Ed25519(SigningKey::from_bytes(&key_array)))
+            }
+            _ => Err(AuthError::InvalidKeyFormat {
+                reason: format!("Unknown key algorithm: {algorithm}"),
+            }),
+        }
+    }
+
+    /// Format the private key as a prefixed string (e.g. `"ed25519:base64..."`).
+    ///
+    /// The returned string is wrapped in [`Zeroizing`] so the key material
+    /// is automatically cleared from memory when dropped.
+    pub fn to_prefixed_string(&self) -> Zeroizing<String> {
+        let bytes = self.to_bytes();
+        let encoded = Base64::encode_string(&bytes);
+        Zeroizing::new(format!("{}:{encoded}", self.algorithm()))
+    }
+
+    /// Parse a private key from a prefixed string (e.g. `"ed25519:base64..."`).
+    pub fn from_prefixed_string(s: &str) -> Result<Self, AuthError> {
+        let (prefix, key_data) = s
+            .split_once(':')
+            .ok_or_else(|| AuthError::InvalidKeyFormat {
+                reason: "Expected 'algorithm:key' format".to_string(),
+            })?;
+        match prefix {
+            "ed25519" => {
+                let key_bytes =
+                    Base64::decode_vec(key_data).map_err(|e| AuthError::InvalidKeyFormat {
+                        reason: format!("Invalid base64 for key: {e}"),
+                    })?;
+                Self::from_bytes("ed25519", &key_bytes)
+            }
+            _ => Err(AuthError::InvalidKeyFormat {
+                reason: format!("Unknown key algorithm prefix: '{prefix}'"),
+            }),
+        }
+    }
+
+    /// Get the algorithm name for this key.
+    pub fn algorithm(&self) -> &'static str {
+        match self {
+            PrivateKey::Ed25519(_) => "ed25519",
+        }
+    }
+}
+
+/// Zeroization is handled by the inner key types' `Drop` impls.
+/// For Ed25519, the `zeroize` feature on `ed25519-dalek` ensures
+/// `SigningKey::Drop` uses volatile writes to clear the secret bytes.
+///
+/// **Invariant:** all inner key types must implement [`ZeroizeOnDrop`].
+impl ZeroizeOnDrop for PrivateKey {}
+
+/// Serializes as the prefixed string format (e.g. `"ed25519:base64..."`).
+impl Serialize for PrivateKey {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_prefixed_string())
+    }
+}
+
+/// Deserializes from the prefixed string format (e.g. `"ed25519:base64..."`).
+impl<'de> Deserialize<'de> for PrivateKey {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        PrivateKey::from_prefixed_string(&s).map_err(serde::de::Error::custom)
+    }
+}
+
+// ==================== Legacy Free Functions ====================
 
 /// Parse a public key from string format
 ///
@@ -71,8 +314,7 @@ pub fn format_public_key(key: &VerifyingKey) -> String {
 ///
 /// Uses cryptographically secure random number generation
 pub fn generate_keypair() -> (SigningKey, VerifyingKey) {
-    let mut rng = rand::rngs::OsRng;
-    let signing_key = SigningKey::generate(&mut rng);
+    let signing_key = SigningKey::generate(&mut OsRng);
     let verifying_key = signing_key.verifying_key();
     (signing_key, verifying_key)
 }
@@ -180,10 +422,8 @@ pub fn verify_signature(
 /// assert_eq!(challenge.len(), 32);
 /// ```
 pub fn generate_challenge() -> Vec<u8> {
-    use rand::Rng;
-    let mut rng = rand::rngs::OsRng;
     let mut challenge = vec![0u8; CHALLENGE_SIZE];
-    rng.fill(&mut challenge[..]);
+    OsRng.fill(&mut challenge[..]);
     challenge
 }
 
@@ -344,5 +584,207 @@ mod tests {
         let (_, wrong_verifying_key) = generate_keypair();
         let wrong_public_key_str = format_public_key(&wrong_verifying_key);
         assert!(!verify_challenge_response(&challenge, &response, &wrong_public_key_str).unwrap());
+    }
+
+    // ==================== PublicKey / PrivateKey Enum Tests ====================
+
+    #[test]
+    fn test_private_key_generate_and_sign() {
+        let key = PrivateKey::generate();
+        let pubkey = key.public_key();
+        let data = b"hello world";
+
+        let signature = key.sign(data);
+        pubkey.verify(data, &signature).unwrap();
+
+        // Wrong data should not verify
+        assert!(pubkey.verify(b"wrong data", &signature).is_err());
+    }
+
+    #[test]
+    fn test_public_key_prefixed_string_roundtrip() {
+        let key = PrivateKey::generate();
+        let pubkey = key.public_key();
+
+        let formatted = pubkey.to_prefixed_string();
+        assert!(formatted.starts_with("ed25519:"));
+
+        let parsed = PublicKey::from_prefixed_string(&formatted).unwrap();
+        assert_eq!(parsed, pubkey);
+    }
+
+    #[test]
+    fn test_public_key_from_prefixed_string_invalid() {
+        // Unknown prefix
+        assert!(PublicKey::from_prefixed_string("rsa:abc").is_err());
+
+        // No prefix
+        assert!(PublicKey::from_prefixed_string("abc").is_err());
+
+        // Invalid base64
+        assert!(PublicKey::from_prefixed_string("ed25519:!!!invalid!!!").is_err());
+
+        // Wrong length
+        assert!(PublicKey::from_prefixed_string("ed25519:AAAA").is_err());
+    }
+
+    #[test]
+    fn test_private_key_algorithm() {
+        let key = PrivateKey::generate();
+        assert_eq!(key.algorithm(), "ed25519");
+        assert_eq!(key.public_key().algorithm(), "ed25519");
+    }
+
+    #[test]
+    fn test_private_key_bytes_roundtrip() {
+        let key = PrivateKey::generate();
+        let bytes = key.to_bytes();
+        let algorithm = key.algorithm();
+
+        let restored = PrivateKey::from_bytes(algorithm, &bytes).unwrap();
+        assert_eq!(
+            key.public_key().to_prefixed_string(),
+            restored.public_key().to_prefixed_string()
+        );
+    }
+
+    #[test]
+    fn test_private_key_from_bytes_invalid() {
+        // Unknown algorithm
+        assert!(PrivateKey::from_bytes("rsa", &[0u8; 32]).is_err());
+
+        // Wrong length
+        assert!(PrivateKey::from_bytes("ed25519", &[0u8; 16]).is_err());
+    }
+
+    #[test]
+    fn test_private_key_prefixed_string_roundtrip() {
+        let key = PrivateKey::generate();
+        let formatted = key.to_prefixed_string();
+        assert!(formatted.starts_with("ed25519:"));
+
+        let restored = PrivateKey::from_prefixed_string(&formatted).unwrap();
+        assert_eq!(
+            key.public_key().to_prefixed_string(),
+            restored.public_key().to_prefixed_string()
+        );
+    }
+
+    #[test]
+    fn test_private_key_from_prefixed_string_invalid() {
+        // Unknown prefix
+        assert!(PrivateKey::from_prefixed_string("rsa:abc").is_err());
+
+        // No prefix
+        assert!(PrivateKey::from_prefixed_string("abc").is_err());
+
+        // Invalid base64
+        assert!(PrivateKey::from_prefixed_string("ed25519:!!!invalid!!!").is_err());
+
+        // Wrong length
+        assert!(PrivateKey::from_prefixed_string("ed25519:AAAA").is_err());
+    }
+
+    #[test]
+    fn test_private_key_serde_roundtrip() {
+        let key = PrivateKey::generate();
+        let pubkey_str = key.public_key().to_prefixed_string();
+
+        let serialized = serde_json::to_string(&key).unwrap();
+        // Should serialize as a prefixed string, same format as PublicKey
+        assert!(serialized.starts_with("\"ed25519:"));
+
+        let deserialized: PrivateKey = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(deserialized.public_key().to_prefixed_string(), pubkey_str);
+    }
+
+    #[test]
+    fn test_private_key_debug_redacted() {
+        let key = PrivateKey::generate();
+        let debug_str = format!("{key:?}");
+        assert_eq!(debug_str, "PrivateKey::Ed25519([REDACTED])");
+        assert!(!debug_str.contains(&format!("{:?}", key.to_bytes())));
+    }
+
+    #[test]
+    fn test_public_key_display() {
+        let key = PrivateKey::generate();
+        let pubkey = key.public_key();
+        assert_eq!(format!("{pubkey}"), pubkey.to_prefixed_string());
+    }
+
+    #[test]
+    fn test_public_key_verify_malformed_signature() {
+        let key = PrivateKey::generate();
+        let pubkey = key.public_key();
+
+        // Too short
+        assert!(pubkey.verify(b"data", &[0u8; 10]).is_err());
+
+        // Wrong length
+        assert!(pubkey.verify(b"data", &[0u8; 63]).is_err());
+
+        // Correct length but invalid
+        assert!(pubkey.verify(b"data", &[0u8; 64]).is_err());
+    }
+
+    #[test]
+    fn test_public_key_serde_roundtrip() {
+        let key = PrivateKey::generate();
+        let pubkey = key.public_key();
+
+        let serialized = serde_json::to_string(&pubkey).unwrap();
+        // Should serialize as a plain prefixed string
+        assert_eq!(serialized, format!("\"{}\"", pubkey.to_prefixed_string()));
+
+        let deserialized: PublicKey = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(deserialized, pubkey);
+    }
+
+    #[test]
+    fn test_public_key_hash() {
+        use std::collections::HashSet;
+
+        let key1 = PrivateKey::generate();
+        let key2 = PrivateKey::generate();
+        let pubkey1 = key1.public_key();
+        let pubkey2 = key2.public_key();
+
+        let mut set = HashSet::new();
+        set.insert(pubkey1.clone());
+        set.insert(pubkey2.clone());
+        set.insert(pubkey1.clone()); // duplicate
+
+        assert_eq!(set.len(), 2);
+        assert!(set.contains(&pubkey1));
+        assert!(set.contains(&pubkey2));
+    }
+
+    #[test]
+    fn test_public_key_compat_with_legacy_format() {
+        // PublicKey.to_prefixed_string() should produce the same format as format_public_key()
+        let (_, verifying_key) = generate_keypair();
+        let legacy = format_public_key(&verifying_key);
+        let pubkey = PublicKey::Ed25519(verifying_key);
+        assert_eq!(pubkey.to_prefixed_string(), legacy);
+    }
+
+    #[test]
+    fn test_private_key_compat_with_legacy_keypair() {
+        // PrivateKey should produce the same signatures as raw SigningKey
+        let (signing_key, verifying_key) = generate_keypair();
+        let private_key = PrivateKey::Ed25519(signing_key.clone());
+
+        let data = b"test data for signing";
+        let legacy_sig = sign_data(data, &signing_key);
+        let enum_sig = private_key.sign(data);
+
+        // The enum produces raw bytes; legacy produces base64.
+        // Verify that the enum signature verifies with both old and new APIs.
+        assert!(verify_signature(data, Base64::encode_string(&enum_sig), &verifying_key).unwrap());
+        private_key
+            .public_key()
+            .verify(data, &Base64::decode_vec(&legacy_sig).unwrap())
+            .unwrap();
     }
 }
