@@ -1,6 +1,8 @@
 # Multi-stage Dockerfile for Eidetica
+ARG DEBIAN_RELEASE=bookworm
+
 # Stage 1: Build the application
-FROM rust:1-slim AS builder
+FROM rust:1-slim-${DEBIAN_RELEASE} AS builder
 
 # Install build dependencies
 # hadolint ignore=DL3008
@@ -21,7 +23,8 @@ COPY examples/ ./examples/
 RUN cargo build --release -p eidetica-bin
 
 # Stage 2: Create minimal runtime image
-FROM debian:bookworm-slim
+ARG DEBIAN_RELEASE
+FROM debian:${DEBIAN_RELEASE}-slim
 
 # Install runtime dependencies
 # hadolint ignore=DL3008
