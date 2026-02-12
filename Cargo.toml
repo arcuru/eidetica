@@ -74,16 +74,17 @@ postcard-derive = "0.2.1"  # Uses syn 2.0 (0.2.0 uses syn 1.0)
 z32 = "1.1.1"  # StdError impl for Z32Error
 instability = "0.3.4"  # Impl block support
 
-# Profile configuration for optimizing builds
-[profile.dev]
-# Keep the local package as debug build for fast compilation
-opt-level = 0
+# Keep the local package as debug build for fast iteration
 # But compile dependencies with optimizations for better performance
+[profile.dev]
+opt-level = 0
+
 [profile.dev.package."*"]
 opt-level = 3
 
-# Optimized benchmark profile
-[profile.bench]
-inherits = "release"
+[profile.release]
+opt-level = 3
+strip = true
 lto = true
 codegen-units = 1
+panic = "abort"
