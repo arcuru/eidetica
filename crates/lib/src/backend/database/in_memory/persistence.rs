@@ -3,12 +3,11 @@
 //! This module handles serialization and file I/O for saving/loading
 //! the in-memory database state to/from JSON files.
 
-use std::{collections::HashMap, path::Path};
+use std::{collections::HashMap, path::Path, sync::RwLock};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use tokio::sync::RwLock;
 
-use super::{InMemory, TreeTipsCache};
+use super::{InMemory, InMemoryInner, TreeTipsCache};
 use crate::{
     Error, Result,
     backend::{InstanceMetadata, VerificationStatus, errors::BackendError},
@@ -69,20 +68,18 @@ impl Serialize for InMemory {
     where
         S: Serializer,
     {
-        // Use blocking_read since serde's Serialize is sync
-        let entries = self.entries.blocking_read().clone();
-        let verification_status = self.verification_status.blocking_read().clone();
-        let instance_metadata = self.instance_metadata.blocking_read().clone();
-        let cache = self.cache.blocking_read().clone();
-        let tips = self.tips.blocking_read().clone();
-
-        let serializable = SerializableDatabase {
-            version: PERSISTENCE_VERSION,
-            entries,
-            verification_status,
-            instance_metadata,
-            cache,
-            tips,
+        // Clone data under locks, then release before serializing
+        let serializable = {
+            let inner = self.inner.read().unwrap();
+            let crdt_cache = self.crdt_cache.read().unwrap();
+            SerializableDatabase {
+                version: PERSISTENCE_VERSION,
+                entries: inner.entries.clone(),
+                verification_status: inner.verification_status.clone(),
+                instance_metadata: inner.instance_metadata.clone(),
+                cache: crdt_cache.clone(),
+                tips: inner.tips.clone(),
+            }
         };
 
         serializable.serialize(serializer)
@@ -98,11 +95,13 @@ impl<'de> Deserialize<'de> for InMemory {
         let serializable = SerializableDatabase::deserialize(deserializer)?;
 
         Ok(InMemory {
-            entries: RwLock::new(serializable.entries),
-            verification_status: RwLock::new(serializable.verification_status),
-            instance_metadata: RwLock::new(serializable.instance_metadata),
-            cache: RwLock::new(serializable.cache),
-            tips: RwLock::new(serializable.tips),
+            inner: RwLock::new(InMemoryInner {
+                entries: serializable.entries,
+                verification_status: serializable.verification_status,
+                instance_metadata: serializable.instance_metadata,
+                tips: serializable.tips,
+            }),
+            crdt_cache: RwLock::new(serializable.cache),
         })
     }
 }
@@ -115,28 +114,24 @@ impl<'de> Deserialize<'de> for InMemory {
 ///
 /// # Returns
 /// A `Result` indicating success or an I/O or serialization error.
-pub(crate) async fn save_to_file<P: AsRef<Path>>(backend: &InMemory, path: P) -> Result<()> {
-    // Extract data from locks asynchronously (can't use blocking_read in async context)
-    let entries = backend.entries.read().await.clone();
-    let verification_status = backend.verification_status.read().await.clone();
-    let instance_metadata = backend.instance_metadata.read().await.clone();
-    let cache = backend.cache.read().await.clone();
-    let tips = backend.tips.read().await.clone();
-
-    let serializable = SerializableDatabase {
-        version: PERSISTENCE_VERSION,
-        entries,
-        verification_status,
-        instance_metadata,
-        cache,
-        tips,
+pub(crate) fn save_to_file<P: AsRef<Path>>(backend: &InMemory, path: P) -> Result<()> {
+    // Clone data under locks, then release before file I/O
+    let serializable = {
+        let inner = backend.inner.read().unwrap();
+        let crdt_cache = backend.crdt_cache.read().unwrap();
+        SerializableDatabase {
+            version: PERSISTENCE_VERSION,
+            entries: inner.entries.clone(),
+            verification_status: inner.verification_status.clone(),
+            instance_metadata: inner.instance_metadata.clone(),
+            cache: crdt_cache.clone(),
+            tips: inner.tips.clone(),
+        }
     };
 
     let json = serde_json::to_string_pretty(&serializable)
         .map_err(|e| -> Error { BackendError::SerializationFailed { source: e }.into() })?;
-    tokio::fs::write(path, json)
-        .await
-        .map_err(|e| -> Error { BackendError::FileIo { source: e }.into() })
+    std::fs::write(path, json).map_err(|e| -> Error { BackendError::FileIo { source: e }.into() })
 }
 
 /// Loads the database state from a specified JSON file.
@@ -148,8 +143,8 @@ pub(crate) async fn save_to_file<P: AsRef<Path>>(backend: &InMemory, path: P) ->
 ///
 /// # Returns
 /// A `Result` containing the loaded `InMemory` database or an I/O or deserialization error.
-pub(crate) async fn load_from_file<P: AsRef<Path>>(path: P) -> Result<InMemory> {
-    match tokio::fs::read_to_string(path).await {
+pub(crate) fn load_from_file<P: AsRef<Path>>(path: P) -> Result<InMemory> {
+    match std::fs::read_to_string(path) {
         Ok(json) => {
             let database: InMemory = serde_json::from_str(&json).map_err(|e| -> Error {
                 BackendError::DeserializationFailed { source: e }.into()

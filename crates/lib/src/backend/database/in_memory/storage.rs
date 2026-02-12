@@ -1,6 +1,8 @@
 //! Core storage operations for InMemory database
 
-use super::InMemory;
+use std::collections::HashMap;
+
+use super::InMemoryInner;
 use crate::{
     Result,
     backend::{VerificationStatus, errors::BackendError},
@@ -9,9 +11,9 @@ use crate::{
 
 /// Retrieves an entry by ID from the internal `HashMap`.
 /// Used internally by traversal functions.
-pub(crate) async fn get(backend: &InMemory, id: &ID) -> Result<Entry> {
-    let entries = backend.entries.read().await;
-    entries
+pub(crate) fn get(inner: &InMemoryInner, id: &ID) -> Result<Entry> {
+    inner
+        .entries
         .get(id)
         .cloned()
         .ok_or_else(|| BackendError::EntryNotFound { id: id.clone() }.into())
@@ -19,35 +21,13 @@ pub(crate) async fn get(backend: &InMemory, id: &ID) -> Result<Entry> {
 
 /// Stores an entry in the database with the specified verification status.
 ///
-/// This function is the **final validation gate** before entries are persisted.
-/// It serves as the last line of defense against invalid entries that could
-/// corrupt the DAG structure and cause sync failures.
-///
-/// # Critical Entry Validation
-///
-/// ## Why This Matters
-/// Invalid entries with missing parent relationships break fundamental assumptions:
-/// - LCA calculations fail with "no common ancestor" errors
-/// - Tree traversal becomes impossible when nodes are unreachable
-/// - Height calculations fail for orphaned entries
-/// - Sync operations cannot determine proper merge points
-///
-/// ## Validation Enforcement
-/// Calls `entry.validate()` which enforces:
-/// - **Non-root entries MUST have main tree parents** (prevents orphaned nodes)
-/// - Parent IDs cannot be empty strings
-/// - Subtree structure integrity is maintained
-///
-/// This validation applies to ALL entries, whether:
-/// - Created locally through transactions
-/// - Received from remote peers during sync
-/// - Loaded from disk during deserialization
+/// IMPORTANT: `entry.validate()` must be called by the caller before this function.
+/// Validation is separated to allow failing before acquiring the write lock.
 ///
 /// # Storage Operations
-/// 1. **Validates entry structure** via `entry.validate()` - HARD FAILURE on invalid
-/// 2. Stores the entry in the entries HashMap
-/// 3. Records the verification status
-/// 4. Updates tip tracking for efficient DAG traversal
+/// 1. Stores the entry in the entries HashMap
+/// 2. Records the verification status
+/// 3. Updates tip tracking for efficient DAG traversal
 ///
 /// # Tip Tracking
 /// The function maintains tips (leaf nodes) for both the main tree and subtrees.
@@ -56,32 +36,17 @@ pub(crate) async fn get(backend: &InMemory, id: &ID) -> Result<Entry> {
 /// - The tip tracking is recalculated from scratch to handle this correctly
 ///
 /// # Arguments
-/// * `backend` - The InMemory database instance
+/// * `inner` - Mutable reference to the core data
 /// * `verification_status` - Whether the entry has been cryptographically verified
-/// * `entry` - The entry to store
+/// * `entry` - The entry to store (must already be validated)
 ///
 /// # Returns
 /// * `Ok(())` on successful storage
-/// * `Err` if validation fails or storage operations fail
-pub(crate) async fn put(
-    backend: &InMemory,
+pub(crate) fn put(
+    inner: &mut InMemoryInner,
     verification_status: VerificationStatus,
     entry: Entry,
 ) -> Result<()> {
-    // CRITICAL VALIDATION GATE: Final check before persistence
-    // This is the last line of defense against invalid entries. The validate() call:
-    // 1. Ensures non-root entries have main tree parents (prevents orphaned nodes)
-    // 2. Rejects empty parent IDs that would break DAG traversal
-    // 3. Validates subtree structural integrity
-    //
-    // Without this validation, invalid entries would cause:
-    // - "No common ancestor" errors during sync LCA calculations
-    // - Unreachable nodes breaking tree traversal algorithms
-    // - Sync failures when peers cannot merge divergent histories
-    //
-    // This applies to ALL entries: local creations, sync receipts, and disk loads
-    entry.validate()?;
-
     let entry_id = entry.id();
     let tree_id = entry.root();
 
@@ -94,81 +59,72 @@ pub(crate) async fn put(
         None
     };
 
-    // Store the entry
-    {
-        let mut entries = backend.entries.write().await;
-        entries.insert(entry_id.clone(), entry.clone());
-    }
-
-    // Store the verification status
-    {
-        let mut verification_status_map = backend.verification_status.write().await;
-        verification_status_map.insert(entry_id.clone(), verification_status);
-    }
+    // Store the entry and verification status
+    inner.entries.insert(entry_id.clone(), entry.clone());
+    inner
+        .verification_status
+        .insert(entry_id.clone(), verification_status);
 
     // Tip tracking uses full recalculation to handle out-of-order entry arrival during sync.
     // This ensures correctness when entries arrive in any order, which is common during
     // sync operations between peers.
 
-    // Smart cache update for tips - ALWAYS update, creating cache if needed
-    {
-        let mut tips_cache = backend.tips.write().await;
+    // Update tips for the entry's declared tree (split borrows: &entries + &mut tips)
+    update_tips_for_tree(&inner.entries, &mut inner.tips, &tree_id);
 
-        // Update tips for the entry's declared tree
-        update_tips_for_tree_async(backend, &mut tips_cache, &tree_id).await;
+    // SPECIAL CASE: For root entries, also update tips for the tree named after the entry ID
+    if let Some(ref additional_tree) = additional_tree_id {
+        update_tips_for_tree(&inner.entries, &mut inner.tips, additional_tree);
+    }
 
-        // SPECIAL CASE: For root entries, also update tips for the tree named after the entry ID
-        if let Some(ref additional_tree) = additional_tree_id {
-            update_tips_for_tree_async(backend, &mut tips_cache, additional_tree).await;
-        }
+    // Update subtree tips - recalculate from scratch to handle out-of-order arrival
+    // This mirrors the tree-level tip recalculation above
+    let cache = inner.tips.entry(tree_id.clone()).or_default();
+    for subtree_name in entry.subtrees() {
+        // Recalculate tips for this store from scratch
+        let subtree_tips = cache.subtree_tips.entry(subtree_name.clone()).or_default();
+        subtree_tips.clear();
 
-        // Update subtree tips - recalculate from scratch to handle out-of-order arrival
-        // This mirrors the tree-level tip recalculation above
-        let cache = tips_cache.entry(tree_id.clone()).or_default();
-        for subtree_name in entry.subtrees() {
-            // Recalculate tips for this store from scratch
-            let subtree_tips = cache.subtree_tips.entry(subtree_name.clone()).or_default();
-            subtree_tips.clear();
+        // Get all entries in this store (split borrow: &entries while &mut tips held via cache)
+        let store_entries: Vec<&Entry> = inner
+            .entries
+            .values()
+            .filter(|e| {
+                (e.root() == tree_id || (e.is_root() && e.id() == tree_id))
+                    && e.subtrees().contains(&subtree_name)
+            })
+            .collect();
 
-            // Get all entries in this store
-            let entries = backend.entries.read().await;
-            let store_entries: Vec<&Entry> = entries
-                .values()
-                .filter(|e| {
-                    (e.root() == tree_id || (e.is_root() && e.id() == tree_id))
-                        && e.subtrees().contains(&subtree_name)
-                })
-                .collect();
+        // An entry is a store tip if no other entry in the store has it as a store parent
+        for store_entry in &store_entries {
+            let store_entry_id = store_entry.id();
+            let mut is_tip = true;
 
-            // An entry is a store tip if no other entry in the store has it as a store parent
-            for store_entry in &store_entries {
-                let store_entry_id = store_entry.id();
-                let mut is_tip = true;
-
-                for other_entry in &store_entries {
-                    if let Ok(parents) = other_entry.subtree_parents(&subtree_name)
-                        && parents.contains(&store_entry_id)
-                    {
-                        is_tip = false;
-                        break;
-                    }
-                }
-
-                if is_tip {
-                    subtree_tips.insert(store_entry_id);
+            for other_entry in &store_entries {
+                if let Ok(parents) = other_entry.subtree_parents(&subtree_name)
+                    && parents.contains(&store_entry_id)
+                {
+                    is_tip = false;
+                    break;
                 }
             }
-            drop(entries);
+
+            if is_tip {
+                subtree_tips.insert(store_entry_id);
+            }
         }
     }
 
     Ok(())
 }
 
-/// Helper function to update tips for a given tree ID (async version)
-async fn update_tips_for_tree_async(
-    backend: &InMemory,
-    tips_cache: &mut std::collections::HashMap<ID, super::TreeTipsCache>,
+/// Helper function to update tips for a given tree ID.
+///
+/// Takes split borrows on entries (read) and tips (write) to avoid
+/// needing a mutable reference to the entire InMemoryInner.
+fn update_tips_for_tree(
+    entries: &HashMap<ID, Entry>,
+    tips_cache: &mut HashMap<ID, super::TreeTipsCache>,
     target_tree_id: &ID,
 ) {
     let cache = tips_cache.entry(target_tree_id.clone()).or_default();
@@ -190,7 +146,6 @@ async fn update_tips_for_tree_async(
     cache.tree_tips.clear();
 
     // Get all entries in this tree and recalculate which ones are actually tips
-    let entries = backend.entries.read().await;
     let tree_entries: Vec<&Entry> = entries
         .values()
         .filter(|e| e.root() == target_tree_id || (e.is_root() && e.id() == *target_tree_id))
@@ -219,9 +174,8 @@ async fn update_tips_for_tree_async(
 /// Helper function to check if an entry is a tip within its tree.
 ///
 /// An entry is a tip if no other entry in the same tree lists it as a parent.
-pub(crate) async fn is_tip(backend: &InMemory, tree: &ID, entry_id: &ID) -> bool {
+pub(crate) fn is_tip(entries: &HashMap<ID, Entry>, tree: &ID, entry_id: &ID) -> bool {
     // Check if any other entry has this entry as its parent
-    let entries = backend.entries.read().await;
     for other_entry in entries.values() {
         if other_entry.root() == tree
             && other_entry.parents().unwrap_or_default().contains(entry_id)
@@ -235,13 +189,12 @@ pub(crate) async fn is_tip(backend: &InMemory, tree: &ID, entry_id: &ID) -> bool
 /// Helper function to check if an entry is a tip within a specific subtree.
 ///
 /// An entry is a subtree tip if no other entry in the same subtree lists it as a subtree parent.
-pub(crate) async fn is_subtree_tip(
-    backend: &InMemory,
+pub(crate) fn is_subtree_tip(
+    entries: &HashMap<ID, Entry>,
     tree: &ID,
     subtree: &str,
     entry_id: &ID,
 ) -> bool {
-    let entries = backend.entries.read().await;
     for other_entry in entries.values() {
         if other_entry.root() == tree
             && other_entry.subtrees().contains(&subtree.to_string())
@@ -255,40 +208,34 @@ pub(crate) async fn is_subtree_tip(
 }
 
 /// Retrieves all entries belonging to a specific tree, sorted topologically.
-pub(crate) async fn get_tree(backend: &InMemory, tree: &ID) -> Result<Vec<Entry>> {
-    let entries = backend.entries.read().await;
-    let mut tree_entries: Vec<Entry> = entries
+pub(crate) fn get_tree(inner: &InMemoryInner, tree: &ID) -> Result<Vec<Entry>> {
+    let mut tree_entries: Vec<Entry> = inner
+        .entries
         .values()
         .filter(|entry| entry.in_tree(tree))
         .cloned()
         .collect();
 
-    drop(entries); // Release the lock before calling sort_entries_by_height
-
-    // Sort by height
-    super::cache::sort_entries_by_height(backend, tree, &mut tree_entries);
+    super::cache::sort_entries_by_height(&mut tree_entries);
     Ok(tree_entries)
 }
 
 /// Retrieves all entries belonging to a specific subtree within a tree, sorted topologically.
-pub(crate) async fn get_store(backend: &InMemory, tree: &ID, subtree: &str) -> Result<Vec<Entry>> {
-    let entries = backend.entries.read().await;
-    let mut subtree_entries: Vec<Entry> = entries
+pub(crate) fn get_store(inner: &InMemoryInner, tree: &ID, subtree: &str) -> Result<Vec<Entry>> {
+    let mut subtree_entries: Vec<Entry> = inner
+        .entries
         .values()
         .filter(|entry| entry.in_tree(tree) && entry.in_subtree(subtree))
         .cloned()
         .collect();
 
-    drop(entries); // Release the lock before calling sort_entries_by_subtree_height
-
-    // Sort by subtree height
-    super::cache::sort_entries_by_subtree_height(backend, tree, subtree, &mut subtree_entries);
+    super::cache::sort_entries_by_subtree_height(subtree, &mut subtree_entries);
     Ok(subtree_entries)
 }
 
 /// Retrieves all entries belonging to a specific tree up to the given tips, sorted topologically.
-pub(crate) async fn get_tree_from_tips(
-    backend: &InMemory,
+pub(crate) fn get_tree_from_tips(
+    inner: &InMemoryInner,
     tree: &ID,
     tips: &[ID],
 ) -> Result<Vec<Entry>> {
@@ -302,9 +249,8 @@ pub(crate) async fn get_tree_from_tips(
     let mut processed = std::collections::HashSet::new();
 
     // Initialize with tips
-    let entries = backend.entries.read().await;
     for tip in tips {
-        if let Some(entry) = entries.get(tip) {
+        if let Some(entry) = inner.entries.get(tip) {
             // Only include entries that are part of the specified tree
             if entry.in_tree(tree) {
                 to_process.push_back(tip.clone());
@@ -327,7 +273,7 @@ pub(crate) async fn get_tree_from_tips(
             continue;
         }
 
-        if let Some(entry) = entries.get(&current_id) {
+        if let Some(entry) = inner.entries.get(&current_id) {
             // Entry must be in the specified tree to be included
             if entry.in_tree(tree) {
                 // Add parents to be processed
@@ -345,17 +291,16 @@ pub(crate) async fn get_tree_from_tips(
             }
         }
     }
-    drop(entries);
 
     // Sort the result by height
-    super::cache::sort_entries_by_height(backend, tree, &mut result);
+    super::cache::sort_entries_by_height(&mut result);
 
     Ok(result)
 }
 
 /// Retrieves all entries belonging to a specific subtree within a tree up to the given tips, sorted topologically.
-pub(crate) async fn get_store_from_tips(
-    backend: &InMemory,
+pub(crate) fn get_store_from_tips(
+    inner: &InMemoryInner,
     tree: &ID,
     subtree: &str,
     tips: &[ID],
@@ -370,9 +315,8 @@ pub(crate) async fn get_store_from_tips(
     let mut processed = std::collections::HashSet::new();
 
     // Initialize with tips
-    let entries = backend.entries.read().await;
     for tip in tips {
-        if let Some(entry) = entries.get(tip) {
+        if let Some(entry) = inner.entries.get(tip) {
             // Only include entries that are part of both the tree and the subtree
             if entry.in_tree(tree) && entry.in_subtree(subtree) {
                 to_process.push_back(tip.clone());
@@ -387,7 +331,7 @@ pub(crate) async fn get_store_from_tips(
             continue;
         }
 
-        if let Some(entry) = entries.get(&current_id) {
+        if let Some(entry) = inner.entries.get(&current_id) {
             // Entry must be in both the tree and subtree to be included
             if entry.in_tree(tree) && entry.in_subtree(subtree) {
                 // Add subtree parents to be processed
@@ -405,10 +349,9 @@ pub(crate) async fn get_store_from_tips(
             }
         }
     }
-    drop(entries);
 
     // Sort the result by subtree height
-    super::cache::sort_entries_by_subtree_height(backend, tree, subtree, &mut result);
+    super::cache::sort_entries_by_subtree_height(subtree, &mut result);
 
     Ok(result)
 }

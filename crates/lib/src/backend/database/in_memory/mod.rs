@@ -13,11 +13,11 @@ use std::{
     any::Any,
     collections::{HashMap, HashSet},
     path::Path,
+    sync::RwLock,
 };
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
 
 use crate::{
     Result,
@@ -30,6 +30,28 @@ use crate::{
 pub(crate) struct TreeTipsCache {
     pub(crate) tree_tips: HashSet<ID>,
     pub(crate) subtree_tips: HashMap<String, HashSet<ID>>,
+}
+
+/// Core data protected by a single lock.
+///
+/// All fields that participate in entry storage and tip tracking are grouped
+/// together to eliminate lock ordering concerns. A single `RwLock` on the
+/// outer `InMemory` struct protects all fields atomically.
+#[derive(Debug)]
+pub(crate) struct InMemoryInner {
+    pub(crate) entries: HashMap<ID, Entry>,
+    pub(crate) verification_status: HashMap<ID, VerificationStatus>,
+    /// Instance metadata containing device key and system database IDs.
+    ///
+    /// When `None`, the backend is uninitialized. When `Some`, contains the
+    /// device key and root IDs for system databases.
+    ///
+    /// **Security Warning**: The device key is stored in memory without encryption.
+    /// This is suitable for development/testing only. Production systems should use
+    /// proper key management with encryption at rest.
+    pub(crate) instance_metadata: Option<InstanceMetadata>,
+    /// Cached tips grouped by tree: tree_id -> (tree_tips, subtree_name -> subtree_tips)
+    pub(crate) tips: HashMap<ID, TreeTipsCache>,
 }
 
 /// A simple in-memory database implementation using a `HashMap` for storage.
@@ -46,41 +68,33 @@ pub(crate) struct TreeTipsCache {
 /// without proper encryption or hardware security module integration.
 #[derive(Debug)]
 pub struct InMemory {
-    /// Entries storage with read-write lock for concurrent access
-    pub(crate) entries: RwLock<HashMap<ID, Entry>>,
-    /// Verification status for each entry
-    pub(crate) verification_status: RwLock<HashMap<ID, VerificationStatus>>,
-    /// Instance metadata containing device key and system database IDs.
-    ///
-    /// When `None`, the backend is uninitialized. When `Some`, contains the
-    /// device key and root IDs for system databases.
-    ///
-    /// **Security Warning**: The device key is stored in memory without encryption.
-    /// This is suitable for development/testing only. Production systems should use
-    /// proper key management with encryption at rest.
-    pub(crate) instance_metadata: RwLock<Option<InstanceMetadata>>,
-    /// Generic key-value cache for frequently computed results
-    pub(crate) cache: RwLock<HashMap<String, String>>,
-    /// Cached tips grouped by tree: tree_id -> (tree_tips, subtree_name -> subtree_tips)
-    pub(crate) tips: RwLock<HashMap<ID, TreeTipsCache>>,
+    /// Core data protected by a single lock for atomic access and
+    /// to eliminate lock ordering concerns between entries, verification
+    /// status, and tips.
+    pub(crate) inner: RwLock<InMemoryInner>,
+    /// CRDT state cache, independent of core data.
+    /// Kept separate because it has no coupling to entries/tips lifecycle.
+    pub(crate) crdt_cache: RwLock<HashMap<String, String>>,
 }
 
 impl InMemory {
     /// Creates a new, empty `InMemory` database.
     pub fn new() -> Self {
         Self {
-            entries: RwLock::new(HashMap::new()),
-            verification_status: RwLock::new(HashMap::new()),
-            instance_metadata: RwLock::new(None),
-            cache: RwLock::new(HashMap::new()),
-            tips: RwLock::new(HashMap::new()),
+            inner: RwLock::new(InMemoryInner {
+                entries: HashMap::new(),
+                verification_status: HashMap::new(),
+                instance_metadata: None,
+                tips: HashMap::new(),
+            }),
+            crdt_cache: RwLock::new(HashMap::new()),
         }
     }
 
     /// Returns a vector containing the IDs of all entries currently stored in the database.
     pub async fn all_ids(&self) -> Vec<ID> {
-        let entries = self.entries.read().await;
-        entries.keys().cloned().collect()
+        let inner = self.inner.read().unwrap();
+        inner.entries.keys().cloned().collect()
     }
 
     /// Saves the entire database state (all entries) to a specified file as JSON.
@@ -91,7 +105,7 @@ impl InMemory {
     /// # Returns
     /// A `Result` indicating success or an I/O or serialization error.
     pub async fn save_to_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
-        persistence::save_to_file(self, path).await
+        persistence::save_to_file(self, path)
     }
 
     /// Loads the database state from a specified JSON file.
@@ -104,7 +118,7 @@ impl InMemory {
     /// # Returns
     /// A `Result` containing the loaded `InMemory` database or an I/O or deserialization error.
     pub async fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
-        persistence::load_from_file(path).await
+        persistence::load_from_file(path)
     }
 
     /// Sort entries by their height within a tree (exposed for testing)
@@ -112,10 +126,10 @@ impl InMemory {
     /// Heights are stored directly in entries, so this just reads and sorts.
     ///
     /// # Arguments
-    /// * `tree` - The ID of the tree context (unused, kept for API compatibility)
+    /// * `_tree` - The ID of the tree context (unused, kept for API compatibility)
     /// * `entries` - The vector of entries to be sorted in place
-    pub fn sort_entries_by_height(&self, tree: &ID, entries: &mut [Entry]) {
-        cache::sort_entries_by_height(self, tree, entries)
+    pub fn sort_entries_by_height(&self, _tree: &ID, entries: &mut [Entry]) {
+        cache::sort_entries_by_height(entries)
     }
 
     /// Sort entries by their height within a subtree (exposed for testing)
@@ -123,11 +137,11 @@ impl InMemory {
     /// Heights are stored directly in entries, so this just reads and sorts.
     ///
     /// # Arguments
-    /// * `tree` - The ID of the tree context (unused, kept for API compatibility)
+    /// * `_tree` - The ID of the tree context (unused, kept for API compatibility)
     /// * `subtree` - The name of the subtree context
     /// * `entries` - The vector of entries to be sorted in place
-    pub fn sort_entries_by_subtree_height(&self, tree: &ID, subtree: &str, entries: &mut [Entry]) {
-        cache::sort_entries_by_subtree_height(self, tree, subtree, entries)
+    pub fn sort_entries_by_subtree_height(&self, _tree: &ID, subtree: &str, entries: &mut [Entry]) {
+        cache::sort_entries_by_subtree_height(subtree, entries)
     }
 
     /// Check if an entry is a tip within its tree (exposed for benchmarks)
@@ -141,7 +155,8 @@ impl InMemory {
     /// # Returns
     /// `true` if the entry is a tip, `false` otherwise
     pub async fn is_tip(&self, tree: &ID, entry_id: &ID) -> bool {
-        storage::is_tip(self, tree, entry_id).await
+        let inner = self.inner.read().unwrap();
+        storage::is_tip(&inner.entries, tree, entry_id)
     }
 }
 
@@ -162,11 +177,8 @@ impl BackendImpl for InMemory {
     /// A `Result` containing the `Entry` if found, or a `DatabaseError::EntryNotFound` otherwise.
     /// Returns an owned copy to support concurrent access with internal synchronization.
     async fn get(&self, id: &ID) -> Result<Entry> {
-        let entries = self.entries.read().await;
-        entries
-            .get(id)
-            .cloned()
-            .ok_or_else(|| BackendError::EntryNotFound { id: id.clone() }.into())
+        let inner = self.inner.read().unwrap();
+        storage::get(&inner, id)
     }
 
     /// Gets the verification status of an entry.
@@ -177,15 +189,19 @@ impl BackendImpl for InMemory {
     /// # Returns
     /// A `Result` containing the `VerificationStatus` if the entry exists, or a `DatabaseError::VerificationStatusNotFound` otherwise.
     async fn get_verification_status(&self, id: &ID) -> Result<VerificationStatus> {
-        let verification_status_map = self.verification_status.read().await;
-        verification_status_map
+        let inner = self.inner.read().unwrap();
+        inner
+            .verification_status
             .get(id)
             .copied()
             .ok_or_else(|| BackendError::VerificationStatusNotFound { id: id.clone() }.into())
     }
 
     async fn put(&self, verification_status: VerificationStatus, entry: Entry) -> Result<()> {
-        storage::put(self, verification_status, entry).await
+        // Validate before acquiring write lock to fail fast
+        entry.validate()?;
+        let mut inner = self.inner.write().unwrap();
+        storage::put(&mut inner, verification_status, entry)
     }
 
     /// Updates the verification status of an existing entry.
@@ -204,9 +220,11 @@ impl BackendImpl for InMemory {
         id: &ID,
         verification_status: VerificationStatus,
     ) -> Result<()> {
-        let mut verification_status_map = self.verification_status.write().await;
-        if verification_status_map.contains_key(id) {
-            verification_status_map.insert(id.clone(), verification_status);
+        let mut inner = self.inner.write().unwrap();
+        if inner.verification_status.contains_key(id) {
+            inner
+                .verification_status
+                .insert(id.clone(), verification_status);
             Ok(())
         } else {
             Err(BackendError::EntryNotFound { id: id.clone() }.into())
@@ -227,8 +245,9 @@ impl BackendImpl for InMemory {
         &self,
         status: VerificationStatus,
     ) -> Result<Vec<ID>> {
-        let verification_status_map = self.verification_status.read().await;
-        let ids = verification_status_map
+        let inner = self.inner.read().unwrap();
+        let ids = inner
+            .verification_status
             .iter()
             .filter(|&(_, entry_status)| *entry_status == status)
             .map(|(id, _)| id.clone())
@@ -237,11 +256,31 @@ impl BackendImpl for InMemory {
     }
 
     async fn get_tips(&self, tree: &ID) -> Result<Vec<ID>> {
-        traversal::get_tips(self, tree).await
+        // Fast path: check cache with read lock
+        {
+            let inner = self.inner.read().unwrap();
+            if let Some(cache) = inner.tips.get(tree) {
+                return Ok(cache.tree_tips.iter().cloned().collect());
+            }
+        }
+        // Slow path: compute and cache with write lock
+        let mut inner = self.inner.write().unwrap();
+        traversal::get_tips(&mut inner, tree)
     }
 
     async fn get_store_tips(&self, tree: &ID, subtree: &str) -> Result<Vec<ID>> {
-        traversal::get_store_tips(self, tree, subtree).await
+        // Fast path: check cache with read lock
+        {
+            let inner = self.inner.read().unwrap();
+            if let Some(cache) = inner.tips.get(tree)
+                && let Some(subtree_tips) = cache.subtree_tips.get(subtree)
+            {
+                return Ok(subtree_tips.iter().cloned().collect());
+            }
+        }
+        // Slow path: compute and cache with write lock
+        let mut inner = self.inner.write().unwrap();
+        traversal::get_store_tips(&mut inner, tree, subtree)
     }
 
     async fn get_store_tips_up_to_entries(
@@ -250,7 +289,8 @@ impl BackendImpl for InMemory {
         subtree: &str,
         main_entries: &[ID],
     ) -> Result<Vec<ID>> {
-        traversal::get_store_tips_up_to_entries(self, tree, subtree, main_entries).await
+        let mut inner = self.inner.write().unwrap();
+        traversal::get_store_tips_up_to_entries(&mut inner, tree, subtree, main_entries)
     }
 
     /// Retrieves the IDs of all top-level root entries stored in the database.
@@ -263,8 +303,9 @@ impl BackendImpl for InMemory {
     /// # Returns
     /// A `Result` containing a vector of top-level root entry IDs or an error.
     async fn all_roots(&self) -> Result<Vec<ID>> {
-        let entries = self.entries.read().await;
-        let roots: Vec<ID> = entries
+        let inner = self.inner.read().unwrap();
+        let roots: Vec<ID> = inner
+            .entries
             .values()
             .filter(|entry| entry.is_root())
             .map(|entry| entry.id())
@@ -273,7 +314,8 @@ impl BackendImpl for InMemory {
     }
 
     async fn find_merge_base(&self, tree: &ID, subtree: &str, entry_ids: &[ID]) -> Result<ID> {
-        traversal::find_merge_base(self, tree, subtree, entry_ids).await
+        let inner = self.inner.read().unwrap();
+        traversal::find_merge_base(&inner, tree, subtree, entry_ids)
     }
 
     async fn collect_root_to_target(
@@ -282,7 +324,8 @@ impl BackendImpl for InMemory {
         subtree: &str,
         target_entry: &ID,
     ) -> Result<Vec<ID>> {
-        traversal::collect_root_to_target(self, tree, subtree, target_entry).await
+        let inner = self.inner.read().unwrap();
+        traversal::collect_root_to_target(&inner, tree, subtree, target_entry)
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -290,15 +333,18 @@ impl BackendImpl for InMemory {
     }
 
     async fn get_tree(&self, tree: &ID) -> Result<Vec<Entry>> {
-        storage::get_tree(self, tree).await
+        let inner = self.inner.read().unwrap();
+        storage::get_tree(&inner, tree)
     }
 
     async fn get_store(&self, tree: &ID, subtree: &str) -> Result<Vec<Entry>> {
-        storage::get_store(self, tree, subtree).await
+        let inner = self.inner.read().unwrap();
+        storage::get_store(&inner, tree, subtree)
     }
 
     async fn get_tree_from_tips(&self, tree: &ID, tips: &[ID]) -> Result<Vec<Entry>> {
-        storage::get_tree_from_tips(self, tree, tips).await
+        let inner = self.inner.read().unwrap();
+        storage::get_tree_from_tips(&inner, tree, tips)
     }
 
     async fn get_store_from_tips(
@@ -307,30 +353,31 @@ impl BackendImpl for InMemory {
         subtree: &str,
         tips: &[ID],
     ) -> Result<Vec<Entry>> {
-        storage::get_store_from_tips(self, tree, subtree, tips).await
+        let inner = self.inner.read().unwrap();
+        storage::get_store_from_tips(&inner, tree, subtree, tips)
     }
 
     async fn get_instance_metadata(&self) -> Result<Option<InstanceMetadata>> {
-        let metadata = self.instance_metadata.read().await;
-        Ok(metadata.clone())
+        let inner = self.inner.read().unwrap();
+        Ok(inner.instance_metadata.clone())
     }
 
     async fn set_instance_metadata(&self, metadata: &InstanceMetadata) -> Result<()> {
-        let mut instance_metadata = self.instance_metadata.write().await;
-        *instance_metadata = Some(metadata.clone());
+        let mut inner = self.inner.write().unwrap();
+        inner.instance_metadata = Some(metadata.clone());
         Ok(())
     }
 
     async fn get_cached_crdt_state(&self, entry_id: &ID, subtree: &str) -> Result<Option<String>> {
-        cache::get_cached_crdt_state(self, entry_id, subtree).await
+        cache::get_cached_crdt_state(self, entry_id, subtree)
     }
 
     async fn cache_crdt_state(&self, entry_id: &ID, subtree: &str, state: String) -> Result<()> {
-        cache::cache_crdt_state(self, entry_id, subtree, state).await
+        cache::cache_crdt_state(self, entry_id, subtree, state)
     }
 
     async fn clear_crdt_cache(&self) -> Result<()> {
-        cache::clear_crdt_cache(self).await
+        cache::clear_crdt_cache(self)
     }
 
     async fn get_sorted_store_parents(
@@ -339,7 +386,8 @@ impl BackendImpl for InMemory {
         entry_id: &ID,
         subtree: &str,
     ) -> Result<Vec<ID>> {
-        traversal::get_sorted_store_parents(self, tree_id, entry_id, subtree).await
+        let inner = self.inner.read().unwrap();
+        traversal::get_sorted_store_parents(&inner, tree_id, entry_id, subtree)
     }
 
     async fn get_path_from_to(
@@ -349,6 +397,7 @@ impl BackendImpl for InMemory {
         from_id: &ID,
         to_ids: &[ID],
     ) -> Result<Vec<ID>> {
-        traversal::get_path_from_to(self, tree_id, subtree, from_id, to_ids).await
+        let inner = self.inner.read().unwrap();
+        traversal::get_path_from_to(&inner, tree_id, subtree, from_id, to_ids)
     }
 }
