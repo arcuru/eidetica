@@ -49,8 +49,8 @@ experimental-features = nix-command flakes
 sandbox = false
 accept-flake-config = true
 build-dir = $BUILD_DIR
-substituters = $SUBSTITUTERS
-trusted-public-keys = $TRUSTED_KEYS
+extra-substituters = $SUBSTITUTERS
+extra-trusted-public-keys = $TRUSTED_KEYS
 EOF
 else
   mkdir -p ~/.config/nix
@@ -59,8 +59,8 @@ experimental-features = nix-command flakes
 sandbox = false
 accept-flake-config = true
 build-dir = $BUILD_DIR
-substituters = $SUBSTITUTERS
-trusted-public-keys = $TRUSTED_KEYS
+extra-substituters = $SUBSTITUTERS
+extra-trusted-public-keys = $TRUSTED_KEYS
 EOF
 fi
 
