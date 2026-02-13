@@ -3,13 +3,13 @@
   pkgs,
   lib,
   rustSrc,
-  fenixNightly,
+  toolChainNightly,
   devPackages,
 }: let
   # Wrapper to run cargo with nightly toolchain (for udeps, miri, sanitizers, etc.)
   # Prepends full nightly toolchain to PATH so rustc, cargo, etc. are all nightly
   cargo-nightly = pkgs.writeShellScriptBin "cargo-nightly" ''
-    export PATH="${fenixNightly.toolchain}/bin:$PATH"
+    export PATH="${toolChainNightly}/bin:$PATH"
     exec cargo "$@"
   '';
 in

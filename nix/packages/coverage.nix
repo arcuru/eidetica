@@ -3,6 +3,7 @@
   craneLibNightly,
   baseArgsNightly,
   fenixNightly,
+  toolChainNightly,
   eidLib,
   pkgs,
   lib,
@@ -71,7 +72,7 @@
   # Interactive coverage runner (uses nightly toolchain)
   coverage-runner = eidLib.mkCargoRunner {
     name = "coverage-runner";
-    inherit (fenixNightly) toolchain;
+    toolchain = toolChainNightly;
     extraInputs = [
       (fenixNightly.withComponents ["llvm-tools-preview"])
       pkgs.cargo-tarpaulin

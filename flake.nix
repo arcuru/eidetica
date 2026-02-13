@@ -73,6 +73,7 @@
           (toolchain)
           fenixStable
           fenixNightly
+          toolChainNightly
           rustSrc
           craneLib
           craneLibNightly
@@ -96,7 +97,7 @@
         mainPkgs = import ./nix/packages/main.nix {inherit craneLib releaseArgs;};
 
         testPkgs = import ./nix/packages/test.nix {inherit craneLib debugArgs baseArgs pkgs lib;};
-        coveragePkgs = import ./nix/packages/coverage.nix {inherit craneLibNightly baseArgsNightly fenixNightly eidLib pkgs lib;};
+        coveragePkgs = import ./nix/packages/coverage.nix {inherit craneLibNightly baseArgsNightly fenixNightly toolChainNightly eidLib pkgs lib;};
         sanitizePkgs = import ./nix/packages/sanitize.nix {inherit craneLibNightly debugArgsNightly asanArgs lsanArgs fenixNightly pkgs lib;};
         docPkgs = import ./nix/packages/doc.nix {inherit craneLib debugArgs pkgs lib;};
         lintPkgs = import ./nix/packages/lint.nix {
@@ -292,7 +293,7 @@
 
         # Development shell configuration
         devShells.default = import ./nix/dev-shell.nix {
-          inherit pkgs lib rustSrc fenixNightly;
+          inherit pkgs lib rustSrc toolChainNightly;
           # Pass the full list of packages so the devshell can pickup the dependencies
           devPackages =
             {inherit (mainPkgs) eidetica-bin;}

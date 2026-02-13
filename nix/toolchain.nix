@@ -196,6 +196,7 @@ in {
   inherit
     fenixStable
     fenixNightly
+    toolChainNightly
     rustSrc
     craneLib
     craneLibNightly
