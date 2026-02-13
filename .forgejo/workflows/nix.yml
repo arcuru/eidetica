@@ -27,13 +27,13 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Setup Nix
-        run: ./.forgejo/scripts/setup-nix.sh --attic
+        run: ./.forgejo/scripts/setup-nix.sh --attic nixpkgs#nix-fast-build
         env:
           ATTIC_SERVER_URL: "${{ secrets.ATTIC_SERVER_URL }}"
           ATTIC_AUTH_TOKEN: "${{ secrets.ATTIC_AUTH_TOKEN }}"
 
       - name: Run Nix checks
-        run: nix develop --command just nix check
+        run: nix-fast-build --no-link --skip-cached --no-nom
 
   coverage:
     name: Coverage (${{ matrix.backend }})

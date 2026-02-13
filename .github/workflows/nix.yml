@@ -35,8 +35,11 @@ jobs:
       - name: Magic Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
 
+      - name: Install nix-fast-build
+        run: nix profile install nixpkgs#nix-fast-build
+
       - name: Run Nix checks
-        run: nix develop --command just nix check
+        run: nix-fast-build --no-link --skip-cached --no-nom
 
   artifacts:
     name: Artifacts (${{ matrix.system }})
