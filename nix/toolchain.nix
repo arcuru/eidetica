@@ -10,8 +10,18 @@
   craneLibStable = (inputs.crane.mkLib pkgs).overrideToolchain toolChainStable;
 
   # Nightly Rust toolchain for coverage (llvm-tools-preview) and sanitizers (miri, -Z flags)
+  # Use .complete as a component source but NOT .complete.toolchain — that combines ALL
+  # components and breaks when any component isn't published for a given nightly date.
+  # Instead, explicitly list only the components needed via .withComponents.
   fenixNightly = inputs.fenix.packages.${system}.complete;
-  toolChainNightly = fenixNightly.toolchain;
+  toolChainNightly = fenixNightly.withComponents [
+    "cargo"
+    "rustc"
+    "rust-std"
+    "rust-src"
+    "clippy"
+    "rustfmt"
+  ];
   craneLibNightly = (inputs.crane.mkLib pkgs).overrideToolchain toolChainNightly;
 
   # Default to stable for main builds
