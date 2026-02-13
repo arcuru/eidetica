@@ -1,10 +1,6 @@
 //! ValueEditor for mutable access to DocStore values.
 
-use crate::{
-    Result,
-    crdt::{Doc, doc::Value},
-    store::errors::StoreError,
-};
+use crate::{Result, Store, crdt::doc::Value, store::errors::StoreError};
 
 use super::DocStore;
 
@@ -256,10 +252,7 @@ impl DocStore {
             }
         }
 
-        let mut subtree_data = self
-            .txn
-            .get_local_data::<Doc>(&self.name)
-            .unwrap_or_default();
+        let mut subtree_data = self.local_data()?.unwrap_or_default();
 
         // Build the dot-separated path string
         let path_str: String = path_slice

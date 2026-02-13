@@ -211,6 +211,8 @@ impl Registered for YDoc {
 
 #[async_trait]
 impl Store for YDoc {
+    type Data = YrsBinary;
+
     async fn new(txn: &Transaction, subtree_name: String) -> Result<Self> {
         Ok(Self {
             name: subtree_name,
@@ -250,12 +252,9 @@ impl YDoc {
         let doc = self.get_initial_doc().await?;
 
         // Apply local changes if they exist
-        let local_data = self
-            .txn
-            .get_local_data::<YrsBinary>(&self.name)
-            .unwrap_or_default();
-
-        if !local_data.is_empty() {
+        if let Some(local_data) = self.local_data()?
+            && !local_data.is_empty()
+        {
             let local_update = Update::decode_v1(local_data.as_bytes()).map_err(|e| {
                 StoreError::from(YDocError::InvalidData {
                     reason: format!("Failed to decode local Y-CRDT update: {e}"),

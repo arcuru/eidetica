@@ -234,7 +234,10 @@ pub async fn test_ydoc_incremental_updates(tree: &Database, subtree_name: &str) 
         .await
         .unwrap();
 
-        let local_diff: YrsBinary = txn1.get_local_data(subtree_name).unwrap();
+        let local_diff: YrsBinary = txn1
+            .get_local_data(subtree_name)
+            .expect("no error")
+            .expect("data should be staged");
         local_diff.as_bytes().len()
     };
     txn1.commit().await.unwrap();
@@ -252,7 +255,10 @@ pub async fn test_ydoc_incremental_updates(tree: &Database, subtree_name: &str) 
         .await
         .unwrap();
 
-        let local_diff: YrsBinary = txn2.get_local_data(subtree_name).unwrap();
+        let local_diff: YrsBinary = txn2
+            .get_local_data(subtree_name)
+            .expect("no error")
+            .expect("data should be staged");
         local_diff.as_bytes().len()
     };
     txn2.commit().await.unwrap();

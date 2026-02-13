@@ -37,6 +37,8 @@ impl Registered for DocStore {
 
 #[async_trait]
 impl Store for DocStore {
+    type Data = Doc;
+
     async fn new(txn: &Transaction, subtree_name: String) -> Result<Self> {
         Ok(Self {
             name: subtree_name,
@@ -69,10 +71,7 @@ impl DocStore {
     pub async fn get(&self, key: impl AsRef<str>) -> Result<Value> {
         let key = key.as_ref();
         // First check if there's any data in the transaction itself
-        let local_data: Result<Doc> = self.txn.get_local_data(&self.name);
-
-        // If there's local data, try to get the key from it
-        if let Ok(data) = local_data {
+        if let Some(data) = self.local_data()? {
             match data.get(key) {
                 Some(Value::Deleted) => {
                     return Err(StoreError::KeyNotFound {
@@ -131,10 +130,7 @@ impl DocStore {
     pub async fn get_result(&self, key: impl AsRef<str>) -> Result<Value> {
         let key = key.as_ref();
         // First check if there's any data in the transaction itself
-        let local_data: Result<Doc> = self.txn.get_local_data(&self.name);
-
-        // If there's data in the transaction and it contains the key, return that
-        if let Ok(data) = local_data
+        if let Some(data) = self.local_data()?
             && let Some(value) = data.get(key)
         {
             return Ok(value.clone());
@@ -211,10 +207,7 @@ impl DocStore {
         let value = value.into();
 
         // Get current data from the transaction, or create new if not existing
-        let mut data = self
-            .txn
-            .get_local_data::<Doc>(&self.name)
-            .unwrap_or_default();
+        let mut data = self.local_data()?.unwrap_or_default();
 
         // Update the data using unified path interface
         data.set(&key, value);
@@ -234,16 +227,17 @@ impl DocStore {
     /// * `value` - The value to associate with the key (can be &str, String, Value, etc.)
     ///
     /// # Returns
-    /// An `Option<Value>` containing the previous value, or `None` if no previous value.
-    pub async fn insert(&self, key: impl Into<String>, value: impl Into<Value>) -> Option<Value> {
+    /// A `Result<Option<Value>>` containing the previous value, or `None` if no previous value.
+    pub async fn insert(
+        &self,
+        key: impl Into<String>,
+        value: impl Into<Value>,
+    ) -> Result<Option<Value>> {
         let key = key.into();
         let value = value.into();
 
         // Get current data from the transaction, or create new if not existing
-        let mut data = self
-            .txn
-            .get_local_data::<Doc>(&self.name)
-            .unwrap_or_default();
+        let mut data = self.local_data()?.unwrap_or_default();
 
         // Get the previous value (if any) before setting
         let previous = data
@@ -255,14 +249,10 @@ impl DocStore {
         data.set(&key, value);
 
         // Serialize and update the transaction
-        let serialized =
-            serde_json::to_string(&data).expect("Failed to serialize data during insert operation");
-        self.txn
-            .update_subtree(&self.name, &serialized)
-            .await
-            .expect("Failed to update subtree during insert operation");
+        let serialized = serde_json::to_string(&data)?;
+        self.txn.update_subtree(&self.name, &serialized).await?;
 
-        previous
+        Ok(previous)
     }
 
     /// Sets a key-value pair (Result-based API for backward compatibility).
@@ -282,10 +272,7 @@ impl DocStore {
         let value = value.into();
 
         // Get current data from the transaction, or create new if not existing
-        let mut data = self
-            .txn
-            .get_local_data::<Doc>(&self.name)
-            .unwrap_or_default();
+        let mut data = self.local_data()?.unwrap_or_default();
 
         // Update the data
         data.set(&key, value);
@@ -395,10 +382,7 @@ impl DocStore {
     /// A `Result<Value>` containing the value if found, or an error if not found.
     pub async fn get_path(&self, path: impl AsRef<Path>) -> Result<Value> {
         // First check if there's any local staged data
-        let local_data: Result<Doc> = self.txn.get_local_data(&self.name);
-
-        // If there's local data, try to get the path from it
-        if let Ok(data) = local_data
+        if let Some(data) = self.local_data()?
             && let Some(value) = data.get(&path)
         {
             return Ok(value.clone());
@@ -862,10 +846,7 @@ impl DocStore {
         let value = value.into();
 
         // Get current data from the transaction, or create new if not existing
-        let mut data = self
-            .txn
-            .get_local_data::<Doc>(&self.name)
-            .unwrap_or_default();
+        let mut data = self.local_data()?.unwrap_or_default();
 
         // Use Doc's set method to handle the path logic
         data.set(&path, value);
@@ -992,10 +973,7 @@ impl DocStore {
         }
 
         // Get current data from the transaction, or create new if not existing
-        let mut data = self
-            .txn
-            .get_local_data::<Doc>(&self.name)
-            .unwrap_or_default();
+        let mut data = self.local_data()?.unwrap_or_default();
 
         // Remove the key (creates a tombstone)
         data.remove(key_str);
@@ -1054,14 +1032,10 @@ impl DocStore {
     /// # Returns
     /// A `Result` containing the merged `Doc` data structure with nested maps for path-based data.
     pub async fn get_all(&self) -> Result<Doc> {
-        // First get the local data directly from the transaction
-        let local_data = self.txn.get_local_data::<Doc>(&self.name);
-
-        // Get the full state from the backend
         let mut data = self.txn.get_full_state::<Doc>(&self.name).await?;
 
-        // If there's also local data, merge it with the full state
-        if let Ok(local) = local_data {
+        // Merge with local staged data if any
+        if let Some(local) = self.local_data()? {
             data = data.merge(&local)?;
         }
 
@@ -1100,8 +1074,8 @@ impl DocStore {
         let key = key.as_ref();
 
         // Check local staged data first
-        if let Ok(local_data) = self.txn.get_local_data::<Doc>(&self.name)
-            && local_data.contains_key(key)
+        if let Ok(Some(data)) = self.local_data()
+            && data.contains_key(key)
         {
             return true;
         }
@@ -1150,8 +1124,8 @@ impl DocStore {
     /// ```
     pub async fn contains_path(&self, path: impl AsRef<Path>) -> bool {
         // Check local staged data first
-        if let Ok(local_data) = self.txn.get_local_data::<Doc>(&self.name)
-            && local_data.get(&path).is_some()
+        if let Ok(Some(data)) = self.local_data()
+            && data.get(&path).is_some()
         {
             return true;
         }

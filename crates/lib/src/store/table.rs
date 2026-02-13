@@ -51,6 +51,8 @@ impl<T> Store for Table<T>
 where
     T: Serialize + for<'de> Deserialize<'de> + Clone + Send + Sync,
 {
+    type Data = Doc;
+
     async fn new(txn: &Transaction, subtree_name: String) -> Result<Self> {
         Ok(Self {
             name: subtree_name,
@@ -70,7 +72,7 @@ where
 
 impl<T> Table<T>
 where
-    T: Serialize + for<'de> Deserialize<'de> + Clone,
+    T: Serialize + for<'de> Deserialize<'de> + Clone + Send + Sync,
 {
     /// Retrieves a row from the Table by its primary key.
     ///
@@ -91,32 +93,29 @@ where
     pub async fn get(&self, key: impl AsRef<str>) -> Result<T> {
         let key = key.as_ref();
 
-        // Get local data from the transaction if it exists
-        let local_data: Result<Doc> = self.txn.get_local_data(&self.name);
-
-        // If there's a tombstone in local data, the record is deleted
-        if let Ok(ref data) = local_data
-            && data.is_tombstone(key)
-        {
-            return Err(StoreError::KeyNotFound {
-                store: self.name.clone(),
-                key: key.to_string(),
-            }
-            .into());
-        }
-
-        // If there's a value in local data, return that
-        if let Ok(ref data) = local_data
-            && let Some(map_value) = data.get(key)
-            && let Some(value) = map_value.as_text()
-        {
-            return serde_json::from_str(value).map_err(|e| {
-                StoreError::DeserializationFailed {
+        // Check local staged data from the transaction
+        if let Some(data) = self.local_data()? {
+            // If there's a tombstone in local data, the record is deleted
+            if data.is_tombstone(key) {
+                return Err(StoreError::KeyNotFound {
                     store: self.name.clone(),
-                    reason: format!("Failed to deserialize record for key '{key}': {e}"),
+                    key: key.to_string(),
                 }
-                .into()
-            });
+                .into());
+            }
+
+            // If there's a value in local data, return that
+            if let Some(map_value) = data.get(key)
+                && let Some(value) = map_value.as_text()
+            {
+                return serde_json::from_str(value).map_err(|e| {
+                    StoreError::DeserializationFailed {
+                        store: self.name.clone(),
+                        reason: format!("Failed to deserialize record for key '{key}': {e}"),
+                    }
+                    .into()
+                });
+            }
         }
 
         // Otherwise, get the full state from the backend
@@ -159,10 +158,7 @@ where
         let primary_key = Uuid::new_v4().to_string();
 
         // Get current data from the transaction, or create new if not existing
-        let mut data = self
-            .txn
-            .get_local_data::<Doc>(&self.name)
-            .unwrap_or_default();
+        let mut data = self.local_data()?.unwrap_or_default();
 
         // Serialize the row
         let serialized_row =
@@ -205,10 +201,7 @@ where
     pub async fn set(&self, key: impl AsRef<str>, row: T) -> Result<()> {
         let key_str = key.as_ref();
         // Get current data from the transaction, or create new if not existing
-        let mut data = self
-            .txn
-            .get_local_data::<Doc>(&self.name)
-            .unwrap_or_default();
+        let mut data = self.local_data()?.unwrap_or_default();
 
         // Serialize the row
         let serialized_row =
@@ -255,10 +248,7 @@ where
         }
 
         // Get current data from the transaction, or create new if not existing
-        let mut data = self
-            .txn
-            .get_local_data::<Doc>(&self.name)
-            .unwrap_or_default();
+        let mut data = self.local_data()?.unwrap_or_default();
 
         // Remove the key (creates tombstone for CRDT semantics)
         data.remove(key_str);
@@ -291,14 +281,11 @@ where
         // Get the full state combining local and backend data
         let mut result = Vec::new();
 
-        // Get data from the transaction if it exists
-        let local_data = self.txn.get_local_data::<Doc>(&self.name);
-
         // Get the full state from the backend
         let mut data = self.txn.get_full_state::<Doc>(&self.name).await?;
 
-        // If there's also local data, merge it with the full state
-        if let Ok(local) = local_data {
+        // Merge with local staged data if any
+        if let Some(local) = self.local_data()? {
             data = data.merge(&local)?;
         }
 

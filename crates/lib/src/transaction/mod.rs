@@ -651,19 +651,19 @@ impl Transaction {
     /// * `subtree_name` - The name of the subtree whose staged data is needed.
     ///
     /// # Returns
-    /// A `Result<T>` containing the deserialized staged data. Returns `Ok(T::default())`
-    /// if no data has been staged for this subtree in this transaction yet.
+    /// A `Result<Option<T>>`:
     ///
     /// # Behavior
-    /// - If the subtree doesn't exist, returns `T::default()`
-    /// - If the subtree exists but has empty data (empty string or whitespace), returns `T::default()`
-    /// - Otherwise deserializes the JSON data to type `T`
+    /// - If the subtree doesn't exist or has no data, returns `Ok(None)`
+    /// - If the subtree exists but has empty data (empty string or whitespace), returns `Ok(None)`
+    /// - Otherwise deserializes the JSON data to type `T` and returns `Ok(Some(T))`
     ///
     /// # Errors
-    /// Returns an error if the subtree data exists but cannot be deserialized to type `T`.
-    pub fn get_local_data<T>(&self, subtree_name: impl AsRef<str>) -> Result<T>
+    /// Returns an error if the transaction has already been committed or if the
+    /// subtree data exists but cannot be deserialized to type `T`.
+    pub fn get_local_data<T>(&self, subtree_name: impl AsRef<str>) -> Result<Option<T>>
     where
-        T: Data + Default,
+        T: Data,
     {
         let subtree_name = subtree_name.as_ref();
         let builder_ref = self.entry_builder.lock().unwrap();
@@ -673,10 +673,9 @@ impl Transaction {
 
         if let Ok(data) = builder.data(subtree_name) {
             if data.trim().is_empty() {
-                // If data is empty, return default
-                Ok(T::default())
+                Ok(None)
             } else {
-                serde_json::from_str(data).map_err(|e| {
+                serde_json::from_str(data).map(Some).map_err(|e| {
                     TransactionError::StoreDeserializationFailed {
                         store: subtree_name.to_string(),
                         reason: e.to_string(),
@@ -685,8 +684,7 @@ impl Transaction {
                 })
             }
         } else {
-            // If subtree doesn't exist or has no data, return default
-            Ok(T::default())
+            Ok(None)
         }
     }
 
@@ -1015,7 +1013,7 @@ impl Transaction {
         let effective_settings_for_validation = if has_settings_update {
             let historical_has_auth = matches!(historical_settings.get("auth"), Some(Value::Doc(auth_map)) if !auth_map.is_empty());
             if !historical_has_auth {
-                let staged_settings = self.get_local_data::<Doc>(SETTINGS)?;
+                let staged_settings = self.get_local_data::<Doc>(SETTINGS)?.unwrap_or_default();
                 let staged_has_auth = matches!(staged_settings.get("auth"), Some(Value::Doc(auth_map)) if !auth_map.is_empty());
                 if staged_has_auth {
                     staged_settings
@@ -1033,7 +1031,7 @@ impl Transaction {
         // This prevents committing entries that would corrupt the database's auth configuration
         if has_settings_update {
             // Compute what the new settings state will be after merging local changes
-            let local_settings = self.get_local_data::<Doc>(SETTINGS)?;
+            let local_settings = self.get_local_data::<Doc>(SETTINGS)?.unwrap_or_default();
             let new_settings = effective_settings_for_validation.merge(&local_settings)?;
 
             // Check if the new settings would have corrupted auth
@@ -1194,7 +1192,7 @@ impl Transaction {
         // Extract height strategy from settings (defaults to Incremental)
         // If this transaction includes settings updates, merge them to get the effective strategy
         let settings_for_height = if has_settings_update {
-            let local_settings = self.get_local_data::<Doc>(SETTINGS)?;
+            let local_settings = self.get_local_data::<Doc>(SETTINGS)?.unwrap_or_default();
             effective_settings_for_validation.merge(&local_settings)?
         } else {
             effective_settings_for_validation.clone()

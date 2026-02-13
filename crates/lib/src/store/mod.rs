@@ -1,4 +1,5 @@
 use crate::HeightStrategy;
+use crate::crdt::Data;
 use crate::{Result, Transaction};
 use async_trait::async_trait;
 
@@ -47,6 +48,11 @@ pub use ydoc::{YDoc, YrsBinary};
 /// Store types must also implement [`Registered`] to provide their type identifier.
 #[async_trait]
 pub trait Store: Sized + Registered + Send + Sync {
+    /// The CRDT data type used for local (staged) data in this store.
+    ///
+    /// This is the type stored within each individual Entry.
+    type Data: Data + Default;
+
     /// Creates a new `Store` handle associated with a specific transaction.
     ///
     /// This constructor is typically called internally by `Transaction::get_store` or
@@ -178,5 +184,13 @@ pub trait Store: Sized + Registered + Send + Sync {
         let mut settings = index.get_subtree_settings(self.name()).await?;
         settings.height_strategy = strategy;
         index.set_subtree_settings(self.name(), settings).await
+    }
+
+    /// Returns the local (staged) data for this store from the current transaction.
+    ///
+    /// This is a convenience method that retrieves data staged in the transaction
+    /// for this store's subtree. Returns `Ok(None)` if no data has been staged.
+    fn local_data(&self) -> Result<Option<Self::Data>> {
+        self.transaction().get_local_data::<Self::Data>(self.name())
     }
 }

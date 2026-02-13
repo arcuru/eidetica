@@ -410,6 +410,8 @@ impl Registered for PasswordStore {
 
 #[async_trait]
 impl Store for PasswordStore {
+    type Data = EncryptedFragment;
+
     async fn new(txn: &Transaction, subtree_name: String) -> Result<Self> {
         // Try to load config from _index to determine state
         let index_store = txn.get_index().await?;
