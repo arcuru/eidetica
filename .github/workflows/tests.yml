@@ -45,5 +45,10 @@ jobs:
             -f '.#legacyPackages.${{ matrix.system }}.test.minimal' \
             -f '.#legacyPackages.${{ matrix.system }}.test.inmemory' \
             -f '.#legacyPackages.${{ matrix.system }}.test.postgres' \
-            -f '.#legacyPackages.${{ matrix.system }}.eval.default' \
-            -f '.#legacyPackages.${{ matrix.system }}.integration.default'
+            -f '.#legacyPackages.${{ matrix.system }}.eval.default'
+
+      - name: Integration tests
+        if: matrix.system == 'x86_64-linux'
+        run: |
+          nix-fast-build --skip-cached --no-nom --no-link \
+            -f '.#legacyPackages.x86_64-linux.integration.default'
