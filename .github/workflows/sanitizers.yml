@@ -1,4 +1,4 @@
-name: Coverage
+name: Sanitizers
 
 on:
   push:
@@ -6,12 +6,13 @@ on:
   workflow_dispatch:
 
 jobs:
-  coverage:
-    name: Coverage (${{ matrix.backend }})
+  sanitize:
+    name: Sanitize (${{ matrix.sanitizer }})
     runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     strategy:
       matrix:
-        backend: [sqlite, inmemory, postgres]
+        sanitizer: [asan, lsan]
       fail-fast: false
     steps:
       - name: Checkout
@@ -32,20 +33,7 @@ jobs:
       - name: Install nix-fast-build
         run: nix profile install nixpkgs#nix-fast-build
 
-      - name: Build coverage
+      - name: Run ${{ matrix.sanitizer }}
         run: |
           nix-fast-build --skip-cached --no-nom --no-link \
-            -f '.#legacyPackages.x86_64-linux.coverage.${{ matrix.backend }}'
-
-      - name: Extract coverage data
-        run: |
-          mkdir -p coverage
-          cp "$(nix path-info '.#coverage.${{ matrix.backend }}')/lcov.info" coverage/lcov.info
-
-      - name: Upload to Codecov
-        uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          flags: ${{ matrix.backend }}
-          files: coverage/lcov.info
-          fail_ci_if_error: false
+            -f '.#legacyPackages.x86_64-linux.sanitize.${{ matrix.sanitizer }}'

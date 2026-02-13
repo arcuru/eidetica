@@ -14,8 +14,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  check:
-    name: Check
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
     container:
       image: nixos/nix:latest@sha256:d5cce2440bda1f966357732c06d86cb92368069fb52dfb6b2bae8725eea488a5
@@ -32,8 +32,88 @@ jobs:
           ATTIC_SERVER_URL: "${{ secrets.ATTIC_SERVER_URL }}"
           ATTIC_AUTH_TOKEN: "${{ secrets.ATTIC_AUTH_TOKEN }}"
 
-      - name: Run Nix checks
-        run: nix-fast-build --no-link --skip-cached --no-nom
+      - name: Lint and format
+        run: |
+          nix-fast-build --skip-cached --no-nom --no-link \
+            -f '.#legacyPackages.x86_64-linux.lint.default' \
+            -f '.#checks.x86_64-linux.treefmt'
+
+  doc:
+    name: Doc
+    runs-on: ubuntu-latest
+    container:
+      image: nixos/nix:latest@sha256:d5cce2440bda1f966357732c06d86cb92368069fb52dfb6b2bae8725eea488a5
+    steps:
+      - name: Install Node.js for actions
+        run: nix-env -iA nixpkgs.nodejs
+
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Nix
+        run: ./.forgejo/scripts/setup-nix.sh --attic nixpkgs#nix-fast-build
+        env:
+          ATTIC_SERVER_URL: "${{ secrets.ATTIC_SERVER_URL }}"
+          ATTIC_AUTH_TOKEN: "${{ secrets.ATTIC_AUTH_TOKEN }}"
+
+      - name: Documentation checks
+        run: |
+          nix-fast-build --skip-cached --no-nom --no-link \
+            -f '.#legacyPackages.x86_64-linux.doc.default'
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    container:
+      image: nixos/nix:latest@sha256:d5cce2440bda1f966357732c06d86cb92368069fb52dfb6b2bae8725eea488a5
+    steps:
+      - name: Install Node.js for actions
+        run: nix-env -iA nixpkgs.nodejs
+
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Nix
+        run: ./.forgejo/scripts/setup-nix.sh --attic nixpkgs#nix-fast-build
+        env:
+          ATTIC_SERVER_URL: "${{ secrets.ATTIC_SERVER_URL }}"
+          ATTIC_AUTH_TOKEN: "${{ secrets.ATTIC_AUTH_TOKEN }}"
+
+      - name: Build and test
+        run: |
+          nix-fast-build --skip-cached --no-nom --no-link \
+            -f '.#legacyPackages.x86_64-linux.eidetica.bin' \
+            -f '.#legacyPackages.x86_64-linux.test.sqlite' \
+            -f '.#legacyPackages.x86_64-linux.test.minimal' \
+            -f '.#legacyPackages.x86_64-linux.eval.default'
+
+  test-backends:
+    name: Test Backends (${{ matrix.backend }})
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    strategy:
+      matrix:
+        backend: [inmemory, postgres]
+      fail-fast: false
+    container:
+      image: nixos/nix:latest@sha256:d5cce2440bda1f966357732c06d86cb92368069fb52dfb6b2bae8725eea488a5
+    steps:
+      - name: Install Node.js for actions
+        run: nix-env -iA nixpkgs.nodejs
+
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Nix
+        run: ./.forgejo/scripts/setup-nix.sh --attic nixpkgs#nix-fast-build
+        env:
+          ATTIC_SERVER_URL: "${{ secrets.ATTIC_SERVER_URL }}"
+          ATTIC_AUTH_TOKEN: "${{ secrets.ATTIC_AUTH_TOKEN }}"
+
+      - name: Test ${{ matrix.backend }}
+        run: |
+          nix-fast-build --skip-cached --no-nom --no-link \
+            -f '.#legacyPackages.x86_64-linux.test.${{ matrix.backend }}'
 
   coverage:
     name: Coverage (${{ matrix.backend }})
@@ -53,17 +133,21 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Setup Nix
-        run: ./.forgejo/scripts/setup-nix.sh --attic
+        run: ./.forgejo/scripts/setup-nix.sh --attic nixpkgs#nix-fast-build
         env:
           ATTIC_SERVER_URL: "${{ secrets.ATTIC_SERVER_URL }}"
           ATTIC_AUTH_TOKEN: "${{ secrets.ATTIC_AUTH_TOKEN }}"
 
-      - name: Run coverage
+      - name: Build coverage
         run: |
-          nix build .#coverage.${{ matrix.backend }} -o coverage-${{ matrix.backend }}
-          cp coverage-${{ matrix.backend }}/lcov.info lcov.info
+          nix-fast-build --skip-cached --no-nom --no-link \
+            -f '.#legacyPackages.x86_64-linux.coverage.${{ matrix.backend }}'
+
+      - name: Extract coverage data
+        run: |
+          cp "$(nix path-info '.#coverage.${{ matrix.backend }}')/lcov.info" lcov.info
           if command -v attic &> /dev/null; then
-            attic push eidetica coverage-${{ matrix.backend }}
+            attic push eidetica "$(nix path-info '.#coverage.${{ matrix.backend }}')"
           fi
 
       - name: Upload coverage to Codecov
@@ -94,12 +178,12 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Setup Nix
-        run: ./.forgejo/scripts/setup-nix.sh --attic
+        run: ./.forgejo/scripts/setup-nix.sh --attic nixpkgs#nix-fast-build
         env:
           ATTIC_SERVER_URL: "${{ secrets.ATTIC_SERVER_URL }}"
           ATTIC_AUTH_TOKEN: "${{ secrets.ATTIC_AUTH_TOKEN }}"
 
-      - name: Run sanitizer
+      - name: Run ${{ matrix.sanitizer }}
         run: |
           PATHS=$(nix build .#sanitize.${{ matrix.sanitizer }} --no-link --print-out-paths)
           if command -v attic &> /dev/null; then
@@ -110,7 +194,7 @@ jobs:
     name: Artifacts
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
-    needs: [check]
+    needs: [lint, doc, test]
     container:
       image: nixos/nix:latest@sha256:d5cce2440bda1f966357732c06d86cb92368069fb52dfb6b2bae8725eea488a5
     steps:

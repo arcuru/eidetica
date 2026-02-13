@@ -3,7 +3,7 @@ name: Container
 on:
   # Trigger after Nix workflow completes on main branch
   workflow_run:
-    workflows: ["Nix"]
+    workflows: ["Tests"]
     types: [completed]
     branches: ["main"]
   # Also trigger on releases

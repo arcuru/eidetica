@@ -7,9 +7,6 @@ on:
     branches: ["main"]
   workflow_dispatch:
 
-env:
-  CARGO_TERM_COLOR: always
-
 jobs:
   benchmark-main:
     name: Benchmark (Main)
@@ -19,18 +16,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@1.92.0
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@c5a866b6ab867e88becbed4467b93592bce69f8a # v21
 
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+      - name: Setup Cachix
+        uses: cachix/cachix-action@ad2ddac53f961de1989924296a1f236fcfbaa4fc # v15
+        with:
+          name: eidetica
+          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+
+      - name: Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
 
       - name: Install Bencher CLI
         uses: bencherdev/bencher@886fbed6aad69e12a7852b0fc9ce49c50516c578 # main
 
       - name: Run Benchmarks
         run: |
-          bencher run \
+          nix develop --command bencher run \
             --project eidetica \
             --token '${{ secrets.BENCHER_API_TOKEN }}' \
             --branch main \
@@ -47,18 +50,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@1.92.0
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@c5a866b6ab867e88becbed4467b93592bce69f8a # v21
 
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+      - name: Setup Cachix
+        uses: cachix/cachix-action@ad2ddac53f961de1989924296a1f236fcfbaa4fc # v15
+        with:
+          name: eidetica
+          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+
+      - name: Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
 
       - name: Install Bencher CLI
         uses: bencherdev/bencher@886fbed6aad69e12a7852b0fc9ce49c50516c578 # main
 
       - name: Run Benchmarks
         run: |
-          bencher run \
+          nix develop --command bencher run \
             --project eidetica \
             --token '${{ secrets.BENCHER_API_TOKEN }}' \
             --branch "$HEAD_REF" \

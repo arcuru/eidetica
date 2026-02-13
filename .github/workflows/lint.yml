@@ -1,17 +1,23 @@
-name: Coverage
+name: Lint
 
 on:
   push:
     branches: ["main"]
+  pull_request:
+    branches: ["main"]
   workflow_dispatch:
 
 jobs:
-  coverage:
-    name: Coverage (${{ matrix.backend }})
-    runs-on: ubuntu-latest
+  lint:
+    name: Lint (${{ matrix.system }})
+    runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
-        backend: [sqlite, inmemory, postgres]
+        include:
+          - system: x86_64-linux
+            runner: ubuntu-latest
+          - system: aarch64-linux
+            runner: ubuntu-24.04-arm
       fail-fast: false
     steps:
       - name: Checkout
@@ -32,20 +38,8 @@ jobs:
       - name: Install nix-fast-build
         run: nix profile install nixpkgs#nix-fast-build
 
-      - name: Build coverage
+      - name: Lint and format
         run: |
           nix-fast-build --skip-cached --no-nom --no-link \
-            -f '.#legacyPackages.x86_64-linux.coverage.${{ matrix.backend }}'
-
-      - name: Extract coverage data
-        run: |
-          mkdir -p coverage
-          cp "$(nix path-info '.#coverage.${{ matrix.backend }}')/lcov.info" coverage/lcov.info
-
-      - name: Upload to Codecov
-        uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          flags: ${{ matrix.backend }}
-          files: coverage/lcov.info
-          fail_ci_if_error: false
+            -f '.#legacyPackages.${{ matrix.system }}.lint.default' \
+            -f '.#checks.${{ matrix.system }}.treefmt'

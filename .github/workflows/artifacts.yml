@@ -1,51 +1,15 @@
-name: Nix
+name: Artifacts
 
 on:
   push:
     branches: ["main"]
-  pull_request:
-    branches: ["main"]
   workflow_dispatch:
 
 jobs:
-  check:
-    name: Check (${{ matrix.system }})
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      matrix:
-        include:
-          - system: x86_64-linux
-            runner: ubuntu-latest
-          - system: aarch64-linux
-            runner: ubuntu-24.04-arm
-      fail-fast: false
-    steps:
-      - name: Checkout
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
-
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@c5a866b6ab867e88becbed4467b93592bce69f8a # v21
-
-      - name: Setup Cachix
-        uses: cachix/cachix-action@ad2ddac53f961de1989924296a1f236fcfbaa4fc # v15
-        with:
-          name: eidetica
-          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
-
-      - name: Magic Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
-
-      - name: Install nix-fast-build
-        run: nix profile install nixpkgs#nix-fast-build
-
-      - name: Run Nix checks
-        run: nix-fast-build --no-link --skip-cached --no-nom
-
   artifacts:
     name: Artifacts (${{ matrix.system }})
     runs-on: ${{ matrix.runner }}
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [check]
     strategy:
       matrix:
         include:
@@ -72,7 +36,8 @@ jobs:
 
       - name: Build and push artifacts
         run: |
-          nix run github:Mic92/nix-fast-build -- --skip-cached --cachix-cache eidetica --no-nom --no-link \
+          nix run github:Mic92/nix-fast-build -- \
+            --skip-cached --cachix-cache eidetica --no-nom --no-link \
             -f '.#legacyPackages.${{ matrix.system }}.eidetica.bin' \
             -f '.#legacyPackages.${{ matrix.system }}.eidetica.image'
         env:
@@ -82,6 +47,7 @@ jobs:
         uses: bencherdev/bencher@886fbed6aad69e12a7852b0fc9ce49c50516c578 # main
 
       - name: Track Binary Size
+        if: github.repository_owner == 'arcuru'
         run: |
           BINARY_PATH=$(nix build .#eidetica.bin --no-link --print-out-paths)/bin/eidetica
           bencher run \
@@ -94,6 +60,7 @@ jobs:
             "echo '{}'"
 
       - name: Track Container Size
+        if: github.repository_owner == 'arcuru'
         run: |
           IMAGE_PATH=$(nix build .#eidetica.image --no-link --print-out-paths)
           bencher run \
