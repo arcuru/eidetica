@@ -346,7 +346,7 @@ async fn test_entry_validation_cache_behavior() {
 
     // Extract AuthSettings from Doc
     let auth_settings_from_doc = match settings.get("auth") {
-        Some(Value::Doc(auth_doc)) => AuthSettings::from_doc(auth_doc.clone()),
+        Some(Value::Doc(auth_doc)) => AuthSettings::from(auth_doc.clone()),
         _ => AuthSettings::new(),
     };
 
@@ -493,7 +493,7 @@ async fn test_entry_validation_unsigned_entry_detection() {
 
     // Extract AuthSettings from Doc (empty auth section = no keys configured)
     let auth_settings = match settings.get("auth") {
-        Some(Value::Doc(auth_doc)) => AuthSettings::from_doc(auth_doc.clone()),
+        Some(Value::Doc(auth_doc)) => AuthSettings::from(auth_doc.clone()),
         _ => AuthSettings::new(),
     };
 

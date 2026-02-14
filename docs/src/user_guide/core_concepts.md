@@ -133,7 +133,7 @@ Eidetica is designed with distributed systems in mind:
 
 - All data structures have CRDT properties for automatic conflict resolution
 - Different store types implement appropriate CRDT strategies:
-  - DocStore uses last-writer-wins (LWW) with implicit timestamps
+  - DocStore uses structural merge by default: concurrent writes to the same key use last-writer-wins (LWW), while writes to different keys are combined. Docs can be marked as **atomic** to use full LWW replacement, where the entire document replaces its predecessor instead of merging field-by-field. This is used for data that must be treated as a complete unit.
   - Table preserves all items, with LWW for updates to the same item
 
 These properties ensure that when Eidetica instances synchronize, they eventually reach a consistent state regardless of the order in which updates are received.

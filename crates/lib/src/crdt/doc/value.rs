@@ -236,14 +236,11 @@ impl Value {
         match other {
             Value::Doc(other_node) => {
                 if let Value::Doc(self_node) = self {
-                    // For in-place merge, use the Doc's merge method via CRDT trait
-                    // We can't do in-place merge easily with Doc, so we'll replace for now
                     match self_node.merge(other_node) {
                         Ok(merged) => *self_node = merged,
-                        Err(_) => *self = other.clone(), // Fallback on error
+                        Err(_) => *self = other.clone(),
                     }
                 } else {
-                    // Different types, replace with other
                     *self = other.clone();
                 }
             }

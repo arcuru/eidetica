@@ -102,12 +102,11 @@ async fn test_password_store_config_serialization() {
     let info = index.get_entry("secrets").await.unwrap();
     assert_eq!(info.type_id, PasswordStore::<DocStore>::type_id());
 
-    // Config should be a non-empty Doc with a "data" key containing serialized JSON
+    // Config should be a non-empty Doc with field-level structure
     assert!(!info.config.is_empty());
-    let config_result = info
-        .config
-        .get_json::<eidetica::store::PasswordStoreConfig>("data");
-    assert!(config_result.is_ok());
+    let config: eidetica::store::PasswordStoreConfig = info.config.try_into().unwrap();
+    assert_eq!(config.encryption.algorithm, "aes-256-gcm");
+    assert_eq!(config.encryption.kdf, "argon2id");
 }
 
 // ============================================================================
@@ -593,7 +592,7 @@ async fn test_password_store_data_decryption_failure() {
 #[tokio::test]
 async fn test_password_store_invalid_salt_config() {
     let (_instance, database) = setup_tree().await;
-    set_invalid_password_store_config(&database, "bad_salt", invalid_configs::INVALID_SALT).await;
+    set_invalid_password_store_config(&database, "bad_salt", invalid_configs::invalid_salt()).await;
 
     let tx = database.new_transaction().await.unwrap();
     let mut encrypted = tx
@@ -617,7 +616,7 @@ async fn test_password_store_invalid_nonce_config() {
     set_invalid_password_store_config(
         &database,
         "bad_nonce",
-        invalid_configs::INVALID_NONCE_LENGTH,
+        invalid_configs::invalid_nonce_length(),
     )
     .await;
 
@@ -637,7 +636,7 @@ async fn test_password_store_invalid_wrapped_config() {
     set_invalid_password_store_config(
         &database,
         "bad_wrapped",
-        invalid_configs::CORRUPTED_CIPHERTEXT,
+        invalid_configs::corrupted_ciphertext(),
     )
     .await;
 
@@ -663,7 +662,7 @@ async fn test_password_store_unsupported_algorithm() {
     set_invalid_password_store_config(
         &database,
         "bad_algo",
-        invalid_configs::UNSUPPORTED_ALGORITHM,
+        invalid_configs::unsupported_algorithm(),
     )
     .await;
 
@@ -682,7 +681,8 @@ async fn test_password_store_unsupported_algorithm() {
 #[tokio::test]
 async fn test_password_store_unsupported_kdf() {
     let (_instance, database) = setup_tree().await;
-    set_invalid_password_store_config(&database, "bad_kdf", invalid_configs::UNSUPPORTED_KDF).await;
+    set_invalid_password_store_config(&database, "bad_kdf", invalid_configs::unsupported_kdf())
+        .await;
 
     let tx = database.new_transaction().await.unwrap();
     let result = tx.get_store::<PasswordStore<DocStore>>("bad_kdf").await;
@@ -699,7 +699,7 @@ async fn test_password_store_unsupported_kdf() {
 #[tokio::test]
 async fn test_password_store_malformed_config_json() {
     let (_instance, database) = setup_tree().await;
-    set_invalid_password_store_config(&database, "bad_json", invalid_configs::MALFORMED_JSON).await;
+    set_invalid_password_store_config(&database, "bad_json", invalid_configs::malformed()).await;
 
     let tx = database.new_transaction().await.unwrap();
     let result = tx.get_store::<PasswordStore<DocStore>>("bad_json").await;
@@ -708,7 +708,7 @@ async fn test_password_store_malformed_config_json() {
     if let Err(e) = result {
         assert!(
             e.is_store_serialization_error(),
-            "Expected store serialization error for malformed JSON, got: {e}"
+            "Expected store serialization error for malformed config, got: {e}"
         );
     }
 }

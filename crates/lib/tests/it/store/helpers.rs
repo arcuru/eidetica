@@ -680,16 +680,9 @@ pub async fn assert_password_docstore_data(
 }
 
 /// Set invalid PasswordStore config in the index for error testing
-pub async fn set_invalid_password_store_config(
-    tree: &Database,
-    store_name: &str,
-    invalid_config: &str,
-) {
-    use eidetica::crdt::{Doc, doc::Value};
+pub async fn set_invalid_password_store_config(tree: &Database, store_name: &str, config_doc: Doc) {
     let tx = tree.new_transaction().await.unwrap();
     let index_store = tx.get_index().await.unwrap();
-    let mut config_doc = Doc::new();
-    config_doc.set("data", Value::Text(invalid_config.to_string()));
     index_store
         .set_entry(store_name, PasswordStore::<DocStore>::type_id(), config_doc)
         .await
@@ -699,70 +692,109 @@ pub async fn set_invalid_password_store_config(
 
 // Common invalid configs for error testing
 pub mod invalid_configs {
-    pub const INVALID_SALT: &str = r#"{
-        "wrapped_config": {
-            "ciphertext": [1, 2, 3],
-            "nonce": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
-        },
-        "encryption": {
-            "algorithm": "aes-256-gcm",
-            "kdf": "argon2id",
-            "salt": "not!!!valid!!!base64",
-            "version": "1"
-        }
-    }"#;
+    use eidetica::crdt::Doc;
+    use eidetica::store::{EncryptedFragment, EncryptionInfo, PasswordStoreConfig};
 
-    pub const INVALID_NONCE_LENGTH: &str = r#"{
-        "wrapped_config": {
-            "ciphertext": [1, 2, 3],
-            "nonce": [1, 2, 3]
-        },
-        "encryption": {
-            "algorithm": "aes-256-gcm",
-            "kdf": "argon2id",
-            "salt": "abcdefghijklmnop",
-            "version": "1"
+    fn make_config(encryption: EncryptionInfo, wrapped_config: EncryptedFragment) -> Doc {
+        PasswordStoreConfig {
+            encryption,
+            wrapped_config,
         }
-    }"#;
+        .into()
+    }
 
-    pub const CORRUPTED_CIPHERTEXT: &str = r#"{
-        "wrapped_config": {
-            "ciphertext": [255, 255, 255],
-            "nonce": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
-        },
-        "encryption": {
-            "algorithm": "aes-256-gcm",
-            "kdf": "argon2id",
-            "salt": "abcdefghijklmnop",
-            "version": "1"
+    fn default_fragment() -> EncryptedFragment {
+        EncryptedFragment {
+            ciphertext: vec![1, 2, 3],
+            nonce: vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
         }
-    }"#;
+    }
 
-    pub const UNSUPPORTED_ALGORITHM: &str = r#"{
-        "wrapped_config": {
-            "ciphertext": [1, 2, 3],
-            "nonce": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
-        },
-        "encryption": {
-            "algorithm": "aes-128-gcm",
-            "kdf": "argon2id",
-            "salt": "c29tZXNhbHQ=",
-            "version": "1"
-        }
-    }"#;
+    pub fn invalid_salt() -> Doc {
+        make_config(
+            EncryptionInfo {
+                algorithm: "aes-256-gcm".to_string(),
+                kdf: "argon2id".to_string(),
+                salt: "not!!!valid!!!base64".to_string(),
+                version: "1".to_string(),
+                argon2_m_cost: None,
+                argon2_t_cost: None,
+                argon2_p_cost: None,
+            },
+            default_fragment(),
+        )
+    }
 
-    pub const UNSUPPORTED_KDF: &str = r#"{
-        "wrapped_config": {
-            "ciphertext": [1, 2, 3],
-            "nonce": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
-        },
-        "encryption": {
-            "algorithm": "aes-256-gcm",
-            "kdf": "pbkdf2",
-            "salt": "c29tZXNhbHQ=",
-            "version": "1"
-        }
-    }"#;
+    pub fn invalid_nonce_length() -> Doc {
+        make_config(
+            EncryptionInfo {
+                algorithm: "aes-256-gcm".to_string(),
+                kdf: "argon2id".to_string(),
+                salt: "abcdefghijklmnop".to_string(),
+                version: "1".to_string(),
+                argon2_m_cost: None,
+                argon2_t_cost: None,
+                argon2_p_cost: None,
+            },
+            EncryptedFragment {
+                ciphertext: vec![1, 2, 3],
+                nonce: vec![1, 2, 3], // Only 3 bytes, should be 12
+            },
+        )
+    }
 
-    pub const MALFORMED_JSON: &str = r#"{ this is not valid json! }"#;
+    pub fn corrupted_ciphertext() -> Doc {
+        make_config(
+            EncryptionInfo {
+                algorithm: "aes-256-gcm".to_string(),
+                kdf: "argon2id".to_string(),
+                salt: "abcdefghijklmnop".to_string(),
+                version: "1".to_string(),
+                argon2_m_cost: None,
+                argon2_t_cost: None,
+                argon2_p_cost: None,
+            },
+            EncryptedFragment {
+                ciphertext: vec![255, 255, 255],
+                nonce: vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+            },
+        )
+    }
+
+    pub fn unsupported_algorithm() -> Doc {
+        make_config(
+            EncryptionInfo {
+                algorithm: "aes-128-gcm".to_string(),
+                kdf: "argon2id".to_string(),
+                salt: "c29tZXNhbHQ=".to_string(),
+                version: "1".to_string(),
+                argon2_m_cost: None,
+                argon2_t_cost: None,
+                argon2_p_cost: None,
+            },
+            default_fragment(),
+        )
+    }
+
+    pub fn unsupported_kdf() -> Doc {
+        make_config(
+            EncryptionInfo {
+                algorithm: "aes-256-gcm".to_string(),
+                kdf: "pbkdf2".to_string(),
+                salt: "c29tZXNhbHQ=".to_string(),
+                version: "1".to_string(),
+                argon2_m_cost: None,
+                argon2_t_cost: None,
+                argon2_p_cost: None,
+            },
+            default_fragment(),
+        )
+    }
+
+    /// Doc with missing required fields — simulates corrupted config
+    pub fn malformed() -> Doc {
+        let mut doc = Doc::new();
+        doc.set("garbage", "not a valid config");
+        doc
+    }
 }

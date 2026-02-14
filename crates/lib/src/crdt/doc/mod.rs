@@ -95,6 +95,11 @@ fn is_v0(v: &u8) -> bool {
     *v == 0
 }
 
+/// Helper for serde skip_serializing_if on bool fields
+fn is_false(v: &bool) -> bool {
+    !v
+}
+
 /// Validates the Doc version during deserialization.
 fn validate_doc_version<'de, D>(deserializer: D) -> std::result::Result<u8, D::Error>
 where
@@ -120,6 +125,10 @@ pub struct Doc {
         deserialize_with = "validate_doc_version"
     )]
     version: u8,
+    /// When true, the document merges as a single unit (LWW) rather than
+    /// recursively merging individual fields.
+    #[serde(rename = "_a", default, skip_serializing_if = "is_false")]
+    atomic: bool,
     /// Child nodes indexed by string keys
     children: HashMap<String, Value>,
 }
@@ -129,8 +138,59 @@ impl Doc {
     pub fn new() -> Self {
         Self {
             version: DOC_VERSION,
+            atomic: false,
             children: HashMap::new(),
         }
+    }
+
+    /// Creates a new empty atomic document.
+    ///
+    /// The atomic flag means "this data is a complete replacement — take all of
+    /// it." During merge (left ⊕ right):
+    ///
+    /// - `right.atomic` → LWW: return right (always replaces left entirely)
+    /// - `left.atomic`, `!right.atomic` → structural field merge, result stays
+    ///   atomic (the flag is **contagious**)
+    /// - Neither atomic → structural field merge, result non-atomic
+    ///
+    /// The contagious property preserves associativity: in a chain `1⊕2⊕3⊕4`
+    /// where 3 is atomic and 4 edits subfields, `3⊕4` produces an atomic
+    /// result, so `(1⊕2) ⊕ (3⊕4)` correctly overwrites everything before 3.
+    ///
+    /// Use this for config or metadata that must always be written as a
+    /// consistent whole. Types that need atomicity should convert into
+    /// `Doc::atomic()` (e.g., via `impl From<MyType> for Doc`) to declare
+    /// replacement semantics.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use eidetica::crdt::{Doc, traits::CRDT};
+    /// let mut doc1 = Doc::atomic();
+    /// doc1.set("x", 1);
+    /// doc1.set("y", 2);
+    ///
+    /// let mut doc2 = Doc::atomic();
+    /// doc2.set("x", 10);
+    /// doc2.set("z", 30);
+    ///
+    /// // Atomic merge replaces entirely (LWW), no field-level merge
+    /// let merged = doc1.merge(&doc2).unwrap();
+    /// assert_eq!(merged.get_as::<i64>("x"), Some(10));
+    /// assert_eq!(merged.get_as::<i64>("z"), Some(30));
+    /// assert_eq!(merged.get_as::<i64>("y"), None); // Not carried from doc1
+    /// ```
+    pub fn atomic() -> Self {
+        Self {
+            version: DOC_VERSION,
+            atomic: true,
+            children: HashMap::new(),
+        }
+    }
+
+    /// Returns true if this document uses atomic merge semantics.
+    pub fn is_atomic(&self) -> bool {
+        self.atomic
     }
 
     /// Returns true if this document has no data (excluding tombstones).
@@ -491,6 +551,9 @@ impl CRDT for Doc {
     /// Merge combines the key-value pairs from both documents, resolving
     /// conflicts deterministically using CRDT rules.
     fn merge(&self, other: &Self) -> crate::Result<Self> {
+        if other.atomic {
+            return Ok(other.clone());
+        }
         let mut result = self.clone();
         for (key, other_value) in &other.children {
             match result.children.get_mut(key) {

@@ -30,7 +30,7 @@ Settings are stored in the `_settings` store (constant `SETTINGS` in `constants.
 
 **Key Properties:**
 
-- **Data Type**: `Doc` CRDT for deterministic merging
+- **Data Type**: `Doc` CRDT for deterministic merging. Store configurations (e.g., `PasswordStoreConfig`) use atomic Docs (`Doc::atomic()`) to ensure the full config is replaced as a unit on each write, rather than merging individual fields.
 - **Location**: Exclusively in `_settings` store
 - **Access**: Through `Transaction::get_settings()` method
 
@@ -248,7 +248,7 @@ When creating a database with authentication:
 ## Design Benefits
 
 1. **Single Source of Truth**: All settings in `_settings` store
-2. **CRDT Semantics**: Deterministic merge resolution for concurrent updates
+2. **CRDT Semantics**: Deterministic merge resolution for concurrent updates. Store configurations use atomic Docs to guarantee whole-value replacement rather than partial field merging.
 3. **Efficient Access**: Metadata tips enable quick settings retrieval
 4. **Clean Architecture**: Entry is pure data, Transaction handles business logic
 5. **Extensibility**: Easy to add new setting categories alongside `auth`

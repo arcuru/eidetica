@@ -1326,7 +1326,7 @@ impl Transaction {
             return Err(TransactionError::CorruptedAuthConfiguration.into());
         } else {
             match effective_settings_for_validation.get("auth") {
-                Some(Value::Doc(auth_doc)) => AuthSettings::from_doc(auth_doc.clone()),
+                Some(Value::Doc(auth_doc)) => auth_doc.clone().into(),
                 None => AuthSettings::new(), // Empty auth - never configured
                 Some(_) => {
                     // Auth exists but has wrong type (not a Doc) - this is corrupted

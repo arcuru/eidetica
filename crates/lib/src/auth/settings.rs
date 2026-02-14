@@ -30,15 +30,22 @@ pub struct AuthSettings {
     inner: Doc,
 }
 
+impl From<Doc> for AuthSettings {
+    fn from(doc: Doc) -> Self {
+        Self { inner: doc }
+    }
+}
+
+impl From<AuthSettings> for Doc {
+    fn from(settings: AuthSettings) -> Doc {
+        settings.inner
+    }
+}
+
 impl AuthSettings {
     /// Create a new empty auth settings view
     pub fn new() -> Self {
         Self { inner: Doc::new() }
-    }
-
-    /// Create from existing Doc (e.g., from _settings.auth)
-    pub fn from_doc(doc: Doc) -> Self {
-        Self { inner: doc }
     }
 
     /// Get the underlying Doc for direct access
@@ -46,7 +53,7 @@ impl AuthSettings {
         &self.inner
     }
 
-    /// Get mutable access to the underlying Map
+    /// Get mutable access to the underlying Doc
     pub fn as_doc_mut(&mut self) -> &mut Doc {
         &mut self.inner
     }
@@ -677,7 +684,7 @@ mod tests {
 
         // Merge at Doc level
         let merged_doc = settings1.as_doc().merge(settings2.as_doc()).unwrap();
-        let merged_settings = AuthSettings::from_doc(merged_doc);
+        let merged_settings: AuthSettings = merged_doc.into();
 
         // Both keys should be present
         assert!(merged_settings.get_key_by_pubkey(&pubkey1).is_ok());

@@ -221,7 +221,7 @@ async fn test_user_approve_bootstrap_request() {
         .get_node("auth")
         .await
         .expect("Failed to get auth settings");
-    let auth_settings = AuthSettings::from_doc(auth_doc);
+    let auth_settings = AuthSettings::from(auth_doc);
     let added_key = auth_settings
         .get_key_by_pubkey(&client_pubkey)
         .expect("Failed to get auth key");
@@ -289,7 +289,7 @@ async fn test_user_reject_bootstrap_request() {
     // Check that the key doesn't exist in auth settings
     let auth_result = settings_store.get_node("auth").await;
     if let Ok(auth_doc) = auth_result {
-        let auth_settings = AuthSettings::from_doc(auth_doc);
+        let auth_settings = AuthSettings::from(auth_doc);
         assert!(
             auth_settings.get_key_by_pubkey(&client_pubkey).is_err(),
             "Key should not have been added to database"
@@ -646,7 +646,7 @@ async fn test_multiple_users() {
         .get_node("auth")
         .await
         .expect("Failed to get Alice's auth");
-    let alice_auth_settings = AuthSettings::from_doc(alice_auth);
+    let alice_auth_settings = AuthSettings::from(alice_auth);
     assert!(
         !alice_auth_settings
             .find_keys_by_name("laptop_key")
@@ -666,7 +666,7 @@ async fn test_multiple_users() {
         .get_node("auth")
         .await
         .expect("Failed to get Bob's auth");
-    let bob_auth_settings = AuthSettings::from_doc(bob_auth);
+    let bob_auth_settings = AuthSettings::from(bob_auth);
     assert!(bob_auth_settings.find_keys_by_name("laptop_key").is_empty());
 
     println!("✅ Multiple users can independently manage bootstrap requests for their databases");

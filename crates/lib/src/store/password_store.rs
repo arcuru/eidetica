@@ -35,9 +35,11 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
+use base64ct::{Base64, Encoding};
+
 use crate::{
     Result, Transaction,
-    crdt::Doc,
+    crdt::{CRDTError, Doc, doc::Value},
     store::{Registered, Store, StoreError},
     transaction::Encryptor,
 };
@@ -95,6 +97,138 @@ pub struct PasswordStoreConfig {
     /// Encrypted wrapped store metadata.
     /// Contains the wrapped store's configuration, e.g: {"type": "docstore:v0", "config": "{}"}
     pub wrapped_config: EncryptedFragment,
+}
+
+impl From<EncryptedFragment> for Doc {
+    fn from(frag: EncryptedFragment) -> Doc {
+        let mut doc = Doc::new();
+        doc.set("ciphertext", Base64::encode_string(&frag.ciphertext));
+        doc.set("nonce", Base64::encode_string(&frag.nonce));
+        doc
+    }
+}
+
+impl TryFrom<&Doc> for EncryptedFragment {
+    type Error = crate::Error;
+
+    fn try_from(doc: &Doc) -> crate::Result<Self> {
+        let bytes = |key: &str| -> crate::Result<Vec<u8>> {
+            let b64 = doc
+                .get_as::<&str>(key)
+                .ok_or_else(|| CRDTError::ElementNotFound {
+                    key: key.to_string(),
+                })?;
+            Base64::decode_vec(b64).map_err(|_| {
+                CRDTError::DeserializationFailed {
+                    reason: format!("{key}: invalid base64"),
+                }
+                .into()
+            })
+        };
+
+        Ok(EncryptedFragment {
+            ciphertext: bytes("ciphertext")?,
+            nonce: bytes("nonce")?,
+        })
+    }
+}
+
+impl From<EncryptionInfo> for Doc {
+    fn from(info: EncryptionInfo) -> Doc {
+        // Functionally this is an atomic Doc, however we can save  small amount of space
+        // by relying on this always being a sub-Doc of the PasswordStoreConfig type.
+        let mut doc = Doc::new();
+        doc.set("algorithm", info.algorithm);
+        doc.set("kdf", info.kdf);
+        doc.set("salt", info.salt);
+        doc.set("version", info.version);
+        if let Some(m) = info.argon2_m_cost {
+            doc.set("argon2_m_cost", m);
+        }
+        if let Some(t) = info.argon2_t_cost {
+            doc.set("argon2_t_cost", t);
+        }
+        if let Some(p) = info.argon2_p_cost {
+            doc.set("argon2_p_cost", p);
+        }
+        doc
+    }
+}
+
+impl TryFrom<&Doc> for EncryptionInfo {
+    type Error = crate::Error;
+
+    fn try_from(doc: &Doc) -> crate::Result<Self> {
+        let text = |key: &str| -> crate::Result<String> {
+            doc.get_as::<&str>(key).map(String::from).ok_or_else(|| {
+                CRDTError::ElementNotFound {
+                    key: key.to_string(),
+                }
+                .into()
+            })
+        };
+
+        let cost = |key: &str| -> crate::Result<Option<u32>> {
+            doc.get_as::<i64>(key)
+                .map(|v| {
+                    u32::try_from(v).map_err(|_| {
+                        crate::Error::from(CRDTError::DeserializationFailed {
+                            reason: format!("{key}: value {v} out of u32 range"),
+                        })
+                    })
+                })
+                .transpose()
+        };
+
+        Ok(EncryptionInfo {
+            algorithm: text("algorithm")?,
+            kdf: text("kdf")?,
+            salt: text("salt")?,
+            version: text("version")?,
+            argon2_m_cost: cost("argon2_m_cost")?,
+            argon2_t_cost: cost("argon2_t_cost")?,
+            argon2_p_cost: cost("argon2_p_cost")?,
+        })
+    }
+}
+
+impl From<PasswordStoreConfig> for Doc {
+    fn from(config: PasswordStoreConfig) -> Doc {
+        // The config always needs to be written atomically to avoid problems with partial updates.
+        let mut doc = Doc::atomic();
+        doc.set("encryption", Value::Doc(config.encryption.into()));
+        doc.set("wrapped_config", Value::Doc(config.wrapped_config.into()));
+        doc
+    }
+}
+
+impl TryFrom<&Doc> for PasswordStoreConfig {
+    type Error = crate::Error;
+
+    fn try_from(doc: &Doc) -> crate::Result<Self> {
+        let sub = |key: &str| -> crate::Result<&Doc> {
+            match doc.get(key) {
+                Some(Value::Doc(d)) => Ok(d),
+                _ => Err(CRDTError::ElementNotFound {
+                    key: key.to_string(),
+                }
+                .into()),
+            }
+        };
+
+        Ok(PasswordStoreConfig {
+            encryption: sub("encryption")?.try_into()?,
+            wrapped_config: sub("wrapped_config")?.try_into()?,
+        })
+    }
+}
+
+impl TryFrom<Doc> for PasswordStoreConfig {
+    type Error = crate::Error;
+
+    fn try_from(doc: Doc) -> crate::Result<Self> {
+        Self::try_from(&doc)
+    }
 }
 
 /// Wrapped store metadata (stored encrypted in config)
@@ -444,12 +578,12 @@ impl<S: Store> Store for PasswordStore<S> {
         } else {
             // Parse the config from the Doc
             let config: PasswordStoreConfig =
-                info.config
-                    .get_json("data")
-                    .map_err(|e| StoreError::DeserializationFailed {
+                info.config.try_into().map_err(|e: crate::Error| {
+                    StoreError::DeserializationFailed {
                         store: subtree_name.clone(),
                         reason: format!("Failed to parse PasswordStoreConfig: {e}"),
-                    })?;
+                    }
+                })?;
 
             // Validate encryption parameters
             if config.encryption.algorithm != "aes-256-gcm" {
@@ -643,9 +777,7 @@ impl<S: Store> PasswordStore<S> {
         };
 
         // Update _index with the encryption config
-        let mut config_doc = Doc::new();
-        config_doc.set_json("data", &config)?;
-        self.set_config(config_doc).await?;
+        self.set_config(config.clone().into()).await?;
 
         // Cache password and create encryptor
         let password_cache = Password {

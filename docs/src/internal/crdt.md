@@ -27,6 +27,34 @@ Uses a recursive merge-base approach for computing CRDT states:
 - **Path Merging**: Merges all entries from merge base to parents with proper ordering
 - **Local Integration**: Applies current entry's data to final state
 
+## Doc Merge Semantics
+
+The `Doc` type supports two merge modes controlled by an `atomic` flag:
+
+- **Atomic merge** (`other.atomic == true`): The incoming Doc replaces the existing one entirely (LWW). The result is a clone of `other`, including its atomic flag.
+
+- **Structural merge** (default): Fields are merged recursively. For each key present in both sides, values are merged per-field using last-writer-wins. Keys unique to either side are preserved in the result. The result is non-atomic unless `self` was atomic (see below).
+
+### Contagious Atomic Flag
+
+When `self.atomic == true` and `other.atomic == false`, a structural merge occurs (other's fields are merged into self's fields), but the result preserves the atomic flag from `self`. This "contagious" property ensures associativity:
+
+```text
+Given entries E1, E2, E3(atomic), E4:
+
+Left fold:   ((E1 ⊕ E2) ⊕ E3) ⊕ E4
+Grouped:     (E1 ⊕ E2) ⊕ (E3 ⊕ E4)
+
+E3 ⊕ E4 produces an atomic result (contagious from E3).
+When merged with (E1 ⊕ E2), the atomic flag triggers LWW,
+correctly overwriting all pre-E3 data.
+Both forms produce identical results.
+```
+
+### When to Use Atomic Docs
+
+Atomic Docs are appropriate for configuration or typed data that should be treated as a complete unit — replacing the previous value entirely rather than merging individual fields. Store implementations use `Doc::atomic()` when writing config values (e.g., `PasswordStoreConfig`) to ensure the full config is replaced on each write.
+
 ## Key Properties
 
 - **Correctness**: Consistent state computation regardless of access patterns
