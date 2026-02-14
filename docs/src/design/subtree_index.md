@@ -86,7 +86,7 @@ Each registered subtree has an entry in `_index` with the following structure:
 **Fields**:
 
 - `type`: The Store type identifier from `Registered::type_id()` (e.g., "docstore:v0")
-- `config`: Store-specific configuration as a JSON string
+- `config`: Store-specific configuration as a `Doc`
 
 ### Auto-Registration
 
@@ -125,7 +125,7 @@ The `Registered` trait provides type identification for registry integration:
 
 The `Store` trait extends `Registered` and provides methods for registry integration:
 
-- **`default_config()`**: Returns default configuration as JSON string
+- **`default_config()`**: Returns default configuration as a `Doc`
 - **`init()`**: Creates store and registers it in `_index`
 - **`get_config()` / `set_config()`**: Read/write configuration in `_index`
 
@@ -175,7 +175,7 @@ assert!(index.contains("config").await);
 
 let info = index.get_entry("config").await?;
 assert_eq!(info.type_id, "docstore:v0");
-assert_eq!(info.config, "{}");
+assert!(info.config.is_empty());
 # Ok(())
 # }
 ```
@@ -204,10 +204,13 @@ assert_eq!(info.config, "{}");
 let txn = db.new_transaction().await?;
 let index = txn.get_index().await?;
 
+let mut config = Doc::new();
+config.set("compression", "zstd");
+config.set("cache_size", "1024");
 index.set_entry(
     "documents",
     "ydoc:v0",
-    r#"{"compression":"zstd","cache_size":1024}"#
+    config,
 ).await?;
 
 txn.commit().await?;
@@ -217,7 +220,7 @@ let txn = db.new_transaction().await?;
 let index = txn.get_index().await?;
 let info = index.get_entry("documents").await?;
 assert_eq!(info.type_id, "ydoc:v0");
-assert!(info.config.contains("compression"));
+assert!(info.config.contains_key("compression"));
 # Ok(())
 # }
 ```

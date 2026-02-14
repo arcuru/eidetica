@@ -22,7 +22,7 @@
 // Create and initialize an encrypted store
 let tx = database.new_transaction().await?;
 let mut encrypted = tx.get_store::<PasswordStore>("secrets").await?;
-encrypted.initialize("my_password", DocStore::type_id(), "{}").await?;
+encrypted.initialize("my_password", DocStore::type_id(), Doc::new()).await?;
 
 // Use the wrapped store normally
 let docstore = encrypted.unwrap::<DocStore>().await?;
@@ -52,7 +52,7 @@ tx.commit().await?;
 # {
 #     let tx = database.new_transaction().await?;
 #     let mut encrypted = tx.get_store::<PasswordStore>("secrets").await?;
-#     encrypted.initialize("my_password", DocStore::type_id(), "{}").await?;
+#     encrypted.initialize("my_password", DocStore::type_id(), Doc::new()).await?;
 #     let docstore = encrypted.unwrap::<DocStore>().await?;
 #     docstore.set("secret", "value").await?;
 #     tx.commit().await?;
@@ -98,7 +98,7 @@ struct Credential {
 
 let tx = database.new_transaction().await?;
 let mut encrypted = tx.get_store::<PasswordStore>("credentials").await?;
-encrypted.initialize("vault_password", Table::<Credential>::type_id(), "{}").await?;
+encrypted.initialize("vault_password", Table::<Credential>::type_id(), Doc::new()).await?;
 
 let table = encrypted.unwrap::<Table<Credential>>().await?;
 table.insert(Credential {

@@ -33,7 +33,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::{
     Result, Transaction,
-    crdt::Data,
+    crdt::{Data, Doc},
     store::{Registered, Store, StoreError},
     transaction::Encryptor,
 };
@@ -105,7 +105,7 @@ pub struct PasswordStoreConfig {
 struct WrappedStoreInfo {
     #[serde(rename = "type")]
     type_id: String,
-    config: String,
+    config: Doc,
 }
 
 /// Internal state of a PasswordStore
@@ -348,7 +348,7 @@ impl Encryptor for PasswordEncryptor {
 /// # let db = Database::create(Doc::new(), &instance, private_key, "key".to_string()).await?;
 /// let tx = db.new_transaction().await?;
 /// let mut encrypted = tx.get_store::<PasswordStore>("secrets").await?;
-/// encrypted.initialize("my_password", "docstore:v0", "{}").await?;
+/// encrypted.initialize("my_password", "docstore:v0", Doc::new()).await?;
 ///
 /// let docstore = encrypted.unwrap::<DocStore>().await?;
 /// docstore.set("key", "secret value").await?;
@@ -428,8 +428,8 @@ impl Store for PasswordStore {
         }
 
         // Determine state based on config content
-        // Empty config "{}" means uninitialized, valid JSON means locked
-        if info.config == "{}" || info.config.is_empty() {
+        // Empty Doc means uninitialized, non-empty means locked
+        if info.config.is_empty() {
             Ok(Self {
                 name: subtree_name,
                 transaction: txn.clone(),
@@ -438,13 +438,14 @@ impl Store for PasswordStore {
                 wrapped_info: None,
             })
         } else {
-            // Parse the config
-            let config: PasswordStoreConfig = serde_json::from_str(&info.config).map_err(|e| {
-                StoreError::DeserializationFailed {
-                    store: subtree_name.clone(),
-                    reason: format!("Failed to parse PasswordStoreConfig: {e}"),
-                }
-            })?;
+            // Parse the config from the Doc
+            let config: PasswordStoreConfig =
+                info.config
+                    .get_json("data")
+                    .map_err(|e| StoreError::DeserializationFailed {
+                        store: subtree_name.clone(),
+                        reason: format!("Failed to parse PasswordStoreConfig: {e}"),
+                    })?;
 
             // Validate encryption parameters
             if config.encryption.algorithm != "aes-256-gcm" {
@@ -499,10 +500,6 @@ impl Store for PasswordStore {
     fn transaction(&self) -> &Transaction {
         &self.transaction
     }
-
-    fn default_config() -> String {
-        "{}".to_string()
-    }
 }
 
 impl PasswordStore {
@@ -540,7 +537,7 @@ impl PasswordStore {
     /// # let db = Database::create(Doc::new(), &instance, private_key, "key".to_string()).await?;
     /// let tx = db.new_transaction().await?;
     /// let mut encrypted = tx.get_store::<PasswordStore>("secrets").await?;
-    /// encrypted.initialize("my_password", "docstore:v0", "{}").await?;
+    /// encrypted.initialize("my_password", "docstore:v0", Doc::new()).await?;
     ///
     /// let docstore = encrypted.unwrap::<DocStore>().await?;
     /// docstore.set("key", "secret value").await?;
@@ -552,7 +549,7 @@ impl PasswordStore {
         &mut self,
         password: impl Into<String>,
         wrapped_type_id: impl Into<String>,
-        wrapped_config: impl Into<String>,
+        wrapped_config: Doc,
     ) -> Result<()> {
         // Check state is Uninitialized
         if self.state() != PasswordStoreState::Uninitialized {
@@ -566,7 +563,6 @@ impl PasswordStore {
 
         let password = password.into();
         let wrapped_type_id = wrapped_type_id.into();
-        let wrapped_config = wrapped_config.into();
 
         // Use default Argon2 parameters
         let argon2_m_cost = DEFAULT_ARGON2_M_COST;
@@ -643,8 +639,9 @@ impl PasswordStore {
         };
 
         // Update _index with the encryption config
-        let config_json = serde_json::to_string(&config)?;
-        self.set_config(config_json).await?;
+        let mut config_doc = Doc::new();
+        config_doc.set_json("data", &config)?;
+        self.set_config(config_doc).await?;
 
         // Cache password and create encryptor
         let password_cache = Password {
@@ -878,7 +875,7 @@ impl PasswordStore {
     /// # let db = Database::create(Doc::new(), &instance, private_key, "key".to_string()).await?;
     /// # let tx = db.new_transaction().await?;
     /// # let mut encrypted = tx.get_store::<PasswordStore>("test").await?;
-    /// # encrypted.initialize("pass", "docstore:v0", "{}").await?;
+    /// # encrypted.initialize("pass", "docstore:v0", Doc::new()).await?;
     /// # tx.commit().await?;
     /// # let tx2 = db.new_transaction().await?;
     /// let mut encrypted = tx2.get_store::<PasswordStore>("test").await?;

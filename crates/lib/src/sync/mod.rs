@@ -431,7 +431,7 @@ impl Sync {
                     }
                     .into());
                 }
-                serde_json::from_str(&entry.config).map_err(|e| {
+                entry.config.get_json("data").map_err(|e| {
                     SyncError::SerializationError(format!(
                         "Failed to deserialize transport config '{name}': {e}"
                     ))
@@ -470,14 +470,15 @@ impl Sync {
         name: &str,
         config: &T,
     ) -> Result<()> {
-        let json = serde_json::to_string(config).map_err(|e| {
+        let mut config_doc = crate::crdt::Doc::new();
+        config_doc.set_json("data", config).map_err(|e| {
             SyncError::SerializationError(format!(
                 "Failed to serialize transport config '{name}': {e}"
             ))
         })?;
         let tx = self.sync_tree.new_transaction().await?;
         let registry = Registry::new(&tx, TRANSPORTS_SUBTREE).await?;
-        registry.set_entry(name, T::type_id(), json).await?;
+        registry.set_entry(name, T::type_id(), config_doc).await?;
         tx.commit().await?;
         Ok(())
     }

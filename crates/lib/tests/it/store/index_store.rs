@@ -7,6 +7,15 @@ use eidetica::{
     store::{DocStore, Table},
 };
 
+/// Helper to create a Doc config with key-value pairs for testing
+fn doc_config(pairs: &[(&str, &str)]) -> Doc {
+    let mut doc = Doc::new();
+    for (k, v) in pairs {
+        doc.set(*k, *v);
+    }
+    doc
+}
+
 use serde::{Deserialize, Serialize};
 
 use crate::helpers::test_instance;
@@ -44,7 +53,11 @@ async fn test_index_store_register_subtree() {
 
     // Now update the index with custom type and config
     index
-        .set_entry("my_subtree", "custom:v1", r#"{"custom":"config"}"#)
+        .set_entry(
+            "my_subtree",
+            "custom:v1",
+            doc_config(&[("custom", "config")]),
+        )
         .await
         .unwrap();
 
@@ -56,7 +69,7 @@ async fn test_index_store_register_subtree() {
 
     let info = index.get_entry("my_subtree").await.unwrap();
     assert_eq!(info.type_id, "custom:v1");
-    assert_eq!(info.config, r#"{"custom":"config"}"#);
+    assert_eq!(info.config, doc_config(&[("custom", "config")]));
 }
 
 #[tokio::test]
@@ -164,7 +177,11 @@ async fn test_index_store_update_existing() {
     store.set("key2", "value2").await.unwrap();
 
     index
-        .set_entry("my_subtree", DocStore::type_id(), r#"{"updated":"config"}"#)
+        .set_entry(
+            "my_subtree",
+            DocStore::type_id(),
+            doc_config(&[("updated", "config")]),
+        )
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -174,7 +191,7 @@ async fn test_index_store_update_existing() {
     let index = tx.get_index().await.unwrap();
 
     let info = index.get_entry("my_subtree").await.unwrap();
-    assert_eq!(info.config, r#"{"updated":"config"}"#);
+    assert_eq!(info.config, doc_config(&[("updated", "config")]));
 }
 
 // ============================================================================
@@ -202,7 +219,7 @@ async fn test_auto_register_on_first_access_docstore() {
 
     let info = index.get_entry("my_data").await.unwrap();
     assert_eq!(info.type_id, DocStore::type_id());
-    assert_eq!(info.config, "{}");
+    assert!(info.config.is_empty());
 }
 
 #[tokio::test]
@@ -292,7 +309,11 @@ async fn test_index_update_includes_target_subtree() {
     store.set("key2", "value2").await.unwrap();
 
     index
-        .set_entry("my_subtree", DocStore::type_id(), r#"{"new":"config"}"#)
+        .set_entry(
+            "my_subtree",
+            DocStore::type_id(),
+            doc_config(&[("new", "config")]),
+        )
         .await
         .unwrap();
 
@@ -327,7 +348,11 @@ async fn test_auto_dummy_write_on_index_update() {
 
     // This should automatically add a dummy write to "target"
     index
-        .set_entry("target", DocStore::type_id(), r#"{"modified":"config"}"#)
+        .set_entry(
+            "target",
+            DocStore::type_id(),
+            doc_config(&[("modified", "config")]),
+        )
         .await
         .unwrap();
 
@@ -393,7 +418,7 @@ async fn test_manual_index_update_with_subtree_modification() {
 
     // Update index metadata
     index
-        .set_entry("my_subtree", "docstore:v2", r#"{"version":"2"}"#)
+        .set_entry("my_subtree", "docstore:v2", doc_config(&[("version", "2")]))
         .await
         .unwrap();
 
@@ -676,7 +701,7 @@ async fn test_empty_config_is_valid() {
     let index = tx.get_index().await.unwrap();
 
     let info = index.get_entry("test").await.unwrap();
-    assert_eq!(info.config, "{}");
+    assert!(info.config.is_empty());
 }
 
 // ============================================================================
@@ -703,7 +728,11 @@ async fn test_index_modification_forces_subtree_in_entry() {
     let tx = database.new_transaction().await.unwrap();
     let index = tx.get_index().await.unwrap();
     index
-        .set_entry("my_subtree", "custom:v1", r#"{"custom":"config"}"#)
+        .set_entry(
+            "my_subtree",
+            "custom:v1",
+            doc_config(&[("custom", "config")]),
+        )
         .await
         .unwrap();
     let entry_id2 = tx.commit().await.unwrap();

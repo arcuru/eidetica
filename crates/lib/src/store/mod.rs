@@ -1,5 +1,5 @@
 use crate::HeightStrategy;
-use crate::crdt::Data;
+use crate::crdt::{Data, Doc};
 use crate::{Result, Transaction};
 use async_trait::async_trait;
 
@@ -74,13 +74,13 @@ pub trait Store: Sized + Registered + Send + Sync {
     /// and `set_config()` to access the index store.
     fn transaction(&self) -> &Transaction;
 
-    /// Returns the default configuration for this Store type as a JSON string.
+    /// Returns the default configuration for this Store type as a [`Doc`].
     ///
     /// This configuration is stored in the `_index` subtree when a new subtree is
     /// first created. The Store implementation owns the format and interpretation
     /// of this configuration data.
     ///
-    /// The default implementation returns `"{}"` (empty JSON object). Store implementations
+    /// The default implementation returns an empty `Doc`. Store implementations
     /// that require specific configuration should override this method.
     ///
     /// # Examples
@@ -88,10 +88,10 @@ pub trait Store: Sized + Registered + Send + Sync {
     /// ```
     /// # use eidetica::{Store, store::DocStore};
     /// let config = DocStore::default_config();
-    /// assert_eq!(config, "{}");
+    /// assert!(config.is_empty());
     /// ```
-    fn default_config() -> String {
-        "{}".to_string()
+    fn default_config() -> Doc {
+        Doc::new()
     }
 
     /// Initializes a new subtree and registers it in the `_index`.
@@ -121,11 +121,11 @@ pub trait Store: Sized + Registered + Send + Sync {
     /// Gets the current configuration for this Store from the `_index` subtree.
     ///
     /// # Returns
-    /// A `Result<String>` containing the JSON configuration string.
+    /// A `Result<Doc>` containing the configuration document.
     ///
     /// # Errors
     /// Returns an error if the subtree is not registered in `_index`.
-    async fn get_config(&self) -> Result<String> {
+    async fn get_config(&self) -> Result<Doc> {
         let index = self.transaction().get_index().await?;
         let info = index.get_entry(self.name()).await?;
         Ok(info.config)
@@ -138,14 +138,14 @@ pub trait Store: Sized + Registered + Send + Sync {
     /// update configuration during a transaction.
     ///
     /// # Arguments
-    /// * `config` - The JSON configuration string to store.
+    /// * `config` - The configuration document to store.
     ///
     /// # Returns
     /// A `Result<()>` indicating success or failure.
-    async fn set_config(&self, config: impl Into<String> + Send) -> Result<()> {
+    async fn set_config(&self, config: Doc) -> Result<()> {
         let index = self.transaction().get_index().await?;
         index
-            .set_entry(self.name(), Self::type_id(), config.into())
+            .set_entry(self.name(), Self::type_id(), config)
             .await?;
         Ok(())
     }

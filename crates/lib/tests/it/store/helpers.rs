@@ -593,7 +593,7 @@ pub async fn init_password_store_docstore(tree: &Database, store_name: &str, pas
     let tx = tree.new_transaction().await.unwrap();
     let mut encrypted = tx.get_store::<PasswordStore>(store_name).await.unwrap();
     encrypted
-        .initialize(password, DocStore::type_id(), "{}")
+        .initialize(password, DocStore::type_id(), Doc::new())
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -621,7 +621,7 @@ pub async fn create_password_docstore_with_data(
     let tx = tree.new_transaction().await.unwrap();
     let mut encrypted = tx.get_store::<PasswordStore>(store_name).await.unwrap();
     encrypted
-        .initialize(password, DocStore::type_id(), "{}")
+        .initialize(password, DocStore::type_id(), Doc::new())
         .await
         .unwrap();
 
@@ -676,10 +676,13 @@ pub async fn set_invalid_password_store_config(
     store_name: &str,
     invalid_config: &str,
 ) {
+    use eidetica::crdt::{Doc, doc::Value};
     let tx = tree.new_transaction().await.unwrap();
     let index_store = tx.get_index().await.unwrap();
+    let mut config_doc = Doc::new();
+    config_doc.set("data", Value::Text(invalid_config.to_string()));
     index_store
-        .set_entry(store_name, PasswordStore::type_id(), invalid_config)
+        .set_entry(store_name, PasswordStore::type_id(), config_doc)
         .await
         .unwrap();
     tx.commit().await.unwrap();

@@ -101,17 +101,15 @@ impl SubtreeSettings {
 }
 
 /// Metadata for a registry entry
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegistryEntry {
     /// The type identifier (e.g., "docstore:v0", "iroh:v0")
-    #[serde(rename = "type")]
     pub type_id: String,
 
-    /// Type-specific configuration data as JSON string
-    pub config: String,
+    /// Type-specific configuration data as a [`Doc`]
+    pub config: Doc,
 
     /// Common subtree settings
-    #[serde(default, skip_serializing_if = "SubtreeSettings::is_default")]
     pub settings: SubtreeSettings,
 }
 
@@ -178,14 +176,18 @@ impl Registry {
             })?
             .to_string();
 
-        let config = doc
-            .get("config")
-            .and_then(|v: &doc::Value| v.as_text())
-            .ok_or_else(|| StoreError::DeserializationFailed {
-                store: self.inner.name().to_string(),
-                reason: format!("Entry '{name}' missing 'config' field"),
-            })?
-            .to_string();
+        let config = match doc.get("config") {
+            Some(doc::Value::Doc(d)) => d.clone(),
+            Some(doc::Value::Text(s)) if s == "{}" => Doc::new(),
+            Some(doc::Value::Text(_)) => {
+                return Err(StoreError::DeserializationFailed {
+                    store: self.inner.name().to_string(),
+                    reason: format!("Entry '{name}' config is a non-empty Text, expected Doc"),
+                }
+                .into());
+            }
+            _ => Doc::new(),
+        };
 
         // Parse settings if present, default to empty settings
         let settings = match doc.get("settings") {
@@ -249,7 +251,7 @@ impl Registry {
     /// # Arguments
     /// * `name` - The name of the entry to register/update
     /// * `type_id` - The type identifier (e.g., "docstore:v0", "iroh:v0")
-    /// * `config` - Type-specific configuration as a JSON string
+    /// * `config` - Type-specific configuration as a [`Doc`]
     ///
     /// # Returns
     /// Result indicating success or failure
@@ -257,16 +259,15 @@ impl Registry {
         &self,
         name: impl AsRef<str>,
         type_id: impl Into<String>,
-        config: impl Into<String>,
+        config: Doc,
     ) -> Result<()> {
         let name = name.as_ref();
         let type_id = type_id.into();
-        let config = config.into();
 
         // Create the nested structure for this entry's metadata
         let mut metadata_doc = Doc::new();
         metadata_doc.set("type", doc::Value::Text(type_id));
-        metadata_doc.set("config", doc::Value::Text(config));
+        metadata_doc.set("config", doc::Value::Doc(config));
 
         // Set the metadata in the registry subtree
         self.inner.set(name, doc::Value::Doc(metadata_doc)).await?;
@@ -333,7 +334,7 @@ impl Registry {
         // Create the nested structure with updated settings
         let mut metadata_doc = Doc::new();
         metadata_doc.set("type", doc::Value::Text(entry.type_id));
-        metadata_doc.set("config", doc::Value::Text(entry.config));
+        metadata_doc.set("config", doc::Value::Doc(entry.config));
 
         // Only add settings if non-default
         if !settings.is_default() {
