@@ -339,14 +339,6 @@ pub fn assert_maps_equivalent(map1: &Map, map2: &Map) {
 
 // ===== MERGE TESTING HELPERS =====
 
-/// Test CRDT merge commutativity: A ⊕ B = B ⊕ A
-pub fn test_merge_commutativity<T: CRDT + PartialEq + std::fmt::Debug>(a: &T, b: &T) -> Result<()> {
-    let a_merge_b = a.merge(b)?;
-    let b_merge_a = b.merge(a)?;
-    assert_eq!(a_merge_b, b_merge_a, "Merge is not commutative");
-    Ok(())
-}
-
 /// Test CRDT merge associativity: (A ⊕ B) ⊕ C = A ⊕ (B ⊕ C)
 pub fn test_merge_associativity<T: CRDT + PartialEq + std::fmt::Debug>(
     a: &T,
@@ -356,13 +348,6 @@ pub fn test_merge_associativity<T: CRDT + PartialEq + std::fmt::Debug>(
     let left_assoc = a.merge(b)?.merge(c)?;
     let right_assoc = a.merge(&b.merge(c)?)?;
     assert_eq!(left_assoc, right_assoc, "Merge is not associative");
-    Ok(())
-}
-
-/// Test CRDT merge idempotency: A ⊕ A = A
-pub fn test_merge_idempotency<T: CRDT + PartialEq + std::fmt::Debug>(a: &T) -> Result<()> {
-    let merged = a.merge(a)?;
-    assert_eq!(*a, merged, "Merge is not idempotent");
     Ok(())
 }
 

@@ -1,5 +1,5 @@
 use crate::HeightStrategy;
-use crate::crdt::{Data, Doc};
+use crate::crdt::{CRDT, Doc};
 use crate::{Result, Transaction};
 use async_trait::async_trait;
 
@@ -51,7 +51,7 @@ pub trait Store: Sized + Registered + Send + Sync {
     /// The CRDT data type used for local (staged) data in this store.
     ///
     /// This is the type stored within each individual Entry.
-    type Data: Data + Default;
+    type Data: CRDT;
 
     /// Creates a new `Store` handle associated with a specific transaction.
     ///

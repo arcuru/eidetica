@@ -710,7 +710,7 @@ impl Transaction {
     /// if the subtree has no history prior to this transaction.
     pub(crate) async fn get_full_state<T>(&self, subtree_name: impl AsRef<str> + Send) -> Result<T>
     where
-        T: CRDT + Default + Send,
+        T: CRDT + Send,
     {
         let subtree_name = subtree_name.as_ref();
 
@@ -795,7 +795,7 @@ impl Transaction {
         entry_ids: &[ID],
     ) -> Result<T>
     where
-        T: CRDT + Default + Send,
+        T: CRDT + Send,
     {
         // Base case: no entries
         if entry_ids.is_empty() {
@@ -887,7 +887,7 @@ impl Transaction {
         entry_id: &'a ID,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T>> + Send + 'a>>
     where
-        T: CRDT + Default + Send + 'a,
+        T: CRDT + Send + 'a,
     {
         Box::pin(async move {
             // Step 1: Check if already cached
@@ -956,7 +956,7 @@ impl Transaction {
         entry_ids: &[ID],
     ) -> Result<T>
     where
-        T: CRDT + Clone + Default + serde::de::DeserializeOwned,
+        T: CRDT,
     {
         for entry_id in entry_ids {
             let entry = self.db.backend()?.get(entry_id).await?;

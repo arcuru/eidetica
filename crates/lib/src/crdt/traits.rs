@@ -53,13 +53,17 @@ pub trait Data: Clone + serde::Serialize + serde::de::DeserializeOwned {}
 /// let merged = kv1.merge(&kv2).unwrap();
 /// // Doc uses last-write-wins semantics for scalar values
 /// ```
-pub trait CRDT: Data {
+pub trait CRDT: Data + Default {
     /// Merge this CRDT with another instance, returning a new merged instance.
     ///
     /// This operation must be:
-    /// - **Commutative**: `a.merge(b) == b.merge(a)`
     /// - **Associative**: `(a.merge(b)).merge(c) == a.merge(b.merge(c))`
-    /// - **Idempotent**: `a.merge(a) == a`
+    ///
+    /// Unlike traditional state-based CRDTs (which require a join-semilattice with
+    /// commutativity and idempotency), Eidetica's Merkle-CRDT design relaxes these
+    /// requirements. The Merkle DAG provides deterministic traversal order, eliminating
+    /// the need for commutativity, and ensures each entry is applied exactly once,
+    /// eliminating the need for idempotency.
     ///
     /// # Arguments
     ///

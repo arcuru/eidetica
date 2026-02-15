@@ -52,25 +52,6 @@ fn test_crdt_map_merge_semantics() {
 }
 
 #[test]
-fn test_crdt_commutativity() {
-    // Create non-conflicting maps to ensure commutativity
-    let mut map1 = Doc::new();
-    map1.set("key1", "value1".to_string());
-    map1.set("shared", "from_map1".to_string());
-
-    let mut map2 = Doc::new();
-    map2.set("key2", "value2".to_string());
-    map2.set("different", "from_map2".to_string());
-
-    // Test that A ⊕ B = B ⊕ A for non-conflicting maps
-    let merge_1_2 = map1.merge(&map2).expect("Merge 1->2 should succeed");
-    let merge_2_1 = map2.merge(&map1).expect("Merge 2->1 should succeed");
-
-    // Results should be identical for non-conflicting merges
-    assert_maps_equivalent(&merge_1_2, &merge_2_1);
-}
-
-#[test]
 fn test_crdt_associativity() {
     let base = setup_test_map();
     let mut map_a = base.clone();
@@ -93,16 +74,6 @@ fn test_crdt_associativity() {
         .expect("Merge A,(B,C) should succeed");
 
     assert_maps_equivalent(&left_assoc, &right_assoc);
-}
-
-#[test]
-fn test_crdt_idempotency() {
-    let map = setup_test_map();
-
-    // Test that A ⊕ A = A
-    let merged = map.merge(&map).expect("Self-merge should succeed");
-
-    assert_maps_equivalent(&map, &merged);
 }
 
 #[test]
@@ -234,10 +205,7 @@ fn test_crdt_merge_properties_comprehensive() {
     let map2 = create_mixed_value_map();
     let map3 = setup_test_map();
 
-    // Test all CRDT properties using helpers
-    test_merge_commutativity(&map1, &map2).expect("Maps should be commutative");
     test_merge_associativity(&map1, &map2, &map3).expect("Maps should be associative");
-    test_merge_idempotency(&map1).expect("Maps should be idempotent");
 }
 
 #[test]
