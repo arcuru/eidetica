@@ -300,11 +300,11 @@ impl Transaction {
     /// encryptor registration automatically:
     ///
     /// ```rust,ignore
-    /// let mut encrypted = tx.get_store::<PasswordStore>("secrets")?;
-    /// encrypted.initialize("my_password", "docstore:v0", "{}")?;
+    /// let mut encrypted = tx.get_store::<PasswordStore<DocStore>>("secrets")?;
+    /// encrypted.initialize("my_password", Doc::new())?;
     ///
     /// // PasswordStore registers the encryptor internally
-    /// let docstore = encrypted.unwrap::<DocStore>()?;
+    /// let docstore = encrypted.inner()?;
     /// ```
     ///
     /// For custom encryption, implement the [`Encryptor`] trait:

@@ -22,19 +22,21 @@ async fn test_password_store_initialize() {
     let (_instance, database) = setup_tree().await;
 
     let tx = database.new_transaction().await.unwrap();
-    let mut encrypted = tx.get_store::<PasswordStore>("secrets").await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<DocStore>>("secrets")
+        .await
+        .unwrap();
 
     assert!(!encrypted.is_initialized());
     assert!(!encrypted.is_open());
 
     encrypted
-        .initialize("my_password", DocStore::type_id(), Doc::new())
+        .initialize("my_password", Doc::new())
         .await
         .unwrap();
 
     assert!(encrypted.is_initialized());
     assert!(encrypted.is_open());
-    assert_eq!(encrypted.wrapped_type_id().unwrap(), DocStore::type_id());
 
     tx.commit().await.unwrap();
 }
@@ -45,7 +47,10 @@ async fn test_password_store_open_with_correct_password() {
     init_password_store_docstore(&database, "secrets", "my_password").await;
 
     let tx = database.new_transaction().await.unwrap();
-    let mut encrypted = tx.get_store::<PasswordStore>("secrets").await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<DocStore>>("secrets")
+        .await
+        .unwrap();
 
     assert!(encrypted.is_initialized());
     assert!(!encrypted.is_open());
@@ -53,7 +58,6 @@ async fn test_password_store_open_with_correct_password() {
     encrypted.open("my_password").unwrap();
 
     assert!(encrypted.is_open());
-    assert_eq!(encrypted.wrapped_type_id().unwrap(), DocStore::type_id());
 }
 
 #[tokio::test]
@@ -62,7 +66,10 @@ async fn test_password_store_open_with_wrong_password() {
     init_password_store_docstore(&database, "secrets", "correct_password").await;
 
     let tx = database.new_transaction().await.unwrap();
-    let mut encrypted = tx.get_store::<PasswordStore>("secrets").await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<DocStore>>("secrets")
+        .await
+        .unwrap();
 
     let result = encrypted.open("wrong_password");
 
@@ -71,35 +78,17 @@ async fn test_password_store_open_with_wrong_password() {
 }
 
 #[tokio::test]
-async fn test_password_store_unwrap_type_mismatch() {
-    let (_instance, database) = setup_tree().await;
-
-    let tx = database.new_transaction().await.unwrap();
-    let mut encrypted = tx.get_store::<PasswordStore>("secrets").await.unwrap();
-    encrypted
-        .initialize("my_password", DocStore::type_id(), Doc::new())
-        .await
-        .unwrap();
-
-    #[derive(Serialize, Deserialize, Clone)]
-    struct TestRecord {
-        value: i32,
-    }
-
-    let result = encrypted.unwrap::<Table<TestRecord>>().await;
-    assert!(result.is_err());
-}
-
-#[tokio::test]
 async fn test_password_store_operations_on_unopened_fail() {
     let (_instance, database) = setup_tree().await;
     init_password_store_docstore(&database, "secrets", "my_password").await;
 
     let tx = database.new_transaction().await.unwrap();
-    let encrypted = tx.get_store::<PasswordStore>("secrets").await.unwrap();
+    let encrypted = tx
+        .get_store::<PasswordStore<DocStore>>("secrets")
+        .await
+        .unwrap();
 
-    assert!(encrypted.wrapped_type_id().is_err());
-    assert!(encrypted.unwrap::<DocStore>().await.is_err());
+    assert!(encrypted.inner().await.is_err());
 }
 
 #[tokio::test]
@@ -111,7 +100,7 @@ async fn test_password_store_config_serialization() {
     let index = tx.get_index().await.unwrap();
 
     let info = index.get_entry("secrets").await.unwrap();
-    assert_eq!(info.type_id, PasswordStore::type_id());
+    assert_eq!(info.type_id, PasswordStore::<DocStore>::type_id());
 
     // Config should be a non-empty Doc with a "data" key containing serialized JSON
     assert!(!info.config.is_empty());
@@ -152,13 +141,16 @@ async fn test_password_store_data_is_encrypted_in_backend() {
     let (_instance, database) = setup_tree().await;
 
     let tx = database.new_transaction().await.unwrap();
-    let mut encrypted = tx.get_store::<PasswordStore>("secrets").await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<DocStore>>("secrets")
+        .await
+        .unwrap();
     encrypted
-        .initialize("my_password", DocStore::type_id(), Doc::new())
+        .initialize("my_password", Doc::new())
         .await
         .unwrap();
 
-    let docstore = encrypted.unwrap::<DocStore>().await.unwrap();
+    let docstore = encrypted.inner().await.unwrap();
     docstore.set("secret_key", "THIS_IS_SECRET").await.unwrap();
 
     let entry_id = tx.commit().await.unwrap();
@@ -197,9 +189,12 @@ async fn test_password_store_cache_is_encrypted() {
 
     // Force CRDT state computation which populates cache
     let tx = database.new_transaction().await.unwrap();
-    let mut store = tx.get_store::<PasswordStore>("secrets").await.unwrap();
+    let mut store = tx
+        .get_store::<PasswordStore<DocStore>>("secrets")
+        .await
+        .unwrap();
     store.open("password").unwrap();
-    let docstore = store.unwrap::<DocStore>().await.unwrap();
+    let docstore = store.inner().await.unwrap();
     let _ = docstore.get("key1").await; // triggers state computation and caching
 
     // Check cache contains encrypted data, not plaintext
@@ -280,10 +275,13 @@ async fn test_password_store_empty_data() {
     init_password_store_docstore(&database, "empty", "password").await;
 
     let tx = database.new_transaction().await.unwrap();
-    let mut encrypted = tx.get_store::<PasswordStore>("empty").await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<DocStore>>("empty")
+        .await
+        .unwrap();
     encrypted.open("password").unwrap();
 
-    let docstore = encrypted.unwrap::<DocStore>().await.unwrap();
+    let docstore = encrypted.inner().await.unwrap();
     let all = docstore.get_all().await.unwrap();
     assert!(all.is_empty());
 }
@@ -319,13 +317,13 @@ async fn test_password_store_docstore_basic_operations() {
     let (_instance, database) = setup_tree().await;
 
     let tx = database.new_transaction().await.unwrap();
-    let mut encrypted = tx.get_store::<PasswordStore>("docs").await.unwrap();
-    encrypted
-        .initialize("pass", DocStore::type_id(), Doc::new())
+    let mut encrypted = tx
+        .get_store::<PasswordStore<DocStore>>("docs")
         .await
         .unwrap();
+    encrypted.initialize("pass", Doc::new()).await.unwrap();
 
-    let docstore = encrypted.unwrap::<DocStore>().await.unwrap();
+    let docstore = encrypted.inner().await.unwrap();
     docstore.set("name", "Alice").await.unwrap();
     docstore.set("age", 30).await.unwrap();
     docstore.set("active", true).await.unwrap();
@@ -333,7 +331,7 @@ async fn test_password_store_docstore_basic_operations() {
 
     let tx2 = database.new_transaction().await.unwrap();
     let encrypted2 = open_password_store(&tx2, "docs", "pass").await;
-    let docstore2 = encrypted2.unwrap::<DocStore>().await.unwrap();
+    let docstore2 = encrypted2.inner().await.unwrap();
 
     assert_eq!(
         docstore2.get("name").await.unwrap().as_text(),
@@ -348,13 +346,13 @@ async fn test_password_store_docstore_nested_values() {
     let (_instance, database) = setup_tree().await;
 
     let tx = database.new_transaction().await.unwrap();
-    let mut encrypted = tx.get_store::<PasswordStore>("nested").await.unwrap();
-    encrypted
-        .initialize("pass", DocStore::type_id(), Doc::new())
+    let mut encrypted = tx
+        .get_store::<PasswordStore<DocStore>>("nested")
         .await
         .unwrap();
+    encrypted.initialize("pass", Doc::new()).await.unwrap();
 
-    let docstore = encrypted.unwrap::<DocStore>().await.unwrap();
+    let docstore = encrypted.inner().await.unwrap();
 
     let mut inner = Doc::new();
     inner.set("city", "Portland");
@@ -367,7 +365,7 @@ async fn test_password_store_docstore_nested_values() {
 
     let tx2 = database.new_transaction().await.unwrap();
     let encrypted2 = open_password_store(&tx2, "nested", "pass").await;
-    let docstore2 = encrypted2.unwrap::<DocStore>().await.unwrap();
+    let docstore2 = encrypted2.inner().await.unwrap();
 
     let address = docstore2.get("address").await.unwrap();
     let address_doc = address.as_doc().unwrap();
@@ -389,13 +387,13 @@ async fn test_password_store_docstore_delete() {
 
     let tx = database.new_transaction().await.unwrap();
     let encrypted = open_password_store(&tx, "docs", "pass").await;
-    let docstore = encrypted.unwrap::<DocStore>().await.unwrap();
+    let docstore = encrypted.inner().await.unwrap();
     docstore.delete("delete").await.unwrap();
     tx.commit().await.unwrap();
 
     let tx2 = database.new_transaction().await.unwrap();
     let encrypted2 = open_password_store(&tx2, "docs", "pass").await;
-    let docstore2 = encrypted2.unwrap::<DocStore>().await.unwrap();
+    let docstore2 = encrypted2.inner().await.unwrap();
 
     assert!(docstore2.get("keep").await.is_ok());
     assert!(docstore2.get("delete").await.is_err());
@@ -416,16 +414,13 @@ async fn test_password_store_table_basic_operations() {
     let (_instance, database) = setup_tree().await;
 
     let tx = database.new_transaction().await.unwrap();
-    let mut encrypted = tx.get_store::<PasswordStore>("records").await.unwrap();
-    encrypted
-        .initialize("pass", Table::<()>::type_id(), Doc::new())
+    let mut encrypted = tx
+        .get_store::<PasswordStore<Table<PasswordTestRecord>>>("records")
         .await
         .unwrap();
+    encrypted.initialize("pass", Doc::new()).await.unwrap();
 
-    let table = encrypted
-        .unwrap::<Table<PasswordTestRecord>>()
-        .await
-        .unwrap();
+    let table = encrypted.inner().await.unwrap();
     let id1 = table
         .insert(PasswordTestRecord {
             name: "Alice".to_string(),
@@ -443,11 +438,12 @@ async fn test_password_store_table_basic_operations() {
     tx.commit().await.unwrap();
 
     let tx2 = database.new_transaction().await.unwrap();
-    let encrypted2 = open_password_store(&tx2, "records", "pass").await;
-    let table2 = encrypted2
-        .unwrap::<Table<PasswordTestRecord>>()
+    let mut encrypted2 = tx2
+        .get_store::<PasswordStore<Table<PasswordTestRecord>>>("records")
         .await
         .unwrap();
+    encrypted2.open("pass").unwrap();
+    let table2 = encrypted2.inner().await.unwrap();
 
     let record1 = table2.get(&id1).await.unwrap();
     let record2 = table2.get(&id2).await.unwrap();
@@ -464,15 +460,12 @@ async fn test_password_store_table_update() {
 
     // Create and insert
     let tx1 = database.new_transaction().await.unwrap();
-    let mut encrypted1 = tx1.get_store::<PasswordStore>("records").await.unwrap();
-    encrypted1
-        .initialize("pass", Table::<()>::type_id(), Doc::new())
+    let mut encrypted1 = tx1
+        .get_store::<PasswordStore<Table<PasswordTestRecord>>>("records")
         .await
         .unwrap();
-    let table1 = encrypted1
-        .unwrap::<Table<PasswordTestRecord>>()
-        .await
-        .unwrap();
+    encrypted1.initialize("pass", Doc::new()).await.unwrap();
+    let table1 = encrypted1.inner().await.unwrap();
     let id = table1
         .insert(PasswordTestRecord {
             name: "Alice".to_string(),
@@ -484,11 +477,12 @@ async fn test_password_store_table_update() {
 
     // Update
     let tx2 = database.new_transaction().await.unwrap();
-    let encrypted2 = open_password_store(&tx2, "records", "pass").await;
-    let table2 = encrypted2
-        .unwrap::<Table<PasswordTestRecord>>()
+    let mut encrypted2 = tx2
+        .get_store::<PasswordStore<Table<PasswordTestRecord>>>("records")
         .await
         .unwrap();
+    encrypted2.open("pass").unwrap();
+    let table2 = encrypted2.inner().await.unwrap();
     table2
         .set(
             &id,
@@ -503,11 +497,12 @@ async fn test_password_store_table_update() {
 
     // Verify
     let tx3 = database.new_transaction().await.unwrap();
-    let encrypted3 = open_password_store(&tx3, "records", "pass").await;
-    let table3 = encrypted3
-        .unwrap::<Table<PasswordTestRecord>>()
+    let mut encrypted3 = tx3
+        .get_store::<PasswordStore<Table<PasswordTestRecord>>>("records")
         .await
         .unwrap();
+    encrypted3.open("pass").unwrap();
+    let table3 = encrypted3.inner().await.unwrap();
 
     let record = table3.get(&id).await.unwrap();
     assert_eq!(record.name, "Alice Updated");
@@ -520,15 +515,12 @@ async fn test_password_store_table_delete() {
 
     // Create and insert
     let tx1 = database.new_transaction().await.unwrap();
-    let mut encrypted1 = tx1.get_store::<PasswordStore>("records").await.unwrap();
-    encrypted1
-        .initialize("pass", Table::<()>::type_id(), Doc::new())
+    let mut encrypted1 = tx1
+        .get_store::<PasswordStore<Table<PasswordTestRecord>>>("records")
         .await
         .unwrap();
-    let table1 = encrypted1
-        .unwrap::<Table<PasswordTestRecord>>()
-        .await
-        .unwrap();
+    encrypted1.initialize("pass", Doc::new()).await.unwrap();
+    let table1 = encrypted1.inner().await.unwrap();
     let id = table1
         .insert(PasswordTestRecord {
             name: "Delete Me".to_string(),
@@ -540,21 +532,23 @@ async fn test_password_store_table_delete() {
 
     // Delete
     let tx2 = database.new_transaction().await.unwrap();
-    let encrypted2 = open_password_store(&tx2, "records", "pass").await;
-    let table2 = encrypted2
-        .unwrap::<Table<PasswordTestRecord>>()
+    let mut encrypted2 = tx2
+        .get_store::<PasswordStore<Table<PasswordTestRecord>>>("records")
         .await
         .unwrap();
+    encrypted2.open("pass").unwrap();
+    let table2 = encrypted2.inner().await.unwrap();
     assert!(table2.delete(&id).await.unwrap());
     tx2.commit().await.unwrap();
 
     // Verify deleted
     let tx3 = database.new_transaction().await.unwrap();
-    let encrypted3 = open_password_store(&tx3, "records", "pass").await;
-    let table3 = encrypted3
-        .unwrap::<Table<PasswordTestRecord>>()
+    let mut encrypted3 = tx3
+        .get_store::<PasswordStore<Table<PasswordTestRecord>>>("records")
         .await
         .unwrap();
+    encrypted3.open("pass").unwrap();
+    let table3 = encrypted3.inner().await.unwrap();
     assert!(table3.get(&id).await.is_err());
 }
 
@@ -584,7 +578,10 @@ async fn test_password_store_data_decryption_failure() {
 
     // Wrong password should fail
     let tx = database.new_transaction().await.unwrap();
-    let mut encrypted = tx.get_store::<PasswordStore>("secrets").await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<DocStore>>("secrets")
+        .await
+        .unwrap();
     let result = encrypted.open("wrong_password");
 
     assert!(result.is_err());
@@ -599,7 +596,10 @@ async fn test_password_store_invalid_salt_config() {
     set_invalid_password_store_config(&database, "bad_salt", invalid_configs::INVALID_SALT).await;
 
     let tx = database.new_transaction().await.unwrap();
-    let mut encrypted = tx.get_store::<PasswordStore>("bad_salt").await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<DocStore>>("bad_salt")
+        .await
+        .unwrap();
     let result = encrypted.open("password");
 
     assert!(result.is_err());
@@ -622,7 +622,10 @@ async fn test_password_store_invalid_nonce_config() {
     .await;
 
     let tx = database.new_transaction().await.unwrap();
-    let mut encrypted = tx.get_store::<PasswordStore>("bad_nonce").await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<DocStore>>("bad_nonce")
+        .await
+        .unwrap();
     let result = encrypted.open("password");
 
     assert!(result.is_err());
@@ -639,7 +642,10 @@ async fn test_password_store_invalid_wrapped_config() {
     .await;
 
     let tx = database.new_transaction().await.unwrap();
-    let mut encrypted = tx.get_store::<PasswordStore>("bad_wrapped").await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<DocStore>>("bad_wrapped")
+        .await
+        .unwrap();
     let result = encrypted.open("password");
 
     assert!(result.is_err());
@@ -662,7 +668,7 @@ async fn test_password_store_unsupported_algorithm() {
     .await;
 
     let tx = database.new_transaction().await.unwrap();
-    let result = tx.get_store::<PasswordStore>("bad_algo").await;
+    let result = tx.get_store::<PasswordStore<DocStore>>("bad_algo").await;
 
     assert!(result.is_err());
     if let Err(e) = result {
@@ -679,7 +685,7 @@ async fn test_password_store_unsupported_kdf() {
     set_invalid_password_store_config(&database, "bad_kdf", invalid_configs::UNSUPPORTED_KDF).await;
 
     let tx = database.new_transaction().await.unwrap();
-    let result = tx.get_store::<PasswordStore>("bad_kdf").await;
+    let result = tx.get_store::<PasswordStore<DocStore>>("bad_kdf").await;
 
     assert!(result.is_err());
     if let Err(e) = result {
@@ -696,7 +702,7 @@ async fn test_password_store_malformed_config_json() {
     set_invalid_password_store_config(&database, "bad_json", invalid_configs::MALFORMED_JSON).await;
 
     let tx = database.new_transaction().await.unwrap();
-    let result = tx.get_store::<PasswordStore>("bad_json").await;
+    let result = tx.get_store::<PasswordStore<DocStore>>("bad_json").await;
 
     assert!(result.is_err());
     if let Err(e) = result {
@@ -712,11 +718,14 @@ async fn test_password_store_open_already_open_fails() {
     let (_instance, database) = setup_tree().await;
 
     let tx = database.new_transaction().await.unwrap();
-    let mut encrypted = tx.get_store::<PasswordStore>("secrets").await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<DocStore>>("secrets")
+        .await
+        .unwrap();
     let mut wrapped_config = Doc::new();
     wrapped_config.set("title", "Test");
     encrypted
-        .initialize("password123", DocStore::type_id(), wrapped_config)
+        .initialize("password123", wrapped_config)
         .await
         .unwrap();
 
@@ -728,7 +737,7 @@ async fn test_password_store_open_already_open_fails() {
 
     // Should still be open and usable
     assert!(encrypted.is_open());
-    assert!(encrypted.unwrap::<DocStore>().await.is_ok());
+    assert!(encrypted.inner().await.is_ok());
 }
 
 #[tokio::test]
@@ -737,14 +746,15 @@ async fn test_password_store_initialize_already_initialized_fails() {
     init_password_store_docstore(&database, "secrets", "password").await;
 
     let tx = database.new_transaction().await.unwrap();
-    let mut encrypted = tx.get_store::<PasswordStore>("secrets").await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<DocStore>>("secrets")
+        .await
+        .unwrap();
 
     assert!(encrypted.is_initialized());
     assert!(!encrypted.is_open());
 
-    let result = encrypted
-        .initialize("new_password", DocStore::type_id(), Doc::new())
-        .await;
+    let result = encrypted.initialize("new_password", Doc::new()).await;
     assert!(result.is_err());
 }
 
@@ -753,7 +763,10 @@ async fn test_password_store_open_uninitialized_fails() {
     let (_instance, database) = setup_tree().await;
 
     let tx = database.new_transaction().await.unwrap();
-    let mut encrypted = tx.get_store::<PasswordStore>("secrets").await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<DocStore>>("secrets")
+        .await
+        .unwrap();
 
     assert!(!encrypted.is_initialized());
 

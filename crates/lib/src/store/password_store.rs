@@ -1,8 +1,9 @@
 //! Password-encrypted store wrapper for transparent encryption of any Store type.
 //!
-//! This module provides [`PasswordStore`], which encrypts both data and metadata
-//! using AES-256-GCM with Argon2id-derived keys. The wrapped store's type and
-//! configuration are stored encrypted in the `_index` subtree.
+//! This module provides [`PasswordStore<S>`], a generic decorator that wraps any
+//! [`Store`] type `S` with AES-256-GCM encryption using Argon2id-derived keys.
+//! The wrapped store's type and configuration are stored encrypted in the `_index`
+//! subtree.
 //!
 //! # Encryption Architecture
 //!
@@ -14,12 +15,16 @@
 //! ```
 //!
 //! The underlying CRDT (e.g., Doc) handles merging of decrypted data from multiple
-//! entry tips. The encrypted wrapper is purely for storage - it has no CRDT semantics.
+//! entry tips. `PasswordStore<S>` delegates `Store::Data` to `S::Data` — encryption
+//! is a transport-level concern, invisible at the type level.
 //!
 //! # Relay Node Support
 //!
 //! Relay nodes without the decryption key can store and forward encrypted entries.
 //! It is unnecessary to decrypt the data before forwarding it to other nodes.
+
+use std::marker::PhantomData;
+use std::sync::{Arc, Mutex};
 
 use aes_gcm::{
     Aes256Gcm, KeyInit, Nonce,
@@ -28,35 +33,27 @@ use aes_gcm::{
 use argon2::{Argon2, Params, password_hash::SaltString};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, Mutex};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::{
     Result, Transaction,
-    crdt::{Data, Doc},
+    crdt::Doc,
     store::{Registered, Store, StoreError},
     transaction::Encryptor,
 };
 
 /// Encrypted data fragment containing ciphertext and nonce.
 ///
-/// This is a simple storage container for encrypted data. It has no CRDT semantics -
-/// merging of encrypted data happens at the entry level, where each entry's data is
-/// decrypted independently and then merged using the underlying CRDT's merge logic.
-///
-/// # Fields
-///
-/// * `ciphertext` - AES-256-GCM encrypted data
-/// * `nonce` - 12-byte nonce (must be unique per encryption)
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
+/// Used for storing encrypted metadata (e.g., the wrapped store's configuration
+/// in [`PasswordStoreConfig::wrapped_config`]). This is a storage container
+/// with no CRDT semantics.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EncryptedFragment {
     /// AES-256-GCM encrypted ciphertext.
     pub ciphertext: Vec<u8>,
     /// 12-byte nonce for AES-GCM (must be unique per encryption).
     pub nonce: Vec<u8>,
 }
-
-impl Data for EncryptedFragment {}
 
 /// AES-256-GCM nonce size (96 bits / 12 bytes).
 const AES_GCM_NONCE_SIZE: usize = 12;
@@ -301,10 +298,16 @@ impl Encryptor for PasswordEncryptor {
     }
 }
 
-/// Password-encrypted store wrapper
+/// Password-encrypted store wrapper.
 ///
-/// Provides transparent encryption for any Store type using AES-256-GCM
-/// with password-derived keys (Argon2id). Both data and metadata are encrypted.
+/// Wraps any [`Store`] type with transparent AES-256-GCM encryption using
+/// password-derived keys (Argon2id). The type parameter `S` specifies the
+/// wrapped store type, and `PasswordStore<S>` delegates `Store::Data` to
+/// `S::Data` — encryption is a transport-level concern invisible at the type level.
+///
+/// # Type Parameter
+///
+/// * `S` - The wrapped store type (e.g., `DocStore`, `Table<T>`)
 ///
 /// # State Machine
 ///
@@ -318,7 +321,6 @@ impl Encryptor for PasswordEncryptor {
 /// - `get_store()` → Uninitialized (new) or Locked (existing)
 /// - `initialize()` → Unlocked (from Uninitialized only)
 /// - `open()` → Unlocked (from Locked only)
-/// - `close()` → Locked (from Unlocked)
 ///
 /// # Security
 ///
@@ -329,7 +331,6 @@ impl Encryptor for PasswordEncryptor {
 ///
 /// # Limitations
 ///
-///   - Uses last-write-wins (may lose data in concurrent scenarios)
 /// - **Password Loss**: Losing the password means permanent data loss
 /// - **Performance**: Encryption/decryption overhead on every operation
 ///
@@ -347,10 +348,10 @@ impl Encryptor for PasswordEncryptor {
 /// # let (private_key, _) = generate_keypair();
 /// # let db = Database::create(Doc::new(), &instance, private_key, "key".to_string()).await?;
 /// let tx = db.new_transaction().await?;
-/// let mut encrypted = tx.get_store::<PasswordStore>("secrets").await?;
-/// encrypted.initialize("my_password", "docstore:v0", Doc::new()).await?;
+/// let mut encrypted = tx.get_store::<PasswordStore<DocStore>>("secrets").await?;
+/// encrypted.initialize("my_password", Doc::new()).await?;
 ///
-/// let docstore = encrypted.unwrap::<DocStore>().await?;
+/// let docstore = encrypted.inner().await?;
 /// docstore.set("key", "secret value").await?;
 /// tx.commit().await?;
 /// # Ok(())
@@ -369,15 +370,15 @@ impl Encryptor for PasswordEncryptor {
 /// # let (private_key, _) = generate_keypair();
 /// # let db = Database::create(Doc::new(), &instance, private_key, "key".to_string()).await?;
 /// let tx = db.new_transaction().await?;
-/// let mut store = tx.get_store::<PasswordStore>("secrets").await?;
+/// let mut store = tx.get_store::<PasswordStore<DocStore>>("secrets").await?;
 /// store.open("my_password")?;
 ///
-/// let docstore = store.unwrap::<DocStore>().await?;
+/// let docstore = store.inner().await?;
 /// let value = docstore.get("key").await?;
 /// # Ok(())
 /// # }
 /// ```
-pub struct PasswordStore {
+pub struct PasswordStore<S: Store> {
     /// Subtree name
     name: String,
     /// Transaction reference
@@ -388,9 +389,11 @@ pub struct PasswordStore {
     cached_password: Option<Password>,
     /// Decrypted wrapped store info (only available after open())
     wrapped_info: Option<WrappedStoreInfo>,
+    /// Phantom type for the wrapped store
+    _phantom: PhantomData<S>,
 }
 
-impl PasswordStore {
+impl<S: Store> PasswordStore<S> {
     /// Derive the current state from internal fields
     fn state(&self) -> PasswordStoreState {
         match (&self.config, &self.cached_password) {
@@ -401,7 +404,7 @@ impl PasswordStore {
     }
 }
 
-impl Registered for PasswordStore {
+impl<S: Store> Registered for PasswordStore<S> {
     fn type_id() -> &'static str {
         // Explicitly use v0 to indicate instability
         "encrypted:password:v0"
@@ -409,8 +412,8 @@ impl Registered for PasswordStore {
 }
 
 #[async_trait]
-impl Store for PasswordStore {
-    type Data = EncryptedFragment;
+impl<S: Store> Store for PasswordStore<S> {
+    type Data = S::Data;
 
     async fn new(txn: &Transaction, subtree_name: String) -> Result<Self> {
         // Try to load config from _index to determine state
@@ -436,6 +439,7 @@ impl Store for PasswordStore {
                 config: None,
                 cached_password: None,
                 wrapped_info: None,
+                _phantom: PhantomData,
             })
         } else {
             // Parse the config from the Doc
@@ -473,6 +477,7 @@ impl Store for PasswordStore {
                 config: Some(config),
                 cached_password: None,
                 wrapped_info: None,
+                _phantom: PhantomData,
             })
         }
     }
@@ -490,6 +495,7 @@ impl Store for PasswordStore {
             config: None,
             cached_password: None,
             wrapped_info: None,
+            _phantom: PhantomData,
         })
     }
 
@@ -502,19 +508,18 @@ impl Store for PasswordStore {
     }
 }
 
-impl PasswordStore {
+impl<S: Store> PasswordStore<S> {
     /// Initialize encryption on an uninitialized store
     ///
     /// This configures encryption for a PasswordStore that was obtained via
-    /// `get_store()`. The wrapped store's type and config are encrypted and
-    /// stored in the PasswordStore's configuration in `_index`.
+    /// `get_store()`. The wrapped store's type (derived from `S`) and config
+    /// are encrypted and stored in the PasswordStore's configuration in `_index`.
     ///
     /// After calling this method, the store transitions to the Unlocked state
     /// and is ready to use.
     ///
     /// # Arguments
     /// * `password` - Password for encryption (will be zeroized after use)
-    /// * `wrapped_type_id` - Type ID of wrapped store (e.g., "docstore:v0")
     /// * `wrapped_config` - Configuration for wrapped store
     ///
     /// # Returns
@@ -536,10 +541,10 @@ impl PasswordStore {
     /// # let (private_key, _) = generate_keypair();
     /// # let db = Database::create(Doc::new(), &instance, private_key, "key".to_string()).await?;
     /// let tx = db.new_transaction().await?;
-    /// let mut encrypted = tx.get_store::<PasswordStore>("secrets").await?;
-    /// encrypted.initialize("my_password", "docstore:v0", Doc::new()).await?;
+    /// let mut encrypted = tx.get_store::<PasswordStore<DocStore>>("secrets").await?;
+    /// encrypted.initialize("my_password", Doc::new()).await?;
     ///
-    /// let docstore = encrypted.unwrap::<DocStore>().await?;
+    /// let docstore = encrypted.inner().await?;
     /// docstore.set("key", "secret value").await?;
     /// tx.commit().await?;
     /// # Ok(())
@@ -548,7 +553,6 @@ impl PasswordStore {
     pub async fn initialize(
         &mut self,
         password: impl Into<String>,
-        wrapped_type_id: impl Into<String>,
         wrapped_config: Doc,
     ) -> Result<()> {
         // Check state is Uninitialized
@@ -562,7 +566,7 @@ impl PasswordStore {
         }
 
         let password = password.into();
-        let wrapped_type_id = wrapped_type_id.into();
+        let wrapped_type_id = S::type_id().to_string();
 
         // Use default Argon2 parameters
         let argon2_m_cost = DEFAULT_ARGON2_M_COST;
@@ -670,8 +674,7 @@ impl PasswordStore {
     /// Open (unlock) the encrypted store with a password
     ///
     /// This decrypts the wrapped store configuration and caches the password
-    /// for subsequent encrypt/decrypt operations. The password remains in memory
-    /// until `close()` is called or the PasswordStore is dropped.
+    /// for subsequent encrypt/decrypt operations.
     ///
     /// # Arguments
     /// * `password` - Password to decrypt the store
@@ -686,7 +689,7 @@ impl PasswordStore {
     ///
     /// # Security
     /// The password is cached in memory (with zeroization on drop) for
-    /// convenience. Call `close()` to explicitly clear it from memory.
+    /// convenience.
     pub fn open(&mut self, password: impl Into<String>) -> Result<()> {
         // Check state
         match self.state() {
@@ -796,6 +799,16 @@ impl PasswordStore {
                 }
             })?;
 
+        // Verify the stored wrapped type matches the static type parameter S
+        if !S::supports_type_id(&wrapped_info.type_id) {
+            return Err(StoreError::TypeMismatch {
+                store: self.name.clone(),
+                expected: S::type_id().to_string(),
+                actual: wrapped_info.type_id,
+            }
+            .into());
+        }
+
         // Cache password and wrapped info (state is derived from these fields)
         let password_cache = Password {
             salt: config.encryption.salt.clone(),
@@ -824,43 +837,15 @@ impl PasswordStore {
         self.state() != PasswordStoreState::Uninitialized
     }
 
-    /// Get the wrapped store's type ID (requires open)
+    /// Get the wrapped store, providing transparent encryption.
     ///
-    /// # Errors
-    /// Returns error if store is not opened
-    pub fn wrapped_type_id(&self) -> Result<&str> {
-        self.wrapped_info
-            .as_ref()
-            .map(|info| info.type_id.as_str())
-            .ok_or_else(|| {
-                StoreError::InvalidOperation {
-                    store: self.name.clone(),
-                    operation: "wrapped_type_id".to_string(),
-                    reason: "Store not opened - call open() first".to_string(),
-                }
-                .into()
-            })
-    }
-
-    /// Unwrap to get the actual wrapped store with transparent encryption
-    ///
-    /// Returns a Store instance (DocStore, Table, etc.) that transparently
-    /// encrypts data on write and decrypts on read. The wrapped store is
-    /// unaware of encryption - all crypto operations are handled by an
-    /// encryptor registered with the transaction during `open()` or `initialize()`.
-    ///
-    /// # Type Parameters
-    /// * `T` - The Store type to unwrap to (must match the wrapped type)
+    /// Returns the inner `S` store instance that transparently encrypts data
+    /// on write and decrypts on read. The wrapped store is unaware of
+    /// encryption — all crypto operations are handled by an encryptor
+    /// registered with the transaction during `open()` or `initialize()`.
     ///
     /// # Errors
     /// - Returns error if store is not opened (call `open()` first)
-    /// - Returns error if `T::type_id()` doesn't match the wrapped store's type
-    ///
-    /// # Implementation Note
-    /// The wrapped store uses the same transaction as the PasswordStore. When
-    /// `open()` or `initialize()` is called, a `PasswordEncryptor` is registered
-    /// with the transaction for this subtree. The transaction then transparently
-    /// decrypts data in `get_full_state()` and encrypts data during `commit()`.
     ///
     /// # Examples
     ///
@@ -874,49 +859,32 @@ impl PasswordStore {
     /// # let (private_key, _) = generate_keypair();
     /// # let db = Database::create(Doc::new(), &instance, private_key, "key".to_string()).await?;
     /// # let tx = db.new_transaction().await?;
-    /// # let mut encrypted = tx.get_store::<PasswordStore>("test").await?;
-    /// # encrypted.initialize("pass", "docstore:v0", Doc::new()).await?;
+    /// # let mut encrypted = tx.get_store::<PasswordStore<DocStore>>("test").await?;
+    /// # encrypted.initialize("pass", Doc::new()).await?;
     /// # tx.commit().await?;
     /// # let tx2 = db.new_transaction().await?;
-    /// let mut encrypted = tx2.get_store::<PasswordStore>("test").await?;
+    /// let mut encrypted = tx2.get_store::<PasswordStore<DocStore>>("test").await?;
     /// encrypted.open("pass")?;
     ///
-    /// // Unwrap to DocStore - type must match
-    /// let docstore = encrypted.unwrap::<DocStore>().await?;
+    /// let docstore = encrypted.inner().await?;
     /// docstore.set("key", "value").await?; // Automatically encrypted
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn unwrap<T: Store>(&self) -> Result<T> {
-        // Check if opened
+    pub async fn inner(&self) -> Result<S> {
         if !self.is_open() {
             return Err(StoreError::InvalidOperation {
                 store: self.name.clone(),
-                operation: "unwrap".to_string(),
+                operation: "inner".to_string(),
                 reason: "Store not opened - call open() first".to_string(),
             }
             .into());
         }
 
-        let wrapped_info = self.wrapped_info.as_ref().unwrap();
-
-        // Verify type matches
-        if T::type_id() != wrapped_info.type_id {
-            return Err(StoreError::TypeMismatch {
-                store: self.name.clone(),
-                expected: T::type_id().to_string(),
-                actual: wrapped_info.type_id.clone(),
-            }
-            .into());
-        }
-
-        // Simply create the wrapped store!
-        // The transaction has an encryptor registered, so it will transparently:
-        // - Decrypt data when get_full_state() is called
-        // - Encrypt data when commit() is called
-        // The wrapped store is completely unaware of encryption
-        // Note: We call T::new() directly, bypassing Transaction::get_store() type checking,
-        // since we've already verified the wrapped type matches.
-        T::new(&self.transaction, self.name.clone()).await
+        // Create the wrapped store. The transaction has an encryptor registered,
+        // so it transparently decrypts on read and encrypts on commit.
+        // We call S::new() directly, bypassing Transaction::get_store() type
+        // checking, since type consistency was already verified in open().
+        S::new(&self.transaction, self.name.clone()).await
     }
 }

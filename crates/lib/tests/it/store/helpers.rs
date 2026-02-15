@@ -591,11 +591,11 @@ pub async fn test_table_concurrent_modifications(
 /// Initialize a PasswordStore with DocStore wrapper
 pub async fn init_password_store_docstore(tree: &Database, store_name: &str, password: &str) {
     let tx = tree.new_transaction().await.unwrap();
-    let mut encrypted = tx.get_store::<PasswordStore>(store_name).await.unwrap();
-    encrypted
-        .initialize(password, DocStore::type_id(), Doc::new())
+    let mut encrypted = tx
+        .get_store::<PasswordStore<DocStore>>(store_name)
         .await
         .unwrap();
+    encrypted.initialize(password, Doc::new()).await.unwrap();
     tx.commit().await.unwrap();
 }
 
@@ -605,8 +605,11 @@ pub async fn open_password_store(
     tx: &Transaction,
     store_name: &str,
     password: &str,
-) -> PasswordStore {
-    let mut encrypted = tx.get_store::<PasswordStore>(store_name).await.unwrap();
+) -> PasswordStore<DocStore> {
+    let mut encrypted = tx
+        .get_store::<PasswordStore<DocStore>>(store_name)
+        .await
+        .unwrap();
     encrypted.open(password).unwrap();
     encrypted
 }
@@ -619,13 +622,13 @@ pub async fn create_password_docstore_with_data(
     data: &[(&str, &str)],
 ) -> ID {
     let tx = tree.new_transaction().await.unwrap();
-    let mut encrypted = tx.get_store::<PasswordStore>(store_name).await.unwrap();
-    encrypted
-        .initialize(password, DocStore::type_id(), Doc::new())
+    let mut encrypted = tx
+        .get_store::<PasswordStore<DocStore>>(store_name)
         .await
         .unwrap();
+    encrypted.initialize(password, Doc::new()).await.unwrap();
 
-    let docstore = encrypted.unwrap::<DocStore>().await.unwrap();
+    let docstore = encrypted.inner().await.unwrap();
     for (key, value) in data {
         docstore.set(*key, *value).await.unwrap();
     }
@@ -641,10 +644,13 @@ pub async fn add_data_to_password_docstore(
     data: &[(&str, &str)],
 ) -> ID {
     let tx = tree.new_transaction().await.unwrap();
-    let mut encrypted = tx.get_store::<PasswordStore>(store_name).await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<DocStore>>(store_name)
+        .await
+        .unwrap();
     encrypted.open(password).unwrap();
 
-    let docstore = encrypted.unwrap::<DocStore>().await.unwrap();
+    let docstore = encrypted.inner().await.unwrap();
     for (key, value) in data {
         docstore.set(*key, *value).await.unwrap();
     }
@@ -660,10 +666,13 @@ pub async fn assert_password_docstore_data(
     expected_data: &[(&str, &str)],
 ) {
     let tx = tree.new_transaction().await.unwrap();
-    let mut encrypted = tx.get_store::<PasswordStore>(store_name).await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<DocStore>>(store_name)
+        .await
+        .unwrap();
     encrypted.open(password).unwrap();
 
-    let docstore = encrypted.unwrap::<DocStore>().await.unwrap();
+    let docstore = encrypted.inner().await.unwrap();
     for (key, expected_value) in expected_data {
         let value = docstore.get(key).await.unwrap();
         assert_eq!(value.as_text(), Some(*expected_value));
@@ -682,7 +691,7 @@ pub async fn set_invalid_password_store_config(
     let mut config_doc = Doc::new();
     config_doc.set("data", Value::Text(invalid_config.to_string()));
     index_store
-        .set_entry(store_name, PasswordStore::type_id(), config_doc)
+        .set_entry(store_name, PasswordStore::<DocStore>::type_id(), config_doc)
         .await
         .unwrap();
     tx.commit().await.unwrap();

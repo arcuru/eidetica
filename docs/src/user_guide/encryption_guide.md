@@ -1,13 +1,13 @@
 # Encryption Guide
 
-`PasswordStore` provides transparent password-based encryption for any Store type.
+`PasswordStore<S>` provides transparent password-based encryption for any Store type `S`.
 
 ## Quick Start
 
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, Registered, backend::database::Sqlite, crdt::Doc, store::{PasswordStore, DocStore}};
+# use eidetica::{Instance, backend::database::Sqlite, crdt::Doc, store::{PasswordStore, DocStore}};
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
@@ -21,11 +21,11 @@
 # let database = user.create_database(settings, &default_key).await?;
 // Create and initialize an encrypted store
 let tx = database.new_transaction().await?;
-let mut encrypted = tx.get_store::<PasswordStore>("secrets").await?;
-encrypted.initialize("my_password", DocStore::type_id(), Doc::new()).await?;
+let mut encrypted = tx.get_store::<PasswordStore<DocStore>>("secrets").await?;
+encrypted.initialize("my_password", Doc::new()).await?;
 
 // Use the wrapped store normally
-let docstore = encrypted.unwrap::<DocStore>().await?;
+let docstore = encrypted.inner().await?;
 docstore.set("api_key", "sk-secret-12345").await?;
 tx.commit().await?;
 # Ok(())
@@ -37,7 +37,7 @@ tx.commit().await?;
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{Instance, Registered, backend::database::Sqlite, crdt::Doc, store::{PasswordStore, DocStore}};
+# use eidetica::{Instance, backend::database::Sqlite, crdt::Doc, store::{PasswordStore, DocStore}};
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
@@ -51,18 +51,18 @@ tx.commit().await?;
 # let database = user.create_database(settings, &default_key).await?;
 # {
 #     let tx = database.new_transaction().await?;
-#     let mut encrypted = tx.get_store::<PasswordStore>("secrets").await?;
-#     encrypted.initialize("my_password", DocStore::type_id(), Doc::new()).await?;
-#     let docstore = encrypted.unwrap::<DocStore>().await?;
+#     let mut encrypted = tx.get_store::<PasswordStore<DocStore>>("secrets").await?;
+#     encrypted.initialize("my_password", Doc::new()).await?;
+#     let docstore = encrypted.inner().await?;
 #     docstore.set("secret", "value").await?;
 #     tx.commit().await?;
 # }
 // Use open() for existing stores instead of initialize()
 let tx = database.new_transaction().await?;
-let mut encrypted = tx.get_store::<PasswordStore>("secrets").await?;
+let mut encrypted = tx.get_store::<PasswordStore<DocStore>>("secrets").await?;
 encrypted.open("my_password")?;
 
-let docstore = encrypted.unwrap::<DocStore>().await?;
+let docstore = encrypted.inner().await?;
 let _secret = docstore.get("secret").await?;
 tx.commit().await?;
 # Ok(())
@@ -71,13 +71,13 @@ tx.commit().await?;
 
 ## Wrapping Other Store Types
 
-PasswordStore wraps any store type. Use `Registered::type_id()` to get the type identifier:
+`PasswordStore<S>` wraps any store type `S`. The wrapped type is specified as a type parameter:
 
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
 # extern crate serde;
-# use eidetica::{Instance, Registered, backend::database::Sqlite, crdt::Doc, store::{PasswordStore, Table}};
+# use eidetica::{Instance, backend::database::Sqlite, crdt::Doc, store::{PasswordStore, Table}};
 # use serde::{Serialize, Deserialize};
 #
 # #[tokio::main]
@@ -97,10 +97,10 @@ struct Credential {
 }
 
 let tx = database.new_transaction().await?;
-let mut encrypted = tx.get_store::<PasswordStore>("credentials").await?;
-encrypted.initialize("vault_password", Table::<Credential>::type_id(), Doc::new()).await?;
+let mut encrypted = tx.get_store::<PasswordStore<Table<Credential>>>("credentials").await?;
+encrypted.initialize("vault_password", Doc::new()).await?;
 
-let table = encrypted.unwrap::<Table<Credential>>().await?;
+let table = encrypted.inner().await?;
 table.insert(Credential {
     service: "github.com".to_string(),
     password: "secret_token".to_string(),
