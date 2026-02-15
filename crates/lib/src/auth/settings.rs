@@ -15,7 +15,7 @@ use crate::{
         crypto::parse_public_key,
         types::{AuthKey, DelegatedTreeRef, KeyHint, KeyStatus, Permission, ResolvedAuth, SigKey},
     },
-    crdt::Doc,
+    crdt::{Doc, doc::Value},
     entry::ID,
 };
 
@@ -78,7 +78,7 @@ impl AuthSettings {
             return Err(AuthError::KeyAlreadyExists { key_name: pubkey }.into());
         }
 
-        self.inner.set_json(format!("keys.{pubkey}"), key)?;
+        self.inner.set(format!("keys.{pubkey}"), key);
         Ok(())
     }
 
@@ -91,20 +91,25 @@ impl AuthSettings {
             parse_public_key(&pubkey)?;
         }
 
-        self.inner.set_json(format!("keys.{pubkey}"), key)?;
+        self.inner.set(format!("keys.{pubkey}"), key);
         Ok(())
     }
 
     /// Get a key by its public key
     pub fn get_key_by_pubkey(&self, pubkey: &str) -> Result<AuthKey> {
-        match self.inner.get_json::<AuthKey>(&format!("keys.{pubkey}")) {
-            Ok(key) => Ok(key),
-            Err(e) if e.is_not_found() => Err(AuthError::KeyNotFound {
-                key_name: pubkey.to_string(),
+        match self.inner.get(format!("keys.{pubkey}")) {
+            Some(Value::Doc(doc)) => AuthKey::try_from(doc).map_err(|e| {
+                AuthError::InvalidKeyFormat {
+                    reason: e.to_string(),
+                }
+                .into()
+            }),
+            Some(_) => Err(AuthError::InvalidKeyFormat {
+                reason: format!("key '{pubkey}' is not a Doc"),
             }
             .into()),
-            Err(e) => Err(AuthError::InvalidKeyFormat {
-                reason: e.to_string(),
+            None => Err(AuthError::KeyNotFound {
+                key_name: pubkey.to_string(),
             }
             .into()),
         }
@@ -132,19 +137,15 @@ impl AuthSettings {
 
     /// Get all authentication keys
     pub fn get_all_keys(&self) -> Result<HashMap<String, AuthKey>> {
-        use crate::crdt::doc::Value;
-
         let mut result: HashMap<String, AuthKey> = HashMap::new();
 
-        // Get the "keys" sub-doc (keys_value should be a Value::Doc)
+        // Get the "keys" sub-doc
         if let Some(Value::Doc(keys_doc)) = self.inner.get("keys") {
-            // Iterate through all children (pubkey -> Value::Text pairs)
             for (pubkey, value) in keys_doc.iter() {
-                if let Value::Text(json_str) = value {
-                    // Each value is a JSON-serialized AuthKey
-                    if let Ok(auth_key) = serde_json::from_str::<AuthKey>(json_str) {
-                        result.insert(pubkey.clone(), auth_key);
-                    }
+                if let Value::Doc(key_doc) = value
+                    && let Ok(auth_key) = AuthKey::try_from(key_doc)
+                {
+                    result.insert(pubkey.clone(), auth_key);
                 }
             }
         }
@@ -156,7 +157,7 @@ impl AuthSettings {
     pub fn revoke_key(&mut self, pubkey: &str) -> Result<()> {
         let mut auth_key = self.get_key_by_pubkey(pubkey)?;
         auth_key.set_status(KeyStatus::Revoked);
-        self.inner.set_json(format!("keys.{pubkey}"), auth_key)?;
+        self.inner.set(format!("keys.{pubkey}"), auth_key);
         Ok(())
     }
 
@@ -167,9 +168,8 @@ impl AuthSettings {
     /// The delegation is stored by root tree ID, extracted from `tree_ref.tree.root`.
     /// This ensures collision-resistant storage similar to key storage by pubkey.
     pub fn add_delegated_tree(&mut self, tree_ref: DelegatedTreeRef) -> Result<()> {
-        let root_id = tree_ref.tree.root.as_str();
-        self.inner
-            .set_json(format!("delegations.{root_id}"), tree_ref)?;
+        let root_id = tree_ref.tree.root.as_str().to_string();
+        self.inner.set(format!("delegations.{root_id}"), tree_ref);
         Ok(())
     }
 
@@ -183,17 +183,19 @@ impl AuthSettings {
     /// This variant accepts a string directly, useful when the ID comes from
     /// a `DelegationStep.tree` field which stores the root ID as a string.
     pub fn get_delegated_tree_by_str(&self, root_id: &str) -> Result<DelegatedTreeRef> {
-        match self
-            .inner
-            .get_json::<DelegatedTreeRef>(&format!("delegations.{root_id}"))
-        {
-            Ok(tree_ref) => Ok(tree_ref),
-            Err(e) if e.is_not_found() => Err(AuthError::DelegationNotFound {
-                tree_id: root_id.to_string(),
+        match self.inner.get(format!("delegations.{root_id}")) {
+            Some(Value::Doc(doc)) => DelegatedTreeRef::try_from(doc).map_err(|e| {
+                AuthError::InvalidAuthConfiguration {
+                    reason: format!("Invalid delegated tree format: {e}"),
+                }
+                .into()
+            }),
+            Some(_) => Err(AuthError::InvalidAuthConfiguration {
+                reason: format!("delegation '{root_id}' is not a Doc"),
             }
             .into()),
-            Err(e) => Err(AuthError::InvalidAuthConfiguration {
-                reason: format!("Invalid delegated tree format: {e}"),
+            None => Err(AuthError::DelegationNotFound {
+                tree_id: root_id.to_string(),
             }
             .into()),
         }
@@ -203,21 +205,16 @@ impl AuthSettings {
     ///
     /// Returns a map from root tree ID to the delegation reference.
     pub fn get_all_delegated_trees(&self) -> Result<HashMap<ID, DelegatedTreeRef>> {
-        use crate::crdt::doc::Value;
-
         let mut result: HashMap<ID, DelegatedTreeRef> = HashMap::new();
 
         // Get the "delegations" sub-doc
         if let Some(Value::Doc(delegations_doc)) = self.inner.get("delegations") {
-            // Iterate through all children (root_id -> Value::Text pairs)
             for (root_id_str, value) in delegations_doc.iter() {
-                if let Value::Text(json_str) = value {
-                    // Each value is a JSON-serialized DelegatedTreeRef
-                    if let Ok(tree_ref) = serde_json::from_str::<DelegatedTreeRef>(json_str) {
-                        // Create ID from the string key
-                        let root_id = ID::new(root_id_str);
-                        result.insert(root_id, tree_ref);
-                    }
+                if let Value::Doc(doc) = value
+                    && let Ok(tree_ref) = DelegatedTreeRef::try_from(doc)
+                {
+                    let root_id = ID::new(root_id_str);
+                    result.insert(root_id, tree_ref);
                 }
             }
         }

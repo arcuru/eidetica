@@ -90,7 +90,7 @@ struct EntryMetadata {
 
 - **Type Safety**: Eliminates raw CRDT manipulation for common operations
 - **Convenience**: Direct methods for authentication key management
-- **Atomicity**: Closure-based updates ensure atomic multi-step operations
+- **Atomicity**: Transaction boundaries ensure atomic multi-step operations
 - **Validation**: Built-in validation for authentication configurations
 - **Abstraction**: Hides implementation details while providing escape hatch via `as_doc_store()`
 
@@ -106,10 +106,7 @@ impl SettingsStore {
     fn set_auth_key(&self, key_name: &str, key: AuthKey) -> Result<()>;
     fn get_auth_key(&self, key_name: &str) -> Result<AuthKey>;
     fn revoke_auth_key(&self, key_name: &str) -> Result<()>;
-
-    // Complex operations via closure
-    fn update_auth_settings<F>(&self, f: F) -> Result<()>
-    where F: FnOnce(&mut AuthSettings) -> Result<()>;
+    fn add_delegated_tree(&self, tree_ref: DelegatedTreeRef) -> Result<()>;
 
     // Advanced access
     fn as_doc_store(&self) -> &DocStore;
@@ -213,12 +210,9 @@ let auth_key = AuthKey::active(
 )?;
 settings_store.set_auth_key("alice", auth_key)?;
 
-// Perform complex auth operations atomically
-settings_store.update_auth_settings(|auth| {
-    auth.overwrite_key("bob", bob_key)?;
-    auth.revoke_key("old_user")?;
-    Ok(())
-})?;
+// Set multiple keys directly
+settings_store.set_auth_key("bob", bob_key)?;
+settings_store.revoke_auth_key("old_user")?;
 
 // Commit the transaction
 transaction.commit()?;

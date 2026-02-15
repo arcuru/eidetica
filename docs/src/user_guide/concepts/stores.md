@@ -281,9 +281,9 @@ transaction.commit().await?;
 # }
 ```
 
-#### Complex Updates with Closures
+#### Multiple Key Operations
 
-For complex operations that need to be atomic, use the `update_auth_settings` method:
+Multiple auth operations within a transaction are accumulated in a single entry:
 
 ```rust
 # extern crate eidetica;
@@ -320,17 +320,12 @@ For complex operations that need to be atomic, use the `update_auth_settings` me
 let transaction = database.new_transaction().await?;
 let settings_store = transaction.get_settings()?;
 
-// Perform multiple auth operations atomically
-settings_store.update_auth_settings(|auth| {
-    // Add multiple keys (indexed by pubkey)
-    auth.overwrite_key(&bob_public_key, bob_key)?;
-    auth.overwrite_key(&charlie_public_key, charlie_key)?;
+// Set multiple keys directly (each write is incremental)
+settings_store.set_auth_key(&bob_public_key, bob_key).await?;
+settings_store.set_auth_key(&charlie_public_key, charlie_key).await?;
 
-    // Revoke an old key
-    auth.revoke_key(&old_user_public_key)?;
-
-    Ok(())
-}).await?;
+// Revoke an old key
+settings_store.revoke_auth_key(&old_user_public_key).await?;
 
 transaction.commit().await?;
 # Ok(())

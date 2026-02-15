@@ -132,19 +132,12 @@ pub async fn configure_database_auth(
     let txn = database.new_transaction().await?;
     {
         let settings = txn.get_settings()?;
-        settings
-            .update_auth_settings(|auth| {
-                for (display_name, key_id, permission, status) in auth_config {
-                    let public_key = parse_public_key(key_id)?;
-                    let pubkey_str = format_public_key(&public_key);
-                    let auth_key =
-                        AuthKey::new(Some(*display_name), permission.clone(), status.clone());
-                    // Use overwrite_key since the key may have been added during bootstrap
-                    auth.overwrite_key(&pubkey_str, auth_key)?; // Store by pubkey
-                }
-                Ok(())
-            })
-            .await?;
+        for (display_name, key_id, permission, status) in auth_config {
+            let public_key = parse_public_key(key_id)?;
+            let pubkey_str = format_public_key(&public_key);
+            let auth_key = AuthKey::new(Some(*display_name), permission.clone(), status.clone());
+            settings.set_auth_key(&pubkey_str, auth_key).await?;
+        }
     }
     txn.commit().await?;
     Ok(())

@@ -198,13 +198,10 @@ settings_store.set_name("Production Database").await?;
 let new_user_key = AuthKey::active(Some("new_device"), Permission::Write(10));
 settings_store.set_auth_key(&new_user_public_key, new_user_key).await?;
 
-// Complex auth operations atomically
+// Set auth keys directly
 let alice_key = AuthKey::active(Some("alice_laptop"), Permission::Write(5));
-settings_store.update_auth_settings(|auth| {
-    auth.overwrite_key(&alice_public_key, alice_key)?;
-    auth.revoke_key(&old_user_public_key)?;
-    Ok(())
-}).await?;
+settings_store.set_auth_key(&alice_public_key, alice_key).await?;
+settings_store.revoke_auth_key(&old_user_public_key).await?;
 
 transaction.commit().await?;
 # Ok(())

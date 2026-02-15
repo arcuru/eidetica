@@ -6,7 +6,11 @@
 
 use crate::{
     Result, Transaction,
-    auth::{settings::AuthSettings, types::AuthKey},
+    auth::{
+        crypto::parse_public_key,
+        settings::AuthSettings,
+        types::{AuthKey, DelegatedTreeRef, KeyStatus},
+    },
     crdt::{CRDTError, Doc, doc},
     height::HeightStrategy,
     store::DocStore,
@@ -147,51 +151,11 @@ impl SettingsStore {
     /// # Returns
     /// An AuthSettings instance representing the current auth configuration
     pub async fn get_auth_settings(&self) -> Result<AuthSettings> {
-        // Try to get the existing auth document
-        match self.inner.get("auth").await {
-            Ok(auth_value) => {
-                // Convert the Value to a Doc and create AuthSettings from it
-                match auth_value {
-                    doc::Value::Doc(auth_doc) => Ok(auth_doc.into()),
-                    _ => {
-                        // Auth exists but isn't a node - return empty AuthSettings
-                        Ok(AuthSettings::new())
-                    }
-                }
-            }
-            Err(_) => {
-                // No auth section exists yet - return empty AuthSettings
-                Ok(AuthSettings::new())
-            }
+        let all = self.inner.get_all().await?;
+        match all.get("auth") {
+            Some(doc::Value::Doc(auth_doc)) => Ok(auth_doc.clone().into()),
+            _ => Ok(AuthSettings::new()),
         }
-    }
-
-    /// Update authentication settings using a closure
-    ///
-    /// This method loads the current auth settings, allows modification via the closure,
-    /// and then saves the updated settings back to the store.
-    ///
-    /// # Arguments
-    /// * `f` - Closure that takes a mutable AuthSettings and returns a Result
-    ///
-    /// # Returns
-    /// Result indicating success or failure of the update operation
-    pub async fn update_auth_settings<F>(&self, f: F) -> Result<()>
-    where
-        F: FnOnce(&mut AuthSettings) -> Result<()>,
-    {
-        // Get current auth settings
-        let mut auth_settings = self.get_auth_settings().await?;
-
-        // Apply the update function
-        f(&mut auth_settings)?;
-
-        // Save the updated auth settings back to the store
-        self.inner
-            .set_node("auth", auth_settings.as_doc().clone())
-            .await?;
-
-        Ok(())
     }
 
     /// Set an authentication key in the settings
@@ -203,6 +167,10 @@ impl SettingsStore {
     /// Keys are stored by pubkey (the cryptographic public key string).
     /// The AuthKey contains optional name metadata and permission information.
     ///
+    /// Writes are incremental: only the specific key path is written to the
+    /// entry, not the full auth state. The CRDT merge produces the correct
+    /// merged view when reading.
+    ///
     /// # Arguments
     /// * `pubkey` - The public key string (e.g., "ed25519:ABC...")
     /// * `key` - The AuthKey containing name, permissions, and status
@@ -210,11 +178,10 @@ impl SettingsStore {
     /// # Returns
     /// Result indicating success or failure
     pub async fn set_auth_key(&self, pubkey: &str, key: AuthKey) -> Result<()> {
-        self.update_auth_settings(|auth| {
-            // Use overwrite_key which handles both create and update
-            auth.overwrite_key(pubkey, key)
-        })
-        .await
+        if pubkey != "*" {
+            parse_public_key(pubkey)?;
+        }
+        self.inner.set(format!("auth.keys.{pubkey}"), key).await
     }
 
     /// Get an authentication key from the settings by public key
@@ -237,7 +204,25 @@ impl SettingsStore {
     /// # Returns
     /// Result indicating success or failure
     pub async fn revoke_auth_key(&self, pubkey: &str) -> Result<()> {
-        self.update_auth_settings(|auth| auth.revoke_key(pubkey))
+        let auth = self.get_auth_settings().await?;
+        let mut key = auth.get_key_by_pubkey(pubkey)?;
+        key.set_status(KeyStatus::Revoked);
+        self.set_auth_key(pubkey, key).await
+    }
+
+    /// Add a delegated tree reference to the settings
+    ///
+    /// The delegation is stored by root tree ID, extracted from `tree_ref.tree.root`.
+    ///
+    /// # Arguments
+    /// * `tree_ref` - The delegated tree reference to add
+    ///
+    /// # Returns
+    /// Result indicating success or failure
+    pub async fn add_delegated_tree(&self, tree_ref: DelegatedTreeRef) -> Result<()> {
+        let root_id = tree_ref.tree.root.as_str().to_string();
+        self.inner
+            .set(format!("auth.delegations.{root_id}"), tree_ref)
             .await
     }
 
@@ -392,7 +377,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_update_auth_settings_closure() {
+    async fn test_multiple_auth_key_writes() {
         let (_instance, database) = create_test_database().await;
         let transaction = database.new_transaction().await.unwrap();
         let settings_store = SettingsStore::new(&transaction).unwrap();
@@ -401,18 +386,19 @@ mod tests {
         let pubkey1 = generate_public_key();
         let pubkey2 = generate_public_key();
 
-        // Use the closure-based update (keys are stored by pubkey now)
-        let pk1 = pubkey1.clone();
-        let pk2 = pubkey2.clone();
+        // Write keys directly via set_auth_key
         settings_store
-            .update_auth_settings(move |auth| {
-                let key1 = AuthKey::active(Some("admin"), Permission::Admin(1));
-                let key2 = AuthKey::active(Some("writer"), Permission::Write(5));
-
-                auth.add_key(&pk1, key1)?;
-                auth.add_key(&pk2, key2)?;
-                Ok(())
-            })
+            .set_auth_key(
+                &pubkey1,
+                AuthKey::active(Some("admin"), Permission::Admin(1)),
+            )
+            .await
+            .unwrap();
+        settings_store
+            .set_auth_key(
+                &pubkey2,
+                AuthKey::active(Some("writer"), Permission::Write(5)),
+            )
             .await
             .unwrap();
 
@@ -441,9 +427,71 @@ mod tests {
         // Get auth doc for validation
         let auth_doc = settings_store.get_auth_doc_for_validation().await.unwrap();
 
-        // Should contain the key under keys.{pubkey}
-        let validator_key: AuthKey = auth_doc.get_json(format!("keys.{pubkey}")).unwrap();
+        // Should contain the key under keys.{pubkey} as a Doc
+        let auth_settings: AuthSettings = auth_doc.into();
+        let validator_key = auth_settings.get_key_by_pubkey(&pubkey).unwrap();
         assert_eq!(validator_key.name(), Some("validator"));
+    }
+
+    /// Verifies that SettingsStore writes incremental entries: each entry
+    /// only contains the keys written in that transaction, not the full
+    /// accumulated state. The CRDT merge produces the correct merged view.
+    #[tokio::test]
+    async fn test_auth_settings_entries_are_incremental() {
+        let (_instance, database) = create_test_database().await;
+
+        let pubkey_a = generate_public_key();
+        let pubkey_b = generate_public_key();
+
+        // Txn 1: Add key A via SettingsStore
+        let txn1 = database.new_transaction().await.unwrap();
+        let settings1 = SettingsStore::new(&txn1).unwrap();
+        settings1
+            .set_auth_key(
+                &pubkey_a,
+                AuthKey::active(Some("key_a"), Permission::Write(5)),
+            )
+            .await
+            .unwrap();
+        txn1.commit().await.unwrap();
+
+        // Txn 2: Add key B (key A was added in a previous entry)
+        let txn2 = database.new_transaction().await.unwrap();
+        let settings2 = SettingsStore::new(&txn2).unwrap();
+        settings2
+            .set_auth_key(
+                &pubkey_b,
+                AuthKey::active(Some("key_b"), Permission::Admin(1)),
+            )
+            .await
+            .unwrap();
+        let entry_id_2 = txn2.commit().await.unwrap();
+
+        // Inspect raw entry data - entry 2 should NOT contain key A (incremental)
+        let entry2 = database.get_entry(&entry_id_2).await.unwrap();
+        let raw_2: Doc = serde_json::from_str(entry2.data("_settings").unwrap()).unwrap();
+
+        assert!(
+            raw_2.get(format!("auth.keys.{pubkey_a}")).is_none(),
+            "SettingsStore entry should NOT contain key A from prior entry (incremental)"
+        );
+        assert!(
+            raw_2.get(format!("auth.keys.{pubkey_b}")).is_some(),
+            "SettingsStore entry should contain key B"
+        );
+
+        // But reading through SettingsStore merges both entries correctly
+        let txn3 = database.new_transaction().await.unwrap();
+        let settings3 = SettingsStore::new(&txn3).unwrap();
+        let auth = settings3.get_auth_settings().await.unwrap();
+        assert!(
+            auth.get_key_by_pubkey(&pubkey_a).is_ok(),
+            "Merged view should contain key A"
+        );
+        assert!(
+            auth.get_key_by_pubkey(&pubkey_b).is_ok(),
+            "Merged view should contain key B"
+        );
     }
 
     #[tokio::test]

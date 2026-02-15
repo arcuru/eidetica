@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::permissions::{KeyStatus, Permission};
+use crate::crdt::{CRDTError, Doc, doc::Value};
 use crate::entry::ID;
 
 /// Authentication key configuration stored in _settings.auth
@@ -101,6 +102,72 @@ impl AuthKey {
     /// Set the name
     pub fn set_name(&mut self, name: Option<String>) {
         self.name = name;
+    }
+}
+
+// ==================== Doc Conversions ====================
+
+impl From<AuthKey> for Value {
+    fn from(key: AuthKey) -> Value {
+        Value::Doc(Doc::from(key))
+    }
+}
+
+impl From<AuthKey> for Doc {
+    fn from(key: AuthKey) -> Doc {
+        // An AuthKey needs to be atomic, no partial merging.
+        let mut doc = Doc::atomic();
+        if let Some(name) = key.name {
+            doc.set("name", name);
+        }
+        doc.set("permissions", key.permissions);
+        let status_str = match key.status {
+            KeyStatus::Active => "Active",
+            KeyStatus::Revoked => "Revoked",
+        };
+        doc.set("status", status_str);
+        doc
+    }
+}
+
+impl TryFrom<&Doc> for AuthKey {
+    type Error = crate::Error;
+
+    fn try_from(doc: &Doc) -> crate::Result<Self> {
+        let name: Option<String> = doc.get_as::<&str>("name").map(String::from);
+
+        let perm_doc = match doc.get("permissions") {
+            Some(Value::Doc(d)) => d,
+            _ => {
+                return Err(CRDTError::ElementNotFound {
+                    key: "permissions".to_string(),
+                }
+                .into());
+            }
+        };
+        let permissions = Permission::try_from(perm_doc)?;
+
+        let status_str =
+            doc.get_as::<&str>("status")
+                .ok_or_else(|| CRDTError::ElementNotFound {
+                    key: "status".to_string(),
+                })?;
+        let status = match status_str {
+            "Active" => KeyStatus::Active,
+            "Revoked" => KeyStatus::Revoked,
+            other => {
+                return Err(CRDTError::DeserializationFailed {
+                    reason: format!("unknown KeyStatus: {other}"),
+                }
+                .into());
+            }
+        };
+
+        Ok(AuthKey {
+            name,
+            permissions,
+            status,
+        })
     }
 }
 

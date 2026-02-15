@@ -514,12 +514,10 @@ async fn test_update_tracked_no_access_fails() -> Result<()> {
     let tx = db.new_transaction().await?;
     let settings_store = tx.get_settings()?;
     settings_store
-        .update_auth_settings(|auth| {
-            auth.add_key(
-                &key1_pubkey,
-                AuthKey::active(Some("user_key1"), Permission::Write(5)),
-            )
-        })
+        .set_auth_key(
+            &key1_pubkey,
+            AuthKey::active(Some("user_key1"), Permission::Write(5)),
+        )
         .await?;
     tx.commit().await?;
 

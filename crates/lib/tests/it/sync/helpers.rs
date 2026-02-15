@@ -224,36 +224,24 @@ pub async fn setup_manual_approval_server() -> (Instance, User, String, Database
     let mut settings = Doc::new();
     settings.set("name", "Bootstrap Test Database");
 
-    let mut auth_doc = Doc::new();
+    let mut auth = AuthSettings::new();
 
     // Add user's key to auth settings (stored by pubkey under "keys.")
-    // The key_id is the public key string (e.g., "ed25519:...")
-    auth_doc
-        .set_json(
-            format!("keys.{key_id}"),
-            serde_json::json!({
-                "name": "server_admin",
-                "permissions": {"Admin": 0},
-                "status": "Active"
-            }),
-        )
-        .expect("Failed to set user key auth");
+    auth.overwrite_key(
+        &key_id,
+        AuthKey::active(Some("server_admin"), AuthPermission::Admin(0)),
+    )
+    .expect("Failed to set user key auth");
 
     // Add device key to auth settings for sync handler operations
     let device_pubkey = instance.device_id_string();
+    auth.overwrite_key(
+        &device_pubkey,
+        AuthKey::active(Some("admin"), AuthPermission::Admin(0)),
+    )
+    .expect("Failed to set device key auth");
 
-    auth_doc
-        .set_json(
-            format!("keys.{device_pubkey}"),
-            serde_json::json!({
-                "name": "admin",
-                "permissions": {"Admin": 0},
-                "status": "Active"
-            }),
-        )
-        .expect("Failed to set device key auth");
-
-    settings.set("auth", auth_doc);
+    settings.set("auth", Doc::from(auth));
 
     let database = user
         .create_database(settings, &key_id)
@@ -292,47 +280,31 @@ pub async fn setup_global_wildcard_server() -> (Instance, User, String, Database
     let mut settings = Doc::new();
     settings.set("name", "Bootstrap Test Database");
 
-    let mut auth_doc = Doc::new();
+    let mut auth = AuthSettings::new();
 
     // Add user's key to auth settings (stored by pubkey under "keys.")
-    // The key_id is the public key string (e.g., "ed25519:...")
-    auth_doc
-        .set_json(
-            format!("keys.{key_id}"),
-            serde_json::json!({
-                "name": "server_admin",
-                "permissions": {"Admin": 0},
-                "status": "Active"
-            }),
-        )
-        .expect("Failed to set user key auth");
+    auth.overwrite_key(
+        &key_id,
+        AuthKey::active(Some("server_admin"), AuthPermission::Admin(0)),
+    )
+    .expect("Failed to set user key auth");
 
     // Add device key to auth settings for sync handler operations
     let device_pubkey = instance.device_id_string();
-
-    auth_doc
-        .set_json(
-            format!("keys.{device_pubkey}"),
-            serde_json::json!({
-                "name": "admin",
-                "permissions": {"Admin": 0},
-                "status": "Active"
-            }),
-        )
-        .expect("Failed to set device key auth");
+    auth.overwrite_key(
+        &device_pubkey,
+        AuthKey::active(Some("admin"), AuthPermission::Admin(0)),
+    )
+    .expect("Failed to set device key auth");
 
     // Add global wildcard permission for automatic bootstrap approval
-    auth_doc
-        .set_json(
-            "keys.*",
-            serde_json::json!({
-                "permissions": {"Admin": 0},
-                "status": "Active"
-            }),
-        )
-        .expect("Failed to set global wildcard permission");
+    auth.add_key(
+        "*",
+        AuthKey::active(None::<String>, AuthPermission::Admin(0)),
+    )
+    .expect("Failed to set global wildcard permission");
 
-    settings.set("auth", auth_doc);
+    settings.set("auth", Doc::from(auth));
 
     let database = user
         .create_database(settings, &key_id)

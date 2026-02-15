@@ -284,29 +284,24 @@ let dept_admin_public_key = format_public_key(&dept_admin_verifying_key);
 let (_user1_signing_key, user1_verifying_key) = generate_keypair();
 let user1_public_key = format_public_key(&user1_verifying_key);
 
-// Use update_auth_settings for complex multi-key setup
-// Keys are indexed by pubkey, with optional name metadata
-settings_store.update_auth_settings(|auth| {
-    // Super admin (priority 0 - highest)
-    auth.overwrite_key(&super_admin_public_key, AuthKey::active(
-        Some("super_admin"),
-        Permission::Admin(0),
-    ))?;
+// Set auth keys directly
+// Super admin (priority 0 - highest)
+settings_store.set_auth_key(&super_admin_public_key, AuthKey::active(
+    Some("super_admin"),
+    Permission::Admin(0),
+)).await?;
 
-    // Department admin (priority 10)
-    auth.overwrite_key(&dept_admin_public_key, AuthKey::active(
-        Some("dept_admin"),
-        Permission::Admin(10),
-    ))?;
+// Department admin (priority 10)
+settings_store.set_auth_key(&dept_admin_public_key, AuthKey::active(
+    Some("dept_admin"),
+    Permission::Admin(10),
+)).await?;
 
-    // Regular users (priority 100)
-    auth.overwrite_key(&user1_public_key, AuthKey::active(
-        Some("user1"),
-        Permission::Write(100),
-    ))?;
-
-    Ok(())
-}).await?;
+// Regular users (priority 100)
+settings_store.set_auth_key(&user1_public_key, AuthKey::active(
+    Some("user1"),
+    Permission::Write(100),
+)).await?;
 
 transaction.commit().await?;
 # Ok(())
@@ -359,19 +354,15 @@ let user_tips = alice_database.get_tips().await?;
 let transaction = project_database.new_transaction().await?;
 let settings = transaction.get_settings()?;
 
-settings.update_auth_settings(|auth| {
-    // Delegation is stored by the root tree ID automatically
-    auth.add_delegated_tree(DelegatedTreeRef {
-        permission_bounds: PermissionBounds {
-            max: Permission::Write(15),
-            min: Some(Permission::Read),
-        },
-        tree: TreeReference {
-            root: user_root,
-            tips: user_tips,
-        },
-    })?;
-    Ok(())
+settings.add_delegated_tree(DelegatedTreeRef {
+    permission_bounds: PermissionBounds {
+        max: Permission::Write(15),
+        min: Some(Permission::Read),
+    },
+    tree: TreeReference {
+        root: user_root,
+        tips: user_tips,
+    },
 }).await?;
 
 transaction.commit().await?;
@@ -412,18 +403,15 @@ Delegations are stored in the **delegating database's** auth settings by the del
 # let transaction = project_db.new_transaction().await?;
 # let settings = transaction.get_settings()?;
 // In project database: delegation stored by Alice's database root ID
-settings.update_auth_settings(|auth| {
-    auth.add_delegated_tree(DelegatedTreeRef {
-        tree: TreeReference {
-            root: alice_root,  // ← Root ID used as storage key
-            tips: alice_tips,
-        },
-        permission_bounds: PermissionBounds {
-            max: Permission::Write(15),
-            min: Some(Permission::Read),
-        },
-    })?;
-    Ok(())
+settings.add_delegated_tree(DelegatedTreeRef {
+    tree: TreeReference {
+        root: alice_root,  // <- Root ID used as storage key
+        tips: alice_tips,
+    },
+    permission_bounds: PermissionBounds {
+        max: Permission::Write(15),
+        min: Some(Permission::Read),
+    },
 }).await?;
 # transaction.commit().await?;
 # Ok(())
@@ -459,16 +447,13 @@ These are names in the **delegated database's** auth settings that point to **pu
 // In Alice's database: keys are indexed by pubkey
 // (The default key was added automatically during bootstrap)
 // We can update it with a descriptive name
-settings.update_auth_settings(|auth| {
-    auth.overwrite_key(
-        &alice_pubkey_str,  // ← Index by pubkey
-        AuthKey::active(
-            Some("alice_work"),  // Optional name metadata
-            Permission::Write(10),
-        )
-    )?;
-    Ok(())
-}).await?;
+settings.set_auth_key(
+    &alice_pubkey_str,
+    AuthKey::active(
+        Some("alice_work"),  // Optional name metadata
+        Permission::Write(10),
+    )
+).await?;
 # transaction.commit().await?;
 # Ok(())
 # }
@@ -715,25 +700,42 @@ user.request_database_access(
 
 The simplest approach for collaborative databases is to use global wildcard permissions:
 
-```rust,ignore
-let mut settings = Doc::new();
-let mut auth_doc = Doc::new();
+```rust
+# extern crate eidetica;
+# extern crate tokio;
+# use eidetica::{Instance, backend::database::Sqlite, crdt::Doc, store::SettingsStore};
+# use eidetica::auth::{AuthKey, Permission};
+# use eidetica::auth::crypto::{generate_keypair, format_public_key};
+#
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
+# let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
+# instance.create_user("alice", None).await?;
+# let mut user = instance.login_user("alice", None).await?;
+# let mut settings = Doc::new();
+# settings.set("name", "wildcard_example");
+# let default_key = user.get_default_key()?;
+# let database = user.create_database(settings, &default_key).await?;
+# let (_admin_signing_key, admin_verifying_key) = generate_keypair();
+# let admin_public_key = format_public_key(&admin_verifying_key);
+let transaction = database.new_transaction().await?;
+let settings_store = transaction.get_settings()?;
 
 // Add admin key
-auth_doc.set_json("admin", serde_json::json!({
-    "pubkey": admin_public_key,
-    "permissions": {"Admin": 1},
-    "status": "Active"
-}))?;
+settings_store.set_auth_key(&admin_public_key, AuthKey::active(
+    Some("admin"),
+    Permission::Admin(1),
+)).await?;
 
 // Add global wildcard permission for automatic bootstrap
-auth_doc.set_json("*", serde_json::json!({
-    "pubkey": "*",
-    "permissions": {"Write": 10},  // Allows Read and Write(11+) requests
-    "status": "Active"
-}))?;
+settings_store.set_auth_key("*", AuthKey::active(
+    None::<String>,
+    Permission::Write(10),  // Allows Read and Write(11+) requests
+)).await?;
 
-settings.set("auth", auth_doc);
+transaction.commit().await?;
+# Ok(())
+# }
 ```
 
 **Benefits**:

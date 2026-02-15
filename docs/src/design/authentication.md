@@ -400,15 +400,12 @@ let database = user.create_database(Doc::new(), &key_id).await?;
 // Optionally add a friendly name to the key
 let transaction = database.new_transaction()?;
 let settings = transaction.get_settings()?;
-settings.update_auth_settings(|auth| {
-    // Update the key's name metadata
-    let mut key = auth.get_key_by_pubkey(&key_id)?;
-    auth.overwrite_key(&key_id, AuthKey::active(
-        Some("alice_laptop"),  // Add friendly name
-        key.permissions().clone(),
-    )?)?;
-    Ok(())
-})?;
+let auth = settings.get_auth_settings().await?;
+let key = auth.get_key_by_pubkey(&key_id)?;
+settings.set_auth_key(&key_id, AuthKey::active(
+    Some("alice_laptop"),  // Add friendly name
+    key.permissions().clone(),
+)).await?;
 transaction.commit()?;
 // Auth now contains: { "keys": { "ed25519:abc123...": AuthKey(name="alice_laptop", ...) } }
 ```

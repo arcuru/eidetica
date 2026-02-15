@@ -5,6 +5,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::super::permission::clamp_permission;
+use crate::crdt::{CRDTError, Doc, doc::Value};
 
 /// Permission levels for authenticated operations
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -108,6 +109,110 @@ impl Default for PermissionBounds {
             max: Permission::Read,
             min: None,
         }
+    }
+}
+
+// ==================== Doc Conversions ====================
+
+impl From<Permission> for Value {
+    fn from(perm: Permission) -> Value {
+        Value::Doc(Doc::from(perm))
+    }
+}
+
+impl From<Permission> for Doc {
+    fn from(perm: Permission) -> Doc {
+        let mut doc = Doc::new();
+        match perm {
+            Permission::Admin(p) => {
+                doc.set("type", "Admin");
+                doc.set("priority", p);
+            }
+            Permission::Write(p) => {
+                doc.set("type", "Write");
+                doc.set("priority", p);
+            }
+            Permission::Read => {
+                doc.set("type", "Read");
+            }
+        }
+        doc
+    }
+}
+
+impl TryFrom<&Doc> for Permission {
+    type Error = crate::Error;
+
+    fn try_from(doc: &Doc) -> crate::Result<Self> {
+        let ptype = doc
+            .get_as::<&str>("type")
+            .ok_or_else(|| CRDTError::ElementNotFound {
+                key: "type".to_string(),
+            })?;
+        match ptype {
+            "Admin" => {
+                let p =
+                    doc.get_as::<i64>("priority")
+                        .ok_or_else(|| CRDTError::ElementNotFound {
+                            key: "priority".to_string(),
+                        })?;
+                Ok(Permission::Admin(p as u32))
+            }
+            "Write" => {
+                let p =
+                    doc.get_as::<i64>("priority")
+                        .ok_or_else(|| CRDTError::ElementNotFound {
+                            key: "priority".to_string(),
+                        })?;
+                Ok(Permission::Write(p as u32))
+            }
+            "Read" => Ok(Permission::Read),
+            other => Err(CRDTError::DeserializationFailed {
+                reason: format!("unknown Permission type: {other}"),
+            }
+            .into()),
+        }
+    }
+}
+
+impl From<PermissionBounds> for Value {
+    fn from(bounds: PermissionBounds) -> Value {
+        Value::Doc(Doc::from(bounds))
+    }
+}
+
+impl From<PermissionBounds> for Doc {
+    fn from(bounds: PermissionBounds) -> Doc {
+        let mut doc = Doc::new();
+        doc.set("max", bounds.max);
+        if let Some(min) = bounds.min {
+            doc.set("min", min);
+        }
+        doc
+    }
+}
+
+impl TryFrom<&Doc> for PermissionBounds {
+    type Error = crate::Error;
+
+    fn try_from(doc: &Doc) -> crate::Result<Self> {
+        let max_doc = match doc.get("max") {
+            Some(Value::Doc(d)) => d,
+            _ => {
+                return Err(CRDTError::ElementNotFound {
+                    key: "max".to_string(),
+                }
+                .into());
+            }
+        };
+        let max = Permission::try_from(max_doc)?;
+
+        let min = match doc.get("min") {
+            Some(Value::Doc(d)) => Some(Permission::try_from(d)?),
+            _ => None,
+        };
+
+        Ok(PermissionBounds { max, min })
     }
 }
 
