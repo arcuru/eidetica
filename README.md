@@ -1,6 +1,6 @@
 # Eidetica
 
-[![build](https://img.shields.io/github/actions/workflow/status/arcuru/eidetica/rust.yml?style=flat-square)](https://github.com/arcuru/eidetica/actions)
+[![build](https://img.shields.io/github/actions/workflow/status/arcuru/eidetica/tests.yml?style=flat-square)](https://github.com/arcuru/eidetica/actions)
 [![coverage](https://img.shields.io/codecov/c/github/arcuru/eidetica)](https://codecov.io/gh/arcuru/eidetica)
 ![license](https://img.shields.io/github/license/arcuru/eidetica)
 
