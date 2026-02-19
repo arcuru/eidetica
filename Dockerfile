@@ -1,28 +1,33 @@
 # Multi-stage Dockerfile for Eidetica
-ARG DEBIAN_RELEASE=bookworm
+ARG DEBIAN_RELEASE=trixie
+ARG RUST_VERSION=1.93
+ARG CARGO_CHEF_VERSION=0.1.73
 
-# Stage 1: Build the application
-FROM rust:1-slim-${DEBIAN_RELEASE} AS builder
-
-# Install build dependencies
+# Stage 1: Base builder image with cargo-chef
+FROM rust:${RUST_VERSION}-slim-${DEBIAN_RELEASE} AS chef
+ARG CARGO_CHEF_VERSION
 # hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     libssl-dev \
     && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
-
+    && rm -rf /var/lib/apt/lists/* \
+    && cargo install cargo-chef --locked --version ${CARGO_CHEF_VERSION}
 WORKDIR /build
 
-# Copy manifests and source
-COPY Cargo.toml Cargo.lock ./
-COPY crates/ ./crates/
-COPY examples/ ./examples/
+# Stage 2: Compute dependency recipe
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
 
-# Build the application in release mode
+# Stage 3: Build dependencies (cached) then application
+FROM chef AS builder
+COPY --from=planner /build/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json -p eidetica-bin
+COPY . .
 RUN cargo build --release -p eidetica-bin
 
-# Stage 2: Create minimal runtime image
+# Stage 4: Minimal runtime image
 ARG DEBIAN_RELEASE
 FROM debian:${DEBIAN_RELEASE}-slim
 
