@@ -267,8 +267,6 @@ impl SettingsStore {
     /// # Returns
     /// A reference to the underlying DocStore
     pub fn as_doc_store(&self) -> &DocStore {
-        // FIXME: audit all uses, should be removed if we can migrate to using
-        // the SettingsStore abstraction for all operations.
         &self.inner
     }
 }

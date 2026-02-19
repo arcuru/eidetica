@@ -225,8 +225,6 @@ Bootstrap requests are auto-approved when the database has a wildcard `"*"` perm
 - No per-request policy evaluation needed
 - Bootstrap combines both open and controlled access patterns
 
-**Note:** A legacy `bootstrap_auto_approve` policy setting exists but is discouraged. Use global `"*"` permissions instead for clearer, more predictable access control.
-
 ## API Design
 
 ### Wildcard Permissions API
