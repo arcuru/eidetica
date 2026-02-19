@@ -17,6 +17,7 @@
 - [Bootstrapping](user_guide/bootstrap.md)
 - [Sync Quick Reference](user_guide/sync_quick_reference.md)
 - [Logging](user_guide/logging.md)
+- [CLI Reference](user_guide/cli.md)
 - [Docker](user_guide/docker.md)
 - [Tutorial: Todo App](user_guide/tutorial_todo_app.md)
 - [Code Examples](user_guide/examples_snippets.md)

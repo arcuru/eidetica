@@ -46,6 +46,8 @@ The container includes a built-in health check that verifies the server is respo
 docker exec <container> eidetica health
 ```
 
+See [CLI Reference](cli.md) for all available commands.
+
 ## Quick Start
 
 Pull and run the latest stable image:
