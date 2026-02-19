@@ -160,14 +160,11 @@ pub struct UserPreferences {
 ```rust,ignore
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UserKey {
-    /// Key identifier (typically the base64-encoded public key string)
+    /// Local key identifier (user-chosen name or auto-generated)
     pub key_id: String,
 
-    /// Private key bytes (encrypted or unencrypted based on encryption field)
-    pub private_key_bytes: Vec<u8>,
-
-    /// Encryption metadata
-    pub encryption: KeyEncryption,
+    /// Key storage (encrypted ciphertext or plaintext PrivateKey)
+    pub storage: KeyStorage,
 
     /// Display name for this key
     pub display_name: Option<String>,
@@ -178,7 +175,8 @@ pub struct UserKey {
     /// Last time this key was used (Unix timestamp)
     pub last_used: Option<i64>,
 
-    /// Whether this is the user's default key
+    /// Whether this is the user's default key, which has admin access on the user's DB
+    /// Only one key should be marked as default at a time
     pub is_default: bool,
 
     /// Database-specific SigKey mappings
@@ -188,14 +186,21 @@ pub struct UserKey {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
-pub enum KeyEncryption {
-    /// Key is encrypted with password-derived key
+pub enum KeyStorage {
+    /// Key is encrypted with a password-derived key (AES-256-GCM)
     Encrypted {
+        /// Encryption algorithm identifier
+        algorithm: String,
+        /// Encrypted prefixed-string-encoded PrivateKey
+        ciphertext: Vec<u8>,
         /// Encryption nonce/IV (12 bytes for AES-GCM)
         nonce: Vec<u8>,
     },
     /// Key is stored unencrypted (passwordless users only)
-    Unencrypted,
+    Unencrypted {
+        /// PrivateKey stored directly — serde carries the signing algorithm tag
+        key: PrivateKey,
+    },
 }
 ```
 
@@ -579,8 +584,8 @@ impl User {
 ```rust,ignore
 /// Internal key manager that holds decrypted keys during user session
 struct UserKeyManager {
-    /// Decrypted keys (key_id → SigningKey)
-    decrypted_keys: HashMap<String, SigningKey>,
+    /// Decrypted keys (key_id → PrivateKey)
+    decrypted_keys: HashMap<String, PrivateKey>,
 
     /// Key metadata (loaded from user database)
     key_metadata: HashMap<String, UserKey>,

@@ -42,7 +42,7 @@ Key management requires solving several technical challenges:
 
 1. Derive 256-bit encryption key from password using Argon2id
 2. Generate random 12-byte nonce for AES-GCM
-3. Serialize private key to bytes
+3. Encode private key as prefixed string (e.g., `"ed25519:base64..."`)
 4. Encrypt with AES-256-GCM
 5. Store ciphertext and nonce
 
@@ -50,7 +50,7 @@ Key management requires solving several technical challenges:
 
 1. Derive encryption key from password (same parameters)
 2. Decrypt ciphertext using nonce and encryption key
-3. Deserialize bytes back to SigningKey
+3. Parse prefixed string back to PrivateKey
 
 ### Key Storage Format
 
@@ -61,28 +61,47 @@ Keys are stored in the user's private database in the `keys` subtree as a Table:
 ```rust,ignore
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UserKey {
-    /// Local key identifier (public key string or hardcoded name)
-    /// Examples: "ed25519:ABC123..." or "_device_key"
+    /// Local key identifier (user-chosen name or auto-generated)
     pub key_id: String,
 
-    /// Encrypted private key bytes (encrypted with user password-derived key)
-    pub encrypted_private_key: Vec<u8>,
+    /// Key storage (encrypted ciphertext or plaintext PrivateKey)
+    pub storage: KeyStorage,
 
-    /// Nonce/IV used for encryption (12 bytes for AES-GCM)
-    pub nonce: Vec<u8>,
-
-    /// Display name for UI/logging
+    /// Display name for this key
     pub display_name: Option<String>,
 
-    /// Unix timestamp when key was created
-    pub created_at: u64,
+    /// When this key was created (Unix timestamp)
+    pub created_at: i64,
 
-    /// Unix timestamp when key was last used for signing
-    pub last_used: Option<u64>,
+    /// Last time this key was used (Unix timestamp)
+    pub last_used: Option<i64>,
+
+    /// Whether this is the user's default key, which has admin access on the user's DB
+    /// Only one key should be marked as default at a time
+    pub is_default: bool,
 
     /// Database-specific SigKey mappings
-    /// Maps: Database ID → SigKey string
+    /// Maps: Database ID → SigKey used in that database's auth settings
     pub database_sigkeys: HashMap<ID, String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum KeyStorage {
+    /// Key is encrypted with a password-derived key (AES-256-GCM)
+    Encrypted {
+        /// Encryption algorithm identifier
+        algorithm: String,
+        /// Encrypted prefixed-string-encoded PrivateKey
+        ciphertext: Vec<u8>,
+        /// Encryption nonce/IV (12 bytes for AES-GCM)
+        nonce: Vec<u8>,
+    },
+    /// Key is stored unencrypted (passwordless users only)
+    Unencrypted {
+        /// PrivateKey stored directly — serde carries the signing algorithm tag
+        key: PrivateKey,
+    },
 }
 ```
 
@@ -150,8 +169,8 @@ Decrypted keys are held in memory only during active user sessions:
 ```rust,ignore
 pub struct UserKeyManager {
     /// Decrypted private keys (only in memory during session)
-    /// Map: key_id → SigningKey
-    decrypted_keys: HashMap<String, SigningKey>,
+    /// Map: key_id → PrivateKey
+    decrypted_keys: HashMap<String, PrivateKey>,
 
     /// Key metadata (including SigKey mappings)
     /// Map: key_id → UserKey
