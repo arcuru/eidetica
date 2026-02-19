@@ -66,7 +66,7 @@ async fn test_delegated_tree_basic_validation() -> Result<()> {
 
     // Test delegated tree validation
     let mut validator = AuthValidator::new();
-    let main_auth_settings = main_tree.get_settings().await?.get_auth_settings().await?;
+    let main_auth_settings = main_tree.get_settings().await?.auth_snapshot().await?;
     let delegated_tips = delegated_tree.get_tips().await?;
 
     // Create delegation path - DelegationStep uses root tree ID and tips
@@ -120,7 +120,7 @@ async fn test_delegated_tree_permission_clamping() -> Result<()> {
 
     // Test permission clamping
     let mut validator = AuthValidator::new();
-    let main_auth_settings = main_tree.get_settings().await?.get_auth_settings().await?;
+    let main_auth_settings = main_tree.get_settings().await?.auth_snapshot().await?;
     let delegated_tips = delegated_tree.get_tips().await?;
 
     let delegated_auth_id = SigKey::Delegation {
@@ -213,7 +213,7 @@ async fn test_nested_delegation() -> Result<()> {
 
     // Test nested delegation: main -> org -> user
     let mut validator = AuthValidator::new();
-    let main_auth_settings = main_tree.get_settings().await?.get_auth_settings().await?;
+    let main_auth_settings = main_tree.get_settings().await?.auth_snapshot().await?;
 
     // Create a nested delegation chain: main -> org -> user
     let nested_auth_id = SigKey::Delegation {
@@ -295,7 +295,7 @@ async fn test_delegated_tree_with_revoked_keys() -> Result<()> {
 
     // Test with active key - should work
     let mut validator = AuthValidator::new();
-    let main_auth_settings = main_tree.get_settings().await?.get_auth_settings().await?;
+    let main_auth_settings = main_tree.get_settings().await?.auth_snapshot().await?;
 
     let delegated_auth_id = SigKey::Delegation {
         path: vec![DelegationStep {
@@ -330,11 +330,7 @@ async fn test_delegated_tree_with_revoked_keys() -> Result<()> {
     txn.commit().await?;
 
     // Test validation against revoked key
-    let revoked_auth_settings = delegated_tree
-        .get_settings()
-        .await?
-        .get_auth_settings()
-        .await?;
+    let revoked_auth_settings = delegated_tree.get_settings().await?.auth_snapshot().await?;
     let resolved_auth_revoked = validator
         .resolve_sig_key(
             &SigKey::from_pubkey(&delegated_user_key),
@@ -405,7 +401,7 @@ async fn test_delegation_depth_limits() -> Result<()> {
 
     // Test depth limit validation
     let mut validator = AuthValidator::new();
-    let main_auth_settings = main_tree.get_settings().await?.get_auth_settings().await?;
+    let main_auth_settings = main_tree.get_settings().await?.auth_snapshot().await?;
     let result = validator
         .resolve_sig_key(&nested_auth_id, &main_auth_settings, Some(&db))
         .await;
@@ -481,7 +477,7 @@ async fn test_delegated_tree_min_bound_upgrade() -> Result<()> {
 
     // Validate
     let mut validator = AuthValidator::new();
-    let main_auth_settings = main_tree.get_settings().await?.get_auth_settings().await?;
+    let main_auth_settings = main_tree.get_settings().await?.auth_snapshot().await?;
 
     let auth_id = SigKey::Delegation {
         path: vec![DelegationStep {
@@ -563,7 +559,7 @@ async fn test_delegated_tree_priority_preservation() -> Result<()> {
 
     // Validate
     let mut validator = AuthValidator::new();
-    let main_auth_settings = main_tree.get_settings().await?.get_auth_settings().await?;
+    let main_auth_settings = main_tree.get_settings().await?.auth_snapshot().await?;
 
     let auth_id = SigKey::Delegation {
         path: vec![DelegationStep {
@@ -619,7 +615,7 @@ async fn test_delegation_depth_limit_exact() -> Result<()> {
     };
 
     let mut validator = AuthValidator::new();
-    let auth_settings = tree.get_settings().await?.get_auth_settings().await?;
+    let auth_settings = tree.get_settings().await?.auth_snapshot().await?;
 
     let result = validator
         .resolve_sig_key(&auth_id, &auth_settings, Some(&db))
@@ -699,7 +695,7 @@ async fn test_delegated_tree_invalid_tips() -> Result<()> {
     txn.commit().await?;
 
     let mut validator = AuthValidator::new();
-    let main_auth_settings = main_tree.get_settings().await?.get_auth_settings().await?;
+    let main_auth_settings = main_tree.get_settings().await?.auth_snapshot().await?;
 
     let auth_id = SigKey::Delegation {
         path: vec![DelegationStep {

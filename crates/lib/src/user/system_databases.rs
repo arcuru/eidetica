@@ -462,7 +462,7 @@ mod tests {
         // Verify auth settings - key is stored by pubkey
         let pubkey_str = instance.device_id_string();
         let settings_store = SettingsStore::new(&transaction).unwrap();
-        let auth_settings = settings_store.get_auth_settings().await.unwrap();
+        let auth_settings = settings_store.auth_snapshot().await.unwrap();
         let device_key = auth_settings.get_key_by_pubkey(&pubkey_str).unwrap();
         assert_eq!(device_key.permissions(), &Permission::Admin(0));
         assert_eq!(device_key.name(), None);
@@ -518,7 +518,7 @@ mod tests {
         let pubkey_str = instance.device_id_string();
         let transaction = users_db.new_transaction().await.unwrap();
         let settings_store = SettingsStore::new(&transaction).unwrap();
-        let auth_settings = settings_store.get_auth_settings().await.unwrap();
+        let auth_settings = settings_store.auth_snapshot().await.unwrap();
         let device_key = auth_settings.get_key_by_pubkey(&pubkey_str).unwrap();
 
         assert_eq!(device_key.permissions(), &Permission::Admin(0));

@@ -343,7 +343,7 @@ impl Database {
     /// on invalid keys, and by `current_permission` to look up permissions.
     async fn validate_key(&self, key: &DatabaseKey) -> Result<Permission> {
         let settings_store = self.get_settings().await?;
-        let auth_settings = settings_store.get_auth_settings().await?;
+        let auth_settings = settings_store.auth_snapshot().await?;
 
         // Derive actual pubkey from the signing key
         let actual_pubkey = format_public_key(&key.signing_key().public_key());
@@ -476,7 +476,7 @@ impl Database {
 
         // Load auth settings
         let settings_store = temp_db.get_settings().await?;
-        let auth_settings = settings_store.get_auth_settings().await?;
+        let auth_settings = settings_store.auth_snapshot().await?;
 
         // Find all SigKeys for this pubkey (returns sorted by highest permission first)
         Ok(auth_settings.find_all_sigkeys_for_pubkey(pubkey))
@@ -964,7 +964,7 @@ impl Database {
         // but requires more complex CRDT state reconstruction logic.
 
         let settings = self.get_settings().await?;
-        settings.get_auth_settings().await
+        settings.auth_snapshot().await
     }
 
     // === DATABASE QUERIES ===

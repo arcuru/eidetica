@@ -98,7 +98,7 @@ impl DelegationResolver {
                     reason: format!("Failed to get delegated tree settings: {e}"),
                 }
             })?;
-            current_auth_settings = delegated_settings.get_auth_settings().await.map_err(|e| {
+            current_auth_settings = delegated_settings.auth_snapshot().await.map_err(|e| {
                 AuthError::InvalidAuthConfiguration {
                     reason: format!("Failed to get delegated tree auth settings: {e}"),
                 }

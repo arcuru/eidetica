@@ -211,7 +211,7 @@ impl SyncHandlerImpl {
         let database = Database::open_unauthenticated(tree_id.clone(), &self.instance()?)?;
         let transaction = database.new_transaction().await?;
         let settings_store = SettingsStore::new(&transaction)?;
-        let auth_settings = settings_store.get_auth_settings().await?;
+        let auth_settings = settings_store.auth_snapshot().await?;
 
         let results = auth_settings.find_all_sigkeys_for_pubkey(requesting_pubkey);
 
@@ -246,7 +246,7 @@ impl SyncHandlerImpl {
         let database = Database::open_unauthenticated(tree_id.clone(), &self.instance()?)?;
         let settings_store = database.get_settings().await?;
 
-        let auth_settings = settings_store.get_auth_settings().await?;
+        let auth_settings = settings_store.auth_snapshot().await?;
 
         // Use the AuthSettings.can_access() method to check permissions
         if auth_settings.can_access(requesting_pubkey, requested_permission) {
@@ -281,7 +281,7 @@ impl SyncHandlerImpl {
         let transaction = database.new_transaction().await?;
         let settings_store = SettingsStore::new(&transaction)?;
 
-        let auth_settings = settings_store.get_auth_settings().await?;
+        let auth_settings = settings_store.auth_snapshot().await?;
 
         // Check if auth settings is completely empty (no auth configured)
         if auth_settings.as_doc().is_empty() {

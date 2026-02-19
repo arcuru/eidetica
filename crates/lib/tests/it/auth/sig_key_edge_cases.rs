@@ -53,7 +53,7 @@ async fn test_direct_key_name_hint() -> Result<()> {
     // Test resolving by name hint - should find key with matching name
     let name_key = SigKey::from_name("test_name");
     let mut validator = AuthValidator::new();
-    let auth_settings = tree.get_settings().await?.get_auth_settings().await?;
+    let auth_settings = tree.get_settings().await?.auth_snapshot().await?;
 
     let result = validator
         .resolve_sig_key(&name_key, &auth_settings, Some(&instance))
@@ -273,7 +273,7 @@ async fn test_circular_delegation_simple() -> Result<()> {
 
     // This should be detectable as a potential circular reference
     // For now, we just test that it doesn't crash
-    let auth_settings = tree.get_settings().await?.get_auth_settings().await?;
+    let auth_settings = tree.get_settings().await?.auth_snapshot().await?;
     let mut validator = AuthValidator::new();
     let result = validator
         .resolve_sig_key(&circular_delegation, &auth_settings, Some(&instance))

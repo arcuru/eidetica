@@ -152,7 +152,7 @@ impl SettingsStore {
     ///
     /// # Returns
     /// An AuthSettings snapshot of the current auth configuration
-    pub async fn get_auth_settings(&self) -> Result<AuthSettings> {
+    pub async fn auth_snapshot(&self) -> Result<AuthSettings> {
         let all = self.inner.get_all().await?;
         match all.get("auth") {
             Some(doc::Value::Doc(auth_doc)) => Ok(auth_doc.clone().into()),
@@ -194,7 +194,7 @@ impl SettingsStore {
     /// # Returns
     /// AuthKey if found, or error if not present or operation fails
     pub async fn get_auth_key(&self, pubkey: &str) -> Result<AuthKey> {
-        let auth_settings = self.get_auth_settings().await?;
+        let auth_settings = self.auth_snapshot().await?;
         auth_settings.get_key_by_pubkey(pubkey)
     }
 
@@ -210,7 +210,7 @@ impl SettingsStore {
     /// # Returns
     /// Result indicating success or failure
     pub async fn rename_auth_key(&self, pubkey: &str, name: Option<&str>) -> Result<()> {
-        let auth = self.get_auth_settings().await?;
+        let auth = self.auth_snapshot().await?;
         let mut key = auth.get_key_by_pubkey(pubkey)?;
         key.set_name(name);
         self.set_auth_key(pubkey, key).await
@@ -224,7 +224,7 @@ impl SettingsStore {
     /// # Returns
     /// Result indicating success or failure
     pub async fn revoke_auth_key(&self, pubkey: &str) -> Result<()> {
-        let auth = self.get_auth_settings().await?;
+        let auth = self.auth_snapshot().await?;
         let mut key = auth.get_key_by_pubkey(pubkey)?;
         key.set_status(KeyStatus::Revoked);
         self.set_auth_key(pubkey, key).await
@@ -255,7 +255,7 @@ impl SettingsStore {
     /// # Returns
     /// A Doc containing the auth configuration
     pub async fn get_auth_doc_for_validation(&self) -> Result<Doc> {
-        let auth_settings = self.get_auth_settings().await?;
+        let auth_settings = self.auth_snapshot().await?;
         Ok(auth_settings.as_doc().clone())
     }
 
@@ -344,7 +344,7 @@ mod tests {
         let settings_store = SettingsStore::new(&transaction).unwrap();
 
         // Get the initial auth settings (may contain a default key from database creation)
-        let initial_auth_settings = settings_store.get_auth_settings().await.unwrap();
+        let initial_auth_settings = settings_store.auth_snapshot().await.unwrap();
         let initial_key_count = initial_auth_settings.get_all_keys().unwrap().len();
 
         // Should be able to add an auth key (stored by pubkey)
@@ -363,7 +363,7 @@ mod tests {
         assert_eq!(retrieved_key.status(), auth_key.status());
 
         // Should have one more key than initially
-        let final_auth_settings = settings_store.get_auth_settings().await.unwrap();
+        let final_auth_settings = settings_store.auth_snapshot().await.unwrap();
         let final_key_count = final_auth_settings.get_all_keys().unwrap().len();
         assert_eq!(final_key_count, initial_key_count + 1);
     }
@@ -457,7 +457,7 @@ mod tests {
             .unwrap();
 
         // Verify both keys were added (plus any existing keys from database creation)
-        let auth_settings = settings_store.get_auth_settings().await.unwrap();
+        let auth_settings = settings_store.auth_snapshot().await.unwrap();
         let all_keys = auth_settings.get_all_keys().unwrap();
         assert!(all_keys.len() >= 2); // At least the two we added
         assert!(all_keys.contains_key(&pubkey1));
@@ -537,7 +537,7 @@ mod tests {
         // But reading through SettingsStore merges both entries correctly
         let txn3 = database.new_transaction().await.unwrap();
         let settings3 = SettingsStore::new(&txn3).unwrap();
-        let auth = settings3.get_auth_settings().await.unwrap();
+        let auth = settings3.auth_snapshot().await.unwrap();
         assert!(
             auth.get_key_by_pubkey(&pubkey_a).is_ok(),
             "Merged view should contain key A"

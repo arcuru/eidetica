@@ -404,7 +404,7 @@ async fn test_complete_delegation_workflow() {
         .get_settings()
         .await
         .unwrap()
-        .get_auth_settings()
+        .auth_snapshot()
         .await
         .unwrap();
 
@@ -479,7 +479,7 @@ async fn test_delegated_tree_requires_tips() {
         .get_settings()
         .await
         .unwrap()
-        .get_auth_settings()
+        .auth_snapshot()
         .await
         .unwrap();
 
@@ -601,7 +601,7 @@ async fn test_nested_delegation_with_permission_clamping() {
         .get_settings()
         .await
         .unwrap()
-        .get_auth_settings()
+        .auth_snapshot()
         .await
         .unwrap();
 

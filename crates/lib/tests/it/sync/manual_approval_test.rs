@@ -680,7 +680,7 @@ async fn test_bootstrap_with_existing_specific_key_permission() {
 
     // Verify no duplicate key was added by checking auth settings
     let settings_store = database.get_settings().await.unwrap();
-    let auth_settings = settings_store.get_auth_settings().await.unwrap();
+    let auth_settings = settings_store.auth_snapshot().await.unwrap();
 
     // Should have exactly 2 keys (admin + existing test key)
     let all_keys = auth_settings.get_all_keys().unwrap();
@@ -766,7 +766,7 @@ async fn test_bootstrap_with_existing_global_permission_no_duplicate() {
 
     // Verify no new key was added - should still only have admin + global key
     let settings_store = database.get_settings().await.unwrap();
-    let auth_settings = settings_store.get_auth_settings().await.unwrap();
+    let auth_settings = settings_store.auth_snapshot().await.unwrap();
 
     // Should have exactly 2 keys (admin + global "*" key)
     let all_keys = auth_settings.get_all_keys().unwrap();

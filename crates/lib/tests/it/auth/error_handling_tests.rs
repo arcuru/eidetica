@@ -86,7 +86,7 @@ async fn test_delegation_nonexistent_tree() -> Result<()> {
     );
 
     let mut validator = AuthValidator::new();
-    let auth_settings = tree.get_settings().await?.get_auth_settings().await?;
+    let auth_settings = tree.get_settings().await?.auth_snapshot().await?;
 
     assert_permission_resolution_fails(
         &mut validator,
@@ -140,7 +140,7 @@ async fn test_delegation_corrupted_tree_references() -> Result<()> {
     };
 
     let mut validator = AuthValidator::new();
-    let auth_settings = tree.get_settings().await?.get_auth_settings().await?;
+    let auth_settings = tree.get_settings().await?.auth_snapshot().await?;
     let result = validator
         .resolve_sig_key(&delegation_path, &auth_settings, Some(&db))
         .await;
@@ -201,7 +201,7 @@ async fn test_privilege_escalation_through_delegation() -> Result<()> {
     };
 
     let mut validator = AuthValidator::new();
-    let main_auth_settings = main_tree.get_settings().await?.get_auth_settings().await?;
+    let main_auth_settings = main_tree.get_settings().await?.auth_snapshot().await?;
     let result = validator
         .resolve_sig_key(&delegation_path, &main_auth_settings, Some(&db))
         .await;
@@ -280,7 +280,7 @@ async fn test_delegation_with_tampered_tips() -> Result<()> {
     };
 
     let mut validator = AuthValidator::new();
-    let main_auth_settings = main_tree.get_settings().await?.get_auth_settings().await?;
+    let main_auth_settings = main_tree.get_settings().await?.auth_snapshot().await?;
     let result = validator
         .resolve_sig_key(&delegation_path, &main_auth_settings, Some(&db))
         .await;
@@ -363,7 +363,7 @@ async fn test_delegation_mixed_key_statuses() -> Result<()> {
     };
 
     let mut validator = AuthValidator::new();
-    let main_auth_settings = main_tree.get_settings().await?.get_auth_settings().await?;
+    let main_auth_settings = main_tree.get_settings().await?.auth_snapshot().await?;
     let result = validator
         .resolve_sig_key(&active_delegation, &main_auth_settings, Some(&db))
         .await;
@@ -409,7 +409,7 @@ async fn test_validation_cache_error_conditions() -> Result<()> {
     let tree = user.create_database(settings, &admin_key_id).await?;
 
     let mut validator = AuthValidator::new();
-    let auth_settings = tree.get_settings().await?.get_auth_settings().await?;
+    let auth_settings = tree.get_settings().await?.auth_snapshot().await?;
 
     // First resolution should succeed and populate cache
     let sig_key = SigKey::from_pubkey(&admin_key_id);
@@ -498,7 +498,7 @@ async fn test_concurrent_validation_basic() -> Result<()> {
     // Create tree (signing key becomes Admin(0))
     let settings = Doc::new();
     let tree = user.create_database(settings, &admin_key_id).await?;
-    let auth_settings = Arc::new(tree.get_settings().await?.get_auth_settings().await?);
+    let auth_settings = Arc::new(tree.get_settings().await?.auth_snapshot().await?);
     let admin_key_id = Arc::new(admin_key_id);
 
     let local = tokio::task::LocalSet::new();
