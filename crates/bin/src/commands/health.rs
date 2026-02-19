@@ -6,7 +6,12 @@ use crate::cli::HealthArgs;
 
 /// Run the health check command
 pub async fn run(args: &HealthArgs) -> Result<(), Box<dyn std::error::Error>> {
-    let url = format!("http://{}:{}/health", args.host, args.port);
+    let base = args.url.trim_end_matches('/');
+    let url = if base.ends_with("/health") {
+        base.to_string()
+    } else {
+        format!("{base}/health")
+    };
     let timeout = Duration::from_secs(args.timeout);
 
     let client = reqwest::Client::builder().timeout(timeout).build()?;

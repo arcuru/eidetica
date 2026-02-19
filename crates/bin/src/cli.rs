@@ -54,7 +54,7 @@ pub struct BackendConfig {
     /// Data directory for storage files.
     /// For SQLite: stores eidetica.db
     /// For InMemory: stores eidetica.json
-    #[arg(short = 'D', long, env = "EIDETICA_DATA_DIR")]
+    #[arg(short, long, env = "EIDETICA_DATA_DIR")]
     pub data_dir: Option<PathBuf>,
 
     /// PostgreSQL connection URL (required when backend=postgres)
@@ -80,13 +80,9 @@ pub struct ServeArgs {
 /// Arguments for the health command
 #[derive(clap::Args, Debug)]
 pub struct HealthArgs {
-    /// Port of the server to check
-    #[arg(short, long, default_value_t = 3000, env = "EIDETICA_PORT")]
-    pub port: u16,
-
-    /// Host of the server to check
-    #[arg(long, default_value = "127.0.0.1", env = "EIDETICA_HOST")]
-    pub host: String,
+    /// URL of the server to check (appends /health if no path)
+    #[arg(default_value = "http://127.0.0.1:3000")]
+    pub url: String,
 
     /// Timeout in seconds
     #[arg(short, long, default_value_t = 5)]
