@@ -12,12 +12,18 @@ Fuzz / simulation testing are planned for the future.
 
 The primary CI runs on GitHub with these workflows:
 
-- **[rust.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/rust.yml)**: Main Rust CI pipeline (format, clippy, build, test, doc tests, book tests)
-- **[nix.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/nix.yml)**: Nix-based CI that mostly runs the same tests but inside the Nix sandbox
-- **[security.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/security.yml)**: Weekly vulnerability scanning and dependency review
+- **[tests.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/tests.yml)**: Main test pipeline (format, build, test, doc tests, book tests, minimal features)
+- **[lint.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/lint.yml)**: Linting checks (clippy, deny, formatting)
+- **[doc.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/doc.yml)**: Documentation building and testing
+- **[sanitizers.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/sanitizers.yml)**: Memory and thread sanitizer checks
+- **[benchmarks.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/benchmarks.yml)**: Performance benchmarks
+- **[container.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/container.yml)**: Container image building
+- **[artifacts.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/artifacts.yml)**: Build artifact management
 - **[coverage.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/coverage.yml)**: Multi-backend code coverage tracking via Codecov
 - **[deploy-docs.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/deploy-docs.yml)**: Documentation deployment to GitHub Pages
 - **[release-plz.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/release-plz.yml)**: Automated releases and crates.io publishing
+- **[renovate.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/renovate.yml)**: Dependency update automation
+- **[codeberg.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/codeberg.yml)**: Codeberg mirror sync
 
 ### Forgejo CI
 

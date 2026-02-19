@@ -27,8 +27,8 @@ use eidetica::backend::database::Sqlite;
 // File-based storage (async) - recommended for persistent data
 let backend = Sqlite::open("my_data.db").await?;
 
-// In-memory (sync) - useful for testing
-let backend = Sqlite::in_memory()?;
+// In-memory - useful for testing
+let backend = Sqlite::in_memory().await?;
 ```
 
 ### PostgreSQL

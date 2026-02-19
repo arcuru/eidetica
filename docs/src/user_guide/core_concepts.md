@@ -107,7 +107,6 @@ Planned future stores include:
 
 - Object Storage: Efficiently handling large objects with content-addressable hashing
 - Backup: Archiving database history for space efficiency
-- Encrypted Store: Transparent encrypted data storage
 
 ## Atomic Operations and Transactions
 
@@ -162,20 +161,23 @@ Eidetica is under active development, and some features mentioned in this docume
 ### Implemented Features
 
 - Core Entry and Database structure
-- In-memory database with file persistence
-- DocStore and Table store implementations
+- SQLite and PostgreSQL persistent storage backends (InMemory available for testing)
+- DocStore, Table, and YDoc (Y-CRDT) store implementations
+- PasswordStore for transparent password-based encryption wrapping any store
 - CRDT functionality:
-  - Doc (hierarchical nested document structure with recursive merging and tombstone support for deletions)
+  - Doc (hierarchical nested document structure with recursive merging and tombstone support)
 - Atomic operations across stores
 - Tombstone support for proper deletion handling in distributed environments
+- Signature-based authentication with crypto-agile key types and granular permissions
+- User identity and session management with encrypted key storage
+- Peer-to-peer synchronization via Iroh and HTTP transports
 
 ### Planned Features
 
 - Object Storage store for efficient handling of large objects
 - Backup store for archiving database history
-- Encrypted store for transparent encrypted data storage
 - IPFS-compatible addressing for distributed storage
-- Enhanced synchronization mechanisms
 - Point-in-time recovery
+- Sparse and shallow checkouts
 
 This roadmap is subject to change as development progresses. Check the project repository for the most up-to-date information on feature availability.
