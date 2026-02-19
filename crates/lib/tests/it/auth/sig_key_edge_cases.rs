@@ -7,7 +7,7 @@ use eidetica::{
     Result,
     auth::{
         AuthSettings,
-        types::{AuthKey, DelegationStep, KeyHint, Permission, SigInfo, SigKey},
+        types::{DelegationStep, KeyHint, SigInfo, SigKey},
         validation::AuthValidator,
     },
     crdt::Doc,
@@ -15,7 +15,7 @@ use eidetica::{
     store::DocStore,
 };
 
-use crate::helpers::{add_auth_key, test_instance, test_instance_with_user_and_key};
+use crate::helpers::{rename_auth_key, test_instance, test_instance_with_user_and_key};
 
 /// Test SigKey with empty delegation path
 #[tokio::test]
@@ -47,15 +47,8 @@ async fn test_direct_key_name_hint() -> Result<()> {
     // Create tree (signing key becomes Admin(0) with no name)
     let tree = user.create_database(Doc::new(), &key_id).await?;
 
-    // Overwrite the bootstrapped key entry (same pubkey) to add the display
-    // name "test_name" — set_auth_key replaces existing entries keyed by pubkey.
-    // FIXME: consider adding a set_name method to AuthSettings/SettingsStore
-    add_auth_key(
-        &tree,
-        &key_id,
-        AuthKey::active(Some("test_name"), Permission::Admin(0)),
-    )
-    .await;
+    // Add a display name to the bootstrapped key (which starts with no name)
+    rename_auth_key(&tree, &key_id, Some("test_name")).await;
 
     // Test resolving by name hint - should find key with matching name
     let name_key = SigKey::from_name("test_name");

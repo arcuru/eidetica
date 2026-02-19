@@ -153,6 +153,17 @@ impl AuthSettings {
         Ok(result)
     }
 
+    /// Rename a key by pubkey
+    ///
+    /// Updates only the display name of an existing key, preserving its
+    /// permissions and status.
+    pub fn rename_key(&mut self, pubkey: &str, name: Option<&str>) -> Result<()> {
+        let mut auth_key = self.get_key_by_pubkey(pubkey)?;
+        auth_key.set_name(name);
+        self.inner.set(format!("keys.{pubkey}"), auth_key);
+        Ok(())
+    }
+
     /// Revoke a key by pubkey
     pub fn revoke_key(&mut self, pubkey: &str) -> Result<()> {
         let mut auth_key = self.get_key_by_pubkey(pubkey)?;

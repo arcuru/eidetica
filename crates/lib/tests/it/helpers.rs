@@ -281,6 +281,14 @@ pub async fn add_auth_key(db: &Database, pubkey: &str, key: AuthKey) {
     txn.commit().await.unwrap();
 }
 
+/// Rename an auth key's display name on a database via a settings transaction.
+pub async fn rename_auth_key(db: &Database, pubkey: &str, name: Option<&str>) {
+    let txn = db.new_transaction().await.unwrap();
+    let settings = txn.get_settings().unwrap();
+    settings.rename_auth_key(pubkey, name).await.unwrap();
+    txn.commit().await.unwrap();
+}
+
 /// Add or overwrite multiple auth keys on a database in a single transaction.
 pub async fn add_auth_keys(db: &Database, keys: &[(&str, AuthKey)]) {
     let txn = db.new_transaction().await.unwrap();

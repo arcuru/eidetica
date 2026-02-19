@@ -143,13 +143,15 @@ impl SettingsStore {
             .await
     }
 
-    /// Get the current authentication settings as an AuthSettings instance
+    /// Get a snapshot of the current authentication settings
     ///
-    /// This method loads the auth section from the settings and returns it as
-    /// an AuthSettings object for convenient manipulation.
+    /// Returns a **cloned** `AuthSettings` built from the merged CRDT state.
+    /// Mutations to the returned value do not propagate back to the store;
+    /// use the dedicated methods (e.g. `set_auth_key`, `rename_auth_key`,
+    /// `revoke_auth_key`) to persist changes.
     ///
     /// # Returns
-    /// An AuthSettings instance representing the current auth configuration
+    /// An AuthSettings snapshot of the current auth configuration
     pub async fn get_auth_settings(&self) -> Result<AuthSettings> {
         let all = self.inner.get_all().await?;
         match all.get("auth") {
@@ -194,6 +196,24 @@ impl SettingsStore {
     pub async fn get_auth_key(&self, pubkey: &str) -> Result<AuthKey> {
         let auth_settings = self.get_auth_settings().await?;
         auth_settings.get_key_by_pubkey(pubkey)
+    }
+
+    /// Rename an authentication key in the settings
+    ///
+    /// Updates only the display name of an existing key, preserving its
+    /// permissions and status.
+    ///
+    /// # Arguments
+    /// * `pubkey` - The public key string of the key to rename
+    /// * `name` - The new display name, or None to remove the name
+    ///
+    /// # Returns
+    /// Result indicating success or failure
+    pub async fn rename_auth_key(&self, pubkey: &str, name: Option<&str>) -> Result<()> {
+        let auth = self.get_auth_settings().await?;
+        let mut key = auth.get_key_by_pubkey(pubkey)?;
+        key.set_name(name);
+        self.set_auth_key(pubkey, key).await
     }
 
     /// Revoke an authentication key in the settings
@@ -376,6 +396,40 @@ mod tests {
         // Verify key is revoked
         let revoked_key = settings_store.get_auth_key(&pubkey).await.unwrap();
         assert_eq!(revoked_key.status(), &KeyStatus::Revoked);
+    }
+
+    #[tokio::test]
+    async fn test_rename_auth_key() {
+        let (_instance, database) = create_test_database().await;
+        let transaction = database.new_transaction().await.unwrap();
+        let settings_store = SettingsStore::new(&transaction).unwrap();
+
+        let pubkey = generate_public_key();
+        let auth_key = AuthKey::active(Some("laptop"), Permission::Write(5));
+
+        settings_store
+            .set_auth_key(&pubkey, auth_key)
+            .await
+            .unwrap();
+
+        // Rename the key
+        settings_store
+            .rename_auth_key(&pubkey, Some("desktop"))
+            .await
+            .unwrap();
+
+        // Verify name changed but permissions preserved
+        let renamed = settings_store.get_auth_key(&pubkey).await.unwrap();
+        assert_eq!(renamed.name(), Some("desktop"));
+        assert_eq!(renamed.permissions(), &Permission::Write(5));
+        assert_eq!(renamed.status(), &KeyStatus::Active);
+
+        // Rename to None (remove name)
+        settings_store.rename_auth_key(&pubkey, None).await.unwrap();
+
+        let unnamed = settings_store.get_auth_key(&pubkey).await.unwrap();
+        assert_eq!(unnamed.name(), None);
+        assert_eq!(unnamed.permissions(), &Permission::Write(5));
     }
 
     #[tokio::test]
