@@ -1,0 +1,174 @@
+# Monthly GitHub Actions version update. Parses SHA-pinned `uses:` lines
+# across all workflow files, queries the GitHub API for latest releases,
+# and updates the SHA and version comment in-place. Respects the Forgejo
+# constraint that actions/checkout must stay at v4. Creates a PR on the
+# deps/actions-update branch with a configurable hold period before merge.
+# CI handles verification via normal PR checks.
+#
+name: "Deps: Actions Update"
+
+on:
+  schedule:
+    - cron: "0 6 1 * *"
+  workflow_dispatch:
+    inputs:
+      hold_days:
+        description: "Days to hold before allowing merge"
+        required: false
+        default: "7"
+        type: string
+
+concurrency:
+  group: deps-actions-update
+  cancel-in-progress: true
+
+jobs:
+  actions-update:
+    name: Actions Update
+    runs-on: ubuntu-latest
+    if: github.repository_owner == 'arcuru'
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@c5a866b6ab867e88becbed4467b93592bce69f8a # v21
+
+      - name: Setup Cachix
+        uses: cachix/cachix-action@ad2ddac53f961de1989924296a1f236fcfbaa4fc # v15
+        with:
+          name: eidetica
+          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+
+      - name: Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
+
+      - name: Setup deps branch
+        uses: ./.github/actions/setup-deps-branch
+        with:
+          branch: deps/actions-update
+
+      - name: Update action versions
+        id: update
+        run: |
+          CHANGES=""
+
+          update_action() {
+            local FILE="$1"
+            local OWNER="$2"
+            local REPO="$3"
+            local CURRENT_SHA="$4"
+            local CURRENT_TAG="$5"
+            local IS_FORGEJO="$6"
+
+            # Skip actions/checkout in Forgejo workflows (must stay at v4)
+            if [ "$IS_FORGEJO" = "true" ] && [ "$OWNER/$REPO" = "actions/checkout" ]; then
+              return
+            fi
+
+            # Get latest release
+            LATEST=$(gh api "repos/$OWNER/$REPO/releases/latest" --jq '.tag_name' 2>/dev/null || true)
+            if [ -z "$LATEST" ]; then
+              # Try tags if no releases (some actions use tags only)
+              LATEST=$(gh api "repos/$OWNER/$REPO/tags" --jq '.[0].name' 2>/dev/null || true)
+            fi
+            if [ -z "$LATEST" ]; then
+              return
+            fi
+
+            if [ "$LATEST" = "$CURRENT_TAG" ]; then
+              return
+            fi
+
+            # Get the SHA and type for the latest tag ref
+            REF_INFO=$(gh api "repos/$OWNER/$REPO/git/ref/tags/$LATEST" --jq '.object | "\(.sha) \(.type)"' 2>/dev/null || true)
+            if [ -z "$REF_INFO" ]; then
+              return
+            fi
+            NEW_SHA=$(echo "$REF_INFO" | cut -d' ' -f1)
+            REF_TYPE=$(echo "$REF_INFO" | cut -d' ' -f2)
+
+            # For annotated tags, the ref points to a tag object; resolve to the underlying commit
+            if [ "$REF_TYPE" = "tag" ]; then
+              NEW_SHA=$(gh api "repos/$OWNER/$REPO/git/tags/$NEW_SHA" --jq '.object.sha' 2>/dev/null || true)
+              if [ -z "$NEW_SHA" ]; then
+                return
+              fi
+            fi
+
+            if [ "$NEW_SHA" = "$CURRENT_SHA" ]; then
+              return
+            fi
+
+            # Replace in file: owner/repo@old_sha # old_tag -> owner/repo@new_sha # new_tag
+            sed -i "s|${OWNER}/${REPO}@${CURRENT_SHA} # ${CURRENT_TAG}|${OWNER}/${REPO}@${NEW_SHA} # ${LATEST}|g" "$FILE"
+
+            if ! git diff --quiet "$FILE"; then
+              CHANGES="${CHANGES}- \`${OWNER}/${REPO}\`: ${CURRENT_TAG} → ${LATEST} (in \`$(basename "$FILE")\`)\n"
+            fi
+          }
+
+          # Process all workflow files
+          for FILE in .github/workflows/*.yml .forgejo/workflows/*.yml; do
+            [ -f "$FILE" ] || continue
+
+            IS_FORGEJO="false"
+            if [[ "$FILE" == .forgejo/* ]]; then
+              IS_FORGEJO="true"
+            fi
+
+            # Read file content first to avoid reading and writing the same file
+            FILE_CONTENT=$(cat "$FILE")
+
+            # Extract uses: lines with SHA pinning pattern: owner/repo@sha # tag
+            while IFS= read -r LINE; do
+              # Parse: uses: owner/repo@sha # tag
+              if [[ "$LINE" =~ uses:[[:space:]]+([^/]+)/([^@]+)@([a-f0-9]+)[[:space:]]+#[[:space:]]*(.*) ]]; then
+                OWNER="${BASH_REMATCH[1]}"
+                REPO="${BASH_REMATCH[2]}"
+                CURRENT_SHA="${BASH_REMATCH[3]}"
+                CURRENT_TAG=$(echo "${BASH_REMATCH[4]}" | xargs)  # trim whitespace
+
+                update_action "$FILE" "$OWNER" "$REPO" "$CURRENT_SHA" "$CURRENT_TAG" "$IS_FORGEJO"
+              fi
+            done <<< "$FILE_CONTENT"
+          done
+
+          if [ -z "$CHANGES" ]; then
+            CHANGES="No action updates available."
+          fi
+
+          {
+            echo "changes<<CHANGES_EOF"
+            echo -e "$CHANGES"
+            echo "CHANGES_EOF"
+          } >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Commit and create PR
+        uses: ./.github/actions/commit-and-pr
+        with:
+          branch: deps/actions-update
+          files: ".github/workflows/ .forgejo/workflows/"
+          commit-message: "chore(deps): update GitHub Actions versions"
+          pr-title: "chore(deps): update GitHub Actions versions"
+          pr-body: |
+            ## GitHub Actions Update
+
+            Monthly update of GitHub Actions to latest versions.
+
+            ### Updated Actions
+
+            ${{ steps.update.outputs.changes }}
+
+            ### Notes
+
+            - All SHA pins updated to match the new release tags
+            - `actions/checkout` in Forgejo workflows is kept at v4 for compatibility
+          hold-days: ${{ inputs.hold_days || '7' }}
+          update-comment: "Updated with latest action versions."
+          github-token: ${{ secrets.GITHUB_TOKEN }}

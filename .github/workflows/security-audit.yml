@@ -1,0 +1,106 @@
+# Daily check of cargo dependencies against the RustSec Advisory Database.
+# Creates/updates a GitHub issue with the "security" label on failure,
+# and auto-closes it when all advisories are resolved.
+#
+name: "Deps: Security Audit"
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: deps-security-audit
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: Advisory Check
+    runs-on: ubuntu-latest
+    if: github.repository_owner == 'arcuru'
+    permissions:
+      issues: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@c5a866b6ab867e88becbed4467b93592bce69f8a # v21
+
+      - name: Setup Cachix
+        uses: cachix/cachix-action@ad2ddac53f961de1989924296a1f236fcfbaa4fc # v15
+        with:
+          name: eidetica
+          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+
+      - name: Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
+
+      - name: Check advisories
+        id: audit
+        run: |
+          set +e
+          OUTPUT=$(nix develop --command cargo deny check advisories 2>&1)
+          EXIT_CODE=$?
+          echo "$OUTPUT"
+          {
+            echo "output<<AUDIT_EOF"
+            echo "$OUTPUT"
+            echo "AUDIT_EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Find existing issue
+        id: find_issue
+        run: |
+          ISSUE_NUMBER=$(gh issue list --label security --state open --search "Security Advisory Alert" --json number --jq '.[0].number // empty')
+          echo "number=${ISSUE_NUMBER}" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create or update issue on failure
+        if: steps.audit.outputs.exit_code != '0'
+        run: |
+          TITLE="Security Advisory Alert"
+          TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          BODY=$(cat <<'ISSUE_EOF'
+          ## Security Advisory Found
+
+          `cargo deny check advisories` found active advisories in dependencies.
+
+          <details>
+          <summary>Full output</summary>
+
+          ```
+          __AUDIT_OUTPUT__
+          ```
+
+          </details>
+
+          **Action required:** Review the advisories above and update affected dependencies or add ignore entries to `deny.toml` if appropriate.
+
+          _Last checked: __TIMESTAMP___
+          ISSUE_EOF
+          )
+          BODY="${BODY//__TIMESTAMP__/$TIMESTAMP}"
+          BODY="${BODY//__AUDIT_OUTPUT__/$AUDIT_OUTPUT}"
+
+          if [ -n "$ISSUE_NUMBER" ]; then
+            gh issue edit "$ISSUE_NUMBER" --body "$BODY"
+          else
+            gh issue create --title "$TITLE" --body "$BODY" --label security
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AUDIT_OUTPUT: ${{ steps.audit.outputs.output }}
+          ISSUE_NUMBER: ${{ steps.find_issue.outputs.number }}
+
+      - name: Close issue on success
+        if: steps.audit.outputs.exit_code == '0' && steps.find_issue.outputs.number != ''
+        run: |
+          gh issue close "$ISSUE_NUMBER" --comment "All advisories resolved. Closing automatically."
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ steps.find_issue.outputs.number }}

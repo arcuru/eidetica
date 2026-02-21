@@ -1,0 +1,105 @@
+# Monthly cargo dependency update. Runs `cargo update` to bump Cargo.lock,
+# then creates a PR on the deps/cargo-update branch with a configurable hold
+# period before merge. CI handles verification via normal PR checks.
+#
+name: "Deps: Cargo Update"
+
+on:
+  schedule:
+    - cron: "0 4 1 * *"
+  workflow_dispatch:
+    inputs:
+      hold_days:
+        description: "Days to hold before allowing merge"
+        required: false
+        default: "7"
+        type: string
+
+concurrency:
+  group: deps-cargo-update
+  cancel-in-progress: true
+
+jobs:
+  cargo-update:
+    name: Cargo Update
+    runs-on: ubuntu-latest
+    if: github.repository_owner == 'arcuru'
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@c5a866b6ab867e88becbed4467b93592bce69f8a # v21
+
+      - name: Setup Cachix
+        uses: cachix/cachix-action@ad2ddac53f961de1989924296a1f236fcfbaa4fc # v15
+        with:
+          name: eidetica
+          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+
+      - name: Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
+
+      - name: Setup deps branch
+        uses: ./.github/actions/setup-deps-branch
+        with:
+          branch: deps/cargo-update
+
+      - name: Run cargo update
+        id: update
+        run: |
+          OUTPUT=$(nix develop --command cargo update 2>&1)
+          echo "$OUTPUT"
+          {
+            echo "output<<UPDATE_EOF"
+            echo "$OUTPUT"
+            echo "UPDATE_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Capture diff stats
+        id: diff
+        run: |
+          if ! git diff --quiet Cargo.lock; then
+            DIFF=$(git diff --stat Cargo.lock)
+            {
+              echo "stat<<DIFF_EOF"
+              echo "$DIFF"
+              echo "DIFF_EOF"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit and create PR
+        uses: ./.github/actions/commit-and-pr
+        with:
+          branch: deps/cargo-update
+          files: Cargo.lock
+          commit-message: "chore(deps): update cargo dependencies"
+          pr-title: "chore(deps): update cargo dependencies"
+          pr-body: |
+            ## Cargo Dependency Update
+
+            Monthly `cargo update` of `Cargo.lock` dependencies.
+
+            <details>
+            <summary>cargo update output</summary>
+
+            ```
+            ${{ steps.update.outputs.output }}
+            ```
+
+            </details>
+
+            <details>
+            <summary>Diff stats</summary>
+
+            ```
+            ${{ steps.diff.outputs.stat }}
+            ```
+
+            </details>
+          hold-days: ${{ inputs.hold_days || '7' }}
+          update-comment: "Updated with latest `cargo update` results."
+          github-token: ${{ secrets.GITHUB_TOKEN }}

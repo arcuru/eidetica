@@ -1,0 +1,34 @@
+# Sets up a deps/ branch for dependency update workflows.
+# Creates a new branch from HEAD or rebases an existing remote branch onto main.
+# On rebase conflict, resets to main (the update step recreates content anyway).
+#
+name: Setup Deps Branch
+description: Create or rebase a dependency update branch
+
+inputs:
+  branch:
+    description: "Branch name (e.g. deps/cargo-update)"
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Setup branch
+      shell: bash
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+        BRANCH="${{ inputs.branch }}"
+        if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+          git fetch --unshallow origin 2>/dev/null || true
+          git fetch origin "$BRANCH"
+          git checkout -B "$BRANCH" "origin/$BRANCH"
+          if ! git rebase origin/main; then
+            echo "::warning::Rebase failed, resetting branch to origin/main"
+            git rebase --abort
+            git reset --hard origin/main
+          fi
+        else
+          git checkout -b "$BRANCH"
+        fi

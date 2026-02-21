@@ -1,0 +1,139 @@
+# Monthly Nix flake input update. Runs `nix flake update` to bump flake.lock,
+# generates a diff summary with GitHub compare links for each changed input,
+# then creates a PR on the deps/flake-update branch with a configurable hold
+# period before merge. CI handles verification via normal PR checks.
+#
+name: "Deps: Flake Update"
+
+on:
+  schedule:
+    - cron: "0 5 1 * *"
+  workflow_dispatch:
+    inputs:
+      hold_days:
+        description: "Days to hold before allowing merge"
+        required: false
+        default: "7"
+        type: string
+
+concurrency:
+  group: deps-flake-update
+  cancel-in-progress: true
+
+jobs:
+  flake-update:
+    name: Flake Update
+    runs-on: ubuntu-latest
+    if: github.repository_owner == 'arcuru'
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@c5a866b6ab867e88becbed4467b93592bce69f8a # v21
+
+      - name: Setup Cachix
+        uses: cachix/cachix-action@ad2ddac53f961de1989924296a1f236fcfbaa4fc # v15
+        with:
+          name: eidetica
+          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+
+      - name: Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
+
+      - name: Setup deps branch
+        uses: ./.github/actions/setup-deps-branch
+        with:
+          branch: deps/flake-update
+
+      - name: Capture pre-update metadata
+        id: before
+        run: |
+          METADATA=$(nix flake metadata --json)
+          echo "$METADATA" > /tmp/flake-metadata-before.json
+
+      - name: Run flake update
+        id: update
+        run: |
+          OUTPUT=$(nix flake update 2>&1)
+          echo "$OUTPUT"
+          {
+            echo "output<<UPDATE_EOF"
+            echo "$OUTPUT"
+            echo "UPDATE_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Generate input diff summary
+        id: summary
+        run: |
+          BEFORE=/tmp/flake-metadata-before.json
+          AFTER_JSON=$(nix flake metadata --json)
+
+          SUMMARY=""
+
+          for INPUT in $(echo "$AFTER_JSON" | jq -r '.locks.nodes.root.inputs | keys[]'); do
+            NODE=$(echo "$AFTER_JSON" | jq -r ".locks.nodes.root.inputs[\"$INPUT\"]")
+            # Handle both direct and indirect references
+            if echo "$AFTER_JSON" | jq -e ".locks.nodes[\"$NODE\"].locked" > /dev/null 2>&1; then
+              AFTER_REV=$(echo "$AFTER_JSON" | jq -r ".locks.nodes[\"$NODE\"].locked.rev // empty")
+              AFTER_TYPE=$(echo "$AFTER_JSON" | jq -r ".locks.nodes[\"$NODE\"].locked.type // empty")
+              AFTER_OWNER=$(echo "$AFTER_JSON" | jq -r ".locks.nodes[\"$NODE\"].locked.owner // empty")
+              AFTER_REPO=$(echo "$AFTER_JSON" | jq -r ".locks.nodes[\"$NODE\"].locked.repo // empty")
+            else
+              continue
+            fi
+
+            BEFORE_REV=$(jq -r ".locks.nodes[\"$NODE\"].locked.rev // empty" "$BEFORE" 2>/dev/null)
+
+            if [ -n "$BEFORE_REV" ] && [ -n "$AFTER_REV" ] && [ "$BEFORE_REV" != "$AFTER_REV" ]; then
+              SHORT_BEFORE="${BEFORE_REV:0:7}"
+              SHORT_AFTER="${AFTER_REV:0:7}"
+              if [ "$AFTER_TYPE" = "github" ] && [ -n "$AFTER_OWNER" ] && [ -n "$AFTER_REPO" ]; then
+                COMPARE_URL="https://github.com/$AFTER_OWNER/$AFTER_REPO/compare/${BEFORE_REV}...${AFTER_REV}"
+                SUMMARY="${SUMMARY}- **${INPUT}**: [\`${SHORT_BEFORE}\` → \`${SHORT_AFTER}\`](${COMPARE_URL})\n"
+              else
+                SUMMARY="${SUMMARY}- **${INPUT}**: \`${SHORT_BEFORE}\` → \`${SHORT_AFTER}\`\n"
+              fi
+            fi
+          done
+
+          if [ -z "$SUMMARY" ]; then
+            SUMMARY="No input revisions changed (lock file metadata update only)."
+          fi
+
+          {
+            echo "text<<SUMMARY_EOF"
+            echo -e "$SUMMARY"
+            echo "SUMMARY_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Commit and create PR
+        uses: ./.github/actions/commit-and-pr
+        with:
+          branch: deps/flake-update
+          files: flake.lock
+          commit-message: "chore(deps): update flake inputs"
+          pr-title: "chore(deps): update flake inputs"
+          pr-body: |
+            ## Flake Input Update
+
+            Monthly `nix flake update` of Nix dependencies.
+
+            ### Input Changes
+
+            ${{ steps.summary.outputs.text }}
+
+            <details>
+            <summary>nix flake update output</summary>
+
+            ```
+            ${{ steps.update.outputs.output }}
+            ```
+
+            </details>
+          hold-days: ${{ inputs.hold_days || '7' }}
+          update-comment: "Updated with latest `nix flake update` results."
+          github-token: ${{ secrets.GITHUB_TOKEN }}

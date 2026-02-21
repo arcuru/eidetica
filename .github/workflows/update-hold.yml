@@ -1,0 +1,62 @@
+# Daily check that releases expired dependency holds. Scans open PRs with
+# the "on-hold" label, parses the <!-- hold-until: YYYY-MM-DD --> comment
+# from the PR body, and removes the label when the date is reached. Label
+# removal triggers the Hold Gate workflow to re-run and pass.
+#
+name: "Deps: Hold Expiry"
+
+on:
+  schedule:
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: deps-hold-expiry
+  cancel-in-progress: true
+
+jobs:
+  release-holds:
+    name: Release Expired Holds
+    runs-on: ubuntu-latest
+    if: github.repository_owner == 'arcuru'
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Check and release expired holds
+        run: |
+          TODAY=$(date -u +%Y-%m-%d)
+          echo "Today: $TODAY"
+
+          # Get all open PRs with on-hold label
+          PRS=$(gh pr list --repo "$GITHUB_REPOSITORY" --label on-hold --state open --json number,body --jq '.[]')
+
+          if [ -z "$PRS" ]; then
+            echo "No PRs with on-hold label found."
+            exit 0
+          fi
+
+          echo "$PRS" | jq -c '.' | while read -r PR; do
+            NUMBER=$(echo "$PR" | jq -r '.number')
+            BODY=$(echo "$PR" | jq -r '.body')
+
+            # Extract hold-until date from HTML comment (POSIX-compatible, no grep -P)
+            HOLD_DATE=$(echo "$BODY" | sed -n 's/.*<!-- hold-until: \([0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}\).*/\1/p' | head -n1)
+
+            if [ -z "$HOLD_DATE" ]; then
+              echo "PR #$NUMBER: No hold-until date found, skipping."
+              continue
+            fi
+
+            echo "PR #$NUMBER: Hold until $HOLD_DATE"
+
+            if [[ ! "$TODAY" < "$HOLD_DATE" ]]; then
+              echo "PR #$NUMBER: Hold expired, removing label."
+              gh pr edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label on-hold
+              COMMENT="Hold period expired (was until $HOLD_DATE). Removing \`on-hold\` label — this PR is now eligible for merge."
+              gh pr comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$COMMENT"
+            else
+              echo "PR #$NUMBER: Still on hold until $HOLD_DATE."
+            fi
+          done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
