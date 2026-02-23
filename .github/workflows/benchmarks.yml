@@ -46,6 +46,8 @@ jobs:
     name: Benchmark (PR)
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request' && github.repository_owner == 'arcuru'
+    permissions:
+      pull-requests: write
     steps:
       - name: Checkout
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
