@@ -77,7 +77,7 @@ pub async fn run(args: &ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     // Create the storage backend
-    let backend_box = create_backend(args).await?;
+    let backend_box = create_backend(&args.backend_config).await?;
 
     // Initialize Instance using open API
     let instance = Instance::open(backend_box).await?;
@@ -118,9 +118,6 @@ pub async fn run(args: &ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
     let sync = instance.sync().ok_or("Sync not enabled on instance")?;
 
     // Register transports for sync
-    // - Iroh: peer-to-peer sync, starts its own server
-    // - HTTP: client-only here (no bind address) for outbound connections to HTTP peers
-    //   Inbound HTTP sync is handled by this binary's web server via /api/v0
     sync.register_transport("iroh", IrohTransport::builder())
         .await?;
     sync.register_transport("http", HttpTransport::builder())
@@ -192,7 +189,11 @@ pub async fn run(args: &ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
     println!();
     println!("Press Ctrl+C to shutdown");
 
-    let data_dir = args.data_dir.clone().unwrap_or_else(|| PathBuf::from("."));
+    let data_dir = args
+        .backend_config
+        .data_dir
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("."));
 
     // Start server with graceful shutdown
     axum::serve(
@@ -217,7 +218,6 @@ pub async fn run(args: &ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // Save database on shutdown (only needed for InMemory backend)
-        // TODO: saving InMemory should only be done if configured
         if let Some(in_memory_backend) = app_state
             .instance
             .backend()
@@ -632,9 +632,7 @@ struct HealthResponse {
 
 /// Handler for GET /health - Health check endpoint
 async fn handle_health_endpoint(State(state): State<AppState>) -> axum::Json<HealthResponse> {
-    // Determine backend type by checking what type we have
     let backend = state.instance.backend();
-    // TODO: add a better method to get the name/type of the backend
     let backend_type = if let Some(sqlx) = backend.as_any().downcast_ref::<SqlxBackend>() {
         match sqlx.kind() {
             DbKind::Sqlite => "sqlite",

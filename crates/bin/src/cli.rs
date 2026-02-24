@@ -23,6 +23,10 @@ pub enum Backend {
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
+
+    /// Output in JSON format instead of human-readable text
+    #[arg(long, global = true)]
+    pub json: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -31,19 +35,18 @@ pub enum Commands {
     Serve(ServeArgs),
     /// Check health of a running Eidetica server
     Health(HealthArgs),
+    /// Show instance information (device ID, user count, database count)
+    Info(InfoArgs),
+    /// Database management commands
+    Db {
+        #[command(subcommand)]
+        command: DbCommands,
+    },
 }
 
-/// Arguments for the serve command
+/// Shared backend configuration for commands that access storage directly
 #[derive(clap::Args, Debug)]
-pub struct ServeArgs {
-    /// Port to listen on
-    #[arg(short, long, default_value_t = 3000, env = "EIDETICA_PORT")]
-    pub port: u16,
-
-    /// Bind address
-    #[arg(long, default_value = "0.0.0.0", env = "EIDETICA_HOST")]
-    pub host: String,
-
+pub struct BackendConfig {
     /// Storage backend to use
     #[arg(short, long, default_value = "sqlite", env = "EIDETICA_BACKEND")]
     pub backend: Backend,
@@ -57,6 +60,21 @@ pub struct ServeArgs {
     /// PostgreSQL connection URL (required when backend=postgres)
     #[arg(long, env = "EIDETICA_POSTGRES_URL")]
     pub postgres_url: Option<String>,
+}
+
+/// Arguments for the serve command
+#[derive(clap::Args, Debug)]
+pub struct ServeArgs {
+    /// Port to listen on
+    #[arg(short, long, default_value_t = 3000, env = "EIDETICA_PORT")]
+    pub port: u16,
+
+    /// Bind address
+    #[arg(long, default_value = "0.0.0.0", env = "EIDETICA_HOST")]
+    pub host: String,
+
+    #[command(flatten)]
+    pub backend_config: BackendConfig,
 }
 
 /// Arguments for the health command
@@ -73,4 +91,25 @@ pub struct HealthArgs {
     /// Timeout in seconds
     #[arg(short, long, default_value_t = 5)]
     pub timeout: u64,
+}
+
+/// Arguments for the info command
+#[derive(clap::Args, Debug)]
+pub struct InfoArgs {
+    #[command(flatten)]
+    pub backend_config: BackendConfig,
+}
+
+/// Database subcommands
+#[derive(Subcommand, Debug)]
+pub enum DbCommands {
+    /// List all databases with their root IDs and tip counts
+    List(DbListArgs),
+}
+
+/// Arguments for db list
+#[derive(clap::Args, Debug)]
+pub struct DbListArgs {
+    #[command(flatten)]
+    pub backend_config: BackendConfig,
 }

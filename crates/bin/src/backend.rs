@@ -7,7 +7,7 @@ use eidetica::backend::{
     database::{InMemory, Postgres, Sqlite},
 };
 
-use crate::cli::{Backend, ServeArgs};
+use crate::cli::{Backend, BackendConfig};
 
 /// Redact credentials from a PostgreSQL connection URL for safe logging
 pub fn redact_postgres_url(url: &str) -> String {
@@ -27,21 +27,24 @@ pub fn redact_postgres_url(url: &str) -> String {
 
 /// Create the appropriate backend based on configuration
 pub async fn create_backend(
-    args: &ServeArgs,
+    config: &BackendConfig,
 ) -> Result<Box<dyn BackendImpl>, Box<dyn std::error::Error>> {
-    let data_dir = args.data_dir.clone().unwrap_or_else(|| PathBuf::from("."));
+    let data_dir = config
+        .data_dir
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("."));
 
     // Ensure data directory exists
     tokio::fs::create_dir_all(&data_dir).await?;
 
-    match args.backend {
+    match config.backend {
         Backend::Sqlite => {
             let db_path = data_dir.join("eidetica.db");
             tracing::info!("Using SQLite backend at {}", db_path.display());
             Ok(Box::new(Sqlite::open(&db_path).await?))
         }
         Backend::Postgres => {
-            let url = args
+            let url = config
                 .postgres_url
                 .as_ref()
                 .ok_or("PostgreSQL backend requires --postgres-url or EIDETICA_POSTGRES_URL")?;
@@ -75,6 +78,31 @@ pub async fn create_backend(
                     Ok(Box::new(InMemory::new()))
                 }
             }
+        }
+    }
+}
+
+/// Return a human-readable label for the backend type and its path/URL
+pub fn backend_label(config: &BackendConfig) -> String {
+    let data_dir = config
+        .data_dir
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("."));
+    match config.backend {
+        Backend::Sqlite => {
+            let db_path = data_dir.join("eidetica.db");
+            format!("sqlite ({})", db_path.display())
+        }
+        Backend::Postgres => {
+            if let Some(ref url) = config.postgres_url {
+                format!("postgres ({})", redact_postgres_url(url))
+            } else {
+                "postgres".to_string()
+            }
+        }
+        Backend::Inmemory => {
+            let json_path = data_dir.join("eidetica.json");
+            format!("inmemory ({})", json_path.display())
         }
     }
 }
