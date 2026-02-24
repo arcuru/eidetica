@@ -30,10 +30,10 @@ Checks the health of a running Eidetica server by querying its `/health` endpoin
 eidetica health [URL] [OPTIONS]
 ```
 
-| Argument/Option | Short | Default                  | Description                                             |
-| --------------- | ----- | ------------------------ | ------------------------------------------------------- |
-| `URL`           |       | `http://127.0.0.1:3000`  | URL of the server to check (appends `/health` if needed) |
-| `--timeout`     | `-t`  | `5`                      | Timeout in seconds                                      |
+| Argument/Option | Short | Default                 | Description                                              |
+| --------------- | ----- | ----------------------- | -------------------------------------------------------- |
+| `URL`           |       | `http://127.0.0.1:3000` | URL of the server to check (appends `/health` if needed) |
+| `--timeout`     | `-t`  | `5`                     | Timeout in seconds                                       |
 
 Both `http://` and `https://` URLs are supported. If the URL doesn't already end with `/health`, it is appended automatically.
 
@@ -102,13 +102,13 @@ The `--json` flag works with `info` and `db list`.
 
 ## Environment Variables
 
-| Variable                | Description                                        | Default                                 |
-| ----------------------- | -------------------------------------------------- | --------------------------------------- |
-| `EIDETICA_PORT`         | Port for the HTTP server (`serve`)                 | `3000`                                  |
-| `EIDETICA_HOST`         | Bind address (`serve`)                             | `0.0.0.0`                               |
-| `EIDETICA_BACKEND`      | Storage backend (`sqlite`, `postgres`, `inmemory`) | `sqlite`                                |
-| `EIDETICA_DATA_DIR`     | Directory for database and data files              | current directory                       |
-| `EIDETICA_POSTGRES_URL` | PostgreSQL connection URL                          | —                                       |
+| Variable                | Description                                        | Default           |
+| ----------------------- | -------------------------------------------------- | ----------------- |
+| `EIDETICA_PORT`         | Port for the HTTP server (`serve`)                 | `3000`            |
+| `EIDETICA_HOST`         | Bind address (`serve`)                             | `0.0.0.0`         |
+| `EIDETICA_BACKEND`      | Storage backend (`sqlite`, `postgres`, `inmemory`) | `sqlite`          |
+| `EIDETICA_DATA_DIR`     | Directory for database and data files              | current directory |
+| `EIDETICA_POSTGRES_URL` | PostgreSQL connection URL                          | —                 |
 
 Command-line flags take precedence over environment variables.
 
