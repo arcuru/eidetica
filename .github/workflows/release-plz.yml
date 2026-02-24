@@ -16,7 +16,7 @@ jobs:
       id-token: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.92.0
       - name: Rust Cache
@@ -27,7 +27,7 @@ jobs:
         id: cratesio-auth
 
       - name: Run release-plz
-        uses: release-plz/action@5ab144c9d67d4346240190d0f95ed08668677928 # v0.5
+        uses: release-plz/action@f708778669256143d984cce4b23592637532e040 # v0.5.127
         with:
           command: release
           config: .config/release-plz.toml
@@ -47,7 +47,7 @@ jobs:
       cancel-in-progress: false
     steps:
       - name: Checkout repository
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.92.0
       - name: Rust Cache
@@ -64,7 +64,7 @@ jobs:
 
       - name: Run release-plz
         if: github.event_name == 'workflow_dispatch' || steps.check-pr.outputs.exists != '0'
-        uses: release-plz/action@5ab144c9d67d4346240190d0f95ed08668677928 # v0.5
+        uses: release-plz/action@f708778669256143d984cce4b23592637532e040 # v0.5.127
         with:
           command: release-pr
           config: .config/release-plz.toml
