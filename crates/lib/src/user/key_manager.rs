@@ -22,7 +22,7 @@ use crate::{
 /// # Security
 ///
 /// This struct holds sensitive cryptographic material in memory:
-/// - `decrypted_keys`: Contains plaintext SigningKeys (ed25519_dalek implements Drop with zeroization)
+/// - `decrypted_keys`: Contains plaintext PrivateKeys (zeroized on drop)
 /// - `encryption_key`: Password-derived key (zeroized via manual Zeroize impl), None for passwordless users
 ///
 /// All sensitive data is zeroized when the struct is dropped.
