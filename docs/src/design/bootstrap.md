@@ -4,11 +4,11 @@
 
 # Bootstrap and Access Control
 
-This design document describes the bootstrap mechanism for requesting access to databases and the wildcard permission system for open access.
+This design document describes the bootstrap mechanism for requesting access to databases and the global permission system for open access.
 
 ## Overview
 
-Bootstrap provides a "knocking" mechanism for clients to request access to databases they don't have permissions for. Wildcard permissions provide an alternative for databases that want to allow open access without requiring bootstrap requests.
+Bootstrap provides a "knocking" mechanism for clients to request access to databases they don't have permissions for. Global permissions provide an alternative for databases that want to allow open access without requiring bootstrap requests.
 
 ## Problem Statement
 
@@ -23,48 +23,45 @@ When a client wants to sync a database they don't have access to:
 
 Two complementary mechanisms:
 
-1. **Wildcard Permissions**: For databases that want open access
+1. **Global Permissions**: For databases that want open access
 2. **Bootstrap Protocol**: For databases that want controlled access grants
 
-## Wildcard Permissions
+## Global Permissions
 
-### Wildcard Key
+### Global Permission
 
-A database can grant universal permissions by setting the special `"*"` key in its auth settings:
+A database can grant universal permissions by setting a global permission in its auth settings. The global permission is stored in the `"global"` sub-object of `_settings.auth`, separate from per-key entries in `"keys"` and delegations in `"delegations"`:
 
-<!-- Code block ignored: Missing Serialize/Deserialize imports from serde -->
+<!-- Code block ignored: Simplified view of AuthSettings structure -->
 
 ```rust,ignore
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct AuthSettings {
-    /// Maps SigKey → AuthKey
-    /// Special key "*" grants permissions to all clients
-    keys: HashMap<String, AuthKey>,
-}
+// AuthSettings stores data in a Doc with three sub-objects:
+//   "keys"        - per-key auth entries (SigKey → AuthKey)
+//   "delegations" - delegated tree references
+//   "global"      - global permission (applies to all clients)
 ```
 
 ### How It Works
 
 When a client attempts to sync a database:
 
-1. **Check for wildcard key**: If `"*"` exists in `_settings.auth`, grant the specified permission to any client
+1. **Check for global permission**: If a global permission exists in `_settings.auth`, grant the specified permission to any client
 2. **No key required**: Client doesn't need their key in the database's auth settings
 3. **Immediate access**: No bootstrap request or approval needed
 
 ### Use Cases
 
-**Public Read Access**: Set wildcard key with Read permission to allow anyone to read the database. Clients can sync immediately without bootstrap.
+**Public Read Access**: Set global permission to Read to allow anyone to read the database. Clients can sync immediately without bootstrap.
 
-**Open Collaboration**: Set wildcard key with Write permission to allow anyone to write (use carefully).
+**Open Collaboration**: Set global permission to Write to allow anyone to write (use carefully).
 
-**Hybrid Model**: Combine wildcard Read permission with specific Write/Admin permissions for named keys. This allows public read access while restricting modifications to specific users.
+**Hybrid Model**: Combine global Read permission with specific Write/Admin permissions for named keys. This allows public read access while restricting modifications to specific users.
 
 ### Security Considerations
 
-- **Use sparingly**: Wildcard permissions bypass authentication
 - **Read-only common**: Most appropriate for public data
-- **Write carefully**: Wildcard write allows any client to modify the database
-- **Per-database**: Each database controls its own wildcard settings
+- **Write carefully**: Global write allows any client to modify the database
+- **Per-database**: Each database controls its own global permission settings
 
 ## Bootstrap Protocol
 
@@ -213,9 +210,9 @@ Once approved, the client retries with normal sync after waiting or polling peri
 
 ### Auto-Approval via Global Permissions
 
-Bootstrap requests are auto-approved when the database has a wildcard `"*"` permission that covers the requested permission level:
+Bootstrap requests are auto-approved when the database has a global permission that covers the requested permission level:
 
-1. **Global Permissions**: A database with `"*"` key set to `Write(10)` auto-approves any request for `Write(10)` or lower (including `Read`)
+1. **Global Permissions**: A database with global permission set to `Write(10)` auto-approves any request for `Write(10)` or lower (including `Read`)
 2. **Manual Approval**: Requests exceeding global permissions require explicit approval by a user with Admin permission
 
 **Rationale:**
@@ -227,9 +224,9 @@ Bootstrap requests are auto-approved when the database has a wildcard `"*"` perm
 
 ## API Design
 
-### Wildcard Permissions API
+### Global Permissions API
 
-Wildcard permissions are managed through the standard `AuthSettings` API using `"*"` as the key name:
+Global permissions are managed through the `AuthSettings` API via the `set_global_permission` method:
 
 <!-- Code block ignored: API interface showing function signatures without bodies -->
 
@@ -317,12 +314,12 @@ impl User {
 
 ## Security Considerations
 
-### Wildcard Permissions
+### Global Permissions
 
-1. **Public Exposure**: Wildcard permissions make databases publicly accessible
-2. **Write Risk**: Wildcard write allows anyone to modify data
+1. **Public Exposure**: Global permissions make databases publicly accessible
+2. **Write Risk**: Global write allows anyone to modify data
 3. **Audit Trail**: All modifications still signed by individual keys
-4. **Revocation**: Can remove wildcard permission at any time
+4. **Revocation**: Admins can remove global permission at any time
 
 ### Bootstrap Protocol
 
@@ -331,43 +328,6 @@ impl User {
 3. **Admin Permission Required**: Only users with Admin permission on the database can approve
 4. **Request Expiry**: Consider implementing request expiration
 5. **Rate Limiting**: Prevent spam bootstrap requests
-
-## Implementation Strategy
-
-### Phase 1: Wildcard Permissions
-
-1. Update AuthSettings to support `"*"` key
-2. Modify sync protocol to check for wildcard permissions
-3. Add SettingsStore API for wildcard management
-4. Tests for wildcard permission scenarios
-
-### Phase 2: Bootstrap Request Storage
-
-1. Define BootstrapRequest structure
-2. Implement storage in `_sync` database
-3. Add request listing and retrieval APIs
-4. Tests for request storage and retrieval
-
-### Phase 3: Client Bootstrap Protocol
-
-1. Implement `User::request_database_access()` client method (wraps low-level sync API)
-2. Add bootstrap request submission to sync protocol
-3. Implement pending status handling
-4. Tests for client bootstrap flow
-
-### Phase 4: User Approval
-
-1. Implement `User::approve_bootstrap_request()`
-2. Implement `User::reject_bootstrap_request()`
-3. Add Admin permission checking and key addition logic
-4. Tests for approval workflow
-
-### Phase 5: Integration
-
-1. Update sync protocol to handle bootstrap responses
-2. Implement client retry logic
-3. End-to-end integration tests
-4. Documentation and examples
 
 ## Future Enhancements
 
@@ -382,7 +342,7 @@ impl User {
 
 The bootstrap and access control system provides:
 
-**Wildcard Permissions:**
+**Global Permissions:**
 
 - Simple open access for public databases
 - Flexible permission levels (Read, Write, Admin)
