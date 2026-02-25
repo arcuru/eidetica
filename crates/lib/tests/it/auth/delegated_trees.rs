@@ -5,8 +5,9 @@
 //! clamping, and various authorization scenarios.
 
 use eidetica::{
-    Result,
+    Database, Instance, Result,
     auth::{
+        crypto::{PrivateKey, PublicKey},
         types::{
             AuthKey, DelegatedTreeRef, DelegationStep, KeyHint, KeyStatus, Permission,
             PermissionBounds, SigKey, TreeReference,
@@ -14,7 +15,10 @@ use eidetica::{
         validation::AuthValidator,
     },
     crdt::Doc,
+    database::DatabaseKey,
     entry::ID,
+    store::DocStore,
+    user::User,
 };
 
 use super::helpers::*;
@@ -759,6 +763,329 @@ async fn test_complex_nested_delegation_chain() -> Result<()> {
         }
         _ => panic!("Expected delegation path"),
     }
+
+    Ok(())
+}
+
+// ===== END-TO-END DELEGATION WRITE TESTS =====
+
+/// Delegation pair: an identity database the user owns and a target database
+/// accessible only through delegation.
+struct DelegationPair {
+    identity_db: Database,
+    target_db: Database,
+    user_key_id: PublicKey,
+    admin_signing_key: PrivateKey,
+}
+
+/// Create a (identity_db, target_db) pair wired for delegation.
+///
+/// - `identity_db` is created via the User API so the user holds its admin key.
+/// - `target_db` is created with a standalone admin key (NOT in the user's keyring),
+///   so the user's only access path is through delegation.
+/// - A `DelegatedTreeRef` with `max_permission` is added to target_db's settings.
+async fn setup_delegation_pair(
+    instance: &Instance,
+    user: &mut User,
+    max_permission: Permission,
+) -> Result<DelegationPair> {
+    let user_key_id = user.add_private_key(Some("user")).await?;
+    let identity_db = user.create_database(Doc::new(), &user_key_id).await?;
+
+    let admin_signing_key = PrivateKey::generate();
+    let target_db = Database::create(instance, admin_signing_key.clone(), Doc::new()).await?;
+
+    let delegation_ref = create_delegation_ref(&identity_db, max_permission, None).await?;
+    let admin_db_key = DatabaseKey::new(admin_signing_key.clone());
+    let target_db_authed =
+        Database::open(instance.clone(), target_db.root_id(), admin_db_key).await?;
+    let txn = target_db_authed.new_transaction().await?;
+    txn.get_settings()?
+        .add_delegated_tree(delegation_ref)
+        .await?;
+    txn.commit().await?;
+
+    Ok(DelegationPair {
+        identity_db,
+        target_db,
+        user_key_id,
+        admin_signing_key,
+    })
+}
+
+/// Open target_db using a delegation identity derived from identity_db.
+async fn open_via_delegation(
+    instance: &Instance,
+    pair: &DelegationPair,
+    signing_key: PrivateKey,
+    hint_key_id: &PublicKey,
+) -> Result<Database> {
+    let identity_db_tips = pair.identity_db.get_tips().await?;
+    let delegation_sigkey = SigKey::Delegation {
+        path: vec![DelegationStep {
+            tree: pair.identity_db.root_id().to_string(),
+            tips: identity_db_tips,
+        }],
+        hint: KeyHint::from_pubkey(hint_key_id),
+    };
+    let db_key = DatabaseKey::with_identity(signing_key, delegation_sigkey);
+    Database::open(instance.clone(), pair.target_db.root_id(), db_key).await
+}
+
+/// Test writing entries via delegation identity using the Database API directly
+#[tokio::test]
+async fn test_delegated_write_database_api() -> Result<()> {
+    let (instance, mut user) = crate::helpers::test_instance_with_user("test_user").await;
+    let pair = setup_delegation_pair(&instance, &mut user, Permission::Write(10)).await?;
+
+    let user_signing_key = user.get_signing_key(&pair.user_key_id)?;
+    let target_via_delegation =
+        open_via_delegation(&instance, &pair, user_signing_key, &pair.user_key_id).await?;
+
+    // Verify the database is using a delegation identity
+    assert!(matches!(
+        target_via_delegation.auth_identity(),
+        Some(SigKey::Delegation { .. })
+    ));
+
+    // Write data using delegation identity
+    let txn = target_via_delegation.new_transaction().await?;
+    let store = txn.get_store::<DocStore>("test_store").await?;
+    store.set("greeting", "hello from delegated key").await?;
+    txn.commit().await?;
+
+    // Verify the entry is readable
+    let txn = target_via_delegation.new_transaction().await?;
+    let store = txn.get_store::<DocStore>("test_store").await?;
+    let value = store.get("greeting").await?;
+    assert_eq!(value.as_text(), Some("hello from delegated key"));
+
+    Ok(())
+}
+
+/// Test full User API flow: track_database discovers delegation, open_database uses it
+#[tokio::test]
+async fn test_delegated_write_user_api_flow() -> Result<()> {
+    let (instance, mut user) = crate::helpers::test_instance_with_user("test_user").await;
+    let pair = setup_delegation_pair(&instance, &mut user, Permission::Write(10)).await?;
+
+    // Track target_db with user_key -- should discover delegation path
+    user.track_database(
+        pair.target_db.root_id().clone(),
+        &pair.user_key_id,
+        Default::default(),
+    )
+    .await?;
+
+    // Open target_db via User API -- should use delegation SigKey
+    let opened_db = user.open_database(pair.target_db.root_id()).await?;
+
+    // Verify the database was opened with a delegation identity pointing to identity_db
+    let identity = opened_db
+        .auth_identity()
+        .expect("should have auth identity");
+    match identity {
+        SigKey::Delegation { path, hint } => {
+            assert_eq!(path.len(), 1);
+            assert_eq!(path[0].tree, pair.identity_db.root_id().to_string());
+            assert_eq!(hint, &KeyHint::from_pubkey(&pair.user_key_id));
+        }
+        other => panic!("Expected delegation SigKey, got {other:?}"),
+    }
+
+    // Write data and commit
+    let txn = opened_db.new_transaction().await?;
+    let store = txn.get_store::<DocStore>("data").await?;
+    store.set("key", "value_via_user_api").await?;
+    txn.commit().await?;
+
+    // Verify the data is readable
+    let txn = opened_db.new_transaction().await?;
+    let store = txn.get_store::<DocStore>("data").await?;
+    let value = store.get("key").await?;
+    assert_eq!(value.as_text(), Some("value_via_user_api"));
+
+    Ok(())
+}
+
+/// Test permission clamping on delegated writes.
+///
+/// The user holds Admin(0) in identity_db (via create_database bootstrap), but the
+/// delegation grants at most Write(10). Data writes should succeed; settings writes
+/// (which require Admin) should be rejected.
+#[tokio::test]
+async fn test_delegated_write_permission_clamping() -> Result<()> {
+    let (instance, mut user) = crate::helpers::test_instance_with_user("test_user").await;
+    let pair = setup_delegation_pair(&instance, &mut user, Permission::Write(10)).await?;
+
+    let user_signing_key = user.get_signing_key(&pair.user_key_id)?;
+    let target_via_delegation =
+        open_via_delegation(&instance, &pair, user_signing_key, &pair.user_key_id).await?;
+
+    // Writing data should succeed (Write permission allows data writes)
+    let txn = target_via_delegation.new_transaction().await?;
+    let store = txn.get_store::<DocStore>("data").await?;
+    store.set("test", "data_write").await?;
+    let result = txn.commit().await;
+    assert!(
+        result.is_ok(),
+        "Data write should succeed with Write permission"
+    );
+
+    // Writing settings should fail (Write permission does not allow settings writes)
+    let txn = target_via_delegation.new_transaction().await?;
+    let settings = txn.get_settings()?;
+    settings.set_name("should_fail").await?;
+    let result = txn.commit().await;
+    assert!(
+        result.is_err(),
+        "Settings write should fail with Write permission"
+    );
+
+    Ok(())
+}
+
+/// Test delegated entry validation across instances (simulating sync).
+///
+/// Entries are copied between instances with `put_verified` (skip-validation insert)
+/// to isolate what this test cares about: whether `AuthValidator` can resolve the
+/// delegation chain on an instance that never held the signing key. Real sync would
+/// use the full `put` path, which is covered by sync-level tests.
+#[tokio::test]
+async fn test_delegated_entry_validation_across_instances() -> Result<()> {
+    let (instance_a, mut user) = crate::helpers::test_instance_with_user("test_user").await;
+    let pair = setup_delegation_pair(&instance_a, &mut user, Permission::Write(10)).await?;
+
+    // Write an entry using delegation on instance A
+    let user_signing_key = user.get_signing_key(&pair.user_key_id)?;
+    let target_via_delegation =
+        open_via_delegation(&instance_a, &pair, user_signing_key, &pair.user_key_id).await?;
+
+    let txn = target_via_delegation.new_transaction().await?;
+    let store = txn.get_store::<DocStore>("data").await?;
+    store.set("synced_key", "synced_value").await?;
+    txn.commit().await?;
+
+    // Create instance B and replicate all entries from both trees
+    let instance_b = crate::helpers::test_instance().await;
+
+    // Copy identity_db entries (needed for delegation resolution on instance B)
+    let identity_entries = instance_a
+        .backend()
+        .get_tree(pair.identity_db.root_id())
+        .await?;
+    for entry in identity_entries {
+        instance_b.backend().put_verified(entry).await?;
+    }
+
+    // Copy target_db entries
+    let target_entries = instance_a
+        .backend()
+        .get_tree(pair.target_db.root_id())
+        .await?;
+    for entry in target_entries {
+        instance_b.backend().put_verified(entry).await?;
+    }
+
+    // Open target_db on instance B with the admin key to read settings
+    let admin_db_key = DatabaseKey::new(pair.admin_signing_key);
+    let target_db_b =
+        Database::open(instance_b.clone(), pair.target_db.root_id(), admin_db_key).await?;
+
+    let settings_b = target_db_b.get_settings().await?;
+    let auth_settings_b = settings_b.auth_snapshot().await?;
+
+    let mut validator = AuthValidator::new();
+
+    // Get tip entries from target_db on instance B and validate them
+    let target_tips = instance_b
+        .backend()
+        .get_tips(pair.target_db.root_id())
+        .await?;
+    assert!(
+        !target_tips.is_empty(),
+        "Target DB should have tips on instance B"
+    );
+
+    // Validate all tip entries (including the delegation-signed one)
+    for tip_id in &target_tips {
+        let entry = instance_b.backend().get(tip_id).await?;
+        let is_valid = validator
+            .validate_entry(&entry, &auth_settings_b, Some(&instance_b))
+            .await?;
+        assert!(is_valid, "Entry {tip_id} should validate on instance B");
+    }
+
+    Ok(())
+}
+
+/// Test delegation write using a non-primary key added to the identity database
+#[tokio::test]
+async fn test_delegated_write_secondary_identity_key() -> Result<()> {
+    let (instance, mut user) = crate::helpers::test_instance_with_user("test_user").await;
+
+    // Create identity_db with a primary key
+    let primary_key_id = user.add_private_key(Some("primary")).await?;
+    let identity_db = user.create_database(Doc::new(), &primary_key_id).await?;
+
+    // Add a second key to the identity_db's auth settings
+    let secondary_key_id = user.add_private_key(Some("secondary")).await?;
+    let txn = identity_db.new_transaction().await?;
+    txn.get_settings()?
+        .set_auth_key(
+            &secondary_key_id,
+            AuthKey::new(Some("secondary"), Permission::Write(5), KeyStatus::Active),
+        )
+        .await?;
+    txn.commit().await?;
+
+    // Create target_db with a standalone admin key and delegate to identity_db
+    let admin_signing_key = PrivateKey::generate();
+    let target_db = Database::create(&instance, admin_signing_key.clone(), Doc::new()).await?;
+
+    let delegation_ref = create_delegation_ref(&identity_db, Permission::Write(10), None).await?;
+    let admin_db_key = DatabaseKey::new(admin_signing_key);
+    let target_db_authed =
+        Database::open(instance.clone(), target_db.root_id(), admin_db_key).await?;
+    let txn = target_db_authed.new_transaction().await?;
+    txn.get_settings()?
+        .add_delegated_tree(delegation_ref)
+        .await?;
+    txn.commit().await?;
+
+    // Open target_db using the secondary key via delegation
+    let identity_db_tips = identity_db.get_tips().await?;
+    let delegation_sigkey = SigKey::Delegation {
+        path: vec![DelegationStep {
+            tree: identity_db.root_id().to_string(),
+            tips: identity_db_tips,
+        }],
+        hint: KeyHint::from_pubkey(&secondary_key_id),
+    };
+
+    let secondary_signing_key = user.get_signing_key(&secondary_key_id)?;
+    let delegation_db_key =
+        DatabaseKey::with_identity(secondary_signing_key, delegation_sigkey.clone());
+    let target_via_delegation =
+        Database::open(instance.clone(), target_db.root_id(), delegation_db_key).await?;
+
+    // Verify the database is using the secondary key's delegation identity
+    assert_eq!(
+        target_via_delegation.auth_identity(),
+        Some(&delegation_sigkey)
+    );
+
+    // Write data using the secondary key's delegation identity
+    let txn = target_via_delegation.new_transaction().await?;
+    let store = txn.get_store::<DocStore>("data").await?;
+    store.set("author", "secondary key").await?;
+    txn.commit().await?;
+
+    // Verify the entry is readable
+    let txn = target_via_delegation.new_transaction().await?;
+    let store = txn.get_store::<DocStore>("data").await?;
+    let value = store.get("author").await?;
+    assert_eq!(value.as_text(), Some("secondary key"));
 
     Ok(())
 }
