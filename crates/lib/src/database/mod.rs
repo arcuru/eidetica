@@ -79,6 +79,11 @@ impl DatabaseKey {
         &self.signing_key
     }
 
+    /// Get the public key.
+    pub fn public_key(&self) -> PublicKey {
+        self.signing_key.public_key()
+    }
+
     /// Get the identity used for auth settings lookup.
     pub fn identity(&self) -> &SigKey {
         &self.identity
@@ -325,7 +330,7 @@ impl Database {
         let auth_settings = settings_store.auth_snapshot().await?;
 
         // Derive actual pubkey from the signing key
-        let actual_pubkey = key.signing_key().public_key();
+        let actual_pubkey = key.public_key();
 
         match key.identity() {
             SigKey::Direct(hint) if hint.is_global() => {
@@ -386,9 +391,33 @@ impl Database {
                     reason: "DatabaseKey has empty identity hint".to_string(),
                 })),
             },
-            SigKey::Delegation { .. } => Err(Error::Auth(AuthError::InvalidAuthConfiguration {
-                reason: "Delegation identities are not yet supported".to_string(),
-            })),
+            SigKey::Delegation { .. } => {
+                // Resolve delegation path through AuthValidator
+                let instance = self.instance()?;
+                let mut validator = AuthValidator::new();
+                let resolved_auths = validator
+                    .resolve_sig_key(key.identity(), &auth_settings, Some(&instance))
+                    .await
+                    .map_err(|e| {
+                        Error::Auth(AuthError::InvalidAuthConfiguration {
+                            reason: format!("Delegation resolution failed: {e}"),
+                        })
+                    })?;
+
+                // Find a resolved auth whose pubkey matches our signing key
+                resolved_auths
+                    .into_iter()
+                    .find(|ra| ra.public_key == actual_pubkey)
+                    .map(|ra| ra.effective_permission)
+                    .ok_or_else(|| {
+                        Error::Auth(AuthError::SigningKeyMismatch {
+                            reason: format!(
+                                "signing key derives pubkey '{actual_pubkey}' \
+                                 but no resolved delegation key matches"
+                            ),
+                        })
+                    })
+            }
         }
     }
 
