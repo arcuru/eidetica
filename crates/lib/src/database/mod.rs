@@ -430,7 +430,7 @@ impl Database {
     /// Returns all matching SigKeys including:
     /// - Specific key names where the pubkey matches
     /// - Global permission if available
-    /// - (Future) Delegation paths
+    /// - Single-hop delegation paths (pubkey found in a directly delegated tree)
     ///
     /// The results are **sorted by permission level, highest first**, making it easy to
     /// select the most privileged access available.
@@ -477,6 +477,8 @@ impl Database {
         root_id: &ID,
         pubkey: &PublicKey,
     ) -> Result<Vec<(SigKey, Permission)>> {
+        use crate::auth::{permission::clamp_permission, types::DelegationStep};
+
         // Create temporary database to load settings (no key source needed for reading)
         let temp_db = Self::open_unauthenticated(root_id.clone(), instance)?;
 
@@ -484,8 +486,63 @@ impl Database {
         let settings_store = temp_db.get_settings().await?;
         let auth_settings = settings_store.auth_snapshot().await?;
 
-        // Find all SigKeys for this pubkey (returns sorted by highest permission first)
-        Ok(auth_settings.find_all_sigkeys_for_pubkey(pubkey))
+        // Find direct SigKeys for this pubkey
+        let mut results = auth_settings.find_all_sigkeys_for_pubkey(pubkey);
+
+        // Scan single-hop delegation paths
+        // FIXME: deep nested delegations can't use this
+        if let Ok(delegated_trees) = auth_settings.get_all_delegated_trees() {
+            for (delegated_root_id, delegated_tree_ref) in &delegated_trees {
+                // Load the delegated tree's auth settings
+                let delegated_db =
+                    match Self::open_unauthenticated(delegated_root_id.clone(), instance) {
+                        Ok(db) => db,
+                        Err(_) => continue,
+                    };
+                let delegated_settings = match delegated_db.get_settings().await {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+                let delegated_auth = match delegated_settings.auth_snapshot().await {
+                    Ok(a) => a,
+                    Err(_) => continue,
+                };
+
+                // Check if pubkey exists in the delegated tree
+                let delegated_sigkeys = delegated_auth.find_all_sigkeys_for_pubkey(pubkey);
+                if delegated_sigkeys.is_empty() {
+                    continue;
+                }
+
+                // Get current tips for the delegated tree
+                let tips = match instance.backend().get_tips(delegated_root_id).await {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                };
+
+                // For each matching key in the delegated tree, construct a delegation SigKey
+                for (delegated_sk, delegated_perm) in delegated_sigkeys {
+                    // Clamp the delegated permission through the bounds
+                    let effective_perm =
+                        clamp_permission(delegated_perm, &delegated_tree_ref.permission_bounds);
+
+                    // Construct the delegation SigKey using the hint from the direct key
+                    let delegation_sigkey = SigKey::Delegation {
+                        path: vec![DelegationStep {
+                            tree: delegated_root_id.to_string(),
+                            tips: tips.clone(),
+                        }],
+                        hint: delegated_sk.hint().clone(),
+                    };
+
+                    results.push((delegation_sigkey, effective_perm));
+                }
+            }
+        }
+
+        // Sort by permission, highest first
+        results.sort_by(|a, b| b.1.cmp(&a.1));
+        Ok(results)
     }
 
     /// Get the auth identity for this database's configured key.

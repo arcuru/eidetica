@@ -403,9 +403,8 @@ impl AuthSettings {
             results.push((SigKey::global(pubkey), global_perm));
         }
 
-        // FIXME: Check delegation paths
-        // This would search for delegation paths that could grant access
-        // to device_pubkey. For now, we only support searching direct keys and global.
+        // Note: Delegation path discovery happens at the Database::find_sigkeys() level
+        // because it requires async Instance access to load delegated tree auth settings.
 
         // Sort by permission, highest first (reverse sort since Permission Ord has higher > lower)
         results.sort_by(|a, b| b.1.cmp(&a.1));
