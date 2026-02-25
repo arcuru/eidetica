@@ -79,8 +79,15 @@ pub enum VerificationStatus {
     /// Entry failed verification (invalid signature, revoked key, etc.).
     /// Also used temporarily for entries awaiting verification during sync.
     Failed,
-    // Future: Add `Unverified` when implementing remote sync:
-    // /// Entry received from remote source, awaiting verification
+    // TODO: Add `Unverified` status and a re-verification pass for sync.
+    // Entries signed via delegation (SigKey::Delegation) require the delegated
+    // tree to be present locally for validation. During sync, the delegated tree
+    // may arrive after the entries that reference it. Currently those entries are
+    // stored as `Failed` with no retry. A re-verification pass should run when
+    // new trees become available, promoting `Unverified` entries whose delegation
+    // paths are now resolvable.
+    // The same applies to the non-delegation path if we try to verify without the
+    // full _settings tree.
     // Unverified,
 }
 
