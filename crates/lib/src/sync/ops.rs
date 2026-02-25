@@ -1,9 +1,10 @@
 //! Core sync operations for the sync system.
 
-use tokio::sync::oneshot;
-use tracing::{debug, info};
-
 use std::future::Future;
+use std::time::Duration;
+
+use tokio::sync::oneshot;
+use tracing::{debug, info, warn};
 
 use super::{
     Address, DatabaseTicket, PeerId, Sync, SyncError,
@@ -760,13 +761,21 @@ impl Sync {
             .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))?
     }
 
+    /// Timeout applied to each address attempt in
+    /// [`try_addresses_concurrently`](Self::try_addresses_concurrently).
+    const ADDRESS_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(30);
+
     /// Try an operation against multiple addresses concurrently, returning on
     /// the first success.
     ///
-    /// Spawns one task per address using [`tokio::task::JoinSet`]. If any task
-    /// succeeds the remaining ones are aborted and `Ok(())` is returned. If all
-    /// tasks fail the last error is returned. If `addresses` is empty an
-    /// [`SyncError::InvalidAddress`] error is returned.
+    /// Spawns one detached task per address via [`tokio::spawn`]. Returns as
+    /// soon as any task succeeds. Remaining tasks are **not** cancelled — they
+    /// continue running in the background so that additional peer connections
+    /// can be established and registered for future syncs. Each task is subject
+    /// to [`ADDRESS_ATTEMPT_TIMEOUT`](Self::ADDRESS_ATTEMPT_TIMEOUT).
+    ///
+    /// If all tasks fail the last error is returned. If `addresses` is empty
+    /// an [`SyncError::InvalidAddress`] error is returned.
     pub(super) async fn try_addresses_concurrently<F, Fut>(
         &self,
         addresses: &[Address],
@@ -780,22 +789,47 @@ impl Sync {
             return Err(SyncError::InvalidAddress("Ticket has no address hints".into()).into());
         }
 
-        let mut set = tokio::task::JoinSet::new();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(addresses.len());
+
         for addr in addresses {
-            set.spawn(f(self.clone(), addr.clone()));
+            let tx = tx.clone();
+            let fut = f(self.clone(), addr.clone());
+            let addr_info = addr.clone();
+            // Detached spawn: the task keeps running even after we return.
+            tokio::spawn(async move {
+                let result = tokio::time::timeout(Self::ADDRESS_ATTEMPT_TIMEOUT, fut).await;
+                let result = match result {
+                    Ok(inner) => inner,
+                    Err(_) => {
+                        warn!(
+                            address = ?addr_info,
+                            "Address attempt timed out after {:?}",
+                            Self::ADDRESS_ATTEMPT_TIMEOUT,
+                        );
+                        Err(SyncError::Network(format!(
+                            "Address attempt timed out after {:?}",
+                            Self::ADDRESS_ATTEMPT_TIMEOUT,
+                        ))
+                        .into())
+                    }
+                };
+                match &result {
+                    Ok(()) => debug!(address = ?addr_info, "Address attempt succeeded"),
+                    Err(e) => debug!(address = ?addr_info, error = %e, "Address attempt failed"),
+                }
+                // Ignore send errors — the receiver is dropped on early success,
+                // but the task still completes its work (peer registration, etc.).
+                let _ = tx.send(result).await;
+            });
         }
+        // Drop our sender so the channel closes when all tasks finish.
+        drop(tx);
 
         let mut last_err = None;
-        while let Some(join_result) = set.join_next().await {
-            match join_result {
-                Ok(Ok(())) => {
-                    set.abort_all();
-                    return Ok(());
-                }
-                Ok(Err(e)) => last_err = Some(e),
-                Err(e) => {
-                    last_err = Some(SyncError::Network(format!("Task join error: {e}")).into());
-                }
+        while let Some(result) = rx.recv().await {
+            match result {
+                Ok(()) => return Ok(()),
+                Err(e) => last_err = Some(e),
             }
         }
 
