@@ -100,6 +100,14 @@ impl AuthValidator {
             }
         };
 
+        // FIXME(security): The claimed tips in a delegation SigKey are mostly
+        // unused. DelegationResolver::validate_tip_ancestry only checks that
+        // claimed tips exist as entries in the backend (not even tree-scoped),
+        // and then the code loads the delegated tree's *current* auth settings
+        // regardless of what tips were claimed. The claimed tips should instead
+        // determine which auth settings snapshot is used for resolution, so that
+        // permissions are evaluated at the state the signer actually observed.
+
         // Determine operation type from entry content
         let operation = if entry.subtrees().contains(&SETTINGS.to_string()) {
             Operation::WriteSettings
