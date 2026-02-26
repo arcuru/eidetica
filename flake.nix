@@ -220,9 +220,8 @@
 
         # CI checks - packages that run during `nix flake check`
         # Each check builds the corresponding .default from legacyPackages
-        # Excluded for performance: coverage, bench, integration, sanitize
+        # Excluded for performance: eidetica binary (release build), coverage, bench, integration, sanitize
         checks = {
-          eidetica = mainPkgs.eidetica-bin;
           test = testPkgs.builds.sqlite;
           lint = mkAggregate "lint" lintPkgs.defaults;
           doc = mkAggregate "doc" docPkgs.defaults;

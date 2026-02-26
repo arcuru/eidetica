@@ -503,6 +503,7 @@ nix action='check':
             ;;
         full)
             just nix check
+            nix build .#eidetica.bin --no-link
             just nix integration
             ;;
         *)

@@ -41,5 +41,6 @@ jobs:
       - name: Lint and format
         run: |
           nix-fast-build --skip-cached --no-nom --no-link \
-            -f '.#legacyPackages.${{ matrix.system }}.lint.default' \
+            -f '.#legacyPackages.${{ matrix.system }}.lint.default'
+          nix-fast-build --skip-cached --no-nom --no-link \
             -f '.#checks.${{ matrix.system }}.treefmt'

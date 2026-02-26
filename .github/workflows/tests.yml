@@ -41,10 +41,8 @@ jobs:
       - name: Build and test
         run: |
           nix-fast-build --skip-cached --no-nom --no-link \
-            -f '.#legacyPackages.${{ matrix.system }}.test.sqlite' \
-            -f '.#legacyPackages.${{ matrix.system }}.test.minimal' \
-            -f '.#legacyPackages.${{ matrix.system }}.test.inmemory' \
-            -f '.#legacyPackages.${{ matrix.system }}.test.postgres' \
+            -f '.#legacyPackages.${{ matrix.system }}.test.all'
+          nix-fast-build --skip-cached --no-nom --no-link \
             -f '.#legacyPackages.${{ matrix.system }}.eval.default'
 
       - name: Integration tests

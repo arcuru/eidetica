@@ -35,7 +35,8 @@ jobs:
       - name: Lint and format
         run: |
           nix-fast-build --skip-cached --no-nom --no-link \
-            -f '.#legacyPackages.x86_64-linux.lint.default' \
+            -f '.#legacyPackages.x86_64-linux.lint.default'
+          nix-fast-build --skip-cached --no-nom --no-link \
             -f '.#checks.x86_64-linux.treefmt'
 
   doc:
@@ -82,9 +83,12 @@ jobs:
       - name: Build and test
         run: |
           nix-fast-build --skip-cached --no-nom --no-link \
-            -f '.#legacyPackages.x86_64-linux.eidetica.bin' \
-            -f '.#legacyPackages.x86_64-linux.test.sqlite' \
-            -f '.#legacyPackages.x86_64-linux.test.minimal' \
+            -f '.#legacyPackages.x86_64-linux.eidetica.bin'
+          nix-fast-build --skip-cached --no-nom --no-link \
+            -f '.#legacyPackages.x86_64-linux.test.sqlite'
+          nix-fast-build --skip-cached --no-nom --no-link \
+            -f '.#legacyPackages.x86_64-linux.test.minimal'
+          nix-fast-build --skip-cached --no-nom --no-link \
             -f '.#legacyPackages.x86_64-linux.eval.default'
 
   test-backends:
