@@ -10,7 +10,7 @@ use eidetica::{
     },
     entry::ID,
     store::DocStore,
-    sync::transports::http::HttpTransport,
+    sync::{Address, transports::http::HttpTransport},
 };
 
 use super::helpers::*;
@@ -210,7 +210,7 @@ async fn test_bootstrap_nonexistent_tree() {
         .await
         .unwrap();
     server_sync.accept_connections().await.unwrap();
-    let server_addr = server_sync.get_server_address().await.unwrap();
+    let server_addr = Address::http(server_sync.get_server_address().await.unwrap());
 
     // Try to bootstrap a tree that doesn't exist
     client_sync

@@ -49,9 +49,11 @@ async fn test_transport_interface_consistency() {
     assert!(http_addr.contains(":"));
     assert!(http_addr.starts_with("127.0.0.1:"));
 
-    // Iroh address should be JSON format with endpoint_id and direct_addresses
-    assert!(iroh_addr.contains("endpoint_id"));
-    assert!(iroh_addr.contains("direct_addresses"));
+    // Iroh address should be base64url-encoded (no +, /, =, or JSON braces)
+    assert!(
+        !iroh_addr.starts_with('{'),
+        "Iroh address should be base64url-encoded, not raw JSON: {iroh_addr}"
+    );
 
     // Both should fail to start again
     let (_instance2, handler2) = super::helpers::setup_test_handler().await;
@@ -133,9 +135,9 @@ async fn test_transport_isolation() {
     // HTTP and Iroh addresses should be in different formats
     assert!(addr1.contains(":")); // HTTP format has port
     assert!(addr2.contains(":")); // HTTP format has port
-    // Iroh addresses now contain JSON with endpoint_id and direct_addresses
-    assert!(addr3.contains("endpoint_id")); // Iroh JSON format
-    assert!(addr4.contains("endpoint_id")); // Iroh JSON format
+    // Iroh addresses are base64url-encoded
+    assert!(!addr3.starts_with('{')); // Not raw JSON
+    assert!(!addr4.starts_with('{')); // Not raw JSON
 
     // Clean up all
     http1.stop_server().await.unwrap();

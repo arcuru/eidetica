@@ -609,15 +609,11 @@ for (_, msg) in all_messages {
 <!-- Code block ignored: Requires network connectivity and running server -->
 
 ```rust,ignore
-use eidetica::sync::transports::http::HttpTransport;
+use eidetica::sync::{Address, transports::http::HttpTransport};
 
 // Join an existing room using bootstrap protocol
-let room_address = "abc123def456@127.0.0.1:8080"; // From room creator
-
-// Parse room address (format: room_id@server_address)
-let parts: Vec<&str> = room_address.split('@').collect();
-let room_id = eidetica::entry::ID::from(parts[0]);
-let server_addr = parts[1];
+let room_id = eidetica::entry::ID::from("sha256:abc...");
+let address = Address::http("127.0.0.1:8080");
 
 // Register sync transport
 if let Some(sync) = instance.sync() {
@@ -627,7 +623,7 @@ if let Some(sync) = instance.sync() {
     let key_id = user.get_default_key()?;
     user.request_database_access(
         &sync,
-        server_addr,
+        &address,
         &room_id,
         &key_id,
         eidetica::auth::Permission::Write(10),
@@ -670,7 +666,7 @@ if let Some(sync) = instance.sync() {
 }
 
 // Manually trigger immediate sync for a specific database
-sync.sync_with_peer(server_addr, Some(&database.root_id())).await?;
+sync.sync_with_peer(&Address::http("127.0.0.1:8080"), Some(&database.root_id())).await?;
 ```
 
 ### Running the Chat Example

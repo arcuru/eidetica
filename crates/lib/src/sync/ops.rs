@@ -9,7 +9,6 @@ use super::{
     peer_manager::PeerManager,
     peer_types,
     protocol::{self, SyncRequest, SyncResponse, SyncTreeRequest},
-    transports::{http::HttpTransport, iroh::IrohTransport},
     user_sync_manager::UserSyncManager,
 };
 use crate::{Database, Entry, Instance, Result, auth::Permission, entry::ID, store::DocStore};
@@ -525,20 +524,13 @@ impl Sync {
     /// This is useful for discovering what can be synced before setting up sync relationships.
     ///
     /// # Arguments
-    /// * `peer_address` - The address of the peer to connect to (format: "host:port")
+    /// * `address` - The transport address of the peer.
     ///
     /// # Returns
     /// A vector of TreeInfo describing available trees, or an error.
-    pub async fn discover_peer_trees(&self, peer_address: &str) -> Result<Vec<protocol::TreeInfo>> {
-        use peer_types::Address;
-
-        let address = Address {
-            transport_type: HttpTransport::TRANSPORT_TYPE.to_string(),
-            address: peer_address.to_string(),
-        };
-
+    pub async fn discover_peer_trees(&self, address: &Address) -> Result<Vec<protocol::TreeInfo>> {
         // Connect and get handshake info
-        let _peer_pubkey = self.connect_to_peer(&address).await?;
+        let _peer_pubkey = self.connect_to_peer(address).await?;
 
         // The handshake already contains the tree list, but we need to get it again
         // since connect_to_peer doesn't return it. For now, return empty list
@@ -561,31 +553,14 @@ impl Sync {
     /// directly, which registers intent and lets background sync handle it.
     ///
     /// # Arguments
-    /// * `peer_address` - The address of the peer (format: "host:port")
+    /// * `address` - The transport address of the peer.
     /// * `tree_id` - Optional tree ID to sync (None = discover available trees)
     ///
     /// # Returns
     /// Result indicating success or failure.
-    pub async fn sync_with_peer(&self, peer_address: &str, tree_id: Option<&ID>) -> Result<()> {
-        use peer_types::Address;
-
-        // Auto-detect transport type from address format
-        let address = if peer_address.starts_with('{') || peer_address.contains("\"node_id\"") {
-            // JSON format indicates Iroh NodeAddr
-            Address {
-                transport_type: IrohTransport::TRANSPORT_TYPE.to_string(),
-                address: peer_address.to_string(),
-            }
-        } else {
-            // Default to HTTP for traditional host:port format
-            Address {
-                transport_type: HttpTransport::TRANSPORT_TYPE.to_string(),
-                address: peer_address.to_string(),
-            }
-        };
-
+    pub async fn sync_with_peer(&self, address: &Address, tree_id: Option<&ID>) -> Result<()> {
         // Connect to peer if not already connected
-        let peer_pubkey = self.connect_to_peer(&address).await?;
+        let peer_pubkey = self.connect_to_peer(address).await?;
 
         // Store the address for this peer (needed for sync_tree_with_peer)
         self.add_peer_address(&peer_pubkey, address.clone()).await?;

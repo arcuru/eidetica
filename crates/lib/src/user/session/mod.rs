@@ -43,7 +43,7 @@ use crate::{
     entry::ID,
     instance::{InstanceError, backend::Backend},
     store::Table,
-    sync::{BootstrapRequest, Sync},
+    sync::{Address, BootstrapRequest, Sync},
     user::{TrackedDatabase, UserError},
 };
 
@@ -759,8 +759,8 @@ impl User {
     /// shared by another user.
     ///
     /// # Arguments
-    /// * `sync` - Mutable reference to the Instance's Sync object
-    /// * `peer_address` - The address of the peer to sync with (format: "host:port")
+    /// * `sync` - Reference to the Instance's Sync object
+    /// * `address` - The transport address of the peer
     /// * `database_id` - The ID of the database to request access to
     /// * `key_id` - The ID of this user's key to use for the request
     /// * `requested_permission` - The permission level being requested
@@ -778,8 +778,8 @@ impl User {
     /// // Request write access to a shared database
     /// let user_key_id = user.get_default_key()?;
     /// user.request_database_access(
-    ///     &mut sync,
-    ///     "192.168.1.100:8080",
+    ///     &sync,
+    ///     &Address::http("192.168.1.100:8080"),
     ///     &shared_database_id,
     ///     &user_key_id,
     ///     Permission::Write(5),
@@ -791,7 +791,7 @@ impl User {
     pub async fn request_database_access(
         &self,
         sync: &Sync,
-        peer_address: &str,
+        address: &Address,
         database_id: &ID,
         key_id: &str,
         requested_permission: Permission,
@@ -808,7 +808,7 @@ impl User {
 
         // Delegate to Sync layer with the public key
         sync.sync_with_peer_for_bootstrap_with_key(
-            peer_address,
+            address,
             database_id,
             &public_key,
             key_id,

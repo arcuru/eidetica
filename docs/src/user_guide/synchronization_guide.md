@@ -39,11 +39,13 @@ sync.accept_connections().await?;
 ### 3. Connect and Sync
 
 ```rust,ignore
+use eidetica::sync::Address;
+
 // Single API handles both bootstrap (new) and incremental (existing) sync
-sync.sync_with_peer("127.0.0.1:8080", Some(&tree_id)).await?;
+sync.sync_with_peer(&Address::http("127.0.0.1:8080"), Some(&tree_id)).await?;
 ```
 
-That's it. The system automatically detects whether you need full bootstrap or incremental sync.
+The system automatically detects whether you need full bootstrap or incremental sync.
 
 ## Connection Architecture
 
@@ -209,10 +211,12 @@ user.track_database(tracked).await?;
 For joining databases that require authentication:
 
 ```rust,ignore
+use eidetica::sync::Address;
+
 // Request database access through User API
 user.request_database_access(
     &sync,
-    "127.0.0.1:8080",
+    &Address::http("127.0.0.1:8080"),
     &database_id,
     &key_id,  // User's key ID from user.add_private_key()
     eidetica::auth::Permission::Write,

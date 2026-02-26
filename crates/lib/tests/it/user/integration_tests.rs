@@ -16,7 +16,7 @@ use eidetica::{
     },
     crdt::Doc,
     store::DocStore,
-    sync::transports::http::HttpTransport,
+    sync::{Address, transports::http::HttpTransport},
     user::types::{SyncSettings, TrackedDatabase},
 };
 
@@ -521,11 +521,12 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
             .accept_connections()
             .await
             .expect("Failed to start Alice's server");
-        let addr = alice_sync
+        let bare_addr = alice_sync
             .get_server_address()
             .await
             .expect("Failed to get server address");
-        println!("🌐 Alice's server listening at: {addr}");
+        let addr = Address::http(&bare_addr);
+        println!("🌐 Alice's server listening at: {bare_addr}");
         addr
     };
 

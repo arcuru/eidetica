@@ -147,20 +147,20 @@ async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
         "Server should have both HTTP and Iroh addresses"
     );
 
-    let http_addr = server_addresses
+    let (http_bare, http_addr) = server_addresses
         .iter()
         .find(|(t, _)| t == "http")
-        .map(|(_, a)| a.clone())
+        .map(|(t, a)| (a.clone(), Address::new(t, a)))
         .expect("Should have HTTP address");
 
-    let iroh_addr = server_addresses
+    let (iroh_bare, iroh_addr) = server_addresses
         .iter()
         .find(|(t, _)| t == "iroh")
-        .map(|(_, a)| a.clone())
+        .map(|(t, a)| (a.clone(), Address::new(t, a)))
         .expect("Should have Iroh address");
 
-    println!("Server HTTP address: {http_addr}");
-    println!("Server Iroh address: {iroh_addr}");
+    println!("Server HTTP address: {http_addr:?}");
+    println!("Server Iroh address: {iroh_addr:?}");
     println!("Server tree_id: {tree_id}");
 
     let server_pubkey = server_sync.get_device_id()?;
@@ -178,7 +178,7 @@ async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
         .register_peer(&server_pubkey, Some("server"))
         .await?;
     http_client_sync
-        .add_peer_address(&server_pubkey, Address::http(&http_addr))
+        .add_peer_address(&server_pubkey, Address::http(&http_bare))
         .await?;
 
     // HTTP client bootstraps the database from server
@@ -247,7 +247,7 @@ async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
         .register_peer(&server_pubkey, Some("server"))
         .await?;
     iroh_client_sync
-        .add_peer_address(&server_pubkey, Address::iroh(&iroh_addr))
+        .add_peer_address(&server_pubkey, Address::iroh(&iroh_bare))
         .await?;
 
     // Verify entry is NOT on Iroh client yet

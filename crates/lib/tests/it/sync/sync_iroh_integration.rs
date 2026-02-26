@@ -20,11 +20,13 @@ async fn test_sync_iroh_transport_integration() {
     // Now server operations should work
     sync.accept_connections().await.unwrap();
 
-    // Get the server address (should be JSON with endpoint info)
+    // Get the server address (should be base64url-encoded)
     let server_addr = sync.get_server_address().await.unwrap();
     assert!(!server_addr.is_empty());
-    assert!(server_addr.contains("endpoint_id"));
-    assert!(server_addr.contains("direct_addresses"));
+    assert!(
+        !server_addr.starts_with('{'),
+        "Address should be base64url-encoded, not raw JSON"
+    );
 
     // Stop the server
     sync.stop_server().await.unwrap();

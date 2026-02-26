@@ -125,10 +125,12 @@ handle.add_address(Address {
 <!-- Code block ignored: Requires network connectivity and authentication flow -->
 
 ```rust,ignore
-// For new devices joining existing databases with authentication
+use eidetica::sync::Address;
+
+// For new devices joining existing databases with authentication.
 user.request_database_access(
     &sync,
-    "peer.example.com:8080",
+    &Address::http("peer.example.com:8080"),
     &database_id,
     &key_id,                         // User's key ID from user.add_private_key()
     eidetica::auth::Permission::Write // Requested permission level
@@ -147,8 +149,10 @@ user.request_database_access(
 <!-- Code block ignored: Requires network connectivity to peer server -->
 
 ```rust,ignore
+use eidetica::sync::Address;
+
 // Single call handles connection, handshake, and sync detection
-sync.sync_with_peer("peer.example.com:8080", Some(&tree_id)).await?;
+sync.sync_with_peer(&Address::http("peer.example.com:8080"), Some(&tree_id)).await?;
 
 // This automatically:
 // 1. Connects to peer and performs handshake
@@ -162,15 +166,18 @@ sync.sync_with_peer("peer.example.com:8080", Some(&tree_id)).await?;
 <!-- Code block ignored: Makes actual HTTP requests during testing -->
 
 ```rust,ignore
+use eidetica::sync::Address;
+
 // Discover available databases on a peer
-let available_trees = sync.discover_peer_trees("peer.example.com:8080").await?;
+let peer_addr = Address::http("peer.example.com:8080");
+let available_trees = sync.discover_peer_trees(&peer_addr).await?;
 for tree in available_trees {
     println!("Available: {} ({} entries)", tree.tree_id, tree.entry_count);
 }
 
 // Bootstrap from discovered database
 if let Some(tree) = available_trees.first() {
-    sync.sync_with_peer("peer.example.com:8080", Some(&tree.tree_id)).await?;
+    sync.sync_with_peer(&peer_addr, Some(&tree.tree_id)).await?;
 }
 ```
 
@@ -261,9 +268,10 @@ println!("Room ID: {}", tree_id);
 <!-- Code block ignored: Requires network connectivity to peer server -->
 
 ```rust,ignore
+use eidetica::sync::Address;
+
 // Join someone else's database using the tree_id
-let room_id = "abc123..."; // Received from another user
-sync.sync_with_peer("peer.example.com:8080", Some(&room_id)).await?;
+sync.sync_with_peer(&Address::http("peer.example.com:8080"), Some(&room_id)).await?;
 
 // You now have the full database locally
 let database = db.load_database(&room_id).await?;
@@ -284,7 +292,7 @@ store.set("my_message", "Hello everyone!").await?;
 txn.commit().await?; // Automatically syncs to all connected peers
 
 // Manually sync to get latest changes
-sync.sync_with_peer("peer.example.com:8080", Some(&tree_id)).await?;
+sync.sync_with_peer(&Address::http("peer.example.com:8080"), Some(&tree_id)).await?;
 ```
 
 ### Advanced: Manual Sync Relationships

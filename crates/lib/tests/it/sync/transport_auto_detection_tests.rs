@@ -15,7 +15,7 @@ use eidetica::{
     crdt::Doc,
     store::DocStore,
     sync::{
-        Sync,
+        Address, Sync,
         handler::SyncHandler,
         protocol::{RequestContext, SyncResponse},
         transports::{http::HttpTransport, iroh::IrohTransport},
@@ -163,53 +163,6 @@ async fn test_bootstrap_pending_error_propagation() {
     println!("✅ BootstrapPending error propagation verified");
 }
 
-/// Test transport auto-detection logic by examining address formats.
-///
-/// This test verifies the library change in sync/mod.rs that auto-detects transport type
-/// from address format:
-/// - JSON format with '{' or containing "endpoint_id" → Iroh transport
-/// - Traditional host:port format → HTTP transport
-#[test]
-fn test_transport_auto_detection_logic() {
-    println!("\n🧪 TEST: Transport auto-detection logic for address formats");
-
-    // Test cases: (address, expected_transport_type)
-    let test_cases = vec![
-        // HTTP addresses (host:port format)
-        ("127.0.0.1:8080", "http"),
-        ("localhost:3000", "http"),
-        ("192.168.1.1:9000", "http"),
-        ("example.com:8000", "http"),
-        // Iroh addresses (JSON format with endpoint_id)
-        (
-            r#"{"endpoint_id":"abc123","relay_url":"https://relay.example.com"}"#,
-            "iroh",
-        ),
-        (r#"{"endpoint_id":"xyz789"}"#, "iroh"),
-        (r#"{"endpoint_id":"def456","direct_addresses":[]}"#, "iroh"),
-        // Edge cases
-        ("{}", "iroh"),         // JSON prefix triggers Iroh detection
-        ("plain-text", "http"), // No JSON prefix defaults to HTTP
-    ];
-
-    for (addr, expected_type) in test_cases {
-        // Simulate the auto-detection logic from sync/mod.rs
-        let detected_type = if addr.starts_with('{') || addr.contains("\"endpoint_id\"") {
-            "iroh"
-        } else {
-            "http"
-        };
-
-        assert_eq!(
-            detected_type, expected_type,
-            "Address '{addr}' should be detected as {expected_type}"
-        );
-        println!("✅ Address '{addr}' correctly detected as {expected_type}");
-    }
-
-    println!("✅ Transport auto-detection logic verified");
-}
-
 /// Test that Iroh transport can be safely accessed from multiple threads concurrently.
 ///
 /// This test verifies the library change in sync/transports/iroh.rs that uses
@@ -290,13 +243,10 @@ async fn test_iroh_transport_concurrent_access() {
     println!("✅ Iroh transport thread safety verified");
 }
 
-/// Integration test: Verify that HTTP addresses work with HTTP transport.
-///
-/// This test demonstrates that the transport auto-detection correctly identifies
-/// HTTP addresses and routes them to the HTTP transport implementation.
+/// Integration test: Verify that tagged HTTP addresses work with HTTP transport.
 #[tokio::test]
 async fn test_http_address_with_http_transport() {
-    println!("\n🧪 TEST: HTTP address auto-detection with HTTP transport");
+    println!("\n🧪 TEST: Tagged HTTP address with HTTP transport");
 
     let (instance, _user, _key_id, database, _sync, _tree_id) =
         setup_global_wildcard_server().await;
@@ -308,13 +258,13 @@ async fn test_http_address_with_http_transport() {
         .await
         .unwrap();
 
-    // Use an HTTP address format
-    let http_addr = "127.0.0.1:9999"; // Non-existent server, but that's okay for this test
+    // Use an HTTP address (non-existent server)
+    let http_addr = Address::http("127.0.0.1:9999");
 
-    // Attempt to sync - should detect as HTTP and attempt HTTP connection
-    // (will fail with connection error, but that proves HTTP was detected)
+    // Attempt to sync - should route to HTTP transport and attempt connection
+    // (will fail with connection error, but that proves HTTP was selected)
     let result = client_sync
-        .sync_with_peer(http_addr, Some(database.root_id()))
+        .sync_with_peer(&http_addr, Some(database.root_id()))
         .await;
 
     match result {
@@ -326,23 +276,20 @@ async fn test_http_address_with_http_transport() {
                 !err_str.contains("Unknown transport"),
                 "Should not fail with transport detection error: {err_str}"
             );
-            println!("✅ HTTP address correctly detected (connection error as expected)");
+            println!("✅ Tagged HTTP address correctly routed (connection error as expected)");
         }
         Ok(_) => {
-            println!("✅ HTTP address correctly detected (unexpected success)");
+            println!("✅ Tagged HTTP address correctly routed (unexpected success)");
         }
     }
 
-    println!("✅ HTTP address auto-detection verified");
+    println!("✅ Tagged HTTP address verified");
 }
 
-/// Integration test: Verify that JSON addresses are detected as Iroh format.
-///
-/// This test demonstrates that addresses starting with '{' or containing "endpoint_id"
-/// are correctly identified as Iroh addresses.
+/// Integration test: Verify that tagged Iroh addresses route to Iroh transport.
 #[tokio::test]
 async fn test_iroh_address_detection() {
-    println!("\n🧪 TEST: Iroh JSON address detection");
+    println!("\n🧪 TEST: Tagged Iroh address detection");
 
     let (instance, _user, _key_id, database, _sync, _tree_id) =
         setup_global_wildcard_server().await;
@@ -354,12 +301,12 @@ async fn test_iroh_address_detection() {
         .await
         .unwrap();
 
-    // Use an Iroh JSON address format
-    let iroh_addr = r#"{"endpoint_id":"test_endpoint_id_123"}"#;
+    // Use an Iroh address (invalid content, but routing is what we test)
+    let iroh_addr = Address::iroh("dGVzdF9lbmRwb2ludF9pZF8xMjM");
 
-    // Attempt to sync - should detect as Iroh and attempt Iroh connection
+    // Attempt to sync - should route to Iroh and attempt connection
     let result = client_sync
-        .sync_with_peer(iroh_addr, Some(database.root_id()))
+        .sync_with_peer(&iroh_addr, Some(database.root_id()))
         .await;
 
     match result {
@@ -371,14 +318,14 @@ async fn test_iroh_address_detection() {
                 !err_str.contains("Unknown transport"),
                 "Should not fail with transport detection error: {err_str}"
             );
-            println!("✅ Iroh JSON address correctly detected (connection error as expected)");
+            println!("✅ Tagged Iroh address correctly routed (connection error as expected)");
         }
         Ok(_) => {
-            println!("✅ Iroh JSON address correctly detected (unexpected success)");
+            println!("✅ Tagged Iroh address correctly routed (unexpected success)");
         }
     }
 
-    println!("✅ Iroh JSON address detection verified");
+    println!("✅ Tagged Iroh address detection verified");
 }
 
 /// **SECURITY TEST**: Verify that unauthenticated clients cannot read authenticated databases.
@@ -450,7 +397,7 @@ async fn test_unauthenticated_sync_should_fail() {
         .unwrap();
 
     let server_addr = start_sync_server(&server_sync).await;
-    println!("✅ Server started at {server_addr}");
+    println!("✅ Server started at {server_addr:?}");
 
     // Setup client with NO authorized key (sync already initialized by setup_instance_with_initialized)
     let client_instance = setup_instance_with_initialized().await;

@@ -6,7 +6,7 @@ use eidetica::{
     entry::ID,
     store::Table,
     sync::{
-        SyncError,
+        Address, SyncError,
         transports::{http::HttpTransport, iroh::IrohTransport},
     },
     user::{
@@ -182,15 +182,15 @@ impl App {
             self.start_server().await?;
         }
 
-        // Parse format: room_id@http://host:port
+        // Parse format: room_id@host:port
         let parts: Vec<&str> = room_address.split('@').collect();
         if parts.len() != 2 {
-            error!("Invalid room address format. Expected format: room_id@http://host:port");
+            error!("Invalid room address format. Expected format: room_id@host:port");
             return Ok(());
         }
 
         let room_id = parts[0];
-        let server_addr = parts[1]; // This is the HTTP address
+        let server_addr = parts[1];
         debug!(room_id = %room_id, server_addr = %server_addr, "Parsed room address components");
 
         // Check if room already exists locally
@@ -222,7 +222,6 @@ impl App {
             let sync_result = if is_bootstrap {
                 // Bootstrap sync - authenticate and sync a room we don't have locally
                 info!(" Starting authenticated bootstrap sync (we don't have this room yet)...");
-
                 debug!(server_addr = %server_addr, room_id = %room_id, "Starting bootstrap sync");
 
                 // For bootstrap sync, use the User API which handles key management internally
@@ -230,7 +229,7 @@ impl App {
                     .user
                     .request_database_access(
                         &sync,
-                        server_addr,
+                        &Address::http(server_addr),
                         &room_id_obj,
                         &key_id,
                         PermissionType::Write(5),
@@ -287,13 +286,14 @@ impl App {
 
                 result
             } else {
-                // Use regular sync for existing rooms
-                sync.sync_with_peer(server_addr, Some(&room_id_obj)).await
+                // Regular sync for existing rooms
+                sync.sync_with_peer(&Address::http(server_addr), Some(&room_id_obj))
+                    .await
             };
 
             match sync_result {
                 Ok(()) => {
-                    info!(" Successfully synced room using simplified API");
+                    info!(" Successfully synced room");
                     true
                 }
                 Err(e) => {

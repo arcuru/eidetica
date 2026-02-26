@@ -503,12 +503,9 @@ The Iroh transport uses a builder pattern to support different deployment scenar
 
 **Address Serialization:**
 
-The Iroh transport serializes NodeAddr information as JSON containing:
-
-- Node ID (cryptographic identity)
-- Direct socket addresses (for P2P connectivity)
-
-This allows the same `get_server_address()` interface to work for both HTTP (returns socket address) and Iroh (returns rich connectivity info).
+The Iroh transport uses base64url-encoded JSON internally for addresses
+(node ID, direct socket addresses, and relay URLs). HTTP transport addresses
+are plain `host:port` strings.
 
 ### Security Design
 

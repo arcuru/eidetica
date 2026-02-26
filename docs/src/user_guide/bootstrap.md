@@ -126,10 +126,12 @@ While the request is pending, the client has several options:
 <!-- Code block ignored: Example retry logic implementation for bootstrap workflow -->
 
 ```rust,ignore
+use eidetica::sync::Address;
+
 async fn bootstrap_with_retry(
     user: &User,
     sync: &Sync,
-    server_addr: &str,
+    server_addr: &Address,
     database_id: &ID,
     key_id: &str,
 ) -> Result<()> {

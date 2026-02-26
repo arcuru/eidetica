@@ -84,12 +84,14 @@ Template for examples that demonstrate concepts but can't be tested due to exter
 use eidetica::{Instance, backend::database::Sqlite};
 
 // Start a sync server
-let mut sync = instance.sync();
-sync.start_server("0.0.0.0:8080").await?;
+let sync = instance.sync().unwrap();
+sync.register_transport("http", HttpTransport::builder().bind("0.0.0.0:8080")).await?;
+sync.accept_connections().await?;
 
 // Connect from another instance on a different machine
-let mut client_sync = client_instance.sync();
-client_sync.sync_with_peer("server.example.com:8080", None).await?;
+let client_sync = client_instance.sync().unwrap();
+client_sync.register_transport("http", HttpTransport::builder()).await?;
+client_sync.sync_with_peer(&Address::http("server.example.com:8080"), None).await?;
 
 // Data automatically synchronizes between peers
 ```

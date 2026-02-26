@@ -273,7 +273,7 @@ impl Sync {
     /// Request bootstrap access (low-level, requires key details)
     pub async fn sync_with_peer_for_bootstrap_with_key(
         &self,
-        peer_addr: &str,
+        address: &Address,
         tree_id: &ID,
         public_key: &str,
         key_id: &str,
@@ -310,7 +310,7 @@ impl User {
     pub async fn request_database_access(
         &self,
         sync: &Sync,
-        peer_address: &str,
+        address: &Address,
         database_id: &ID,
         key_id: &str,
         requested_permission: Permission,

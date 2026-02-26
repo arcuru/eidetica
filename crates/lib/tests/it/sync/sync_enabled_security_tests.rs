@@ -11,6 +11,7 @@ use eidetica::{
     database::DatabaseKey,
     store::DocStore,
     sync::{
+        Address,
         handler::SyncHandler,
         protocol::{RequestContext, SyncRequest, SyncResponse, SyncTreeRequest},
         transports::http::HttpTransport,
@@ -80,7 +81,7 @@ async fn test_bootstrap_rejected_when_sync_disabled() {
         .await
         .unwrap();
     server_sync.accept_connections().await.unwrap();
-    let server_addr = server_sync.get_server_address().await.unwrap();
+    let server_addr = Address::http(server_sync.get_server_address().await.unwrap());
 
     // Create client that will attempt to bootstrap
     let (client_instance, client_sync) = helpers::setup().await;
@@ -183,7 +184,7 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
         .await
         .unwrap();
     server_sync.accept_connections().await.unwrap();
-    let server_addr = server_sync.get_server_address().await.unwrap();
+    let server_addr = Address::http(server_sync.get_server_address().await.unwrap());
 
     // Create client and perform initial bootstrap (should succeed)
     let (client_instance, client_sync) = helpers::setup().await;
@@ -359,7 +360,7 @@ async fn test_sync_succeeds_when_enabled() {
         .await
         .unwrap();
     server_sync.accept_connections().await.unwrap();
-    let server_addr = server_sync.get_server_address().await.unwrap();
+    let server_addr = Address::http(server_sync.get_server_address().await.unwrap());
 
     // Create client and sync
     let (client_instance, client_sync) = helpers::setup().await;

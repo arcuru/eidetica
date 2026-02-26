@@ -105,14 +105,6 @@ impl Address {
     pub fn iroh(node_id: impl Into<String>) -> Self {
         Self::new("iroh", node_id)
     }
-
-    /// Create an Iroh address from an EndpointAddr (requires iroh dependency)
-    pub fn from_endpoint_addr(endpoint_addr: &iroh::EndpointAddr) -> Self {
-        // Serialize the EndpointAddr to a string format that can be parsed later
-        // For now, we'll just use the EndpointId as the address since that's what our
-        // current send_request method expects
-        Self::new("iroh", endpoint_addr.id.to_string())
-    }
 }
 
 /// Information about a remote peer in the sync network.

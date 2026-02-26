@@ -59,7 +59,7 @@ reqwest = { version = "0.12", features = [
     "rustls-tls",
 ], default-features = false }
 async-trait = "0.1"
-iroh = { version = "0.95", default-features = false }
+iroh = { version = "0.96", default-features = false }
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "postgres", "any"] }
 # CLI dependencies
 clap = { version = "4.5", features = ["derive", "env"] }

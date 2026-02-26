@@ -12,7 +12,7 @@ use eidetica::{
     auth::{Permission, types::AuthKey},
     crdt::Doc,
     store::Table,
-    sync::transports::http::HttpTransport,
+    sync::{Address, transports::http::HttpTransport},
     user::types::{SyncSettings, TrackedDatabase},
 };
 use serde::{Deserialize, Serialize};
@@ -127,13 +127,14 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
             .accept_connections()
             .await
             .expect("Failed to start server");
-        device1_sync
+        let addr = device1_sync
             .get_server_address()
             .await
-            .expect("Failed to get server address")
+            .expect("Failed to get server address");
+        Address::http(addr)
     };
 
-    println!("🌐 Device 1 server started at: {device1_server_addr}");
+    println!("🌐 Device 1 server started at: {device1_server_addr:?}");
 
     // === STEP 2: Device 2 bootstraps and syncs from Device 1 ===
     println!("\n📱 STEP 2: Device 2 bootstraps and syncs from Device 1");

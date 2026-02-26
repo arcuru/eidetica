@@ -274,8 +274,10 @@ impl Sync {
 
     /// Get a server address if any transport is running a server.
     ///
-    /// For backward compatibility, returns the first available server address.
-    /// Use `get_server_address_for` for specific transports.
+    /// Returns the first available raw server address string (e.g.,
+    /// `127.0.0.1:8080`).
+    ///
+    /// Use `get_server_address_for` for a specific transport.
     ///
     /// # Returns
     /// The address of the first running server, or an error if no server is running.

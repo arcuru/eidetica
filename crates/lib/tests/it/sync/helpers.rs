@@ -330,17 +330,22 @@ pub async fn setup_auto_approval_server() -> (Instance, User, String, Database, 
     (instance, user, key_id, database, sync, tree_id)
 }
 
-/// Start a sync server with common settings
-pub async fn start_sync_server(sync: &Sync) -> String {
+/// Start a sync server with common settings.
+///
+/// Returns an [`Address`] suitable for
+/// [`sync_with_peer`](eidetica::sync::Sync::sync_with_peer).
+pub async fn start_sync_server(sync: &Sync) -> Address {
     sync.register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
         .await
         .expect("Failed to register HTTP transport");
     sync.accept_connections()
         .await
         .expect("Failed to start server");
-    sync.get_server_address()
+    let addr = sync
+        .get_server_address_for("http")
         .await
-        .expect("Failed to get server address")
+        .expect("Failed to get server address");
+    Address::http(addr)
 }
 
 /// Create a SyncTreeRequest for bootstrap testing
@@ -551,7 +556,7 @@ pub async fn setup_indexed_client(index: usize) -> (Instance, User, String) {
 pub async fn request_and_map_database_access(
     instance: &mut Instance,
     user: &mut User,
-    server_addr: &str,
+    server_addr: &Address,
     tree_id: &ID,
     key_id: &str,
     permission: AuthPermission,
@@ -585,7 +590,7 @@ pub async fn request_and_map_database_access(
 pub async fn request_database_access_default(
     instance: &mut Instance,
     user: &mut User,
-    server_addr: &str,
+    server_addr: &Address,
     tree_id: &ID,
     key_id: &str,
 ) -> Result<()> {

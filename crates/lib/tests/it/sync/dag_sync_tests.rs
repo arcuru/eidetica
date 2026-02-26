@@ -587,13 +587,14 @@ async fn test_sync_protocol_implementation() {
     );
 
     // Debug: Check trees available on server (sync1 is the server now)
-    let available_trees = sync2.discover_peer_trees(&server_addr).await.unwrap();
+    let server_address = Address::http(&server_addr);
+    let available_trees = sync2.discover_peer_trees(&server_address).await.unwrap();
     println!("🧪 DEBUG: Available trees on server: {available_trees:?}");
 
     // Use the new bootstrap-first sync protocol (sync2 bootstraps from sync1)
     println!("🧪 DEBUG: Starting sync for tree_root_id: {tree_root_id}");
     let result = sync2
-        .sync_with_peer(&server_addr, Some(&tree_root_id))
+        .sync_with_peer(&server_address, Some(&tree_root_id))
         .await;
 
     // The sync should succeed with properly implemented protocol methods
@@ -653,7 +654,7 @@ async fn test_sync_protocol_implementation() {
 
     // Perform another sync to transfer the new entry (incremental sync)
     let result2 = sync2
-        .sync_with_peer(&server_addr, Some(&tree_root_id))
+        .sync_with_peer(&server_address, Some(&tree_root_id))
         .await;
     assert!(
         result2.is_ok(),

@@ -17,7 +17,7 @@
 //! sync.accept_connections().await?;
 //!
 //! // Outbound sync works via the registered transports
-//! sync.sync_with_peer("http://peer:8080", Some(&tree_id)).await?;
+//! sync.sync_with_peer(&Address::http("peer:8080"), Some(&tree_id)).await?;
 //! ```
 //!
 //! # Architecture

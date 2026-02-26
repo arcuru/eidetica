@@ -147,17 +147,17 @@ async fn test_iroh_transport_p2p_addressing() {
     // Addresses should be different
     assert_ne!(addr1, addr2);
 
-    // Both should be valid JSON format containing endpoint_id and direct_addresses
-    assert!(
-        addr1.starts_with("{")
-            && addr1.contains("endpoint_id")
-            && addr1.contains("direct_addresses")
-    );
-    assert!(
-        addr2.starts_with("{")
-            && addr2.contains("endpoint_id")
-            && addr2.contains("direct_addresses")
-    );
+    // Both should be base64url-encoded (no +, /, =, or whitespace)
+    for addr in [&addr1, &addr2] {
+        assert!(
+            !addr.contains('+') && !addr.contains('/') && !addr.contains('='),
+            "Address should be base64url-encoded without padding: {addr}"
+        );
+        assert!(
+            !addr.starts_with('{'),
+            "Address should not be raw JSON: {addr}"
+        );
+    }
 
     // Clean up
     transport1.stop_server().await.unwrap();

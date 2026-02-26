@@ -3,10 +3,8 @@
 use tracing::info;
 
 use super::{
-    BootstrapRequest, RequestStatus, Sync, SyncError,
+    Address, BootstrapRequest, RequestStatus, Sync, SyncError,
     bootstrap_request_manager::BootstrapRequestManager,
-    peer_types::Address,
-    transports::{http::HttpTransport, iroh::IrohTransport},
 };
 use crate::{
     Database, Result,
@@ -32,7 +30,7 @@ impl Sync {
     /// permission during the initial sync.
     ///
     /// # Arguments
-    /// * `peer_address` - The address of the peer to sync with
+    /// * `address` - The transport address of the peer to sync with
     /// * `tree_id` - The ID of the tree to sync
     /// * `requesting_public_key` - The formatted public key string for authentication
     /// * `requesting_key_name` - The name/ID of the requesting key
@@ -46,7 +44,7 @@ impl Sync {
     /// * `SyncError::InvalidKeyName` if the key name is empty
     async fn sync_with_peer_for_bootstrap_internal(
         &self,
-        peer_address: &str,
+        address: &Address,
         tree_id: &ID,
         requesting_public_key: String,
         requesting_key_name: &str,
@@ -75,23 +73,8 @@ impl Sync {
             .into());
         }
 
-        // Auto-detect transport type from address format
-        let address = if peer_address.starts_with('{') || peer_address.contains("\"node_id\"") {
-            // JSON format indicates Iroh NodeAddr
-            Address {
-                transport_type: IrohTransport::TRANSPORT_TYPE.to_string(),
-                address: peer_address.to_string(),
-            }
-        } else {
-            // Default to HTTP for traditional host:port format
-            Address {
-                transport_type: HttpTransport::TRANSPORT_TYPE.to_string(),
-                address: peer_address.to_string(),
-            }
-        };
-
         // Connect to peer if not already connected
-        let peer_pubkey = self.connect_to_peer(&address).await?;
+        let peer_pubkey = self.connect_to_peer(address).await?;
 
         // Store the address for this peer
         self.add_peer_address(&peer_pubkey, address.clone()).await?;
@@ -118,7 +101,7 @@ impl Sync {
     /// User API managed keys.
     ///
     /// # Arguments
-    /// * `peer_address` - The address of the peer to sync with
+    /// * `address` - The transport address of the peer to sync with
     /// * `tree_id` - The ID of the tree to sync
     /// * `requesting_public_key` - The formatted public key string (e.g., "ed25519:base64...")
     /// * `requesting_key_name` - The name/ID of the requesting key for audit trail
@@ -132,7 +115,7 @@ impl Sync {
     /// // With User API managed keys:
     /// let public_key = user.get_public_key(user_key_id)?;
     /// sync.sync_with_peer_for_bootstrap_with_key(
-    ///     "127.0.0.1:8080",
+    ///     &Address::http("127.0.0.1:8080"),
     ///     &tree_id,
     ///     &public_key,
     ///     user_key_id,
@@ -141,7 +124,7 @@ impl Sync {
     /// ```
     pub async fn sync_with_peer_for_bootstrap_with_key(
         &self,
-        peer_address: &str,
+        address: &Address,
         tree_id: &ID,
         requesting_public_key: &str,
         requesting_key_name: &str,
@@ -149,7 +132,7 @@ impl Sync {
     ) -> Result<()> {
         // Delegate to internal method
         self.sync_with_peer_for_bootstrap_internal(
-            peer_address,
+            address,
             tree_id,
             requesting_public_key.to_string(),
             requesting_key_name,
