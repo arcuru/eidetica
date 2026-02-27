@@ -294,19 +294,11 @@ pub fn dashboard_page(user: &User, databases: Vec<DatabaseInfo>) -> String {
         <h2>Request Database Access</h2>
         <form method="POST" action="/dashboard/track">
             <div class="form-group">
-                <label for="database_id">Database ID (Root Entry ID):</label>
-                <input type="text" id="database_id" name="database_id"
-                       placeholder="Enter database root entry ID" required>
+                <label for="ticket">Database Ticket URL:</label>
+                <input type="text" id="ticket" name="ticket"
+                       placeholder="eidetica:?db=sha256:...&pr=http:host:port" required>
                 <small style="color: #666;">
-                    Example: bafyreib7xqxqxqxqxqxqxqxqxqxqxqxqxqxqxqxqxqxqxqxqxqxqxqx
-                </small>
-            </div>
-            <div class="form-group">
-                <label for="peer_address">Peer Address (Iroh Node ID):</label>
-                <input type="text" id="peer_address" name="peer_address"
-                       placeholder="Enter Iroh node ID" required>
-                <small style="color: #666;">
-                    Iroh node ID (looks like: 6jk7x2pq...) - get this from the peer's node info
+                    Paste a ticket URL shared by the database owner
                 </small>
             </div>
             <div class="form-group">

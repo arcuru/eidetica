@@ -63,8 +63,7 @@ struct RegisterForm {
 /// Track database form data (bootstrap request)
 #[derive(Deserialize)]
 struct TrackDatabaseForm {
-    database_id: String,
-    peer_address: String,
+    ticket: String,
     permission: String,
 }
 
@@ -518,14 +517,10 @@ async fn handle_track_database(
         None => return Redirect::to("/login").into_response(),
     };
 
-    let database_id = match ID::parse(&form.database_id) {
-        Ok(id) => id,
+    let ticket: DatabaseTicket = match form.ticket.parse() {
+        Ok(t) => t,
         Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                format!("Invalid database ID: {e:?}"),
-            )
-                .into_response();
+            return (StatusCode::BAD_REQUEST, format!("Invalid ticket URL: {e}")).into_response();
         }
     };
 
@@ -553,12 +548,6 @@ async fn handle_track_database(
         }
     };
 
-    let peer_address = form.peer_address.clone();
-    let database_id_str = form.database_id.clone();
-
-    let ticket =
-        DatabaseTicket::with_addresses(database_id.clone(), vec![Address::http(&peer_address)]);
-
     let key_id = {
         let user = user_lock.read().await;
         match user.get_default_key() {
@@ -583,17 +572,14 @@ async fn handle_track_database(
         Ok(_) => {
             let mut user = user_lock.write().await;
 
-            let mut properties = std::collections::HashMap::new();
-            properties.insert("peer_address".to_string(), peer_address);
-
             let tracked = TrackedDatabase {
-                database_id: database_id.clone(),
+                database_id: ticket.database_id().clone(),
                 key_id: key_id.clone(),
                 sync_settings: SyncSettings {
                     sync_enabled: true,
                     sync_on_commit: false,
                     interval_seconds: Some(13),
-                    properties,
+                    properties: Default::default(),
                 },
             };
 
@@ -601,14 +587,14 @@ async fn handle_track_database(
                 Ok(_) => {
                     tracing::info!(
                         "Successfully bootstrapped and tracked database {} for user {}",
-                        database_id_str,
+                        ticket.database_id(),
                         user.username()
                     );
                 }
                 Err(e) => {
                     tracing::warn!(
                         "Bootstrapped database {} but failed to add to tracking: {}",
-                        database_id_str,
+                        ticket.database_id(),
                         e
                     );
                 }
