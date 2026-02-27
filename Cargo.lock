@@ -1270,6 +1270,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
  "yrs",
  "z32",

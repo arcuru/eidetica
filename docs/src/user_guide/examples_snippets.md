@@ -609,11 +609,12 @@ for (_, msg) in all_messages {
 <!-- Code block ignored: Requires network connectivity and running server -->
 
 ```rust,ignore
-use eidetica::sync::{Address, transports::http::HttpTransport};
+use eidetica::sync::{Address, DatabaseTicket, transports::http::HttpTransport};
 
-// Join an existing room using bootstrap protocol
-let room_id = eidetica::entry::ID::from("sha256:abc...");
-let address = Address::http("127.0.0.1:8080");
+// Join an existing room using a ticket URL
+let ticket: DatabaseTicket = "eidetica:?db=sha256:abc...&pr=http:127.0.0.1:8080".parse()?;
+let room_id = ticket.database_id().clone();
+let address = ticket.addresses().first().unwrap().clone();
 
 // Register sync transport
 if let Some(sync) = instance.sync() {

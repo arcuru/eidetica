@@ -3,7 +3,7 @@
 use tracing::info;
 
 use super::{
-    Address, BootstrapRequest, RequestStatus, Sync, SyncError,
+    Address, BootstrapRequest, DatabaseTicket, RequestStatus, Sync, SyncError,
     bootstrap_request_manager::BootstrapRequestManager,
 };
 use crate::{
@@ -138,6 +138,49 @@ impl Sync {
             requesting_key_name,
             requested_permission,
         )
+        .await
+    }
+
+    /// Bootstrap with a peer using a [`DatabaseTicket`].
+    ///
+    /// Tries every address hint in the ticket concurrently. Succeeds if at
+    /// least one address connects and syncs; returns the last error if all
+    /// fail.
+    ///
+    /// # Arguments
+    /// * `ticket` - A ticket containing the database ID and address hints.
+    /// * `requesting_public_key` - The formatted public key string for authentication.
+    /// * `requesting_key_name` - The name/ID of the requesting key.
+    /// * `requested_permission` - The permission level being requested.
+    ///
+    /// # Errors
+    /// Returns [`SyncError::InvalidAddress`] if the ticket has no address hints.
+    /// Returns the last sync error if no address succeeded.
+    pub async fn bootstrap_with_ticket(
+        &self,
+        ticket: &DatabaseTicket,
+        requesting_public_key: &str,
+        requesting_key_name: &str,
+        requested_permission: Permission,
+    ) -> Result<()> {
+        let database_id = ticket.database_id().clone();
+        let pubkey = requesting_public_key.to_string();
+        let key_name = requesting_key_name.to_string();
+        self.try_addresses_concurrently(ticket.addresses(), |sync, addr| {
+            let db_id = database_id.clone();
+            let pubkey = pubkey.clone();
+            let key_name = key_name.clone();
+            async move {
+                sync.sync_with_peer_for_bootstrap_internal(
+                    &addr,
+                    &db_id,
+                    pubkey,
+                    &key_name,
+                    requested_permission,
+                )
+                .await
+            }
+        })
         .await
     }
 

@@ -15,7 +15,7 @@ use eidetica::{
     path,
     store::DocStore,
     sync::{
-        Sync,
+        DatabaseTicket, Sync,
         error::SyncError,
         handler::{SyncHandler, SyncHandlerImpl},
         peer_types::Address,
@@ -568,7 +568,8 @@ pub async fn request_and_map_database_access(
             .register_transport("http", HttpTransport::builder())
             .await?;
 
-        user.request_database_access(&client_sync, server_addr, tree_id, key_id, permission)
+        let ticket = DatabaseTicket::with_addresses(tree_id.clone(), vec![server_addr.clone()]);
+        user.request_database_access(&client_sync, &ticket, key_id, permission)
             .await?;
     } // Drop Arc before sleep
 

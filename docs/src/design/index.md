@@ -31,6 +31,7 @@ Each design document typically includes:
 - [Settings Storage](settings_storage.md) - How settings are stored and tracked in databases
 - [Subtree Index](subtree_index.md) - Registry system for subtree metadata and type discovery
 - [Height Strategy](height_strategy.md) - Configurable height calculation for entry ordering
+- [Database Ticket](database_ticket.md) - URL-based shareable database links with transport hints
 
 ### Proposed
 

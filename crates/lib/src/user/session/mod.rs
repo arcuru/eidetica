@@ -43,7 +43,7 @@ use crate::{
     entry::ID,
     instance::{InstanceError, backend::Backend},
     store::Table,
-    sync::{Address, BootstrapRequest, Sync},
+    sync::{BootstrapRequest, DatabaseTicket, Sync},
     user::{TrackedDatabase, UserError},
 };
 
@@ -760,8 +760,7 @@ impl User {
     ///
     /// # Arguments
     /// * `sync` - Reference to the Instance's Sync object
-    /// * `address` - The transport address of the peer
-    /// * `database_id` - The ID of the database to request access to
+    /// * `ticket` - A ticket containing the database ID and address hints
     /// * `key_id` - The ID of this user's key to use for the request
     /// * `requested_permission` - The permission level being requested
     ///
@@ -770,53 +769,41 @@ impl User {
     ///
     /// # Errors
     /// - Returns an error if the user doesn't own the specified key
-    /// - Returns an error if the peer is unreachable
+    /// - Returns an error if all addresses in the ticket fail
     /// - Returns an error if the bootstrap sync fails
     ///
     /// # Example
     /// ```rust,ignore
     /// // Request write access to a shared database
     /// let user_key_id = user.get_default_key()?;
+    /// let ticket: DatabaseTicket = "eidetica:?db=sha256:abc...&pr=http:192.168.1.1:8080".parse()?;
     /// user.request_database_access(
     ///     &sync,
-    ///     &Address::http("192.168.1.100:8080"),
-    ///     &shared_database_id,
+    ///     &ticket,
     ///     &user_key_id,
     ///     Permission::Write(5),
     /// ).await?;
     ///
     /// // After approval, the database can be opened
-    /// let database = user.open_database(&shared_database_id)?;
+    /// let database = user.open_database(ticket.database_id())?;
     /// ```
     pub async fn request_database_access(
         &self,
         sync: &Sync,
-        address: &Address,
-        database_id: &ID,
+        ticket: &DatabaseTicket,
         key_id: &str,
         requested_permission: Permission,
     ) -> Result<()> {
-        // Get the signing key from the key manager
         let signing_key = self.key_manager.get_signing_key(key_id).ok_or_else(|| {
             super::errors::UserError::KeyNotFound {
                 key_id: key_id.to_string(),
             }
         })?;
 
-        // Derive the public key from the signing key
         let public_key = format_public_key(&signing_key.public_key());
 
-        // Delegate to Sync layer with the public key
-        sync.sync_with_peer_for_bootstrap_with_key(
-            address,
-            database_id,
-            &public_key,
-            key_id,
-            requested_permission,
-        )
-        .await?;
-
-        Ok(())
+        sync.bootstrap_with_ticket(ticket, &public_key, key_id, requested_permission)
+            .await
     }
 
     // === Tracked Databases ===

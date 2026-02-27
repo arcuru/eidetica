@@ -21,8 +21,8 @@ use ui::ui;
 #[command(about = "A TUI chat application using Eidetica for distributed messaging")]
 #[command(version)]
 struct Args {
-    /// Room address to connect to (format: room_id@server). If not provided, creates a new room.
-    #[arg(value_name = "ROOM_ADDRESS")]
+    /// Ticket URL to connect to (eidetica:?db=...&pr=...). If not provided, creates a new room.
+    #[arg(value_name = "TICKET")]
     room_address: Option<String>,
 
     /// Username for the chat session

@@ -39,7 +39,7 @@ Example output:
 
 ```
 🚀 Eidetica Chat Room Created!
-📍 Room Address: <room_id@server_info>
+📍 Room Address: eidetica:?db=sha256:abc...&pr=iroh:endpoint...
 👤 Username: alice
 
 Share this address with others to invite them to the chat.
@@ -75,7 +75,7 @@ Controls:
 Usage: eidetica-chat [ROOM_ADDRESS] [OPTIONS]
 
 Arguments:
-  [ROOM_ADDRESS]  Room address to connect to (format: room_id@server).
+  [TICKET]        Ticket URL to connect to (eidetica:?db=...&pr=...).
                   If not provided, creates a new room.
 
 Options:
@@ -105,13 +105,13 @@ cargo run -- --username alice
 
 # App displays:
 # 🚀 Eidetica Chat Room Created!
-# 📍 Room Address: abc123@127.0.0.1:54321
+# 📍 Room Address: eidetica:?db=sha256:abc...&pr=iroh:endpoint...
 # 👤 Username: alice
 #
 # Share this address with others to invite them to the chat.
 # Press Enter to start chatting...
 
-# Copy the room address, share it with Bob, then press Enter
+# Copy the ticket URL, share it with Bob, then press Enter
 ```
 
 **Terminal 2 (Bob - Room Joiner):**
@@ -119,8 +119,8 @@ cargo run -- --username alice
 ```bash
 cd examples/chat
 
-# Paste Alice's room address as the first argument
-cargo run -- abc123@127.0.0.1:54321 --username bob
+# Paste Alice's ticket URL as the first argument
+cargo run -- 'eidetica:?db=sha256:abc...&pr=iroh:endpoint...' --username bob
 
 # Chat interface starts immediately - start chatting!
 ```

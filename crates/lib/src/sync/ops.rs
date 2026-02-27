@@ -3,8 +3,10 @@
 use tokio::sync::oneshot;
 use tracing::{debug, info};
 
+use std::future::Future;
+
 use super::{
-    Address, PeerId, Sync, SyncError,
+    Address, DatabaseTicket, PeerId, Sync, SyncError,
     background::SyncCommand,
     peer_manager::PeerManager,
     peer_types,
@@ -578,6 +580,28 @@ impl Sync {
         Ok(())
     }
 
+    /// Sync with a peer using a [`DatabaseTicket`].
+    ///
+    /// Attempts [`sync_with_peer`](Self::sync_with_peer) for every address
+    /// hint in the ticket concurrently. Each address may point to a different
+    /// peer, so connections are independent. Succeeds if at least one address
+    /// syncs successfully; returns the last error if all fail.
+    ///
+    /// # Arguments
+    /// * `ticket` - A ticket containing the database ID and address hints.
+    ///
+    /// # Errors
+    /// Returns [`SyncError::InvalidAddress`] if the ticket has no address hints.
+    /// Returns the last sync error if no address succeeded.
+    pub async fn sync_with_ticket(&self, ticket: &DatabaseTicket) -> Result<()> {
+        let database_id = ticket.database_id().clone();
+        self.try_addresses_concurrently(ticket.addresses(), |sync, addr| {
+            let db_id = database_id.clone();
+            async move { sync.sync_with_peer(&addr, Some(&db_id)).await }
+        })
+        .await
+    }
+
     /// Sync a specific tree with a peer, with optional authentication for bootstrap.
     ///
     /// This is a lower-level method that allows specifying authentication parameters
@@ -734,5 +758,47 @@ impl Sync {
 
         rx.await
             .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))?
+    }
+
+    /// Try an operation against multiple addresses concurrently, returning on
+    /// the first success.
+    ///
+    /// Spawns one task per address using [`tokio::task::JoinSet`]. If any task
+    /// succeeds the remaining ones are aborted and `Ok(())` is returned. If all
+    /// tasks fail the last error is returned. If `addresses` is empty an
+    /// [`SyncError::InvalidAddress`] error is returned.
+    pub(super) async fn try_addresses_concurrently<F, Fut>(
+        &self,
+        addresses: &[Address],
+        f: F,
+    ) -> Result<()>
+    where
+        F: Fn(Sync, Address) -> Fut,
+        Fut: Future<Output = Result<()>> + Send + 'static,
+    {
+        if addresses.is_empty() {
+            return Err(SyncError::InvalidAddress("Ticket has no address hints".into()).into());
+        }
+
+        let mut set = tokio::task::JoinSet::new();
+        for addr in addresses {
+            set.spawn(f(self.clone(), addr.clone()));
+        }
+
+        let mut last_err = None;
+        while let Some(join_result) = set.join_next().await {
+            match join_result {
+                Ok(Ok(())) => {
+                    set.abort_all();
+                    return Ok(());
+                }
+                Ok(Err(e)) => last_err = Some(e),
+                Err(e) => {
+                    last_err = Some(SyncError::Network(format!("Task join error: {e}")).into());
+                }
+            }
+        }
+
+        Err(last_err.expect("at least one task was spawned"))
     }
 }

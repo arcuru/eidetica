@@ -50,6 +50,7 @@ postcard = { workspace = true }
 postcard-derive = { workspace = true }
 z32 = { workspace = true }
 instability = { workspace = true }
+url = { workspace = true }
 
 # Ignore transitive deps that are only here to set version floors
 [package.metadata.cargo-udeps.ignore]

@@ -46,6 +46,7 @@
   - [Settings Storage](design/settings_storage.md)
   - [Subtree Index](design/subtree_index.md)
   - [Height Strategy](design/height_strategy.md)
+  - [Database Ticket](design/database_ticket.md)
   - [Users](design/users.md)
   - [Key Management](design/key_management.md)
   - [Bootstrap & Access Control](design/bootstrap.md)

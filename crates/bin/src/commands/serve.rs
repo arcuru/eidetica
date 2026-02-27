@@ -20,6 +20,7 @@ use eidetica::{
     backend::database::{DbKind, InMemory, SqlxBackend},
     entry::ID,
     sync::{
+        DatabaseTicket,
         handler::{SyncHandler, SyncHandlerImpl},
         peer_types::Address,
         protocol::{RequestContext, SyncRequest, SyncResponse},
@@ -553,8 +554,10 @@ async fn handle_track_database(
     };
 
     let peer_address = form.peer_address.clone();
-    let address = Address::http(&peer_address);
     let database_id_str = form.database_id.clone();
+
+    let ticket =
+        DatabaseTicket::with_addresses(database_id.clone(), vec![Address::http(&peer_address)]);
 
     let key_id = {
         let user = user_lock.read().await;
@@ -572,7 +575,7 @@ async fn handle_track_database(
 
     let bootstrap_result = {
         let user = user_lock.read().await;
-        user.request_database_access(&sync, &address, &database_id, &key_id, permission)
+        user.request_database_access(&sync, &ticket, &key_id, permission)
             .await
     };
 

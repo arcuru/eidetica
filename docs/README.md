@@ -88,10 +88,13 @@ let sync = instance.sync().unwrap();
 sync.register_transport("http", HttpTransport::builder().bind("0.0.0.0:8080")).await?;
 sync.accept_connections().await?;
 
-// Connect from another instance on a different machine
+// Generate a shareable ticket URL for this database
+let ticket = sync.create_ticket(&database.root_id()).await?;
+println!("Share this: {ticket}"); // eidetica:?db=sha256:...&pr=http:192.168.1.1:8080
+
+// Connect from another instance using the ticket
 let client_sync = client_instance.sync().unwrap();
-client_sync.register_transport("http", HttpTransport::builder()).await?;
-client_sync.sync_with_peer(&Address::http("server.example.com:8080"), None).await?;
+client_sync.sync_with_ticket(&ticket).await?;
 
 // Data automatically synchronizes between peers
 ```

@@ -149,10 +149,14 @@ user.request_database_access(
 <!-- Code block ignored: Requires network connectivity to peer server -->
 
 ```rust,ignore
-use eidetica::sync::Address;
+use eidetica::sync::{Address, DatabaseTicket};
 
-// Single call handles connection, handshake, and sync detection
+// Using a typed Address
 sync.sync_with_peer(&Address::http("peer.example.com:8080"), Some(&tree_id)).await?;
+
+// Or using a ticket (contains address + database ID)
+let ticket: DatabaseTicket = "eidetica:?db=sha256:abc...&pr=http:peer.example.com:8080".parse()?;
+sync.sync_with_ticket(&ticket).await?;
 
 // This automatically:
 // 1. Connects to peer and performs handshake
@@ -268,9 +272,13 @@ println!("Room ID: {}", tree_id);
 <!-- Code block ignored: Requires network connectivity to peer server -->
 
 ```rust,ignore
-use eidetica::sync::Address;
+use eidetica::sync::{Address, DatabaseTicket};
 
-// Join someone else's database using the tree_id
+// Join someone else's database using a ticket
+let ticket: DatabaseTicket = "eidetica:?db=sha256:abc...&pr=http:peer.example.com:8080".parse()?;
+sync.sync_with_ticket(&ticket).await?;
+
+// Or use a typed Address with an explicit tree ID
 sync.sync_with_peer(&Address::http("peer.example.com:8080"), Some(&room_id)).await?;
 
 // You now have the full database locally

@@ -27,6 +27,7 @@ mod peer_management_tests;
 mod sync_enabled_security_tests;
 mod sync_iroh_integration;
 mod test_transport_peer_tracking;
+mod ticket_sync_tests;
 mod transport_auto_detection_tests;
 mod transport_conformance;
 mod transport_integration_tests;

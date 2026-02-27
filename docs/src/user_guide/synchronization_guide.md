@@ -39,13 +39,18 @@ sync.accept_connections().await?;
 ### 3. Connect and Sync
 
 ```rust,ignore
-use eidetica::sync::Address;
+use eidetica::sync::{Address, DatabaseTicket};
 
-// Single API handles both bootstrap (new) and incremental (existing) sync
+// Using a typed Address
 sync.sync_with_peer(&Address::http("127.0.0.1:8080"), Some(&tree_id)).await?;
+
+// Or using a ticket (contains both address and database ID)
+let ticket: DatabaseTicket = "eidetica:?db=sha256:abc...&pr=http:127.0.0.1:8080".parse()?;
+sync.sync_with_ticket(&ticket).await?;
 ```
 
 The system automatically detects whether you need full bootstrap or incremental sync.
+Tickets embed the database ID, so `sync_with_ticket` requires no separate tree ID.
 
 ## Connection Architecture
 

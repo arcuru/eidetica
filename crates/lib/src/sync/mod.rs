@@ -112,6 +112,7 @@ pub mod peer_manager;
 pub mod peer_types;
 pub mod protocol;
 pub mod state;
+pub mod ticket;
 pub mod transports;
 pub mod utils;
 
@@ -132,6 +133,7 @@ pub use bootstrap_request_manager::{BootstrapRequest, RequestStatus};
 pub use error::SyncError;
 pub use peer_types::{Address, ConnectionState, PeerId, PeerInfo, PeerStatus};
 use queue::SyncQueue;
+pub use ticket::DatabaseTicket;
 use transports::TransportConfig;
 
 /// Private constant for the sync settings subtree name

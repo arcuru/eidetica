@@ -503,9 +503,14 @@ The Iroh transport uses a builder pattern to support different deployment scenar
 
 **Address Serialization:**
 
-The Iroh transport uses base64url-encoded JSON internally for addresses
-(node ID, direct socket addresses, and relay URLs). HTTP transport addresses
-are plain `host:port` strings.
+The Iroh transport uses iroh's standard `EndpointTicket` format
+(postcard + base32-lower with `endpoint` prefix) for addresses.
+HTTP transport addresses are plain `host:port` strings. In
+`DatabaseTicket` URLs, each address is prefixed by its transport name
+and a colon (e.g., `iroh:endpoint...`, `http:192.168.1.1:8080`).
+
+Both transports expose `get_server_address()` for addresses used in
+`DatabaseTicket` URLs and peer handshakes.
 
 ### Security Design
 

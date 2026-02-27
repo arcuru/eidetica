@@ -5,14 +5,16 @@ use tokio::sync::oneshot;
 use tracing::info;
 
 use super::{
-    Sync, SyncError, TRANSPORT_STATE_STORE,
+    DatabaseTicket, Sync, SyncError, TRANSPORT_STATE_STORE,
     background::BackgroundSync,
     background::SyncCommand,
+    peer_types::Address,
     transports::{SyncTransport, TransportBuilder},
 };
 use crate::{
     Result,
     crdt::{Doc, doc::Value},
+    entry::ID,
     store::DocStore,
 };
 
@@ -275,7 +277,9 @@ impl Sync {
     /// Get a server address if any transport is running a server.
     ///
     /// Returns the first available raw server address string (e.g.,
-    /// `127.0.0.1:8080`).
+    /// `127.0.0.1:8080`). To produce a shareable link, use
+    /// [`create_ticket`](Self::create_ticket) to generate a full ticket URL,
+    /// or construct an [`Address`] with [`Address::new`] for programmatic use.
     ///
     /// Use `get_server_address_for` for a specific transport.
     ///
@@ -330,5 +334,24 @@ impl Sync {
 
         rx.await
             .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))?
+    }
+
+    /// Generate a ticket for a database using all running transports' addresses.
+    ///
+    /// The ticket contains the database ID and address hints from all running
+    /// transport servers.
+    ///
+    /// # Arguments
+    /// * `database_id` - The ID of the database to create a ticket for
+    ///
+    /// # Returns
+    /// A `DatabaseTicket` containing the database ID and transport address hints.
+    pub async fn create_ticket(&self, database_id: &ID) -> Result<DatabaseTicket> {
+        let mut ticket = DatabaseTicket::new(database_id.clone());
+        let addresses = self.get_all_server_addresses().await?;
+        for (transport_type, address) in addresses {
+            ticket.add_address(Address::new(transport_type, address));
+        }
+        Ok(ticket)
     }
 }
