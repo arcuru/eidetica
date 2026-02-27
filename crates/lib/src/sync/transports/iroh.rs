@@ -3,15 +3,15 @@
 //! This module provides peer-to-peer sync communication using
 //! Iroh's QUIC-based networking with hole punching and relay servers.
 
-use std::{collections::BTreeSet, net::SocketAddr, sync::Arc};
+use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use async_trait::async_trait;
-use base64ct::{Base64UrlUnpadded, Encoding};
 use iroh::{
-    Endpoint, EndpointAddr, RelayMode, SecretKey, TransportAddr,
+    Endpoint, RelayMode, SecretKey,
     endpoint::{Connection, RecvStream, SendStream},
 };
+use iroh_tickets::{Ticket, endpoint::EndpointTicket};
 use serde::{Deserialize, Serialize};
 #[allow(unused_imports)] // Used by write_all method on streams
 use tokio::io::AsyncWriteExt;
@@ -19,7 +19,7 @@ use tokio::sync::oneshot;
 
 use super::{SyncTransport, TransportBuilder, TransportConfig, shared::*};
 use crate::{
-    Error, Result,
+    Result,
     crdt::Doc,
     store::Registered,
     sync::{
@@ -31,60 +31,6 @@ use crate::{
 };
 
 const SYNC_ALPN: &[u8] = b"eidetica/v0";
-
-/// Serializable representation of EndpointAddr for storage
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct EndpointAddrInfo {
-    endpoint_id: String,
-    direct_addresses: BTreeSet<SocketAddr>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    relay_urls: Vec<String>,
-}
-
-impl From<&EndpointAddr> for EndpointAddrInfo {
-    fn from(endpoint_addr: &EndpointAddr) -> Self {
-        let relay_urls = endpoint_addr
-            .relay_urls()
-            .map(|url| url.to_string())
-            .collect();
-
-        Self {
-            endpoint_id: endpoint_addr.id.to_string(),
-            direct_addresses: endpoint_addr.ip_addrs().cloned().collect(),
-            relay_urls,
-        }
-    }
-}
-
-impl TryFrom<EndpointAddrInfo> for EndpointAddr {
-    type Error = Error;
-
-    fn try_from(info: EndpointAddrInfo) -> Result<Self> {
-        let endpoint_id = info.endpoint_id.parse().map_err(|e| {
-            SyncError::SerializationError(format!(
-                "Invalid EndpointId '{}': {}",
-                info.endpoint_id, e
-            ))
-        })?;
-
-        // Convert SocketAddrs to TransportAddrs
-        let mut transport_addrs: Vec<TransportAddr> = info
-            .direct_addresses
-            .into_iter()
-            .map(TransportAddr::Ip)
-            .collect();
-
-        // Reconstruct relay URLs
-        for relay_url in info.relay_urls {
-            let url = relay_url.parse().map_err(|e| {
-                SyncError::SerializationError(format!("Invalid relay URL '{}': {}", relay_url, e))
-            })?;
-            transport_addrs.push(TransportAddr::Relay(url));
-        }
-
-        Ok(EndpointAddr::from_parts(endpoint_id, transport_addrs))
-    }
-}
 
 /// Serializable relay mode setting for transport configuration.
 ///
@@ -428,10 +374,8 @@ struct IrohRuntimeConfig {
 ///
 /// # Server Addresses
 ///
-/// Internally, addresses use a base64url-encoded JSON format (`EndpointAddrInfo`)
-/// for `get_server_address()` and handshake `listen_addresses`. For `DatabaseTicket`
-/// URLs, the address is converted to iroh's standard `EndpointTicket` format
-/// (postcard + base32-lower with `endpoint` prefix) via `to_ticket_param()`.
+/// Addresses use iroh's standard `EndpointTicket` format (postcard + base32-lower
+/// with `endpoint` prefix) for both `get_server_address()` and `DatabaseTicket` URLs.
 ///
 /// # Example
 ///
@@ -688,13 +632,7 @@ impl SyncTransport for IrohTransport {
         // Note: We don't wait for online() - direct addresses are available immediately
         // after bind(), and relay connections happen asynchronously in the background.
         let endpoint_addr = endpoint.addr();
-
-        // Serialize EndpointAddr to base64url-encoded JSON for compact, URL-safe storage
-        let endpoint_addr_info = EndpointAddrInfo::from(&endpoint_addr);
-        let json = serde_json::to_vec(&endpoint_addr_info).map_err(|e| {
-            SyncError::TransportInit(format!("Failed to serialize EndpointAddr: {e}"))
-        })?;
-        let endpoint_addr_str = Base64UrlUnpadded::encode_string(&json);
+        let endpoint_addr_str = Ticket::serialize(&EndpointTicket::new(endpoint_addr));
 
         // Create server coordination channels
         let (ready_tx, ready_rx) = oneshot::channel();
@@ -741,18 +679,15 @@ impl SyncTransport for IrohTransport {
         // Ensure we have an endpoint (lazy initialization)
         let endpoint = self.ensure_endpoint().await?;
 
-        // Decode the base64url-encoded JSON address
-        let json_bytes = Base64UrlUnpadded::decode_vec(&address.address).map_err(|e| {
-            SyncError::SerializationError(format!("Invalid base64 in iroh address: {e}"))
-        })?;
-        let endpoint_addr_info: EndpointAddrInfo =
-            serde_json::from_slice(&json_bytes).map_err(|e| {
+        // Deserialize the EndpointTicket address
+        let endpoint_ticket =
+            <EndpointTicket as Ticket>::deserialize(&address.address).map_err(|e| {
                 SyncError::SerializationError(format!(
-                    "Failed to parse EndpointAddrInfo from '{}': {}",
-                    address.address, e
+                    "Failed to parse EndpointTicket '{}': {e}",
+                    address.address
                 ))
             })?;
-        let endpoint_addr = EndpointAddr::try_from(endpoint_addr_info)?;
+        let endpoint_addr = endpoint_ticket.endpoint_addr().clone();
 
         // Connect to the peer
         let conn = endpoint
@@ -805,30 +740,35 @@ impl SyncTransport for IrohTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use iroh::{EndpointAddr, TransportAddr};
 
-    /// Round-trip test: EndpointAddrInfo → JSON → base64url → decode → parse → compare
+    /// Round-trip: EndpointAddr → EndpointTicket string → EndpointAddr
     #[test]
-    fn endpoint_addr_info_base64_round_trip() {
-        let info = EndpointAddrInfo {
-            endpoint_id: "node42".to_string(),
-            direct_addresses: ["10.0.0.1:9090"]
-                .iter()
-                .map(|s| s.parse().unwrap())
-                .collect(),
-            relay_urls: vec![
-                "https://relay1.example.com".to_string(),
-                "https://relay2.example.com".to_string(),
+    fn endpoint_ticket_round_trip() {
+        let secret_key = SecretKey::from_bytes(&[1u8; 32]);
+        let endpoint_addr = EndpointAddr::from_parts(
+            secret_key.public(),
+            vec![
+                TransportAddr::Ip("127.0.0.1:1234".parse().unwrap()),
+                TransportAddr::Ip("192.168.1.1:5678".parse().unwrap()),
             ],
-        };
+        );
 
-        let json = serde_json::to_vec(&info).unwrap();
-        let encoded = Base64UrlUnpadded::encode_string(&json);
+        // Serialize to EndpointTicket string
+        let ticket_str = Ticket::serialize(&EndpointTicket::new(endpoint_addr.clone()));
+        assert!(
+            ticket_str.starts_with("endpoint"),
+            "EndpointTicket should start with 'endpoint' prefix: {ticket_str}"
+        );
 
-        let decoded_bytes = Base64UrlUnpadded::decode_vec(&encoded).unwrap();
-        let decoded: EndpointAddrInfo = serde_json::from_slice(&decoded_bytes).unwrap();
+        // Deserialize back
+        let ticket = <EndpointTicket as Ticket>::deserialize(&ticket_str).unwrap();
+        let round_tripped = ticket.endpoint_addr();
 
-        assert_eq!(info.endpoint_id, decoded.endpoint_id);
-        assert_eq!(info.direct_addresses, decoded.direct_addresses);
-        assert_eq!(info.relay_urls, decoded.relay_urls);
+        assert_eq!(endpoint_addr.id, round_tripped.id);
+        assert_eq!(
+            endpoint_addr.ip_addrs().collect::<Vec<_>>(),
+            round_tripped.ip_addrs().collect::<Vec<_>>()
+        );
     }
 }

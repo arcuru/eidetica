@@ -1255,6 +1255,7 @@ dependencies = [
  "hex",
  "instability",
  "iroh",
+ "iroh-tickets",
  "postcard",
  "postcard-derive",
  "rand 0.8.5",
@@ -2487,6 +2488,20 @@ dependencies = [
  "webpki-roots",
  "ws_stream_wasm",
  "z32",
+]
+
+[[package]]
+name = "iroh-tickets"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09cd580bf680db919cbbce6886a47314acb0e9b4f7b639acebcea5e9f485d183"
+dependencies = [
+ "data-encoding",
+ "derive_more",
+ "iroh-base",
+ "n0-error",
+ "postcard",
+ "serde",
 ]
 
 [[package]]
