@@ -160,21 +160,21 @@ fn test_permission_hierarchical_key_modification() {
     // Create resolved auth for super admin
     let super_resolved = ResolvedAuth {
         public_key: PrivateKey::generate().public_key(),
-        effective_permission: super_admin.permissions().clone(),
+        effective_permission: *super_admin.permissions(),
         key_status: super_admin.status().clone(),
     };
 
     // Create resolved auth for low admin
     let low_admin_resolved = ResolvedAuth {
         public_key: PrivateKey::generate().public_key(),
-        effective_permission: low_admin.permissions().clone(),
+        effective_permission: *low_admin.permissions(),
         key_status: low_admin.status().clone(),
     };
 
     // Create resolved auth for write key
     let write_resolved = ResolvedAuth {
         public_key: PrivateKey::generate().public_key(),
-        effective_permission: high_write.permissions().clone(),
+        effective_permission: *high_write.permissions(),
         key_status: high_write.status().clone(),
     };
 
@@ -291,19 +291,11 @@ fn test_permission_complex_priority_scenarios() {
             }
 
             // Test min/max behavior
-            let expected_min = if p1 < p2 {
-                admin2.clone()
-            } else {
-                admin1.clone()
-            };
-            let expected_max = if p1 < p2 {
-                admin1.clone()
-            } else {
-                admin2.clone()
-            };
+            let expected_min = if p1 < p2 { admin2 } else { admin1 };
+            let expected_max = if p1 < p2 { admin1 } else { admin2 };
 
-            assert_eq!(min(admin1.clone(), admin2.clone()), expected_min);
-            assert_eq!(max(admin1.clone(), admin2.clone()), expected_max);
+            assert_eq!(min(admin1, admin2), expected_min);
+            assert_eq!(max(admin1, admin2), expected_max);
         }
     }
 
@@ -342,7 +334,7 @@ fn test_permission_string_conversion_comprehensive() {
     ];
 
     for permission in permissions {
-        let string_repr: String = permission.clone().into();
+        let string_repr: String = permission.into();
         let parsed_back = Permission::try_from(string_repr.clone())
             .unwrap_or_else(|_| panic!("Failed to parse: {string_repr}"));
         assert_eq!(

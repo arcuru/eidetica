@@ -45,21 +45,21 @@ pub fn clamp_permission(delegated_permission: Permission, bounds: &PermissionBou
         );
         // For invalid bounds, apply only the max bound (safer fallback)
         if delegated_permission > bounds.max {
-            return bounds.max.clone();
+            return bounds.max;
         }
         return delegated_permission;
     }
 
     // Apply maximum bound (always enforced) - if permission exceeds max, clamp to max
     if delegated_permission > bounds.max {
-        return bounds.max.clone();
+        return bounds.max;
     }
 
     // Apply minimum bound if specified - only if permission is naturally below minimum
     if let Some(min) = &bounds.min
         && delegated_permission < *min
     {
-        return min.clone();
+        return *min;
     }
 
     delegated_permission

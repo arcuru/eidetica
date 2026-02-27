@@ -109,12 +109,12 @@ impl DelegationResolver {
                 Some(existing_bounds) => {
                     // Combine bounds by taking the minimum of max permissions
                     let new_max = std::cmp::min(
-                        existing_bounds.max.clone(),
-                        delegated_tree_ref.permission_bounds.max.clone(),
+                        existing_bounds.max,
+                        delegated_tree_ref.permission_bounds.max,
                     );
                     let new_min = match (
                         existing_bounds.min,
-                        delegated_tree_ref.permission_bounds.min.clone(),
+                        delegated_tree_ref.permission_bounds.min,
                     ) {
                         (Some(existing_min), Some(new_min)) => {
                             Some(std::cmp::max(existing_min, new_min))
@@ -145,7 +145,7 @@ impl DelegationResolver {
         if let Some(bounds) = cumulative_bounds {
             for resolved in &mut matches {
                 resolved.effective_permission =
-                    clamp_permission(resolved.effective_permission.clone(), &bounds);
+                    clamp_permission(resolved.effective_permission, &bounds);
             }
         }
 

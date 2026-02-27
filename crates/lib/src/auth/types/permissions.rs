@@ -8,7 +8,7 @@ use super::super::permission::clamp_permission;
 use crate::crdt::{CRDTError, Doc, doc::Value};
 
 /// Permission levels for authenticated operations
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Permission {
     /// Full administrative access including settings and key management
     /// Priority may be used for conflict resolution, lower number = higher priority
@@ -71,7 +71,7 @@ impl Permission {
     /// Returns the minimum of self and max_permission.
     pub fn clamp_to(&self, max_permission: &Permission) -> Permission {
         use std::cmp::min;
-        min(self.clone(), max_permission.clone())
+        min(*self, *max_permission)
     }
 
     /// Clamp permissions within bounds (for delegated trees)
@@ -80,7 +80,7 @@ impl Permission {
     /// If min is specified and self is below min, raises to min.
     /// If self is above max, lowers to max.
     pub fn clamp_to_bounds(&self, bounds: &PermissionBounds) -> Permission {
-        clamp_permission(self.clone(), bounds)
+        clamp_permission(*self, bounds)
     }
 }
 

@@ -28,7 +28,7 @@ fn test_admin_hierarchy_enforcement() {
 
     let low_priority_resolved = ResolvedAuth {
         public_key: PrivateKey::generate().public_key(),
-        effective_permission: low_admin.permissions().clone(),
+        effective_permission: *low_admin.permissions(),
         key_status: low_admin.status().clone(),
     };
 
@@ -89,7 +89,7 @@ fn test_admin_hierarchy_complete_enforcement() {
 
     let junior_resolved = ResolvedAuth {
         public_key: PrivateKey::generate().public_key(),
-        effective_permission: junior_admin.permissions().clone(),
+        effective_permission: *junior_admin.permissions(),
         key_status: junior_admin.status().clone(),
     };
 
@@ -154,7 +154,7 @@ fn test_privilege_escalation_prevention() {
 
     let write_resolved = ResolvedAuth {
         public_key: PrivateKey::generate().public_key(),
-        effective_permission: write_user.permissions().clone(),
+        effective_permission: *write_user.permissions(),
         key_status: write_user.status().clone(),
     };
 
@@ -192,7 +192,7 @@ fn test_key_creation_privilege_escalation_prevention() {
 
     let low_admin_resolved = ResolvedAuth {
         public_key: PrivateKey::generate().public_key(),
-        effective_permission: low_admin.permissions().clone(),
+        effective_permission: *low_admin.permissions(),
         key_status: low_admin.status().clone(),
     };
 

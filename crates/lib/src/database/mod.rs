@@ -379,7 +379,7 @@ impl Database {
                         }));
                     }
                     let auth_key = auth_settings.get_key_by_pubkey(pubkey)?;
-                    Ok(auth_key.permissions().clone())
+                    Ok(*auth_key.permissions())
                 }
                 (_, Some(name)) => {
                     let matches = auth_settings.find_keys_by_name(name);
@@ -400,7 +400,7 @@ impl Database {
                                 ),
                             })
                         })?;
-                    Ok(auth_key.permissions().clone())
+                    Ok(*auth_key.permissions())
                 }
                 _ => Err(Error::Auth(AuthError::InvalidAuthConfiguration {
                     reason: "DatabaseKey has empty identity hint".to_string(),

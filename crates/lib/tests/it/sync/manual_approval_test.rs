@@ -465,7 +465,7 @@ async fn test_malformed_permission_requests() {
             peer_pubkey: None,
             requesting_key: Some(test_key.clone()),
             requesting_key_name: Some(format!("key_for_{}", description.replace(" ", "_"))),
-            requested_permission: Some(permission.clone()),
+            requested_permission: Some(*permission),
         });
 
         let context = RequestContext::default();

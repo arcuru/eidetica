@@ -102,7 +102,7 @@ fn test_auth_key_to_nested_value() {
 fn test_permission_nested_value_roundtrip() {
     let original = Permission::Write(42);
     let mut nested = Doc::new();
-    nested.set_json("perm", &original).unwrap();
+    nested.set_json("perm", original).unwrap();
     let parsed: Permission = nested.get_json("perm").unwrap();
     assert_eq!(original, parsed);
 }
@@ -263,14 +263,14 @@ fn test_option_permission_nested_value_roundtrip() {
     // Test Some(permission)
     let some_perm = Some(Permission::Write(42));
     let mut nested = Doc::new();
-    nested.set_json("perm", &some_perm).unwrap();
+    nested.set_json("perm", some_perm).unwrap();
     let parsed: Option<Permission> = nested.get_json("perm").unwrap();
     assert_eq!(some_perm, parsed);
 
     // Test None
     let none_perm: Option<Permission> = None;
     let mut nested2 = Doc::new();
-    nested2.set_json("perm", &none_perm).unwrap();
+    nested2.set_json("perm", none_perm).unwrap();
     let parsed2: Option<Permission> = nested2.get_json("perm").unwrap();
     assert_eq!(none_perm, parsed2);
 }

@@ -257,7 +257,7 @@ impl Sync {
         // Keys are stored by pubkey, with name as optional metadata
         let auth_key = AuthKey::active(
             Some(&request.requesting_key_name), // name metadata
-            request.requested_permission.clone(),
+            request.requested_permission,
         );
 
         // Add the new key to auth settings using SettingsStore API

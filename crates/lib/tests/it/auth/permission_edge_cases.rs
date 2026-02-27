@@ -78,7 +78,7 @@ fn test_permission_clamping_none_min_bound() {
     ];
 
     for (input, expected) in test_cases {
-        let result = clamp_permission(input.clone(), &bounds);
+        let result = clamp_permission(input, &bounds);
         assert_eq!(result, expected, "Failed for input: {input:?}");
     }
 }
@@ -99,7 +99,7 @@ fn test_permission_clamping_read_permissions() {
     ];
 
     for (input, expected) in test_cases {
-        let result = clamp_permission(input.clone(), &bounds);
+        let result = clamp_permission(input, &bounds);
         assert_eq!(result, expected, "Failed for input: {input:?}");
     }
 }
@@ -143,7 +143,7 @@ fn test_permission_bounds_edge_cases() {
     ];
 
     for (input, expected) in test_cases {
-        let result = clamp_permission(input.clone(), &same_level_bounds);
+        let result = clamp_permission(input, &same_level_bounds);
         assert_eq!(result, expected, "Failed for input: {input:?}");
     }
 }
@@ -201,7 +201,7 @@ fn test_permission_extreme_priority_differences() {
     ];
 
     for (input, expected) in test_cases {
-        let result = clamp_permission(input.clone(), &bounds);
+        let result = clamp_permission(input, &bounds);
         assert_eq!(result, expected, "Failed for input: {input:?}");
     }
 }

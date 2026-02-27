@@ -261,7 +261,7 @@ impl AuthSettings {
             // There is only 1 global, no need to look for others
             return Ok(vec![ResolvedAuth {
                 public_key: PublicKey::from_prefixed_string(actual_pubkey)?,
-                effective_permission: global_key.permissions().clone(),
+                effective_permission: *global_key.permissions(),
                 key_status: global_key.status().clone(),
             }]);
         }
@@ -271,7 +271,7 @@ impl AuthSettings {
             return match self.get_key_by_pubkey(pubkey) {
                 Ok(key) => Ok(vec![ResolvedAuth {
                     public_key: PublicKey::from_prefixed_string(pubkey)?,
-                    effective_permission: key.permissions().clone(),
+                    effective_permission: *key.permissions(),
                     key_status: key.status().clone(),
                 }]),
                 Err(e) => Err(e),
@@ -292,7 +292,7 @@ impl AuthSettings {
             for (pubkey, auth_key) in matches {
                 results.push(ResolvedAuth {
                     public_key: PublicKey::from_prefixed_string(&pubkey)?,
-                    effective_permission: auth_key.permissions().clone(),
+                    effective_permission: *auth_key.permissions(),
                     key_status: auth_key.status().clone(),
                 });
             }
@@ -315,7 +315,7 @@ impl AuthSettings {
         if let Ok(key) = self.get_key_by_pubkey("*")
             && *key.status() == KeyStatus::Active
         {
-            Some(key.permissions().clone())
+            Some(*key.permissions())
         } else {
             None
         }
@@ -354,7 +354,7 @@ impl AuthSettings {
 
         // Check if this pubkey has a direct key entry
         if let Ok(auth_key) = self.get_key_by_pubkey(pubkey) {
-            results.push((SigKey::from_pubkey(pubkey), auth_key.permissions().clone()));
+            results.push((SigKey::from_pubkey(pubkey), *auth_key.permissions()));
         }
 
         // Check if global "*" permission exists

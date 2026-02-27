@@ -135,7 +135,7 @@ pub async fn configure_database_auth(
         for (display_name, key_id, permission, status) in auth_config {
             let public_key = PublicKey::from_prefixed_string(key_id)?;
             let pubkey_str = format_public_key(&public_key);
-            let auth_key = AuthKey::new(Some(*display_name), permission.clone(), status.clone());
+            let auth_key = AuthKey::new(Some(*display_name), *permission, status.clone());
             settings.set_auth_key(&pubkey_str, auth_key).await?;
         }
     }
@@ -186,9 +186,7 @@ pub async fn setup_complete_auth_environment_with_user(
     let auth_config: Vec<(&str, &str, Permission, KeyStatus)> = keys
         .iter()
         .zip(key_ids.iter())
-        .map(|((name, perm, status), key_id)| {
-            (*name, key_id.as_str(), perm.clone(), status.clone())
-        })
+        .map(|((name, perm, status), key_id)| (*name, key_id.as_str(), *perm, status.clone()))
         .collect();
 
     configure_database_auth(&database, &auth_config)
@@ -248,9 +246,7 @@ pub async fn create_delegated_tree_with_user(
     let auth_config: Vec<(&str, &str, Permission, KeyStatus)> = keys
         .iter()
         .zip(key_ids.iter())
-        .map(|((name, perm, status), key_id)| {
-            (*name, key_id.as_str(), perm.clone(), status.clone())
-        })
+        .map(|((name, perm, status), key_id)| (*name, key_id.as_str(), *perm, status.clone()))
         .collect();
 
     configure_database_auth(&database, &auth_config).await?;

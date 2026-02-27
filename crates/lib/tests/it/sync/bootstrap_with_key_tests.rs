@@ -324,7 +324,7 @@ async fn test_bootstrap_with_different_permissions() {
             &tree_id,
             &key_id,
             &key_id,
-            permission.clone(),
+            permission,
         )
         .await
         .unwrap_or_else(|e| panic!("Bootstrap with {perm_name} should succeed: {e:?}"));

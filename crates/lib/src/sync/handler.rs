@@ -114,7 +114,7 @@ impl SyncHandlerImpl {
             tree_id: tree_id.clone(),
             requesting_pubkey: requesting_key.to_string(),
             requesting_key_name: requesting_key_name.to_string(),
-            requested_permission: requested_permission.clone(),
+            requested_permission: *requested_permission,
             timestamp: self.instance()?.clock().now_rfc3339(),
             status: RequestStatus::Pending,
             // TODO: We need to get the actual peer address from the transport layer
@@ -220,7 +220,7 @@ impl SyncHandlerImpl {
         }
 
         // Results are sorted highest first, so take the first one
-        Ok(Some(results[0].1.clone()))
+        Ok(Some(results[0].1))
     }
 
     /// Check if the requesting key already has sufficient permissions through existing auth.
@@ -565,7 +565,7 @@ impl SyncHandlerImpl {
                 return self.handle_bootstrap_request(&request.tree_id,
                                                   request.requesting_key.as_deref(),
                                                   request.requesting_key_name.as_deref(),
-                                                  request.requested_permission.clone()).await;
+                                                  request.requested_permission).await;
             }
 
             // Handle incremental sync (peer has existing data, needs updates)
