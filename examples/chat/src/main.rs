@@ -47,7 +47,7 @@ async fn main() -> Result<()> {
     if args.verbose {
         tracing_subscriber::fmt().with_env_filter("debug").init();
     } else {
-        tracing_subscriber::fmt().with_env_filter("warn").init();
+        tracing_subscriber::fmt().with_env_filter("error").init();
     }
 
     // Initialize Eidetica with sync enabled
