@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use eidetica::{
     Database, Instance, Result,
+    auth::crypto::PublicKey,
     crdt::Doc,
     store::DocStore,
     sync::{PeerId, Sync},
@@ -18,7 +19,7 @@ use super::helpers::{HttpTransportFactory, IrohTransportFactory, TransportFactor
 use crate::helpers::test_instance_with_user_and_key;
 
 /// Set up two Instance instances with users and private keys
-async fn setup_databases() -> Result<(Instance, User, String, Instance, User, String)> {
+async fn setup_databases() -> Result<(Instance, User, PublicKey, Instance, User, PublicKey)> {
     let (db1, user1, key_id1) = test_instance_with_user_and_key("user1", Some("device_key")).await;
     let (db2, user2, key_id2) = test_instance_with_user_and_key("user2", Some("device_key")).await;
     Ok((db1, user1, key_id1, db2, user2, key_id2))
@@ -83,8 +84,8 @@ where
 async fn setup_sync_hooks(
     user1: &mut User,
     user2: &mut User,
-    key_id1: &str,
-    key_id2: &str,
+    key_id1: &PublicKey,
+    key_id2: &PublicKey,
     sync1: &Sync,
     sync2: &Sync,
     peer1_pubkey: &str,

@@ -135,7 +135,7 @@ async fn test_approve_bootstrap_request() {
 
     match approved_request.status {
         RequestStatus::Approved { approved_by, .. } => {
-            assert_eq!(approved_by, key_id);
+            assert_eq!(approved_by, key_id.to_string());
         }
         other => panic!("Expected Approved status, got: {other:?}"),
     }
@@ -220,7 +220,7 @@ async fn test_reject_bootstrap_request() {
 
     match rejected_request.status {
         RequestStatus::Rejected { rejected_by, .. } => {
-            assert_eq!(rejected_by, key_id);
+            assert_eq!(rejected_by, key_id.to_string());
         }
         other => panic!("Expected Rejected status, got: {other:?}"),
     }
@@ -848,9 +848,10 @@ async fn test_bootstrap_global_permission_client_cannot_create_entries_bug() {
     let sync_handler = create_test_sync_handler(&sync);
 
     // Client bootstraps via global permission - this should succeed
+    let client_key_str = client_key_id.to_string();
     let sync_request = create_bootstrap_request(
         &tree_id,
-        &client_key_id,
+        &client_key_str,
         "client_key",
         AuthPermission::Write(10),
     );
@@ -950,9 +951,10 @@ async fn test_global_permission_enables_transactions() {
     println!("🔍 Testing bootstrap with global permission");
 
     // Test 1: Bootstrap with global permission
+    let client_key_str = client_key_id.to_string();
     let sync_request = create_bootstrap_request(
         &tree_id,
-        &client_key_id,
+        &client_key_str,
         "client_device",
         AuthPermission::Write(15),
     );
@@ -1011,7 +1013,7 @@ async fn test_global_permission_enables_transactions() {
 
     // Discover which SigKeys this public key can use
     // This will return global "*" since the client is using global permissions
-    let sigkeys = Database::find_sigkeys(&client_instance, &tree_id, &client_key_id)
+    let sigkeys = Database::find_sigkeys(&client_instance, &tree_id, &client_key_str)
         .await
         .expect("Should find valid SigKeys");
 
@@ -1123,12 +1125,13 @@ async fn test_client_retry_after_approval() {
 
     // First attempt - should be pending
     println!("🔍 Client attempting bootstrap (should be pending)...");
+    let client_key_str = client_key_id.to_string();
     let bootstrap_result = client_sync
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &client_key_id,
-            &client_key_id,
+            &client_key_str,
+            &client_key_str,
             AuthPermission::Write(5),
         )
         .await;
@@ -1167,8 +1170,8 @@ async fn test_client_retry_after_approval() {
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &client_key_id,
-            &client_key_id,
+            &client_key_str,
+            &client_key_str,
             AuthPermission::Write(5),
         )
         .await;
@@ -1198,7 +1201,6 @@ async fn test_client_retry_after_approval() {
     // Cleanup
     server_sync.stop_server().await.unwrap();
     drop(server_instance);
-    drop(server_key_id);
 
     println!("✅ TEST PASSED: Client retry after approval");
 }
@@ -1231,12 +1233,13 @@ async fn test_client_denied_after_rejection() {
 
     // Bootstrap attempt - should be pending
     println!("🔍 Client attempting bootstrap (should be pending)...");
+    let client_key_str = client_key_id.to_string();
     let bootstrap_result = client_sync
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &client_key_id,
-            &client_key_id,
+            &client_key_str,
+            &client_key_str,
             AuthPermission::Write(5),
         )
         .await;
@@ -1274,8 +1277,8 @@ async fn test_client_denied_after_rejection() {
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &client_key_id,
-            &client_key_id,
+            &client_key_str,
+            &client_key_str,
             AuthPermission::Write(5),
         )
         .await;
@@ -1290,7 +1293,6 @@ async fn test_client_denied_after_rejection() {
     // Cleanup
     server_sync.stop_server().await.unwrap();
     drop(server_instance);
-    drop(server_key_id);
 
     println!("✅ TEST PASSED: Client denied after rejection");
 }
@@ -1330,12 +1332,13 @@ async fn test_bootstrap_api_equivalence() {
         .await
         .unwrap();
 
+    let client_key_str = client_key_id.to_string();
     client_sync
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &client_key_id,
-            &client_key_id,
+            &client_key_str,
+            &client_key_str,
             AuthPermission::Write(5),
         )
         .await

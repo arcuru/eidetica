@@ -316,7 +316,7 @@ async fn test_collaborative_database_with_global_permissions() {
     let bob_key = bob.get_default_key().expect("Bob get default key");
 
     // Bob discovers available SigKeys for his public key
-    let bob_pubkey = bob.get_public_key(&bob_key).expect("Bob public key");
+    let bob_pubkey = bob_key.to_string();
 
     let sigkeys = Database::find_sigkeys(&instance, &db_id, &bob_pubkey)
         .await
@@ -490,7 +490,7 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
 
     // Enable sync for this database
     alice
-        .track_database(db_id.clone(), alice_key.clone(), SyncSettings::enabled())
+        .track_database(db_id.clone(), &alice_key, SyncSettings::enabled())
         .await
         .expect("Failed to add database to Alice's preferences");
 
@@ -563,7 +563,7 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
 
     // Bob discovers available SigKeys for his public key
     println!("\n🔍 Bob discovering available SigKeys...");
-    let bob_pubkey = bob.get_public_key(&bob_key).expect("Bob public key");
+    let bob_pubkey = bob_key.to_string();
 
     let sigkeys = Database::find_sigkeys(&bob_instance, &db_id, &bob_pubkey)
         .await

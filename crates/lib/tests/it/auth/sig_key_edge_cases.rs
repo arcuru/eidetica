@@ -48,7 +48,7 @@ async fn test_direct_key_name_hint() -> Result<()> {
     let tree = user.create_database(Doc::new(), &key_id).await?;
 
     // Add a display name to the bootstrapped key (which starts with no name)
-    rename_auth_key(&tree, &key_id, Some("test_name")).await;
+    rename_auth_key(&tree, &key_id.to_string(), Some("test_name")).await;
 
     // Test resolving by name hint - should find key with matching name
     let name_key = SigKey::from_name("test_name");
@@ -264,7 +264,7 @@ async fn test_circular_delegation_simple() -> Result<()> {
             tree: "self_reference".to_string(),
             tips: tree_tips,
         }],
-        hint: KeyHint::from_pubkey(&key_id),
+        hint: KeyHint::from_pubkey(key_id.to_string()),
     };
 
     // Add self-referencing delegation to the tree

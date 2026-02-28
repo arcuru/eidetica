@@ -8,7 +8,7 @@
 
 use super::helpers::*;
 
-use eidetica::{crdt::Doc, entry::ID, store::DocStore};
+use eidetica::{auth::crypto::generate_keypair, crdt::Doc, entry::ID, store::DocStore};
 
 // ===== CREATE DATABASE TESTS =====
 
@@ -146,10 +146,12 @@ async fn test_find_key_returns_valid_key_id() {
         .expect("Should not error")
         .expect("Should find key");
 
-    // Verify the key ID is valid
-    let _public_key = user
-        .get_public_key(&key_id)
-        .expect("Key ID should be valid");
+    // Verify the key ID is valid (it's a PublicKey, so check it's in user's key list)
+    let keys = user.list_keys().expect("Should list keys");
+    assert!(
+        keys.contains(&key_id),
+        "Found key should be in user's key list"
+    );
 }
 
 #[tokio::test]
@@ -484,11 +486,12 @@ async fn test_create_database_with_nonexistent_key() {
     let (instance, username) = setup_instance_with_user("wendy", None).await;
     let mut user = login_user(&instance, &username, None).await;
 
-    // Try to create database with a key that doesn't exist
+    // Try to create database with a key that doesn't exist (generate a random one)
     let mut settings = Doc::new();
     settings.set("name", "Test DB");
 
-    let result = user.create_database(settings, "nonexistent_key_id").await;
+    let (_, fake_key) = generate_keypair();
+    let result = user.create_database(settings, &fake_key).await;
 
     assert!(result.is_err(), "Should return error for nonexistent key");
 }
@@ -498,8 +501,9 @@ async fn test_get_signing_key_for_nonexistent_key() {
     let (instance, username) = setup_instance_with_user("xavier", None).await;
     let user = login_user(&instance, &username, None).await;
 
-    // Try to get a signing key that doesn't exist
-    let result = user.get_signing_key("nonexistent_key");
+    // Try to get a signing key that doesn't exist (generate a random one)
+    let (_, fake_key) = generate_keypair();
+    let result = user.get_signing_key(&fake_key);
 
     assert!(result.is_err(), "Should return error for nonexistent key");
 }

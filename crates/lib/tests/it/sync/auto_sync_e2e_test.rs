@@ -79,7 +79,7 @@ async fn test_auto_sync_between_instances() -> Result<()> {
     // Configure sync settings for this database with sync_on_commit enabled
     // This automatically registers the user with sync and updates combined settings
     user1
-        .track_database(db_id.clone(), key_id.clone(), SyncSettings::on_commit())
+        .track_database(db_id.clone(), &key_id, SyncSettings::on_commit())
         .await?;
 
     // Add peer2 as a sync target for this database
@@ -200,11 +200,11 @@ async fn test_bidirectional_auto_sync() -> Result<()> {
     // Configure sync on both instances
     // track_database() automatically registers users with sync and updates combined settings
     user1
-        .track_database(db1_id.clone(), key1.clone(), SyncSettings::on_commit())
+        .track_database(db1_id.clone(), &key1, SyncSettings::on_commit())
         .await?;
 
     user2
-        .track_database(db2_id.clone(), key2.clone(), SyncSettings::on_commit())
+        .track_database(db2_id.clone(), &key2, SyncSettings::on_commit())
         .await?;
 
     // Configure peer mappings
@@ -282,7 +282,7 @@ async fn test_enable_sync_after_user_setup() -> Result<()> {
 
     // Add database preferences - but sync isn't enabled yet!
     user1
-        .track_database(db_id.clone(), key_id.clone(), SyncSettings::on_commit())
+        .track_database(db_id.clone(), &key_id, SyncSettings::on_commit())
         .await?;
 
     println!("✅ User and preferences created (sync not enabled yet)");
@@ -405,7 +405,7 @@ async fn test_auto_sync_after_restart() -> Result<()> {
 
     // Add database preferences (this registers user and updates settings)
     user1
-        .track_database(db_id.clone(), key_id.clone(), SyncSettings::on_commit())
+        .track_database(db_id.clone(), &key_id, SyncSettings::on_commit())
         .await?;
 
     sync1.add_tree_sync(&peer2_pubkey, &db_id).await?;

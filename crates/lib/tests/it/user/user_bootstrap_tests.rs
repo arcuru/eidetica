@@ -7,7 +7,7 @@ use eidetica::{
     Database, Instance, Result,
     auth::{
         AuthKey, Permission,
-        crypto::{format_public_key, generate_keypair},
+        crypto::{PublicKey, format_public_key, generate_keypair},
         settings::AuthSettings,
     },
     constants::SETTINGS,
@@ -29,7 +29,7 @@ use crate::helpers::test_instance;
 /// Create a server instance with a user who owns a database
 ///
 /// Returns: (Instance, User, Database, Sync, tree_id, user_key_id)
-async fn setup_user_with_database() -> Result<(Instance, User, Database, Sync, ID, String)> {
+async fn setup_user_with_database() -> Result<(Instance, User, Database, Sync, ID, PublicKey)> {
     let instance = test_instance().await;
 
     // Create and login user
@@ -79,13 +79,9 @@ async fn setup_user_with_database() -> Result<(Instance, User, Database, Sync, I
         .expect("Failed to create sync");
 
     // Enable sync for this database
-    user.track_database(
-        tree_id.clone(),
-        user_key_id.clone(),
-        SyncSettings::enabled(),
-    )
-    .await
-    .expect("Failed to add database to user preferences");
+    user.track_database(tree_id.clone(), &user_key_id, SyncSettings::enabled())
+        .await
+        .expect("Failed to add database to user preferences");
 
     // Sync the user database to update combined settings
     sync.sync_user(user.user_uuid(), user.user_database().root_id())
@@ -136,17 +132,15 @@ async fn create_pending_request(
 ///
 /// # Arguments
 /// * `database` - The database to grant permission on
-/// * `user_key_id` - The user's key ID (public key string)
-/// * `user` - The user who owns the key (for getting the signing key)
+/// * `user_key_id` - The user's key ID (PublicKey)
 /// * `permission` - The permission level to grant
 async fn grant_user_permission_on_database(
     database: &Database,
-    user_key_id: &str,
-    user: &User,
+    user_key_id: &PublicKey,
     permission: Permission,
 ) -> Result<()> {
-    // Get user's public key
-    let pubkey = user.get_public_key(user_key_id)?;
+    // Get user's public key string representation
+    let pubkey = user_key_id.to_string();
 
     // Update database auth settings using SettingsStore API (keyed by pubkey)
     let tx = database.new_transaction().await?;
@@ -310,9 +304,10 @@ async fn test_user_approve_with_nonexistent_key() {
     let request_id =
         create_pending_request(&sync, &tree_id, &client_pubkey, Permission::Write(5)).await;
 
-    // Try to approve with a key the user doesn't own
+    // Try to approve with a key the user doesn't own (generate a random one)
+    let (_, fake_key) = generate_keypair();
     let result = user
-        .approve_bootstrap_request(&sync, &request_id, "nonexistent_key")
+        .approve_bootstrap_request(&sync, &request_id, &fake_key)
         .await;
 
     assert!(result.is_err(), "Approval should fail with nonexistent key");
@@ -337,9 +332,10 @@ async fn test_user_reject_with_nonexistent_key() {
     let request_id =
         create_pending_request(&sync, &tree_id, &client_pubkey, Permission::Write(5)).await;
 
-    // Try to reject with a key the user doesn't own
+    // Try to reject with a key the user doesn't own (generate a random one)
+    let (_, fake_key) = generate_keypair();
     let result = user
-        .reject_bootstrap_request(&sync, &request_id, "nonexistent_key")
+        .reject_bootstrap_request(&sync, &request_id, &fake_key)
         .await;
 
     assert!(
@@ -546,22 +542,14 @@ async fn test_multiple_users() {
 
     // Enable sync for Alice's database
     alice
-        .track_database(
-            alice_tree_id.clone(),
-            alice_key.clone(),
-            SyncSettings::enabled(),
-        )
+        .track_database(alice_tree_id.clone(), &alice_key, SyncSettings::enabled())
         .await
         .expect("Failed to add Alice's database preferences");
 
     // Enable sync for Bob's database
-    bob.track_database(
-        bob_tree_id.clone(),
-        bob_key.clone(),
-        SyncSettings::enabled(),
-    )
-    .await
-    .expect("Failed to add Bob's database preferences");
+    bob.track_database(bob_tree_id.clone(), &bob_key, SyncSettings::enabled())
+        .await
+        .expect("Failed to add Bob's database preferences");
 
     // Create sync instance
     let sync = Sync::new(instance.clone())
@@ -739,7 +727,7 @@ async fn test_user_without_admin_cannot_modify() {
 
     // Enable sync for Alice's database
     alice
-        .track_database(tree_id.clone(), alice_key.clone(), SyncSettings::enabled())
+        .track_database(tree_id.clone(), &alice_key, SyncSettings::enabled())
         .await
         .expect("Failed to add Alice's database preferences");
 
@@ -758,12 +746,12 @@ async fn test_user_without_admin_cannot_modify() {
         .expect("Failed to add Bob's key");
 
     // Grant Bob Write permission (NOT Admin) on Alice's database using helper
-    grant_user_permission_on_database(&alice_db, &bob_key, &bob, Permission::Write(10))
+    grant_user_permission_on_database(&alice_db, &bob_key, Permission::Write(10))
         .await
         .expect("Failed to grant Bob write permission");
 
     // Update Bob's key mapping to include Alice's database
-    bob.map_key(&bob_key, &tree_id, &bob_key)
+    bob.map_key(&bob_key, &tree_id, &bob_key.to_string())
         .await
         .expect("Failed to update Bob's key mapping");
 

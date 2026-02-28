@@ -84,7 +84,7 @@ impl App {
         self.user
             .track_database(
                 database_id,
-                key_id.clone(),
+                &key_id,
                 SyncSettings::on_commit().with_interval(2),
             )
             .await?;
@@ -200,7 +200,7 @@ impl App {
             self.user
                 .track_database(
                     room_id.clone(),
-                    key_id,
+                    &key_id,
                     SyncSettings::on_commit().with_interval(2),
                 )
                 .await?;

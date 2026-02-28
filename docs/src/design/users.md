@@ -160,8 +160,8 @@ pub struct UserPreferences {
 ```rust,ignore
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UserKey {
-    /// Local key identifier (user-chosen name or auto-generated)
-    pub key_id: String,
+    /// Public key identifier
+    pub key_id: PublicKey,
 
     /// Key storage (encrypted ciphertext or plaintext PrivateKey)
     pub storage: KeyStorage,
@@ -217,7 +217,7 @@ pub struct TrackedDatabase {
     pub database_id: ID,
 
     /// Which user key to use for this database
-    pub key_id: String,
+    pub key_id: PublicKey,
 
     /// Sync preferences for this database
     pub sync_settings: SyncSettings,
@@ -517,7 +517,7 @@ impl User {
     // === Database Operations ===
 
     /// Create a new database in this user's context
-    pub fn create_database(&self, settings: Doc, signing_key: &str) -> Result<Database>;
+    pub fn create_database(&self, settings: Doc, key_id: &PublicKey) -> Result<Database>;
 
     /// Load a database using this user's keys
     pub fn open_database(&self, database_id: &ID) -> Result<Database>;
@@ -530,14 +530,14 @@ impl User {
     /// Get the SigKey mapping for a key in a specific database
     pub fn key_mapping(
         &self,
-        key_id: &str,
+        key_id: &PublicKey,
         database_id: &ID,
     ) -> Result<Option<String>>;
 
     /// Add a SigKey mapping for a key in a specific database
     pub fn map_key(
         &mut self,
-        key_id: &str,
+        key_id: &PublicKey,
         database_id: &ID,
         sigkey: &str,
     ) -> Result<()>;
@@ -551,7 +551,7 @@ impl User {
     pub fn database(&self, database_id: &ID) -> Result<TrackedDatabase>;
 
     /// Track a database with auto-discovery of SigKeys (upsert behavior).
-    pub fn track_database(&mut self, database_id: impl Into<ID>, key_id: impl Into<String>, sync_settings: SyncSettings) -> Result<()>;
+    pub fn track_database(&mut self, database_id: impl Into<ID>, key_id: &PublicKey, sync_settings: SyncSettings) -> Result<()>;
 
     /// Stop tracking a database.
     pub fn untrack_database(&mut self, database_id: &ID) -> Result<()>;
@@ -562,13 +562,13 @@ impl User {
     pub fn add_private_key(
         &mut self,
         display_name: Option<&str>,
-    ) -> Result<String>;
+    ) -> Result<PublicKey>;
 
     /// List all key IDs owned by this user
-    pub fn list_keys(&self) -> Result<Vec<String>>;
+    pub fn list_keys(&self) -> Result<Vec<PublicKey>>;
 
     /// Get a signing key by its ID
-    pub fn get_signing_key(&self, key_id: &str) -> Result<SigningKey>;
+    pub fn get_signing_key(&self, key_id: &PublicKey) -> Result<SigningKey>;
 
     // === Session Management ===
 

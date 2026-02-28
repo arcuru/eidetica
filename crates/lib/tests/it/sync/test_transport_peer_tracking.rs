@@ -62,11 +62,7 @@ async fn test_server_automatically_tracks_peers_that_sync_trees() {
 
     // Enable sync for this database
     server_user
-        .track_database(
-            tree_id.clone(),
-            server_key_id.clone(),
-            SyncSettings::enabled(),
-        )
+        .track_database(tree_id.clone(), &server_key_id, SyncSettings::enabled())
         .await
         .unwrap();
 

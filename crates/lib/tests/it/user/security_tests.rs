@@ -7,6 +7,7 @@
 //! - Session security
 
 use super::helpers::*;
+use eidetica::auth::crypto::generate_keypair;
 
 // ===== PASSWORD EDGE CASES =====
 
@@ -180,7 +181,8 @@ async fn test_invalid_key_id_fails() {
     let (instance, username) = setup_instance_with_user("alice", None).await;
     let user = login_user(&instance, &username, None).await;
 
-    let result = user.get_signing_key("invalid_key_id");
+    let (_, fake_key) = generate_keypair();
+    let result = user.get_signing_key(&fake_key);
     assert!(result.is_err(), "Getting invalid key should fail");
 }
 

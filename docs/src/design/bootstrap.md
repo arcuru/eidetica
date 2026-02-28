@@ -294,7 +294,7 @@ impl User {
         &self,
         sync: &Sync,
         request_id: &str,
-        approving_key_id: &str,
+        approving_key_id: &PublicKey,
     ) -> Result<()>;
 
     /// Reject a bootstrap request (requires Admin permission)
@@ -303,7 +303,7 @@ impl User {
         &self,
         sync: &Sync,
         request_id: &str,
-        rejecting_key_id: &str,
+        rejecting_key_id: &PublicKey,
     ) -> Result<()>;
 
     /// Request database access via bootstrap (client-side with user-managed keys)
@@ -312,7 +312,7 @@ impl User {
         sync: &Sync,
         address: &Address,
         database_id: &ID,
-        key_id: &str,
+        key_id: &PublicKey,
         requested_permission: Permission,
     ) -> Result<()>;
 }

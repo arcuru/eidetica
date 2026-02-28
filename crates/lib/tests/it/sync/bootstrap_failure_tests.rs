@@ -79,11 +79,12 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
             .expect("Failed to register HTTP transport");
 
         // Attempt bootstrap with key approval request - should be REJECTED by default
+        let client_key_str = client_key_id.to_string();
         let result = client_sync
             .sync_with_peer_for_bootstrap_with_key(
                 &server_addr,
                 &restricted_tree_id,
-                &client_key_id,
+                &client_key_str,
                 "unauthorized_client", // Client's key name
                 Permission::Write(10), // Requested permission level
             )
@@ -123,7 +124,7 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
     {
         // EXPECTED SECURE BEHAVIOR: Should NOT contain the unauthorized client key
         assert!(
-            !auth_doc.contains_key(&client_key_id),
+            !auth_doc.contains_key(client_key_id.to_string()),
             "Unauthorized client key should NOT be added to server auth config - test fails because security is not implemented"
         );
         println!(
@@ -196,11 +197,12 @@ async fn test_bootstrap_permission_denied_no_auth_config() {
             .expect("Failed to register HTTP transport");
 
         // Attempt bootstrap with key approval request on database with no auth config — should be REJECTED
+        let client_key_str = client_key_id.to_string();
         let result = client_sync
             .sync_with_peer_for_bootstrap_with_key(
                 &server_addr,
                 &unprotected_tree_id,
-                &client_key_id,
+                &client_key_str,
                 "client_key",
                 Permission::Write(10),
             )
@@ -241,7 +243,7 @@ async fn test_bootstrap_permission_denied_no_auth_config() {
     {
         // EXPECTED SECURE BEHAVIOR: Auth config should NOT be created by unauthorized bootstrap
         assert!(
-            !auth_doc.contains_key(&client_key_id),
+            !auth_doc.contains_key(client_key_id.to_string()),
             "Auth config should NOT be created by unauthorized bootstrap - test fails because security is not implemented"
         );
         println!(
@@ -313,11 +315,12 @@ async fn test_bootstrap_invalid_public_key_format() {
         .expect("Failed to register HTTP transport");
 
     // Attempt bootstrap - current implementation may accept any key name
+    let client_key_str = client_key_id.to_string();
     let bootstrap_result = client_sync
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &client_key_id,
+            &client_key_str,
             "client_with_spaces_and_symbols!@#",
             Permission::Write(10),
         )
@@ -374,11 +377,12 @@ async fn test_bootstrap_with_revoked_key() {
 
     // Add revoked client key and device key via follow-up transaction
     let device_pubkey = server_instance.device_id_string();
+    let revoked_client_key_str = revoked_client_key_id.to_string();
     add_auth_keys(
         &server_database,
         &[
             (
-                &revoked_client_key_id,
+                &revoked_client_key_str,
                 AuthKey::new(Some("revoked"), Permission::Write(10), KeyStatus::Revoked),
             ),
             (
@@ -415,11 +419,12 @@ async fn test_bootstrap_with_revoked_key() {
         .expect("Failed to register HTTP transport");
 
     // Attempt bootstrap with a different key (since we can't use the actual revoked key easily)
+    let client_key_str = client_key_id.to_string();
     let bootstrap_result = client_sync
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &client_key_id,
+            &client_key_str,
             "attempting_revoked_access",
             Permission::Write(10),
         )
@@ -506,11 +511,12 @@ async fn test_bootstrap_exceeds_granted_permissions() {
         .expect("Failed to register HTTP transport");
 
     // Attempt bootstrap requesting Admin permissions (excessive for a new client)
+    let client_key_str = client_key_id.to_string();
     let bootstrap_result = client_sync
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &client_key_id,
+            &client_key_str,
             "greedy_client",
             Permission::Admin(0), // Requesting highest admin level
         )
@@ -541,7 +547,7 @@ async fn test_bootstrap_exceeds_granted_permissions() {
     {
         // EXPECTED SECURE BEHAVIOR: Greedy client should NOT be in auth config
         assert!(
-            !auth_doc.contains_key(&client_key_id),
+            !auth_doc.contains_key(client_key_id.to_string()),
             "Greedy client should NOT be granted any permissions for excessive request - test fails because permission validation is not implemented"
         );
     }

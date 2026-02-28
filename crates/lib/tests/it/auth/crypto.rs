@@ -2,10 +2,7 @@
 
 use eidetica::{
     Database,
-    auth::{
-        crypto::PublicKey,
-        types::{AuthKey, Permission, SigKey},
-    },
+    auth::types::{AuthKey, Permission, SigKey},
     crdt::Doc,
     database::DatabaseKey,
     store::DocStore,
@@ -26,7 +23,6 @@ async fn test_key_management() {
         .add_private_key(Some("TEST_KEY"))
         .await
         .expect("Failed to add key");
-    let _public_key = PublicKey::from_prefixed_string(&key_id).expect("Failed to parse key");
 
     // List keys should now show two keys (default_key + TEST_KEY)
     let keys = user.list_keys().expect("Failed to list keys");
@@ -38,7 +34,6 @@ async fn test_key_management() {
         .add_private_key(Some("TEST_KEY_2"))
         .await
         .expect("Failed to add second key");
-    let _public_key2 = PublicKey::from_prefixed_string(&key_id2).expect("Failed to parse key");
 
     // List keys should now show three keys (default_key + TEST_KEY + TEST_KEY_2)
     let keys = user.list_keys().expect("Failed to list keys");
@@ -74,7 +69,7 @@ async fn test_key_management() {
         .get_entry(&entry_id)
         .await
         .expect("Failed to get entry");
-    assert_eq!(entry.sig.key, SigKey::from_pubkey(&key_id));
+    assert_eq!(entry.sig.key, SigKey::from_pubkey(key_id.to_string()));
     assert!(entry.sig.sig.is_some());
 
     // Verify signature with tree's auth configuration
@@ -127,7 +122,7 @@ async fn test_generated_key_can_sign() {
         .get_entry(&entry_id)
         .await
         .expect("Failed to get entry");
-    assert_eq!(entry.sig.key, SigKey::from_pubkey(&key_id));
+    assert_eq!(entry.sig.key, SigKey::from_pubkey(key_id.to_string()));
     assert!(
         tree.verify_entry_signature(&entry_id)
             .await
@@ -144,13 +139,11 @@ async fn test_multi_key_authentication() {
         .add_private_key(Some("TEST_KEY"))
         .await
         .expect("Failed to add key");
-    let _public_key1 = PublicKey::from_prefixed_string(&key_id1).expect("Failed to parse key");
 
     let key_id2 = user
         .add_private_key(Some("SECOND_KEY"))
         .await
         .expect("Failed to add second key");
-    let _public_key2 = PublicKey::from_prefixed_string(&key_id2).expect("Failed to parse key");
 
     // Create database with first key (signing key becomes Admin(0))
     let tree = user
@@ -166,7 +159,7 @@ async fn test_multi_key_authentication() {
     let settings_store = txn.get_settings().expect("Failed to get settings store");
     settings_store
         .set_auth_key(
-            &key_id2,
+            &key_id2.to_string(),
             AuthKey::active(Some("SECOND_KEY"), Permission::Write(20)),
         )
         .await
@@ -196,7 +189,7 @@ async fn test_multi_key_authentication() {
         .get_entry(&entry_id)
         .await
         .expect("Failed to get entry");
-    assert_eq!(entry.sig.key, SigKey::from_pubkey(&key_id1));
+    assert_eq!(entry.sig.key, SigKey::from_pubkey(key_id1.to_string()));
     assert!(entry.sig.sig.is_some());
     assert!(
         tree.verify_entry_signature(&entry_id)
@@ -212,7 +205,7 @@ async fn test_multi_key_authentication() {
     let tree_with_key2 = Database::open(
         instance.clone(),
         tree.root_id(),
-        DatabaseKey::from_legacy_sigkey(signing_key2_for_load, &key_id2),
+        DatabaseKey::from_legacy_sigkey(signing_key2_for_load, &key_id2.to_string()),
     )
     .await
     .expect("Failed to load database with key2");
@@ -237,7 +230,7 @@ async fn test_multi_key_authentication() {
         .get_entry(&entry_id2)
         .await
         .expect("Failed to get entry2");
-    assert_eq!(entry2.sig.key, SigKey::from_pubkey(&key_id2));
+    assert_eq!(entry2.sig.key, SigKey::from_pubkey(key_id2.to_string()));
     assert!(
         tree.verify_entry_signature(&entry_id2)
             .await
@@ -256,17 +249,14 @@ async fn test_keys_have_unique_identity() {
         .add_private_key(Some("TEST_KEY"))
         .await
         .expect("Failed to add key");
-    let public_key1 = PublicKey::from_prefixed_string(&key_id1).expect("Failed to parse key");
 
     // Add another key with different name
     let key_id2 = user
         .add_private_key(Some("TEST_KEY_2"))
         .await
         .expect("Failed to add another key");
-    let public_key2 = PublicKey::from_prefixed_string(&key_id2).expect("Failed to parse key");
 
     // Should be different keys
-    assert_ne!(public_key1, public_key2);
     assert_ne!(key_id1, key_id2);
 
     // Should now have three keys (default_key + TEST_KEY + TEST_KEY_2)

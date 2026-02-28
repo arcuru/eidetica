@@ -8,7 +8,7 @@
 //! - Database-key mappings and sigkey retrieval
 //! - Multi-key and multi-database scenarios
 
-use eidetica::auth::crypto::format_public_key;
+use eidetica::auth::crypto::generate_keypair;
 use eidetica::crdt::Doc;
 use eidetica::entry::ID;
 
@@ -202,105 +202,13 @@ async fn test_get_nonexistent_signing_key() {
     let (instance, username) = setup_instance_with_user("kate", None).await;
     let user = login_user(&instance, &username, None).await;
 
-    // Try to get a key that doesn't exist
-    let fake_key_id = "nonexistent_key_id";
-    let result = user.get_signing_key(fake_key_id);
+    // Try to get a key that doesn't exist (generate a random one)
+    let (_, fake_key_id) = generate_keypair();
+    let result = user.get_signing_key(&fake_key_id);
 
     assert!(
         result.is_err(),
         "Getting nonexistent signing key should fail"
-    );
-}
-
-#[tokio::test]
-async fn test_get_public_key() {
-    let (instance, username) = setup_instance_with_user("laura", None).await;
-    let mut user = login_user(&instance, &username, None).await;
-
-    // Add a key
-    let key_id = add_user_key(&mut user, Some("Public Key Test")).await;
-
-    // Get both the signing key and public key
-    let signing_key = user
-        .get_signing_key(&key_id)
-        .expect("Should get signing key");
-    let public_key = user.get_public_key(&key_id).expect("Should get public key");
-
-    // Verify the public key matches the signing key's verifying key
-    let expected_pubkey = format_public_key(&signing_key.public_key());
-    assert_eq!(
-        public_key, expected_pubkey,
-        "Public key should match the signing key's verifying key"
-    );
-
-    // Verify the public key is not empty
-    assert!(!public_key.is_empty(), "Public key should not be empty");
-}
-
-#[tokio::test]
-async fn test_get_public_key_for_default_key() {
-    let (instance, username) = setup_instance_with_user("mike", None).await;
-    let user = login_user(&instance, &username, None).await;
-
-    // Get the default key
-    let default_key_id = user.get_default_key().expect("Should have default key");
-
-    // Get the public key
-    let public_key = user
-        .get_public_key(&default_key_id)
-        .expect("Should get public key for default key");
-
-    // Verify it's a valid formatted public key
-    assert!(!public_key.is_empty(), "Public key should not be empty");
-}
-
-#[tokio::test]
-async fn test_get_public_key_for_nonexistent_key() {
-    let (instance, username) = setup_instance_with_user("nancy", None).await;
-    let user = login_user(&instance, &username, None).await;
-
-    // Try to get public key for a nonexistent key
-    let fake_key_id = "nonexistent_key_id";
-    let result = user.get_public_key(fake_key_id);
-
-    assert!(
-        result.is_err(),
-        "Getting public key for nonexistent key should fail"
-    );
-}
-
-#[tokio::test]
-async fn test_get_public_key_multiple_keys() {
-    let (instance, username) = setup_instance_with_user("oscar", None).await;
-    let mut user = login_user(&instance, &username, None).await;
-
-    // Add multiple keys
-    let key1_id = add_user_key(&mut user, Some("Key 1")).await;
-    let key2_id = add_user_key(&mut user, Some("Key 2")).await;
-    let key3_id = add_user_key(&mut user, Some("Key 3")).await;
-
-    // Get public keys for all three
-    let pubkey1 = user
-        .get_public_key(&key1_id)
-        .expect("Should get public key 1");
-    let pubkey2 = user
-        .get_public_key(&key2_id)
-        .expect("Should get public key 2");
-    let pubkey3 = user
-        .get_public_key(&key3_id)
-        .expect("Should get public key 3");
-
-    // Verify all public keys are unique
-    assert_ne!(pubkey1, pubkey2, "Public keys should be different");
-    assert_ne!(pubkey2, pubkey3, "Public keys should be different");
-    assert_ne!(pubkey1, pubkey3, "Public keys should be different");
-
-    // Verify each matches its corresponding signing key
-    let signing_key1 = user.get_signing_key(&key1_id).expect("Get signing key 1");
-    let expected_pubkey1 = format_public_key(&signing_key1.public_key());
-    assert_eq!(
-        pubkey1, expected_pubkey1,
-        "Public key 1 should match signing key 1"
     );
 }
 
@@ -461,8 +369,9 @@ async fn test_get_database_sigkey_for_nonexistent_key() {
     let database = create_named_database(&mut user, "test_db").await;
     let db_id = database.root_id();
 
-    // Try to get sigkey with nonexistent key
-    let result = user.key_mapping("nonexistent_key", db_id);
+    // Try to get sigkey with nonexistent key (generate a random one)
+    let (_, fake_key) = generate_keypair();
+    let result = user.key_mapping(&fake_key, db_id);
 
     assert!(
         result.is_err(),
@@ -503,7 +412,7 @@ async fn test_add_database_key_mapping() {
     );
 
     // Add mapping manually for the extra key
-    user.map_key(&extra_key, db_id, &extra_key)
+    user.map_key(&extra_key, db_id, &extra_key.to_string())
         .await
         .expect("Should add database key mapping");
 
@@ -535,8 +444,9 @@ async fn test_add_database_key_mapping_for_nonexistent_key() {
     let database = create_named_database(&mut user, "test_db").await;
     let db_id = database.root_id();
 
-    // Try to add mapping for nonexistent key
-    let result = user.map_key("nonexistent_key", db_id, "fake_sigkey").await;
+    // Try to add mapping for nonexistent key (generate a random one)
+    let (_, fake_key) = generate_keypair();
+    let result = user.map_key(&fake_key, db_id, "fake_sigkey").await;
 
     assert!(
         result.is_err(),
@@ -590,10 +500,10 @@ async fn test_multiple_keys_one_database() {
     let key3 = add_user_key(&mut user, Some("Key 3")).await;
 
     // Add mappings for the new keys to the same database
-    user.map_key(&key2, db_id, &key2)
+    user.map_key(&key2, db_id, &key2.to_string())
         .await
         .expect("Should add mapping for key2");
-    user.map_key(&key3, db_id, &key3)
+    user.map_key(&key3, db_id, &key3.to_string())
         .await
         .expect("Should add mapping for key3");
 
@@ -654,16 +564,16 @@ async fn test_complex_key_database_mappings() {
     // Add specific manual mappings:
     // - key2 -> work_db and shared_db
     // - key3 -> home_db and shared_db
-    user.map_key(&key2, db1.root_id(), &key2)
+    user.map_key(&key2, db1.root_id(), &key2.to_string())
         .await
         .expect("Map key2 to work_db");
-    user.map_key(&key2, db3.root_id(), &key2)
+    user.map_key(&key2, db3.root_id(), &key2.to_string())
         .await
         .expect("Map key2 to shared_db");
-    user.map_key(&key3, db2.root_id(), &key3)
+    user.map_key(&key3, db2.root_id(), &key3.to_string())
         .await
         .expect("Map key3 to home_db");
-    user.map_key(&key3, db3.root_id(), &key3)
+    user.map_key(&key3, db3.root_id(), &key3.to_string())
         .await
         .expect("Map key3 to shared_db");
 
@@ -748,7 +658,7 @@ async fn test_manual_mappings_persist_across_sessions() {
 
     // Add manual mapping
     user1
-        .map_key(&extra_key, &db_id, &extra_key)
+        .map_key(&extra_key, &db_id, &extra_key.to_string())
         .await
         .expect("Should add mapping");
 
@@ -821,19 +731,19 @@ async fn test_multiple_manual_mappings_persist() {
 
     // Add multiple manual mappings
     user1
-        .map_key(&key2, db1.root_id(), &key2)
+        .map_key(&key2, db1.root_id(), &key2.to_string())
         .await
         .expect("Map key2 to db1");
     user1
-        .map_key(&key2, db2.root_id(), &key2)
+        .map_key(&key2, db2.root_id(), &key2.to_string())
         .await
         .expect("Map key2 to db2");
     user1
-        .map_key(&key3, db2.root_id(), &key3)
+        .map_key(&key3, db2.root_id(), &key3.to_string())
         .await
         .expect("Map key3 to db2");
     user1
-        .map_key(&key3, db3.root_id(), &key3)
+        .map_key(&key3, db3.root_id(), &key3.to_string())
         .await
         .expect("Map key3 to db3");
 

@@ -49,7 +49,7 @@ async fn create_test_user_session() -> User {
     let (encrypted_key, nonce) = encrypt_private_key(&device_key, &encryption_key).unwrap();
 
     let user_key = UserKey {
-        key_id: "admin".to_string(),
+        key_id: device_key.public_key(),
         storage: KeyStorage::Encrypted {
             algorithm: "aes-256-gcm".to_string(),
             ciphertext: encrypted_key,

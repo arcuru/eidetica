@@ -22,7 +22,7 @@ async fn test_get_entry_basic() {
         .await
         .expect("Failed to get entry");
     assert_eq!(entry.id(), entry_id);
-    assert_eq!(entry.sig.key, SigKey::from_pubkey(&key_id));
+    assert_eq!(entry.sig.key, SigKey::from_pubkey(key_id.to_string()));
     assert!(entry.sig.sig.is_some());
 }
 
@@ -230,12 +230,13 @@ async fn test_tree_validation_get_entries() {
 #[tokio::test]
 async fn test_auth_helpers_signed_entries() {
     let (_instance, tree, key_id) = setup_tree_with_user_auth().await;
+    let key_id_str = key_id.to_string();
 
     // Create signed entry using helper
     let entry_id = add_authenticated_data(&tree, "data", &[("key", "value")]).await;
 
     // Test entry auth access using helper
-    assert_entry_authentication(&tree, &entry_id, &key_id).await;
+    assert_entry_authentication(&tree, &entry_id, &key_id_str).await;
 
     // Test entry belongs to tree
     assert_entry_belongs_to_tree(&tree, &entry_id).await;
@@ -247,7 +248,10 @@ async fn test_auth_helpers_signed_entries() {
         .expect("Failed to get entry");
     let sig_info = &entry.sig;
     let hint = sig_info.hint();
-    assert!(hint.pubkey.as_deref() == Some(&key_id) || hint.name.as_deref() == Some(&key_id));
+    assert!(
+        hint.pubkey.as_deref() == Some(key_id_str.as_str())
+            || hint.name.as_deref() == Some(key_id_str.as_str())
+    );
     assert!(
         hint.pubkey.as_deref() != Some("OTHER_KEY") && hint.name.as_deref() != Some("OTHER_KEY")
     );
@@ -257,12 +261,13 @@ async fn test_auth_helpers_signed_entries() {
 #[tokio::test]
 async fn test_auth_helpers_default_authenticated_entries() {
     let (_instance, tree, key_id) = setup_tree_with_user_key().await;
+    let key_id_str = key_id.to_string();
 
     // Create entry using default authentication helper
     let entry_id = add_data_to_subtree(&tree, "data", &[("key", "value")]).await;
 
     // Test entry auth access using helper
-    assert_entry_authentication(&tree, &entry_id, &key_id).await;
+    assert_entry_authentication(&tree, &entry_id, &key_id_str).await;
 
     // Test manual auth checks
     let entry = tree
@@ -271,7 +276,10 @@ async fn test_auth_helpers_default_authenticated_entries() {
         .expect("Failed to get entry");
     let sig_info = &entry.sig;
     let hint = sig_info.hint();
-    assert!(hint.pubkey.as_deref() == Some(&key_id) || hint.name.as_deref() == Some(&key_id));
+    assert!(
+        hint.pubkey.as_deref() == Some(key_id_str.as_str())
+            || hint.name.as_deref() == Some(key_id_str.as_str())
+    );
     assert!(
         hint.pubkey.as_deref() != Some("OTHER_KEY") && hint.name.as_deref() != Some("OTHER_KEY")
     );
@@ -281,12 +289,13 @@ async fn test_auth_helpers_default_authenticated_entries() {
 #[tokio::test]
 async fn test_verify_entry_signature_auth_scenarios() {
     let (_instance, tree, key_id) = setup_tree_with_user_auth().await;
+    let key_id_str = key_id.to_string();
 
     // Test 1: Create entry signed with valid key using helper
     let signed_entry_id = add_authenticated_data(&tree, "data", &[("key", "value1")]).await;
 
     // Should verify successfully using helper
-    assert_entry_authentication(&tree, &signed_entry_id, &key_id).await;
+    assert_entry_authentication(&tree, &signed_entry_id, &key_id_str).await;
 
     // Test 2: Create unsigned entry using helper
     let unsigned_entry_id = add_data_to_subtree(&tree, "data", &[("key", "value2")]).await;
@@ -323,7 +332,7 @@ async fn test_verify_entry_signature_unauthorized_key() {
     // Test with authorized key (should succeed) using helper
     let authorized_entry_id = add_authenticated_data(&tree, "data", &[("key", "value1")]).await;
 
-    assert_entry_authentication(&tree, &authorized_entry_id, &authorized_key_id).await;
+    assert_entry_authentication(&tree, &authorized_entry_id, &authorized_key_id.to_string()).await;
 
     // Test with unauthorized key (should fail at open because key is not in tree's auth settings)
     let unauthorized_signing_key = user
@@ -335,7 +344,7 @@ async fn test_verify_entry_signature_unauthorized_key() {
     let open_result = Database::open(
         instance.clone(),
         tree.root_id(),
-        DatabaseKey::from_legacy_sigkey(unauthorized_signing_key, &unauthorized_key_id),
+        DatabaseKey::from_legacy_sigkey(unauthorized_signing_key, &unauthorized_key_id.to_string()),
     )
     .await;
 
@@ -356,7 +365,7 @@ async fn test_verify_entry_signature_validates_tree_auth() {
     let entry_id = add_authenticated_data(&tree, "data", &[("key", "value")]).await;
 
     // Verify the entry using helper - should validate against tree's auth settings
-    assert_entry_authentication(&tree, &entry_id, &key_id).await;
+    assert_entry_authentication(&tree, &entry_id, &key_id.to_string()).await;
 
     // Note: In the future, this test should also verify that:
     // 1. Entries remain valid even if the key is later revoked (historical validation)

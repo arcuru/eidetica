@@ -197,7 +197,7 @@ Configure per-database sync behavior:
 // Track this database with sync on every commit + periodic sync every 60s
 user.track_database(
     db_id,
-    user.get_default_key()?,
+    &user.get_default_key()?,
     SyncSettings::on_commit().with_interval(60),
 ).await?;
 # Ok(())

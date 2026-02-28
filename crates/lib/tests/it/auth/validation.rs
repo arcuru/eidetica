@@ -183,7 +183,7 @@ async fn test_multiple_authenticated_entries() {
         .get_entry(&entry_id1)
         .await
         .expect("Failed to get entry1");
-    assert_eq!(entry1.sig.key, SigKey::from_pubkey(&key_id));
+    assert_eq!(entry1.sig.key, SigKey::from_pubkey(key_id.to_string()));
     assert!(
         tree.verify_entry_signature(&entry_id1)
             .await
@@ -194,7 +194,7 @@ async fn test_multiple_authenticated_entries() {
         .get_entry(&entry_id2)
         .await
         .expect("Failed to get entry2");
-    assert_eq!(entry2.sig.key, SigKey::from_pubkey(&key_id));
+    assert_eq!(entry2.sig.key, SigKey::from_pubkey(key_id.to_string()));
     assert!(
         tree.verify_entry_signature(&entry_id2)
             .await

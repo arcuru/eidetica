@@ -575,7 +575,7 @@ async fn handle_track_database(
             match user
                 .track_database(
                     ticket.database_id().clone(),
-                    key_id.clone(),
+                    &key_id,
                     SyncSettings::enabled().with_interval(13),
                 )
                 .await

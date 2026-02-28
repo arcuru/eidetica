@@ -453,7 +453,7 @@ impl DatabaseInfo {
             name,
             entry_count,
             sync_enabled: tracked.sync_settings.sync_enabled,
-            key_id: tracked.key_id.clone(),
+            key_id: tracked.key_id.to_string(),
         }
     }
 }

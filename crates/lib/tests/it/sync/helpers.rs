@@ -8,7 +8,7 @@ use std::{sync::Arc, time::Duration};
 use async_trait::async_trait;
 use eidetica::{
     Database, Entry, Error, Instance, Result,
-    auth::{AuthKey, Permission as AuthPermission},
+    auth::{AuthKey, Permission as AuthPermission, crypto::PublicKey},
     crdt::Doc,
     database::DatabaseKey,
     entry::ID,
@@ -208,7 +208,7 @@ impl TransportFactory for IrohTransportFactory {
 /// # Implementation Note
 /// This function uses the admin for sync handler operations. The device key
 /// is accessed via Instance internals and will be migrated to InstanceMetadata shortly
-pub async fn setup_manual_approval_server() -> (Instance, User, String, Database, Sync, ID) {
+pub async fn setup_manual_approval_server() -> (Instance, User, PublicKey, Database, Sync, ID) {
     let (instance, mut user, key_id) =
         crate::helpers::test_instance_with_user_and_key("server_user", Some("server_admin")).await;
 
@@ -260,7 +260,7 @@ pub async fn setup_manual_approval_server() -> (Instance, User, String, Database
 ///
 /// # Returns
 /// (Instance, User, key_id, Database, Sync, tree_id)
-pub async fn setup_global_wildcard_server() -> (Instance, User, String, Database, Sync, ID) {
+pub async fn setup_global_wildcard_server() -> (Instance, User, PublicKey, Database, Sync, ID) {
     let (instance, mut user, key_id) =
         crate::helpers::test_instance_with_user_and_key("server_user", Some("server_admin")).await;
 
@@ -319,7 +319,7 @@ pub async fn setup_global_wildcard_server() -> (Instance, User, String, Database
 /// Create a server with auto approval (auto_approve = true)
 ///
 /// Returns (Instance, User, key_id, Database, Arc<Sync>, tree_id)
-pub async fn setup_auto_approval_server() -> (Instance, User, String, Database, Arc<Sync>, ID) {
+pub async fn setup_auto_approval_server() -> (Instance, User, PublicKey, Database, Arc<Sync>, ID) {
     let (instance, user, key_id, database, tree_id, sync) =
         setup_sync_enabled_server_with_auto_approve("server_user", "server_key", "test_database")
             .await;
@@ -385,7 +385,7 @@ pub async fn approve_request(
     user: &User,
     sync: &Sync,
     request_id: &str,
-    approver_key_id: &str,
+    approver_key_id: &PublicKey,
 ) -> Result<()> {
     user.approve_bootstrap_request(sync, request_id, approver_key_id)
         .await
@@ -439,7 +439,7 @@ pub fn create_test_sync_handler(sync: &Sync) -> SyncHandlerImpl {
 ///
 /// Uses global wildcard permission for automatic bootstrap approval.
 ///
-/// Returns (Instance, User, key_id: String, Database, TreeId)
+/// Returns (Instance, User, key_id: PublicKey, Database, TreeId)
 ///
 /// # Implementation Note
 /// This function uses the admin for sync handler operations.
@@ -447,7 +447,7 @@ pub async fn setup_server_with_bootstrap_database(
     username: &str,
     key_name: &str,
     db_name: &str,
-) -> (Instance, User, String, Database, ID) {
+) -> (Instance, User, PublicKey, Database, ID) {
     let server_instance = setup_instance_with_initialized().await;
     server_instance.create_user(username, None).await.unwrap();
     let mut server_user = server_instance.login_user(username, None).await.unwrap();
@@ -488,11 +488,7 @@ pub async fn setup_server_with_bootstrap_database(
     // Enable sync for this database
     let sync = server_instance.sync().expect("Sync should be initialized");
     server_user
-        .track_database(
-            tree_id.clone(),
-            server_key_id.clone(),
-            SyncSettings::enabled(),
-        )
+        .track_database(tree_id.clone(), &server_key_id, SyncSettings::enabled())
         .await
         .unwrap();
 
@@ -516,8 +512,8 @@ pub async fn setup_server_with_bootstrap_database(
 /// Creates a client instance with an indexed user and key (for concurrent test scenarios)
 ///
 /// Creates a user with name format "client_user_{index}" and key "client_key_{index}"
-/// Returns (Instance, User, key_id: String)
-pub async fn setup_indexed_client(index: usize) -> (Instance, User, String) {
+/// Returns (Instance, User, key_id: PublicKey)
+pub async fn setup_indexed_client(index: usize) -> (Instance, User, PublicKey) {
     let client_instance = setup_instance_with_initialized().await;
     let client_username = format!("client_user_{index}");
     client_instance
@@ -550,7 +546,7 @@ pub async fn request_and_map_database_access(
     user: &mut User,
     server_addr: &Address,
     tree_id: &ID,
-    key_id: &str,
+    key_id: &PublicKey,
     permission: AuthPermission,
     sync_delay_ms: u64,
 ) -> Result<()> {
@@ -569,12 +565,8 @@ pub async fn request_and_map_database_access(
     tokio::time::sleep(Duration::from_millis(sync_delay_ms)).await;
 
     // Track the database, which discovers the correct sigkey from auth settings
-    user.track_database(
-        tree_id.clone(),
-        key_id.to_string(),
-        SyncSettings::disabled(),
-    )
-    .await?;
+    user.track_database(tree_id.clone(), key_id, SyncSettings::disabled())
+        .await?;
 
     Ok(())
 }
@@ -585,7 +577,7 @@ pub async fn request_database_access_default(
     user: &mut User,
     server_addr: &Address,
     tree_id: &ID,
-    key_id: &str,
+    key_id: &PublicKey,
 ) -> Result<()> {
     request_and_map_database_access(
         instance,
@@ -656,7 +648,7 @@ pub async fn setup_sync_enabled_server(
     username: &str,
     key_name: &str,
     db_name: &str,
-) -> (Instance, User, String, Database, ID, Arc<Sync>) {
+) -> (Instance, User, PublicKey, Database, ID, Arc<Sync>) {
     let server_instance = setup_instance_with_initialized().await;
     server_instance.create_user(username, None).await.unwrap();
     let mut server_user = server_instance.login_user(username, None).await.unwrap();
@@ -687,11 +679,7 @@ pub async fn setup_sync_enabled_server(
     // Enable sync for this database
     let sync = server_instance.sync().expect("Sync should be initialized");
     server_user
-        .track_database(
-            tree_id.clone(),
-            server_key_id.clone(),
-            SyncSettings::enabled(),
-        )
+        .track_database(tree_id.clone(), &server_key_id, SyncSettings::enabled())
         .await
         .unwrap();
 
@@ -723,7 +711,7 @@ pub async fn setup_sync_enabled_server_with_auto_approve(
     username: &str,
     key_name: &str,
     db_name: &str,
-) -> (Instance, User, String, Database, ID, Arc<Sync>) {
+) -> (Instance, User, PublicKey, Database, ID, Arc<Sync>) {
     let (instance, user, key_id, database, tree_id, sync) =
         setup_sync_enabled_server(username, key_name, db_name).await;
 
@@ -740,7 +728,7 @@ pub async fn setup_sync_enabled_server_with_auto_approve(
 pub async fn setup_sync_enabled_client(
     username: &str,
     key_name: &str,
-) -> (Instance, User, String, Arc<Sync>) {
+) -> (Instance, User, PublicKey, Arc<Sync>) {
     let client_instance = setup_instance_with_initialized().await;
     client_instance.create_user(username, None).await.unwrap();
     let mut client_user = client_instance.login_user(username, None).await.unwrap();
@@ -807,7 +795,7 @@ pub async fn setup_public_sync_enabled_server(
     username: &str,
     key_name: &str,
     db_name: &str,
-) -> (Instance, User, String, Database, ID, Arc<Sync>) {
+) -> (Instance, User, PublicKey, Database, ID, Arc<Sync>) {
     let server_instance = setup_instance_with_initialized().await;
     server_instance.create_user(username, None).await.unwrap();
     let mut server_user = server_instance.login_user(username, None).await.unwrap();
@@ -825,6 +813,7 @@ pub async fn setup_public_sync_enabled_server(
         .unwrap();
 
     // Add auth keys: device key, user's key, and wildcard permission
+    let server_key_id_str = server_key_id.to_string();
     crate::helpers::add_auth_keys(
         &server_database,
         &[
@@ -833,7 +822,7 @@ pub async fn setup_public_sync_enabled_server(
                 AuthKey::active(Some("admin"), AuthPermission::Admin(0)),
             ),
             (
-                &server_key_id,
+                &server_key_id_str,
                 AuthKey::active(None, AuthPermission::Admin(0)),
             ),
             ("*", AuthKey::active(None, AuthPermission::Read)),
@@ -846,11 +835,7 @@ pub async fn setup_public_sync_enabled_server(
     // Enable sync for this database
     let sync = server_instance.sync().expect("Sync should be initialized");
     server_user
-        .track_database(
-            tree_id.clone(),
-            server_key_id.clone(),
-            SyncSettings::enabled(),
-        )
+        .track_database(tree_id.clone(), &server_key_id, SyncSettings::enabled())
         .await
         .unwrap();
 

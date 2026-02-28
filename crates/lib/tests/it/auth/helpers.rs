@@ -49,7 +49,7 @@ use eidetica::{
 pub async fn setup_user_and_tree_with_key(
     username: &str,
     key_name: &str,
-) -> (Instance, User, Database, String) {
+) -> (Instance, User, Database, PublicKey) {
     let (instance, mut user) = crate::helpers::test_instance_with_user(username).await;
 
     // Add a key with the specified display name
@@ -80,7 +80,7 @@ pub fn auth_key(permission: Permission, status: KeyStatus) -> AuthKey {
 pub async fn setup_test_user_with_keys(
     username: &str,
     key_names: &[&str],
-) -> (Instance, User, Vec<String>) {
+) -> (Instance, User, Vec<PublicKey>) {
     let (instance, mut user) = crate::helpers::test_instance_with_user(username).await;
 
     let mut key_ids = Vec::new();
@@ -127,14 +127,13 @@ pub async fn setup_test_user_with_keys(
 /// * `auth_config` - Array of (display_name, key_id, permission, status) tuples
 pub async fn configure_database_auth(
     database: &Database,
-    auth_config: &[(&str, &str, Permission, KeyStatus)],
+    auth_config: &[(&str, &PublicKey, Permission, KeyStatus)],
 ) -> Result<()> {
     let txn = database.new_transaction().await?;
     {
         let settings = txn.get_settings()?;
         for (display_name, key_id, permission, status) in auth_config {
-            let public_key = PublicKey::from_prefixed_string(key_id)?;
-            let pubkey_str = format_public_key(&public_key);
+            let pubkey_str = format_public_key(key_id);
             let auth_key = AuthKey::new(Some(*display_name), *permission, status.clone());
             settings.set_auth_key(&pubkey_str, auth_key).await?;
         }
@@ -160,7 +159,7 @@ pub async fn configure_database_auth(
 pub async fn setup_complete_auth_environment_with_user(
     username: &str,
     keys: &[(&str, Permission, KeyStatus)],
-) -> (Instance, User, Database, Vec<String>) {
+) -> (Instance, User, Database, Vec<PublicKey>) {
     // Extract key display names
     let key_names: Vec<&str> = keys.iter().map(|(name, _, _)| *name).collect();
 
@@ -183,10 +182,10 @@ pub async fn setup_complete_auth_environment_with_user(
     // Bootstrap added: auth[key_id] = AuthKey(pubkey, Admin(0))
     // We add: auth[friendly_name] = AuthKey(pubkey, specified_permission)
     // These are both valid - same key, different names/permissions
-    let auth_config: Vec<(&str, &str, Permission, KeyStatus)> = keys
+    let auth_config: Vec<(&str, &PublicKey, Permission, KeyStatus)> = keys
         .iter()
         .zip(key_ids.iter())
-        .map(|((name, perm, status), key_id)| (*name, key_id.as_str(), *perm, status.clone()))
+        .map(|((name, perm, status), key_id)| (*name, key_id, *perm, status.clone()))
         .collect();
 
     configure_database_auth(&database, &auth_config)
@@ -214,7 +213,7 @@ pub async fn setup_complete_auth_environment_with_user(
 pub async fn create_delegated_tree_with_user(
     user: &mut User,
     keys: &[(&str, Permission, KeyStatus)],
-) -> Result<(Database, Vec<String>)> {
+) -> Result<(Database, Vec<PublicKey>)> {
     let mut key_ids = Vec::new();
 
     // Use existing default key for first key, or create new ones
@@ -243,10 +242,10 @@ pub async fn create_delegated_tree_with_user(
     // Bootstrap added: auth[key_id] = AuthKey(pubkey, Admin(0))
     // We add: auth[friendly_name] = AuthKey(pubkey, specified_permission)
     // These are both valid - same key, different names/permissions
-    let auth_config: Vec<(&str, &str, Permission, KeyStatus)> = keys
+    let auth_config: Vec<(&str, &PublicKey, Permission, KeyStatus)> = keys
         .iter()
         .zip(key_ids.iter())
-        .map(|((name, perm, status), key_id)| (*name, key_id.as_str(), *perm, status.clone()))
+        .map(|((name, perm, status), key_id)| (*name, key_id, *perm, status.clone()))
         .collect();
 
     configure_database_auth(&database, &auth_config).await?;

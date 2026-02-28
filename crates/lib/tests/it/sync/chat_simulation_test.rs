@@ -84,11 +84,12 @@ async fn test_chat_app_authenticated_bootstrap() {
         .unwrap();
 
     // First bootstrap attempt should fail (pending approval)
+    let client_key_str = client_key_id.to_string();
     let first_attempt = client_sync
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &client_key_id,
+            &client_key_str,
             "client_key",
             Permission::Write(10),
         )
@@ -110,7 +111,7 @@ async fn test_chat_app_authenticated_bootstrap() {
     );
     let (request_id, pending_request) = &pending_requests[0];
     assert_eq!(pending_request.tree_id, tree_id);
-    assert_eq!(pending_request.requesting_pubkey, client_key_id);
+    assert_eq!(pending_request.requesting_pubkey, client_key_str);
 
     // Admin approves the request
     server_user
@@ -125,7 +126,7 @@ async fn test_chat_app_authenticated_bootstrap() {
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &client_key_id,
+            &client_key_str,
             "client_key",
             Permission::Write(10),
         )
@@ -140,7 +141,7 @@ async fn test_chat_app_authenticated_bootstrap() {
     );
 
     // Client opens database using their registered key (discovered via find_sigkeys)
-    let sigkeys = Database::find_sigkeys(&client_instance, &tree_id, &client_key_id)
+    let sigkeys = Database::find_sigkeys(&client_instance, &tree_id, &client_key_str)
         .await
         .expect("Should find valid SigKeys");
     assert!(!sigkeys.is_empty(), "Should find at least one SigKey");
@@ -157,7 +158,7 @@ async fn test_chat_app_authenticated_bootstrap() {
 
     // The sigkey should be the client_key_id (pubkey) since keys are indexed by pubkey
     assert_eq!(
-        sigkey_str, client_key_id,
+        sigkey_str, client_key_str,
         "Should use registered key's pubkey"
     );
 
@@ -268,7 +269,8 @@ async fn test_global_key_bootstrap() {
     client_sync.flush().await.ok();
 
     // Client opens database with global permission
-    let sigkeys = Database::find_sigkeys(&client_instance, &tree_id, &client_key_id)
+    let client_key_str = client_key_id.to_string();
+    let sigkeys = Database::find_sigkeys(&client_instance, &tree_id, &client_key_str)
         .await
         .expect("Should find valid SigKeys");
 
@@ -387,12 +389,13 @@ async fn test_multiple_databases_sync() {
         .unwrap();
 
     // Bootstrap each database
+    let client_key_str = client_key_id.to_string();
     for (i, room_id) in room_ids.iter().enumerate() {
         client_sync
             .sync_with_peer_for_bootstrap_with_key(
                 &server_addr,
                 room_id,
-                &client_key_id,
+                &client_key_str,
                 "client_key",
                 Permission::Write(10),
             )

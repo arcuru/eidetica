@@ -116,7 +116,8 @@ async fn test_new_database_without_key_fails() -> Result<(), Error> {
     settings.set("name", "test_db");
 
     // This should fail with a nonexistent key_id
-    let result = user.create_database(settings, "nonexistent_key").await;
+    let (_, fake_key) = crate::auth::generate_keypair();
+    let result = user.create_database(settings, &fake_key).await;
     assert!(result.is_err());
     Ok(())
 }

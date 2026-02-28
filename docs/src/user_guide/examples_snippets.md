@@ -633,7 +633,7 @@ if let Some(sync) = instance.sync() {
     // Register the database with User's key manager
     user.track_database(
         room_id.clone(),
-        key_id.clone(),
+        &key_id,
         eidetica::user::types::SyncSettings::on_commit(),
     ).await?;
 

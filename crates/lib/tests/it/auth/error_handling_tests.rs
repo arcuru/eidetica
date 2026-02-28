@@ -197,7 +197,7 @@ async fn test_privilege_escalation_through_delegation() -> Result<()> {
             tree: delegated_tree_root.to_string(),
             tips: delegated_tips,
         }],
-        hint: KeyHint::from_pubkey(&admin_key_id),
+        hint: KeyHint::from_pubkey(admin_key_id.to_string()),
     };
 
     let mut validator = AuthValidator::new();
@@ -239,7 +239,7 @@ async fn test_delegation_with_tampered_tips() -> Result<()> {
     let settings_store = txn.get_settings()?;
     settings_store
         .set_auth_key(
-            &user_key_id,
+            &user_key_id.to_string(),
             AuthKey::active(Some("user"), Permission::Write(10)),
         )
         .await?;
@@ -276,7 +276,7 @@ async fn test_delegation_with_tampered_tips() -> Result<()> {
             tree: delegated_tree_root.to_string(),
             tips: fake_tips, // Using fake tips instead of real ones
         }],
-        hint: KeyHint::from_pubkey(&user_key_id),
+        hint: KeyHint::from_pubkey(user_key_id.to_string()),
     };
 
     let mut validator = AuthValidator::new();
@@ -313,13 +313,13 @@ async fn test_delegation_mixed_key_statuses() -> Result<()> {
     let settings_store = txn.get_settings()?;
     settings_store
         .set_auth_key(
-            &active_user_key_id,
+            &active_user_key_id.to_string(),
             AuthKey::active(Some("active_user"), Permission::Write(10)),
         )
         .await?;
     settings_store
         .set_auth_key(
-            &revoked_key_id,
+            &revoked_key_id.to_string(),
             AuthKey::new(
                 Some("revoked_user"),
                 Permission::Write(10),
@@ -359,7 +359,7 @@ async fn test_delegation_mixed_key_statuses() -> Result<()> {
             tree: delegated_tree_root.to_string(),
             tips: delegated_tips.clone(),
         }],
-        hint: KeyHint::from_pubkey(&active_user_key_id),
+        hint: KeyHint::from_pubkey(active_user_key_id.to_string()),
     };
 
     let mut validator = AuthValidator::new();
@@ -380,7 +380,7 @@ async fn test_delegation_mixed_key_statuses() -> Result<()> {
             tree: delegated_tree_root.to_string(),
             tips: delegated_tips,
         }],
-        hint: KeyHint::from_pubkey(&revoked_key_id),
+        hint: KeyHint::from_pubkey(revoked_key_id.to_string()),
     };
 
     let result = validator
@@ -412,7 +412,7 @@ async fn test_validation_cache_error_conditions() -> Result<()> {
     let auth_settings = tree.get_settings().await?.auth_snapshot().await?;
 
     // First resolution should succeed and populate cache
-    let sig_key = SigKey::from_pubkey(&admin_key_id);
+    let sig_key = SigKey::from_pubkey(admin_key_id.to_string());
     let result1 = validator
         .resolve_sig_key(&sig_key, &auth_settings, Some(&db))
         .await;
@@ -511,7 +511,7 @@ async fn test_concurrent_validation_basic() -> Result<()> {
 
         let handle = local.spawn_local(async move {
             let mut validator = AuthValidator::new();
-            let sig_key = SigKey::from_pubkey(&*admin_key_clone);
+            let sig_key = SigKey::from_pubkey(admin_key_clone.to_string());
 
             // Each task should be able to validate independently
             for _ in 0..10 {

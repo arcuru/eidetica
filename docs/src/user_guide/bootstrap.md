@@ -133,7 +133,7 @@ async fn bootstrap_with_retry(
     sync: &Sync,
     server_addr: &Address,
     database_id: &ID,
-    key_id: &str,
+    key_id: &PublicKey,
 ) -> Result<()> {
     // Initial bootstrap request
     if let Err(_) = user.request_database_access(

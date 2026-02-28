@@ -61,8 +61,8 @@ Keys are stored in the user's private database in the `keys` subtree as a Table:
 ```rust,ignore
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UserKey {
-    /// Local key identifier (user-chosen name or auto-generated)
-    pub key_id: String,
+    /// Public key identifier
+    pub key_id: PublicKey,
 
     /// Key storage (encrypted ciphertext or plaintext PrivateKey)
     pub storage: KeyStorage,

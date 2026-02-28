@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use eidetica::{
     Database, Error, FixedClock, Instance,
-    auth::types::AuthKey,
+    auth::{crypto::PublicKey, types::AuthKey},
     backend::BackendImpl,
     backend::database::InMemory,
     crdt::{Doc, doc::Value},
@@ -121,17 +121,17 @@ pub async fn test_instance_with_user(username: &str) -> (Instance, User) {
 
 /// Creates an Instance with a user and key, returning user and key_id for User API tests.
 ///
-/// The key_id is the public key string (e.g., "ed25519:abc123...") which is used
+/// The key_id is the public key (e.g., "ed25519:abc123...") which is used
 /// as the SigKey when creating databases via User API.
 ///
 /// # Returns
 /// - Instance: The database instance
 /// - User: Logged-in user session
-/// - String: The key_id (public key string) for database operations
+/// - PublicKey: The key_id for database operations
 pub async fn test_instance_with_user_and_key(
     username: &str,
     key_display_name: Option<&str>,
-) -> (Instance, User, String) {
+) -> (Instance, User, PublicKey) {
     let instance = test_instance().await;
     instance
         .create_user(username, None)
@@ -154,7 +154,7 @@ pub async fn test_instance_with_user_and_key(
 ///
 /// This is the preferred pattern for new tests. The key_id should be used
 /// in assertions like `is_signed_by(&key_id)`.
-pub async fn setup_tree_with_user_key() -> (Instance, Database, String) {
+pub async fn setup_tree_with_user_key() -> (Instance, Database, PublicKey) {
     let (instance, mut user, key_id) =
         test_instance_with_user_and_key("test_user", Some("test_key")).await;
 

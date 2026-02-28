@@ -4,7 +4,10 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{auth::crypto::PrivateKey, entry::ID};
+use crate::{
+    auth::crypto::{PrivateKey, PublicKey},
+    entry::ID,
+};
 
 /// User information stored in _users database
 ///
@@ -98,8 +101,8 @@ pub enum KeyStorage {
 /// unencrypted (for passwordless single-user mode).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UserKey {
-    /// Local key identifier (user-chosen name or auto-generated)
-    pub key_id: String,
+    /// Key identifier (the public key)
+    pub key_id: PublicKey,
 
     /// Key storage (encrypted ciphertext or plaintext PrivateKey)
     pub storage: KeyStorage,
@@ -133,7 +136,7 @@ pub struct TrackedDatabase {
     pub database_id: ID,
 
     /// Which user key to use for this database
-    pub key_id: String,
+    pub key_id: PublicKey,
 
     /// Sync preferences for this database
     pub sync_settings: SyncSettings,

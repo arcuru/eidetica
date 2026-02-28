@@ -75,7 +75,7 @@ async fn test_delegated_tree_basic_validation() -> Result<()> {
             tree: delegated_tree.root_id().to_string(),
             tips: delegated_tips,
         }],
-        hint: KeyHint::from_pubkey(&delegated_key_ids[0]),
+        hint: KeyHint::from_pubkey(delegated_key_ids[0].to_string()),
     };
 
     assert_permission_resolution(
@@ -128,7 +128,7 @@ async fn test_delegated_tree_permission_clamping() -> Result<()> {
             tree: delegated_tree.root_id().to_string(),
             tips: delegated_tips,
         }],
-        hint: KeyHint::from_pubkey(&delegated_key_ids[0]),
+        hint: KeyHint::from_pubkey(delegated_key_ids[0].to_string()),
     };
 
     // Permissions should be clamped from Admin to Read
@@ -227,7 +227,7 @@ async fn test_nested_delegation() -> Result<()> {
                 tips: user_tips.clone(),
             },
         ],
-        hint: KeyHint::from_pubkey(&user_key),
+        hint: KeyHint::from_pubkey(user_key.to_string()),
     };
 
     // This should resolve with Write permissions (clamped through the chain)
@@ -302,7 +302,7 @@ async fn test_delegated_tree_with_revoked_keys() -> Result<()> {
             tree: delegated_tree_root.to_string(),
             tips: delegated_tips.clone(),
         }],
-        hint: KeyHint::from_pubkey(&delegated_user_key),
+        hint: KeyHint::from_pubkey(delegated_user_key.to_string()),
     };
 
     let resolved_auths = validator
@@ -324,7 +324,7 @@ async fn test_delegated_tree_with_revoked_keys() -> Result<()> {
             KeyStatus::Revoked,
         );
         settings
-            .set_auth_key(&delegated_user_key, revoked_key)
+            .set_auth_key(&delegated_user_key.to_string(), revoked_key)
             .await?;
     }
     txn.commit().await?;
@@ -333,7 +333,7 @@ async fn test_delegated_tree_with_revoked_keys() -> Result<()> {
     let revoked_auth_settings = delegated_tree.get_settings().await?.auth_snapshot().await?;
     let resolved_auth_revoked = validator
         .resolve_sig_key(
-            &SigKey::from_pubkey(&delegated_user_key),
+            &SigKey::from_pubkey(delegated_user_key.to_string()),
             &revoked_auth_settings,
             Some(&db),
         )
@@ -396,7 +396,7 @@ async fn test_delegation_depth_limits() -> Result<()> {
 
     let nested_auth_id = SigKey::Delegation {
         path: delegation_steps,
-        hint: KeyHint::from_pubkey(&user_key),
+        hint: KeyHint::from_pubkey(user_key.to_string()),
     };
 
     // Test depth limit validation
@@ -484,7 +484,7 @@ async fn test_delegated_tree_min_bound_upgrade() -> Result<()> {
             tree: delegated_tree_root.to_string(),
             tips: delegated_tips.clone(),
         }],
-        hint: KeyHint::from_pubkey(&delegated_user_key),
+        hint: KeyHint::from_pubkey(delegated_user_key.to_string()),
     };
 
     let resolved = validator
@@ -566,7 +566,7 @@ async fn test_delegated_tree_priority_preservation() -> Result<()> {
             tree: delegated_tree_root.to_string(),
             tips: delegated_tips.clone(),
         }],
-        hint: KeyHint::from_pubkey(&delegated_user_key),
+        hint: KeyHint::from_pubkey(delegated_user_key.to_string()),
     };
 
     let resolved = validator
@@ -611,7 +611,7 @@ async fn test_delegation_depth_limit_exact() -> Result<()> {
 
     let auth_id = SigKey::Delegation {
         path: delegation_steps,
-        hint: KeyHint::from_pubkey(&admin_key),
+        hint: KeyHint::from_pubkey(admin_key.to_string()),
     };
 
     let mut validator = AuthValidator::new();
@@ -702,7 +702,7 @@ async fn test_delegated_tree_invalid_tips() -> Result<()> {
             tree: delegated_tree_root.to_string(),
             tips: vec![bogus_tip],
         }],
-        hint: KeyHint::from_pubkey(&delegated_user_key),
+        hint: KeyHint::from_pubkey(delegated_user_key.to_string()),
     };
 
     let result = validator

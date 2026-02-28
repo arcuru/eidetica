@@ -27,11 +27,11 @@ use crate::{
 ///
 /// All sensitive data is zeroized when the struct is dropped.
 pub struct UserKeyManager {
-    /// Decrypted keys (key_id → PrivateKey)
-    decrypted_keys: HashMap<String, PrivateKey>,
+    /// Decrypted keys (PublicKey → PrivateKey)
+    decrypted_keys: HashMap<PublicKey, PrivateKey>,
 
     /// Key metadata (loaded from user database)
-    key_metadata: HashMap<String, UserKey>,
+    key_metadata: HashMap<PublicKey, UserKey>,
 
     /// User's password-derived encryption key (for saving new keys)
     /// None for passwordless users
@@ -98,23 +98,12 @@ impl UserKeyManager {
     /// Get a decrypted signing key
     ///
     /// # Arguments
-    /// * `key_id` - The key identifier
+    /// * `key_id` - The public key identifier
     ///
     /// # Returns
-    /// A reference to the SigningKey if found
-    pub fn get_signing_key(&self, key_id: &str) -> Option<&PrivateKey> {
+    /// A reference to the PrivateKey if found
+    pub fn get_signing_key(&self, key_id: &PublicKey) -> Option<&PrivateKey> {
         self.decrypted_keys.get(key_id)
-    }
-
-    /// Get the public key for a given key ID.
-    ///
-    /// # Arguments
-    /// * `key_id` - The key identifier
-    ///
-    /// # Returns
-    /// The `PublicKey` if the signing key is found
-    pub fn get_public_key(&self, key_id: &str) -> Option<PublicKey> {
-        self.decrypted_keys.get(key_id).map(|sk| sk.public_key())
     }
 
     /// Add a key to the manager from metadata
@@ -128,8 +117,6 @@ impl UserKeyManager {
     /// # Returns
     /// Ok(()) if the key was successfully added
     pub fn add_key(&mut self, metadata: UserKey) -> Result<()> {
-        let key_id = metadata.key_id.clone();
-
         // Decrypt or extract the key based on storage type
         let signing_key = match &metadata.storage {
             KeyStorage::Encrypted {
@@ -159,6 +146,7 @@ impl UserKeyManager {
             }
         };
 
+        let key_id = metadata.key_id.clone();
         self.decrypted_keys.insert(key_id.clone(), signing_key);
         self.key_metadata.insert(key_id, metadata);
 
@@ -184,7 +172,7 @@ impl UserKeyManager {
                 .key_metadata
                 .get(key_id)
                 .ok_or_else(|| UserError::KeyNotFound {
-                    key_id: key_id.clone(),
+                    key_id: key_id.to_string(),
                 })?;
 
             // Build storage based on current storage type
@@ -225,8 +213,8 @@ impl UserKeyManager {
             serialized.push(updated_key);
         }
 
-        // Sort by key_id for deterministic output
-        serialized.sort_by(|a, b| a.key_id.cmp(&b.key_id));
+        // Sort by key_id string representation for deterministic output
+        serialized.sort_by(|a, b| a.key_id.to_string().cmp(&b.key_id.to_string()));
 
         Ok(serialized)
     }
@@ -242,8 +230,8 @@ impl UserKeyManager {
     /// List all key IDs managed by this manager
     ///
     /// Returns key IDs sorted by creation timestamp (oldest first) for deterministic behavior.
-    pub fn list_key_ids(&self) -> Vec<String> {
-        let mut keys: Vec<(String, i64)> = self
+    pub fn list_key_ids(&self) -> Vec<PublicKey> {
+        let mut keys: Vec<(PublicKey, i64)> = self
             .decrypted_keys
             .keys()
             .filter_map(|key_id| {
@@ -261,7 +249,7 @@ impl UserKeyManager {
     }
 
     /// Get metadata for a key
-    pub fn get_key_metadata(&self, key_id: &str) -> Option<&UserKey> {
+    pub fn get_key_metadata(&self, key_id: &PublicKey) -> Option<&UserKey> {
         self.key_metadata.get(key_id)
     }
 
@@ -271,8 +259,8 @@ impl UserKeyManager {
     /// oldest key by creation timestamp if no default is explicitly set.
     ///
     /// # Returns
-    /// The key ID of the default key, or None if there are no keys
-    pub fn get_default_key_id(&self) -> Option<String> {
+    /// The PublicKey of the default key, or None if there are no keys
+    pub fn get_default_key_id(&self) -> Option<PublicKey> {
         // First try to find a key explicitly marked as default
         for (key_id, metadata) in &self.key_metadata {
             if metadata.is_default {
@@ -334,21 +322,18 @@ mod tests {
     use crate::user::crypto::{encrypt_private_key, hash_password};
     use crate::{Clock, Error, SystemClock};
 
-    fn create_test_user_key(
-        key_id: &str,
-        signing_key: &PrivateKey,
-        encryption_key: &[u8],
-    ) -> UserKey {
+    fn create_test_user_key(signing_key: &PrivateKey, encryption_key: &[u8]) -> UserKey {
         let (ciphertext, nonce) = encrypt_private_key(signing_key, encryption_key).unwrap();
+        let key_id = signing_key.public_key();
 
         UserKey {
-            key_id: key_id.to_string(),
+            key_id,
             storage: KeyStorage::Encrypted {
                 algorithm: "aes-256-gcm".to_string(),
                 ciphertext,
                 nonce,
             },
-            display_name: Some(format!("Test key {key_id}")),
+            display_name: Some("Test key".to_string()),
             created_at: SystemClock.now_secs(),
             last_used: None,
             is_default: false,
@@ -364,19 +349,22 @@ mod tests {
         let encryption_key = derive_encryption_key(password, &salt).unwrap();
 
         // Create some test keys
-        let (key1, _) = generate_keypair();
-        let (key2, _) = generate_keypair();
+        let (key1, pub1) = generate_keypair();
+        let (key2, pub2) = generate_keypair();
 
-        let user_key1 = create_test_user_key("key1", &key1, &encryption_key);
-        let user_key2 = create_test_user_key("key2", &key2, &encryption_key);
+        let user_key1 = create_test_user_key(&key1, &encryption_key);
+        let user_key2 = create_test_user_key(&key2, &encryption_key);
 
         // Create key manager
         let manager = UserKeyManager::new(password, &salt, vec![user_key1, user_key2]).unwrap();
 
         // Verify keys were decrypted
-        assert!(manager.get_signing_key("key1").is_some());
-        assert!(manager.get_signing_key("key2").is_some());
-        assert!(manager.get_signing_key("key3").is_none());
+        assert!(manager.get_signing_key(&pub1).is_some());
+        assert!(manager.get_signing_key(&pub2).is_some());
+
+        // Non-existent key returns None
+        let (_, nonexistent) = generate_keypair();
+        assert!(manager.get_signing_key(&nonexistent).is_none());
     }
 
     #[test]
@@ -386,39 +374,36 @@ mod tests {
         let (_, salt) = hash_password(password).unwrap();
         let encryption_key = derive_encryption_key(password, &salt).unwrap();
 
-        let (key1, _) = generate_keypair();
-        let user_key1 = create_test_user_key("key1", &key1, &encryption_key);
+        let (key1, pub1) = generate_keypair();
+        let user_key1 = create_test_user_key(&key1, &encryption_key);
 
         let manager = UserKeyManager::new(password, &salt, vec![user_key1]).unwrap();
 
         // Get key and verify it's the same
-        let retrieved_key = manager.get_signing_key("key1").unwrap();
+        let retrieved_key = manager.get_signing_key(&pub1).unwrap();
         assert_eq!(retrieved_key.to_bytes(), key1.to_bytes());
     }
 
     #[test]
     #[cfg_attr(miri, ignore)] // Argon2 is extremely slow under Miri
-    fn test_key_manager_get_public_key() {
+    fn test_key_manager_signing_key_produces_correct_public_key() {
         let password = "test_password";
         let (_, salt) = hash_password(password).unwrap();
         let encryption_key = derive_encryption_key(password, &salt).unwrap();
 
         let (key1, pub_key1) = generate_keypair();
-        let user_key1 = create_test_user_key("key1", &key1, &encryption_key);
+        let user_key1 = create_test_user_key(&key1, &encryption_key);
 
         let manager = UserKeyManager::new(password, &salt, vec![user_key1]).unwrap();
 
-        // Get public key and verify it matches the original
-        let retrieved_pub_key = manager.get_public_key("key1").unwrap();
-        assert_eq!(retrieved_pub_key, pub_key1);
-
-        // Verify non-existent key returns None
-        assert!(manager.get_public_key("nonexistent").is_none());
+        // Verify that the signing key's public key matches
+        let signing_key = manager.get_signing_key(&pub_key1).unwrap();
+        assert_eq!(signing_key.public_key(), pub_key1);
     }
 
     #[test]
     #[cfg_attr(miri, ignore)] // Argon2 is extremely slow under Miri
-    fn test_key_manager_get_public_key_multiple_keys() {
+    fn test_key_manager_multiple_keys() {
         let password = "test_password";
         let (_, salt) = hash_password(password).unwrap();
         let encryption_key = derive_encryption_key(password, &salt).unwrap();
@@ -428,19 +413,19 @@ mod tests {
         let (key2, pub_key2) = generate_keypair();
         let (key3, pub_key3) = generate_keypair();
 
-        let user_key1 = create_test_user_key("key1", &key1, &encryption_key);
-        let user_key2 = create_test_user_key("key2", &key2, &encryption_key);
-        let user_key3 = create_test_user_key("key3", &key3, &encryption_key);
+        let user_key1 = create_test_user_key(&key1, &encryption_key);
+        let user_key2 = create_test_user_key(&key2, &encryption_key);
+        let user_key3 = create_test_user_key(&key3, &encryption_key);
 
         let manager =
             UserKeyManager::new(password, &salt, vec![user_key1, user_key2, user_key3]).unwrap();
 
-        // Verify all public keys match
-        assert_eq!(manager.get_public_key("key1").unwrap(), pub_key1);
-        assert_eq!(manager.get_public_key("key2").unwrap(), pub_key2);
-        assert_eq!(manager.get_public_key("key3").unwrap(), pub_key3);
+        // Verify all keys are retrievable
+        assert!(manager.get_signing_key(&pub_key1).is_some());
+        assert!(manager.get_signing_key(&pub_key2).is_some());
+        assert!(manager.get_signing_key(&pub_key3).is_some());
 
-        // Verify all keys are different
+        // Verify all public keys are different
         assert_ne!(pub_key1, pub_key2);
         assert_ne!(pub_key2, pub_key3);
         assert_ne!(pub_key1, pub_key3);
@@ -448,13 +433,13 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore)] // Uses SystemTime for timestamp
-    fn test_key_manager_get_public_key_passwordless() {
+    fn test_key_manager_passwordless() {
         // Create passwordless keys
         let (key1, pub_key1) = generate_keypair();
         let (key2, pub_key2) = generate_keypair();
 
         let user_key1 = UserKey {
-            key_id: "key1".to_string(),
+            key_id: pub_key1.clone(),
             storage: KeyStorage::Unencrypted { key: key1.clone() },
             display_name: Some("Key 1".to_string()),
             created_at: SystemClock.now_secs(),
@@ -464,7 +449,7 @@ mod tests {
         };
 
         let user_key2 = UserKey {
-            key_id: "key2".to_string(),
+            key_id: pub_key2.clone(),
             storage: KeyStorage::Unencrypted { key: key2.clone() },
             display_name: Some("Key 2".to_string()),
             created_at: SystemClock.now_secs(),
@@ -475,30 +460,9 @@ mod tests {
 
         let manager = UserKeyManager::new_passwordless(vec![user_key1, user_key2]).unwrap();
 
-        // Verify public keys match for passwordless keys
-        assert_eq!(manager.get_public_key("key1").unwrap(), pub_key1);
-        assert_eq!(manager.get_public_key("key2").unwrap(), pub_key2);
-    }
-
-    #[test]
-    #[cfg_attr(miri, ignore)] // Argon2 is extremely slow under Miri
-    fn test_key_manager_get_public_key_consistency_with_signing_key() {
-        let password = "test_password";
-        let (_, salt) = hash_password(password).unwrap();
-        let encryption_key = derive_encryption_key(password, &salt).unwrap();
-
-        let (key1, pub_key1) = generate_keypair();
-        let user_key1 = create_test_user_key("key1", &key1, &encryption_key);
-
-        let manager = UserKeyManager::new(password, &salt, vec![user_key1]).unwrap();
-
-        // Get both signing key and public key
-        let signing_key = manager.get_signing_key("key1").unwrap();
-        let public_key = manager.get_public_key("key1").unwrap();
-
-        // Verify public key matches the signing key's public key
-        assert_eq!(signing_key.public_key(), public_key);
-        assert_eq!(public_key, pub_key1);
+        // Verify keys are retrievable
+        assert!(manager.get_signing_key(&pub_key1).is_some());
+        assert!(manager.get_signing_key(&pub_key2).is_some());
     }
 
     #[test]
@@ -509,18 +473,18 @@ mod tests {
         let encryption_key = derive_encryption_key(password, &salt).unwrap();
 
         let (key1, _) = generate_keypair();
-        let user_key1 = create_test_user_key("key1", &key1, &encryption_key);
+        let user_key1 = create_test_user_key(&key1, &encryption_key);
 
         let mut manager = UserKeyManager::new(password, &salt, vec![user_key1]).unwrap();
 
         // Add a new key - only pass metadata, key is decrypted internally
-        let (key2, _) = generate_keypair();
-        let user_key2 = create_test_user_key("key2", &key2, &encryption_key);
+        let (key2, pub2) = generate_keypair();
+        let user_key2 = create_test_user_key(&key2, &encryption_key);
         manager.add_key(user_key2).unwrap();
 
         // Verify it was added and decrypted correctly
-        assert!(manager.get_signing_key("key2").is_some());
-        let retrieved_key = manager.get_signing_key("key2").unwrap();
+        assert!(manager.get_signing_key(&pub2).is_some());
+        let retrieved_key = manager.get_signing_key(&pub2).unwrap();
         assert_eq!(retrieved_key.to_bytes(), key2.to_bytes());
     }
 
@@ -531,8 +495,8 @@ mod tests {
         let (_, salt) = hash_password(password).unwrap();
         let encryption_key = derive_encryption_key(password, &salt).unwrap();
 
-        let (key1, _) = generate_keypair();
-        let user_key1 = create_test_user_key("key1", &key1, &encryption_key);
+        let (key1, pub1) = generate_keypair();
+        let user_key1 = create_test_user_key(&key1, &encryption_key);
 
         let manager = UserKeyManager::new(password, &salt, vec![user_key1]).unwrap();
 
@@ -540,9 +504,9 @@ mod tests {
         let serialized = manager.serialize_keys().unwrap();
         assert_eq!(serialized.len(), 1);
 
-        // Verify the serialized key can be decrypted
+        // Verify the serialized key has the correct key_id
         let serialized_key = &serialized[0];
-        assert_eq!(serialized_key.key_id, "key1");
+        assert_eq!(serialized_key.key_id, pub1);
 
         // Extract ciphertext and nonce from storage
         let (ciphertext, nonce) = match &serialized_key.storage {
@@ -563,27 +527,26 @@ mod tests {
         let (_, salt) = hash_password(password).unwrap();
         let encryption_key = derive_encryption_key(password, &salt).unwrap();
 
-        // Create keys with intentionally non-alphabetical order
-        let (key_z, _) = generate_keypair();
-        let (key_a, _) = generate_keypair();
-        let (key_m, _) = generate_keypair();
+        let (key1, _) = generate_keypair();
+        let (key2, _) = generate_keypair();
+        let (key3, _) = generate_keypair();
 
-        let user_key_z = create_test_user_key("key_z", &key_z, &encryption_key);
-        let user_key_a = create_test_user_key("key_a", &key_a, &encryption_key);
-        let user_key_m = create_test_user_key("key_m", &key_m, &encryption_key);
+        let user_key1 = create_test_user_key(&key1, &encryption_key);
+        let user_key2 = create_test_user_key(&key2, &encryption_key);
+        let user_key3 = create_test_user_key(&key3, &encryption_key);
 
-        // Add in non-sorted order
         let manager =
-            UserKeyManager::new(password, &salt, vec![user_key_z, user_key_a, user_key_m]).unwrap();
+            UserKeyManager::new(password, &salt, vec![user_key1, user_key2, user_key3]).unwrap();
 
-        // Serialize should return sorted keys
+        // Serialize should return sorted keys (by string representation)
         let serialized = manager.serialize_keys().unwrap();
         assert_eq!(serialized.len(), 3);
 
-        // Verify keys are sorted alphabetically
-        assert_eq!(serialized[0].key_id, "key_a");
-        assert_eq!(serialized[1].key_id, "key_m");
-        assert_eq!(serialized[2].key_id, "key_z");
+        // Verify keys are sorted by their string representation
+        let ids: Vec<String> = serialized.iter().map(|k| k.key_id.to_string()).collect();
+        let mut sorted_ids = ids.clone();
+        sorted_ids.sort();
+        assert_eq!(ids, sorted_ids);
     }
 
     #[test]
@@ -593,19 +556,19 @@ mod tests {
         let (_, salt) = hash_password(password).unwrap();
         let encryption_key = derive_encryption_key(password, &salt).unwrap();
 
-        let (key1, _) = generate_keypair();
-        let user_key1 = create_test_user_key("key1", &key1, &encryption_key);
+        let (key1, pub1) = generate_keypair();
+        let user_key1 = create_test_user_key(&key1, &encryption_key);
 
         let mut manager = UserKeyManager::new(password, &salt, vec![user_key1]).unwrap();
 
         // Verify key exists
-        assert!(manager.get_signing_key("key1").is_some());
+        assert!(manager.get_signing_key(&pub1).is_some());
 
         // Clear
         manager.clear();
 
         // Verify keys are gone
-        assert!(manager.get_signing_key("key1").is_none());
+        assert!(manager.get_signing_key(&pub1).is_none());
         assert_eq!(manager.list_key_ids().len(), 0);
     }
 
@@ -616,17 +579,17 @@ mod tests {
         let (_, salt) = hash_password(password).unwrap();
         let encryption_key = derive_encryption_key(password, &salt).unwrap();
 
-        let (key1, _) = generate_keypair();
-        let (key2, _) = generate_keypair();
-        let user_key1 = create_test_user_key("key1", &key1, &encryption_key);
-        let user_key2 = create_test_user_key("key2", &key2, &encryption_key);
+        let (key1, pub1) = generate_keypair();
+        let (key2, pub2) = generate_keypair();
+        let user_key1 = create_test_user_key(&key1, &encryption_key);
+        let user_key2 = create_test_user_key(&key2, &encryption_key);
 
         let manager = UserKeyManager::new(password, &salt, vec![user_key1, user_key2]).unwrap();
 
         let key_ids = manager.list_key_ids();
         assert_eq!(key_ids.len(), 2);
-        assert!(key_ids.contains(&"key1".to_string()));
-        assert!(key_ids.contains(&"key2".to_string()));
+        assert!(key_ids.contains(&pub1));
+        assert!(key_ids.contains(&pub2));
     }
 
     #[test]
@@ -637,9 +600,9 @@ mod tests {
         let encryption_key = derive_encryption_key(password, &salt).unwrap();
 
         // Create keys with specific timestamps
-        let (key_new, _) = generate_keypair();
-        let (key_old, _) = generate_keypair();
-        let (key_mid, _) = generate_keypair();
+        let (key_new, pub_new) = generate_keypair();
+        let (key_old, pub_old) = generate_keypair();
+        let (key_mid, pub_mid) = generate_keypair();
 
         let (ct_new, nonce_new) = encrypt_private_key(&key_new, &encryption_key).unwrap();
         let (ct_old, nonce_old) = encrypt_private_key(&key_old, &encryption_key).unwrap();
@@ -647,7 +610,7 @@ mod tests {
 
         // Create keys with explicit timestamps (old, middle, new)
         let user_key_old = UserKey {
-            key_id: "key_old".to_string(),
+            key_id: pub_old.clone(),
             storage: KeyStorage::Encrypted {
                 algorithm: "aes-256-gcm".to_string(),
                 ciphertext: ct_old,
@@ -661,7 +624,7 @@ mod tests {
         };
 
         let user_key_mid = UserKey {
-            key_id: "key_mid".to_string(),
+            key_id: pub_mid.clone(),
             storage: KeyStorage::Encrypted {
                 algorithm: "aes-256-gcm".to_string(),
                 ciphertext: ct_mid,
@@ -675,7 +638,7 @@ mod tests {
         };
 
         let user_key_new = UserKey {
-            key_id: "key_new".to_string(),
+            key_id: pub_new.clone(),
             storage: KeyStorage::Encrypted {
                 algorithm: "aes-256-gcm".to_string(),
                 ciphertext: ct_new,
@@ -699,9 +662,9 @@ mod tests {
         // list_key_ids() should return keys sorted by created_at (oldest first)
         let key_ids = manager.list_key_ids();
         assert_eq!(key_ids.len(), 3);
-        assert_eq!(key_ids[0], "key_old"); // created_at: 1000
-        assert_eq!(key_ids[1], "key_mid"); // created_at: 2000
-        assert_eq!(key_ids[2], "key_new"); // created_at: 3000
+        assert_eq!(key_ids[0], pub_old); // created_at: 1000
+        assert_eq!(key_ids[1], pub_mid); // created_at: 2000
+        assert_eq!(key_ids[2], pub_new); // created_at: 3000
     }
 
     #[test]
@@ -711,14 +674,14 @@ mod tests {
         let (_, salt) = hash_password(password).unwrap();
         let encryption_key = derive_encryption_key(password, &salt).unwrap();
 
-        let (key1, _) = generate_keypair();
-        let user_key1 = create_test_user_key("key1", &key1, &encryption_key);
+        let (key1, pub1) = generate_keypair();
+        let user_key1 = create_test_user_key(&key1, &encryption_key);
 
         let manager = UserKeyManager::new(password, &salt, vec![user_key1]).unwrap();
 
-        let metadata = manager.get_key_metadata("key1").unwrap();
-        assert_eq!(metadata.key_id, "key1");
-        assert_eq!(metadata.display_name, Some("Test key key1".to_string()));
+        let metadata = manager.get_key_metadata(&pub1).unwrap();
+        assert_eq!(metadata.key_id, pub1);
+        assert_eq!(metadata.display_name, Some("Test key".to_string()));
     }
 
     #[test]
@@ -731,7 +694,7 @@ mod tests {
 
         // Create keys with correct password
         let (key1, _) = generate_keypair();
-        let user_key1 = create_test_user_key("key1", &key1, &encryption_key);
+        let user_key1 = create_test_user_key(&key1, &encryption_key);
 
         // Attempt to create manager with wrong password - should fail
         let result = UserKeyManager::new(wrong_password, &salt, vec![user_key1]);
@@ -754,7 +717,7 @@ mod tests {
         let encryption_key = derive_encryption_key(password, &salt).unwrap();
 
         let (key1, _) = generate_keypair();
-        let mut user_key = create_test_user_key("key1", &key1, &encryption_key);
+        let mut user_key = create_test_user_key(&key1, &encryption_key);
 
         // Tamper with the algorithm field
         if let KeyStorage::Encrypted {

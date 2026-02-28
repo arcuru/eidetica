@@ -428,7 +428,7 @@ These are names in the **delegated database's** auth settings that point to **pu
 # let mut user = instance.login_user("alice", None).await?;
 # let default_key_id = user.get_default_key()?;
 # let alice_db = user.create_database(Doc::new(), &default_key_id).await?;
-# let alice_pubkey_str = user.get_public_key(&default_key_id)?;
+# let alice_pubkey_str = default_key_id.to_string();
 # let transaction = alice_db.new_transaction().await?;
 # let settings = transaction.get_settings()?;
 // In Alice's database: keys are indexed by pubkey

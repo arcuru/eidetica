@@ -196,7 +196,7 @@ async fn test_bootstrap_sync_tracks_tree_peer_relationship() {
     let tree_id = db.root_id().clone();
 
     // Enable sync for this database
-    user.track_database(tree_id.clone(), key_id, SyncSettings::enabled())
+    user.track_database(tree_id.clone(), &key_id, SyncSettings::enabled())
         .await
         .unwrap();
 
@@ -267,7 +267,7 @@ async fn test_incremental_sync_tracks_tree_peer_relationship() {
     let tree_id = db.root_id().clone();
 
     // Enable sync
-    user.track_database(tree_id.clone(), key_id, SyncSettings::enabled())
+    user.track_database(tree_id.clone(), &key_id, SyncSettings::enabled())
         .await
         .unwrap();
 
@@ -337,7 +337,7 @@ async fn test_relationship_tracking_skipped_without_peer_pubkey() {
     let db = user.create_database(settings, &key_id).await.unwrap();
     let tree_id = db.root_id().clone();
 
-    user.track_database(tree_id.clone(), key_id, SyncSettings::enabled())
+    user.track_database(tree_id.clone(), &key_id, SyncSettings::enabled())
         .await
         .unwrap();
 
@@ -416,11 +416,11 @@ async fn test_multiple_trees_tracked_with_same_peer() {
     let tree_id2 = db2.root_id().clone();
 
     // Enable sync for both
-    user.track_database(tree_id1.clone(), key_id.clone(), SyncSettings::enabled())
+    user.track_database(tree_id1.clone(), &key_id, SyncSettings::enabled())
         .await
         .unwrap();
 
-    user.track_database(tree_id2.clone(), key_id, SyncSettings::enabled())
+    user.track_database(tree_id2.clone(), &key_id, SyncSettings::enabled())
         .await
         .unwrap();
 
@@ -550,7 +550,7 @@ async fn test_sync_without_peer_identifier_works() {
     let db = user.create_database(settings, &key_id).await.unwrap();
     let tree_id = db.root_id().clone();
 
-    user.track_database(tree_id.clone(), key_id, SyncSettings::enabled())
+    user.track_database(tree_id.clone(), &key_id, SyncSettings::enabled())
         .await
         .unwrap();
 
@@ -599,11 +599,11 @@ async fn test_bootstrap_auto_detects_permission_for_authorized_key() {
     let db = user.create_database(settings, &key_id).await.unwrap();
     let tree_id = db.root_id().clone();
 
-    // Get the user's actual key (the one that's authorized as Admin)
-    let user_key_pubkey = user.get_public_key(&key_id).unwrap();
+    // Get the user's actual public key string (the one that's authorized as Admin)
+    let user_key_pubkey = key_id.to_string();
 
     // Enable sync
-    user.track_database(tree_id.clone(), key_id.clone(), SyncSettings::enabled())
+    user.track_database(tree_id.clone(), &key_id, SyncSettings::enabled())
         .await
         .unwrap();
 
@@ -621,7 +621,7 @@ async fn test_bootstrap_auto_detects_permission_for_authorized_key() {
         our_tips: vec![],
         peer_pubkey: None,
         requesting_key: Some(user_key_pubkey.clone()),
-        requesting_key_name: Some(key_id.clone()),
+        requesting_key_name: Some(key_id.to_string()),
         requested_permission: None, // Should auto-detect from auth settings
     };
 
@@ -665,7 +665,7 @@ async fn test_bootstrap_rejects_unauthorized_key_when_permission_not_specified()
     let tree_id = db.root_id().clone();
 
     // Enable sync
-    user.track_database(tree_id.clone(), key_id, SyncSettings::enabled())
+    user.track_database(tree_id.clone(), &key_id, SyncSettings::enabled())
         .await
         .unwrap();
 
@@ -739,7 +739,7 @@ async fn test_bootstrap_auto_detects_global_wildcard_permission() {
     }
 
     // Enable sync
-    user.track_database(tree_id.clone(), key_id, SyncSettings::enabled())
+    user.track_database(tree_id.clone(), &key_id, SyncSettings::enabled())
         .await
         .unwrap();
 
@@ -829,7 +829,7 @@ async fn test_bootstrap_uses_highest_permission_when_key_has_multiple() {
     }
 
     // Enable sync
-    user.track_database(tree_id.clone(), key_id, SyncSettings::enabled())
+    user.track_database(tree_id.clone(), &key_id, SyncSettings::enabled())
         .await
         .unwrap();
 

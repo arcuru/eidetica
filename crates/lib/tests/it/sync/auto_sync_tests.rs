@@ -36,7 +36,7 @@ async fn test_commits_work_with_sync_enabled() {
     let db_id = db.root_id().clone();
 
     // Add database with sync enabled
-    user.track_database(db_id.clone(), key_id.clone(), SyncSettings::on_commit())
+    user.track_database(db_id.clone(), &key_id, SyncSettings::on_commit())
         .await
         .expect("Add database");
 
@@ -125,7 +125,7 @@ async fn test_commits_with_sync_disabled() {
     // Add database with sync disabled
     user.track_database(
         db_id.clone(),
-        key_id.clone(),
+        &key_id,
         SyncSettings {
             sync_on_commit: true,
             ..Default::default()
@@ -168,7 +168,7 @@ async fn test_commits_with_sync_on_commit_disabled() {
     let db_id = db.root_id().clone();
 
     // Add database with sync_on_commit=false
-    user.track_database(db_id.clone(), key_id.clone(), SyncSettings::enabled())
+    user.track_database(db_id.clone(), &key_id, SyncSettings::enabled())
         .await
         .expect("Add database");
 

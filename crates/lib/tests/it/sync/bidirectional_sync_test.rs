@@ -79,11 +79,12 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
         .expect("Failed to create database on device1");
 
     // Add auth keys: user's key, device key for sync handler, and global wildcard permission
+    let device1_key_id_str = device1_key_id.to_string();
     add_auth_keys(
         &device1_database,
         &[
             (
-                &device1_key_id,
+                &device1_key_id_str,
                 AuthKey::active(Some("admin"), Permission::Admin(10)),
             ),
             (
@@ -155,11 +156,12 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
             .await
             .expect("Failed to register HTTP transport");
 
+        let device2_key_id_str = device2_key_id.to_string();
         device2_sync
             .sync_with_peer_for_bootstrap_with_key(
                 &device1_server_addr,
                 &room_id,
-                &device2_key_id,
+                &device2_key_id_str,
                 CHAT_APP_KEY,
                 Permission::Write(10),
             )
@@ -180,11 +182,7 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     // Verify device 2 has the database and message A
     // Track and open database using User API
     device2_user
-        .track_database(
-            room_id.clone(),
-            device2_key_id.clone(),
-            SyncSettings::disabled(),
-        )
+        .track_database(room_id.clone(), &device2_key_id, SyncSettings::disabled())
         .await
         .expect("Failed to track database on device2");
     let device2_database = device2_user

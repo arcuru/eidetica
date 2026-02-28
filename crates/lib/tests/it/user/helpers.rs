@@ -8,7 +8,9 @@
 
 #![allow(dead_code)]
 
-use eidetica::{Database, Instance, crdt::Doc, entry::ID, sync::Sync, user::User};
+use eidetica::{
+    Database, Instance, auth::crypto::PublicKey, crdt::Doc, entry::ID, sync::Sync, user::User,
+};
 
 use crate::helpers::test_instance;
 
@@ -69,14 +71,14 @@ pub async fn login_user(instance: &Instance, username: &str, password: Option<&s
 // ===== KEY MANAGEMENT HELPERS =====
 
 /// Add a private key to a user and return the key ID
-pub async fn add_user_key(user: &mut User, display_name: Option<&str>) -> String {
+pub async fn add_user_key(user: &mut User, display_name: Option<&str>) -> PublicKey {
     user.add_private_key(display_name)
         .await
         .expect("Failed to add private key")
 }
 
 /// Add multiple keys to a user
-pub async fn add_multiple_keys(user: &mut User, count: usize) -> Vec<String> {
+pub async fn add_multiple_keys(user: &mut User, count: usize) -> Vec<PublicKey> {
     let mut keys = Vec::with_capacity(count);
     for i in 0..count {
         keys.push(add_user_key(user, Some(&format!("key_{i}"))).await);
@@ -199,22 +201,21 @@ pub fn assert_user_key_count(user: &User, expected_count: usize) {
     );
 }
 
-/// Assert that a user can get a specific key
-pub fn assert_user_has_key(user: &User, key_id: &str) {
-    let result = user.get_public_key(key_id);
+/// Assert that a user has a specific key
+pub fn assert_user_has_key(user: &User, key_id: &PublicKey) {
+    let keys = user.list_keys().expect("Failed to list keys");
     assert!(
-        result.is_ok(),
-        "User should have key {}, but got error: {:?}",
+        keys.contains(key_id),
+        "User should have key {}, but it was not found in key list",
         key_id,
-        result.err()
     );
 }
 
 /// Assert that a user does NOT have a specific key
-pub fn assert_user_lacks_key(user: &User, key_id: &str) {
-    let result = user.get_public_key(key_id);
+pub fn assert_user_lacks_key(user: &User, key_id: &PublicKey) {
+    let keys = user.list_keys().expect("Failed to list keys");
     assert!(
-        result.is_err(),
+        !keys.contains(key_id),
         "User should NOT have key {key_id}, but found it"
     );
 }
@@ -232,7 +233,7 @@ pub async fn assert_database_name(database: &Database, expected_name: &str) {
 }
 
 /// Assert that a user has a sigkey mapping for a database
-pub fn assert_user_has_database_access(user: &User, key_id: &str, database_id: &ID) {
+pub fn assert_user_has_database_access(user: &User, key_id: &PublicKey, database_id: &ID) {
     let sigkey = user
         .key_mapping(key_id, database_id)
         .expect("Failed to get database sigkey");

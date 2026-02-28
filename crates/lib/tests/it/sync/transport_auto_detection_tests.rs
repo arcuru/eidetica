@@ -372,7 +372,7 @@ async fn test_unauthenticated_sync_should_fail() {
     // Verify auth is configured by checking if server_key exists
     let db_settings = database.get_settings().await.unwrap();
     let auth_settings = db_settings.auth_snapshot().await.unwrap();
-    let server_key_auth = auth_settings.get_key_by_pubkey(&server_key_id);
+    let server_key_auth = auth_settings.get_key_by_pubkey(&server_key_id.to_string());
     assert!(
         server_key_auth.is_ok(),
         "Database should have auth configured with server_key"
@@ -415,7 +415,7 @@ async fn test_unauthenticated_sync_should_fail() {
         .unwrap();
 
     // Verify client key is NOT in server's auth settings
-    let sigkeys = Database::find_sigkeys(&server_instance, &tree_id, &client_key_id)
+    let sigkeys = Database::find_sigkeys(&server_instance, &tree_id, &client_key_id.to_string())
         .await
         .unwrap();
     assert!(

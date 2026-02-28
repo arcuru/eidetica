@@ -5,6 +5,7 @@
 
 use eidetica::{
     Database, Instance,
+    auth::crypto::PublicKey,
     crdt::{Doc, doc::Value},
     entry::ID,
     store::DocStore,
@@ -219,9 +220,9 @@ pub async fn create_linear_chain(
 
 /// Create tree with authentication using User API.
 ///
-/// Returns (Instance, Database, key_id) where key_id is the public key string
-/// that should be used in assertions like `is_signed_by(&key_id)`.
-pub async fn setup_tree_with_user_auth() -> (Instance, Database, String) {
+/// Returns (Instance, Database, key_id) where key_id is the PublicKey
+/// that should be used in assertions like `is_signed_by(&key_id.to_string())`.
+pub async fn setup_tree_with_user_auth() -> (Instance, Database, PublicKey) {
     let (instance, mut user, key_id) =
         crate::helpers::test_instance_with_user_and_key("test_user", Some("test_key")).await;
 

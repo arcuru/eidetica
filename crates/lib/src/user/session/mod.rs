@@ -33,11 +33,15 @@
 //! keys have access to which databases.
 
 use handle_trait::Handle;
+use std::collections::HashMap;
 
 use super::{UserKeyManager, types::UserInfo};
 use crate::{
     Database, Error, Instance, Result, Transaction,
-    auth::{self, Permission, SigKey, crypto::format_public_key},
+    auth::{
+        self, Permission, SigKey,
+        crypto::{PublicKey, format_public_key},
+    },
     crdt::Doc,
     database::DatabaseKey,
     entry::ID,
@@ -197,7 +201,7 @@ impl User {
     /// settings.set("name", "My Database");
     /// let database = user.new_database(settings, key_id)?;
     /// ```
-    pub async fn create_database(&mut self, settings: Doc, key_id: &str) -> Result<Database> {
+    pub async fn create_database(&mut self, settings: Doc, key_id: &PublicKey) -> Result<Database> {
         use crate::user::types::{SyncSettings, UserKey};
 
         // Get the signing key from UserKeyManager
@@ -218,7 +222,7 @@ impl User {
 
         // Find the key metadata in the database
         let (uuid_primary_key, mut metadata) = keys_table
-            .search(|uk| uk.key_id == key_id)
+            .search(|uk| &uk.key_id == key_id)
             .await?
             .into_iter()
             .next()
@@ -226,7 +230,7 @@ impl User {
                 key_id: key_id.to_string(),
             })?;
 
-        // Add the database sigkey mapping
+        // Add the database sigkey mapping (store pubkey string as sigkey value)
         metadata
             .database_sigkeys
             .insert(database.root_id().clone(), key_id.to_string());
@@ -238,7 +242,7 @@ impl User {
         let databases_table = tx.get_store::<Table<TrackedDatabase>>("databases").await?;
         let tracked = TrackedDatabase {
             database_id: database.root_id().clone(),
-            key_id: key_id.to_string(),
+            key_id: key_id.clone(),
             sync_settings: SyncSettings::disabled(),
         };
         databases_table.set(database.root_id(), tracked).await?;
@@ -286,14 +290,14 @@ impl User {
         // Get the SigningKey from UserKeyManager
         let signing_key = self.key_manager.get_signing_key(&key_id).ok_or_else(|| {
             super::errors::UserError::KeyNotFound {
-                key_id: key_id.clone(),
+                key_id: key_id.to_string(),
             }
         })?;
 
         // Get the SigKey mapping for this database
         let sigkey = self.key_mapping(&key_id, root_id)?.ok_or_else(|| {
             super::errors::UserError::NoSigKeyMapping {
-                key_id: key_id.clone(),
+                key_id: key_id.to_string(),
                 database_id: root_id.clone(),
             }
         })?;
@@ -348,7 +352,7 @@ impl User {
     ///
     /// # Returns
     /// Some(key_id) if a suitable key is found, None if no keys can access this database
-    pub fn find_key(&self, database_id: &ID) -> Result<Option<String>> {
+    pub fn find_key(&self, database_id: &ID) -> Result<Option<PublicKey>> {
         // Iterate through all keys and find ones with SigKey mappings for this database
         for key_id in self.key_manager.list_key_ids() {
             if let Some(metadata) = self.key_manager.get_key_metadata(&key_id)
@@ -377,7 +381,7 @@ impl User {
     ///
     /// # Errors
     /// Returns an error if the key_id doesn't exist in the UserKeyManager
-    pub fn key_mapping(&self, key_id: &str, database_id: &ID) -> Result<Option<String>> {
+    pub fn key_mapping(&self, key_id: &PublicKey, database_id: &ID) -> Result<Option<String>> {
         let metadata = self.key_manager.get_key_metadata(key_id).ok_or_else(|| {
             super::errors::UserError::KeyNotFound {
                 key_id: key_id.to_string(),
@@ -406,7 +410,12 @@ impl User {
     ///
     /// # Errors
     /// Returns an error if the key_id doesn't exist in the user database
-    pub async fn map_key(&mut self, key_id: &str, database_id: &ID, sigkey: &str) -> Result<()> {
+    pub async fn map_key(
+        &mut self,
+        key_id: &PublicKey,
+        database_id: &ID,
+        sigkey: &str,
+    ) -> Result<()> {
         let tx = self.user_database.new_transaction().await?;
         self.map_key_in_txn(&tx, key_id, database_id, sigkey)
             .await?;
@@ -421,7 +430,7 @@ impl User {
     async fn map_key_in_txn(
         &mut self,
         tx: &Transaction,
-        key_id: &str,
+        key_id: &PublicKey,
         database_id: &ID,
         sigkey: &str,
     ) -> Result<()> {
@@ -432,7 +441,7 @@ impl User {
 
         // Find the key metadata in the database
         let (uuid_primary_key, mut metadata) = keys_table
-            .search(|uk| uk.key_id == key_id)
+            .search(|uk| &uk.key_id == key_id)
             .await?
             .into_iter()
             .next()
@@ -462,7 +471,7 @@ impl User {
         &mut self,
         tx: &Transaction,
         database_id: &ID,
-        key_id: &str,
+        key_id: &PublicKey,
     ) -> Result<()> {
         // Verify the key exists
         let signing_key =
@@ -472,7 +481,7 @@ impl User {
                     key_id: key_id.to_string(),
                 })?;
 
-        // Get public key for SigKey discovery
+        // Get public key string for SigKey discovery
         let public_key = auth::format_public_key(&signing_key.public_key());
 
         // Discover available SigKeys for this public key
@@ -528,14 +537,13 @@ impl User {
     ///
     /// # Returns
     /// The key ID (public key string)
-    pub async fn add_private_key(&mut self, display_name: Option<&str>) -> Result<String> {
-        use crate::auth::crypto::{format_public_key, generate_keypair};
+    pub async fn add_private_key(&mut self, display_name: Option<&str>) -> Result<PublicKey> {
+        use crate::auth::crypto::generate_keypair;
         use crate::store::Table;
         use crate::user::types::{KeyStorage, UserKey};
 
         // Generate new keypair
         let (private_key, public_key) = generate_keypair();
-        let key_id = format_public_key(&public_key);
 
         // Get current timestamp using the instance's clock
         let timestamp = self.instance.clock().now_secs();
@@ -547,7 +555,7 @@ impl User {
             let (ciphertext, nonce) = encrypt_private_key(&private_key, encryption_key)?;
 
             UserKey {
-                key_id: key_id.clone(),
+                key_id: public_key.clone(),
                 storage: KeyStorage::Encrypted {
                     algorithm: "aes-256-gcm".to_string(),
                     ciphertext,
@@ -557,18 +565,18 @@ impl User {
                 created_at: timestamp,
                 last_used: None,
                 is_default: false, // New keys are not default
-                database_sigkeys: std::collections::HashMap::new(),
+                database_sigkeys: HashMap::new(),
             }
         } else {
             // Passwordless user: store unencrypted
             UserKey {
-                key_id: key_id.clone(),
+                key_id: public_key.clone(),
                 storage: KeyStorage::Unencrypted { key: private_key },
                 display_name: display_name.map(|s| s.to_string()),
                 created_at: timestamp,
                 last_used: None,
                 is_default: false, // New keys are not default
-                database_sigkeys: std::collections::HashMap::new(),
+                database_sigkeys: HashMap::new(),
             }
         };
 
@@ -581,7 +589,7 @@ impl User {
         // Add to in-memory key manager
         self.key_manager.add_key(user_key)?;
 
-        Ok(key_id)
+        Ok(public_key)
     }
 
     /// List all key IDs owned by this user.
@@ -590,8 +598,8 @@ impl User {
     /// first key in the list the "default" key created when the user was set up.
     ///
     /// # Returns
-    /// Vector of key IDs (public key strings) sorted by creation time
-    pub fn list_keys(&self) -> Result<Vec<String>> {
+    /// Vector of PublicKeys sorted by creation time
+    pub fn list_keys(&self) -> Result<Vec<PublicKey>> {
         Ok(self.key_manager.list_key_ids())
     }
 
@@ -601,11 +609,11 @@ impl User {
     /// by creation timestamp if no default is explicitly set.
     ///
     /// # Returns
-    /// The key ID of the default key
+    /// The PublicKey of the default key
     ///
     /// # Errors
     /// Returns an error if no keys exist
-    pub fn get_default_key(&self) -> Result<String> {
+    pub fn get_default_key(&self) -> Result<PublicKey> {
         self.key_manager
             .get_default_key_id()
             .ok_or_else(|| Error::from(InstanceError::AuthenticationRequired))
@@ -614,12 +622,12 @@ impl User {
     /// Get a signing key by its ID.
     ///
     /// # Arguments
-    /// * `key_id` - The key ID (public key string)
+    /// * `key_id` - The public key identifier
     ///
     /// # Returns
-    /// The SigningKey if found
+    /// The PrivateKey if found
     #[cfg(any(test, feature = "testing"))]
-    pub fn get_signing_key(&self, key_id: &str) -> Result<crate::auth::crypto::PrivateKey> {
+    pub fn get_signing_key(&self, key_id: &PublicKey) -> Result<crate::auth::crypto::PrivateKey> {
         self.key_manager
             .get_signing_key(key_id)
             .cloned()
@@ -629,24 +637,6 @@ impl User {
                 }
                 .into()
             })
-    }
-
-    /// Get the formatted public key string for a given key ID.
-    ///
-    /// Returns the public key in the same format used throughout Eidetica's auth system.
-    ///
-    /// # Arguments
-    /// * `key_id` - The key ID (public key string)
-    ///
-    /// # Returns
-    /// The formatted public key string if the key is found
-    pub fn get_public_key(&self, key_id: &str) -> Result<String> {
-        let verifying_key = self.key_manager.get_public_key(key_id).ok_or_else(|| {
-            Error::from(UserError::KeyNotFound {
-                key_id: key_id.to_string(),
-            })
-        })?;
-        Ok(format_public_key(&verifying_key))
     }
 
     // === Bootstrap Request Management (User Context) ===
@@ -688,7 +678,7 @@ impl User {
         &self,
         sync: &Sync,
         request_id: &str,
-        approving_key_id: &str,
+        approving_key_id: &PublicKey,
     ) -> Result<()> {
         // Get the signing key from the key manager
         let signing_key = self
@@ -729,7 +719,7 @@ impl User {
         &self,
         sync: &Sync,
         request_id: &str,
-        rejecting_key_id: &str,
+        rejecting_key_id: &PublicKey,
     ) -> Result<()> {
         // Get the signing key from the key manager
         let signing_key = self
@@ -791,7 +781,7 @@ impl User {
         &self,
         sync: &Sync,
         ticket: &DatabaseTicket,
-        key_id: &str,
+        key_id: &PublicKey,
         requested_permission: Permission,
     ) -> Result<()> {
         let signing_key = self.key_manager.get_signing_key(key_id).ok_or_else(|| {
@@ -802,8 +792,13 @@ impl User {
 
         let public_key = format_public_key(&signing_key.public_key());
 
-        sync.bootstrap_with_ticket(ticket, &public_key, key_id, requested_permission)
-            .await
+        sync.bootstrap_with_ticket(
+            ticket,
+            &public_key,
+            &key_id.to_string(),
+            requested_permission,
+        )
+        .await
     }
 
     // === Tracked Databases ===
@@ -836,12 +831,12 @@ impl User {
     pub async fn track_database(
         &mut self,
         database_id: impl Into<ID>,
-        key_id: impl Into<String>,
+        key_id: &PublicKey,
         sync_settings: SyncSettings,
     ) -> Result<()> {
         let tracked = TrackedDatabase {
             database_id: database_id.into(),
-            key_id: key_id.into(),
+            key_id: key_id.clone(),
             sync_settings,
         };
         // Single transaction for all operations

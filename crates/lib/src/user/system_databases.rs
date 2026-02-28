@@ -182,7 +182,7 @@ pub async fn create_user(
             let (ciphertext, nonce) = encrypt_private_key(&user_private_key, &encryption_key)?;
 
             UserKey {
-                key_id: user_public_key_str.clone(),
+                key_id: user_public_key.clone(),
                 storage: KeyStorage::Encrypted {
                     algorithm: "aes-256-gcm".to_string(),
                     ciphertext,
@@ -198,7 +198,7 @@ pub async fn create_user(
         _ => {
             // Passwordless: store unencrypted
             UserKey {
-                key_id: user_public_key_str.clone(),
+                key_id: user_public_key.clone(),
                 storage: KeyStorage::Unencrypted {
                     key: user_private_key,
                 },
@@ -360,7 +360,7 @@ pub async fn login_user(
     let default_signing_key = key_manager
         .get_signing_key(&default_key_id)
         .ok_or_else(|| UserError::KeyNotFound {
-            key_id: default_key_id.clone(),
+            key_id: default_key_id.to_string(),
         })?
         .clone();
 
