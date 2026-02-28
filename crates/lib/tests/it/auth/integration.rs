@@ -122,7 +122,7 @@ async fn test_validation_pipeline_with_concurrent_settings_changes() {
     let tree_with_key2 = Database::open(
         instance.clone(),
         tree.root_id(),
-        DatabaseKey::from_legacy_sigkey(key2_signing_key, &key2_id.to_string()),
+        DatabaseKey::new(key2_signing_key),
     )
     .await
     .expect("Failed to reload database with KEY2");

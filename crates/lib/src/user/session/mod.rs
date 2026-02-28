@@ -38,10 +38,7 @@ use std::collections::HashMap;
 use super::{UserKeyManager, types::UserInfo};
 use crate::{
     Database, Error, Instance, Result, Transaction,
-    auth::{
-        self, Permission, SigKey,
-        crypto::{PublicKey, format_public_key},
-    },
+    auth::{Permission, SigKey, crypto::PublicKey},
     crdt::Doc,
     database::DatabaseKey,
     entry::ID,
@@ -499,17 +496,15 @@ impl User {
         key_id: &PublicKey,
     ) -> Result<()> {
         // Verify the key exists
-        let signing_key =
-            self.key_manager
-                .get_signing_key(key_id)
-                .ok_or_else(|| UserError::KeyNotFound {
-                    key_id: key_id.to_string(),
-                })?;
-
-        // Get public key string for SigKey discovery
-        let public_key = auth::format_public_key(&signing_key.public_key());
+        if self.key_manager.get_signing_key(key_id).is_none() {
+            return Err(UserError::KeyNotFound {
+                key_id: key_id.to_string(),
+            }
+            .into());
+        }
 
         // Discover available SigKeys for this public key
+        let public_key = key_id.to_string();
         let available_sigkeys =
             Database::find_sigkeys(&self.instance, database_id, &public_key).await?;
 
@@ -791,21 +786,17 @@ impl User {
         key_id: &PublicKey,
         requested_permission: Permission,
     ) -> Result<()> {
-        let signing_key = self.key_manager.get_signing_key(key_id).ok_or_else(|| {
-            super::errors::UserError::KeyNotFound {
+        if self.key_manager.get_signing_key(key_id).is_none() {
+            return Err(super::errors::UserError::KeyNotFound {
                 key_id: key_id.to_string(),
             }
-        })?;
+            .into());
+        }
 
-        let public_key = format_public_key(&signing_key.public_key());
+        let public_key = key_id.to_string();
 
-        sync.bootstrap_with_ticket(
-            ticket,
-            &public_key,
-            &key_id.to_string(),
-            requested_permission,
-        )
-        .await
+        sync.bootstrap_with_ticket(ticket, &public_key, &public_key, requested_permission)
+            .await
     }
 
     // === Tracked Databases ===

@@ -74,27 +74,6 @@ impl DatabaseKey {
         }
     }
 
-    /// Bridge constructor for legacy `String`-based sigkey mappings.
-    ///
-    /// Converts an untyped sigkey string to the appropriate `SigKey` variant:
-    /// - `"*"` or `"*:<pubkey>"` → global identity with actual pubkey
-    /// - Starts with `"ed25519:"` → direct pubkey identity
-    /// - Otherwise → name-based identity
-    pub fn from_legacy_sigkey(signing_key: PrivateKey, sigkey_str: &str) -> Self {
-        let identity = if sigkey_str == "*" || sigkey_str.starts_with("*:") {
-            let pubkey_str = format_public_key(&signing_key.public_key());
-            SigKey::global(pubkey_str)
-        } else if sigkey_str.starts_with("ed25519:") {
-            SigKey::from_pubkey(sigkey_str)
-        } else {
-            SigKey::from_name(sigkey_str)
-        };
-        Self {
-            signing_key: Box::new(signing_key),
-            identity,
-        }
-    }
-
     /// Get the signing key.
     pub fn signing_key(&self) -> &PrivateKey {
         &self.signing_key

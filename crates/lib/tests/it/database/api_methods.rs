@@ -344,7 +344,7 @@ async fn test_verify_entry_signature_unauthorized_key() {
     let open_result = Database::open(
         instance.clone(),
         tree.root_id(),
-        DatabaseKey::from_legacy_sigkey(unauthorized_signing_key, &unauthorized_key_id.to_string()),
+        DatabaseKey::new(unauthorized_signing_key),
     )
     .await;
 

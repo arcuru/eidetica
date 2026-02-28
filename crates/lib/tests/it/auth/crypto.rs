@@ -205,7 +205,7 @@ async fn test_multi_key_authentication() {
     let tree_with_key2 = Database::open(
         instance.clone(),
         tree.root_id(),
-        DatabaseKey::from_legacy_sigkey(signing_key2_for_load, &key_id2.to_string()),
+        DatabaseKey::new(signing_key2_for_load),
     )
     .await
     .expect("Failed to load database with key2");

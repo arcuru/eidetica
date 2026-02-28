@@ -20,7 +20,7 @@ use super::helpers::{
 use crate::helpers::test_instance_with_user_and_key;
 use eidetica::{
     Database,
-    auth::{Permission, generate_keypair, types::SigKey},
+    auth::{Permission, generate_keypair},
     crdt::Doc,
     database::DatabaseKey,
     store::Table,
@@ -147,19 +147,11 @@ async fn test_chat_app_authenticated_bootstrap() {
     assert!(!sigkeys.is_empty(), "Should find at least one SigKey");
 
     let (sigkey, _) = &sigkeys[0];
-    let sigkey_str = match sigkey {
-        SigKey::Direct(hint) => hint
-            .pubkey
-            .clone()
-            .or(hint.name.clone())
-            .expect("Should have pubkey or name"),
-        _ => panic!("Expected Direct SigKey"),
-    };
 
-    // The sigkey should be the client_key_id (pubkey) since keys are indexed by pubkey
-    assert_eq!(
-        sigkey_str, client_key_str,
-        "Should use registered key's pubkey"
+    // The sigkey should reference the client's pubkey since keys are indexed by pubkey
+    assert!(
+        sigkey.has_pubkey_hint(&client_key_str),
+        "Should use registered key's pubkey, got: {sigkey:?}"
     );
 
     let client_signing_key = client_user
@@ -170,7 +162,7 @@ async fn test_chat_app_authenticated_bootstrap() {
     let client_database = Database::open(
         client_instance.clone(),
         &tree_id,
-        DatabaseKey::from_legacy_sigkey(client_signing_key, &sigkey_str),
+        DatabaseKey::with_identity(client_signing_key, sigkey.clone()),
     )
     .await
     .expect("Client should load database");
@@ -277,14 +269,6 @@ async fn test_global_key_bootstrap() {
     let (sigkey, _) = &sigkeys[0];
     // Global permission is encoded as "*:ed25519:..." in the pubkey field
     assert!(sigkey.is_global(), "Should resolve to global permission");
-    let sigkey_str = match sigkey {
-        SigKey::Direct(hint) => hint
-            .pubkey
-            .clone()
-            .or(hint.name.clone())
-            .expect("Should have pubkey or name"),
-        _ => panic!("Expected Direct SigKey"),
-    };
 
     let client_signing_key = client_user
         .get_signing_key(&client_key_id)
@@ -294,7 +278,7 @@ async fn test_global_key_bootstrap() {
     let client_database = Database::open(
         client_instance.clone(),
         &tree_id,
-        DatabaseKey::from_legacy_sigkey(client_signing_key, &sigkey_str),
+        DatabaseKey::with_identity(client_signing_key, sigkey.clone()),
     )
     .await
     .expect("Client should load database");

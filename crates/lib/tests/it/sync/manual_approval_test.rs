@@ -1023,19 +1023,11 @@ async fn test_global_permission_enables_transactions() {
     // Extract the first SigKey (should be global permission encoded as "*:ed25519:...")
     let (sigkey, _permission) = &sigkeys[0];
     assert!(sigkey.is_global(), "Should resolve to global permission");
-    let sigkey_str = match sigkey {
-        SigKey::Direct(hint) => hint
-            .pubkey
-            .clone()
-            .or(hint.name.clone())
-            .expect("Should have pubkey or name"),
-        _ => panic!("Expected Direct SigKey"),
-    };
 
     let client_db = Database::open(
         client_instance.clone(),
         &tree_id,
-        DatabaseKey::from_legacy_sigkey(client_signing_key, &sigkey_str),
+        DatabaseKey::with_identity(client_signing_key, sigkey.clone()),
     )
     .await
     .expect("Client should be able to load database");
