@@ -751,9 +751,13 @@ async fn test_user_without_admin_cannot_modify() {
         .expect("Failed to grant Bob write permission");
 
     // Update Bob's key mapping to include Alice's database
-    bob.map_key(&bob_key, &tree_id, &bob_key.to_string())
-        .await
-        .expect("Failed to update Bob's key mapping");
+    bob.map_key(
+        &bob_key,
+        &tree_id,
+        eidetica::auth::SigKey::from_pubkey(bob_key.to_string()),
+    )
+    .await
+    .expect("Failed to update Bob's key mapping");
 
     // Create a sync instance and bootstrap request
     let sync = Sync::new(instance.clone())

@@ -81,8 +81,8 @@ pub struct UserKey {
     pub is_default: bool,
 
     /// Database-specific SigKey mappings
-    /// Maps: Database ID → SigKey used in that database's auth settings
-    pub database_sigkeys: HashMap<ID, String>,
+    /// None = default pubkey identity, Some(sigkey) = non-default identity
+    pub database_sigkeys: HashMap<ID, Option<SigKey>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -120,7 +120,7 @@ Local Key: "ed25519:ABC123..."
 └── Database C: SigKey "alice_laptop"
 ```
 
-**Mapping Storage**: The `database_sigkeys` HashMap in `UserKey` stores these mappings as `database_id → sigkey_string`.
+**Mapping Storage**: The `database_sigkeys` HashMap in `UserKey` stores these mappings as `database_id → Option<SigKey>`, where `None` represents the default pubkey identity and `Some(sigkey)` represents non-default identities.
 
 **Lookup**: When creating a transaction, retrieve the appropriate SigKey from the mapping using the database ID.
 

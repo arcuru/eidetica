@@ -230,10 +230,10 @@ impl User {
                 key_id: key_id.to_string(),
             })?;
 
-        // Add the database sigkey mapping (store pubkey string as sigkey value)
+        // Add the database sigkey mapping (None = default pubkey identity)
         metadata
             .database_sigkeys
-            .insert(database.root_id().clone(), key_id.to_string());
+            .insert(database.root_id().clone(), None);
 
         // Update the key in user database using the UUID primary key
         keys_table.set(&uuid_primary_key, metadata.clone()).await?;
@@ -302,8 +302,8 @@ impl User {
             }
         })?;
 
-        // Create Database with user-provided key (legacy bridge for string-based sigkey mappings)
-        let key = DatabaseKey::from_legacy_sigkey(signing_key.clone(), &sigkey);
+        // Create Database with user-provided key using resolved SigKey identity
+        let key = DatabaseKey::with_identity(signing_key.clone(), sigkey);
         Database::open(self.instance.handle(), root_id, key).await
     }
 
@@ -366,36 +366,50 @@ impl User {
         Ok(None)
     }
 
-    /// Get the SigKey mapping for a key in a specific database.
+    /// Get the resolved SigKey mapping for a key in a specific database.
     ///
     /// Users map their private keys to SigKey identifiers on a per-database basis.
-    /// This retrieves the SigKey identifier that a specific key uses in
+    /// This retrieves the resolved SigKey that a specific key uses in
     /// a specific database's authentication settings.
+    ///
+    /// Internally, `None` in the stored mapping means "default pubkey identity",
+    /// which this method resolves to the concrete `SigKey::from_pubkey(...)` value.
     ///
     /// # Arguments
     /// * `key_id` - The user's key identifier
     /// * `database_id` - The database ID
     ///
     /// # Returns
-    /// Some(sigkey) if a mapping exists, None if no mapping is configured
+    /// `Ok(Some(sigkey))` if a mapping exists (resolved to concrete SigKey),
+    /// `Ok(None)` if no mapping is configured for this database
     ///
     /// # Errors
     /// Returns an error if the key_id doesn't exist in the UserKeyManager
-    pub fn key_mapping(&self, key_id: &PublicKey, database_id: &ID) -> Result<Option<String>> {
+    pub fn key_mapping(&self, key_id: &PublicKey, database_id: &ID) -> Result<Option<SigKey>> {
         let metadata = self.key_manager.get_key_metadata(key_id).ok_or_else(|| {
             super::errors::UserError::KeyNotFound {
                 key_id: key_id.to_string(),
             }
         })?;
 
-        Ok(metadata.database_sigkeys.get(database_id).cloned())
+        match metadata.database_sigkeys.get(database_id) {
+            None => Ok(None), // no mapping exists
+            Some(None) => {
+                // Default: pubkey identity derived directly from key_id
+                Ok(Some(SigKey::from_pubkey(key_id.to_string())))
+            }
+            Some(Some(sigkey)) => Ok(Some(sigkey.clone())),
+        }
     }
 
-    /// Map a key to a SigKey identifier for a specific database.
+    /// Map a key to a SigKey identity for a specific database.
     ///
-    /// Registers that this user's key should be used with a specific SigKey identifier
+    /// Registers that this user's key should be used with a specific SigKey identity
     /// when interacting with a database. This is typically used when a user has been
     /// granted access to a database and needs to configure their local key to work with it.
+    ///
+    /// If the provided SigKey matches the default pubkey identity for this key,
+    /// it is normalized to `None` internally (compact storage for the common case).
     ///
     /// # Multi-Key Support
     ///
@@ -404,9 +418,9 @@ impl User {
     /// different devices, each with their own key.
     ///
     /// # Arguments
-    /// * `key_id` - The user's key identifier (public key string)
+    /// * `key_id` - The user's key identifier (public key)
     /// * `database_id` - The database ID
-    /// * `sigkey` - The SigKey identifier to use for this database
+    /// * `sigkey` - The SigKey identity to use for this database
     ///
     /// # Errors
     /// Returns an error if the key_id doesn't exist in the user database
@@ -414,7 +428,7 @@ impl User {
         &mut self,
         key_id: &PublicKey,
         database_id: &ID,
-        sigkey: &str,
+        sigkey: SigKey,
     ) -> Result<()> {
         let tx = self.user_database.new_transaction().await?;
         self.map_key_in_txn(&tx, key_id, database_id, sigkey)
@@ -427,12 +441,15 @@ impl User {
     ///
     /// This is used internally by methods that manage their own transactions.
     /// For external use, call `map_key()` instead.
+    ///
+    /// Normalizes the stored value: if the sigkey matches the default pubkey
+    /// identity for this key, stores `None` instead of `Some(sigkey)`.
     async fn map_key_in_txn(
         &mut self,
         tx: &Transaction,
         key_id: &PublicKey,
         database_id: &ID,
-        sigkey: &str,
+        sigkey: SigKey,
     ) -> Result<()> {
         use crate::store::Table;
         use crate::user::types::UserKey;
@@ -449,10 +466,18 @@ impl User {
                 key_id: key_id.to_string(),
             })?;
 
+        // Normalize: if the sigkey matches the default pubkey identity, store None
+        let default_sigkey = SigKey::from_pubkey(key_id.to_string());
+        let stored = if sigkey == default_sigkey {
+            None
+        } else {
+            Some(sigkey)
+        };
+
         // Add the database sigkey mapping
         metadata
             .database_sigkeys
-            .insert(database_id.clone(), sigkey.to_string());
+            .insert(database_id.clone(), stored);
 
         // Update the key in user database using the UUID primary key
         keys_table.set(&uuid_primary_key, metadata.clone()).await?;
@@ -498,27 +523,9 @@ impl User {
 
         // Select the first SigKey (highest permission, since find_sigkeys returns sorted list)
         let (sigkey, _permission) = &available_sigkeys[0];
-        let sigkey_str = match sigkey {
-            SigKey::Direct(hint) => {
-                // Extract the sigkey string from the hint
-                // Prefer pubkey hint, fall back to name hint
-                hint.pubkey
-                    .clone()
-                    .or_else(|| hint.name.clone())
-                    .unwrap_or_default()
-            }
-            SigKey::Delegation { .. } => {
-                // FIXME: Implement delegation path handling
-                return Err(UserError::NoSigKeyFound {
-                    key_id: key_id.to_string(),
-                    database_id: database_id.clone(),
-                }
-                .into());
-            }
-        };
 
-        // Create the key mapping within the provided transaction
-        self.map_key_in_txn(tx, key_id, database_id, &sigkey_str)
+        // Store the discovered SigKey directly (map_key_in_txn normalizes to None if default)
+        self.map_key_in_txn(tx, key_id, database_id, sigkey.clone())
             .await?;
 
         Ok(())

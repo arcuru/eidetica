@@ -180,8 +180,8 @@ pub struct UserKey {
     pub is_default: bool,
 
     /// Database-specific SigKey mappings
-    /// Maps: Database ID → SigKey used in that database's auth settings
-    pub database_sigkeys: HashMap<ID, String>,
+    /// None = default pubkey identity, Some(sigkey) = non-default identity
+    pub database_sigkeys: HashMap<ID, Option<SigKey>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -241,7 +241,7 @@ pub struct SyncSettings {
 
 **Design Notes**:
 
-- **SigKey Discovery**: When tracking a database via `track_database()`, the system automatically discovers which SigKey the user can use via `Database::find_sigkeys()`, selecting the highest-permission SigKey available. The discovered SigKey is stored in `UserKey.database_sigkeys` HashMap.
+- **SigKey Discovery**: When tracking a database via `track_database()`, the system automatically discovers which SigKey the user can use via `Database::find_sigkeys()`, selecting the highest-permission SigKey available. The discovered SigKey is stored in `UserKey.database_sigkeys` HashMap, where `None` represents the default pubkey identity and `Some(sigkey)` represents non-default identities (global, name-based, delegation).
 
 - **Separation of Concerns**: The `key_id` in TrackedDatabase references the user's key, while the actual SigKey mapping is stored in `UserKey.database_sigkeys`. This allows the same key to use different SigKeys in different databases.
 
@@ -527,19 +527,19 @@ impl User {
 
     /// Find the best key for accessing a database
 
-    /// Get the SigKey mapping for a key in a specific database
+    /// Get the resolved SigKey mapping for a key in a specific database
     pub fn key_mapping(
         &self,
         key_id: &PublicKey,
         database_id: &ID,
-    ) -> Result<Option<String>>;
+    ) -> Result<Option<SigKey>>;
 
     /// Add a SigKey mapping for a key in a specific database
     pub fn map_key(
         &mut self,
         key_id: &PublicKey,
         database_id: &ID,
-        sigkey: &str,
+        sigkey: SigKey,
     ) -> Result<()>;
 
     // === Tracked Databases ===

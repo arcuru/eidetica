@@ -5,7 +5,10 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    auth::crypto::{PrivateKey, PublicKey},
+    auth::{
+        SigKey,
+        crypto::{PrivateKey, PublicKey},
+    },
     entry::ID,
 };
 
@@ -121,8 +124,11 @@ pub struct UserKey {
     pub is_default: bool,
 
     /// Database-specific SigKey mappings
-    /// Maps: Database ID → SigKey used in that database's auth settings
-    pub database_sigkeys: HashMap<ID, String>,
+    /// Maps: Database ID → SigKey identity for that database
+    ///
+    /// `None` = default identity (pubkey derived from this key's `key_id`)
+    /// `Some(sigkey)` = non-default identity (global wildcard, name-based, delegation)
+    pub database_sigkeys: HashMap<ID, Option<SigKey>>,
 }
 
 /// A database tracked by a user.

@@ -10,10 +10,7 @@ use super::helpers::*;
 use crate::helpers::{add_auth_keys, test_instance};
 use eidetica::{
     Database,
-    auth::{
-        Permission,
-        types::{AuthKey, SigKey},
-    },
+    auth::{Permission, types::AuthKey},
     crdt::Doc,
     store::DocStore,
     sync::{Address, transports::http::HttpTransport},
@@ -335,18 +332,8 @@ async fn test_collaborative_database_with_global_permissions() {
     );
     println!("✅ Bob discovered global permission with Write(10)");
 
-    // Get the actual sigkey string for mapping (will be "*:ed25519:...")
-    let sigkey_str = match sigkey {
-        SigKey::Direct(hint) => hint
-            .pubkey
-            .clone()
-            .or(hint.name.clone())
-            .expect("Should have pubkey or name"),
-        _ => panic!("Expected Direct SigKey"),
-    };
-
-    // Bob adds the database key mapping to his user preferences
-    bob.map_key(&bob_key, &db_id, &sigkey_str)
+    // Bob adds the database key mapping to his user preferences using the discovered SigKey
+    bob.map_key(&bob_key, &db_id, sigkey.clone())
         .await
         .expect("Bob adds database key mapping");
     println!("✅ Bob configured key mapping for the database");
@@ -576,18 +563,8 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
     assert_eq!(permission, &Permission::Write(10));
     println!("✅ Bob discovered global permission with Write(10)");
 
-    // Get the actual sigkey string for mapping (will be "*:ed25519:...")
-    let sigkey_str = match sigkey {
-        SigKey::Direct(hint) => hint
-            .pubkey
-            .clone()
-            .or(hint.name.clone())
-            .expect("Should have pubkey or name"),
-        _ => panic!("Expected Direct SigKey"),
-    };
-
-    // Bob adds the database key mapping to his user preferences
-    bob.map_key(&bob_key, &db_id, &sigkey_str)
+    // Bob adds the database key mapping to his user preferences using the discovered SigKey
+    bob.map_key(&bob_key, &db_id, sigkey.clone())
         .await
         .expect("Bob adds database key mapping");
     println!("✅ Bob configured key mapping for the database");

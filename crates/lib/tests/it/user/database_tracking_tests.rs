@@ -438,15 +438,11 @@ async fn test_update_tracked_auto_creates_mapping() -> Result<()> {
     assert!(retrieved.sync_settings.sync_enabled);
     assert_eq!(retrieved.sync_settings.interval_seconds, Some(90));
 
-    // Verify the mapping was auto-created (global permission = "*:pubkey")
+    // Verify the mapping was auto-created (global permission)
     let mapping = user.key_mapping(&key2, &db_id)?;
-    // With global permission, the sigkey is formatted as "*:actual_pubkey"
     assert!(
-        mapping
-            .as_deref()
-            .map(|s| s.starts_with("*:"))
-            .unwrap_or(false),
-        "Expected global permission mapping starting with '*:', got: {:?}",
+        mapping.as_ref().map(|s| s.is_global()).unwrap_or(false),
+        "Expected global permission mapping, got: {:?}",
         mapping
     );
 
