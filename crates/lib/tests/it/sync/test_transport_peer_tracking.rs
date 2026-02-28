@@ -13,7 +13,7 @@ use eidetica::{
         Address,
         transports::{SyncTransport, http::HttpTransport},
     },
-    user::types::{SyncSettings, TrackedDatabase},
+    user::types::SyncSettings,
 };
 
 use super::helpers::*;
@@ -62,16 +62,11 @@ async fn test_server_automatically_tracks_peers_that_sync_trees() {
 
     // Enable sync for this database
     server_user
-        .track_database(TrackedDatabase {
-            database_id: tree_id.clone(),
-            key_id: server_key_id.clone(),
-            sync_settings: SyncSettings {
-                sync_enabled: true,
-                sync_on_commit: false,
-                interval_seconds: None,
-                properties: Default::default(),
-            },
-        })
+        .track_database(
+            tree_id.clone(),
+            server_key_id.clone(),
+            SyncSettings::enabled(),
+        )
         .await
         .unwrap();
 

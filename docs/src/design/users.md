@@ -223,7 +223,7 @@ pub struct TrackedDatabase {
     pub sync_settings: SyncSettings,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SyncSettings {
     /// Whether user wants to sync this database
     pub sync_enabled: bool,
@@ -551,7 +551,7 @@ impl User {
     pub fn database(&self, database_id: &ID) -> Result<TrackedDatabase>;
 
     /// Track a database with auto-discovery of SigKeys (upsert behavior).
-    pub fn track_database(&mut self, tracked: TrackedDatabase) -> Result<()>;
+    pub fn track_database(&mut self, database_id: impl Into<ID>, key_id: impl Into<String>, sync_settings: SyncSettings) -> Result<()>;
 
     /// Stop tracking a database.
     pub fn untrack_database(&mut self, database_id: &ID) -> Result<()>;

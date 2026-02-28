@@ -631,16 +631,11 @@ if let Some(sync) = instance.sync() {
     ).await?;
 
     // Register the database with User's key manager
-    user.track_database(eidetica::user::types::TrackedDatabase {
-        database_id: room_id.clone(),
-        key_id: key_id.clone(),
-        sync_settings: eidetica::user::types::SyncSettings {
-            sync_enabled: true,
-            sync_on_commit: true,
-            interval_seconds: None,
-            properties: std::collections::HashMap::new(),
-        },
-    })?;
+    user.track_database(
+        room_id.clone(),
+        key_id.clone(),
+        eidetica::user::types::SyncSettings::on_commit(),
+    ).await?;
 
     // Open the synced database
     let database = user.open_database(&room_id)?;

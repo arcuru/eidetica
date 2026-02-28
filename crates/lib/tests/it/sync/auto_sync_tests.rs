@@ -7,11 +7,7 @@
 //! we test the observable behavior: that enable_sync() works and doesn't crash when commits occur.
 
 use crate::helpers::test_instance;
-use eidetica::{
-    crdt::Doc,
-    store::DocStore,
-    user::types::{SyncSettings, TrackedDatabase},
-};
+use eidetica::{crdt::Doc, store::DocStore, user::types::SyncSettings};
 
 /// Test that commits work correctly when sync is enabled
 /// This verifies the callback doesn't break normal operation
@@ -40,18 +36,9 @@ async fn test_commits_work_with_sync_enabled() {
     let db_id = db.root_id().clone();
 
     // Add database with sync enabled
-    user.track_database(TrackedDatabase {
-        database_id: db_id.clone(),
-        key_id: key_id.clone(),
-        sync_settings: SyncSettings {
-            sync_enabled: true,
-            sync_on_commit: true,
-            interval_seconds: None,
-            properties: Default::default(),
-        },
-    })
-    .await
-    .expect("Add database");
+    user.track_database(db_id.clone(), key_id.clone(), SyncSettings::on_commit())
+        .await
+        .expect("Add database");
 
     // Register user with sync
     let sync = instance.sync().expect("Sync should exist");
@@ -136,16 +123,14 @@ async fn test_commits_with_sync_disabled() {
     let db_id = db.root_id().clone();
 
     // Add database with sync disabled
-    user.track_database(TrackedDatabase {
-        database_id: db_id.clone(),
-        key_id: key_id.clone(),
-        sync_settings: SyncSettings {
-            sync_enabled: false,
+    user.track_database(
+        db_id.clone(),
+        key_id.clone(),
+        SyncSettings {
             sync_on_commit: true,
-            interval_seconds: None,
-            properties: Default::default(),
+            ..Default::default()
         },
-    })
+    )
     .await
     .expect("Add database");
 
@@ -183,18 +168,9 @@ async fn test_commits_with_sync_on_commit_disabled() {
     let db_id = db.root_id().clone();
 
     // Add database with sync_on_commit=false
-    user.track_database(TrackedDatabase {
-        database_id: db_id.clone(),
-        key_id: key_id.clone(),
-        sync_settings: SyncSettings {
-            sync_enabled: true,
-            sync_on_commit: false,
-            interval_seconds: Some(3600),
-            properties: Default::default(),
-        },
-    })
-    .await
-    .expect("Add database");
+    user.track_database(db_id.clone(), key_id.clone(), SyncSettings::enabled())
+        .await
+        .expect("Add database");
 
     // Commit should work fine
     let tx = db.new_transaction().await.expect("Create transaction");

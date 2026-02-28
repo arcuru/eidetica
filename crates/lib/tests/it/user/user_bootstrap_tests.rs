@@ -19,10 +19,7 @@ use eidetica::{
         handler::{SyncHandler, SyncHandlerImpl},
         protocol::{RequestContext, SyncRequest, SyncResponse, SyncTreeRequest},
     },
-    user::{
-        User,
-        types::{SyncSettings, TrackedDatabase},
-    },
+    user::{User, types::SyncSettings},
 };
 
 use crate::helpers::test_instance;
@@ -82,16 +79,11 @@ async fn setup_user_with_database() -> Result<(Instance, User, Database, Sync, I
         .expect("Failed to create sync");
 
     // Enable sync for this database
-    user.track_database(TrackedDatabase {
-        database_id: tree_id.clone(),
-        key_id: user_key_id.clone(),
-        sync_settings: SyncSettings {
-            sync_enabled: true,
-            sync_on_commit: false,
-            interval_seconds: None,
-            properties: Default::default(),
-        },
-    })
+    user.track_database(
+        tree_id.clone(),
+        user_key_id.clone(),
+        SyncSettings::enabled(),
+    )
     .await
     .expect("Failed to add database to user preferences");
 
@@ -554,30 +546,20 @@ async fn test_multiple_users() {
 
     // Enable sync for Alice's database
     alice
-        .track_database(TrackedDatabase {
-            database_id: alice_tree_id.clone(),
-            key_id: alice_key.clone(),
-            sync_settings: SyncSettings {
-                sync_enabled: true,
-                sync_on_commit: false,
-                interval_seconds: None,
-                properties: Default::default(),
-            },
-        })
+        .track_database(
+            alice_tree_id.clone(),
+            alice_key.clone(),
+            SyncSettings::enabled(),
+        )
         .await
         .expect("Failed to add Alice's database preferences");
 
     // Enable sync for Bob's database
-    bob.track_database(TrackedDatabase {
-        database_id: bob_tree_id.clone(),
-        key_id: bob_key.clone(),
-        sync_settings: SyncSettings {
-            sync_enabled: true,
-            sync_on_commit: false,
-            interval_seconds: None,
-            properties: Default::default(),
-        },
-    })
+    bob.track_database(
+        bob_tree_id.clone(),
+        bob_key.clone(),
+        SyncSettings::enabled(),
+    )
     .await
     .expect("Failed to add Bob's database preferences");
 
@@ -757,16 +739,7 @@ async fn test_user_without_admin_cannot_modify() {
 
     // Enable sync for Alice's database
     alice
-        .track_database(TrackedDatabase {
-            database_id: tree_id.clone(),
-            key_id: alice_key.clone(),
-            sync_settings: SyncSettings {
-                sync_enabled: true,
-                sync_on_commit: false,
-                interval_seconds: None,
-                properties: Default::default(),
-            },
-        })
+        .track_database(tree_id.clone(), alice_key.clone(), SyncSettings::enabled())
         .await
         .expect("Failed to add Alice's database preferences");
 

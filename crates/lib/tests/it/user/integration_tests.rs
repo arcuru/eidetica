@@ -17,7 +17,7 @@ use eidetica::{
     crdt::Doc,
     store::DocStore,
     sync::{Address, transports::http::HttpTransport},
-    user::types::{SyncSettings, TrackedDatabase},
+    user::types::SyncSettings,
 };
 
 // ===== MULTI-USER COLLABORATION SCENARIOS =====
@@ -490,16 +490,7 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
 
     // Enable sync for this database
     alice
-        .track_database(TrackedDatabase {
-            database_id: db_id.clone(),
-            key_id: alice_key.clone(),
-            sync_settings: SyncSettings {
-                sync_enabled: true,
-                sync_on_commit: false,
-                interval_seconds: None,
-                properties: Default::default(),
-            },
-        })
+        .track_database(db_id.clone(), alice_key.clone(), SyncSettings::enabled())
         .await
         .expect("Failed to add database to Alice's preferences");
 

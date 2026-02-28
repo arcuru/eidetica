@@ -143,7 +143,20 @@ pub struct TrackedDatabase {
 ///
 /// Per-user-per-database sync configuration.
 /// Different users may have different sync preferences for the same database.
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+///
+/// # Construction
+///
+/// Use factory methods for common configurations:
+/// - `SyncSettings::disabled()` — sync disabled (this is the `Default`)
+/// - `SyncSettings::enabled()` — sync enabled, no sync on commit
+/// - `SyncSettings::on_commit()` — sync enabled with sync on commit on every transaction
+///
+/// Chain `.with_interval()` to override the periodic sync interval:
+/// ```
+/// # use eidetica::user::types::SyncSettings;
+/// let settings = SyncSettings::enabled().with_interval(60);
+/// ```
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SyncSettings {
     /// Whether user wants to sync this database
     pub sync_enabled: bool,
@@ -152,11 +165,53 @@ pub struct SyncSettings {
     /// Whether to sync after every commit
     pub sync_on_commit: bool,
 
-    /// Sync interval in seconds (for periodic sync)
+    /// Sync interval in seconds (for periodic sync).
+    /// `None` uses the background sync default interval.
     pub interval_seconds: Option<u64>,
 
     /// Additional sync configuration
     pub properties: HashMap<String, String>,
+}
+
+impl Default for SyncSettings {
+    fn default() -> Self {
+        Self::disabled()
+    }
+}
+
+impl SyncSettings {
+    /// Sync disabled. This is the `Default`.
+    pub fn disabled() -> Self {
+        Self {
+            sync_enabled: false,
+            sync_on_commit: false,
+            interval_seconds: None,
+            properties: HashMap::new(),
+        }
+    }
+
+    /// Sync enabled, no sync on commit.
+    pub fn enabled() -> Self {
+        Self {
+            sync_enabled: true,
+            ..Self::disabled()
+        }
+    }
+
+    /// Sync enabled with sync on commit on every transaction.
+    pub fn on_commit() -> Self {
+        Self {
+            sync_enabled: true,
+            sync_on_commit: true,
+            ..Self::disabled()
+        }
+    }
+
+    /// Set periodic sync interval in seconds.
+    pub fn with_interval(mut self, seconds: u64) -> Self {
+        self.interval_seconds = Some(seconds);
+        self
+    }
 }
 
 /// Database tracking information in _databases table

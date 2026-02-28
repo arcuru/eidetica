@@ -22,10 +22,7 @@ use eidetica::{
         protocol::{RequestContext, SyncRequest, SyncResponse, SyncTreeRequest},
         transports::{http::HttpTransport, iroh::IrohTransport},
     },
-    user::{
-        User,
-        types::{SyncSettings, TrackedDatabase},
-    },
+    user::{User, types::SyncSettings},
 };
 use iroh::RelayMode;
 
@@ -491,16 +488,11 @@ pub async fn setup_server_with_bootstrap_database(
     // Enable sync for this database
     let sync = server_instance.sync().expect("Sync should be initialized");
     server_user
-        .track_database(TrackedDatabase {
-            database_id: tree_id.clone(),
-            key_id: server_key_id.clone(),
-            sync_settings: SyncSettings {
-                sync_enabled: true,
-                sync_on_commit: false,
-                interval_seconds: None,
-                properties: Default::default(),
-            },
-        })
+        .track_database(
+            tree_id.clone(),
+            server_key_id.clone(),
+            SyncSettings::enabled(),
+        )
         .await
         .unwrap();
 
@@ -577,11 +569,11 @@ pub async fn request_and_map_database_access(
     tokio::time::sleep(Duration::from_millis(sync_delay_ms)).await;
 
     // Track the database, which discovers the correct sigkey from auth settings
-    user.track_database(TrackedDatabase {
-        database_id: tree_id.clone(),
-        key_id: key_id.to_string(),
-        sync_settings: Default::default(),
-    })
+    user.track_database(
+        tree_id.clone(),
+        key_id.to_string(),
+        SyncSettings::disabled(),
+    )
     .await?;
 
     Ok(())
@@ -695,16 +687,11 @@ pub async fn setup_sync_enabled_server(
     // Enable sync for this database
     let sync = server_instance.sync().expect("Sync should be initialized");
     server_user
-        .track_database(TrackedDatabase {
-            database_id: tree_id.clone(),
-            key_id: server_key_id.clone(),
-            sync_settings: SyncSettings {
-                sync_enabled: true,
-                sync_on_commit: false,
-                interval_seconds: None,
-                properties: Default::default(),
-            },
-        })
+        .track_database(
+            tree_id.clone(),
+            server_key_id.clone(),
+            SyncSettings::enabled(),
+        )
         .await
         .unwrap();
 
@@ -859,16 +846,11 @@ pub async fn setup_public_sync_enabled_server(
     // Enable sync for this database
     let sync = server_instance.sync().expect("Sync should be initialized");
     server_user
-        .track_database(TrackedDatabase {
-            database_id: tree_id.clone(),
-            key_id: server_key_id.clone(),
-            sync_settings: SyncSettings {
-                sync_enabled: true,
-                sync_on_commit: false,
-                interval_seconds: None,
-                properties: Default::default(),
-            },
-        })
+        .track_database(
+            tree_id.clone(),
+            server_key_id.clone(),
+            SyncSettings::enabled(),
+        )
         .await
         .unwrap();
 

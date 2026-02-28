@@ -20,7 +20,7 @@ use eidetica::{
         },
         transports::{SyncTransport, http::HttpTransport},
     },
-    user::types::{SyncSettings, TrackedDatabase},
+    user::types::SyncSettings,
 };
 
 use super::helpers::*;
@@ -196,18 +196,9 @@ async fn test_bootstrap_sync_tracks_tree_peer_relationship() {
     let tree_id = db.root_id().clone();
 
     // Enable sync for this database
-    user.track_database(TrackedDatabase {
-        database_id: tree_id.clone(),
-        key_id,
-        sync_settings: SyncSettings {
-            sync_enabled: true,
-            sync_on_commit: false,
-            interval_seconds: None,
-            properties: Default::default(),
-        },
-    })
-    .await
-    .unwrap();
+    user.track_database(tree_id.clone(), key_id, SyncSettings::enabled())
+        .await
+        .unwrap();
 
     let sync = instance.sync().unwrap();
     sync.sync_user(user.user_uuid(), user.user_database().root_id())
@@ -276,18 +267,9 @@ async fn test_incremental_sync_tracks_tree_peer_relationship() {
     let tree_id = db.root_id().clone();
 
     // Enable sync
-    user.track_database(TrackedDatabase {
-        database_id: tree_id.clone(),
-        key_id,
-        sync_settings: SyncSettings {
-            sync_enabled: true,
-            sync_on_commit: false,
-            interval_seconds: None,
-            properties: Default::default(),
-        },
-    })
-    .await
-    .unwrap();
+    user.track_database(tree_id.clone(), key_id, SyncSettings::enabled())
+        .await
+        .unwrap();
 
     let sync = instance.sync().unwrap();
     sync.sync_user(user.user_uuid(), user.user_database().root_id())
@@ -355,18 +337,9 @@ async fn test_relationship_tracking_skipped_without_peer_pubkey() {
     let db = user.create_database(settings, &key_id).await.unwrap();
     let tree_id = db.root_id().clone();
 
-    user.track_database(TrackedDatabase {
-        database_id: tree_id.clone(),
-        key_id,
-        sync_settings: SyncSettings {
-            sync_enabled: true,
-            sync_on_commit: false,
-            interval_seconds: None,
-            properties: Default::default(),
-        },
-    })
-    .await
-    .unwrap();
+    user.track_database(tree_id.clone(), key_id, SyncSettings::enabled())
+        .await
+        .unwrap();
 
     let sync = instance.sync().unwrap();
     sync.sync_user(user.user_uuid(), user.user_database().root_id())
@@ -443,31 +416,13 @@ async fn test_multiple_trees_tracked_with_same_peer() {
     let tree_id2 = db2.root_id().clone();
 
     // Enable sync for both
-    user.track_database(TrackedDatabase {
-        database_id: tree_id1.clone(),
-        key_id: key_id.clone(),
-        sync_settings: SyncSettings {
-            sync_enabled: true,
-            sync_on_commit: false,
-            interval_seconds: None,
-            properties: Default::default(),
-        },
-    })
-    .await
-    .unwrap();
+    user.track_database(tree_id1.clone(), key_id.clone(), SyncSettings::enabled())
+        .await
+        .unwrap();
 
-    user.track_database(TrackedDatabase {
-        database_id: tree_id2.clone(),
-        key_id,
-        sync_settings: SyncSettings {
-            sync_enabled: true,
-            sync_on_commit: false,
-            interval_seconds: None,
-            properties: Default::default(),
-        },
-    })
-    .await
-    .unwrap();
+    user.track_database(tree_id2.clone(), key_id, SyncSettings::enabled())
+        .await
+        .unwrap();
 
     let sync = instance.sync().unwrap();
     sync.sync_user(user.user_uuid(), user.user_database().root_id())
@@ -595,18 +550,9 @@ async fn test_sync_without_peer_identifier_works() {
     let db = user.create_database(settings, &key_id).await.unwrap();
     let tree_id = db.root_id().clone();
 
-    user.track_database(TrackedDatabase {
-        database_id: tree_id.clone(),
-        key_id,
-        sync_settings: SyncSettings {
-            sync_enabled: true,
-            sync_on_commit: false,
-            interval_seconds: None,
-            properties: Default::default(),
-        },
-    })
-    .await
-    .unwrap();
+    user.track_database(tree_id.clone(), key_id, SyncSettings::enabled())
+        .await
+        .unwrap();
 
     let sync = instance.sync().unwrap();
     sync.sync_user(user.user_uuid(), user.user_database().root_id())
@@ -657,18 +603,9 @@ async fn test_bootstrap_auto_detects_permission_for_authorized_key() {
     let user_key_pubkey = user.get_public_key(&key_id).unwrap();
 
     // Enable sync
-    user.track_database(TrackedDatabase {
-        database_id: tree_id.clone(),
-        key_id: key_id.clone(),
-        sync_settings: SyncSettings {
-            sync_enabled: true,
-            sync_on_commit: false,
-            interval_seconds: None,
-            properties: Default::default(),
-        },
-    })
-    .await
-    .unwrap();
+    user.track_database(tree_id.clone(), key_id.clone(), SyncSettings::enabled())
+        .await
+        .unwrap();
 
     let sync = instance.sync().unwrap();
     sync.sync_user(user.user_uuid(), user.user_database().root_id())
@@ -728,18 +665,9 @@ async fn test_bootstrap_rejects_unauthorized_key_when_permission_not_specified()
     let tree_id = db.root_id().clone();
 
     // Enable sync
-    user.track_database(TrackedDatabase {
-        database_id: tree_id.clone(),
-        key_id,
-        sync_settings: SyncSettings {
-            sync_enabled: true,
-            sync_on_commit: false,
-            interval_seconds: None,
-            properties: Default::default(),
-        },
-    })
-    .await
-    .unwrap();
+    user.track_database(tree_id.clone(), key_id, SyncSettings::enabled())
+        .await
+        .unwrap();
 
     let sync = instance.sync().unwrap();
     sync.sync_user(user.user_uuid(), user.user_database().root_id())
@@ -811,18 +739,9 @@ async fn test_bootstrap_auto_detects_global_wildcard_permission() {
     }
 
     // Enable sync
-    user.track_database(TrackedDatabase {
-        database_id: tree_id.clone(),
-        key_id,
-        sync_settings: SyncSettings {
-            sync_enabled: true,
-            sync_on_commit: false,
-            interval_seconds: None,
-            properties: Default::default(),
-        },
-    })
-    .await
-    .unwrap();
+    user.track_database(tree_id.clone(), key_id, SyncSettings::enabled())
+        .await
+        .unwrap();
 
     let sync = instance.sync().unwrap();
     sync.sync_user(user.user_uuid(), user.user_database().root_id())
@@ -910,18 +829,9 @@ async fn test_bootstrap_uses_highest_permission_when_key_has_multiple() {
     }
 
     // Enable sync
-    user.track_database(TrackedDatabase {
-        database_id: tree_id.clone(),
-        key_id,
-        sync_settings: SyncSettings {
-            sync_enabled: true,
-            sync_on_commit: false,
-            interval_seconds: None,
-            properties: Default::default(),
-        },
-    })
-    .await
-    .unwrap();
+    user.track_database(tree_id.clone(), key_id, SyncSettings::enabled())
+        .await
+        .unwrap();
 
     let sync = instance.sync().unwrap();
     sync.sync_user(user.user_uuid(), user.user_database().root_id())

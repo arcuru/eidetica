@@ -26,7 +26,7 @@ use eidetica::{
         protocol::{RequestContext, SyncRequest, SyncResponse},
         transports::{http::HttpTransport, iroh::IrohTransport},
     },
-    user::{SyncSettings, TrackedDatabase},
+    user::SyncSettings,
 };
 
 use crate::backend::create_backend;
@@ -572,18 +572,14 @@ async fn handle_track_database(
         Ok(_) => {
             let mut user = user_lock.write().await;
 
-            let tracked = TrackedDatabase {
-                database_id: ticket.database_id().clone(),
-                key_id: key_id.clone(),
-                sync_settings: SyncSettings {
-                    sync_enabled: true,
-                    sync_on_commit: false,
-                    interval_seconds: Some(13),
-                    properties: Default::default(),
-                },
-            };
-
-            match user.track_database(tracked).await {
+            match user
+                .track_database(
+                    ticket.database_id().clone(),
+                    key_id.clone(),
+                    SyncSettings::enabled().with_interval(13),
+                )
+                .await
+            {
                 Ok(_) => {
                     tracing::info!(
                         "Successfully bootstrapped and tracked database {} for user {}",

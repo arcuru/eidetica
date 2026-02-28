@@ -44,7 +44,7 @@ use crate::{
     instance::{InstanceError, backend::Backend},
     store::Table,
     sync::{BootstrapRequest, DatabaseTicket, Sync},
-    user::{TrackedDatabase, UserError},
+    user::{SyncSettings, TrackedDatabase, UserError},
 };
 
 #[cfg(test)]
@@ -239,7 +239,7 @@ impl User {
         let tracked = TrackedDatabase {
             database_id: database.root_id().clone(),
             key_id: key_id.to_string(),
-            sync_settings: SyncSettings::default(),
+            sync_settings: SyncSettings::disabled(),
         };
         databases_table.set(database.root_id(), tracked).await?;
 
@@ -823,7 +823,9 @@ impl User {
     /// sync relationships.
     ///
     /// # Arguments
-    /// * `tracked` - The database to track, including database_id, key_id, and sync_settings
+    /// * `database_id` - ID of the database to track
+    /// * `key_id` - Which user key to use for this database
+    /// * `sync_settings` - Sync preferences for this database
     ///
     /// # Returns
     /// Result indicating success or failure
@@ -831,7 +833,17 @@ impl User {
     /// # Errors
     /// - Returns `NoSigKeyFound` if no SigKey can be found for the specified key
     /// - Returns `KeyNotFound` if the specified key_id doesn't exist
-    pub async fn track_database(&mut self, tracked: TrackedDatabase) -> Result<()> {
+    pub async fn track_database(
+        &mut self,
+        database_id: impl Into<ID>,
+        key_id: impl Into<String>,
+        sync_settings: SyncSettings,
+    ) -> Result<()> {
+        let tracked = TrackedDatabase {
+            database_id: database_id.into(),
+            key_id: key_id.into(),
+            sync_settings,
+        };
         // Single transaction for all operations
         let tx = self.user_database.new_transaction().await?;
         let databases_table = tx.get_store::<Table<TrackedDatabase>>("databases").await?;

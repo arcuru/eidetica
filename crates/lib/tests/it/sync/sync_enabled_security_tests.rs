@@ -16,7 +16,7 @@ use eidetica::{
         protocol::{RequestContext, SyncRequest, SyncResponse, SyncTreeRequest},
         transports::http::HttpTransport,
     },
-    user::types::{SyncSettings, TrackedDatabase},
+    user::types::SyncSettings,
 };
 
 use super::helpers;
@@ -52,16 +52,11 @@ async fn test_bootstrap_rejected_when_sync_disabled() {
 
     // Add database to user preferences but with sync DISABLED
     server_user
-        .track_database(TrackedDatabase {
-            database_id: tree_id.clone(),
-            key_id: server_key_id.clone(),
-            sync_settings: SyncSettings {
-                sync_enabled: false, // Sync is DISABLED
-                sync_on_commit: false,
-                interval_seconds: None,
-                properties: Default::default(),
-            },
-        })
+        .track_database(
+            tree_id.clone(),
+            server_key_id.clone(),
+            SyncSettings::disabled(),
+        )
         .await
         .unwrap();
 
@@ -156,16 +151,11 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
 
     // Add database with sync ENABLED initially
     server_user
-        .track_database(TrackedDatabase {
-            database_id: tree_id.clone(),
-            key_id: server_key_id.clone(),
-            sync_settings: SyncSettings {
-                sync_enabled: true, // Sync is ENABLED initially
-                sync_on_commit: false,
-                interval_seconds: None,
-                properties: Default::default(),
-            },
-        })
+        .track_database(
+            tree_id.clone(),
+            server_key_id.clone(),
+            SyncSettings::enabled(),
+        )
         .await
         .unwrap();
 
@@ -225,16 +215,11 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
 
     // NOW disable sync on the server
     server_user
-        .track_database(TrackedDatabase {
-            database_id: tree_id.clone(),
-            key_id: server_key_id.clone(),
-            sync_settings: SyncSettings {
-                sync_enabled: false, // Sync is now DISABLED
-                sync_on_commit: false,
-                interval_seconds: None,
-                properties: Default::default(),
-            },
-        })
+        .track_database(
+            tree_id.clone(),
+            server_key_id.clone(),
+            SyncSettings::disabled(),
+        )
         .await
         .unwrap();
 
@@ -332,16 +317,11 @@ async fn test_sync_succeeds_when_enabled() {
 
     // Add database with sync ENABLED
     server_user
-        .track_database(TrackedDatabase {
-            database_id: tree_id.clone(),
-            key_id: server_key_id.clone(),
-            sync_settings: SyncSettings {
-                sync_enabled: true, // Sync is ENABLED
-                sync_on_commit: false,
-                interval_seconds: None,
-                properties: Default::default(),
-            },
-        })
+        .track_database(
+            tree_id.clone(),
+            server_key_id.clone(),
+            SyncSettings::enabled(),
+        )
         .await
         .unwrap();
 

@@ -7,7 +7,7 @@ use eidetica::{
         types::{AuthKey, Permission},
     },
     crdt::Doc,
-    user::types::{SyncSettings, TrackedDatabase},
+    user::types::SyncSettings,
 };
 
 use super::helpers::{login_user, setup_instance};
@@ -37,19 +37,9 @@ async fn test_track_database() -> Result<()> {
     let db_id = db.root_id().clone();
 
     // Track the database
-    let prefs = TrackedDatabase {
-        database_id: db_id.clone(),
-        key_id: user_key.clone(),
-        sync_settings: SyncSettings {
-            sync_enabled: true,
-            sync_on_commit: false,
-            interval_seconds: Some(60),
-            properties: Default::default(),
-        },
-    };
-
     // Add a database to the test user, which uses the global permissions
-    user.track_database(prefs).await?;
+    user.track_database(db_id.clone(), user_key.clone(), SyncSettings::enabled())
+        .await?;
 
     // Verify it was added
     let tracked_dbs = user.databases().await?;
@@ -79,14 +69,10 @@ async fn test_track_database_no_sigkey_error() -> Result<()> {
     let db = Database::create(&instance, alice_key, db_settings).await?;
     let db_id = db.root_id().clone();
 
-    let prefs = TrackedDatabase {
-        database_id: db_id,
-        key_id: user_key,
-        sync_settings: Default::default(),
-    };
-
     // Try to add database - should fail because user has no SigKey
-    let result = user.track_database(prefs).await;
+    let result = user
+        .track_database(db_id, user_key, SyncSettings::disabled())
+        .await;
     assert!(result.is_err());
 
     Ok(())
@@ -116,13 +102,12 @@ async fn test_list_databases() -> Result<()> {
         // Add global Write permission (signing key is already Admin(0))
         add_auth_key(&db, "*", AuthKey::active(None, Permission::Write(10))).await;
 
-        let prefs = TrackedDatabase {
-            database_id: db.root_id().clone(),
-            key_id: user_key.clone(),
-            sync_settings: Default::default(),
-        };
-
-        user.track_database(prefs).await?;
+        user.track_database(
+            db.root_id().clone(),
+            user_key.clone(),
+            SyncSettings::disabled(),
+        )
+        .await?;
     }
 
     // Should now have 3 databases
@@ -154,18 +139,12 @@ async fn test_get_tracked_database() -> Result<()> {
     add_auth_key(&db, "*", AuthKey::active(None, Permission::Write(10))).await;
 
     // Add database
-    let prefs = TrackedDatabase {
-        database_id: db_id.clone(),
-        key_id: user_key.clone(),
-        sync_settings: SyncSettings {
-            sync_enabled: true,
-            sync_on_commit: true,
-            interval_seconds: Some(30),
-            properties: Default::default(),
-        },
-    };
-
-    user.track_database(prefs).await?;
+    user.track_database(
+        db_id.clone(),
+        user_key.clone(),
+        SyncSettings::on_commit().with_interval(30),
+    )
+    .await?;
 
     // Get preferences
     let retrieved = user.database(&db_id).await?;
@@ -200,32 +179,16 @@ async fn test_update_tracked_database() -> Result<()> {
     add_auth_key(&db, "*", AuthKey::active(None, Permission::Write(10))).await;
 
     // Add database with initial settings
-    let initial_prefs = TrackedDatabase {
-        database_id: db_id.clone(),
-        key_id: user_key.clone(),
-        sync_settings: SyncSettings {
-            sync_enabled: false,
-            sync_on_commit: false,
-            interval_seconds: None,
-            properties: Default::default(),
-        },
-    };
-
-    user.track_database(initial_prefs).await?;
+    user.track_database(db_id.clone(), user_key.clone(), SyncSettings::disabled())
+        .await?;
 
     // Update by calling track_database again (upsert)
-    let updated_prefs = TrackedDatabase {
-        database_id: db_id.clone(),
-        key_id: user_key.clone(),
-        sync_settings: SyncSettings {
-            sync_enabled: true,
-            sync_on_commit: true,
-            interval_seconds: Some(60),
-            properties: Default::default(),
-        },
-    };
-
-    user.track_database(updated_prefs).await?;
+    user.track_database(
+        db_id.clone(),
+        user_key.clone(),
+        SyncSettings::on_commit().with_interval(60),
+    )
+    .await?;
 
     // Verify updates succeeded
     let retrieved = user.database(&db_id).await?;
@@ -258,13 +221,8 @@ async fn test_untrack_database() -> Result<()> {
     add_auth_key(&db, "*", AuthKey::active(None, Permission::Write(10))).await;
 
     // Add database
-    let prefs = TrackedDatabase {
-        database_id: db_id.clone(),
-        key_id: user_key,
-        sync_settings: Default::default(),
-    };
-
-    user.track_database(prefs).await?;
+    user.track_database(db_id.clone(), user_key, SyncSettings::disabled())
+        .await?;
     assert_eq!(user.databases().await?.len(), 1);
 
     // Remove database
@@ -300,13 +258,8 @@ async fn test_load_tracked_database() -> Result<()> {
     add_auth_key(&db, "*", AuthKey::active(None, Permission::Write(10))).await;
 
     // Add to user's tracked databases
-    let prefs = TrackedDatabase {
-        database_id: db_id.clone(),
-        key_id: user_key,
-        sync_settings: Default::default(),
-    };
-
-    user.track_database(prefs).await?;
+    user.track_database(db_id.clone(), user_key, SyncSettings::disabled())
+        .await?;
 
     // Open the database
     let loaded_db = user.open_database(&db_id).await?;
@@ -341,25 +294,16 @@ async fn test_update_tracked_valid_key_change() -> Result<()> {
     add_auth_key(&db, "*", AuthKey::active(None, Permission::Write(10))).await;
 
     // Add database with key1
-    let prefs = TrackedDatabase {
-        database_id: db_id.clone(),
-        key_id: key1.clone(),
-        sync_settings: Default::default(),
-    };
-    user.track_database(prefs).await?;
+    user.track_database(db_id.clone(), key1.clone(), SyncSettings::disabled())
+        .await?;
 
     // Update preferences to use key2 - should succeed and auto-create mapping
-    let updated_prefs = TrackedDatabase {
-        database_id: db_id.clone(),
-        key_id: key2.clone(),
-        sync_settings: SyncSettings {
-            sync_enabled: true,
-            sync_on_commit: true,
-            interval_seconds: Some(120),
-            properties: Default::default(),
-        },
-    };
-    user.track_database(updated_prefs).await?;
+    user.track_database(
+        db_id.clone(),
+        key2.clone(),
+        SyncSettings::on_commit().with_interval(120),
+    )
+    .await?;
 
     // Verify the update
     let retrieved = user.database(&db_id).await?;
@@ -393,22 +337,14 @@ async fn test_update_tracked_nonexistent_key_fails() -> Result<()> {
     add_auth_key(&db, "*", AuthKey::active(None, Permission::Write(10))).await;
 
     // Add database
-    let prefs = TrackedDatabase {
-        database_id: db_id.clone(),
-        key_id: user_key,
-        sync_settings: Default::default(),
-    };
-    user.track_database(prefs).await?;
+    user.track_database(db_id.clone(), user_key, SyncSettings::disabled())
+        .await?;
 
     // Try to update with non-existent key - should fail with KeyNotFound
     let fake_key_id = "Ed25519:fake_nonexistent_key_12345".to_string();
-    let invalid_prefs = TrackedDatabase {
-        database_id: db_id.clone(),
-        key_id: fake_key_id,
-        sync_settings: Default::default(),
-    };
-
-    let result = user.track_database(invalid_prefs).await;
+    let result = user
+        .track_database(db_id.clone(), fake_key_id, SyncSettings::disabled())
+        .await;
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("Key not found"));
 
@@ -449,21 +385,13 @@ async fn test_update_tracked_no_access_fails() -> Result<()> {
     tx.commit().await?;
 
     // Add database using key1
-    let prefs = TrackedDatabase {
-        database_id: db_id.clone(),
-        key_id: key1,
-        sync_settings: Default::default(),
-    };
-    user.track_database(prefs).await?;
+    user.track_database(db_id.clone(), key1, SyncSettings::disabled())
+        .await?;
 
     // Try to update to key2 which has NO access to database - should fail
-    let invalid_prefs = TrackedDatabase {
-        database_id: db_id.clone(),
-        key_id: key2,
-        sync_settings: Default::default(),
-    };
-
-    let result = user.track_database(invalid_prefs).await;
+    let result = user
+        .track_database(db_id.clone(), key2, SyncSettings::disabled())
+        .await;
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("No SigKey found"));
 
@@ -495,28 +423,18 @@ async fn test_update_tracked_auto_creates_mapping() -> Result<()> {
     add_auth_key(&db, "*", AuthKey::active(None, Permission::Write(10))).await;
 
     // Add database with key1 (creates mapping: key1 -> "*")
-    let prefs = TrackedDatabase {
-        database_id: db_id.clone(),
-        key_id: key1.clone(),
-        sync_settings: Default::default(),
-    };
-    user.track_database(prefs).await?;
+    user.track_database(db_id.clone(), key1.clone(), SyncSettings::disabled())
+        .await?;
 
     // Update to key2 - should succeed and auto-create mapping
     // key2 CAN access the database (via "*"), mapping will be auto-created
-    let updated_prefs = TrackedDatabase {
-        database_id: db_id.clone(),
-        key_id: key2.clone(),
-        sync_settings: SyncSettings {
-            sync_enabled: true,
-            sync_on_commit: false,
-            interval_seconds: Some(90),
-            properties: Default::default(),
-        },
-    };
-
     // Should succeed - auto-creates the mapping
-    user.track_database(updated_prefs).await?;
+    user.track_database(
+        db_id.clone(),
+        key2.clone(),
+        SyncSettings::enabled().with_interval(90),
+    )
+    .await?;
 
     // Verify the update succeeded
     let retrieved = user.database(&db_id).await?;

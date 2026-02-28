@@ -182,7 +182,7 @@ Configure per-database sync behavior:
 # extern crate eidetica;
 # extern crate tokio;
 # use eidetica::{Instance, backend::database::Sqlite, crdt::Doc};
-# use eidetica::user::types::{SyncSettings, TrackedDatabase};
+# use eidetica::user::types::SyncSettings;
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
@@ -194,19 +194,12 @@ Configure per-database sync behavior:
 # let key = user.get_default_key()?;
 # let db = user.create_database(Doc::new(), &key).await?;
 # let db_id = db.root_id().clone();
-let tracked = TrackedDatabase {
-    database_id: db_id,
-    key_id: user.get_default_key()?,
-    sync_settings: SyncSettings {
-        sync_enabled: true,
-        sync_on_commit: true,        // Sync immediately on commit
-        interval_seconds: Some(60),  // Also sync every 60 seconds
-        properties: Default::default(),
-    },
-};
-
-// Track this database with the User
-user.track_database(tracked).await?;
+// Track this database with sync on every commit + periodic sync every 60s
+user.track_database(
+    db_id,
+    user.get_default_key()?,
+    SyncSettings::on_commit().with_interval(60),
+).await?;
 # Ok(())
 # }
 ```

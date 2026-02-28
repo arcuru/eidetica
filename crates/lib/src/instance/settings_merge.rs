@@ -47,7 +47,7 @@ use crate::user::types::SyncSettings;
 /// ```
 pub fn merge_sync_settings(settings: Vec<SyncSettings>) -> SyncSettings {
     if settings.is_empty() {
-        return SyncSettings::default();
+        return SyncSettings::disabled();
     }
 
     // Start with the first setting as base

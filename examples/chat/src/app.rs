@@ -8,10 +8,7 @@ use eidetica::{
         DatabaseTicket, SyncError,
         transports::{http::HttpTransport, iroh::IrohTransport},
     },
-    user::{
-        User,
-        types::{SyncSettings, TrackedDatabase},
-    },
+    user::{User, types::SyncSettings},
 };
 use ratatui::widgets::ScrollbarState;
 use tracing::{debug, info};
@@ -85,16 +82,11 @@ impl App {
         // Enable sync for this database with periodic sync every 2 seconds
         let database_id = database.root_id().clone();
         self.user
-            .track_database(TrackedDatabase {
+            .track_database(
                 database_id,
-                key_id: key_id.clone(),
-                sync_settings: SyncSettings {
-                    sync_enabled: true,
-                    sync_on_commit: true,
-                    interval_seconds: Some(2), // Sync every 2 seconds
-                    properties: std::collections::HashMap::new(),
-                },
-            })
+                key_id.clone(),
+                SyncSettings::on_commit().with_interval(2),
+            )
             .await?;
 
         // Open the new room
@@ -206,16 +198,11 @@ impl App {
 
             // Register the database with the User so it knows which key to use
             self.user
-                .track_database(TrackedDatabase {
-                    database_id: room_id.clone(),
+                .track_database(
+                    room_id.clone(),
                     key_id,
-                    sync_settings: SyncSettings {
-                        sync_enabled: true,
-                        sync_on_commit: true,
-                        interval_seconds: Some(2),
-                        properties: std::collections::HashMap::new(),
-                    },
-                })
+                    SyncSettings::on_commit().with_interval(2),
+                )
                 .await?;
         } else {
             sync.sync_with_ticket(&ticket).await?;
