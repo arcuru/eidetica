@@ -195,9 +195,9 @@ async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
     );
     println!("✅ HTTP client bootstrapped database from server");
 
-    // HTTP client opens the database using the wildcard permission ("*")
-    // The wildcard allows any key to write, so we use the client's device key
-    // but sign as "*" to use the global permission
+    // HTTP client opens the database using the global permission
+    // The global permission allows any key to write, so we use the client's device key
+    // with a global SigKey
     let http_client_db = Database::open(
         http_client_instance.clone(),
         &tree_id,

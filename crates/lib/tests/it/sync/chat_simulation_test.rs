@@ -7,8 +7,8 @@
 //!   registered key name as the SigKey.
 //!
 //! - `test_global_key_bootstrap`: Auto-approval flow where the server has a global
-//!   wildcard permission that grants access to any client. Client uses "*" as the
-//!   SigKey (with pubkey embedded in the signature).
+//!   permission that grants access to any client. Client uses a global SigKey
+//!   (with pubkey embedded for verification).
 //!
 //! - `test_multiple_databases_sync`: Verifies syncing multiple databases from a
 //!   single server.
@@ -226,11 +226,11 @@ async fn test_chat_app_authenticated_bootstrap() {
     drop(server_instance);
 }
 
-/// Test bootstrap with global "*" permission (auto-approval).
+/// Test bootstrap with global permission (auto-approval).
 ///
-/// Verifies that databases with global wildcard permission allow any client
+/// Verifies that databases with global permission allow any client
 /// to sync and write without explicit key registration. The client still signs
-/// entries, but uses the global "*" as the SigKey instead of a registered key name.
+/// entries, but uses a global SigKey instead of a registered key name.
 #[tokio::test]
 async fn test_global_key_bootstrap() {
     // Setup server with global wildcard permission (auto-approval)

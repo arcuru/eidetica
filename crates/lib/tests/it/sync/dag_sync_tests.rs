@@ -672,7 +672,7 @@ async fn test_sync_protocol_implementation() {
     );
 
     // Reload the tree to get the latest state
-    // Use global "*" permission (public database with Permission::Read)
+    // Use global permission (public database with Permission::Read)
     let (reader_key, _) = generate_keypair();
     let tree2 = Database::open(
         base_db2.clone(),

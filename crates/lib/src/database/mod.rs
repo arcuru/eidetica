@@ -57,7 +57,7 @@ impl DatabaseKey {
         }
     }
 
-    /// Identity = global ("*") with actual pubkey embedded for verification.
+    /// Identity = global permission with actual pubkey embedded for verification.
     pub fn global(signing_key: PrivateKey) -> Self {
         let pubkey_str = format_public_key(&signing_key.public_key());
         Self {
@@ -399,7 +399,7 @@ impl Database {
     ///
     /// Returns all matching SigKeys including:
     /// - Specific key names where the pubkey matches
-    /// - Global "*" permission if available
+    /// - Global permission if available
     /// - (Future) Delegation paths
     ///
     /// The results are **sorted by permission level, highest first**, making it easy to

@@ -418,12 +418,12 @@ async fn test_update_tracked_auto_creates_mapping() -> Result<()> {
     // Add global Write permission (signing key is already Admin(0))
     set_global_auth_key(&db, AuthKey::active(None, Permission::Write(10))).await;
 
-    // Add database with key1 (creates mapping: key1 -> "*")
+    // Add database with key1 (creates mapping via global permission)
     user.track_database(db_id.clone(), &key1, SyncSettings::disabled())
         .await?;
 
     // Update to key2 - should succeed and auto-create mapping
-    // key2 CAN access the database (via "*"), mapping will be auto-created
+    // key2 CAN access the database (via global permission), mapping will be auto-created
     // Should succeed - auto-creates the mapping
     user.track_database(
         db_id.clone(),

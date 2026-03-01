@@ -331,7 +331,7 @@ async fn test_sync_succeeds_when_enabled() {
     assert!(result.is_ok(), "Sync should succeed when enabled");
 
     // Verify data was synced
-    // Use global "*" permission (configured with Permission::Read)
+    // Use global permission (configured with Permission::Read)
     let (reader_key, _) = generate_keypair();
     let client_db = Database::open(
         client_instance.clone(),

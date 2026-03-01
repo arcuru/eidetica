@@ -789,24 +789,24 @@ async fn test_bootstrap_with_existing_global_permission_no_duplicate() {
 /// permission need a way to discover which SigKey to use for creating entries.
 ///
 /// Current Behavior:
-/// - Server approves bootstrap via global "*" permission without adding a per-device key
+/// - Server approves bootstrap via global permission without adding a per-device key
 /// - Client successfully bootstraps and can read from the database
 /// - When client attempts to create entries, it must choose which SigKey to use:
 ///   - Using their device key name (e.g., "client_key") will fail validation
-///   - Using "*" as the SigKey works correctly (with pubkey field populated)
+///   - Using a global SigKey works correctly (with pubkey field populated)
 /// - However, the client has no programmatic way to discover this requirement
 ///
 /// The Issue:
 /// This is a client-side API/UX design issue. Clients need a mechanism to:
 /// 1. Query the database's auth settings after bootstrap approval
-/// 2. Determine whether their access comes from global "*" or a specific key
+/// 2. Determine whether their access comes from global permission or a specific key
 /// 3. Select the appropriate SigKey for entry creation based on that discovery
 ///
 /// Potential Solutions:
 /// - Client-side helper API: `database.discover_auth_key()` that queries auth settings
-///   and returns the appropriate SigKey to use ("*" for global, specific key name otherwise)
+///   and returns the appropriate SigKey (global or device-specific)
 /// - Bootstrap response enhancement: Include which key authorized the client
-/// - Documentation: Clear guidance on when to use "*" vs device-specific keys
+/// - Documentation: Clear guidance on when to use global vs device-specific keys
 ///
 /// This test is intentionally ignored until the client-side key discovery mechanism is implemented.
 #[ignore]
@@ -872,7 +872,7 @@ async fn test_bootstrap_global_permission_client_cannot_create_entries_bug() {
     // CLIENT-SIDE KEY DISCOVERY ISSUE:
     // The client cannot programmatically discover which SigKey to use for entry creation.
     // This test demonstrates that clients need an API to query auth settings and
-    // determine whether to use "*" (for global permissions) or their device key name.
+    // determine whether to use global permission or their device key name.
 
     println!("📋 CLIENT-SIDE ISSUE: No API for discovering which SigKey to use");
     println!("   Client approved via global permission but lacks key discovery mechanism");
@@ -1007,7 +1007,7 @@ async fn test_global_permission_enables_transactions() {
         .expect("Failed to get client signing key");
 
     // Discover which SigKeys this public key can use
-    // This will return global "*" since the client is using global permissions
+    // This will return a global SigKey since the client is using global permissions
     let sigkeys = Database::find_sigkeys(&client_instance, &tree_id, &client_key_str)
         .await
         .expect("Should find valid SigKeys");

@@ -781,7 +781,7 @@ pub async fn enable_sync_for_instance_database(sync: &Sync, database_id: &ID) ->
     Ok(())
 }
 
-/// Creates a public (unauthenticated) sync-enabled database with wildcard "*" permissions.
+/// Creates a public (unauthenticated) sync-enabled database with global permission.
 ///
 /// This is useful for testing unauthenticated sync scenarios where clients can
 /// access the database without providing credentials.
@@ -801,7 +801,7 @@ pub async fn setup_public_sync_enabled_server(
     let mut server_user = server_instance.login_user(username, None).await.unwrap();
     let server_key_id = server_user.add_private_key(Some(key_name)).await.unwrap();
 
-    // Create database settings with wildcard "*" permission for public access
+    // Create database settings for public access
     let mut settings = Doc::new();
     settings.set("name", db_name);
 

@@ -315,7 +315,7 @@ async fn test_collaborative_database_with_global_permissions() {
         .await
         .expect("Bob discovers SigKeys");
 
-    // Should find the global "*" permission
+    // Should find the global permission
     assert!(!sigkeys.is_empty(), "Bob should find at least one SigKey");
     let (sigkey, permission) = &sigkeys[0];
 

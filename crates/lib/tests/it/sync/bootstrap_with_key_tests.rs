@@ -521,7 +521,7 @@ async fn test_full_e2e_bootstrap_with_database_instances() {
     client_sync.flush().await.ok();
 
     // Verify client successfully bootstrapped and can load the database
-    // Use global "*" permission (server has wildcard permission)
+    // Use global permission (server has global permission configured)
     let (reader_key, _) = generate_keypair();
     let client_database = Database::open(
         client_instance.clone(),
