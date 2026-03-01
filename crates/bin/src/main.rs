@@ -22,6 +22,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Some(Commands::Health(ref args)) => commands::health::run(args).await,
         Some(Commands::Serve(ref args)) => commands::serve::run(args).await,
+        Some(Commands::Daemon(ref args)) => commands::daemon::run(args).await,
         Some(Commands::Info(ref args)) => commands::info::run(args, format).await,
         Some(Commands::Db {
             command: DbCommands::List(ref args),
