@@ -300,18 +300,13 @@ mod tests {
     use crate::{
         Database, Error, Instance,
         auth::{
-            crypto::{PublicKey, generate_keypair},
+            crypto::PublicKey,
             types::{KeyStatus, Permission},
         },
         backend::database::InMemory,
         crdt::Doc,
         store::Store,
     };
-
-    fn generate_public_key() -> PublicKey {
-        let (_, verifying_key) = generate_keypair();
-        verifying_key
-    }
 
     async fn create_test_database() -> (Instance, Database) {
         let backend = Box::new(InMemory::new());
@@ -371,7 +366,7 @@ mod tests {
         let initial_key_count = initial_auth_settings.get_all_keys().unwrap().len();
 
         // Should be able to add an auth key (stored by pubkey)
-        let pubkey = generate_public_key();
+        let pubkey = PublicKey::random();
         let auth_key = AuthKey::active(Some("new_test_key"), Permission::Admin(1));
 
         settings_store
@@ -397,7 +392,7 @@ mod tests {
         let transaction = database.new_transaction().await.unwrap();
         let settings_store = SettingsStore::new(&transaction).unwrap();
 
-        let pubkey = generate_public_key();
+        let pubkey = PublicKey::random();
         let auth_key = AuthKey::active(Some("laptop"), Permission::Write(5));
 
         // Add key (stored by pubkey)
@@ -425,7 +420,7 @@ mod tests {
         let transaction = database.new_transaction().await.unwrap();
         let settings_store = SettingsStore::new(&transaction).unwrap();
 
-        let pubkey = generate_public_key();
+        let pubkey = PublicKey::random();
         let auth_key = AuthKey::active(Some("laptop"), Permission::Write(5));
 
         settings_store
@@ -460,8 +455,8 @@ mod tests {
         let settings_store = SettingsStore::new(&transaction).unwrap();
 
         // Generate pubkeys for the test
-        let pubkey1 = generate_public_key();
-        let pubkey2 = generate_public_key();
+        let pubkey1 = PublicKey::random();
+        let pubkey2 = PublicKey::random();
 
         // Write keys directly via set_auth_key
         settings_store
@@ -494,7 +489,7 @@ mod tests {
         let settings_store = SettingsStore::new(&transaction).unwrap();
 
         // Add a key (stored by pubkey)
-        let pubkey = generate_public_key();
+        let pubkey = PublicKey::random();
         let auth_key = AuthKey::active(Some("validator"), Permission::Read);
         settings_store
             .set_auth_key(&pubkey, auth_key)
@@ -517,8 +512,8 @@ mod tests {
     async fn test_auth_settings_entries_are_incremental() {
         let (_instance, database) = create_test_database().await;
 
-        let pubkey_a = generate_public_key();
-        let pubkey_b = generate_public_key();
+        let pubkey_a = PublicKey::random();
+        let pubkey_b = PublicKey::random();
 
         // Txn 1: Add key A via SettingsStore
         let txn1 = database.new_transaction().await.unwrap();
@@ -578,7 +573,7 @@ mod tests {
         let settings_store = SettingsStore::new(&transaction).unwrap();
 
         // Getting non-existent auth key should return KeyNotFound error
-        let nonexistent_pubkey = generate_public_key();
+        let nonexistent_pubkey = PublicKey::random();
         let result = settings_store.get_auth_key(&nonexistent_pubkey).await;
         assert!(result.is_err());
         if let Err(Error::Auth(auth_err)) = result {

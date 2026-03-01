@@ -474,18 +474,13 @@ impl Default for AuthSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{auth::generate_keypair, crdt::CRDT};
-
-    fn generate_public_key() -> PublicKey {
-        let (_, pk) = generate_keypair();
-        pk
-    }
+    use crate::crdt::CRDT;
 
     #[test]
     fn test_auth_settings_basic_operations() {
         let mut settings = AuthSettings::new();
 
-        let pubkey = generate_public_key();
+        let pubkey = PublicKey::random();
         let auth_key = AuthKey::active(Some("laptop"), Permission::Write(10));
 
         settings.add_key(&pubkey, auth_key.clone()).unwrap();
@@ -501,8 +496,8 @@ mod tests {
     fn test_find_keys_by_name() {
         let mut settings = AuthSettings::new();
 
-        let pubkey1 = generate_public_key();
-        let pubkey2 = generate_public_key();
+        let pubkey1 = PublicKey::random();
+        let pubkey2 = PublicKey::random();
 
         // Add two keys with same name
         settings
@@ -527,7 +522,7 @@ mod tests {
     fn test_revoke_key() {
         let mut settings = AuthSettings::new();
 
-        let pubkey = generate_public_key();
+        let pubkey = PublicKey::random();
         let auth_key = AuthKey::active(Some("laptop"), Permission::Admin(5));
 
         settings.add_key(&pubkey, auth_key).unwrap();
@@ -570,7 +565,7 @@ mod tests {
     fn test_resolve_hint_pubkey() {
         let mut settings = AuthSettings::new();
 
-        let pubkey = generate_public_key();
+        let pubkey = PublicKey::random();
         settings
             .add_key(
                 &pubkey,
@@ -590,7 +585,7 @@ mod tests {
     fn test_resolve_hint_name() {
         let mut settings = AuthSettings::new();
 
-        let pubkey = generate_public_key();
+        let pubkey = PublicKey::random();
         settings
             .add_key(
                 &pubkey,
@@ -613,7 +608,7 @@ mod tests {
         // Set global permission
         settings.set_global_permission(AuthKey::active(None, Permission::Write(10)));
 
-        let actual_pubkey = generate_public_key();
+        let actual_pubkey = PublicKey::random();
         let hint = KeyHint::global(&actual_pubkey);
         let matches = settings.resolve_hint(&hint).unwrap();
 
@@ -626,7 +621,7 @@ mod tests {
     fn test_find_all_sigkeys_for_pubkey() {
         let mut settings = AuthSettings::new();
 
-        let pubkey = generate_public_key();
+        let pubkey = PublicKey::random();
 
         // No keys - should return empty vec
         let results = settings.find_all_sigkeys_for_pubkey(&pubkey);
@@ -654,7 +649,7 @@ mod tests {
     fn test_resolve_sig_key_for_operation() {
         let mut settings = AuthSettings::new();
 
-        let pubkey = generate_public_key();
+        let pubkey = PublicKey::random();
 
         // No keys configured - should fail
         let result = settings.resolve_sig_key_for_operation(&pubkey);
@@ -678,8 +673,8 @@ mod tests {
     fn test_can_access() {
         let mut settings = AuthSettings::new();
 
-        let pubkey = generate_public_key();
-        let other_pubkey = generate_public_key();
+        let pubkey = PublicKey::random();
+        let other_pubkey = PublicKey::random();
 
         // No access without keys
         assert!(!settings.can_access(&pubkey, &Permission::Read));
@@ -713,8 +708,8 @@ mod tests {
         let mut settings1 = AuthSettings::new();
         let mut settings2 = AuthSettings::new();
 
-        let pubkey1 = generate_public_key();
-        let pubkey2 = generate_public_key();
+        let pubkey1 = PublicKey::random();
+        let pubkey2 = PublicKey::random();
 
         settings1
             .add_key(

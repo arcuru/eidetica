@@ -4,18 +4,11 @@
 //! including storing pending requests, listing them, and approving/rejecting them.
 
 use super::helpers::*;
-
-/// Generate a valid test public key
-fn generate_public_key() -> eidetica::auth::crypto::PublicKey {
-    let (_, verifying_key) = generate_keypair();
-    verifying_key
-}
-
 use eidetica::{
     Database, Entry,
     auth::{
         Permission as AuthPermission,
-        crypto::generate_keypair,
+        crypto::PublicKey,
         types::{AuthKey, KeyStatus, SigKey},
     },
     backend::VerificationStatus,
@@ -37,7 +30,7 @@ async fn test_manual_approval_stores_pending_request() {
     let sync_handler = create_test_sync_handler(&sync);
 
     // Create a bootstrap request that should be stored as pending
-    let test_key = generate_public_key();
+    let test_key = PublicKey::random();
     let sync_request = create_bootstrap_request(
         &tree_id,
         &test_key.to_string(),
@@ -74,7 +67,7 @@ async fn test_auto_approve_still_works() {
     let sync_handler = create_test_sync_handler(&sync);
 
     // Create a bootstrap request that should be auto-approved
-    let test_key = generate_public_key();
+    let test_key = PublicKey::random();
     let sync_request = create_bootstrap_request(
         &tree_id,
         &test_key.to_string(),
@@ -114,7 +107,7 @@ async fn test_approve_bootstrap_request() {
 
     // Create sync handler and submit bootstrap request
     let sync_handler = create_test_sync_handler(&sync);
-    let test_key = generate_public_key();
+    let test_key = PublicKey::random();
     let request_id = create_pending_bootstrap_request(
         &sync_handler,
         &tree_id,
@@ -187,7 +180,7 @@ async fn test_reject_bootstrap_request() {
     );
 
     // Create a bootstrap request that will be stored as pending
-    let test_key = generate_public_key();
+    let test_key = PublicKey::random();
     let sync_request = SyncRequest::SyncTree(SyncTreeRequest {
         tree_id: tree_id.clone(),
         our_tips: vec![], // Empty tips = bootstrap needed
@@ -271,7 +264,7 @@ async fn test_list_bootstrap_requests_by_status() {
     );
 
     // Create and store a bootstrap request
-    let test_key = generate_public_key();
+    let test_key = PublicKey::random();
     let sync_request = SyncRequest::SyncTree(SyncTreeRequest {
         tree_id: tree_id.clone(),
         our_tips: vec![],
@@ -331,7 +324,7 @@ async fn test_duplicate_bootstrap_requests_same_client() {
     );
 
     // Create first bootstrap request
-    let test_key = generate_public_key();
+    let test_key = PublicKey::random();
     let sync_request1 = SyncRequest::SyncTree(SyncTreeRequest {
         tree_id: tree_id.clone(),
         our_tips: vec![], // Empty tips = bootstrap needed
@@ -449,7 +442,7 @@ async fn test_malformed_permission_requests() {
     );
 
     // Generate a test key to use for all permission tests
-    let test_key = generate_public_key();
+    let test_key = PublicKey::random();
 
     // Test with various permission configurations to ensure they're handled properly
     let permission_tests = vec![
@@ -638,7 +631,7 @@ async fn test_bootstrap_with_existing_specific_key_permission() {
         crate::helpers::test_instance_with_user_and_key("server_user", Some("server_admin")).await;
     server_instance.enable_sync().await.unwrap();
 
-    let test_key = generate_public_key();
+    let test_key = PublicKey::random();
 
     // Create database with both admin key and the test key with Write(5) permission
     let mut settings = Doc::new();
@@ -729,7 +722,7 @@ async fn test_bootstrap_with_existing_global_permission_no_duplicate() {
         crate::helpers::test_instance_with_user_and_key("server_user", Some("server_admin")).await;
     server_instance.enable_sync().await.unwrap();
 
-    let test_key = generate_public_key();
+    let test_key = PublicKey::random();
 
     // Create database with admin key and global Write(5) permission
     let mut settings = Doc::new();

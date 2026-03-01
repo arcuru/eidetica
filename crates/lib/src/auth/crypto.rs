@@ -102,6 +102,17 @@ impl PublicKey {
         }
     }
 
+    /// Generate a random public key for testing.
+    ///
+    /// Creates a fresh Ed25519 keypair and returns only the public key,
+    /// discarding the private key. Useful in tests that need a valid
+    /// public key but don't need to sign anything.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn random() -> Self {
+        let (_, pubkey) = generate_keypair();
+        pubkey
+    }
+
     /// Get the algorithm name for this key.
     pub fn algorithm(&self) -> &'static str {
         match self {

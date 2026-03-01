@@ -1,16 +1,7 @@
 //! Comprehensive tests for authentication types
 
 use super::*;
-use crate::{
-    auth::crypto::{PublicKey, generate_keypair},
-    crdt::Doc,
-    entry::ID,
-};
-
-fn generate_public_key() -> PublicKey {
-    let (_, pubkey) = generate_keypair();
-    pubkey
-}
+use crate::{auth::crypto::PublicKey, crdt::Doc, entry::ID};
 
 #[test]
 fn test_permission_min_max() {
@@ -393,7 +384,7 @@ fn test_auth_key_mutators() {
 #[test]
 fn test_key_hint_types() {
     // Test pubkey hint
-    let pubkey = generate_public_key();
+    let pubkey = PublicKey::random();
     let hint = KeyHint::from_pubkey(&pubkey);
     assert_eq!(hint.pubkey, Some(pubkey.clone()));
     assert_eq!(hint.name, None);
@@ -421,7 +412,7 @@ fn test_key_hint_types() {
 
 #[test]
 fn test_sig_key_hint_access() {
-    let pubkey = generate_public_key();
+    let pubkey = PublicKey::random();
 
     // Test Direct SigKey
     let direct = SigKey::from_pubkey(&pubkey);
@@ -540,7 +531,7 @@ fn test_permission_methods() {
 
 #[test]
 fn test_sig_info_with_global_serialization() {
-    let pubkey = generate_public_key();
+    let pubkey = PublicKey::random();
     let sig_info = SigInfo::builder()
         .key(SigKey::global(&pubkey))
         .sig("signature_base64_encoded_string_here")
@@ -567,7 +558,7 @@ fn test_sig_info_builder_basic() {
 
 #[test]
 fn test_sig_info_builder_with_pubkey_hint() {
-    let pubkey = generate_public_key();
+    let pubkey = PublicKey::random();
     let sig_info = SigInfo::builder()
         .pubkey_hint(&pubkey)
         .sig("test_signature")
@@ -590,7 +581,7 @@ fn test_sig_info_builder_with_name_hint() {
 
 #[test]
 fn test_sig_info_builder_with_global_hint() {
-    let pubkey = generate_public_key();
+    let pubkey = PublicKey::random();
     let sig_info = SigInfo::builder()
         .global_hint(&pubkey)
         .sig("test_signature")
@@ -649,7 +640,7 @@ fn test_sig_info_is_unsigned() {
     assert!(default.is_unsigned());
 
     // With pubkey hint - not unsigned
-    let test_pubkey = generate_public_key();
+    let test_pubkey = PublicKey::random();
     let with_hint = SigInfo::from_pubkey(&test_pubkey);
     assert!(!with_hint.is_unsigned());
 
@@ -677,7 +668,7 @@ fn test_sig_info_is_unsigned() {
 
 #[test]
 fn test_sig_info_malformed_reason() {
-    let test_pubkey = generate_public_key();
+    let test_pubkey = PublicKey::random();
 
     // Valid states: unsigned (default)
     let default = SigInfo::default();
@@ -733,7 +724,7 @@ fn test_sig_info_malformed_reason() {
 
 #[test]
 fn test_sig_key_is_global() {
-    let pubkey = generate_public_key();
+    let pubkey = PublicKey::random();
 
     // Direct with global hint
     let global = SigKey::global(&pubkey);
