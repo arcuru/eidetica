@@ -17,20 +17,19 @@ use crate::sync::{
 };
 use crate::{
     Error, Result,
-    auth::crypto::{generate_challenge, verify_challenge_response},
+    auth::crypto::{PublicKey, generate_challenge, verify_challenge_response},
     entry::Entry,
 };
 
 impl BackgroundSync {
     /// Connect to a peer and perform handshake
-    pub(super) async fn connect_to_peer(&mut self, address: &Address) -> Result<String> {
+    pub(super) async fn connect_to_peer(&mut self, address: &Address) -> Result<PublicKey> {
         // Generate challenge for authentication
         let challenge = generate_challenge();
 
         // Get our device info from instance
         let instance = self.instance()?;
-        let public_key = instance.device_key().public_key().to_string();
-        let device_id = public_key.clone();
+        let public_key = instance.device_id();
 
         // Build listen addresses from all running servers
         let listen_addresses: Vec<Address> = self
@@ -45,7 +44,7 @@ impl BackgroundSync {
 
         // Create handshake request
         let handshake_request = HandshakeRequest {
-            device_id,
+            device_id: public_key.clone(),
             public_key: public_key.clone(),
             display_name: Some("BackgroundSync".to_string()),
             protocol_version: PROTOCOL_VERSION,
@@ -89,11 +88,9 @@ impl BackgroundSync {
                 let peer_manager = PeerManager::new(&txn);
 
                 // Try to register peer, but ignore if already exists
+                let peer_pubkey_str = handshake_resp.public_key.to_string();
                 match peer_manager
-                    .register_peer(
-                        &handshake_resp.public_key,
-                        handshake_resp.display_name.as_deref(),
-                    )
+                    .register_peer(&peer_pubkey_str, handshake_resp.display_name.as_deref())
                     .await
                 {
                     Ok(_) => {

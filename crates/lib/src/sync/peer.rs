@@ -7,7 +7,7 @@ use super::{
     Address, ConnectionState, PeerId, PeerInfo, PeerStatus, Sync, SyncError, SyncHandle,
     SyncPeerInfo, SyncStatus, background::SyncCommand, peer_manager::PeerManager,
 };
-use crate::{Result, entry::ID};
+use crate::{Result, auth::crypto::PublicKey, entry::ID};
 
 impl Sync {
     // === Peer Management Methods ===
@@ -286,7 +286,7 @@ impl Sync {
     ///
     /// # Returns
     /// A Result containing the peer's public key if successful.
-    pub async fn connect_to_peer(&self, address: &Address) -> Result<String> {
+    pub async fn connect_to_peer(&self, address: &Address) -> Result<PublicKey> {
         let (tx, rx) = oneshot::channel();
 
         self.background_tx

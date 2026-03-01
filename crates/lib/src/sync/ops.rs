@@ -53,7 +53,7 @@ impl Sync {
             .map_err(|e| SyncError::BackendError(format!("Failed to get local tips: {e}")))?;
 
         // Get our device public key for automatic peer tracking
-        let our_device_pubkey = self.get_device_id().ok();
+        let our_device_pubkey = self.get_device_pubkey().ok().map(|pk| pk.to_string());
 
         // Send unified sync request
         let request = SyncRequest::SyncTree(SyncTreeRequest {
@@ -564,13 +564,15 @@ impl Sync {
     pub async fn sync_with_peer(&self, address: &Address, tree_id: Option<&ID>) -> Result<()> {
         // Connect to peer if not already connected
         let peer_pubkey = self.connect_to_peer(address).await?;
+        let peer_pubkey_str = peer_pubkey.to_string();
 
         // Store the address for this peer (needed for sync_tree_with_peer)
-        self.add_peer_address(&peer_pubkey, address.clone()).await?;
+        self.add_peer_address(&peer_pubkey_str, address.clone())
+            .await?;
 
         if let Some(tree_id) = tree_id {
             // Sync specific tree
-            self.sync_tree_with_peer(&peer_pubkey, tree_id).await?;
+            self.sync_tree_with_peer(&peer_pubkey_str, tree_id).await?;
         } else {
             // TODO: Sync all available trees
             tracing::warn!(
@@ -644,7 +646,7 @@ impl Sync {
             .map_err(|e| SyncError::BackendError(format!("Failed to get local tips: {e}")))?;
 
         // Get our device public key for automatic peer tracking
-        let our_device_pubkey = self.get_device_id().ok();
+        let our_device_pubkey = self.get_device_pubkey().ok().map(|pk| pk.to_string());
 
         // Send unified sync request with auth parameters
         let request = SyncRequest::SyncTree(SyncTreeRequest {

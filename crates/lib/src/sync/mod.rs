@@ -95,7 +95,7 @@ use handle_trait::Handle;
 
 use crate::{
     Database, Instance, Result, WeakInstance,
-    auth::Permission,
+    auth::{Permission, crypto::PublicKey},
     crdt::{Doc, doc::Value},
     database::DatabaseKey,
     entry::ID,
@@ -495,9 +495,9 @@ impl Sync {
     /// Get the device public key for this sync instance.
     ///
     /// # Returns
-    /// The device's public key in ed25519:base64 format.
-    pub fn get_device_id(&self) -> Result<String> {
-        Ok(self.instance()?.device_key().public_key().to_string())
+    /// The device's public key.
+    pub fn get_device_pubkey(&self) -> Result<PublicKey> {
+        Ok(self.instance()?.device_id())
     }
 }
 

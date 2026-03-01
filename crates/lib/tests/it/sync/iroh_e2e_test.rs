@@ -44,8 +44,8 @@ async fn test_iroh_e2e_basic_local() {
     // Setup peer relationship
     let _addr1 = sync1.get_server_address().await.unwrap();
     let addr2 = sync2.get_server_address().await.unwrap();
-    let _pubkey1 = sync1.get_device_id().unwrap();
-    let pubkey2 = sync2.get_device_id().unwrap();
+    let _pubkey1 = sync1.get_device_pubkey().unwrap().to_string();
+    let pubkey2 = sync2.get_device_pubkey().unwrap().to_string();
 
     sync1.register_peer(&pubkey2, Some("peer2")).await.unwrap();
     sync1
@@ -120,8 +120,8 @@ async fn test_iroh_e2e_resilience() {
 
     let _addr1 = sync1.get_server_address().await.unwrap();
     let addr2 = sync2.get_server_address().await.unwrap();
-    let _pubkey1 = sync1.get_device_id().unwrap();
-    let pubkey2 = sync2.get_device_id().unwrap();
+    let _pubkey1 = sync1.get_device_pubkey().unwrap().to_string();
+    let pubkey2 = sync2.get_device_pubkey().unwrap().to_string();
 
     // Register peers
     sync1.register_peer(&pubkey2, None).await.unwrap();
@@ -286,8 +286,8 @@ async fn test_iroh_e2e_with_relays() {
     println!("📍 Node 2 address (with relay info): {addr2}");
 
     // Get public keys for peer registration
-    let pubkey1 = sync1.get_device_id().unwrap();
-    let pubkey2 = sync2.get_device_id().unwrap();
+    let pubkey1 = sync1.get_device_pubkey().unwrap().to_string();
+    let pubkey2 = sync2.get_device_pubkey().unwrap().to_string();
 
     // Register peers
     println!("👥 Registering peers for P2P communication...");

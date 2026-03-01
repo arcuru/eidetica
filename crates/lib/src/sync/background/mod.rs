@@ -23,6 +23,7 @@ use super::{
 };
 use crate::{
     Database, Error, Instance, Result, WeakInstance,
+    auth::crypto::PublicKey,
     database::DatabaseKey,
     entry::{Entry, ID},
     store::DocStore,
@@ -31,6 +32,7 @@ use crate::{
 mod conn;
 
 /// Commands that can be sent to the background sync engine
+#[allow(clippy::large_enum_variant)]
 pub enum SyncCommand {
     /// Send entries to a specific peer
     SendEntries { peer: PeerId, entries: Vec<Entry> },
@@ -74,7 +76,7 @@ pub enum SyncCommand {
     /// Connect to a peer and perform handshake
     ConnectToPeer {
         address: Address,
-        response: oneshot::Sender<Result<String>>, // Returns peer pubkey
+        response: oneshot::Sender<Result<PublicKey>>, // Returns peer pubkey
     },
 
     // Request/Response operations
@@ -745,7 +747,7 @@ impl BackgroundSync {
                 .map_err(|e| SyncError::BackendError(format!("Failed to get local tips: {e}")))?;
 
             // Get our device public key for automatic peer tracking
-            let our_device_pubkey = Some(instance.device_key().public_key().to_string());
+            let our_device_pubkey = Some(instance.device_id().to_string());
 
             debug!(peer = %peer_id, tree = %tree_id, our_tips = our_tips.len(), "Sending sync tree request");
 

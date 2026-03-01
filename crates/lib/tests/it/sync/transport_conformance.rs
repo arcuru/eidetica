@@ -57,8 +57,8 @@ where
     let address2 = factory.create_address(&addr2);
 
     // Connect peers
-    let peer1_pubkey = sync1.get_device_id()?;
-    let peer2_pubkey = sync2.get_device_id()?;
+    let peer1_pubkey = sync1.get_device_pubkey()?.to_string();
+    let peer2_pubkey = sync2.get_device_pubkey()?.to_string();
 
     // Register peers with each other
     sync1
@@ -71,12 +71,7 @@ where
         .await?;
     sync2.add_peer_address(&peer1_pubkey, address1).await?;
 
-    Ok((
-        sync1,
-        sync2,
-        peer1_pubkey.to_string(),
-        peer2_pubkey.to_string(),
-    ))
+    Ok((sync1, sync2, peer1_pubkey, peer2_pubkey))
 }
 
 /// Set up trees with bidirectional sync hooks

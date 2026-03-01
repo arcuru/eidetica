@@ -481,7 +481,7 @@ impl SyncHandlerImpl {
             let signing_key = instance.device_key().clone();
 
             // Generate device ID and public key from signing key
-            let public_key = signing_key.public_key().to_string();
+            let public_key = signing_key.public_key();
             let device_id = public_key.clone(); // Device ID is the public key
 
             // Sign the challenge with our device key to prove identity
@@ -494,7 +494,8 @@ impl SyncHandlerImpl {
             let available_trees = self.get_available_trees().await;
 
             // Register the peer and add their addresses to our peer list
-            match self.register_incoming_peer(&request.public_key, request.display_name.as_deref(), &request.listen_addresses, &context.remote_address).await {
+            let request_pubkey_str = request.public_key.to_string();
+            match self.register_incoming_peer(&request_pubkey_str, request.display_name.as_deref(), &request.listen_addresses, &context.remote_address).await {
                 Ok(()) => {
                     debug!(peer_pubkey = %request.public_key, "Successfully registered incoming peer");
                 }

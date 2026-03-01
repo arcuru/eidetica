@@ -362,15 +362,14 @@ pub fn create_challenge_response(challenge: impl AsRef<[u8]>, signing_key: &Priv
 /// Verify a challenge response
 ///
 /// Verifies that the given response bytes are a valid signature of the challenge
-/// using the provided public key string.
+/// using the provided public key.
 ///
 /// # Arguments
 /// * `challenge` - The original challenge bytes
 /// * `response` - The signature bytes to verify
-/// * `public_key_str` - Public key in "ed25519:base64" format
+/// * `public_key` - The public key to verify against
 ///
 /// # Errors
-/// Returns `AuthError::InvalidKeyFormat` if the public key string cannot be parsed.
 /// Returns `AuthError::InvalidSignature` if the signature is malformed or does not match.
 ///
 /// # Example
@@ -379,9 +378,8 @@ pub fn create_challenge_response(challenge: impl AsRef<[u8]>, signing_key: &Priv
 ///
 /// let challenge = generate_challenge();
 /// let response = create_challenge_response(&challenge, &signing_key);
-/// let public_key = "ed25519:base64_encoded_key";
 ///
-/// match verify_challenge_response(&challenge, &response, public_key) {
+/// match verify_challenge_response(&challenge, &response, &public_key) {
 ///     Ok(()) => println!("Signature verified"),
 ///     Err(e) => println!("Verification failed: {}", e),
 /// }
@@ -389,9 +387,8 @@ pub fn create_challenge_response(challenge: impl AsRef<[u8]>, signing_key: &Priv
 pub fn verify_challenge_response(
     challenge: impl AsRef<[u8]>,
     response: impl AsRef<[u8]>,
-    public_key_str: impl AsRef<str>,
+    public_key: &PublicKey,
 ) -> Result<(), AuthError> {
-    let public_key = PublicKey::from_prefixed_string(public_key_str.as_ref())?;
     public_key.verify(challenge.as_ref(), response.as_ref())
 }
 
@@ -473,7 +470,6 @@ mod tests {
     #[test]
     fn test_challenge_response() {
         let (signing_key, verifying_key) = generate_keypair();
-        let public_key_str = verifying_key.to_string();
         let challenge = generate_challenge();
 
         // Create and verify challenge response
@@ -483,16 +479,15 @@ mod tests {
         assert_eq!(response.len(), ED25519_SIGNATURE_SIZE);
 
         // Should verify correctly
-        assert!(verify_challenge_response(&challenge, &response, &public_key_str).is_ok());
+        assert!(verify_challenge_response(&challenge, &response, &verifying_key).is_ok());
 
         // Should fail with wrong challenge
         let wrong_challenge = generate_challenge();
-        assert!(verify_challenge_response(&wrong_challenge, &response, &public_key_str).is_err());
+        assert!(verify_challenge_response(&wrong_challenge, &response, &verifying_key).is_err());
 
         // Should fail with wrong key
         let (_, wrong_pubkey) = generate_keypair();
-        let wrong_public_key_str = wrong_pubkey.to_string();
-        assert!(verify_challenge_response(&challenge, &response, &wrong_public_key_str).is_err());
+        assert!(verify_challenge_response(&challenge, &response, &wrong_pubkey).is_err());
     }
 
     // ==================== PublicKey / PrivateKey Enum Tests ====================

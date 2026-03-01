@@ -50,8 +50,8 @@ async fn test_handshake_automatically_registers_peer() {
     ];
 
     let handshake_request = HandshakeRequest {
-        device_id: peer_pubkey.clone(),
-        public_key: peer_pubkey.clone(),
+        device_id: peer_verifying_key.clone(),
+        public_key: peer_verifying_key.clone(),
         display_name: Some("Test Peer".to_string()),
         protocol_version: PROTOCOL_VERSION,
         challenge: generate_challenge(),
@@ -110,8 +110,8 @@ async fn test_duplicate_handshakes_handled_gracefully() {
     let peer_pubkey = peer_verifying_key.to_string();
 
     let handshake_request = HandshakeRequest {
-        device_id: peer_pubkey.clone(),
-        public_key: peer_pubkey.clone(),
+        device_id: peer_verifying_key.clone(),
+        public_key: peer_verifying_key.clone(),
         display_name: Some("Test Peer".to_string()),
         protocol_version: PROTOCOL_VERSION,
         challenge: generate_challenge(),
@@ -152,8 +152,8 @@ async fn test_handshake_without_listen_addresses() {
 
     // Handshake with empty listen_addresses
     let handshake_request = HandshakeRequest {
-        device_id: peer_pubkey.clone(),
-        public_key: peer_pubkey.clone(),
+        device_id: peer_verifying_key.clone(),
+        public_key: peer_verifying_key.clone(),
         display_name: Some("Test Peer".to_string()),
         protocol_version: PROTOCOL_VERSION,
         challenge: generate_challenge(),
@@ -500,8 +500,8 @@ async fn test_http_transport_request_context() {
     // Create handshake request
     let challenge = generate_challenge();
     let handshake_request = HandshakeRequest {
-        device_id: peer_pubkey.clone(),
-        public_key: peer_pubkey.clone(),
+        device_id: peer_verifying_key.clone(),
+        public_key: peer_verifying_key,
         display_name: Some("HTTP Test Peer".to_string()),
         protocol_version: PROTOCOL_VERSION,
         challenge: challenge.clone(),

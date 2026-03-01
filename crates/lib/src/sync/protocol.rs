@@ -7,17 +7,19 @@ use serde::{Deserialize, Serialize};
 
 use super::peer_types::Address;
 use crate::{
-    auth::Permission,
+    auth::{Permission, crypto::PublicKey},
     entry::{Entry, ID},
 };
 
 /// Handshake request sent when establishing a peer connection.
+#[allow(clippy::large_enum_variant)]
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct HandshakeRequest {
+    // FIXME: device_id and public_key are functionally identical
     /// Unique device identifier
-    pub device_id: String,
+    pub device_id: PublicKey,
     /// Ed25519 public key of the sender
-    pub public_key: String,
+    pub public_key: PublicKey,
     /// Optional human-readable display name
     pub display_name: Option<String>,
     /// Protocol version number
@@ -44,10 +46,11 @@ pub struct TreeInfo {
 /// Handshake response sent in reply to a handshake request.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct HandshakeResponse {
+    // FIXME: device_id and public_key are functionally identical
     /// Unique device identifier
-    pub device_id: String,
+    pub device_id: PublicKey,
     /// Ed25519 public key of the responder
-    pub public_key: String,
+    pub public_key: PublicKey,
     /// Optional human-readable display name
     pub display_name: Option<String>,
     /// Protocol version number
@@ -106,6 +109,7 @@ pub struct IncrementalResponse {
 }
 
 /// Request messages that can be sent to a sync peer.
+#[allow(clippy::large_enum_variant)]
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum SyncRequest {
     /// Initial handshake request
