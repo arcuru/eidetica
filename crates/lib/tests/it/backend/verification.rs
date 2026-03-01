@@ -10,6 +10,18 @@ use super::helpers::test_backend;
 async fn test_verification_status_basic_operations() {
     let backend = test_backend().await;
 
+    // Record initial counts (may be non-zero for backends with pre-seeded data)
+    let initial_verified = backend
+        .get_entries_by_verification_status(VerificationStatus::Verified)
+        .await
+        .unwrap()
+        .len();
+    let initial_failed = backend
+        .get_entries_by_verification_status(VerificationStatus::Failed)
+        .await
+        .unwrap()
+        .len();
+
     // Create a test entry
     let entry = Entry::root_builder()
         .build()
@@ -45,19 +57,27 @@ async fn test_verification_status_basic_operations() {
         .get_entries_by_verification_status(VerificationStatus::Failed)
         .await
         .expect("Failed to get failed entries");
-    assert_eq!(failed_entries.len(), 1);
-    assert_eq!(failed_entries[0], entry_id);
+    assert_eq!(failed_entries.len(), initial_failed + 1);
+    assert!(failed_entries.contains(&entry_id));
 
     let verified_entries = backend
         .get_entries_by_verification_status(VerificationStatus::Verified)
         .await
         .expect("Failed to get verified entries");
-    assert_eq!(verified_entries.len(), 0); // Should be empty since we updated to Failed
+    // Our entry was moved to Failed, so verified count should be unchanged
+    assert_eq!(verified_entries.len(), initial_verified);
 }
 
 #[tokio::test]
 async fn test_verification_status_default_behavior() {
     let backend = test_backend().await;
+
+    // Record initial verified count
+    let initial_verified = backend
+        .get_entries_by_verification_status(VerificationStatus::Verified)
+        .await
+        .unwrap()
+        .len();
 
     // Create a test entry
     let entry = Entry::root_builder()
@@ -83,13 +103,25 @@ async fn test_verification_status_default_behavior() {
         .get_entries_by_verification_status(VerificationStatus::Verified)
         .await
         .expect("Failed to get verified entries");
-    assert_eq!(verified_entries.len(), 1);
-    assert_eq!(verified_entries[0], entry_id);
+    assert_eq!(verified_entries.len(), initial_verified + 1);
+    assert!(verified_entries.contains(&entry_id));
 }
 
 #[tokio::test]
 async fn test_verification_status_multiple_entries() {
     let backend = test_backend().await;
+
+    // Record initial counts
+    let initial_verified = backend
+        .get_entries_by_verification_status(VerificationStatus::Verified)
+        .await
+        .unwrap()
+        .len();
+    let initial_failed = backend
+        .get_entries_by_verification_status(VerificationStatus::Failed)
+        .await
+        .unwrap()
+        .len();
 
     // Create multiple test entries
     let entry1 = Entry::root_builder()
@@ -125,7 +157,7 @@ async fn test_verification_status_multiple_entries() {
         .get_entries_by_verification_status(VerificationStatus::Verified)
         .await
         .expect("Failed to get verified entries");
-    assert_eq!(verified_entries.len(), 2);
+    assert_eq!(verified_entries.len(), initial_verified + 2);
     assert!(verified_entries.contains(&entry1_id));
     assert!(verified_entries.contains(&entry2_id));
 
@@ -133,8 +165,8 @@ async fn test_verification_status_multiple_entries() {
         .get_entries_by_verification_status(VerificationStatus::Failed)
         .await
         .expect("Failed to get failed entries");
-    assert_eq!(failed_entries.len(), 1);
-    assert_eq!(failed_entries[0], entry3_id);
+    assert_eq!(failed_entries.len(), initial_failed + 1);
+    assert!(failed_entries.contains(&entry3_id));
 }
 
 #[tokio::test]
@@ -214,6 +246,18 @@ async fn test_verification_status_serialization() {
 async fn test_backend_verification_helpers() {
     let backend = test_backend().await;
 
+    // Record initial counts
+    let initial_verified = backend
+        .get_entries_by_verification_status(VerificationStatus::Verified)
+        .await
+        .unwrap()
+        .len();
+    let initial_failed = backend
+        .get_entries_by_verification_status(VerificationStatus::Failed)
+        .await
+        .unwrap()
+        .len();
+
     // Test the convenience methods
     let entry1 = Entry::root_builder()
         .build()
@@ -269,7 +313,7 @@ async fn test_backend_verification_helpers() {
         .get_entries_by_verification_status(VerificationStatus::Verified)
         .await
         .unwrap();
-    assert_eq!(verified_entries.len(), 2); // id1 and id3
+    assert_eq!(verified_entries.len(), initial_verified + 2); // id1 and id3
     assert!(verified_entries.contains(&id1));
     assert!(verified_entries.contains(&id3));
 
@@ -277,6 +321,6 @@ async fn test_backend_verification_helpers() {
         .get_entries_by_verification_status(VerificationStatus::Failed)
         .await
         .unwrap();
-    assert_eq!(failed_entries.len(), 1); // id2
+    assert_eq!(failed_entries.len(), initial_failed + 1); // id2
     assert!(failed_entries.contains(&id2));
 }

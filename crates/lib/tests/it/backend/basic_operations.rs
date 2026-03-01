@@ -12,12 +12,12 @@ async fn test_backend_basic_operations() {
     let retrieved_entry = get_result.unwrap();
     assert_eq!(retrieved_entry.id(), root_id);
 
-    // Check all_roots
-    let roots_result = backend.all_roots().await;
-    assert!(roots_result.is_ok());
-    let roots = roots_result.unwrap();
-    assert_eq!(roots.len(), 1);
-    assert_eq!(roots[0], root_id);
+    // Check all_roots contains our root
+    let roots = backend.all_roots().await.unwrap();
+    assert!(
+        roots.contains(&root_id),
+        "all_roots should contain the root we added"
+    );
 }
 
 #[tokio::test]
@@ -71,8 +71,9 @@ async fn test_backend_error_handling() {
 async fn test_all_roots() {
     let backend = test_backend().await;
 
-    // Initially, there should be no roots
-    assert!(backend.all_roots().await.unwrap().is_empty());
+    // Record initial root count (may be non-zero for backends with pre-seeded data)
+    let initial_roots = backend.all_roots().await.unwrap();
+    let initial_count = initial_roots.len();
 
     // Add a simple top-level entry (a root)
     let root1 = Entry::root_builder()
@@ -87,9 +88,9 @@ async fn test_all_roots() {
     let root2_id = root2.id();
     backend.put_verified(root2).await.unwrap();
 
-    // Test with two roots
+    // Should have two more roots than initially
     let roots = backend.all_roots().await.unwrap();
-    assert_eq!(roots.len(), 2);
+    assert_eq!(roots.len(), initial_count + 2);
     assert!(roots.contains(&root1_id));
     assert!(roots.contains(&root2_id));
 
@@ -100,9 +101,9 @@ async fn test_all_roots() {
         .expect("Child entry should build successfully");
     backend.put_verified(child).await.unwrap();
 
-    // Should still have only the two roots
+    // Adding a child should not change the root count
     let roots = backend.all_roots().await.unwrap();
-    assert_eq!(roots.len(), 2);
+    assert_eq!(roots.len(), initial_count + 2);
     assert!(roots.contains(&root1_id));
     assert!(roots.contains(&root2_id));
 }

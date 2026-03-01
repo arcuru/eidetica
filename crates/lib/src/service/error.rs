@@ -48,6 +48,10 @@ pub fn service_error_to_eidetica_error(err: ServiceError) -> crate::Error {
             id: extract_id_from_message(&err.message).unwrap_or_default(),
         }
         .into(),
+        ("backend", "VerificationStatusNotFound") => BackendError::VerificationStatusNotFound {
+            id: extract_id_from_message(&err.message).unwrap_or_else(|| ID::from("")),
+        }
+        .into(),
         ("backend", "EntryNotInTree") => BackendError::EntryNotInTree {
             entry_id: ID::default(),
             tree_id: ID::default(),
