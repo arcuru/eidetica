@@ -11,7 +11,8 @@ description.workspace = true
 
 [features]
 default = ["full"]
-full = ["y-crdt", "sqlite", "postgres"]
+full = ["y-crdt", "sqlite", "postgres", "service"]
+service = []
 y-crdt = ["dep:yrs"]
 sqlite = ["dep:sqlx"]
 postgres = ["dep:sqlx"]

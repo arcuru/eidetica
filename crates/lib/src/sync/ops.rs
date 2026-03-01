@@ -181,9 +181,14 @@ impl Sync {
 
             // Collect entries server is missing
             let backend = self.backend()?;
-            let entries_for_server =
-                collect_ancestors_to_send(backend.as_backend_impl(), &missing_tip_ids, their_tips)
-                    .await?;
+            let entries_for_server = collect_ancestors_to_send(
+                backend
+                    .as_backend_impl()
+                    .expect("sync requires local backend"),
+                &missing_tip_ids,
+                their_tips,
+            )
+            .await?;
 
             if !entries_for_server.is_empty() {
                 // Send these entries back to server

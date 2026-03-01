@@ -157,7 +157,10 @@ impl SyncHandlerImpl {
 
         // Collect ancestors
         super::utils::collect_ancestors_to_send(
-            self.instance()?.backend().as_backend_impl(),
+            self.instance()?
+                .backend()
+                .as_backend_impl()
+                .expect("sync requires local backend"),
             &missing_tip_ids,
             peer_tips,
         )

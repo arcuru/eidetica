@@ -57,7 +57,12 @@ impl DelegationResolver {
 
         // Iterate through delegation steps
         let mut current_auth_settings = auth_settings.clone();
-        let current_backend = Arc::clone(instance.backend().as_arc_backend_impl());
+        let current_backend = Arc::clone(
+            instance
+                .backend()
+                .as_arc_backend_impl()
+                .expect("delegation validation requires local backend"),
+        );
         let mut cumulative_bounds: Option<PermissionBounds> = None;
 
         // Process all delegation steps (tree traversal)
