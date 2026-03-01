@@ -78,6 +78,11 @@
     backend = "sqlite";
   };
 
+  test-runner-service = mkTestRunner {
+    name = "test-runner-service";
+    backend = "service";
+  };
+
   test-runner-postgres = mkTestRunner {
     name = "test-runner-postgres";
     backend = "postgres";
@@ -113,6 +118,10 @@
       ${test-runner-sqlite}/bin/test-runner-sqlite "$@"
 
       ${lib.optionalString pkgs.stdenv.isLinux ''
+        echo ""
+        echo "=== Running service backend tests ==="
+        ${test-runner-service}/bin/test-runner-service "$@"
+
         echo ""
         echo "=== Running postgres backend tests ==="
         ${test-runner-postgres}/bin/test-runner-postgres "$@"
@@ -160,6 +169,14 @@
       cargoNextestExtraArgs = "-p eidetica --no-default-features --features testing ${nextestCheckArgs}";
     });
 
+  # Service backend check (Linux only, requires Unix sockets)
+  test-check-service = craneLib.cargoNextest (testCheckArgs
+    // {
+      pname = "test-check-service";
+      TEST_BACKEND = "service";
+      cargoNextestExtraArgs = "--workspace --all-features ${nextestCheckArgs}";
+    });
+
   # PostgreSQL backend check (Linux only)
   test-check-postgres = craneLib.cargoNextest (testCheckArgs
     // {
@@ -198,6 +215,7 @@ in {
       minimal = test-check-minimal;
     }
     // lib.optionalAttrs pkgs.stdenv.isLinux {
+      service = test-check-service;
       postgres = test-check-postgres;
     };
 
@@ -215,6 +233,7 @@ in {
       all = test-runner-all;
     }
     // lib.optionalAttrs pkgs.stdenv.isLinux {
+      service = test-runner-service;
       postgres = test-runner-postgres;
     };
 }

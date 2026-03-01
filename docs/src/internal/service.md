@@ -186,6 +186,18 @@ pub mod service;
 
 The `service` feature is included in the default `full` feature set. The `unix` gate ensures it is only compiled on Unix-like systems where Unix domain sockets are available.
 
+## Testing
+
+The full integration test suite can be run through the service layer using `TEST_BACKEND=service`. This starts a shared in-process daemon with an InMemory backend and routes all `BackendImpl` operations through the Unix socket RPC layer:
+
+```bash
+TEST_BACKEND=service cargo nextest run --workspace --all-features
+just test service
+nix build .#test.service
+```
+
+This provides comprehensive coverage of the service module without dedicated tests -- any test that passes with `inmemory` should also pass with `service`. Failures indicate bugs in the RPC layer, serialization, or error reconstruction.
+
 ## Future Work
 
 ### Server-Push Notifications

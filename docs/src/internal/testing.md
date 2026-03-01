@@ -20,6 +20,20 @@ cargo test --test it   # Run integration tests
 cargo test auth::      # Run specific module tests
 ```
 
+## Backend Matrix Testing
+
+The test suite runs against multiple storage backends via the `TEST_BACKEND` environment variable. The `test_backend()` factory in `helpers.rs` creates the appropriate backend for each test:
+
+| Value      | Backend               | Notes                            |
+| ---------- | --------------------- | -------------------------------- |
+| (unset)    | InMemory              | Default, fastest                 |
+| `inmemory` | InMemory              | Explicit default                 |
+| `sqlite`   | SQLite (in-memory)    | Requires `sqlite` feature        |
+| `postgres` | PostgreSQL            | Requires `postgres` feature      |
+| `service`  | RemoteBackend via RPC | Requires `service` feature, unix |
+
+The `service` backend starts a fresh in-process daemon with an InMemory backend for each `test_backend()` call, routing all operations through the Unix socket RPC layer. This maintains the same isolation semantics as other backends.
+
 ## Writing Tests
 
 1. Add tests to appropriate module in `tests/it/`
