@@ -22,8 +22,9 @@ This user guide is structured to guide you from basic setup to advanced concepts
     - [Databases](concepts/backends.md): How data is stored.
     - [Stores](concepts/stores.md): Where structured data lives (`DocStore`, `Table`, `YDoc`).
     - [Transactions](transactions.md): How atomic changes are made.
-4.  [**Tutorial: Todo App**](tutorial_todo_app.md): A step-by-step walkthrough using a simple application.
-5.  [**Code Examples**](examples_snippets.md): Focused code snippets for common tasks.
+4.  [**Service (Daemon) Mode**](service.md): Share an Instance across processes via a local daemon.
+5.  [**Tutorial: Todo App**](tutorial_todo_app.md): A step-by-step walkthrough using a simple application.
+6.  [**Code Examples**](examples_snippets.md): Focused code snippets for common tasks.
 
 ## Quick Overview: The Core Flow
 

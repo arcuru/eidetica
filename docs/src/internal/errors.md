@@ -14,3 +14,17 @@ The `Error` enum uses a modular approach with structured error types from each c
 - `Transaction(transaction::TransactionError)`: Transaction coordination errors.
 
 The use of `#[error(transparent)]` allows for zero-cost conversion from module-specific errors into `crate::Error` using the `?` operator. Helper methods like `is_not_found()`, `is_permission_denied()`, and `is_authentication_error()` enable categorized error handling without pattern matching on specific variants.
+
+## Cross-Process Error Propagation
+
+When using the [service (daemon) mode](service.md), errors must cross a Unix socket boundary. The `ServiceError` wire type captures the originating module, discriminant name, and display message:
+
+```rust,ignore
+pub struct ServiceError {
+    pub module: String,  // e.g. "backend"
+    pub kind: String,    // e.g. "EntryNotFound"
+    pub message: String, // Display message
+}
+```
+
+On the client side, `service_error_to_eidetica_error()` reconstructs the appropriate `crate::Error` variant by matching on `(module, kind)`. Recognized error types are reconstructed precisely (e.g., `BackendError::EntryNotFound`); unrecognized combinations fall back to `Error::Io` with the original message. This means error-handling code using `is_not_found()` and similar helpers works identically for local and remote instances.

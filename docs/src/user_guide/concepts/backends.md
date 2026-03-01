@@ -76,6 +76,21 @@ let database = InMemory::load_from_file(&path).await?;
 let db = Instance::open(Box::new(database)).await?;
 ```
 
+### Remote (Service Daemon)
+
+The `RemoteBackend` connects to an Eidetica [service daemon](../service.md) over a Unix domain socket. All storage operations are forwarded as RPCs to the daemon, which holds the actual backend. This enables multiple processes to share the same storage.
+
+<!-- Code block ignored: Requires a running daemon -->
+
+```rust,ignore
+use eidetica::Instance;
+
+// Connect to a running daemon (uses RemoteBackend internally)
+let instance = Instance::connect("/tmp/eidetica.sock").await?;
+```
+
+The `service` feature must be enabled (included in the default `full` feature set). See [Service (Daemon) Mode](../service.md) for setup details.
+
 ## Database Trait Responsibilities
 
 The `Database` trait (`eidetica::backend::Database`) defines the core interface required for storage. Beyond simple `get` and `put` for entries, it includes methods crucial for navigating the database's history and structure:
