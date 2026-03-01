@@ -12,6 +12,13 @@ The system is built on a foundation of content-addressable entries organized in 
 
 See [DAG Structure](dag.md) for details on the Merkle-DAG architecture.
 
+Other key subsystems include:
+
+- [Sync](sync.md): Merkle-CRDT based peer-to-peer synchronization
+- [Service (Daemon)](service.md): Local daemon mode for multi-process access over Unix domain sockets
+- [Authentication](authentication.md): Ed25519 signature-based entry verification
+- [Errors](errors.md): Modular error hierarchy with cross-process reconstruction
+
 ## API Reference
 
 For detailed API documentation, see the [rustdoc API reference](../rustdoc/eidetica/index.html) (development version) or [docs.rs/eidetica](https://docs.rs/eidetica) (stable releases).

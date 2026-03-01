@@ -40,21 +40,22 @@ Eidetica organizes data in a layered architecture:
 +-----------------------+
 | User Application      |
 +-----------------------+
-| Instance                |
+| Instance              |
 +-----------------------+
-| Databases                 |
+| Databases             |
 +----------+------------+
-| Stores | Operations |
+| Stores | Operations   |
 +----------+------------+
 | Entries (DAG)         |
 +-----------------------+
 | Database Storage      |
+| (local or daemon RPC) |
 +-----------------------+
 ```
 
 Each layer builds on the ones below, providing progressively higher-level abstractions:
 
-1. **Database Storage**: Physical storage of data (SQLite, PostgreSQL, or InMemory backends)
+1. **Database Storage**: Physical storage of data (SQLite, PostgreSQL, InMemory, or remote via [daemon mode](service.md))
 2. **Entries**: Immutable, content-addressed objects forming the database's history
 3. **Databases & Stores**: Logical organization and typed access to data
 4. **Operations**: Atomic transactions across multiple stores
@@ -168,6 +169,7 @@ Eidetica is under active development, and some features mentioned in this docume
 - Signature-based authentication with crypto-agile key types and granular permissions
 - User identity and session management with encrypted key storage
 - Peer-to-peer synchronization via Iroh and HTTP transports
+- Local service (daemon) mode for multi-process shared access over Unix sockets
 
 ### Planned Features
 

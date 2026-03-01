@@ -338,5 +338,6 @@ After getting familiar with the basics, you might want to explore:
 - [Core Concepts](core_concepts.md) to understand Eidetica's unique features
 - [Synchronization Guide](synchronization_guide.md) to set up peer-to-peer data sync
 - [Authentication Guide](authentication_guide.md) for secure multi-user applications
+- [Service (Daemon) Mode](service.md) to share an Instance across multiple processes
 - Advanced operations like querying and filtering
 - Using different store types for various data patterns

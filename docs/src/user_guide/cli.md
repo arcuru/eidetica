@@ -62,6 +62,23 @@ Users:       2
 Databases:   5
 ```
 
+### `daemon`
+
+Starts the Eidetica service daemon, listening for client connections over a Unix domain socket. Multiple processes can connect to a running daemon to share the same backend storage.
+
+```bash
+eidetica daemon [OPTIONS]
+```
+
+| Option           | Short | Default        | Env Var                 | Description                                                     |
+| ---------------- | ----- | -------------- | ----------------------- | --------------------------------------------------------------- |
+| `--socket`       | `-s`  | auto-detected  | `EIDETICA_SOCKET`       | Unix socket path (see [Service Mode](service.md) for defaults)  |
+| `--backend`      | `-b`  | `sqlite`       | `EIDETICA_BACKEND`      | Storage backend (`sqlite`, `postgres`, `inmemory`)              |
+| `--data-dir`     | `-d`  | current dir    | `EIDETICA_DATA_DIR`     | Data directory for storage files                                |
+| `--postgres-url` |       | —              | `EIDETICA_POSTGRES_URL` | PostgreSQL connection URL (required when backend is `postgres`) |
+
+The daemon runs until interrupted with SIGINT or SIGTERM. Clients connect using `Instance::connect(socket_path)`. See [Service (Daemon) Mode](service.md) for full documentation.
+
 ### `db list`
 
 Lists all user-created databases with their root IDs and tip counts. System databases are excluded.
@@ -104,6 +121,7 @@ The `--json` flag works with `info` and `db list`.
 
 | Variable                | Description                                        | Default           |
 | ----------------------- | -------------------------------------------------- | ----------------- |
+| `EIDETICA_SOCKET`       | Unix socket path for daemon mode (`daemon`)        | auto-detected     |
 | `EIDETICA_PORT`         | Port for the HTTP server (`serve`)                 | `3000`            |
 | `EIDETICA_HOST`         | Bind address (`serve`)                             | `0.0.0.0`         |
 | `EIDETICA_BACKEND`      | Storage backend (`sqlite`, `postgres`, `inmemory`) | `sqlite`          |
@@ -130,4 +148,7 @@ eidetica info --json
 
 # List databases from a specific data directory
 eidetica db list --data-dir /var/lib/eidetica
+
+# Start a daemon for shared multi-process access
+eidetica daemon --socket /tmp/eidetica.sock
 ```
