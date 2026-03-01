@@ -8,6 +8,7 @@
 {
   pkgs,
   lib,
+  testPkgs,
   eidetica-bin,
   eidetica-image,
   nixosModule,
@@ -205,6 +206,71 @@ in {
         machine.log("NixOS service integration test passed!")
       '';
     };
+
+    # Service daemon integration test
+    # Starts the real eidetica daemon binary, then runs a smoke test against it.
+    #
+    # Why a smoke test instead of the full suite?
+    # The daemon hosts a single shared Instance/backend. Every test that calls
+    # test_backend() gets a RemoteBackend connected to that same Instance, so
+    # state (users, databases) leaks between tests. Most tests assume a clean
+    # backend (e.g. they all create_user("test_user")), so running them all
+    # against one daemon causes widespread collisions. The full test suite with
+    # per-test backend isolation is already covered by `nix build .#test.service`.
+    #
+    # This test validates what test.service cannot: that the actual compiled
+    # `eidetica daemon` binary starts, binds a socket, and serves requests
+    # correctly over the real Unix socket protocol.
+    service =
+      pkgs.runCommand "integration-service" {
+        nativeBuildInputs = [eidetica-bin pkgs.cargo-nextest];
+      } ''
+        SOCKET="$TMPDIR/test.sock"
+
+        # Start the daemon with inmemory backend
+        eidetica daemon --backend inmemory --socket "$SOCKET" &
+        DAEMON_PID=$!
+        trap 'kill "$DAEMON_PID" 2>/dev/null || true; wait "$DAEMON_PID" 2>/dev/null || true' EXIT
+
+        # Wait for the socket to appear
+        for i in $(seq 1 50); do
+          if [ -S "$SOCKET" ]; then
+            break
+          fi
+          if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
+            echo "Daemon exited prematurely"
+            exit 1
+          fi
+          sleep 0.1
+        done
+
+        if [ ! -S "$SOCKET" ]; then
+          echo "Timed out waiting for daemon socket"
+          exit 1
+        fi
+
+        echo "Daemon started (pid=$DAEMON_PID, socket=$SOCKET)"
+
+        # Copy source to a writable location (nextest creates target/nextest/ in the workspace)
+        cp -r ${testPkgs.src} "$TMPDIR/src"
+        chmod -R u+w "$TMPDIR/src"
+
+        # Run a focused smoke test against the external daemon.
+        # All tests share one daemon so we run a single representative test that
+        # exercises user creation, login, key generation, database creation, and
+        # store operations -- validating the full protocol stack end-to-end.
+        export TEST_BACKEND=service
+        export EIDETICA_SOCKET="$SOCKET"
+        cargo-nextest nextest run \
+          --archive-file ${testPkgs.archive}/archive.tar.zst \
+          --workspace-remap "$TMPDIR/src" \
+          --show-progress=none \
+          -E 'test(=user::user_lifecycle_tests::test_complete_lifecycle_passwordless)'
+
+        echo "Service integration test passed"
+        mkdir -p $out
+        echo "passed" > $out/result
+      '';
 
     # OCI container integration test
     # Loads the container image and verifies it starts and responds

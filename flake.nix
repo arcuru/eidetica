@@ -113,7 +113,7 @@
         };
 
         nixTests = import ./nix/tests.nix {
-          inherit pkgs lib;
+          inherit pkgs lib testPkgs;
           inherit (mainPkgs) eidetica-bin;
           eidetica-image = containerPkgs.image;
           nixosModule = import ./nix/nixos-module.nix;
