@@ -4,10 +4,7 @@
 //! can join and bootstrap a database from another peer without any prior setup.
 
 use eidetica::{
-    auth::{
-        Permission,
-        crypto::{format_public_key, generate_keypair},
-    },
+    auth::{Permission, crypto::generate_keypair},
     entry::ID,
     store::DocStore,
     sync::{Address, transports::http::HttpTransport},
@@ -290,7 +287,7 @@ async fn test_bootstrap_malformed_request_data() {
 
     // Generate a test keypair for bootstrap requests
     let (_, test_verifying_key) = generate_keypair();
-    let test_pubkey = format_public_key(&test_verifying_key);
+    let test_pubkey = test_verifying_key.to_string();
 
     // Test 1: Invalid tree ID format
     let malformed_tree_id = ID::from("invalid_tree_format");
@@ -355,7 +352,7 @@ async fn test_bootstrap_conflicting_tree_ids() {
 
     // Generate a test keypair for bootstrap request
     let (_, test_verifying_key) = generate_keypair();
-    let test_pubkey = format_public_key(&test_verifying_key);
+    let test_pubkey = test_verifying_key.to_string();
 
     // Try to bootstrap with a different tree ID than what exists
     let different_tree_id = ID::from("different_tree_that_doesnt_exist");

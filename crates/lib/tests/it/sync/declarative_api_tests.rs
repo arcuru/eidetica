@@ -5,7 +5,7 @@
 
 use eidetica::{
     Database, Result,
-    auth::crypto::{format_public_key, generate_keypair},
+    auth::crypto::generate_keypair,
     crdt::Doc,
     sync::{Address, SyncPeerInfo},
 };
@@ -27,7 +27,7 @@ async fn test_register_sync_peer_tracks_relationship_immediately() -> Result<()>
 
     // Generate a fake peer pubkey
     let (_, peer_verifying_key) = generate_keypair();
-    let peer_pubkey = format_public_key(&peer_verifying_key);
+    let peer_pubkey = peer_verifying_key.to_string();
 
     // Before registering, peer should not exist
     let peers_before = sync.list_peers().await?;
@@ -72,7 +72,7 @@ async fn test_sync_handle_methods() -> Result<()> {
     let tree_id = db.root_id().clone();
 
     let (_, peer_verifying_key) = generate_keypair();
-    let peer_pubkey = format_public_key(&peer_verifying_key);
+    let peer_pubkey = peer_verifying_key.to_string();
 
     let handle = sync
         .register_sync_peer(SyncPeerInfo {
@@ -109,7 +109,7 @@ async fn test_sync_handle_add_address() -> Result<()> {
     let db = Database::create(&instance, signing_key, settings).await?;
 
     let (_, peer_verifying_key) = generate_keypair();
-    let peer_pubkey = format_public_key(&peer_verifying_key);
+    let peer_pubkey = peer_verifying_key.to_string();
 
     let handle = sync
         .register_sync_peer(SyncPeerInfo {

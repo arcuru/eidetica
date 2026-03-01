@@ -21,7 +21,7 @@ use crate::{
     Database, Error, Instance, Result, WeakInstance,
     auth::{
         KeyStatus, Permission,
-        crypto::{PublicKey, create_challenge_response, format_public_key, generate_challenge},
+        crypto::{PublicKey, create_challenge_response, generate_challenge},
     },
     database::DatabaseKey,
     entry::ID,
@@ -481,7 +481,7 @@ impl SyncHandlerImpl {
             let signing_key = instance.device_key().clone();
 
             // Generate device ID and public key from signing key
-            let public_key = format_public_key(&signing_key.public_key());
+            let public_key = signing_key.public_key().to_string();
             let device_id = public_key.clone(); // Device ID is the public key
 
             // Sign the challenge with our device key to prove identity

@@ -162,7 +162,7 @@ Within transactions, you can manage database settings using `SettingsStore`. Thi
 # extern crate tokio;
 # use eidetica::{Instance, backend::database::Sqlite, crdt::Doc, store::SettingsStore};
 # use eidetica::auth::{AuthKey, Permission};
-# use eidetica::auth::crypto::{generate_keypair, format_public_key};
+# use eidetica::auth::crypto::generate_keypair;
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
@@ -175,8 +175,7 @@ Within transactions, you can manage database settings using `SettingsStore`. Thi
 # let default_key = user.get_default_key()?;
 # let database = user.create_database(settings, &default_key).await?;
 # // Generate keypairs for old user and add it first so we can revoke it
-# let (_old_user_signing_key, old_user_verifying_key) = generate_keypair();
-# let old_user_public_key = format_public_key(&old_user_verifying_key);
+# let (_old_user_signing_key, old_user_public_key) = generate_keypair();
 # let old_user_key = AuthKey::active(Some("old_device"), Permission::Write(15));
 # let setup_txn = database.new_transaction().await?;
 # let setup_store = setup_txn.get_settings()?;
@@ -189,10 +188,8 @@ let settings_store = transaction.get_settings()?;
 settings_store.set_name("Production Database").await?;
 
 // Generate keypairs for new users (hidden in production code)
-# let (_new_user_signing_key, new_user_verifying_key) = generate_keypair();
-# let new_user_public_key = format_public_key(&new_user_verifying_key);
-# let (_alice_signing_key, alice_verifying_key) = generate_keypair();
-# let alice_public_key = format_public_key(&alice_verifying_key);
+# let (_new_user_signing_key, new_user_public_key) = generate_keypair();
+# let (_alice_signing_key, alice_public_key) = generate_keypair();
 
 // Add authentication keys (indexed by pubkey, name is optional metadata)
 let new_user_key = AuthKey::active(Some("new_device"), Permission::Write(10));

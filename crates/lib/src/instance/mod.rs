@@ -15,7 +15,7 @@ use handle_trait::Handle;
 
 use crate::{
     Clock, Database, Entry, Result, SystemClock,
-    auth::crypto::{PrivateKey, PublicKey, format_public_key},
+    auth::crypto::{PrivateKey, PublicKey},
     backend::{BackendImpl, InstanceMetadata},
     database::DatabaseKey,
     entry::ID,
@@ -535,17 +535,6 @@ impl Instance {
     /// The device's public key (device ID).
     pub fn device_id(&self) -> PublicKey {
         self.inner.device_key.public_key()
-    }
-
-    /// Get the device ID as a formatted string.
-    ///
-    /// This is a convenience method that returns the device ID (public key)
-    /// in a standard formatted string representation.
-    ///
-    /// # Returns
-    /// The formatted device ID string.
-    pub fn device_id_string(&self) -> String {
-        format_public_key(&self.inner.device_key.public_key())
     }
 
     // === Synchronization Management ===

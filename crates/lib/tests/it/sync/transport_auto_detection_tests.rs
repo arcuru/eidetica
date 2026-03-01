@@ -8,10 +8,7 @@
 use super::helpers::*;
 use eidetica::{
     Database,
-    auth::{
-        Permission as AuthPermission,
-        crypto::{format_public_key, generate_keypair},
-    },
+    auth::{Permission as AuthPermission, crypto::generate_keypair},
     crdt::Doc,
     store::DocStore,
     sync::{
@@ -36,7 +33,7 @@ async fn test_bootstrap_pending_error_structure() {
 
     // Generate a test public key
     let (_, verifying_key) = generate_keypair();
-    let test_pubkey = format_public_key(&verifying_key);
+    let test_pubkey = verifying_key.to_string();
 
     // Create a bootstrap request that will require manual approval
     let sync_request = create_bootstrap_request(

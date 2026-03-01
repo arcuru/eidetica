@@ -246,7 +246,7 @@ transaction.commit().await?;
 # extern crate tokio;
 # use eidetica::{Instance, backend::database::Sqlite, crdt::Doc, store::SettingsStore};
 # use eidetica::auth::{AuthKey, Permission};
-# use eidetica::auth::crypto::{generate_keypair, format_public_key};
+# use eidetica::auth::crypto::generate_keypair;
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
@@ -259,8 +259,7 @@ transaction.commit().await?;
 # let default_key = user.get_default_key()?;
 # let database = user.create_database(settings, &default_key).await?;
 # // Generate a keypair for the new user
-# let (_alice_signing_key, alice_verifying_key) = generate_keypair();
-# let alice_public_key = format_public_key(&alice_verifying_key);
+# let (_alice_signing_key, alice_public_key) = generate_keypair();
 let transaction = database.new_transaction().await?;
 let settings_store = transaction.get_settings()?;
 
@@ -290,7 +289,7 @@ Multiple auth operations within a transaction are accumulated in a single entry:
 # extern crate tokio;
 # use eidetica::{Instance, backend::database::Sqlite, crdt::Doc, store::SettingsStore};
 # use eidetica::auth::{AuthKey, Permission};
-# use eidetica::auth::crypto::{generate_keypair, format_public_key};
+# use eidetica::auth::crypto::generate_keypair;
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
@@ -303,14 +302,11 @@ Multiple auth operations within a transaction are accumulated in a single entry:
 # let default_key = user.get_default_key()?;
 # let database = user.create_database(settings, &default_key).await?;
 # // Generate keypairs for multiple users
-# let (_bob_signing_key, bob_verifying_key) = generate_keypair();
-# let bob_public_key = format_public_key(&bob_verifying_key);
+# let (_bob_signing_key, bob_public_key) = generate_keypair();
 # let bob_key = AuthKey::active(Some("bob_device"), Permission::Write(20));
-# let (_charlie_signing_key, charlie_verifying_key) = generate_keypair();
-# let charlie_public_key = format_public_key(&charlie_verifying_key);
+# let (_charlie_signing_key, charlie_public_key) = generate_keypair();
 # let charlie_key = AuthKey::active(Some("charlie_device"), Permission::Admin(15));
-# let (_old_user_signing_key, old_user_verifying_key) = generate_keypair();
-# let old_user_public_key = format_public_key(&old_user_verifying_key);
+# let (_old_user_signing_key, old_user_public_key) = generate_keypair();
 # let old_user_key = AuthKey::active(Some("old_device"), Permission::Write(30));
 # // Add old_user first so we can revoke it
 # let setup_txn = database.new_transaction().await?;

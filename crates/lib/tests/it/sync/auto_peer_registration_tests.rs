@@ -6,7 +6,7 @@
 use eidetica::{
     auth::{
         Permission,
-        crypto::{format_public_key, generate_challenge, generate_keypair},
+        crypto::{generate_challenge, generate_keypair},
         types::AuthKey,
     },
     crdt::{Doc, doc::path},
@@ -38,7 +38,7 @@ async fn test_handshake_automatically_registers_peer() {
 
     // Generate a peer key
     let (_, peer_verifying_key) = generate_keypair();
-    let peer_pubkey = format_public_key(&peer_verifying_key);
+    let peer_pubkey = peer_verifying_key.to_string();
 
     // Verify peer doesn't exist yet
     assert!(sync.get_peer_info(&peer_pubkey).await.unwrap().is_none());
@@ -107,7 +107,7 @@ async fn test_duplicate_handshakes_handled_gracefully() {
     let handler = SyncHandlerImpl::new(instance, sync_tree_id);
 
     let (_, peer_verifying_key) = generate_keypair();
-    let peer_pubkey = format_public_key(&peer_verifying_key);
+    let peer_pubkey = peer_verifying_key.to_string();
 
     let handshake_request = HandshakeRequest {
         device_id: peer_pubkey.clone(),
@@ -148,7 +148,7 @@ async fn test_handshake_without_listen_addresses() {
     let handler = SyncHandlerImpl::new(instance, sync_tree_id);
 
     let (_, peer_verifying_key) = generate_keypair();
-    let peer_pubkey = format_public_key(&peer_verifying_key);
+    let peer_pubkey = peer_verifying_key.to_string();
 
     // Handshake with empty listen_addresses
     let handshake_request = HandshakeRequest {
@@ -210,7 +210,7 @@ async fn test_bootstrap_sync_tracks_tree_peer_relationship() {
 
     // Generate peer credentials
     let (_, peer_verifying_key) = generate_keypair();
-    let peer_pubkey = format_public_key(&peer_verifying_key);
+    let peer_pubkey = peer_verifying_key.to_string();
 
     // Register the peer first (would normally happen during handshake)
     sync.register_peer(&peer_pubkey, Some("Test Peer"))
@@ -287,7 +287,7 @@ async fn test_incremental_sync_tracks_tree_peer_relationship() {
 
     // Generate peer credentials
     let (_, peer_verifying_key) = generate_keypair();
-    let peer_pubkey = format_public_key(&peer_verifying_key);
+    let peer_pubkey = peer_verifying_key.to_string();
 
     // Register the peer first (would normally happen during handshake)
     sync.register_peer(&peer_pubkey, Some("Test Peer"))
@@ -350,7 +350,7 @@ async fn test_relationship_tracking_skipped_without_peer_pubkey() {
     let handler = SyncHandlerImpl::new(instance, sync_tree_id);
 
     let (_, peer_verifying_key) = generate_keypair();
-    let peer_pubkey = format_public_key(&peer_verifying_key);
+    let peer_pubkey = peer_verifying_key.to_string();
 
     // Register the peer first (would normally happen during handshake)
     sync.register_peer(&peer_pubkey, Some("Test Peer"))
@@ -433,7 +433,7 @@ async fn test_multiple_trees_tracked_with_same_peer() {
     let handler = SyncHandlerImpl::new(instance, sync_tree_id);
 
     let (_, peer_verifying_key) = generate_keypair();
-    let peer_pubkey = format_public_key(&peer_verifying_key);
+    let peer_pubkey = peer_verifying_key.to_string();
 
     // Register the peer first (would normally happen during handshake)
     sync.register_peer(&peer_pubkey, Some("Test Peer"))
@@ -495,7 +495,7 @@ async fn test_http_transport_request_context() {
 
     // Generate peer credentials
     let (_peer_signing_key, peer_verifying_key) = generate_keypair();
-    let peer_pubkey = format_public_key(&peer_verifying_key);
+    let peer_pubkey = peer_verifying_key.to_string();
 
     // Create handshake request
     let challenge = generate_challenge();
@@ -679,7 +679,7 @@ async fn test_bootstrap_rejects_unauthorized_key_when_permission_not_specified()
 
     // Generate an unauthorized key
     let (_, unauthorized_verifying_key) = generate_keypair();
-    let unauthorized_pubkey = format_public_key(&unauthorized_verifying_key);
+    let unauthorized_pubkey = unauthorized_verifying_key.to_string();
 
     // Bootstrap request with unauthorized key and no requested_permission
     let sync_request = SyncTreeRequest {
@@ -752,7 +752,7 @@ async fn test_bootstrap_auto_detects_global_wildcard_permission() {
 
     // Generate a random key (any key should work due to global '*')
     let (_, random_verifying_key) = generate_keypair();
-    let random_pubkey = format_public_key(&random_verifying_key);
+    let random_pubkey = random_verifying_key.to_string();
 
     // Bootstrap request with random key and no requested_permission
     let sync_request = SyncTreeRequest {
@@ -797,7 +797,7 @@ async fn test_bootstrap_uses_highest_permission_when_key_has_multiple() {
 
     // Generate a key that will have both direct and global permissions
     let (_, special_verifying_key) = generate_keypair();
-    let special_pubkey = format_public_key(&special_verifying_key);
+    let special_pubkey = special_verifying_key.to_string();
 
     // Create database (user's key will be auto-added as Admin)
     let mut settings = Doc::new();

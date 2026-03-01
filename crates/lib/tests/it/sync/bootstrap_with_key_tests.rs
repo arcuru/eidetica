@@ -7,11 +7,7 @@
 use super::helpers::*;
 use eidetica::{
     Database, Entry,
-    auth::{
-        Permission,
-        crypto::{format_public_key, generate_keypair},
-        types::KeyStatus,
-    },
+    auth::{Permission, crypto::generate_keypair, types::KeyStatus},
     crdt::Doc,
     database::DatabaseKey,
     entry::ID,
@@ -47,7 +43,7 @@ async fn test_bootstrap_with_provided_key() {
 
     // Setup client with a key we'll manage manually (not in backend)
     let (_client_signing_key, client_verifying_key) = generate_keypair();
-    let client_key_id = format_public_key(&client_verifying_key);
+    let client_key_id = client_verifying_key.to_string();
 
     let (client_instance, client_sync) = setup().await;
     client_sync
@@ -118,7 +114,7 @@ async fn test_bootstrap_with_provided_key_succeeds() {
 
     // Setup client with user-managed key
     let (_client_signing_key, client_verifying_key) = generate_keypair();
-    let client_key_id = format_public_key(&client_verifying_key);
+    let client_key_id = client_verifying_key.to_string();
 
     let (_client_instance, client_sync) = setup().await;
     client_sync
@@ -176,7 +172,7 @@ async fn test_bootstrap_with_invalid_key_fails() {
 
     // Setup client with a signing key
     let (_client_signing_key, client_verifying_key) = generate_keypair();
-    let client_key_id = format_public_key(&client_verifying_key);
+    let client_key_id = client_verifying_key.to_string();
 
     let (_client_instance, client_sync) = setup().await;
     client_sync
@@ -233,7 +229,7 @@ async fn test_multiple_clients_with_different_keys() {
     let mut clients = Vec::new();
     for i in 0..3 {
         let (_signing_key, verifying_key) = generate_keypair();
-        let key_id = format_public_key(&verifying_key);
+        let key_id = verifying_key.to_string();
         let (instance, sync) = setup().await;
         sync.register_transport("http", HttpTransport::builder())
             .await
@@ -311,7 +307,7 @@ async fn test_bootstrap_with_different_permissions() {
         println!("🧪 Testing bootstrap with {perm_name} permission");
 
         let (_signing_key, verifying_key) = generate_keypair();
-        let key_id = format_public_key(&verifying_key);
+        let key_id = verifying_key.to_string();
 
         let (_instance, sync) = setup().await;
         sync.register_transport("http", HttpTransport::builder())
@@ -374,7 +370,7 @@ async fn test_bootstrap_with_invalid_keys() {
 
     // Generate a valid public key for comparison
     let (_signing_key, verifying_key) = generate_keypair();
-    let valid_public_key = format_public_key(&verifying_key);
+    let valid_public_key = verifying_key.to_string();
 
     println!("🧪 TEST: Testing empty public key");
     let result = sync
@@ -489,7 +485,7 @@ async fn test_full_e2e_bootstrap_with_database_instances() {
 
     // Setup client with user-managed key (simulating User API)
     let (_client_signing_key, client_verifying_key) = generate_keypair();
-    let client_key_id = format_public_key(&client_verifying_key);
+    let client_key_id = client_verifying_key.to_string();
 
     let (client_instance, client_sync) = setup().await;
     client_sync
@@ -596,7 +592,7 @@ async fn test_incremental_sync_after_bootstrap_with_key() {
 
     // Setup client with user-managed key
     let (_client_signing_key, client_verifying_key) = generate_keypair();
-    let client_key_id = format_public_key(&client_verifying_key);
+    let client_key_id = client_verifying_key.to_string();
 
     let (_client_instance, client_sync) = setup().await;
     client_sync

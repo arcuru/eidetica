@@ -497,7 +497,7 @@ impl Sync {
     /// # Returns
     /// The device's public key in ed25519:base64 format.
     pub fn get_device_id(&self) -> Result<String> {
-        Ok(self.instance()?.device_id_string())
+        Ok(self.instance()?.device_key().public_key().to_string())
     }
 }
 

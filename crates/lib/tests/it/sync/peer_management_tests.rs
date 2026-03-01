@@ -1,7 +1,7 @@
 //! Tests for peer management functionality in the sync module.
 
 use eidetica::{
-    auth::crypto::{format_public_key, generate_keypair},
+    auth::crypto::generate_keypair,
     sync::{Address, PeerId, PeerStatus},
 };
 
@@ -12,12 +12,12 @@ use std::sync::LazyLock;
 
 static TEST_PEER_PUBKEY: LazyLock<String> = LazyLock::new(|| {
     let (_, verifying_key) = generate_keypair();
-    format_public_key(&verifying_key)
+    verifying_key.to_string()
 });
 
 static TEST_PEER_PUBKEY_2: LazyLock<String> = LazyLock::new(|| {
     let (_, verifying_key) = generate_keypair();
-    format_public_key(&verifying_key)
+    verifying_key.to_string()
 });
 const TEST_TREE_ROOT_ID: &str = "tree_root_id_123";
 const TEST_TREE_ROOT_ID_2: &str = "tree_root_id_456";

@@ -266,13 +266,6 @@ impl<'de> Deserialize<'de> for PrivateKey {
 
 // ==================== Free Functions ====================
 
-/// Format a public key as a prefixed string.
-///
-/// Returns format: `"ed25519:<base64_encoded_key>"`
-pub fn format_public_key(key: &PublicKey) -> String {
-    key.to_prefixed_string()
-}
-
 /// Generate a new keypair using the default algorithm (Ed25519).
 ///
 /// Returns a `(PrivateKey, PublicKey)` tuple. Uses the operating system's
@@ -415,7 +408,7 @@ mod tests {
     #[test]
     fn test_key_formatting() {
         let (_, verifying_key) = generate_keypair();
-        let formatted = format_public_key(&verifying_key);
+        let formatted = verifying_key.to_string();
 
         assert!(formatted.starts_with("ed25519:"));
 
@@ -469,7 +462,7 @@ mod tests {
     #[test]
     fn test_challenge_response() {
         let (signing_key, verifying_key) = generate_keypair();
-        let public_key_str = format_public_key(&verifying_key);
+        let public_key_str = verifying_key.to_string();
         let challenge = generate_challenge();
 
         // Create and verify challenge response
@@ -487,7 +480,7 @@ mod tests {
 
         // Should fail with wrong key
         let (_, wrong_pubkey) = generate_keypair();
-        let wrong_public_key_str = format_public_key(&wrong_pubkey);
+        let wrong_public_key_str = wrong_pubkey.to_string();
         assert!(verify_challenge_response(&challenge, &response, &wrong_public_key_str).is_err());
     }
 
@@ -666,10 +659,10 @@ mod tests {
     }
 
     #[test]
-    fn test_public_key_compat_with_legacy_format() {
-        // PublicKey.to_prefixed_string() should produce the same format as format_public_key()
+    fn test_public_key_display_matches_prefixed_string() {
+        // PublicKey Display should produce the same format as to_prefixed_string()
         let (_, verifying_key) = generate_keypair();
-        let formatted = format_public_key(&verifying_key);
+        let formatted = verifying_key.to_string();
         assert_eq!(verifying_key.to_prefixed_string(), formatted);
     }
 

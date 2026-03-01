@@ -202,7 +202,7 @@ async fn test_instance_load_device_id_persistence() -> Result<(), Error> {
     // Create instance and get device_id
     let backend1 = InMemory::new();
     let instance1 = Instance::open(Box::new(backend1)).await?;
-    let device_id1 = instance1.device_id_string();
+    let device_id1 = instance1.device_key().public_key().to_string();
 
     // Save backend
     save_in_memory_backend(&instance1, &path).await?;
@@ -211,7 +211,7 @@ async fn test_instance_load_device_id_persistence() -> Result<(), Error> {
     // Load backend and verify device_id is the same
     let backend2 = load_in_memory_backend(&path).await?;
     let instance2 = Instance::open(Box::new(backend2)).await?;
-    let device_id2 = instance2.device_id_string();
+    let device_id2 = instance2.device_key().public_key().to_string();
 
     assert_eq!(
         device_id1, device_id2,
@@ -410,7 +410,7 @@ async fn test_instance_load_idempotency() -> Result<(), Error> {
     let instance1 =
         Instance::open_with_clock(Box::new(backend1), Arc::new(FixedClock::default())).await?;
     instance1.create_user("frank", None).await?;
-    let device_id1 = instance1.device_id_string();
+    let device_id1 = instance1.device_key().public_key().to_string();
 
     save_in_memory_backend(&instance1, &path).await?;
     drop(instance1);
@@ -422,7 +422,7 @@ async fn test_instance_load_idempotency() -> Result<(), Error> {
             Instance::open_with_clock(Box::new(backend), Arc::new(FixedClock::default())).await?;
 
         // Device ID should be the same every time
-        let device_id = instance.device_id_string();
+        let device_id = instance.device_key().public_key().to_string();
         assert_eq!(
             device_id, device_id1,
             "Device ID should be consistent on reload {i}"
@@ -462,7 +462,7 @@ async fn test_instance_load_new_vs_existing() -> Result<(), Error> {
     let backend1 = InMemory::new();
     let instance1 =
         Instance::open_with_clock(Box::new(backend1), Arc::new(FixedClock::default())).await?;
-    let device_id1 = instance1.device_id_string();
+    let device_id1 = instance1.device_key().public_key().to_string();
     instance1.create_user("grace", None).await?;
 
     save_in_memory_backend(&instance1, &path).await?;
@@ -472,7 +472,7 @@ async fn test_instance_load_new_vs_existing() -> Result<(), Error> {
     let backend2 = load_in_memory_backend(&path).await?;
     let instance2 =
         Instance::open_with_clock(Box::new(backend2), Arc::new(FixedClock::default())).await?;
-    let device_id2 = instance2.device_id_string();
+    let device_id2 = instance2.device_key().public_key().to_string();
 
     // Device ID should match (existing backend)
     assert_eq!(device_id1, device_id2);
@@ -487,7 +487,7 @@ async fn test_instance_load_new_vs_existing() -> Result<(), Error> {
     let backend3 = InMemory::new();
     let instance3 =
         Instance::open_with_clock(Box::new(backend3), Arc::new(FixedClock::default())).await?;
-    let device_id3 = instance3.device_id_string();
+    let device_id3 = instance3.device_key().public_key().to_string();
 
     // Device ID should be different (new backend)
     assert_ne!(device_id1, device_id3);

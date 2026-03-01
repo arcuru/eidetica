@@ -29,5 +29,5 @@ pub use validation::AuthValidator;
 /// don't need the corresponding private key for signing operations.
 pub fn generate_public_key() -> String {
     let (_, verifying_key) = generate_keypair();
-    format_public_key(&verifying_key)
+    verifying_key.to_string()
 }

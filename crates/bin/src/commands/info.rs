@@ -11,7 +11,7 @@ pub async fn run(args: &InfoArgs, format: OutputFormat) -> Result<(), Box<dyn st
     let backend = create_backend(&args.backend_config).await?;
     let instance = Instance::open(backend).await?;
 
-    let device_id = instance.device_id_string();
+    let device_id = instance.device_id();
     let users = instance.list_users().await?;
     let all_roots = instance.backend().all_roots().await?;
 

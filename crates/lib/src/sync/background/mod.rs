@@ -745,7 +745,7 @@ impl BackgroundSync {
                 .map_err(|e| SyncError::BackendError(format!("Failed to get local tips: {e}")))?;
 
             // Get our device public key for automatic peer tracking
-            let our_device_pubkey = Some(instance.device_id_string());
+            let our_device_pubkey = Some(instance.device_key().public_key().to_string());
 
             debug!(peer = %peer_id, tree = %tree_id, our_tips = our_tips.len(), "Sending sync tree request");
 

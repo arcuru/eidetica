@@ -58,7 +58,7 @@ Give other users access to your database:
 # extern crate tokio;
 # use eidetica::{Instance, backend::database::Sqlite, crdt::Doc, store::SettingsStore};
 # use eidetica::auth::{AuthKey, Permission};
-# use eidetica::auth::crypto::{generate_keypair, format_public_key};
+# use eidetica::auth::crypto::generate_keypair;
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
@@ -73,12 +73,11 @@ Give other users access to your database:
 # let transaction = database.new_transaction().await?;
 # // Generate a keypair for the new user
 # let (_alice_signing_key, alice_verifying_key) = generate_keypair();
-# let alice_public_key = format_public_key(&alice_verifying_key);
 let settings_store = transaction.get_settings()?;
 
 // Add a user with write access (indexed by pubkey, name is optional metadata)
 let user_key = AuthKey::active(Some("alice_laptop"), Permission::Write(10));
-settings_store.set_auth_key(&alice_public_key, user_key).await?;
+settings_store.set_auth_key(&alice_verifying_key, user_key).await?;
 
 transaction.commit().await?;
 # Ok(())
@@ -205,7 +204,7 @@ Remove a user's access:
 # use eidetica::{Instance, backend::database::Sqlite};
 # use eidetica::store::SettingsStore;
 # use eidetica::auth::{AuthKey, Permission};
-# use eidetica::auth::crypto::{generate_keypair, format_public_key};
+# use eidetica::auth::crypto::generate_keypair;
 # use eidetica::crdt::Doc;
 #
 # #[tokio::main]
@@ -219,18 +218,17 @@ Remove a user's access:
 # let database = user.create_database(settings, &default_key).await?;
 # // Generate a keypair for alice
 # let (_alice_signing_key, alice_verifying_key) = generate_keypair();
-# let alice_pubkey = format_public_key(&alice_verifying_key);
 // First add alice key so we can revoke it
 let transaction_setup = database.new_transaction().await?;
 let settings_setup = transaction_setup.get_settings()?;
-settings_setup.set_auth_key(&alice_pubkey, AuthKey::active(Some("alice"), Permission::Write(10))).await?;
+settings_setup.set_auth_key(&alice_verifying_key, AuthKey::active(Some("alice"), Permission::Write(10))).await?;
 transaction_setup.commit().await?;
 let transaction = database.new_transaction().await?;
 
 let settings_store = transaction.get_settings()?;
 
 // Revoke the key by its pubkey identifier
-settings_store.revoke_auth_key(&alice_pubkey).await?;
+settings_store.revoke_auth_key(&alice_verifying_key).await?;
 
 transaction.commit().await?;
 # Ok(())
@@ -246,7 +244,7 @@ Note: Historical entries created by revoked keys remain valid.
 # extern crate tokio;
 # use eidetica::{Instance, backend::database::Sqlite, crdt::Doc, store::SettingsStore};
 # use eidetica::auth::{AuthKey, Permission};
-# use eidetica::auth::crypto::{generate_keypair, format_public_key};
+# use eidetica::auth::crypto::generate_keypair;
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
@@ -263,29 +261,24 @@ Note: Historical entries created by revoked keys remain valid.
 #
 // Generate keypairs for different users
 let (_super_admin_signing_key, super_admin_verifying_key) = generate_keypair();
-let super_admin_public_key = format_public_key(&super_admin_verifying_key);
-
 let (_dept_admin_signing_key, dept_admin_verifying_key) = generate_keypair();
-let dept_admin_public_key = format_public_key(&dept_admin_verifying_key);
-
 let (_user1_signing_key, user1_verifying_key) = generate_keypair();
-let user1_public_key = format_public_key(&user1_verifying_key);
 
 // Set auth keys directly
 // Super admin (priority 0 - highest)
-settings_store.set_auth_key(&super_admin_public_key, AuthKey::active(
+settings_store.set_auth_key(&super_admin_verifying_key, AuthKey::active(
     Some("super_admin"),
     Permission::Admin(0),
 )).await?;
 
 // Department admin (priority 10)
-settings_store.set_auth_key(&dept_admin_public_key, AuthKey::active(
+settings_store.set_auth_key(&dept_admin_verifying_key, AuthKey::active(
     Some("dept_admin"),
     Permission::Admin(10),
 )).await?;
 
 // Regular users (priority 100)
-settings_store.set_auth_key(&user1_public_key, AuthKey::active(
+settings_store.set_auth_key(&user1_verifying_key, AuthKey::active(
     Some("user1"),
     Permission::Write(100),
 )).await?;
@@ -428,14 +421,13 @@ These are names in the **delegated database's** auth settings that point to **pu
 # let mut user = instance.login_user("alice", None).await?;
 # let default_key_id = user.get_default_key()?;
 # let alice_db = user.create_database(Doc::new(), &default_key_id).await?;
-# let alice_pubkey_str = default_key_id.to_string();
 # let transaction = alice_db.new_transaction().await?;
 # let settings = transaction.get_settings()?;
 // In Alice's database: keys are indexed by pubkey
 // (The default key was added automatically during bootstrap)
 // We can update it with a descriptive name
 settings.set_auth_key(
-    &alice_pubkey_str,
+    &default_key_id,
     AuthKey::active(
         Some("alice_work"),  // Optional name metadata
         Permission::Write(10),
@@ -694,7 +686,7 @@ The simplest approach for collaborative databases is to use global wildcard perm
 # extern crate tokio;
 # use eidetica::{Instance, backend::database::Sqlite, crdt::Doc, store::SettingsStore};
 # use eidetica::auth::{AuthKey, Permission};
-# use eidetica::auth::crypto::{generate_keypair, format_public_key};
+# use eidetica::auth::crypto::generate_keypair;
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
@@ -706,12 +698,11 @@ The simplest approach for collaborative databases is to use global wildcard perm
 # let default_key = user.get_default_key()?;
 # let database = user.create_database(settings, &default_key).await?;
 # let (_admin_signing_key, admin_verifying_key) = generate_keypair();
-# let admin_public_key = format_public_key(&admin_verifying_key);
 let transaction = database.new_transaction().await?;
 let settings_store = transaction.get_settings()?;
 
 // Add admin key
-settings_store.set_auth_key(&admin_public_key, AuthKey::active(
+settings_store.set_auth_key(&admin_verifying_key, AuthKey::active(
     Some("admin"),
     Permission::Admin(1),
 )).await?;
