@@ -369,12 +369,11 @@ async fn test_update_tracked_no_access_fails() -> Result<()> {
     let db_id = db.root_id().clone();
 
     // Give key1 explicit access by adding it to the database
-    let key1_pubkey = key1.to_string();
     let tx = db.new_transaction().await?;
     let settings_store = tx.get_settings()?;
     settings_store
         .set_auth_key(
-            &key1_pubkey,
+            &key1,
             AuthKey::active(Some("user_key1"), Permission::Write(5)),
         )
         .await?;

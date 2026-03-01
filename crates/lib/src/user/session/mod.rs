@@ -393,7 +393,7 @@ impl User {
             None => Ok(None), // no mapping exists
             Some(None) => {
                 // Default: pubkey identity derived directly from key_id
-                Ok(Some(SigKey::from_pubkey(key_id.to_string())))
+                Ok(Some(SigKey::from_pubkey(key_id)))
             }
             Some(Some(sigkey)) => Ok(Some(sigkey.clone())),
         }
@@ -464,7 +464,7 @@ impl User {
             })?;
 
         // Normalize: if the sigkey matches the default pubkey identity, store None
-        let default_sigkey = SigKey::from_pubkey(key_id.to_string());
+        let default_sigkey = SigKey::from_pubkey(key_id);
         let stored = if sigkey == default_sigkey {
             None
         } else {
@@ -504,9 +504,7 @@ impl User {
         }
 
         // Discover available SigKeys for this public key
-        let public_key = key_id.to_string();
-        let available_sigkeys =
-            Database::find_sigkeys(&self.instance, database_id, &public_key).await?;
+        let available_sigkeys = Database::find_sigkeys(&self.instance, database_id, key_id).await?;
 
         if available_sigkeys.is_empty() {
             return Err(UserError::NoSigKeyFound {

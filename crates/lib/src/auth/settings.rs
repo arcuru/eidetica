@@ -63,36 +63,40 @@ impl AuthSettings {
     /// Add a new authentication key by pubkey (fails if key already exists)
     ///
     /// # Arguments
-    /// * `pubkey` - The public key string (e.g., "ed25519:ABC...")
+    /// * `pubkey` - The public key
     /// * `key` - The AuthKey containing permissions, status, and optional name
-    pub fn add_key(&mut self, pubkey: impl Into<String>, key: AuthKey) -> Result<()> {
-        let pubkey = pubkey.into();
-
-        // Validate pubkey format
-        PublicKey::from_prefixed_string(&pubkey)?;
+    pub fn add_key(&mut self, pubkey: &PublicKey, key: AuthKey) -> Result<()> {
+        let pubkey_str = pubkey.to_string();
 
         // Check if key already exists
-        if self.get_key_by_pubkey(&pubkey).is_ok() {
-            return Err(AuthError::KeyAlreadyExists { key_name: pubkey }.into());
+        if self.get_key_by_str(&pubkey_str).is_ok() {
+            return Err(AuthError::KeyAlreadyExists {
+                key_name: pubkey_str,
+            }
+            .into());
         }
 
-        self.inner.set(format!("keys.{pubkey}"), key);
+        self.inner.set(format!("keys.{pubkey_str}"), key);
         Ok(())
     }
 
     /// Explicitly overwrite an existing authentication key
-    pub fn overwrite_key(&mut self, pubkey: impl Into<String>, key: AuthKey) -> Result<()> {
-        let pubkey = pubkey.into();
-
-        // Validate pubkey format
-        PublicKey::from_prefixed_string(&pubkey)?;
-
-        self.inner.set(format!("keys.{pubkey}"), key);
+    pub fn overwrite_key(&mut self, pubkey: &PublicKey, key: AuthKey) -> Result<()> {
+        let pubkey_str = pubkey.to_string();
+        self.inner.set(format!("keys.{pubkey_str}"), key);
         Ok(())
     }
 
     /// Get a key by its public key
-    pub fn get_key_by_pubkey(&self, pubkey: &str) -> Result<AuthKey> {
+    pub fn get_key_by_pubkey(&self, pubkey: &PublicKey) -> Result<AuthKey> {
+        self.get_key_by_str(&pubkey.to_string())
+    }
+
+    /// Get a key by its public key string
+    ///
+    /// Internal helper used by `get_key_by_pubkey` and `resolve_hint` (which
+    /// already has strings from Doc storage).
+    fn get_key_by_str(&self, pubkey: &str) -> Result<AuthKey> {
         match self.inner.get(format!("keys.{pubkey}")) {
             Some(Value::Doc(doc)) => AuthKey::try_from(doc).map_err(|e| {
                 AuthError::InvalidKeyFormat {
@@ -153,18 +157,20 @@ impl AuthSettings {
     ///
     /// Updates only the display name of an existing key, preserving its
     /// permissions and status.
-    pub fn rename_key(&mut self, pubkey: &str, name: Option<&str>) -> Result<()> {
-        let mut auth_key = self.get_key_by_pubkey(pubkey)?;
+    pub fn rename_key(&mut self, pubkey: &PublicKey, name: Option<&str>) -> Result<()> {
+        let pubkey_str = pubkey.to_string();
+        let mut auth_key = self.get_key_by_str(&pubkey_str)?;
         auth_key.set_name(name);
-        self.inner.set(format!("keys.{pubkey}"), auth_key);
+        self.inner.set(format!("keys.{pubkey_str}"), auth_key);
         Ok(())
     }
 
     /// Revoke a key by pubkey
-    pub fn revoke_key(&mut self, pubkey: &str) -> Result<()> {
-        let mut auth_key = self.get_key_by_pubkey(pubkey)?;
+    pub fn revoke_key(&mut self, pubkey: &PublicKey) -> Result<()> {
+        let pubkey_str = pubkey.to_string();
+        let mut auth_key = self.get_key_by_str(&pubkey_str)?;
         auth_key.set_status(KeyStatus::Revoked);
-        self.inner.set(format!("keys.{pubkey}"), auth_key);
+        self.inner.set(format!("keys.{pubkey_str}"), auth_key);
         Ok(())
     }
 
@@ -287,7 +293,7 @@ impl AuthSettings {
             // The actual pubkey is directly in hint.pubkey
             let actual_pubkey =
                 hint.pubkey
-                    .as_deref()
+                    .as_ref()
                     .ok_or_else(|| AuthError::InvalidAuthConfiguration {
                         reason: "Global hint has no pubkey".to_string(),
                     })?;
@@ -295,7 +301,7 @@ impl AuthSettings {
             // Return ResolvedAuth with actual pubkey and global permission
             // There is only 1 global, no need to look for others
             return Ok(vec![ResolvedAuth {
-                public_key: PublicKey::from_prefixed_string(actual_pubkey)?,
+                public_key: actual_pubkey.clone(),
                 effective_permission: *global_key.permissions(),
                 key_status: global_key.status().clone(),
             }]);
@@ -305,7 +311,7 @@ impl AuthSettings {
         if let Some(pubkey) = &hint.pubkey {
             return match self.get_key_by_pubkey(pubkey) {
                 Ok(key) => Ok(vec![ResolvedAuth {
-                    public_key: PublicKey::from_prefixed_string(pubkey)?,
+                    public_key: pubkey.clone(),
                     effective_permission: *key.permissions(),
                     key_status: key.status().clone(),
                 }]),
@@ -368,7 +374,7 @@ impl AuthSettings {
     // ==================== Access Control ====================
 
     /// Check if a public key can access the database with the requested permission
-    pub fn can_access(&self, pubkey: &str, requested_permission: &Permission) -> bool {
+    pub fn can_access(&self, pubkey: &PublicKey, requested_permission: &Permission) -> bool {
         // First check if there's a specific key entry for this pubkey
         if let Ok(auth_key) = self.get_key_by_pubkey(pubkey)
             && *auth_key.status() == KeyStatus::Active
@@ -384,7 +390,7 @@ impl AuthSettings {
     /// Find all SigKeys that a public key can use to access this database
     ///
     /// Returns (SigKey, Permission) tuples sorted by permission (highest first)
-    pub fn find_all_sigkeys_for_pubkey(&self, pubkey: &str) -> Vec<(SigKey, Permission)> {
+    pub fn find_all_sigkeys_for_pubkey(&self, pubkey: &PublicKey) -> Vec<(SigKey, Permission)> {
         let mut results = Vec::new();
 
         // Check if this pubkey has a direct key entry
@@ -409,7 +415,10 @@ impl AuthSettings {
     /// Resolve which SigKey should be used for an operation
     ///
     /// Returns the SigKey with highest permission for the given pubkey.
-    pub fn resolve_sig_key_for_operation(&self, pubkey: &str) -> Result<(SigKey, Permission)> {
+    pub fn resolve_sig_key_for_operation(
+        &self,
+        pubkey: &PublicKey,
+    ) -> Result<(SigKey, Permission)> {
         let matches = self.find_all_sigkeys_for_pubkey(pubkey);
 
         matches.into_iter().next().ok_or_else(|| {
@@ -423,7 +432,11 @@ impl AuthSettings {
     // ==================== Key Modification Authorization ====================
 
     /// Check if a signing key can modify an existing target key
-    pub fn can_modify_key(&self, signing_key: &ResolvedAuth, target_pubkey: &str) -> Result<bool> {
+    pub fn can_modify_key(
+        &self,
+        signing_key: &ResolvedAuth,
+        target_pubkey: &PublicKey,
+    ) -> Result<bool> {
         // Must have admin permissions to modify keys
         if !signing_key.effective_permission.can_admin() {
             return Ok(false);
@@ -461,14 +474,11 @@ impl Default for AuthSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        auth::{crypto::format_public_key, generate_keypair},
-        crdt::CRDT,
-    };
+    use crate::{auth::generate_keypair, crdt::CRDT};
 
-    fn generate_public_key() -> String {
-        let (_, verifying_key) = generate_keypair();
-        format_public_key(&verifying_key)
+    fn generate_public_key() -> PublicKey {
+        let (_, pk) = generate_keypair();
+        pk
     }
 
     #[test]
@@ -572,7 +582,7 @@ mod tests {
         let hint = KeyHint::from_pubkey(&pubkey);
         let matches = settings.resolve_hint(&hint).unwrap();
         assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].public_key.to_prefixed_string(), pubkey);
+        assert_eq!(matches[0].public_key, pubkey);
         assert_eq!(matches[0].effective_permission, Permission::Write(10));
     }
 
@@ -592,7 +602,7 @@ mod tests {
         let hint = KeyHint::from_name("laptop");
         let matches = settings.resolve_hint(&hint).unwrap();
         assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].public_key.to_prefixed_string(), pubkey);
+        assert_eq!(matches[0].public_key, pubkey);
         assert_eq!(matches[0].effective_permission, Permission::Write(10));
     }
 
@@ -608,7 +618,7 @@ mod tests {
         let matches = settings.resolve_hint(&hint).unwrap();
 
         assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].public_key.to_prefixed_string(), actual_pubkey);
+        assert_eq!(matches[0].public_key, actual_pubkey);
         assert_eq!(matches[0].effective_permission, Permission::Write(10));
     }
 

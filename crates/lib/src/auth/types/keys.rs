@@ -191,9 +191,9 @@ fn is_false(v: &bool) -> bool {
 /// in AuthSettings for signature verification.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct KeyHint {
-    /// Public key hint: "ed25519:ABC..."
+    /// Public key hint (e.g. Ed25519 verifying key)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub pubkey: Option<String>,
+    pub pubkey: Option<PublicKey>,
     /// Name hint: "alice_laptop" - searches keys where name matches
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -209,9 +209,9 @@ pub struct KeyHint {
 
 impl KeyHint {
     /// Create a hint from a public key
-    pub fn from_pubkey(pubkey: impl Into<String>) -> Self {
+    pub fn from_pubkey(pubkey: &PublicKey) -> Self {
         Self {
-            pubkey: Some(pubkey.into()),
+            pubkey: Some(pubkey.clone()),
             name: None,
             is_global: false,
         }
@@ -227,9 +227,9 @@ impl KeyHint {
     }
 
     /// Create a global permission hint with actual signer pubkey
-    pub fn global(actual_pubkey: impl Into<String>) -> Self {
+    pub fn global(actual_pubkey: &PublicKey) -> Self {
         Self {
-            pubkey: Some(actual_pubkey.into()),
+            pubkey: Some(actual_pubkey.clone()),
             name: None,
             is_global: true,
         }
@@ -256,12 +256,14 @@ impl KeyHint {
     ///
     /// ```
     /// # use eidetica::auth::types::KeyHint;
+    /// # use eidetica::auth::crypto::PrivateKey;
     /// // Empty hint - represents an unsigned entry when combined with no signature
     /// let empty = KeyHint::default();
     /// assert!(!empty.is_set());
     ///
     /// // Hint with pubkey - this entry requires signature verification
-    /// let with_pubkey = KeyHint::from_pubkey("ed25519:ABC...");
+    /// let pubkey = PrivateKey::generate().public_key();
+    /// let with_pubkey = KeyHint::from_pubkey(&pubkey);
     /// assert!(with_pubkey.is_set());
     ///
     /// // Hint with name only - also requires signature verification
@@ -328,7 +330,7 @@ impl Default for SigKey {
 
 impl SigKey {
     /// Create a direct key reference from a pubkey
-    pub fn from_pubkey(pubkey: impl Into<String>) -> Self {
+    pub fn from_pubkey(pubkey: &PublicKey) -> Self {
         SigKey::Direct(KeyHint::from_pubkey(pubkey))
     }
 
@@ -338,7 +340,7 @@ impl SigKey {
     }
 
     /// Create a global permission key with actual signer pubkey
-    pub fn global(actual_pubkey: impl Into<String>) -> Self {
+    pub fn global(actual_pubkey: &PublicKey) -> Self {
         SigKey::Direct(KeyHint::global(actual_pubkey))
     }
 
@@ -367,22 +369,22 @@ impl SigKey {
     ///
     /// Returns `"*"` for global, the pubkey string for pubkey-based,
     /// the name for name-based, or `"unknown"` if no hint is set.
-    pub fn display_id(&self) -> &str {
+    pub fn display_id(&self) -> String {
         let hint = self.hint();
         if hint.is_global() {
-            "*"
+            "*".to_string()
         } else if let Some(pubkey) = &hint.pubkey {
-            pubkey
+            pubkey.to_string()
         } else if let Some(name) = &hint.name {
-            name
+            name.clone()
         } else {
-            "unknown"
+            "unknown".to_string()
         }
     }
 
     /// Check if this SigKey uses a specific pubkey hint
-    pub fn has_pubkey_hint(&self, pubkey: &str) -> bool {
-        self.hint().pubkey.as_deref() == Some(pubkey)
+    pub fn has_pubkey_hint(&self, pubkey: &PublicKey) -> bool {
+        self.hint().pubkey.as_ref() == Some(pubkey)
     }
 
     /// Check if this SigKey uses a specific name hint
@@ -404,7 +406,7 @@ pub struct SigInfo {
 
 impl SigInfo {
     /// Create a new SigInfo with a pubkey hint
-    pub fn from_pubkey(pubkey: impl Into<String>) -> Self {
+    pub fn from_pubkey(pubkey: &PublicKey) -> Self {
         Self {
             sig: None,
             key: SigKey::from_pubkey(pubkey),
@@ -420,7 +422,7 @@ impl SigInfo {
     }
 
     /// Create a new SigInfo for global permission
-    pub fn global(actual_pubkey: impl Into<String>) -> Self {
+    pub fn global(actual_pubkey: &PublicKey) -> Self {
         Self {
             sig: None,
             key: SigKey::global(actual_pubkey),
@@ -510,7 +512,7 @@ impl SigInfoBuilder {
     }
 
     /// Set a pubkey hint
-    pub fn pubkey_hint(mut self, pubkey: impl Into<String>) -> Self {
+    pub fn pubkey_hint(mut self, pubkey: &PublicKey) -> Self {
         self.key = Some(SigKey::from_pubkey(pubkey));
         self
     }
@@ -522,7 +524,7 @@ impl SigInfoBuilder {
     }
 
     /// Set a global permission hint with actual signer pubkey
-    pub fn global_hint(mut self, actual_pubkey: impl Into<String>) -> Self {
+    pub fn global_hint(mut self, actual_pubkey: &PublicKey) -> Self {
         self.key = Some(SigKey::global(actual_pubkey));
         self
     }

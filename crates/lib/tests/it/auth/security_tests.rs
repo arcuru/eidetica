@@ -1,5 +1,5 @@
 use eidetica::auth::{
-    crypto::{PrivateKey, format_public_key, generate_keypair},
+    crypto::{PrivateKey, generate_keypair},
     settings::AuthSettings,
     types::{AuthKey, KeyStatus, Permission, ResolvedAuth},
 };
@@ -15,16 +15,12 @@ fn test_admin_hierarchy_enforcement() {
 
     let (_, high_pubkey) = generate_keypair();
     let (_, low_pubkey) = generate_keypair();
-    let high_pubkey_str = format_public_key(&high_pubkey);
-    let low_pubkey_str = format_public_key(&low_pubkey);
 
     let high_admin = auth_key(Permission::Admin(1), KeyStatus::Active);
     let low_admin = auth_key(Permission::Admin(100), KeyStatus::Active);
 
-    settings.add_key(&high_pubkey_str, high_admin).unwrap();
-    settings
-        .add_key(&low_pubkey_str, low_admin.clone())
-        .unwrap();
+    settings.add_key(&high_pubkey, high_admin).unwrap();
+    settings.add_key(&low_pubkey, low_admin.clone()).unwrap();
 
     let low_priority_resolved = ResolvedAuth {
         public_key: PrivateKey::generate().public_key(),
@@ -33,7 +29,7 @@ fn test_admin_hierarchy_enforcement() {
     };
 
     let can_modify = settings
-        .can_modify_key(&low_priority_resolved, &high_pubkey_str)
+        .can_modify_key(&low_priority_resolved, &high_pubkey)
         .unwrap();
 
     // Low priority admin should NOT be able to modify high priority admin
@@ -66,7 +62,6 @@ fn test_admin_hierarchy_complete_enforcement() {
 
     // Create a super high-priority admin (priority 0 = absolute highest)
     let (_, super_admin_key) = generate_keypair();
-    let super_admin_pubkey = format_public_key(&super_admin_key);
     let super_admin = AuthKey::active(
         Some("super_admin"),
         Permission::Admin(0), // Absolute highest priority
@@ -74,17 +69,16 @@ fn test_admin_hierarchy_complete_enforcement() {
 
     // Create a very low-priority admin (almost lowest possible)
     let (_, junior_admin_key) = generate_keypair();
-    let junior_admin_pubkey = format_public_key(&junior_admin_key);
     let junior_admin = AuthKey::active(
         Some("junior_admin"),
         Permission::Admin(u32::MAX - 1), // Almost lowest priority
     );
 
     settings
-        .add_key(&super_admin_pubkey, super_admin.clone())
+        .add_key(&super_admin_key, super_admin.clone())
         .unwrap();
     settings
-        .add_key(&junior_admin_pubkey, junior_admin.clone())
+        .add_key(&junior_admin_key, junior_admin.clone())
         .unwrap();
 
     let junior_resolved = ResolvedAuth {
@@ -95,7 +89,7 @@ fn test_admin_hierarchy_complete_enforcement() {
 
     // This should NEVER be true - a low priority admin should not be able to modify a super admin
     let can_modify = settings
-        .can_modify_key(&junior_resolved, &super_admin_pubkey)
+        .can_modify_key(&junior_resolved, &super_admin_key)
         .unwrap();
 
     // Junior admin should NEVER be able to modify super admin
@@ -139,18 +133,12 @@ fn test_privilege_escalation_prevention() {
 
     let (_, write_pubkey) = generate_keypair();
     let (_, admin_pubkey) = generate_keypair();
-    let write_pubkey_str = format_public_key(&write_pubkey);
-    let admin_pubkey_str = format_public_key(&admin_pubkey);
 
     let write_user = auth_key(Permission::Write(10), KeyStatus::Active);
     let admin_user = auth_key(Permission::Admin(5), KeyStatus::Active);
 
-    settings
-        .add_key(&write_pubkey_str, write_user.clone())
-        .unwrap();
-    settings
-        .add_key(&admin_pubkey_str, admin_user.clone())
-        .unwrap();
+    settings.add_key(&write_pubkey, write_user.clone()).unwrap();
+    settings.add_key(&admin_pubkey, admin_user.clone()).unwrap();
 
     let write_resolved = ResolvedAuth {
         public_key: PrivateKey::generate().public_key(),
@@ -160,7 +148,7 @@ fn test_privilege_escalation_prevention() {
 
     // Write users should NEVER be able to modify admin keys
     let can_modify_admin = settings
-        .can_modify_key(&write_resolved, &admin_pubkey_str)
+        .can_modify_key(&write_resolved, &admin_pubkey)
         .unwrap();
 
     // Write users should NEVER be able to create new admin keys
@@ -180,14 +168,13 @@ fn test_key_creation_privilege_escalation_prevention() {
 
     // Create a low-priority admin that should not be able to create high-priority admins
     let (_, low_admin_pubkey) = generate_keypair();
-    let low_admin_pubkey_str = format_public_key(&low_admin_pubkey);
     let low_admin = auth_key(
         Permission::Admin(100), // Low priority admin
         KeyStatus::Active,
     );
 
     settings
-        .add_key(&low_admin_pubkey_str, low_admin.clone())
+        .add_key(&low_admin_pubkey, low_admin.clone())
         .unwrap();
 
     let low_admin_resolved = ResolvedAuth {

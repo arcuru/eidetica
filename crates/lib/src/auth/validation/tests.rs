@@ -8,7 +8,7 @@ use super::entry::AuthValidator;
 use crate::{
     Database, Entry, Error,
     auth::{
-        crypto::{PrivateKey, format_public_key, generate_keypair, sign_entry},
+        crypto::{PrivateKey, PublicKey, generate_keypair, sign_entry},
         settings::AuthSettings,
         types::{
             AuthKey, DelegationStep, KeyHint, KeyStatus, Operation, Permission, ResolvedAuth,
@@ -19,7 +19,7 @@ use crate::{
     entry::ID,
 };
 
-fn create_test_auth_with_key(pubkey: &str, auth_key: &AuthKey) -> AuthSettings {
+fn create_test_auth_with_key(pubkey: &PublicKey, auth_key: &AuthKey) -> AuthSettings {
     let mut auth_settings = AuthSettings::new();
     auth_settings.add_key(pubkey, auth_key.clone()).unwrap();
     auth_settings
@@ -34,8 +34,7 @@ fn create_test_auth_with_global(auth_key: &AuthKey) -> AuthSettings {
 #[tokio::test]
 async fn test_basic_key_resolution() {
     let mut validator = AuthValidator::new();
-    let (_, verifying_key) = generate_keypair();
-    let pubkey = format_public_key(&verifying_key);
+    let (_, pubkey) = generate_keypair();
 
     let auth_key = AuthKey::active(Some("KEY_LAPTOP"), Permission::Write(10));
 
@@ -55,8 +54,7 @@ async fn test_basic_key_resolution() {
 #[tokio::test]
 async fn test_revoked_key_validation() {
     let mut validator = AuthValidator::new();
-    let (_signing_key, verifying_key) = generate_keypair();
-    let pubkey = format_public_key(&verifying_key);
+    let (_signing_key, pubkey) = generate_keypair();
 
     let auth_key = AuthKey::active(Some("KEY_LAPTOP"), Permission::Write(10));
 
@@ -128,8 +126,7 @@ async fn test_permission_levels() {
 #[tokio::test]
 async fn test_entry_validation_success() {
     let mut validator = AuthValidator::new();
-    let (signing_key, verifying_key) = generate_keypair();
-    let pubkey = format_public_key(&verifying_key);
+    let (signing_key, pubkey) = generate_keypair();
 
     let auth_key = AuthKey::active(Some("KEY_LAPTOP"), Permission::Write(20));
 
@@ -218,8 +215,7 @@ async fn test_delegation_path_rejects_wildcard_in_path() {
 #[tokio::test]
 async fn test_validate_entry_with_auth_info_against_empty_settings() {
     let mut validator = AuthValidator::new();
-    let (signing_key, verifying_key) = generate_keypair();
-    let pubkey = format_public_key(&verifying_key);
+    let (signing_key, pubkey) = generate_keypair();
 
     // Create an entry with auth info (signed)
     let mut entry = Entry::root_builder()
@@ -249,8 +245,7 @@ async fn test_validate_entry_with_auth_info_against_empty_settings() {
 #[tokio::test]
 async fn test_entry_validation_with_revoked_key() {
     let mut validator = AuthValidator::new();
-    let (signing_key, verifying_key) = generate_keypair();
-    let pubkey = format_public_key(&verifying_key);
+    let (signing_key, pubkey) = generate_keypair();
 
     let revoked_key = AuthKey::new(
         Some("KEY_LAPTOP"),
@@ -286,8 +281,7 @@ async fn test_entry_validation_with_revoked_key() {
 #[tokio::test]
 async fn test_performance_optimizations() {
     let mut validator = AuthValidator::new();
-    let (_, verifying_key) = generate_keypair();
-    let pubkey = format_public_key(&verifying_key);
+    let (_, pubkey) = generate_keypair();
 
     let auth_key = AuthKey::active(Some("PERF_KEY"), Permission::Write(10));
 
@@ -322,8 +316,7 @@ async fn test_basic_delegated_tree_resolution() {
     let mut validator = AuthValidator::new();
 
     // Create a simple direct key resolution test
-    let (_, verifying_key) = generate_keypair();
-    let pubkey = format_public_key(&verifying_key);
+    let (_, pubkey) = generate_keypair();
     let auth_key = AuthKey::active(Some("DIRECT_KEY"), Permission::Admin(5));
 
     let settings = create_test_auth_with_key(&pubkey, &auth_key);
@@ -358,8 +351,7 @@ async fn test_complete_delegation_workflow() {
         .expect("Failed to create test instance");
 
     // Generate a separate key for the delegated user role
-    let (_, delegated_verifying_key) = generate_keypair();
-    let delegated_pubkey = format_public_key(&delegated_verifying_key);
+    let (_, delegated_pubkey) = generate_keypair();
 
     // Create the delegated tree — device key bootstrapped as Admin(0), untouched
     let delegated_tree = Database::create(&instance, instance.device_key().clone(), Doc::new())
@@ -529,8 +521,7 @@ async fn test_nested_delegation_with_permission_clamping() {
         .expect("Failed to create test instance");
 
     // Generate a separate key for the delegated user
-    let (_, user_verifying_key) = generate_keypair();
-    let user_pubkey = format_public_key(&user_verifying_key);
+    let (_, user_pubkey) = generate_keypair();
 
     // 1. Create the final user tree (deepest level)
     // Device key bootstrapped as Admin(0), untouched
@@ -690,8 +681,7 @@ async fn test_delegation_depth_limit() {
 #[tokio::test]
 async fn test_global_permission_with_pubkey_hint() {
     let mut validator = AuthValidator::new();
-    let (signing_key, verifying_key) = generate_keypair();
-    let actual_pubkey = format_public_key(&verifying_key);
+    let (signing_key, actual_pubkey) = generate_keypair();
 
     // Create settings with global permission
     let global_auth_key = AuthKey::active(None, Permission::Write(10));
@@ -756,8 +746,7 @@ async fn test_global_permission_without_pubkey_fails() {
 #[tokio::test]
 async fn test_global_permission_resolver() {
     let mut validator = AuthValidator::new();
-    let public_key = PrivateKey::generate().public_key();
-    let actual_pubkey = public_key.to_prefixed_string();
+    let actual_pubkey = PrivateKey::generate().public_key();
 
     // Create settings with global permission
     let global_auth_key = AuthKey::active(None, Permission::Write(10));
@@ -776,15 +765,14 @@ async fn test_global_permission_resolver() {
     );
     let resolved = result.unwrap();
     assert_eq!(resolved.len(), 1);
-    assert_eq!(resolved[0].public_key, public_key);
+    assert_eq!(resolved[0].public_key, actual_pubkey);
     assert_eq!(resolved[0].effective_permission, Permission::Write(10));
 }
 
 #[tokio::test]
 async fn test_global_permission_insufficient_perms() {
     let mut validator = AuthValidator::new();
-    let (signing_key, verifying_key) = generate_keypair();
-    let actual_pubkey = format_public_key(&verifying_key);
+    let (signing_key, actual_pubkey) = generate_keypair();
 
     // Create settings with global permission but only Read access
     let global_auth_key = AuthKey::active(
@@ -824,10 +812,8 @@ async fn test_global_permission_insufficient_perms() {
 #[tokio::test]
 async fn test_global_permission_vs_specific_key() {
     let mut validator = AuthValidator::new();
-    let (signing_key1, verifying_key1) = generate_keypair();
-    let (signing_key2, verifying_key2) = generate_keypair();
-    let pubkey1 = format_public_key(&verifying_key1);
-    let pubkey2 = format_public_key(&verifying_key2);
+    let (signing_key1, pubkey1) = generate_keypair();
+    let (signing_key2, pubkey2) = generate_keypair();
 
     // Create settings with both a specific key and global permission
     let mut auth_settings = AuthSettings::new();

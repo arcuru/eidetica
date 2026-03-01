@@ -813,7 +813,7 @@ async fn test_bootstrap_uses_highest_permission_when_key_has_multiple() {
         // Add the special key directly with Write(5) permission (keyed by pubkey)
         let special_auth_key = AuthKey::active(Some("special_key"), Permission::Write(5));
         settings_store
-            .set_auth_key(&special_pubkey, special_auth_key)
+            .set_auth_key(&special_verifying_key, special_auth_key)
             .await
             .unwrap();
 

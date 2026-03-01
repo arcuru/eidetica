@@ -14,7 +14,7 @@ use super::{
 use crate::{
     Database, Instance, Result,
     auth::{
-        crypto::{PrivateKey, format_public_key, generate_keypair},
+        crypto::{PrivateKey, generate_keypair},
         types::{AuthKey, Permission},
     },
     constants::{DATABASES, INSTANCE, USERS},
@@ -146,8 +146,6 @@ pub async fn create_user(
 
     // 2. Generate default keypair for this user (kept in memory only)
     let (user_private_key, user_public_key) = generate_keypair();
-    let user_public_key_str = format_public_key(&user_public_key);
-
     // 3. Create user database with the user's key in auth (device key added automatically)
     let mut user_db_settings = Doc::new();
     user_db_settings.set("name", format!("_user_{username}"));
@@ -168,7 +166,7 @@ pub async fn create_user(
     let settings = txn.get_settings()?;
     settings
         .set_auth_key(
-            &user_public_key_str,
+            &user_public_key,
             AuthKey::active(Some("user"), Permission::Admin(0)),
         )
         .await?;
@@ -460,10 +458,10 @@ mod tests {
         assert_eq!(name, INSTANCE);
 
         // Verify auth settings - key is stored by pubkey
-        let pubkey_str = instance.device_id_string();
+        let device_pubkey = instance.device_key().public_key();
         let settings_store = SettingsStore::new(&transaction).unwrap();
         let auth_settings = settings_store.auth_snapshot().await.unwrap();
-        let device_key = auth_settings.get_key_by_pubkey(&pubkey_str).unwrap();
+        let device_key = auth_settings.get_key_by_pubkey(&device_pubkey).unwrap();
         assert_eq!(device_key.permissions(), &Permission::Admin(0));
         assert_eq!(device_key.name(), None);
     }
@@ -515,11 +513,11 @@ mod tests {
         let users_db = create_users_database(&instance, &device_key).await.unwrap();
 
         // Verify device key has admin access - key is stored by pubkey
-        let pubkey_str = instance.device_id_string();
+        let device_pubkey = instance.device_key().public_key();
         let transaction = users_db.new_transaction().await.unwrap();
         let settings_store = SettingsStore::new(&transaction).unwrap();
         let auth_settings = settings_store.auth_snapshot().await.unwrap();
-        let device_key = auth_settings.get_key_by_pubkey(&pubkey_str).unwrap();
+        let device_key = auth_settings.get_key_by_pubkey(&device_pubkey).unwrap();
 
         assert_eq!(device_key.permissions(), &Permission::Admin(0));
         assert_eq!(device_key.name(), None);

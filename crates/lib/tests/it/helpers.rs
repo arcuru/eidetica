@@ -274,7 +274,7 @@ pub fn assert_key_not_found(result: Result<Value, Error>) {
 // ==========================
 
 /// Add or overwrite an auth key on a database via a settings transaction.
-pub async fn add_auth_key(db: &Database, pubkey: &str, key: AuthKey) {
+pub async fn add_auth_key(db: &Database, pubkey: &PublicKey, key: AuthKey) {
     let txn = db.new_transaction().await.unwrap();
     let settings = txn.get_settings().unwrap();
     settings.set_auth_key(pubkey, key).await.unwrap();
@@ -282,7 +282,7 @@ pub async fn add_auth_key(db: &Database, pubkey: &str, key: AuthKey) {
 }
 
 /// Rename an auth key's display name on a database via a settings transaction.
-pub async fn rename_auth_key(db: &Database, pubkey: &str, name: Option<&str>) {
+pub async fn rename_auth_key(db: &Database, pubkey: &PublicKey, name: Option<&str>) {
     let txn = db.new_transaction().await.unwrap();
     let settings = txn.get_settings().unwrap();
     settings.rename_auth_key(pubkey, name).await.unwrap();
@@ -290,7 +290,7 @@ pub async fn rename_auth_key(db: &Database, pubkey: &str, name: Option<&str>) {
 }
 
 /// Add or overwrite multiple auth keys on a database in a single transaction.
-pub async fn add_auth_keys(db: &Database, keys: &[(&str, AuthKey)]) {
+pub async fn add_auth_keys(db: &Database, keys: &[(&PublicKey, AuthKey)]) {
     let txn = db.new_transaction().await.unwrap();
     let settings = txn.get_settings().unwrap();
     for (pubkey, key) in keys {

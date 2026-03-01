@@ -21,7 +21,7 @@ use crate::{
     Database, Error, Instance, Result, WeakInstance,
     auth::{
         KeyStatus, Permission,
-        crypto::{create_challenge_response, format_public_key, generate_challenge},
+        crypto::{PublicKey, create_challenge_response, format_public_key, generate_challenge},
     },
     database::DatabaseKey,
     entry::ID,
@@ -208,12 +208,13 @@ impl SyncHandlerImpl {
         tree_id: &ID,
         requesting_pubkey: &str,
     ) -> Result<Option<Permission>> {
+        let pubkey = PublicKey::from_prefixed_string(requesting_pubkey)?;
         let database = Database::open_unauthenticated(tree_id.clone(), &self.instance()?)?;
         let transaction = database.new_transaction().await?;
         let settings_store = SettingsStore::new(&transaction)?;
         let auth_settings = settings_store.auth_snapshot().await?;
 
-        let results = auth_settings.find_all_sigkeys_for_pubkey(requesting_pubkey);
+        let results = auth_settings.find_all_sigkeys_for_pubkey(&pubkey);
 
         if results.is_empty() {
             return Ok(None);
@@ -242,6 +243,7 @@ impl SyncHandlerImpl {
         requesting_pubkey: &str,
         requested_permission: &Permission,
     ) -> Result<bool> {
+        let pubkey = PublicKey::from_prefixed_string(requesting_pubkey)?;
         // Use open_unauthenticated since we only need to read auth settings
         let database = Database::open_unauthenticated(tree_id.clone(), &self.instance()?)?;
         let settings_store = database.get_settings().await?;
@@ -249,7 +251,7 @@ impl SyncHandlerImpl {
         let auth_settings = settings_store.auth_snapshot().await?;
 
         // Use the AuthSettings.can_access() method to check permissions
-        if auth_settings.can_access(requesting_pubkey, requested_permission) {
+        if auth_settings.can_access(&pubkey, requested_permission) {
             debug!(
                 tree_id = %tree_id,
                 requesting_pubkey = %requesting_pubkey,

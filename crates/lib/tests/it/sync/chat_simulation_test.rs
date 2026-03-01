@@ -141,7 +141,7 @@ async fn test_chat_app_authenticated_bootstrap() {
     );
 
     // Client opens database using their registered key (discovered via find_sigkeys)
-    let sigkeys = Database::find_sigkeys(&client_instance, &tree_id, &client_key_str)
+    let sigkeys = Database::find_sigkeys(&client_instance, &tree_id, &client_key_id)
         .await
         .expect("Should find valid SigKeys");
     assert!(!sigkeys.is_empty(), "Should find at least one SigKey");
@@ -150,7 +150,7 @@ async fn test_chat_app_authenticated_bootstrap() {
 
     // The sigkey should reference the client's pubkey since keys are indexed by pubkey
     assert!(
-        sigkey.has_pubkey_hint(&client_key_str),
+        sigkey.has_pubkey_hint(&client_key_id),
         "Should use registered key's pubkey, got: {sigkey:?}"
     );
 
@@ -261,8 +261,7 @@ async fn test_global_key_bootstrap() {
     client_sync.flush().await.ok();
 
     // Client opens database with global permission
-    let client_key_str = client_key_id.to_string();
-    let sigkeys = Database::find_sigkeys(&client_instance, &tree_id, &client_key_str)
+    let sigkeys = Database::find_sigkeys(&client_instance, &tree_id, &client_key_id)
         .await
         .expect("Should find valid SigKeys");
 

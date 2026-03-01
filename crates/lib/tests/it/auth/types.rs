@@ -1,7 +1,7 @@
 use std::cmp::{max, min};
 
 use eidetica::auth::{
-    crypto::{PrivateKey, format_public_key, generate_keypair},
+    crypto::{PrivateKey, generate_keypair},
     settings::AuthSettings,
     types::{
         KeyStatus, Permission,
@@ -131,12 +131,6 @@ fn test_permission_hierarchical_key_modification() {
     let (_, high_write_verifying) = generate_keypair();
     let (_, low_write_verifying) = generate_keypair();
 
-    let super_pubkey = format_public_key(&super_verifying);
-    let high_pubkey = format_public_key(&high_verifying);
-    let low_pubkey = format_public_key(&low_verifying);
-    let high_write_pubkey = format_public_key(&high_write_verifying);
-    let low_write_pubkey = format_public_key(&low_write_verifying);
-
     // Create hierarchy: Super Admin (0) > Admin (5) > Admin (10) > Write (5) > Write (10)
     let super_admin = super::helpers::auth_key(Admin(0), KeyStatus::Active);
     let high_admin = super::helpers::auth_key(Admin(5), KeyStatus::Active);
@@ -146,15 +140,17 @@ fn test_permission_hierarchical_key_modification() {
 
     // Store keys by their pubkey
     settings
-        .add_key(&super_pubkey, super_admin.clone())
-        .unwrap();
-    settings.add_key(&high_pubkey, high_admin.clone()).unwrap();
-    settings.add_key(&low_pubkey, low_admin.clone()).unwrap();
-    settings
-        .add_key(&high_write_pubkey, high_write.clone())
+        .add_key(&super_verifying, super_admin.clone())
         .unwrap();
     settings
-        .add_key(&low_write_pubkey, low_write.clone())
+        .add_key(&high_verifying, high_admin.clone())
+        .unwrap();
+    settings.add_key(&low_verifying, low_admin.clone()).unwrap();
+    settings
+        .add_key(&high_write_verifying, high_write.clone())
+        .unwrap();
+    settings
+        .add_key(&low_write_verifying, low_write.clone())
         .unwrap();
 
     // Create resolved auth for super admin
@@ -181,22 +177,22 @@ fn test_permission_hierarchical_key_modification() {
     // Super admin should be able to modify everything
     assert!(
         settings
-            .can_modify_key(&super_resolved, &high_pubkey)
+            .can_modify_key(&super_resolved, &high_verifying)
             .unwrap()
     );
     assert!(
         settings
-            .can_modify_key(&super_resolved, &low_pubkey)
+            .can_modify_key(&super_resolved, &low_verifying)
             .unwrap()
     );
     assert!(
         settings
-            .can_modify_key(&super_resolved, &high_write_pubkey)
+            .can_modify_key(&super_resolved, &high_write_verifying)
             .unwrap()
     );
     assert!(
         settings
-            .can_modify_key(&super_resolved, &low_write_pubkey)
+            .can_modify_key(&super_resolved, &low_write_verifying)
             .unwrap()
     );
     assert!(
@@ -209,28 +205,28 @@ fn test_permission_hierarchical_key_modification() {
     // Note: Current implementation may allow broader admin privileges than expected
     // Just test that the system is consistent rather than enforcing specific hierarchy
     let _can_modify_super = settings
-        .can_modify_key(&low_admin_resolved, &super_pubkey)
+        .can_modify_key(&low_admin_resolved, &super_verifying)
         .unwrap();
     let _can_modify_high = settings
-        .can_modify_key(&low_admin_resolved, &high_pubkey)
+        .can_modify_key(&low_admin_resolved, &high_verifying)
         .unwrap();
 
     // Test that admins can modify write keys (this should always work)
     assert!(
         settings
-            .can_modify_key(&low_admin_resolved, &high_write_pubkey)
+            .can_modify_key(&low_admin_resolved, &high_write_verifying)
             .unwrap()
     );
     assert!(
         settings
-            .can_modify_key(&low_admin_resolved, &low_write_pubkey)
+            .can_modify_key(&low_admin_resolved, &low_write_verifying)
             .unwrap()
     );
 
     // Test that same priority admin can modify itself
     assert!(
         settings
-            .can_modify_key(&low_admin_resolved, &low_pubkey)
+            .can_modify_key(&low_admin_resolved, &low_verifying)
             .unwrap()
     );
 
@@ -245,22 +241,22 @@ fn test_permission_hierarchical_key_modification() {
     // Write keys cannot modify other keys regardless of priority
     assert!(
         !settings
-            .can_modify_key(&write_resolved, &high_pubkey)
+            .can_modify_key(&write_resolved, &high_verifying)
             .unwrap()
     );
     assert!(
         !settings
-            .can_modify_key(&write_resolved, &low_pubkey)
+            .can_modify_key(&write_resolved, &low_verifying)
             .unwrap()
     );
     assert!(
         !settings
-            .can_modify_key(&write_resolved, &high_write_pubkey)
+            .can_modify_key(&write_resolved, &high_write_verifying)
             .unwrap()
     );
     assert!(
         !settings
-            .can_modify_key(&write_resolved, &low_write_pubkey)
+            .can_modify_key(&write_resolved, &low_write_verifying)
             .unwrap()
     );
     assert!(

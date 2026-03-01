@@ -222,7 +222,7 @@ pub async fn setup_manual_approval_server() -> (Instance, User, PublicKey, Datab
     let mut settings = Doc::new();
     settings.set("name", "Bootstrap Test Database");
 
-    let device_pubkey = instance.device_id_string();
+    let device_pubkey = instance.device_key().public_key();
 
     let database = user
         .create_database(settings, &key_id)
@@ -274,7 +274,7 @@ pub async fn setup_global_wildcard_server() -> (Instance, User, PublicKey, Datab
     let mut settings = Doc::new();
     settings.set("name", "Bootstrap Test Database");
 
-    let device_pubkey = instance.device_id_string();
+    let device_pubkey = instance.device_key().public_key();
 
     let database = user
         .create_database(settings, &key_id)
@@ -468,7 +468,7 @@ pub async fn setup_server_with_bootstrap_database(
         .unwrap();
 
     // Add admin to the database's auth configuration so sync handler can modify the database
-    let device_pubkey = server_instance.device_id_string();
+    let device_pubkey = server_instance.device_key().public_key();
 
     // Add admin as Admin to the database (keyed by pubkey, name is "admin")
     let tx = server_database.new_transaction().await.unwrap();
@@ -664,7 +664,7 @@ pub async fn setup_sync_enabled_server(
     let tree_id = server_database.root_id().clone();
 
     // Add admin to the database's auth configuration so sync handler can modify the database
-    let device_pubkey = server_instance.device_id_string();
+    let device_pubkey = server_instance.device_key().public_key();
 
     // Add admin as Admin to the database (keyed by pubkey, name is "admin")
     let tx = server_database.new_transaction().await.unwrap();
@@ -805,7 +805,7 @@ pub async fn setup_public_sync_enabled_server(
     let mut settings = Doc::new();
     settings.set("name", db_name);
 
-    let device_pubkey = server_instance.device_id_string();
+    let device_pubkey = server_instance.device_key().public_key();
 
     let server_database = server_user
         .create_database(settings, &server_key_id)
@@ -813,7 +813,6 @@ pub async fn setup_public_sync_enabled_server(
         .unwrap();
 
     // Add auth keys: device key and user's key
-    let server_key_id_str = server_key_id.to_string();
     crate::helpers::add_auth_keys(
         &server_database,
         &[
@@ -822,7 +821,7 @@ pub async fn setup_public_sync_enabled_server(
                 AuthKey::active(Some("admin"), AuthPermission::Admin(0)),
             ),
             (
-                &server_key_id_str,
+                &server_key_id,
                 AuthKey::active(None, AuthPermission::Admin(0)),
             ),
         ],

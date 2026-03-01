@@ -553,7 +553,7 @@ async fn test_full_e2e_bootstrap_with_database_instances() {
     let settings_store = server_tx.get_settings().unwrap();
 
     // Client key should NOT be added individually - access is via global wildcard
-    let client_key_result = settings_store.get_auth_key(&client_key_id).await;
+    let client_key_result = settings_store.get_auth_key(&client_verifying_key).await;
     assert!(
         client_key_result.is_err(),
         "Client key should not be added individually when global wildcard permission exists"

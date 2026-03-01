@@ -10,7 +10,6 @@ async fn test_find_sigkeys_returns_sorted_by_permission() -> Result<()> {
 
     // Generate a test key
     let (signing_key, public_key) = generate_keypair();
-    let pubkey_str = format_public_key(&public_key);
 
     // Create database (Database::create bootstraps signing key as Admin(0))
     let db = Database::create(&instance, signing_key, Doc::new()).await?;
@@ -24,7 +23,7 @@ async fn test_find_sigkeys_returns_sorted_by_permission() -> Result<()> {
     txn.commit().await?;
 
     // Call find_sigkeys
-    let results = Database::find_sigkeys(&instance, db.root_id(), &pubkey_str).await?;
+    let results = Database::find_sigkeys(&instance, db.root_id(), &public_key).await?;
 
     // Verify we got 2 entries (direct key + global)
     assert_eq!(results.len(), 2, "Should find direct key and global option");
@@ -44,7 +43,7 @@ async fn test_find_sigkeys_returns_sorted_by_permission() -> Result<()> {
 
     // Verify the SigKey types
     assert!(
-        results[0].0.has_pubkey_hint(&pubkey_str),
+        results[0].0.has_pubkey_hint(&public_key),
         "First should be direct pubkey hint"
     );
     assert!(results[1].0.is_global(), "Second should be global hint");
@@ -57,13 +56,12 @@ async fn test_create_bootstraps_signing_key_as_admin_zero() -> Result<()> {
     let instance = Instance::open(Box::new(InMemory::new())).await?;
 
     let (signing_key, signing_pubkey) = generate_keypair();
-    let signing_pubkey_str = format_public_key(&signing_pubkey);
 
     // Create database (signing key is bootstrapped as Admin(0))
     let db = Database::create(&instance, signing_key, Doc::new()).await?;
 
     // Verify the signing key was bootstrapped as Admin(0)
-    let results = Database::find_sigkeys(&instance, db.root_id(), &signing_pubkey_str).await?;
+    let results = Database::find_sigkeys(&instance, db.root_id(), &signing_pubkey).await?;
     assert_eq!(results.len(), 1, "Signing key should be present in auth");
     assert_eq!(
         results[0].1,
@@ -81,7 +79,6 @@ async fn test_create_rejects_preconfigured_auth() -> Result<()> {
     let (signing_key, _) = generate_keypair();
 
     let (_, other_pubkey) = generate_keypair();
-    let other_pubkey_str = format_public_key(&other_pubkey);
 
     // Pre-configure auth in settings — this should be rejected
     let mut settings = Doc::new();
@@ -89,7 +86,7 @@ async fn test_create_rejects_preconfigured_auth() -> Result<()> {
 
     let mut auth_settings = AuthSettings::new();
     auth_settings.add_key(
-        &other_pubkey_str,
+        &other_pubkey,
         AuthKey::active(Some("other_user"), Permission::Write(5)),
     )?;
     settings.set("auth", auth_settings.as_doc().clone());

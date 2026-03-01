@@ -413,13 +413,9 @@ async fn test_add_database_key_mapping() {
     );
 
     // Add mapping manually for the extra key
-    user.map_key(
-        &extra_key,
-        db_id,
-        SigKey::from_pubkey(extra_key.to_string()),
-    )
-    .await
-    .expect("Should add database key mapping");
+    user.map_key(&extra_key, db_id, SigKey::from_pubkey(&extra_key))
+        .await
+        .expect("Should add database key mapping");
 
     // Now the extra key should have a mapping
     let sigkey_after = user
@@ -507,10 +503,10 @@ async fn test_multiple_keys_one_database() {
     let key3 = add_user_key(&mut user, Some("Key 3")).await;
 
     // Add mappings for the new keys to the same database
-    user.map_key(&key2, db_id, SigKey::from_pubkey(key2.to_string()))
+    user.map_key(&key2, db_id, SigKey::from_pubkey(&key2))
         .await
         .expect("Should add mapping for key2");
-    user.map_key(&key3, db_id, SigKey::from_pubkey(key3.to_string()))
+    user.map_key(&key3, db_id, SigKey::from_pubkey(&key3))
         .await
         .expect("Should add mapping for key3");
 
@@ -571,16 +567,16 @@ async fn test_complex_key_database_mappings() {
     // Add specific manual mappings:
     // - key2 -> work_db and shared_db
     // - key3 -> home_db and shared_db
-    user.map_key(&key2, db1.root_id(), SigKey::from_pubkey(key2.to_string()))
+    user.map_key(&key2, db1.root_id(), SigKey::from_pubkey(&key2))
         .await
         .expect("Map key2 to work_db");
-    user.map_key(&key2, db3.root_id(), SigKey::from_pubkey(key2.to_string()))
+    user.map_key(&key2, db3.root_id(), SigKey::from_pubkey(&key2))
         .await
         .expect("Map key2 to shared_db");
-    user.map_key(&key3, db2.root_id(), SigKey::from_pubkey(key3.to_string()))
+    user.map_key(&key3, db2.root_id(), SigKey::from_pubkey(&key3))
         .await
         .expect("Map key3 to home_db");
-    user.map_key(&key3, db3.root_id(), SigKey::from_pubkey(key3.to_string()))
+    user.map_key(&key3, db3.root_id(), SigKey::from_pubkey(&key3))
         .await
         .expect("Map key3 to shared_db");
 
@@ -665,11 +661,7 @@ async fn test_manual_mappings_persist_across_sessions() {
 
     // Add manual mapping
     user1
-        .map_key(
-            &extra_key,
-            &db_id,
-            SigKey::from_pubkey(extra_key.to_string()),
-        )
+        .map_key(&extra_key, &db_id, SigKey::from_pubkey(&extra_key))
         .await
         .expect("Should add mapping");
 
@@ -742,19 +734,19 @@ async fn test_multiple_manual_mappings_persist() {
 
     // Add multiple manual mappings
     user1
-        .map_key(&key2, db1.root_id(), SigKey::from_pubkey(key2.to_string()))
+        .map_key(&key2, db1.root_id(), SigKey::from_pubkey(&key2))
         .await
         .expect("Map key2 to db1");
     user1
-        .map_key(&key2, db2.root_id(), SigKey::from_pubkey(key2.to_string()))
+        .map_key(&key2, db2.root_id(), SigKey::from_pubkey(&key2))
         .await
         .expect("Map key2 to db2");
     user1
-        .map_key(&key3, db2.root_id(), SigKey::from_pubkey(key3.to_string()))
+        .map_key(&key3, db2.root_id(), SigKey::from_pubkey(&key3))
         .await
         .expect("Map key3 to db2");
     user1
-        .map_key(&key3, db3.root_id(), SigKey::from_pubkey(key3.to_string()))
+        .map_key(&key3, db3.root_id(), SigKey::from_pubkey(&key3))
         .await
         .expect("Map key3 to db3");
 

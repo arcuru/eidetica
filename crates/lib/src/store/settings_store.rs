@@ -174,14 +174,14 @@ impl SettingsStore {
     /// merged view when reading.
     ///
     /// # Arguments
-    /// * `pubkey` - The public key string (e.g., "ed25519:ABC...")
+    /// * `pubkey` - The public key
     /// * `key` - The AuthKey containing name, permissions, and status
     ///
     /// # Returns
     /// Result indicating success or failure
-    pub async fn set_auth_key(&self, pubkey: &str, key: AuthKey) -> Result<()> {
-        PublicKey::from_prefixed_string(pubkey)?;
-        self.inner.set(format!("auth.keys.{pubkey}"), key).await
+    pub async fn set_auth_key(&self, pubkey: &PublicKey, key: AuthKey) -> Result<()> {
+        let pubkey_str = pubkey.to_string();
+        self.inner.set(format!("auth.keys.{pubkey_str}"), key).await
     }
 
     /// Set the global authentication permission
@@ -212,11 +212,11 @@ impl SettingsStore {
     /// Get an authentication key from the settings by public key
     ///
     /// # Arguments
-    /// * `pubkey` - The public key string to retrieve
+    /// * `pubkey` - The public key to retrieve
     ///
     /// # Returns
     /// AuthKey if found, or error if not present or operation fails
-    pub async fn get_auth_key(&self, pubkey: &str) -> Result<AuthKey> {
+    pub async fn get_auth_key(&self, pubkey: &PublicKey) -> Result<AuthKey> {
         let auth_settings = self.auth_snapshot().await?;
         auth_settings.get_key_by_pubkey(pubkey)
     }
@@ -227,12 +227,12 @@ impl SettingsStore {
     /// permissions and status.
     ///
     /// # Arguments
-    /// * `pubkey` - The public key string of the key to rename
+    /// * `pubkey` - The public key of the key to rename
     /// * `name` - The new display name, or None to remove the name
     ///
     /// # Returns
     /// Result indicating success or failure
-    pub async fn rename_auth_key(&self, pubkey: &str, name: Option<&str>) -> Result<()> {
+    pub async fn rename_auth_key(&self, pubkey: &PublicKey, name: Option<&str>) -> Result<()> {
         let auth = self.auth_snapshot().await?;
         let mut key = auth.get_key_by_pubkey(pubkey)?;
         key.set_name(name);
@@ -242,11 +242,11 @@ impl SettingsStore {
     /// Revoke an authentication key in the settings
     ///
     /// # Arguments
-    /// * `pubkey` - The public key string of the key to revoke
+    /// * `pubkey` - The public key of the key to revoke
     ///
     /// # Returns
     /// Result indicating success or failure
-    pub async fn revoke_auth_key(&self, pubkey: &str) -> Result<()> {
+    pub async fn revoke_auth_key(&self, pubkey: &PublicKey) -> Result<()> {
         let auth = self.auth_snapshot().await?;
         let mut key = auth.get_key_by_pubkey(pubkey)?;
         key.set_status(KeyStatus::Revoked);
@@ -300,7 +300,7 @@ mod tests {
     use crate::{
         Database, Error, Instance,
         auth::{
-            crypto::{format_public_key, generate_keypair},
+            crypto::{PublicKey, generate_keypair},
             types::{KeyStatus, Permission},
         },
         backend::database::InMemory,
@@ -308,9 +308,9 @@ mod tests {
         store::Store,
     };
 
-    fn generate_public_key() -> String {
+    fn generate_public_key() -> PublicKey {
         let (_, verifying_key) = generate_keypair();
-        format_public_key(&verifying_key)
+        verifying_key
     }
 
     async fn create_test_database() -> (Instance, Database) {
@@ -483,8 +483,8 @@ mod tests {
         let auth_settings = settings_store.auth_snapshot().await.unwrap();
         let all_keys = auth_settings.get_all_keys().unwrap();
         assert!(all_keys.len() >= 2); // At least the two we added
-        assert!(all_keys.contains_key(&pubkey1));
-        assert!(all_keys.contains_key(&pubkey2));
+        assert!(all_keys.contains_key(&pubkey1.to_string()));
+        assert!(all_keys.contains_key(&pubkey2.to_string()));
     }
 
     #[tokio::test]
@@ -578,7 +578,8 @@ mod tests {
         let settings_store = SettingsStore::new(&transaction).unwrap();
 
         // Getting non-existent auth key should return KeyNotFound error
-        let result = settings_store.get_auth_key("nonexistent").await;
+        let nonexistent_pubkey = generate_public_key();
+        let result = settings_store.get_auth_key(&nonexistent_pubkey).await;
         assert!(result.is_err());
         if let Err(Error::Auth(auth_err)) = result {
             assert!(auth_err.is_not_found());
@@ -587,7 +588,7 @@ mod tests {
         }
 
         // Revoking non-existent key should fail
-        let revoke_result = settings_store.revoke_auth_key("nonexistent").await;
+        let revoke_result = settings_store.revoke_auth_key(&nonexistent_pubkey).await;
         assert!(revoke_result.is_err());
     }
 }

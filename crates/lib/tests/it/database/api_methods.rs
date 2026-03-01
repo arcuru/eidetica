@@ -22,7 +22,7 @@ async fn test_get_entry_basic() {
         .await
         .expect("Failed to get entry");
     assert_eq!(entry.id(), entry_id);
-    assert_eq!(entry.sig.key, SigKey::from_pubkey(key_id.to_string()));
+    assert_eq!(entry.sig.key, SigKey::from_pubkey(&key_id));
     assert!(entry.sig.sig.is_some());
 }
 
@@ -248,12 +248,13 @@ async fn test_auth_helpers_signed_entries() {
         .expect("Failed to get entry");
     let sig_info = &entry.sig;
     let hint = sig_info.hint();
+    let pubkey_str_opt = hint.pubkey.as_ref().map(|k| k.to_string());
     assert!(
-        hint.pubkey.as_deref() == Some(key_id_str.as_str())
+        pubkey_str_opt.as_deref() == Some(key_id_str.as_str())
             || hint.name.as_deref() == Some(key_id_str.as_str())
     );
     assert!(
-        hint.pubkey.as_deref() != Some("OTHER_KEY") && hint.name.as_deref() != Some("OTHER_KEY")
+        pubkey_str_opt.as_deref() != Some("OTHER_KEY") && hint.name.as_deref() != Some("OTHER_KEY")
     );
 }
 
@@ -276,12 +277,13 @@ async fn test_auth_helpers_default_authenticated_entries() {
         .expect("Failed to get entry");
     let sig_info = &entry.sig;
     let hint = sig_info.hint();
+    let pubkey_str_opt = hint.pubkey.as_ref().map(|k| k.to_string());
     assert!(
-        hint.pubkey.as_deref() == Some(key_id_str.as_str())
+        pubkey_str_opt.as_deref() == Some(key_id_str.as_str())
             || hint.name.as_deref() == Some(key_id_str.as_str())
     );
     assert!(
-        hint.pubkey.as_deref() != Some("OTHER_KEY") && hint.name.as_deref() != Some("OTHER_KEY")
+        pubkey_str_opt.as_deref() != Some("OTHER_KEY") && hint.name.as_deref() != Some("OTHER_KEY")
     );
 }
 

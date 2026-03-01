@@ -305,8 +305,9 @@ impl Sync {
 
         // Add the new key to auth settings using SettingsStore API
         // Store by pubkey (this provides proper upsert behavior and validation)
+        let requesting_pk = PublicKey::from_prefixed_string(&request.requesting_pubkey)?;
         settings_store
-            .set_auth_key(&request.requesting_pubkey, auth_key)
+            .set_auth_key(&requesting_pk, auth_key)
             .await?;
 
         // Commit will validate that the user's key has Admin permission

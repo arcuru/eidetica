@@ -6,16 +6,16 @@
 use super::helpers::*;
 
 /// Generate a valid test public key
-fn generate_public_key() -> String {
+fn generate_public_key() -> eidetica::auth::crypto::PublicKey {
     let (_, verifying_key) = generate_keypair();
-    format_public_key(&verifying_key)
+    verifying_key
 }
 
 use eidetica::{
     Database, Entry,
     auth::{
         Permission as AuthPermission,
-        crypto::{format_public_key, generate_keypair},
+        crypto::generate_keypair,
         types::{AuthKey, KeyStatus, SigKey},
     },
     backend::VerificationStatus,
@@ -38,8 +38,12 @@ async fn test_manual_approval_stores_pending_request() {
 
     // Create a bootstrap request that should be stored as pending
     let test_key = generate_public_key();
-    let sync_request =
-        create_bootstrap_request(&tree_id, &test_key, "laptop_key", AuthPermission::Write(5));
+    let sync_request = create_bootstrap_request(
+        &tree_id,
+        &test_key.to_string(),
+        "laptop_key",
+        AuthPermission::Write(5),
+    );
 
     // Handle the request
     let context = RequestContext::default();
@@ -53,7 +57,7 @@ async fn test_manual_approval_stores_pending_request() {
     let pending_requests = sync.pending_bootstrap_requests().await.unwrap();
     let (_, stored_request) = &pending_requests[0];
     assert_eq!(stored_request.tree_id, tree_id);
-    assert_eq!(stored_request.requesting_pubkey, test_key);
+    assert_eq!(stored_request.requesting_pubkey, test_key.to_string());
     assert_eq!(stored_request.requesting_key_name, "laptop_key");
     assert_eq!(
         stored_request.requested_permission,
@@ -71,8 +75,12 @@ async fn test_auto_approve_still_works() {
 
     // Create a bootstrap request that should be auto-approved
     let test_key = generate_public_key();
-    let sync_request =
-        create_bootstrap_request(&tree_id, &test_key, "laptop_key", AuthPermission::Write(5));
+    let sync_request = create_bootstrap_request(
+        &tree_id,
+        &test_key.to_string(),
+        "laptop_key",
+        AuthPermission::Write(5),
+    );
 
     // Handle the request
     let context = RequestContext::default();
@@ -110,7 +118,7 @@ async fn test_approve_bootstrap_request() {
     let request_id = create_pending_bootstrap_request(
         &sync_handler,
         &tree_id,
-        &test_key,
+        &test_key.to_string(),
         "laptop_key",
         AuthPermission::Write(5),
     )
@@ -184,7 +192,7 @@ async fn test_reject_bootstrap_request() {
         tree_id: tree_id.clone(),
         our_tips: vec![], // Empty tips = bootstrap needed
         peer_pubkey: None,
-        requesting_key: Some(test_key.clone()),
+        requesting_key: Some(test_key.to_string()),
         requesting_key_name: Some("laptop_key".to_string()),
         requested_permission: Some(AuthPermission::Write(5)),
     });
@@ -233,7 +241,7 @@ async fn test_reject_bootstrap_request() {
     let settings_store = transaction
         .get_settings()
         .expect("Failed to create settings store");
-    let key_result = settings_store.get_auth_key("laptop_key").await;
+    let key_result = settings_store.get_auth_key(&test_key).await;
     assert!(
         key_result.is_err(),
         "Key should not have been added to database"
@@ -268,7 +276,7 @@ async fn test_list_bootstrap_requests_by_status() {
         tree_id: tree_id.clone(),
         our_tips: vec![],
         peer_pubkey: None,
-        requesting_key: Some(test_key.clone()),
+        requesting_key: Some(test_key.to_string()),
         requesting_key_name: Some("test_key".to_string()),
         requested_permission: Some(AuthPermission::Write(5)),
     });
@@ -328,7 +336,7 @@ async fn test_duplicate_bootstrap_requests_same_client() {
         tree_id: tree_id.clone(),
         our_tips: vec![], // Empty tips = bootstrap needed
         peer_pubkey: None,
-        requesting_key: Some(test_key.clone()),
+        requesting_key: Some(test_key.to_string()),
         requesting_key_name: Some("laptop_key".to_string()),
         requested_permission: Some(AuthPermission::Write(5)),
     });
@@ -346,7 +354,7 @@ async fn test_duplicate_bootstrap_requests_same_client() {
         tree_id: tree_id.clone(),
         our_tips: vec![], // Empty tips = bootstrap needed
         peer_pubkey: None,
-        requesting_key: Some(test_key.clone()),
+        requesting_key: Some(test_key.to_string()),
         requesting_key_name: Some("laptop_key".to_string()),
         requested_permission: Some(AuthPermission::Write(5)),
     });
@@ -382,7 +390,7 @@ async fn test_duplicate_bootstrap_requests_same_client() {
     // Verify all requests have correct details
     for (_, request) in &pending_requests {
         assert_eq!(request.tree_id, tree_id);
-        assert_eq!(request.requesting_pubkey, test_key);
+        assert_eq!(request.requesting_pubkey, test_key.to_string());
         assert_eq!(request.requesting_key_name, "laptop_key");
         assert_eq!(request.requested_permission, AuthPermission::Write(5));
         assert!(matches!(request.status, RequestStatus::Pending));
@@ -463,7 +471,7 @@ async fn test_malformed_permission_requests() {
             tree_id: tree_id.clone(),
             our_tips: vec![],
             peer_pubkey: None,
-            requesting_key: Some(test_key.clone()),
+            requesting_key: Some(test_key.to_string()),
             requesting_key_name: Some(format!("key_for_{}", description.replace(" ", "_"))),
             requested_permission: Some(*permission),
         });
@@ -532,9 +540,10 @@ async fn test_bootstrap_with_global_permission_auto_approval() {
     // Test 1: Request Write(15) permission - should be auto-approved via global permission
     // Note: Lower priority numbers = higher permissions, so Write(15) < Write(10) in permission level
     println!("🔍 Testing Write(15) request against global Write(10) permission");
+    let (_, client_pk1) = eidetica::auth::generate_keypair();
     let sync_request = create_bootstrap_request(
         &tree_id,
-        "ed25519:client_requesting_key",
+        &client_pk1.to_string(),
         "client_key",
         AuthPermission::Write(15),
     );
@@ -564,9 +573,10 @@ async fn test_bootstrap_with_global_permission_auto_approval() {
 
     // Test 2: Request Read permission - should also be auto-approved (Read < Write in permission level)
     println!("🔍 Testing Read request against global Write(10) permission");
+    let (_, client_pk2) = eidetica::auth::generate_keypair();
     let sync_request = create_bootstrap_request(
         &tree_id,
-        "ed25519:another_client_key",
+        &client_pk2.to_string(),
         "another_client",
         AuthPermission::Read,
     );
@@ -587,9 +597,10 @@ async fn test_bootstrap_with_global_permission_auto_approval() {
 
     // Test 3: Request Admin(5) permission - should require manual approval (Admin > Write always)
     println!("🔍 Testing Admin(5) request against global Write(10) permission");
+    let (_, client_pk3) = eidetica::auth::generate_keypair();
     let sync_request = create_bootstrap_request(
         &tree_id,
-        "ed25519:admin_requesting_key",
+        &client_pk3.to_string(),
         "admin_client",
         AuthPermission::Admin(5),
     );
@@ -658,8 +669,12 @@ async fn test_bootstrap_with_existing_specific_key_permission() {
     let sync_handler = create_test_sync_handler(&sync);
 
     // Now try to bootstrap with the same key requesting Write(10) permission (should succeed)
-    let sync_request =
-        create_bootstrap_request(&tree_id, &test_key, "laptop_key", AuthPermission::Write(10));
+    let sync_request = create_bootstrap_request(
+        &tree_id,
+        &test_key.to_string(),
+        "laptop_key",
+        AuthPermission::Write(10),
+    );
 
     let context = RequestContext::default();
     let response = sync_handler.handle_request(&sync_request, &context).await;
@@ -692,9 +707,10 @@ async fn test_bootstrap_with_existing_specific_key_permission() {
     );
 
     // Verify the original test key is still there (keyed by pubkey now)
+    let test_key_str = test_key.to_string();
     assert!(
-        all_keys.contains_key(&test_key),
-        "Original test key should still exist (keyed by pubkey: {test_key})"
+        all_keys.contains_key(&test_key_str),
+        "Original test key should still exist (keyed by pubkey: {test_key_str})"
     );
 
     println!(
@@ -740,8 +756,12 @@ async fn test_bootstrap_with_existing_global_permission_no_duplicate() {
     let sync_handler = create_test_sync_handler(&sync);
 
     // Try to bootstrap with any key requesting Write(10) permission (should succeed via global)
-    let sync_request =
-        create_bootstrap_request(&tree_id, &test_key, "laptop_key", AuthPermission::Write(10));
+    let sync_request = create_bootstrap_request(
+        &tree_id,
+        &test_key.to_string(),
+        "laptop_key",
+        AuthPermission::Write(10),
+    );
 
     let context = RequestContext::default();
     let response = sync_handler.handle_request(&sync_request, &context).await;
@@ -1008,7 +1028,7 @@ async fn test_global_permission_enables_transactions() {
 
     // Discover which SigKeys this public key can use
     // This will return a global SigKey since the client is using global permissions
-    let sigkeys = Database::find_sigkeys(&client_instance, &tree_id, &client_key_str)
+    let sigkeys = Database::find_sigkeys(&client_instance, &tree_id, &client_key_id)
         .await
         .expect("Should find valid SigKeys");
 

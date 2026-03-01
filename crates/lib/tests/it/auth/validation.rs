@@ -4,9 +4,7 @@ use eidetica::{
     Database, Entry,
     auth::{
         AuthSettings,
-        crypto::{
-            PrivateKey, format_public_key, generate_keypair, sign_entry, verify_entry_signature,
-        },
+        crypto::{PrivateKey, generate_keypair, sign_entry, verify_entry_signature},
         types::{AuthKey, DelegationStep, KeyHint, KeyStatus, Permission, SigInfo, SigKey},
         validation::AuthValidator,
     },
@@ -183,7 +181,7 @@ async fn test_multiple_authenticated_entries() {
         .get_entry(&entry_id1)
         .await
         .expect("Failed to get entry1");
-    assert_eq!(entry1.sig.key, SigKey::from_pubkey(key_id.to_string()));
+    assert_eq!(entry1.sig.key, SigKey::from_pubkey(&key_id));
     assert!(
         tree.verify_entry_signature(&entry_id1)
             .await
@@ -194,7 +192,7 @@ async fn test_multiple_authenticated_entries() {
         .get_entry(&entry_id2)
         .await
         .expect("Failed to get entry2");
-    assert_eq!(entry2.sig.key, SigKey::from_pubkey(key_id.to_string()));
+    assert_eq!(entry2.sig.key, SigKey::from_pubkey(&key_id));
     assert!(
         tree.verify_entry_signature(&entry_id2)
             .await
@@ -310,14 +308,13 @@ async fn test_entry_validation_with_mixed_key_states() {
 async fn test_entry_validation_cache_behavior() {
     let mut validator = AuthValidator::new();
     let (signing_key, verifying_key) = generate_keypair();
-    let pubkey_str = format_public_key(&verifying_key);
 
     let auth_key = AuthKey::active(Some("TEST_KEY"), Permission::Write(10));
 
     // Create auth settings with the key for validation testing
     let mut auth_settings = AuthSettings::new();
     auth_settings
-        .add_key(&pubkey_str, auth_key.clone())
+        .add_key(&verifying_key, auth_key.clone())
         .unwrap();
 
     // Create a signed entry
@@ -325,7 +322,7 @@ async fn test_entry_validation_cache_behavior() {
         .build()
         .expect("Entry should build successfully");
     entry.sig = SigInfo::builder()
-        .key(SigKey::from_pubkey(&pubkey_str))
+        .key(SigKey::from_pubkey(&verifying_key))
         .build();
     let signature = sign_entry(&entry, &signing_key).unwrap();
     entry.sig.sig = Some(signature);
@@ -340,7 +337,7 @@ async fn test_entry_validation_cache_behavior() {
 
     let mut revoked_auth_settings = AuthSettings::new();
     revoked_auth_settings
-        .add_key(&pubkey_str, revoked_auth_key)
+        .add_key(&verifying_key, revoked_auth_key)
         .unwrap();
 
     // Validate with revoked key - should fail (returns Ok(false) since no active key could verify)
@@ -364,14 +361,13 @@ async fn test_entry_validation_cache_behavior() {
 async fn test_entry_validation_with_malformed_keys() {
     let mut validator = AuthValidator::new();
     let (signing_key, verifying_key) = generate_keypair();
-    let pubkey_str = format_public_key(&verifying_key);
 
     // Create settings with a valid key for comparison
     let auth_key = AuthKey::active(Some("TEST_KEY"), Permission::Write(10));
 
     let mut auth_settings = AuthSettings::new();
     auth_settings
-        .add_key(&pubkey_str, auth_key.clone())
+        .add_key(&verifying_key, auth_key.clone())
         .unwrap();
 
     // Create entry signed with correct key
@@ -379,7 +375,7 @@ async fn test_entry_validation_with_malformed_keys() {
         .build()
         .expect("Entry should build successfully");
     correct_entry.sig = SigInfo::builder()
-        .key(SigKey::from_pubkey(&pubkey_str))
+        .key(SigKey::from_pubkey(&verifying_key))
         .build();
     let correct_signature = sign_entry(&correct_entry, &signing_key).unwrap();
     correct_entry.sig.sig = Some(correct_signature);
@@ -427,7 +423,7 @@ async fn test_entry_validation_with_malformed_keys() {
         .build()
         .expect("Entry should build successfully");
     wrong_signature_entry.sig = SigInfo::builder()
-        .key(SigKey::from_pubkey(&pubkey_str))
+        .key(SigKey::from_pubkey(&verifying_key))
         .build();
 
     // Sign with wrong key but try to validate against correct key
@@ -485,20 +481,19 @@ async fn test_entry_validation_with_invalid_signatures() {
     let mut validator = AuthValidator::new();
     let (signing_key, verifying_key) = generate_keypair();
     let wrong_pubkey = PrivateKey::generate().public_key();
-    let pubkey_str = format_public_key(&verifying_key);
 
     // Create settings with the correct public key
     let auth_key = AuthKey::active(Some("TEST_KEY"), Permission::Write(10));
 
     let mut auth_settings = AuthSettings::new();
-    auth_settings.add_key(&pubkey_str, auth_key).unwrap();
+    auth_settings.add_key(&verifying_key, auth_key).unwrap();
 
     // Create entry signed with correct key
     let mut correct_entry = Entry::root_builder()
         .build()
         .expect("Entry should build successfully");
     correct_entry.sig = SigInfo::builder()
-        .key(SigKey::from_pubkey(&pubkey_str))
+        .key(SigKey::from_pubkey(&verifying_key))
         .build();
     let correct_signature = sign_entry(&correct_entry, &signing_key).unwrap();
     correct_entry.sig.sig = Some(correct_signature);
@@ -537,15 +532,14 @@ async fn test_entry_validation_with_invalid_signatures() {
 #[tokio::test]
 async fn test_sigkey_tampering_invalidates_signature() {
     let (signing_key, verifying_key) = generate_keypair();
-    let other_pubkey_str = PrivateKey::generate().public_key().to_prefixed_string();
-    let pubkey_str = format_public_key(&verifying_key);
+    let other_pubkey = PrivateKey::generate().public_key();
 
     // Create and sign an entry with a pubkey hint
     let mut entry = Entry::root_builder()
         .build()
         .expect("Entry should build successfully");
     entry.sig = SigInfo::builder()
-        .key(SigKey::from_pubkey(&pubkey_str))
+        .key(SigKey::from_pubkey(&verifying_key))
         .build();
     let signature = sign_entry(&entry, &signing_key).unwrap();
     entry.sig.sig = Some(signature);
@@ -556,7 +550,7 @@ async fn test_sigkey_tampering_invalidates_signature() {
 
     // Tamper with pubkey hint - should fail verification
     let mut tampered_pubkey = entry.clone();
-    tampered_pubkey.sig.key = SigKey::from_pubkey(&other_pubkey_str);
+    tampered_pubkey.sig.key = SigKey::from_pubkey(&other_pubkey);
     assert!(
         verify_entry_signature(&tampered_pubkey, &verifying_key).is_err(),
         "Tampering with pubkey hint should invalidate signature"
@@ -577,7 +571,7 @@ async fn test_sigkey_tampering_invalidates_signature() {
             tree: "fake_tree".to_string(),
             tips: vec![],
         }],
-        hint: KeyHint::from_pubkey(&pubkey_str),
+        hint: KeyHint::from_pubkey(&verifying_key),
     };
     assert!(
         verify_entry_signature(&tampered_delegation, &verifying_key).is_err(),

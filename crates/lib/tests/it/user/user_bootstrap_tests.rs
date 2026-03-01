@@ -7,7 +7,7 @@ use eidetica::{
     Database, Instance, Result,
     auth::{
         AuthKey, Permission,
-        crypto::{PublicKey, format_public_key, generate_keypair},
+        crypto::{PublicKey, generate_keypair},
         settings::AuthSettings,
     },
     constants::SETTINGS,
@@ -57,8 +57,7 @@ async fn setup_user_with_database() -> Result<(Instance, User, Database, Sync, I
 
     // Add admin to the database's auth configuration so sync handler can modify the database
     let device_key_name = "admin";
-    let device_signing_key = instance.device_key().clone();
-    let device_pubkey = format_public_key(&device_signing_key.public_key());
+    let device_pubkey = instance.device_key().public_key();
 
     // Add admin as Admin to the database (keyed by pubkey, name is device_key_name)
     let tx = database
@@ -92,17 +91,16 @@ async fn setup_user_with_database() -> Result<(Instance, User, Database, Sync, I
 }
 
 /// Create a client keypair and formatted public key
-fn create_client_key() -> (eidetica::auth::crypto::PrivateKey, String) {
+fn create_client_key() -> (eidetica::auth::crypto::PrivateKey, PublicKey) {
     let (signing_key, verifying_key) = generate_keypair();
-    let pubkey = format_public_key(&verifying_key);
-    (signing_key, pubkey)
+    (signing_key, verifying_key)
 }
 
 /// Create and submit a bootstrap request, returning the request ID
 async fn create_pending_request(
     sync: &Sync,
     tree_id: &ID,
-    client_pubkey: &str,
+    client_pubkey: &PublicKey,
     permission: Permission,
 ) -> String {
     let handler = SyncHandlerImpl::new(
@@ -114,7 +112,7 @@ async fn create_pending_request(
         tree_id: tree_id.clone(),
         our_tips: vec![], // Empty tips = bootstrap needed
         peer_pubkey: None,
-        requesting_key: Some(client_pubkey.to_string()),
+        requesting_key: Some(client_pubkey.to_string()), // Convert PublicKey to string for protocol
         requesting_key_name: Some("laptop_key".to_string()),
         requested_permission: Some(permission),
     });
@@ -139,14 +137,11 @@ async fn grant_user_permission_on_database(
     user_key_id: &PublicKey,
     permission: Permission,
 ) -> Result<()> {
-    // Get user's public key string representation
-    let pubkey = user_key_id.to_string();
-
     // Update database auth settings using SettingsStore API (keyed by pubkey)
     let tx = database.new_transaction().await?;
     let settings_store = tx.get_settings()?;
     settings_store
-        .set_auth_key(&pubkey, AuthKey::active(None, permission))
+        .set_auth_key(user_key_id, AuthKey::active(None, permission))
         .await?;
     tx.commit().await?;
 
@@ -508,8 +503,7 @@ async fn test_multiple_users() {
 
     // Add admin to Alice's database for sync
     let device_key_name = "admin";
-    let device_signing_key = instance.device_key().clone();
-    let device_pubkey = format_public_key(&device_signing_key.public_key());
+    let device_pubkey = instance.device_key().public_key();
     let alice_tx = alice_db
         .new_transaction()
         .await
@@ -706,8 +700,7 @@ async fn test_user_without_admin_cannot_modify() {
 
     // Add admin to Alice's database for sync
     let device_key_name = "admin";
-    let device_signing_key = instance.device_key().clone();
-    let device_pubkey = format_public_key(&device_signing_key.public_key());
+    let device_pubkey = instance.device_key().public_key();
     let alice_tx = alice_db
         .new_transaction()
         .await
@@ -754,7 +747,7 @@ async fn test_user_without_admin_cannot_modify() {
     bob.map_key(
         &bob_key,
         &tree_id,
-        eidetica::auth::SigKey::from_pubkey(bob_key.to_string()),
+        eidetica::auth::SigKey::from_pubkey(&bob_key),
     )
     .await
     .expect("Failed to update Bob's key mapping");

@@ -309,9 +309,7 @@ async fn test_collaborative_database_with_global_permissions() {
     let bob_key = bob.get_default_key().expect("Bob get default key");
 
     // Bob discovers available SigKeys for his public key
-    let bob_pubkey = bob_key.to_string();
-
-    let sigkeys = Database::find_sigkeys(&instance, &db_id, &bob_pubkey)
+    let sigkeys = Database::find_sigkeys(&instance, &db_id, &bob_key)
         .await
         .expect("Bob discovers SigKeys");
 
@@ -542,9 +540,8 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
 
     // Bob discovers available SigKeys for his public key
     println!("\n🔍 Bob discovering available SigKeys...");
-    let bob_pubkey = bob_key.to_string();
 
-    let sigkeys = Database::find_sigkeys(&bob_instance, &db_id, &bob_pubkey)
+    let sigkeys = Database::find_sigkeys(&bob_instance, &db_id, &bob_key)
         .await
         .expect("Bob discovers SigKeys");
 

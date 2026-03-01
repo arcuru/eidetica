@@ -2,14 +2,14 @@
 
 use super::*;
 use crate::{
-    auth::crypto::{format_public_key, generate_keypair},
+    auth::crypto::{PublicKey, generate_keypair},
     crdt::Doc,
     entry::ID,
 };
 
-fn generate_public_key() -> String {
-    let (_, verifying_key) = generate_keypair();
-    format_public_key(&verifying_key)
+fn generate_public_key() -> PublicKey {
+    let (_, pubkey) = generate_keypair();
+    pubkey
 }
 
 #[test]
@@ -409,7 +409,7 @@ fn test_key_hint_types() {
 
     // Test global hint
     let hint = KeyHint::global(&pubkey);
-    assert_eq!(hint.pubkey, Some(pubkey.clone()));
+    assert_eq!(hint.pubkey, Some(pubkey));
     assert!(hint.is_global());
     assert!(hint.is_set());
 
@@ -649,7 +649,8 @@ fn test_sig_info_is_unsigned() {
     assert!(default.is_unsigned());
 
     // With pubkey hint - not unsigned
-    let with_hint = SigInfo::from_pubkey("ed25519:ABC");
+    let test_pubkey = generate_public_key();
+    let with_hint = SigInfo::from_pubkey(&test_pubkey);
     assert!(!with_hint.is_unsigned());
 
     // With name hint - not unsigned
@@ -676,6 +677,8 @@ fn test_sig_info_is_unsigned() {
 
 #[test]
 fn test_sig_info_malformed_reason() {
+    let test_pubkey = generate_public_key();
+
     // Valid states: unsigned (default)
     let default = SigInfo::default();
     assert!(default.malformed_reason().is_none());
@@ -683,7 +686,7 @@ fn test_sig_info_malformed_reason() {
     // Valid states: properly signed with hint
     let signed = SigInfo {
         sig: Some("signature".to_string()),
-        key: SigKey::from_pubkey("ed25519:ABC"),
+        key: SigKey::from_pubkey(&test_pubkey),
     };
     assert!(signed.malformed_reason().is_none());
 
@@ -698,7 +701,7 @@ fn test_sig_info_malformed_reason() {
     assert!(signed_delegation.malformed_reason().is_none());
 
     // Malformed: hint but no signature
-    let hint_no_sig = SigInfo::from_pubkey("ed25519:ABC");
+    let hint_no_sig = SigInfo::from_pubkey(&test_pubkey);
     assert_eq!(
         hint_no_sig.malformed_reason(),
         Some("entry has key hint but no signature")

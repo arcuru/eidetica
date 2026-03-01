@@ -11,7 +11,7 @@ use serde_json;
 use crate::{
     Error, Instance, Result, Transaction, WeakInstance,
     auth::{
-        crypto::{PrivateKey, format_public_key},
+        crypto::{PrivateKey, PublicKey},
         errors::AuthError,
         settings::AuthSettings,
         types::{AuthKey, Permission, SigKey},
@@ -42,10 +42,10 @@ pub struct DatabaseKey {
 impl DatabaseKey {
     /// Identity = pubkey derived from signing key. Most common case.
     pub fn new(signing_key: PrivateKey) -> Self {
-        let pubkey_str = format_public_key(&signing_key.public_key());
+        let pubkey = signing_key.public_key();
         Self {
             signing_key: Box::new(signing_key),
-            identity: SigKey::from_pubkey(pubkey_str),
+            identity: SigKey::from_pubkey(&pubkey),
         }
     }
 
@@ -59,10 +59,10 @@ impl DatabaseKey {
 
     /// Identity = global permission with actual pubkey embedded for verification.
     pub fn global(signing_key: PrivateKey) -> Self {
-        let pubkey_str = format_public_key(&signing_key.public_key());
+        let pubkey = signing_key.public_key();
         Self {
             signing_key: Box::new(signing_key),
-            identity: SigKey::global(pubkey_str),
+            identity: SigKey::global(&pubkey),
         }
     }
 
@@ -159,7 +159,7 @@ impl Database {
         initial_settings: Doc,
     ) -> Result<Self> {
         let mut initial_settings = initial_settings;
-        let pubkey_str = format_public_key(&signing_key.public_key());
+        let pubkey = signing_key.public_key();
 
         // Reject preconfigured auth — Database::create owns auth bootstrapping entirely.
         if initial_settings.get("auth").is_some() {
@@ -172,7 +172,7 @@ impl Database {
 
         // Bootstrap auth with the signing key as Admin(0)
         let mut auth_settings = AuthSettings::new();
-        auth_settings.add_key(&pubkey_str, AuthKey::active(None, Permission::Admin(0)))?;
+        auth_settings.add_key(&pubkey, AuthKey::active(None, Permission::Admin(0)))?;
         initial_settings.set("auth", auth_settings.as_doc().clone());
 
         // Create the initial root entry using a temporary Database and Transaction.
@@ -325,13 +325,13 @@ impl Database {
         let auth_settings = settings_store.auth_snapshot().await?;
 
         // Derive actual pubkey from the signing key
-        let actual_pubkey = format_public_key(&key.signing_key().public_key());
+        let actual_pubkey = key.signing_key().public_key();
 
         match key.identity() {
             SigKey::Direct(hint) if hint.is_global() => {
                 // Verify the embedded pubkey matches the actual signing key
-                if let Some(embedded_pubkey) = hint.pubkey.as_deref()
-                    && embedded_pubkey != actual_pubkey
+                if let Some(embedded_pubkey) = &hint.pubkey
+                    && *embedded_pubkey != actual_pubkey
                 {
                     return Err(Error::Auth(AuthError::SigningKeyMismatch {
                         reason: format!(
@@ -368,9 +368,10 @@ impl Database {
                         }));
                     }
                     // Find the named key whose pubkey matches our actual signing key
+                    let actual_pubkey_str = actual_pubkey.to_string();
                     let (_, auth_key) = matches
                         .iter()
-                        .find(|(pk, _)| *pk == actual_pubkey)
+                        .find(|(pk, _)| *pk == actual_pubkey_str)
                         .ok_or_else(|| {
                             Error::Auth(AuthError::SigningKeyMismatch {
                                 reason: format!(
@@ -424,16 +425,13 @@ impl Database {
     /// # use eidetica::*;
     /// # use eidetica::database::DatabaseKey;
     /// # use eidetica::backend::database::InMemory;
-    /// # use eidetica::auth::crypto::{generate_keypair, format_public_key};
+    /// # use eidetica::auth::crypto::generate_keypair;
     /// # use eidetica::auth::types::SigKey;
     /// # #[tokio::main]
     /// # async fn main() -> Result<()> {
     /// # let instance = Instance::open(Box::new(InMemory::new())).await?;
-    /// # let (signing_key, verifying_key) = generate_keypair();
+    /// # let (signing_key, pubkey) = generate_keypair();
     /// # let root_id = "database_root_id".into();
-    /// // Get the public key string
-    /// let pubkey = format_public_key(&verifying_key);
-    ///
     /// // Find all SigKeys this pubkey can use (sorted highest permission first)
     /// let sigkeys = Database::find_sigkeys(&instance, &root_id, &pubkey).await?;
     ///
@@ -448,7 +446,7 @@ impl Database {
     pub async fn find_sigkeys(
         instance: &Instance,
         root_id: &ID,
-        pubkey: &str,
+        pubkey: &PublicKey,
     ) -> Result<Vec<(SigKey, Permission)>> {
         // Create temporary database to load settings (no key source needed for reading)
         let temp_db = Self::open_unauthenticated(root_id.clone(), instance)?;

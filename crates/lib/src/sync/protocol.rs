@@ -117,6 +117,7 @@ pub enum SyncRequest {
 }
 
 /// Response messages returned from a sync peer.
+#[allow(clippy::large_enum_variant)]
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum SyncResponse {
     /// Handshake response

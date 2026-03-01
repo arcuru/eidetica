@@ -101,8 +101,8 @@ pub async fn assert_entry_authentication(tree: &Database, entry_id: &ID, expecte
 
     // Check if the hint matches the expected key (could be pubkey or name)
     let hint = sig_info.hint();
-    let matches =
-        hint.pubkey.as_deref() == Some(expected_key) || hint.name.as_deref() == Some(expected_key);
+    let matches = hint.pubkey.as_ref().map(|k| k.to_string()).as_deref() == Some(expected_key)
+        || hint.name.as_deref() == Some(expected_key);
     assert!(
         matches,
         "Entry not signed by {expected_key}, got hint: {:?}",

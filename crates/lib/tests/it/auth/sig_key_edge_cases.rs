@@ -48,7 +48,7 @@ async fn test_direct_key_name_hint() -> Result<()> {
     let tree = user.create_database(Doc::new(), &key_id).await?;
 
     // Add a display name to the bootstrapped key (which starts with no name)
-    rename_auth_key(&tree, &key_id.to_string(), Some("test_name")).await;
+    rename_auth_key(&tree, &key_id, Some("test_name")).await;
 
     // Test resolving by name hint - should find key with matching name
     let name_key = SigKey::from_name("test_name");
@@ -167,7 +167,11 @@ async fn test_delegation_with_unicode_keys() -> Result<()> {
 #[tokio::test]
 async fn test_sig_info_with_signature_no_key() {
     let sig_info = SigInfo::builder()
-        .key(SigKey::from_pubkey("")) // Empty key
+        .key(SigKey::Direct(KeyHint {
+            pubkey: None,
+            name: None,
+            is_global: false,
+        })) // Empty key
         .sig("fake_signature")
         .build();
 
@@ -181,7 +185,7 @@ async fn test_sig_info_with_signature_no_key() {
 #[tokio::test]
 async fn test_sig_info_with_key_no_signature() {
     let sig_info = SigInfo::builder()
-        .key(SigKey::from_pubkey("valid_key"))
+        .key(SigKey::from_name("valid_key"))
         .build(); // No signature
 
     // Should serialize/deserialize correctly
@@ -264,7 +268,7 @@ async fn test_circular_delegation_simple() -> Result<()> {
             tree: "self_reference".to_string(),
             tips: tree_tips,
         }],
-        hint: KeyHint::from_pubkey(key_id.to_string()),
+        hint: KeyHint::from_pubkey(&key_id),
     };
 
     // Add self-referencing delegation to the tree
