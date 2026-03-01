@@ -7,10 +7,11 @@ use tracing::{debug, info};
 
 use super::{
     error::SyncError,
-    peer_types::{Address, ConnectionState, PeerId, PeerInfo, PeerStatus},
+    peer_types::{Address, ConnectionState, PeerInfo, PeerStatus},
 };
 use crate::{
     Error, Result, Transaction, auth::crypto::PublicKey, crdt::doc::path, store::DocStore,
+    sync::PeerId,
 };
 
 /// Private constants for peer management subtree names
@@ -46,7 +47,7 @@ impl<'a> PeerManager<'a> {
     ) -> Result<()> {
         let pk_str = pubkey.to_string();
         let now = self.txn.now_rfc3339()?;
-        let peer_info = PeerInfo::new_at(&pk_str, display_name, now);
+        let peer_info = PeerInfo::new_at(pubkey, display_name, now);
         let peers = self.txn.get_store::<DocStore>(PEERS_SUBTREE).await?;
 
         // Check if peer already exists using path-based check
@@ -325,7 +326,7 @@ impl<'a> PeerManager<'a> {
             .ok();
 
         let mut peer_info = PeerInfo {
-            id: PeerId::new(peer_pubkey),
+            id: PeerId::new(PublicKey::from_prefixed_string(&peer_pubkey)?),
             display_name,
             first_seen,
             last_seen,
@@ -561,7 +562,11 @@ impl<'a> PeerManager<'a> {
             .ok()
             .and_then(|json| serde_json::from_str(&json).ok())
             .unwrap_or_else(Vec::new);
-        Ok(string_vec.into_iter().map(PeerId::new).collect())
+        Ok(string_vec
+            .into_iter()
+            .filter_map(|s| PublicKey::from_prefixed_string(&s).ok())
+            .map(PeerId::new)
+            .collect())
     }
 
     /// Check if a tree is synced with a specific peer.

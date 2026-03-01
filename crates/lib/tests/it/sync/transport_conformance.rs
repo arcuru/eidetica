@@ -30,7 +30,7 @@ async fn setup_sync_with_peers<F>(
     factory: &F,
     db1: &Instance,
     db2: &Instance,
-) -> Result<(Sync, Sync, String, String)>
+) -> Result<(Sync, Sync, PublicKey, PublicKey)>
 where
     F: TransportFactory,
 {
@@ -71,12 +71,7 @@ where
         .await?;
     sync2.add_peer_address(&peer1_pubkey, address1).await?;
 
-    Ok((
-        sync1,
-        sync2,
-        peer1_pubkey.to_string(),
-        peer2_pubkey.to_string(),
-    ))
+    Ok((sync1, sync2, peer1_pubkey, peer2_pubkey))
 }
 
 /// Set up trees with bidirectional sync hooks
@@ -88,8 +83,8 @@ async fn setup_sync_hooks(
     key_id2: &PublicKey,
     sync1: &Sync,
     sync2: &Sync,
-    peer1_pubkey: &str,
-    peer2_pubkey: &str,
+    peer1_pubkey: &PublicKey,
+    peer2_pubkey: &PublicKey,
 ) -> Result<(Database, Database)> {
     let mut settings1 = Doc::new();
     settings1.set("name", "test_tree_1");
@@ -102,10 +97,10 @@ async fn setup_sync_hooks(
     // Set up sync callbacks using WriteCallback directly
     // Clone sync instances and peer pubkeys for use in callbacks
     let sync1_clone = sync1.clone();
-    let peer2_pubkey_owned = peer2_pubkey.to_string();
+    let peer2_pk = peer2_pubkey.clone();
     tree1.on_local_write(move |entry, db, _instance| {
         let sync = sync1_clone.clone();
-        let peer = PeerId::new(peer2_pubkey_owned.clone());
+        let peer = PeerId::new(peer2_pk.clone());
         let entry_id = entry.id();
         let tree_id = db.root_id().clone();
         async move {
@@ -115,10 +110,10 @@ async fn setup_sync_hooks(
     })?;
 
     let sync2_clone = sync2.clone();
-    let peer1_pubkey_owned = peer1_pubkey.to_string();
+    let peer1_pk = peer1_pubkey.clone();
     tree2.on_local_write(move |entry, db, _instance| {
         let sync = sync2_clone.clone();
-        let peer = PeerId::new(peer1_pubkey_owned.clone());
+        let peer = PeerId::new(peer1_pk.clone());
         let entry_id = entry.id();
         let tree_id = db.root_id().clone();
         async move {

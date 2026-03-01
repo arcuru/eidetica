@@ -27,7 +27,6 @@ async fn test_register_sync_peer_tracks_relationship_immediately() -> Result<()>
 
     // Generate a fake peer pubkey
     let (_, peer_verifying_key) = generate_keypair();
-    let peer_pubkey = peer_verifying_key.to_string();
 
     // Before registering, peer should not exist
     let peers_before = sync.list_peers().await?;
@@ -50,7 +49,7 @@ async fn test_register_sync_peer_tracks_relationship_immediately() -> Result<()>
     // Verify peer exists immediately
     let peers_after = sync.list_peers().await?;
     assert_eq!(peers_after.len(), 1, "Peer should be registered");
-    assert_eq!(peers_after[0].id.as_str(), peer_pubkey);
+    assert_eq!(*peers_after[0].id.public_key(), peer_verifying_key);
     assert_eq!(peers_after[0].display_name, Some("Test Peer".to_string()));
 
     // Verify the peer has the address

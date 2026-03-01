@@ -3,35 +3,29 @@
 //! This module defines the data structures used to track remote peers,
 //! their sync relationships, and simple address information for transports.
 
-use std::borrow::Borrow;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::Result;
 use crate::auth::crypto::PublicKey;
 
-/// A peer's unique identifier, derived from their public key.
+/// A peer's unique identifier, wrapping their [`PublicKey`].
 ///
-/// The format is `ed25519:{base64_encoded_key}`.
+/// This is syntactic sugar for a `PublicKey` used in the peer context.
+/// The serialized format is `ed25519:{base64_encoded_key}` (via `PublicKey`'s serde).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct PeerId(String);
+pub struct PeerId(PublicKey);
 
 impl PeerId {
-    /// Create a new PeerId from a string.
-    pub fn new(s: impl Into<String>) -> Self {
-        Self(s.into())
+    /// Create a new PeerId from a [`PublicKey`].
+    pub fn new(pk: PublicKey) -> Self {
+        Self(pk)
     }
 
-    /// Get the underlying string representation.
-    pub fn as_str(&self) -> &str {
+    /// Get the underlying public key.
+    pub fn public_key(&self) -> &PublicKey {
         &self.0
-    }
-
-    /// Parse the underlying string back into a [`PublicKey`].
-    pub fn to_public_key(&self) -> Result<PublicKey> {
-        PublicKey::from_prefixed_string(&self.0).map_err(Into::into)
     }
 }
 
@@ -41,45 +35,15 @@ impl fmt::Display for PeerId {
     }
 }
 
-impl AsRef<str> for PeerId {
-    fn as_ref(&self) -> &str {
-        &self.0
-    }
-}
-
-impl Borrow<str> for PeerId {
-    fn borrow(&self) -> &str {
-        &self.0
-    }
-}
-
-impl From<String> for PeerId {
-    fn from(s: String) -> Self {
-        Self(s)
-    }
-}
-
-impl From<&str> for PeerId {
-    fn from(s: &str) -> Self {
-        Self(s.to_string())
-    }
-}
-
-impl From<&String> for PeerId {
-    fn from(s: &String) -> Self {
-        Self(s.clone())
-    }
-}
-
 impl From<PublicKey> for PeerId {
     fn from(pk: PublicKey) -> Self {
-        Self(pk.to_string())
+        Self(pk)
     }
 }
 
 impl From<&PublicKey> for PeerId {
     fn from(pk: &PublicKey) -> Self {
-        Self(pk.to_string())
+        Self(pk.clone())
     }
 }
 

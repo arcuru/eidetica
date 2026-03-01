@@ -449,11 +449,10 @@ impl BackgroundSync {
     async fn send_to_peer(&self, peer: &PeerId, entries: Vec<Entry>) -> Result<()> {
         // Get peer address from sync tree (extract and drop transaction before await)
         let address = {
-            let peer_pk = peer.to_public_key()?;
             let sync_tree = self.get_sync_tree().await?;
             let txn = sync_tree.new_transaction().await?;
             let peer_info = PeerManager::new(&txn)
-                .get_peer_info(&peer_pk)
+                .get_peer_info(peer.public_key())
                 .await?
                 .ok_or_else(|| SyncError::PeerNotFound(peer.to_string()))?;
 
@@ -661,13 +660,12 @@ impl BackgroundSync {
 
             // Get peer info and tree list from sync tree (extract and drop transaction before await)
             let (address, sync_trees) = {
-                let peer_pk = peer_id.to_public_key()?;
                 let sync_tree = self.get_sync_tree().await?;
                 let txn = sync_tree.new_transaction().await?;
                 let peer_manager = PeerManager::new(&txn);
 
                 let peer_info = peer_manager
-                    .get_peer_info(&peer_pk)
+                    .get_peer_info(peer_id.public_key())
                     .await?
                     .ok_or_else(|| SyncError::PeerNotFound(peer_id.to_string()))?;
 
@@ -678,7 +676,7 @@ impl BackgroundSync {
                     .clone();
 
                 // Find all trees that sync with this peer from sync tree
-                let sync_trees = peer_manager.get_peer_trees(&peer_pk).await?;
+                let sync_trees = peer_manager.get_peer_trees(peer_id.public_key()).await?;
 
                 (address, sync_trees)
             }; // Transaction is dropped here

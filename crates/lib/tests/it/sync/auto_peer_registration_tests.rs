@@ -38,7 +38,6 @@ async fn test_handshake_automatically_registers_peer() {
 
     // Generate a peer key
     let (_, peer_verifying_key) = generate_keypair();
-    let peer_pubkey = peer_verifying_key.to_string();
 
     // Verify peer doesn't exist yet
     assert!(
@@ -82,7 +81,7 @@ async fn test_handshake_automatically_registers_peer() {
     assert!(peer_info.is_some());
 
     let peer_info = peer_info.unwrap();
-    assert_eq!(peer_info.id.as_str(), peer_pubkey);
+    assert_eq!(*peer_info.id.public_key(), peer_verifying_key);
     assert_eq!(peer_info.display_name, Some("Test Peer".to_string()));
 
     // Verify addresses were added (both advertised and remote)
@@ -115,7 +114,6 @@ async fn test_duplicate_handshakes_handled_gracefully() {
     let handler = SyncHandlerImpl::new(instance, sync_tree_id);
 
     let (_, peer_verifying_key) = generate_keypair();
-    let peer_pubkey = peer_verifying_key.to_string();
 
     let handshake_request = HandshakeRequest {
         device_id: peer_verifying_key.clone(),
@@ -143,7 +141,7 @@ async fn test_duplicate_handshakes_handled_gracefully() {
     // Peer should still exist and be registered only once
     let peers = sync.list_peers().await.unwrap();
     assert_eq!(peers.len(), 1);
-    assert_eq!(peers[0].id.as_str(), peer_pubkey);
+    assert_eq!(*peers[0].id.public_key(), peer_verifying_key);
 }
 
 /// Test that handshake works without advertised addresses
@@ -156,7 +154,6 @@ async fn test_handshake_without_listen_addresses() {
     let handler = SyncHandlerImpl::new(instance, sync_tree_id);
 
     let (_, peer_verifying_key) = generate_keypair();
-    let peer_pubkey = peer_verifying_key.to_string();
 
     // Handshake with empty listen_addresses
     let handshake_request = HandshakeRequest {
@@ -185,7 +182,7 @@ async fn test_handshake_without_listen_addresses() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(peer_info.id.as_str(), peer_pubkey);
+    assert_eq!(*peer_info.id.public_key(), peer_verifying_key);
 
     let addresses = sync
         .get_peer_addresses(&peer_verifying_key, None)
@@ -225,7 +222,6 @@ async fn test_bootstrap_sync_tracks_tree_peer_relationship() {
 
     // Generate peer credentials
     let (_, peer_verifying_key) = generate_keypair();
-    let peer_pubkey = peer_verifying_key.to_string();
 
     // Register the peer first (would normally happen during handshake)
     sync.register_peer(&peer_verifying_key, Some("Test Peer"))
@@ -259,7 +255,7 @@ async fn test_bootstrap_sync_tracks_tree_peer_relationship() {
 
     // Verify peer can be found in tree's peer list
     let tree_peers = sync.get_tree_peers(&tree_id).await.unwrap();
-    assert!(tree_peers.contains(&PeerId::new(&peer_pubkey)));
+    assert!(tree_peers.contains(&PeerId::new(peer_verifying_key.clone())));
 
     // Verify tree can be found in peer's tree list
     let peer_trees = sync.get_peer_trees(&peer_verifying_key).await.unwrap();

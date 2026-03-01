@@ -78,14 +78,16 @@ impl SyncQueue {
 
 #[cfg(test)]
 mod tests {
+    use crate::auth::crypto::PublicKey;
+
     use super::*;
 
     #[test]
     fn test_enqueue_and_drain() {
         let queue = SyncQueue::new();
 
-        let peer1 = PeerId::new("peer1");
-        let peer2 = PeerId::new("peer2");
+        let peer1 = PeerId::new(PublicKey::random());
+        let peer2 = PeerId::new(PublicKey::random());
         let entry1 = ID::new("entry1");
         let entry2 = ID::new("entry2");
         let tree = ID::new("tree1");
