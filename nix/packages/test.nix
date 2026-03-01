@@ -207,6 +207,12 @@ in {
   # Common build artifacts (compiled test binaries, shared by builds and runners)
   artifacts = testCheckArtifacts;
 
+  # Nextest archive (portable test binary archive for runners and integration tests)
+  archive = test-archive;
+
+  # Source tree (for --workspace-remap in archive-based test runs)
+  inherit (baseArgs) src;
+
   # CI build derivations (for nix build .#test.<backend>)
   builds =
     {

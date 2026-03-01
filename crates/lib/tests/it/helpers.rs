@@ -93,9 +93,7 @@ pub async fn test_backend() -> Box<dyn BackendImpl> {
             }
             #[cfg(not(all(unix, feature = "service")))]
             {
-                panic!(
-                    "TEST_BACKEND=service requires unix and the 'service' feature to be enabled"
-                )
+                panic!("TEST_BACKEND=service requires unix and the 'service' feature to be enabled")
             }
         }
         Ok("inmemory") | Ok("") | Err(_) => Box::new(InMemory::new()),
@@ -109,13 +107,31 @@ pub async fn test_backend() -> Box<dyn BackendImpl> {
 
 /// Starts a new service daemon and returns a `RemoteBackend` connected to it.
 ///
-/// Each call starts its own daemon on a unique Unix socket, maintaining the same
-/// isolation semantics as other backends. Prefers SQLite in-memory if the `sqlite`
-/// feature is enabled, otherwise falls back to the bare `InMemory` backend.
+/// If `EIDETICA_SOCKET` is set, connects to an external daemon at that path
+/// instead of spawning an in-process one. This enables integration tests that
+/// start the real `eidetica daemon` binary.
+///
+/// **Note:** When using `EIDETICA_SOCKET`, all tests share a single daemon
+/// (and therefore a single backend). State created by one test (users, databases)
+/// is visible to all others, so only a subset of tests will pass — most assume
+/// a clean backend. The full test suite should use the default in-process mode,
+/// which gives each test its own isolated daemon.
+///
+/// Otherwise, each call starts its own in-process daemon on a unique Unix socket,
+/// maintaining the same isolation semantics as other backends. Prefers SQLite
+/// in-memory if the `sqlite` feature is enabled, otherwise falls back to the
+/// bare `InMemory` backend.
 #[cfg(all(unix, feature = "service"))]
 async fn start_service_backend() -> eidetica::service::RemoteBackend {
-    use eidetica::backend::BackendImpl;
+    // If EIDETICA_SOCKET is set, connect to an external daemon
+    if let Ok(socket_path) = std::env::var("EIDETICA_SOCKET") {
+        return eidetica::service::RemoteBackend::connect(socket_path)
+            .await
+            .expect("Failed to connect to external service daemon (EIDETICA_SOCKET)");
+    }
+
     use eidetica::Instance;
+    use eidetica::backend::BackendImpl;
     use eidetica::service::server::ServiceServer;
 
     let dir = tempfile::tempdir().unwrap();
@@ -127,7 +143,11 @@ async fn start_service_backend() -> eidetica::service::RemoteBackend {
             #[cfg(feature = "sqlite")]
             {
                 use eidetica::backend::database::Sqlite;
-                Box::new(Sqlite::in_memory().await.expect("Failed to create SQLite backend"))
+                Box::new(
+                    Sqlite::in_memory()
+                        .await
+                        .expect("Failed to create SQLite backend"),
+                )
             }
             #[cfg(not(feature = "sqlite"))]
             {
