@@ -5,7 +5,10 @@ use crate::{Error, backend::database::InMemory, crdt::Doc};
 use std::path::Path;
 
 async fn save_in_memory_backend(instance: &Instance, path: &Path) -> Result<(), Error> {
-    let backend = instance.backend().as_arc_backend_impl();
+    let backend = instance
+        .backend()
+        .as_arc_backend_impl()
+        .expect("local backend");
     let in_memory = backend
         .as_any()
         .downcast_ref::<InMemory>()

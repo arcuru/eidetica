@@ -40,7 +40,7 @@ pub use errors::InstanceError;
 ///
 /// This distinction allows different callbacks to be triggered based on the write source,
 /// enabling behaviors like "only trigger sync for local writes" or "only update UI for remote writes".
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum WriteSource {
     /// Write originated from a local transaction commit
     Local,
@@ -307,6 +307,48 @@ pub struct WeakInstance {
 }
 
 impl Instance {
+    /// Connect to a running Eidetica service daemon over a Unix domain socket.
+    ///
+    /// This creates a `RemoteConnection` that forwards all storage operations
+    /// to the daemon via RPC, wrapped in a `Backend::Remote` variant.
+    ///
+    /// The daemon holds signing keys server-side. After connecting, clients
+    /// authenticate via `login_user()` which sends a password to the server.
+    /// The server verifies the password, decrypts the user's keys, and holds
+    /// them in per-connection state. The client receives a `PrivateKey::Remote`
+    /// that proxies signing operations back to the server.
+    ///
+    /// # Arguments
+    /// * `socket_path` - Path to the Unix domain socket
+    ///
+    /// # Returns
+    /// A Result containing the connected Instance
+    #[cfg(all(unix, feature = "service"))]
+    pub async fn connect(socket_path: impl AsRef<std::path::Path>) -> Result<Self> {
+        let conn = crate::service::client::RemoteConnection::connect(socket_path).await?;
+        let backend = Backend::Remote(conn);
+
+        // Load metadata from the remote backend
+        let metadata = backend
+            .get_instance_metadata()
+            .await?
+            .ok_or(InstanceError::DeviceKeyNotFound)?;
+
+        // No local secrets — keys are held server-side after login
+        let inner = Arc::new(InstanceInternal {
+            backend,
+            clock: Arc::new(SystemClock),
+            sync: std::sync::OnceLock::new(),
+            metadata,
+            secrets: None,
+            write_callbacks: Mutex::new(HashMap::new()),
+            global_write_callbacks: Mutex::new(Vec::new()),
+            next_callback_id: AtomicU64::new(0),
+            tree_locks: Mutex::new(HashMap::new()),
+        });
+        Ok(Self { inner })
+    }
+
     /// Load an existing Instance or create a new one (recommended).
     ///
     /// This is the recommended method for initializing an Instance. It automatically detects
@@ -637,8 +679,12 @@ impl Instance {
     /// # Returns
     /// A Result containing the user's UUID (stable internal identifier)
     pub async fn create_user(&self, user_id: &str, password: Option<&str>) -> Result<String> {
-        use crate::user::system_databases::create_user;
+        #[cfg(all(unix, feature = "service"))]
+        if let Backend::Remote(_) = self.backend() {
+            return self.backend().create_user(user_id, password).await;
+        }
 
+        use crate::user::system_databases::create_user;
         let users_db = self.users_db().await?;
         let (user_uuid, _user_info) = create_user(&users_db, self, user_id, password).await?;
         Ok(user_uuid)
@@ -667,8 +713,12 @@ impl Instance {
     /// # Returns
     /// A Result containing a vector of user IDs
     pub async fn list_users(&self) -> Result<Vec<String>> {
-        use crate::user::system_databases::list_users;
+        #[cfg(all(unix, feature = "service"))]
+        if let Backend::Remote(_) = self.backend() {
+            return self.backend().list_users().await;
+        }
 
+        use crate::user::system_databases::list_users;
         let users_db = self.users_db().await?;
         list_users(&users_db).await
     }
@@ -942,8 +992,10 @@ impl Instance {
         // 1. Capture tips before the write so callbacks know what changed
         let previous_tips = self.get_tips(tree_id).await?;
 
-        // 2. Persist to backend storage
-        self.backend().put(verification, entry.clone()).await?;
+        // 2. Persist to backend storage (and notify server for remote backends)
+        self.backend()
+            .write_entry(tree_id, verification, entry.clone(), source)
+            .await?;
 
         // 3. Build event and fire callbacks
         let event = WriteEvent {
@@ -1080,6 +1132,39 @@ impl Instance {
                 );
             }
         }
+    }
+
+    /// Dispatch write callbacks for an entry that has already been stored.
+    ///
+    /// This is used by the service server when handling `NotifyEntryWritten` RPCs.
+    /// The entry is already in the backend; this method only fires callbacks via
+    /// the standard `fire_write_callbacks` path.
+    ///
+    /// TODO(service): `previous_tips` is approximated here — for remotely-notified
+    /// writes, the daemon doesn't currently send the pre-write tips, so we read
+    /// current tips minus the new entry's id. A future revision of the
+    /// NotifyEntryWritten RPC should carry `previous_tips` explicitly.
+    pub(crate) async fn dispatch_write_callbacks(
+        &self,
+        tree_id: &ID,
+        entry: &Entry,
+        source: WriteSource,
+    ) -> Result<()> {
+        let entry_id = entry.id();
+        let previous_tips: Vec<ID> = self
+            .get_tips(tree_id)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|t| t != &entry_id)
+            .collect();
+        let event = WriteEvent {
+            entries: vec![entry.clone()],
+            previous_tips,
+            source,
+        };
+        self.fire_write_callbacks(tree_id, &event).await;
+        Ok(())
     }
 
     /// Downgrade to a weak reference.

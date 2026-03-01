@@ -1,7 +1,5 @@
 //! Tests for the user_session module.
 
-use handle_trait::Handle;
-
 use super::*;
 use crate::backend::database::InMemory;
 

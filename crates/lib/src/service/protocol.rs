@@ -1,0 +1,461 @@
+//! Wire protocol types for the Eidetica service.
+//!
+//! The protocol uses length-prefixed JSON frames over a Unix domain socket.
+//! Each frame is a 4-byte big-endian length followed by the JSON payload.
+
+use serde::{Deserialize, Serialize};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+
+use crate::backend::{InstanceMetadata, VerificationStatus};
+use crate::entry::{Entry, ID};
+use crate::instance::WriteSource;
+use crate::service::error::ServiceError;
+
+/// Protocol version. Version 0 indicates an unstable protocol that may change
+/// without notice between releases.
+pub const PROTOCOL_VERSION: u32 = 0;
+
+/// Maximum frame size: 64 MiB.
+pub const MAX_FRAME_SIZE: u32 = 64 * 1024 * 1024;
+
+/// Handshake message sent by the client on connection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Handshake {
+    pub protocol_version: u32,
+}
+
+/// Handshake acknowledgment sent by the server.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HandshakeAck {
+    pub protocol_version: u32,
+}
+
+/// Request from client to server, one variant per `BackendImpl` method.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ServiceRequest {
+    // === Entry operations ===
+    Get {
+        id: ID,
+    },
+    Put {
+        verification_status: VerificationStatus,
+        entry: Entry,
+    },
+
+    // === Verification ===
+    GetVerificationStatus {
+        id: ID,
+    },
+    UpdateVerificationStatus {
+        id: ID,
+        verification_status: VerificationStatus,
+    },
+    GetEntriesByVerificationStatus {
+        status: VerificationStatus,
+    },
+
+    // === Tips ===
+    GetTips {
+        tree: ID,
+    },
+    GetStoreTips {
+        tree: ID,
+        store: String,
+    },
+    GetStoreTipsUpToEntries {
+        tree: ID,
+        store: String,
+        main_entries: Vec<ID>,
+    },
+
+    // === Tree/Store traversal ===
+    AllRoots,
+    FindMergeBase {
+        tree: ID,
+        store: String,
+        entry_ids: Vec<ID>,
+    },
+    CollectRootToTarget {
+        tree: ID,
+        store: String,
+        target_entry: ID,
+    },
+    GetTree {
+        tree: ID,
+    },
+    GetStore {
+        tree: ID,
+        store: String,
+    },
+    GetTreeFromTips {
+        tree: ID,
+        tips: Vec<ID>,
+    },
+    GetStoreFromTips {
+        tree: ID,
+        store: String,
+        tips: Vec<ID>,
+    },
+
+    // === CRDT cache ===
+    GetCachedCrdtState {
+        entry_id: ID,
+        store: String,
+    },
+    CacheCrdtState {
+        entry_id: ID,
+        store: String,
+        state: Vec<u8>,
+    },
+    ClearCrdtCache,
+
+    // === Path operations ===
+    GetSortedStoreParents {
+        tree_id: ID,
+        entry_id: ID,
+        store: String,
+    },
+    GetPathFromTo {
+        tree_id: ID,
+        store: String,
+        from_id: ID,
+        to_ids: Vec<ID>,
+    },
+
+    // === Instance metadata ===
+    GetInstanceMetadata,
+    SetInstanceMetadata {
+        metadata: InstanceMetadata,
+    },
+
+    // === Write coordination ===
+    NotifyEntryWritten {
+        tree_id: ID,
+        entry_id: ID,
+        source: WriteSource,
+    },
+
+    // === User management ===
+    CreateUser {
+        username: String,
+        password: Option<String>,
+    },
+    ListUsers,
+}
+
+/// Response from server to client.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ServiceResponse {
+    /// Single entry
+    Entry(Entry),
+    /// Multiple entries
+    Entries(Vec<Entry>),
+    /// Single ID
+    Id(ID),
+    /// Multiple IDs
+    Ids(Vec<ID>),
+    /// Success with no data
+    Ok,
+    /// Verification status
+    VerificationStatus(VerificationStatus),
+    /// Optional cached CRDT state
+    CachedCrdtState(Option<Vec<u8>>),
+    /// Optional instance metadata
+    InstanceMetadata(Option<InstanceMetadata>),
+    /// Error response
+    Error(ServiceError),
+    /// User created successfully (returns user UUID)
+    UserCreated(String),
+    /// List of user IDs
+    Users(Vec<String>),
+}
+
+/// Write a length-prefixed JSON frame to an async writer.
+pub async fn write_frame<W: AsyncWrite + Unpin, T: Serialize>(
+    writer: &mut W,
+    value: &T,
+) -> crate::Result<()> {
+    let payload = serde_json::to_vec(value)?;
+    let len = payload.len() as u32;
+    if len > MAX_FRAME_SIZE {
+        return Err(crate::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("frame too large: {len} bytes (max {MAX_FRAME_SIZE})"),
+        )));
+    }
+    writer.write_all(&len.to_be_bytes()).await?;
+    writer.write_all(&payload).await?;
+    writer.flush().await?;
+    Ok(())
+}
+
+/// Read a length-prefixed JSON frame from an async reader.
+///
+/// Returns `None` on clean EOF (connection closed).
+pub async fn read_frame<R: AsyncRead + Unpin, T: for<'de> Deserialize<'de>>(
+    reader: &mut R,
+) -> crate::Result<Option<T>> {
+    let mut len_buf = [0u8; 4];
+    match reader.read_exact(&mut len_buf).await {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(e) => return Err(e.into()),
+    }
+    let len = u32::from_be_bytes(len_buf);
+    if len > MAX_FRAME_SIZE {
+        return Err(crate::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("frame too large: {len} bytes (max {MAX_FRAME_SIZE})"),
+        )));
+    }
+    let mut payload = vec![0u8; len as usize];
+    reader.read_exact(&mut payload).await?;
+    let value = serde_json::from_slice(&payload)?;
+    Ok(Some(value))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Helper to make a simple entry for testing
+    fn test_id() -> ID {
+        ID::from_bytes("test-entry-id")
+    }
+
+    #[test]
+    fn test_handshake_serde() {
+        let h = Handshake {
+            protocol_version: PROTOCOL_VERSION,
+        };
+        let json = serde_json::to_string(&h).unwrap();
+        let h2: Handshake = serde_json::from_str(&json).unwrap();
+        assert_eq!(h2.protocol_version, PROTOCOL_VERSION);
+    }
+
+    #[test]
+    fn test_handshake_ack_serde() {
+        let h = HandshakeAck {
+            protocol_version: PROTOCOL_VERSION,
+        };
+        let json = serde_json::to_string(&h).unwrap();
+        let h2: HandshakeAck = serde_json::from_str(&json).unwrap();
+        assert_eq!(h2.protocol_version, PROTOCOL_VERSION);
+    }
+
+    #[test]
+    fn test_request_get_serde() {
+        let req = ServiceRequest::Get { id: test_id() };
+        let json = serde_json::to_string(&req).unwrap();
+        let req2: ServiceRequest = serde_json::from_str(&json).unwrap();
+        match req2 {
+            ServiceRequest::Get { id } => assert_eq!(id, test_id()),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_request_get_tips_serde() {
+        let req = ServiceRequest::GetTips { tree: test_id() };
+        let json = serde_json::to_string(&req).unwrap();
+        let req2: ServiceRequest = serde_json::from_str(&json).unwrap();
+        match req2 {
+            ServiceRequest::GetTips { tree } => assert_eq!(tree, test_id()),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_request_all_roots_serde() {
+        let req = ServiceRequest::AllRoots;
+        let json = serde_json::to_string(&req).unwrap();
+        let req2: ServiceRequest = serde_json::from_str(&json).unwrap();
+        assert!(matches!(req2, ServiceRequest::AllRoots));
+    }
+
+    #[test]
+    fn test_request_get_instance_metadata_serde() {
+        let req = ServiceRequest::GetInstanceMetadata;
+        let json = serde_json::to_string(&req).unwrap();
+        let req2: ServiceRequest = serde_json::from_str(&json).unwrap();
+        assert!(matches!(req2, ServiceRequest::GetInstanceMetadata));
+    }
+
+    #[test]
+    fn test_request_clear_crdt_cache_serde() {
+        let req = ServiceRequest::ClearCrdtCache;
+        let json = serde_json::to_string(&req).unwrap();
+        let req2: ServiceRequest = serde_json::from_str(&json).unwrap();
+        assert!(matches!(req2, ServiceRequest::ClearCrdtCache));
+    }
+
+    #[test]
+    fn test_request_notify_entry_written_serde() {
+        let req = ServiceRequest::NotifyEntryWritten {
+            tree_id: test_id(),
+            entry_id: ID::from_bytes("entry-1"),
+            source: WriteSource::Local,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let req2: ServiceRequest = serde_json::from_str(&json).unwrap();
+        match req2 {
+            ServiceRequest::NotifyEntryWritten {
+                tree_id,
+                entry_id,
+                source,
+            } => {
+                assert_eq!(tree_id, test_id());
+                assert_eq!(entry_id, ID::from_bytes("entry-1"));
+                assert_eq!(source, WriteSource::Local);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_response_ok_serde() {
+        let resp = ServiceResponse::Ok;
+        let json = serde_json::to_string(&resp).unwrap();
+        let resp2: ServiceResponse = serde_json::from_str(&json).unwrap();
+        assert!(matches!(resp2, ServiceResponse::Ok));
+    }
+
+    #[test]
+    fn test_response_ids_serde() {
+        let resp = ServiceResponse::Ids(vec![test_id(), ID::from_bytes("other")]);
+        let json = serde_json::to_string(&resp).unwrap();
+        let resp2: ServiceResponse = serde_json::from_str(&json).unwrap();
+        match resp2 {
+            ServiceResponse::Ids(ids) => {
+                assert_eq!(ids.len(), 2);
+                assert_eq!(ids[0], test_id());
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_response_error_serde() {
+        let se = ServiceError {
+            module: "backend".to_string(),
+            kind: "EntryNotFound".to_string(),
+            message: "Entry not found: abc".to_string(),
+        };
+        let resp = ServiceResponse::Error(se);
+        let json = serde_json::to_string(&resp).unwrap();
+        let resp2: ServiceResponse = serde_json::from_str(&json).unwrap();
+        match resp2 {
+            ServiceResponse::Error(e) => {
+                assert_eq!(e.module, "backend");
+                assert_eq!(e.kind, "EntryNotFound");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_response_verification_status_serde() {
+        let resp = ServiceResponse::VerificationStatus(VerificationStatus::Verified);
+        let json = serde_json::to_string(&resp).unwrap();
+        let resp2: ServiceResponse = serde_json::from_str(&json).unwrap();
+        match resp2 {
+            ServiceResponse::VerificationStatus(vs) => assert_eq!(vs, VerificationStatus::Verified),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_response_cached_crdt_state_serde() {
+        let resp = ServiceResponse::CachedCrdtState(Some(b"state-data".to_vec()));
+        let json = serde_json::to_string(&resp).unwrap();
+        let resp2: ServiceResponse = serde_json::from_str(&json).unwrap();
+        match resp2 {
+            ServiceResponse::CachedCrdtState(Some(s)) => assert_eq!(s, b"state-data"),
+            _ => panic!("wrong variant"),
+        }
+
+        let resp_none = ServiceResponse::CachedCrdtState(None);
+        let json_none = serde_json::to_string(&resp_none).unwrap();
+        let resp_none2: ServiceResponse = serde_json::from_str(&json_none).unwrap();
+        assert!(matches!(resp_none2, ServiceResponse::CachedCrdtState(None)));
+    }
+
+    #[test]
+    fn test_response_instance_metadata_none_serde() {
+        let resp = ServiceResponse::InstanceMetadata(None);
+        let json = serde_json::to_string(&resp).unwrap();
+        let resp2: ServiceResponse = serde_json::from_str(&json).unwrap();
+        assert!(matches!(resp2, ServiceResponse::InstanceMetadata(None)));
+    }
+
+    #[tokio::test]
+    async fn test_frame_roundtrip() {
+        // duplex gives two ends: writing to `client` is readable from `server` and vice versa
+        let (client, server) = tokio::io::duplex(4096);
+        let (mut server_read, _server_write) = tokio::io::split(server);
+        let (_client_read, mut client_write) = tokio::io::split(client);
+
+        let req = ServiceRequest::Get { id: test_id() };
+
+        let write_handle = tokio::spawn(async move {
+            write_frame(&mut client_write, &req).await.unwrap();
+        });
+
+        let read_result: Option<ServiceRequest> = read_frame(&mut server_read).await.unwrap();
+        write_handle.await.unwrap();
+
+        let result = read_result.unwrap();
+        match result {
+            ServiceRequest::Get { id } => assert_eq!(id, test_id()),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_frame_eof_returns_none() {
+        // Use a real Unix socket pair for proper EOF semantics
+        let dir = tempfile::tempdir().unwrap();
+        let sock_path = dir.path().join("eof-test.sock");
+        let listener = tokio::net::UnixListener::bind(&sock_path).unwrap();
+
+        let client = tokio::net::UnixStream::connect(&sock_path).await.unwrap();
+        let (server_stream, _) = listener.accept().await.unwrap();
+
+        // Drop the server stream to close the connection
+        drop(server_stream);
+
+        let (mut reader, _writer) = tokio::io::split(client);
+        let result: crate::Result<Option<ServiceRequest>> = read_frame(&mut reader).await;
+        assert!(result.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_frame_max_size_rejection_on_write() {
+        let (client, _server) = tokio::io::duplex(1024);
+        let (_read, mut write) = tokio::io::split(client);
+
+        // Create a payload that's too large
+        let huge_string = "x".repeat(MAX_FRAME_SIZE as usize + 1);
+        let result = write_frame(&mut write, &huge_string).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_frame_max_size_rejection_on_read() {
+        let (client, server) = tokio::io::duplex(1024 * 1024);
+        let (mut client_read, _client_write) = tokio::io::split(client);
+        let (_server_read, mut server_write) = tokio::io::split(server);
+
+        // Write a fake frame header with size > MAX_FRAME_SIZE from the server end
+        let fake_len = MAX_FRAME_SIZE + 1;
+        tokio::spawn(async move {
+            server_write
+                .write_all(&fake_len.to_be_bytes())
+                .await
+                .unwrap();
+        });
+
+        let result: crate::Result<Option<ServiceRequest>> = read_frame(&mut client_read).await;
+        assert!(result.is_err());
+    }
+}
