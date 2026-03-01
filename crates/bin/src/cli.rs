@@ -33,6 +33,8 @@ pub struct Cli {
 pub enum Commands {
     /// Run the Eidetica server
     Serve(ServeArgs),
+    /// Run the Eidetica local service daemon (Unix socket)
+    Daemon(DaemonArgs),
     /// Check health of a running Eidetica server
     Health(HealthArgs),
     /// Show instance information (device ID, user count, database count)
@@ -92,6 +94,17 @@ pub struct HealthArgs {
 /// Arguments for the info command
 #[derive(clap::Args, Debug)]
 pub struct InfoArgs {
+    #[command(flatten)]
+    pub backend_config: BackendConfig,
+}
+
+/// Arguments for the daemon command
+#[derive(clap::Args, Debug)]
+pub struct DaemonArgs {
+    /// Unix socket path (default: $XDG_RUNTIME_DIR/eidetica/service.sock)
+    #[arg(short, long, env = "EIDETICA_SOCKET")]
+    pub socket: Option<PathBuf>,
+
     #[command(flatten)]
     pub backend_config: BackendConfig,
 }
