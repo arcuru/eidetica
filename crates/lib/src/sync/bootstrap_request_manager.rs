@@ -9,7 +9,7 @@ use tracing::{debug, info};
 use super::peer_types::Address;
 use crate::{
     Error, Result, Transaction,
-    auth::Permission,
+    auth::{Permission, crypto::PublicKey},
     entry::ID,
     store::{StoreError, Table},
 };
@@ -31,7 +31,7 @@ pub struct BootstrapRequest {
     /// The tree ID being requested for access
     pub tree_id: ID,
     /// Public key of the requesting device
-    pub requesting_pubkey: String,
+    pub requesting_pubkey: PublicKey,
     /// Key name identifier for the requesting key
     pub requesting_key_name: String,
     /// Permission level being requested
@@ -230,7 +230,7 @@ mod tests {
         BootstrapRequest {
             // Use a valid, prefixed ID so parsing validates correctly
             tree_id: ID::from_bytes("test_tree_id"),
-            requesting_pubkey: "ed25519:test_public_key".to_string(),
+            requesting_pubkey: PublicKey::random(),
             requesting_key_name: "laptop_key".to_string(),
             requested_permission: Permission::Write(5),
             timestamp: clock.now_rfc3339(),

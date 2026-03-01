@@ -161,12 +161,11 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
             .await
             .expect("Failed to register HTTP transport");
 
-        let device2_key_id_str = device2_key_id.to_string();
         device2_sync
             .sync_with_peer_for_bootstrap_with_key(
                 &device1_server_addr,
                 &room_id,
-                &device2_key_id_str,
+                &device2_key_id,
                 CHAT_APP_KEY,
                 Permission::Write(10),
             )

@@ -36,7 +36,7 @@ async fn test_register_sync_peer_tracks_relationship_immediately() -> Result<()>
     // Register the peer using declarative API
     let _handle = sync
         .register_sync_peer(SyncPeerInfo {
-            peer_pubkey: peer_pubkey.clone(),
+            peer_pubkey: peer_verifying_key.clone(),
             tree_id: tree_id.clone(),
             addresses: vec![Address {
                 transport_type: "http".to_string(),
@@ -72,11 +72,10 @@ async fn test_sync_handle_methods() -> Result<()> {
     let tree_id = db.root_id().clone();
 
     let (_, peer_verifying_key) = generate_keypair();
-    let peer_pubkey = peer_verifying_key.to_string();
 
     let handle = sync
         .register_sync_peer(SyncPeerInfo {
-            peer_pubkey: peer_pubkey.clone(),
+            peer_pubkey: peer_verifying_key.clone(),
             tree_id: tree_id.clone(),
             addresses: vec![],
             auth: None,
@@ -86,7 +85,7 @@ async fn test_sync_handle_methods() -> Result<()> {
 
     // Test getter methods
     assert_eq!(handle.tree_id(), &tree_id);
-    assert_eq!(handle.peer_pubkey(), &peer_pubkey);
+    assert_eq!(handle.peer_pubkey(), &peer_verifying_key);
 
     // Test status - Database::create() creates root entry, so has_local_data should be true
     let status = handle.status().await?;
@@ -113,7 +112,7 @@ async fn test_sync_handle_add_address() -> Result<()> {
 
     let handle = sync
         .register_sync_peer(SyncPeerInfo {
-            peer_pubkey: peer_pubkey.clone(),
+            peer_pubkey: peer_verifying_key.clone(),
             tree_id: db.root_id().clone(),
             addresses: vec![Address {
                 transport_type: "http".to_string(),

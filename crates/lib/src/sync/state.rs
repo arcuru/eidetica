@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Error, Result, Transaction,
+    auth::crypto::PublicKey,
     clock::Clock,
     crdt::doc::{Value, path},
     entry::ID,
@@ -20,7 +21,7 @@ use crate::{
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SyncCursor {
     /// The peer's public key
-    pub peer_pubkey: String,
+    pub peer_pubkey: PublicKey,
     /// The tree ID this cursor applies to
     pub tree_id: ID,
     /// The last entry ID that was successfully synchronized
@@ -40,7 +41,7 @@ impl SyncCursor {
     /// * `peer_pubkey` - The peer's public key
     /// * `tree_id` - The tree ID this cursor applies to
     /// * `clock` - The time provider for timestamps
-    pub fn new(peer_pubkey: String, tree_id: ID, clock: &dyn Clock) -> Self {
+    pub fn new(peer_pubkey: PublicKey, tree_id: ID, clock: &dyn Clock) -> Self {
         Self {
             peer_pubkey,
             tree_id,
@@ -77,7 +78,7 @@ impl SyncCursor {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SyncMetadata {
     /// The peer's public key
-    pub peer_pubkey: String,
+    pub peer_pubkey: PublicKey,
     /// Timestamp when sync relationship was first established
     pub sync_established: String,
     /// Timestamp of the last sync attempt (successful or failed)
@@ -104,7 +105,7 @@ impl SyncMetadata {
     /// # Arguments
     /// * `peer_pubkey` - The peer's public key
     /// * `clock` - The time provider for timestamps
-    pub fn new(peer_pubkey: String, clock: &dyn Clock) -> Self {
+    pub fn new(peer_pubkey: PublicKey, clock: &dyn Clock) -> Self {
         let now = clock.now_rfc3339();
         Self {
             peer_pubkey,
@@ -185,7 +186,7 @@ pub struct SyncHistoryEntry {
     /// Unique ID for this sync operation
     pub sync_id: String,
     /// The peer involved in this sync
-    pub peer_pubkey: String,
+    pub peer_pubkey: PublicKey,
     /// The tree that was synchronized
     pub tree_id: ID,
     /// Timestamp when sync started
@@ -211,7 +212,7 @@ impl SyncHistoryEntry {
     /// * `peer_pubkey` - The peer's public key
     /// * `tree_id` - The tree that was synchronized
     /// * `clock` - The time provider for timestamps
-    pub fn new(peer_pubkey: String, tree_id: ID, clock: &dyn Clock) -> Self {
+    pub fn new(peer_pubkey: PublicKey, tree_id: ID, clock: &dyn Clock) -> Self {
         let now = clock.now_rfc3339();
         Self {
             sync_id: uuid::Uuid::new_v4().to_string(),
@@ -284,12 +285,13 @@ impl<'a> SyncStateManager<'a> {
     /// * `clock` - The time provider for timestamps (used when creating new cursor)
     pub async fn get_sync_cursor(
         &self,
-        peer_pubkey: impl AsRef<str>,
+        peer_pubkey: &PublicKey,
         tree_id: &ID,
         clock: &dyn Clock,
     ) -> Result<SyncCursor> {
         let sync_state = self.txn.get_store::<DocStore>("sync_state").await?;
-        let cursor_path = path!("cursors", peer_pubkey.as_ref(), tree_id.as_str());
+        let pk_str = peer_pubkey.to_string();
+        let cursor_path = path!("cursors", &pk_str as &str, tree_id.as_str());
 
         match sync_state.get_path_as::<String>(&cursor_path).await {
             Ok(json) => serde_json::from_str(&json).map_err(|e| {
@@ -300,11 +302,7 @@ impl<'a> SyncStateManager<'a> {
             }),
             Err(_) => {
                 // Create new cursor
-                Ok(SyncCursor::new(
-                    peer_pubkey.as_ref().to_string(),
-                    tree_id.clone(),
-                    clock,
-                ))
+                Ok(SyncCursor::new(peer_pubkey.clone(), tree_id.clone(), clock))
             }
         }
     }
@@ -312,7 +310,8 @@ impl<'a> SyncStateManager<'a> {
     /// Update a sync cursor.
     pub async fn update_sync_cursor(&self, cursor: &SyncCursor) -> Result<()> {
         let sync_state = self.txn.get_store::<DocStore>("sync_state").await?;
-        let cursor_path = path!("cursors", cursor.peer_pubkey, cursor.tree_id.as_str());
+        let pk_str = cursor.peer_pubkey.to_string();
+        let cursor_path = path!("cursors", &pk_str as &str, cursor.tree_id.as_str());
         let cursor_json = serde_json::to_string(cursor)?;
         sync_state.set_path(&cursor_path, cursor_json).await?;
         Ok(())
@@ -325,11 +324,12 @@ impl<'a> SyncStateManager<'a> {
     /// * `clock` - The time provider for timestamps (used when creating new metadata)
     pub async fn get_sync_metadata(
         &self,
-        peer_pubkey: impl AsRef<str>,
+        peer_pubkey: &PublicKey,
         clock: &dyn Clock,
     ) -> Result<SyncMetadata> {
         let sync_state = self.txn.get_store::<DocStore>("sync_state").await?;
-        let metadata_path = path!("metadata", peer_pubkey.as_ref());
+        let pk_str = peer_pubkey.to_string();
+        let metadata_path = path!("metadata", &pk_str as &str);
 
         match sync_state.get_path_as::<String>(&metadata_path).await {
             Ok(json) => serde_json::from_str(&json).map_err(|e| {
@@ -340,7 +340,7 @@ impl<'a> SyncStateManager<'a> {
             }),
             Err(_) => {
                 // Create new metadata
-                Ok(SyncMetadata::new(peer_pubkey.as_ref().to_string(), clock))
+                Ok(SyncMetadata::new(peer_pubkey.clone(), clock))
             }
         }
     }
@@ -348,7 +348,8 @@ impl<'a> SyncStateManager<'a> {
     /// Update sync metadata for a peer.
     pub async fn update_sync_metadata(&self, metadata: &SyncMetadata) -> Result<()> {
         let sync_state = self.txn.get_store::<DocStore>("sync_state").await?;
-        let metadata_path = path!("metadata", metadata.peer_pubkey);
+        let pk_str = metadata.peer_pubkey.to_string();
+        let metadata_path = path!("metadata", &pk_str as &str);
         let metadata_json = serde_json::to_string(metadata)?;
         sync_state.set_path(&metadata_path, metadata_json).await?;
         Ok(())
@@ -371,7 +372,7 @@ impl<'a> SyncStateManager<'a> {
     /// `{ "history": { "sync_id": data } }` rather than a flat key with dots.
     pub async fn get_sync_history(
         &self,
-        peer_pubkey: impl AsRef<str>,
+        peer_pubkey: &PublicKey,
         limit: Option<usize>,
     ) -> Result<Vec<SyncHistoryEntry>> {
         let sync_state = self.txn.get_store::<DocStore>("sync_state").await?;
@@ -385,7 +386,7 @@ impl<'a> SyncStateManager<'a> {
             for (_sync_id, value) in history_node.iter() {
                 if let Value::Text(json_str) = value
                     && let Ok(history_entry) = serde_json::from_str::<SyncHistoryEntry>(json_str)
-                    && history_entry.peer_pubkey == peer_pubkey.as_ref()
+                    && history_entry.peer_pubkey == *peer_pubkey
                 {
                     history_entries.push(history_entry);
                 }
@@ -409,7 +410,7 @@ impl<'a> SyncStateManager<'a> {
     /// This method navigates the nested map structure created by `DocStore::set_path()`.
     /// The data is organized in nested maps like `{ "metadata": { "peer_key": data } }`
     /// and `{ "cursors": { "peer_key": { "tree_id": data } } }`.
-    pub async fn get_peers_with_sync_state(&self) -> Result<Vec<String>> {
+    pub async fn get_peers_with_sync_state(&self) -> Result<Vec<PublicKey>> {
         let sync_state = self.txn.get_store::<DocStore>("sync_state").await?;
         let all_data = sync_state.get_all().await?;
 
@@ -418,14 +419,18 @@ impl<'a> SyncStateManager<'a> {
         // Check metadata node for peers
         if let Some(Value::Doc(metadata_node)) = all_data.get("metadata") {
             for (peer_key, _) in metadata_node.iter() {
-                peers.insert(peer_key.to_string());
+                if let Ok(pk) = PublicKey::from_prefixed_string(peer_key) {
+                    peers.insert(pk);
+                }
             }
         }
 
         // Check cursors node for peers
         if let Some(Value::Doc(cursors_node)) = all_data.get("cursors") {
             for (peer_key, _) in cursors_node.iter() {
-                peers.insert(peer_key.to_string());
+                if let Ok(pk) = PublicKey::from_prefixed_string(peer_key) {
+                    peers.insert(pk);
+                }
             }
         }
 
@@ -492,7 +497,7 @@ mod tests {
         use crate::clock::FixedClock;
 
         let clock = FixedClock::default();
-        let peer_pubkey = "test_peer".to_string();
+        let peer_pubkey = PublicKey::random();
         let tree_id = Entry::root_builder()
             .build()
             .expect("Root entry should build successfully")
@@ -521,7 +526,7 @@ mod tests {
         use crate::clock::FixedClock;
 
         let clock = FixedClock::default();
-        let peer_pubkey = "test_peer".to_string();
+        let peer_pubkey = PublicKey::random();
         let mut metadata = SyncMetadata::new(peer_pubkey.clone(), &clock);
 
         assert_eq!(metadata.peer_pubkey, peer_pubkey);
@@ -564,11 +569,11 @@ mod tests {
         let txn = sync_tree.new_transaction().await.unwrap();
 
         let state_manager = SyncStateManager::new(&txn);
-        let peer_pubkey = "test_peer";
+        let peer_pubkey = PublicKey::random();
 
         // Test cursor management
         let mut cursor = state_manager
-            .get_sync_cursor(peer_pubkey, &tree_id, clock.as_ref())
+            .get_sync_cursor(&peer_pubkey, &tree_id, clock.as_ref())
             .await
             .unwrap();
         assert!(!cursor.has_sync_history());
@@ -583,7 +588,7 @@ mod tests {
 
         // Test metadata management
         let mut metadata = state_manager
-            .get_sync_metadata(peer_pubkey, clock.as_ref())
+            .get_sync_metadata(&peer_pubkey, clock.as_ref())
             .await
             .unwrap();
         metadata.record_successful_sync(3, 512, 50.0, clock.as_ref());
@@ -591,7 +596,7 @@ mod tests {
 
         // Test history
         let mut history_entry =
-            SyncHistoryEntry::new(peer_pubkey.to_string(), tree_id.clone(), clock.as_ref());
+            SyncHistoryEntry::new(peer_pubkey.clone(), tree_id.clone(), clock.as_ref());
         history_entry.complete_success(3, 512, clock.as_ref());
         state_manager
             .add_sync_history(&history_entry)
@@ -605,7 +610,7 @@ mod tests {
         let txn2 = sync_tree.new_transaction().await.unwrap();
         let state_manager2 = SyncStateManager::new(&txn2);
         let history = state_manager2
-            .get_sync_history(peer_pubkey, Some(10))
+            .get_sync_history(&peer_pubkey, Some(10))
             .await
             .unwrap();
 

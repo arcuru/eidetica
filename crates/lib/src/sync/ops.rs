@@ -14,7 +14,10 @@ use super::{
     protocol::{self, SyncRequest, SyncResponse, SyncTreeRequest},
     user_sync_manager::UserSyncManager,
 };
-use crate::{Database, Entry, Instance, Result, auth::Permission, entry::ID, store::DocStore};
+use crate::{
+    Database, Entry, Instance, Result, auth::Permission, auth::crypto::PublicKey, entry::ID,
+    store::DocStore,
+};
 
 use super::utils::collect_ancestors_to_send;
 
@@ -53,7 +56,7 @@ impl Sync {
             .map_err(|e| SyncError::BackendError(format!("Failed to get local tips: {e}")))?;
 
         // Get our device public key for automatic peer tracking
-        let our_device_pubkey = self.get_device_pubkey().ok().map(|pk| pk.to_string());
+        let our_device_pubkey = self.get_device_pubkey().ok();
 
         // Send unified sync request
         let request = SyncRequest::SyncTree(SyncTreeRequest {
@@ -72,7 +75,7 @@ impl Sync {
             .ok_or(SyncError::NoTransportEnabled)?
             .send(SyncCommand::SendRequest {
                 address: address.clone(),
-                request,
+                request: Box::new(request),
                 response: tx,
             })
             .await
@@ -212,7 +215,7 @@ impl Sync {
             .ok_or(SyncError::NoTransportEnabled)?
             .send(SyncCommand::SendRequest {
                 address: peer_address.clone(),
-                request,
+                request: Box::new(request),
                 response: tx,
             })
             .await
@@ -511,7 +514,7 @@ impl Sync {
             .ok_or(SyncError::NoTransportEnabled)?
             .send(SyncCommand::SendRequest {
                 address: address.clone(),
-                request: request.clone(),
+                request: Box::new(request.clone()),
                 response: tx,
             })
             .await
@@ -623,7 +626,7 @@ impl Sync {
         &self,
         peer_pubkey: &str,
         tree_id: &ID,
-        requesting_key: Option<&str>,
+        requesting_key: Option<&PublicKey>,
         requesting_key_name: Option<&str>,
         requested_permission: Option<Permission>,
     ) -> Result<()> {
@@ -646,14 +649,14 @@ impl Sync {
             .map_err(|e| SyncError::BackendError(format!("Failed to get local tips: {e}")))?;
 
         // Get our device public key for automatic peer tracking
-        let our_device_pubkey = self.get_device_pubkey().ok().map(|pk| pk.to_string());
+        let our_device_pubkey = self.get_device_pubkey().ok();
 
         // Send unified sync request with auth parameters
         let request = SyncRequest::SyncTree(SyncTreeRequest {
             tree_id: tree_id.clone(),
             our_tips,
             peer_pubkey: our_device_pubkey,
-            requesting_key: requesting_key.map(|k| k.to_string()),
+            requesting_key: requesting_key.cloned(),
             requesting_key_name: requesting_key_name.map(|k| k.to_string()),
             requested_permission,
         });
@@ -665,7 +668,7 @@ impl Sync {
             .ok_or(SyncError::NoTransportEnabled)?
             .send(SyncCommand::SendRequest {
                 address: address.clone(),
-                request,
+                request: Box::new(request),
                 response: tx,
             })
             .await

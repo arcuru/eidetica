@@ -84,12 +84,11 @@ async fn test_chat_app_authenticated_bootstrap() {
         .unwrap();
 
     // First bootstrap attempt should fail (pending approval)
-    let client_key_str = client_key_id.to_string();
     let first_attempt = client_sync
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &client_key_str,
+            &client_key_id,
             "client_key",
             Permission::Write(10),
         )
@@ -111,7 +110,7 @@ async fn test_chat_app_authenticated_bootstrap() {
     );
     let (request_id, pending_request) = &pending_requests[0];
     assert_eq!(pending_request.tree_id, tree_id);
-    assert_eq!(pending_request.requesting_pubkey, client_key_str);
+    assert_eq!(pending_request.requesting_pubkey, client_key_id);
 
     // Admin approves the request
     server_user
@@ -126,7 +125,7 @@ async fn test_chat_app_authenticated_bootstrap() {
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &client_key_str,
+            &client_key_id,
             "client_key",
             Permission::Write(10),
         )
@@ -372,13 +371,12 @@ async fn test_multiple_databases_sync() {
         .unwrap();
 
     // Bootstrap each database
-    let client_key_str = client_key_id.to_string();
     for (i, room_id) in room_ids.iter().enumerate() {
         client_sync
             .sync_with_peer_for_bootstrap_with_key(
                 &server_addr,
                 room_id,
-                &client_key_str,
+                &client_key_id,
                 "client_key",
                 Permission::Write(10),
             )

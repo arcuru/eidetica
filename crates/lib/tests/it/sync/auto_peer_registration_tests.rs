@@ -222,14 +222,14 @@ async fn test_bootstrap_sync_tracks_tree_peer_relationship() {
         tree_id: tree_id.clone(),
         our_tips: vec![], // Empty tips = bootstrap
         peer_pubkey: None,
-        requesting_key: Some(peer_pubkey.clone()),
+        requesting_key: Some(peer_verifying_key.clone()),
         requesting_key_name: Some("peer_key".to_string()),
         requested_permission: None,
     };
 
     let context = RequestContext {
         remote_address: Some(Address::http("203.0.113.42:54321")),
-        peer_pubkey: Some(peer_pubkey.clone()),
+        peer_pubkey: Some(peer_verifying_key.clone()),
     };
 
     let request = SyncRequest::SyncTree(sync_request);
@@ -302,14 +302,14 @@ async fn test_incremental_sync_tracks_tree_peer_relationship() {
         tree_id: tree_id.clone(),
         our_tips: tips, // Non-empty tips = incremental
         peer_pubkey: None,
-        requesting_key: Some(peer_pubkey.clone()),
+        requesting_key: Some(peer_verifying_key.clone()),
         requesting_key_name: Some("peer_key".to_string()),
         requested_permission: None,
     };
 
     let context = RequestContext {
         remote_address: Some(Address::http("203.0.113.42:54321")),
-        peer_pubkey: Some(peer_pubkey.clone()),
+        peer_pubkey: Some(peer_verifying_key.clone()),
     };
 
     let request = SyncRequest::SyncTree(sync_request);
@@ -361,7 +361,7 @@ async fn test_relationship_tracking_skipped_without_peer_pubkey() {
         tree_id: tree_id.clone(),
         our_tips: vec![],
         peer_pubkey: None,
-        requesting_key: Some(peer_pubkey.clone()),
+        requesting_key: Some(peer_verifying_key.clone()),
         requesting_key_name: Some("peer_key".to_string()),
         requested_permission: None,
     };
@@ -442,7 +442,7 @@ async fn test_multiple_trees_tracked_with_same_peer() {
 
     let context = RequestContext {
         remote_address: Some(Address::http("203.0.113.42:54321")),
-        peer_pubkey: Some(peer_pubkey.clone()),
+        peer_pubkey: Some(peer_verifying_key.clone()),
     };
 
     // Request first tree
@@ -450,7 +450,7 @@ async fn test_multiple_trees_tracked_with_same_peer() {
         tree_id: tree_id1.clone(),
         our_tips: vec![],
         peer_pubkey: None,
-        requesting_key: Some(peer_pubkey.clone()),
+        requesting_key: Some(peer_verifying_key.clone()),
         requesting_key_name: Some("peer_key".to_string()),
         requested_permission: None,
     });
@@ -461,7 +461,7 @@ async fn test_multiple_trees_tracked_with_same_peer() {
         tree_id: tree_id2.clone(),
         our_tips: vec![],
         peer_pubkey: None,
-        requesting_key: Some(peer_pubkey.clone()),
+        requesting_key: Some(peer_verifying_key.clone()),
         requesting_key_name: Some("peer_key".to_string()),
         requested_permission: None,
     });
@@ -599,9 +599,6 @@ async fn test_bootstrap_auto_detects_permission_for_authorized_key() {
     let db = user.create_database(settings, &key_id).await.unwrap();
     let tree_id = db.root_id().clone();
 
-    // Get the user's actual public key string (the one that's authorized as Admin)
-    let user_key_pubkey = key_id.to_string();
-
     // Enable sync
     user.track_database(tree_id.clone(), &key_id, SyncSettings::enabled())
         .await
@@ -620,7 +617,7 @@ async fn test_bootstrap_auto_detects_permission_for_authorized_key() {
         tree_id: tree_id.clone(),
         our_tips: vec![],
         peer_pubkey: None,
-        requesting_key: Some(user_key_pubkey.clone()),
+        requesting_key: Some(key_id.clone()),
         requesting_key_name: Some(key_id.to_string()),
         requested_permission: None, // Should auto-detect from auth settings
     };
@@ -679,14 +676,13 @@ async fn test_bootstrap_rejects_unauthorized_key_when_permission_not_specified()
 
     // Generate an unauthorized key
     let (_, unauthorized_verifying_key) = generate_keypair();
-    let unauthorized_pubkey = unauthorized_verifying_key.to_string();
 
     // Bootstrap request with unauthorized key and no requested_permission
     let sync_request = SyncTreeRequest {
         tree_id: tree_id.clone(),
         our_tips: vec![],
         peer_pubkey: None,
-        requesting_key: Some(unauthorized_pubkey),
+        requesting_key: Some(unauthorized_verifying_key.clone()),
         requesting_key_name: Some("unauthorized_key".to_string()),
         requested_permission: None,
     };
@@ -752,14 +748,13 @@ async fn test_bootstrap_auto_detects_global_wildcard_permission() {
 
     // Generate a random key (any key should work due to global '*')
     let (_, random_verifying_key) = generate_keypair();
-    let random_pubkey = random_verifying_key.to_string();
 
     // Bootstrap request with random key and no requested_permission
     let sync_request = SyncTreeRequest {
         tree_id: tree_id.clone(),
         our_tips: vec![],
         peer_pubkey: None,
-        requesting_key: Some(random_pubkey),
+        requesting_key: Some(random_verifying_key.clone()),
         requesting_key_name: Some("random_key".to_string()),
         requested_permission: None, // Should auto-detect global '*' permission
     };
@@ -797,7 +792,6 @@ async fn test_bootstrap_uses_highest_permission_when_key_has_multiple() {
 
     // Generate a key that will have both direct and global permissions
     let (_, special_verifying_key) = generate_keypair();
-    let special_pubkey = special_verifying_key.to_string();
 
     // Create database (user's key will be auto-added as Admin)
     let mut settings = Doc::new();
@@ -844,7 +838,7 @@ async fn test_bootstrap_uses_highest_permission_when_key_has_multiple() {
         tree_id: tree_id.clone(),
         our_tips: vec![],
         peer_pubkey: None,
-        requesting_key: Some(special_pubkey),
+        requesting_key: Some(special_verifying_key.clone()),
         requesting_key_name: Some("special_key".to_string()),
         requested_permission: None, // Should auto-detect highest (Write(5))
     };

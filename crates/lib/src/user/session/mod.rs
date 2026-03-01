@@ -791,9 +791,9 @@ impl User {
             .into());
         }
 
-        let public_key = key_id.to_string();
+        let key_name = key_id.to_string();
 
-        sync.bootstrap_with_ticket(ticket, &public_key, &public_key, requested_permission)
+        sync.bootstrap_with_ticket(ticket, key_id, &key_name, requested_permission)
             .await
     }
 

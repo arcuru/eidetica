@@ -46,25 +46,10 @@ impl Sync {
         &self,
         address: &Address,
         tree_id: &ID,
-        requesting_public_key: String,
+        requesting_public_key: &PublicKey,
         requesting_key_name: &str,
         requested_permission: Permission,
     ) -> Result<()> {
-        // Validate public key is not empty
-        if requesting_public_key.is_empty() {
-            return Err(SyncError::InvalidPublicKey {
-                reason: "Public key cannot be empty".to_string(),
-            }
-            .into());
-        }
-
-        // Validate public key format by attempting to parse it
-        PublicKey::from_prefixed_string(&requesting_public_key).map_err(|e| {
-            SyncError::InvalidPublicKey {
-                reason: format!("Invalid public key format: {e}"),
-            }
-        })?;
-
         // Validate key name is not empty
         if requesting_key_name.is_empty() {
             return Err(SyncError::InvalidKeyName {
@@ -85,7 +70,7 @@ impl Sync {
         self.sync_tree_with_peer_auth(
             &peer_pubkey_str,
             tree_id,
-            Some(&requesting_public_key),
+            Some(requesting_public_key),
             Some(requesting_key_name),
             Some(requested_permission),
         )
@@ -128,7 +113,7 @@ impl Sync {
         &self,
         address: &Address,
         tree_id: &ID,
-        requesting_public_key: &str,
+        requesting_public_key: &PublicKey,
         requesting_key_name: &str,
         requested_permission: Permission,
     ) -> Result<()> {
@@ -136,7 +121,7 @@ impl Sync {
         self.sync_with_peer_for_bootstrap_internal(
             address,
             tree_id,
-            requesting_public_key.to_string(),
+            requesting_public_key,
             requesting_key_name,
             requested_permission,
         )
@@ -161,12 +146,12 @@ impl Sync {
     pub async fn bootstrap_with_ticket(
         &self,
         ticket: &DatabaseTicket,
-        requesting_public_key: &str,
+        requesting_public_key: &PublicKey,
         requesting_key_name: &str,
         requested_permission: Permission,
     ) -> Result<()> {
         let database_id = ticket.database_id().clone();
-        let pubkey = requesting_public_key.to_string();
+        let pubkey = requesting_public_key.clone();
         let key_name = requesting_key_name.to_string();
         self.try_addresses_concurrently(ticket.addresses(), |sync, addr| {
             let db_id = database_id.clone();
@@ -176,7 +161,7 @@ impl Sync {
                 sync.sync_with_peer_for_bootstrap_internal(
                     &addr,
                     &db_id,
-                    pubkey,
+                    &pubkey,
                     &key_name,
                     requested_permission,
                 )
@@ -307,9 +292,8 @@ impl Sync {
 
         // Add the new key to auth settings using SettingsStore API
         // Store by pubkey (this provides proper upsert behavior and validation)
-        let requesting_pk = PublicKey::from_prefixed_string(&request.requesting_pubkey)?;
         settings_store
-            .set_auth_key(&requesting_pk, auth_key)
+            .set_auth_key(&request.requesting_pubkey, auth_key)
             .await?;
 
         // Commit will validate that the user's key has Admin permission

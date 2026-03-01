@@ -102,7 +102,7 @@ impl SyncHandlerImpl {
     async fn store_bootstrap_request(
         &self,
         tree_id: &ID,
-        requesting_key: &str,
+        requesting_key: &PublicKey,
         requesting_key_name: &str,
         requested_permission: &Permission,
     ) -> Result<String> {
@@ -112,7 +112,7 @@ impl SyncHandlerImpl {
 
         let request = BootstrapRequest {
             tree_id: tree_id.clone(),
-            requesting_pubkey: requesting_key.to_string(),
+            requesting_pubkey: requesting_key.clone(),
             requesting_key_name: requesting_key_name.to_string(),
             requested_permission: *requested_permission,
             timestamp: self.instance()?.clock().now_rfc3339(),
@@ -206,15 +206,14 @@ impl SyncHandlerImpl {
     async fn get_key_highest_permission(
         &self,
         tree_id: &ID,
-        requesting_pubkey: &str,
+        requesting_pubkey: &PublicKey,
     ) -> Result<Option<Permission>> {
-        let pubkey = PublicKey::from_prefixed_string(requesting_pubkey)?;
         let database = Database::open_unauthenticated(tree_id.clone(), &self.instance()?)?;
         let transaction = database.new_transaction().await?;
         let settings_store = SettingsStore::new(&transaction)?;
         let auth_settings = settings_store.auth_snapshot().await?;
 
-        let results = auth_settings.find_all_sigkeys_for_pubkey(&pubkey);
+        let results = auth_settings.find_all_sigkeys_for_pubkey(requesting_pubkey);
 
         if results.is_empty() {
             return Ok(None);
@@ -240,10 +239,9 @@ impl SyncHandlerImpl {
     async fn check_existing_auth_permission(
         &self,
         tree_id: &ID,
-        requesting_pubkey: &str,
+        requesting_pubkey: &PublicKey,
         requested_permission: &Permission,
     ) -> Result<bool> {
-        let pubkey = PublicKey::from_prefixed_string(requesting_pubkey)?;
         // Use open_unauthenticated since we only need to read auth settings
         let database = Database::open_unauthenticated(tree_id.clone(), &self.instance()?)?;
         let settings_store = database.get_settings().await?;
@@ -251,7 +249,7 @@ impl SyncHandlerImpl {
         let auth_settings = settings_store.auth_snapshot().await?;
 
         // Use the AuthSettings.can_access() method to check permissions
-        if auth_settings.can_access(&pubkey, requested_permission) {
+        if auth_settings.can_access(requesting_pubkey, requested_permission) {
             debug!(
                 tree_id = %tree_id,
                 requesting_pubkey = %requesting_pubkey,
@@ -429,13 +427,18 @@ impl SyncHandlerImpl {
     ///
     /// # Returns
     /// Result indicating success or failure
-    async fn track_tree_sync_relationship(&self, tree_id: &ID, peer_pubkey: &str) -> Result<()> {
+    async fn track_tree_sync_relationship(
+        &self,
+        tree_id: &ID,
+        peer_pubkey: &PublicKey,
+    ) -> Result<()> {
         let sync_tree = self.get_sync_tree().await?;
         let txn = sync_tree.new_transaction().await?;
         let peer_manager = PeerManager::new(&txn);
+        let pk_str = peer_pubkey.to_string();
 
         // Add the tree sync relationship
-        peer_manager.add_tree_sync(peer_pubkey, tree_id).await?;
+        peer_manager.add_tree_sync(&pk_str, tree_id).await?;
         txn.commit().await?;
 
         debug!(tree_id = %tree_id, peer_pubkey = %peer_pubkey, "Tracked tree/peer sync relationship");
@@ -566,7 +569,7 @@ impl SyncHandlerImpl {
             if request.our_tips.is_empty() {
                 debug!(tree_id = %request.tree_id, "Peer needs bootstrap - sending full tree");
                 return self.handle_bootstrap_request(&request.tree_id,
-                                                  request.requesting_key.as_deref(),
+                                                  request.requesting_key.as_ref(),
                                                   request.requesting_key_name.as_deref(),
                                                   request.requested_permission).await;
             }
@@ -637,7 +640,7 @@ impl SyncHandlerImpl {
     async fn handle_bootstrap_request(
         &self,
         tree_id: &ID,
-        requesting_key: Option<&str>,
+        requesting_key: Option<&PublicKey>,
         requesting_key_name: Option<&str>,
         requested_permission: Option<Permission>,
     ) -> SyncResponse {

@@ -8,6 +8,8 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use crate::auth::crypto::PublicKey;
+
 /// A peer's unique identifier, derived from their public key.
 ///
 /// The format is `ed25519:{base64_encoded_key}`.
@@ -60,6 +62,18 @@ impl From<&str> for PeerId {
 impl From<&String> for PeerId {
     fn from(s: &String) -> Self {
         Self(s.clone())
+    }
+}
+
+impl From<PublicKey> for PeerId {
+    fn from(pk: PublicKey) -> Self {
+        Self(pk.to_string())
+    }
+}
+
+impl From<&PublicKey> for PeerId {
+    fn from(pk: &PublicKey) -> Self {
+        Self(pk.to_string())
     }
 }
 

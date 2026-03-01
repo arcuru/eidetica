@@ -83,7 +83,7 @@ pub enum SyncCommand {
     /// Send a sync request and get response
     SendRequest {
         address: Address,
-        request: SyncRequest,
+        request: Box<SyncRequest>,
         response: oneshot::Sender<Result<SyncResponse>>,
     },
 
@@ -747,7 +747,7 @@ impl BackgroundSync {
                 .map_err(|e| SyncError::BackendError(format!("Failed to get local tips: {e}")))?;
 
             // Get our device public key for automatic peer tracking
-            let our_device_pubkey = Some(instance.device_id().to_string());
+            let our_device_pubkey = Some(instance.device_id());
 
             debug!(peer = %peer_id, tree = %tree_id, our_tips = our_tips.len(), "Sending sync tree request");
 

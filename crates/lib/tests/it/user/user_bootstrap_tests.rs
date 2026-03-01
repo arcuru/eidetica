@@ -112,7 +112,7 @@ async fn create_pending_request(
         tree_id: tree_id.clone(),
         our_tips: vec![], // Empty tips = bootstrap needed
         peer_pubkey: None,
-        requesting_key: Some(client_pubkey.to_string()), // Convert PublicKey to string for protocol
+        requesting_key: Some(client_pubkey.clone()),
         requesting_key_name: Some("laptop_key".to_string()),
         requested_permission: Some(permission),
     });

@@ -63,7 +63,7 @@ async fn test_bootstrap_with_provided_key() {
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &client_key_id,
+            &client_verifying_key,
             &client_key_id,
             Permission::Write(5),
         )
@@ -127,7 +127,7 @@ async fn test_bootstrap_with_provided_key_succeeds() {
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &client_key_id,
+            &client_verifying_key,
             &client_key_id,
             Permission::Read,
         )
@@ -187,7 +187,7 @@ async fn test_bootstrap_with_invalid_key_fails() {
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &fake_tree_id,
-            &client_key_id,
+            &client_verifying_key,
             &client_key_id,
             Permission::Write(5),
         )
@@ -234,11 +234,11 @@ async fn test_multiple_clients_with_different_keys() {
         sync.register_transport("http", HttpTransport::builder())
             .await
             .unwrap();
-        clients.push((instance, sync, key_id, i));
+        clients.push((instance, sync, verifying_key, key_id, i));
     }
 
     // Each client bootstraps with their own key
-    for (instance, sync, key_id, i) in clients {
+    for (instance, sync, verifying_key, key_id, i) in clients {
         println!("🧪 Client {i} bootstrapping...");
 
         // Verify client doesn't have database initially
@@ -251,7 +251,7 @@ async fn test_multiple_clients_with_different_keys() {
         sync.sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &key_id,
+            &verifying_key,
             &key_id,
             Permission::Read,
         )
@@ -318,7 +318,7 @@ async fn test_bootstrap_with_different_permissions() {
         sync.sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &key_id,
+            &verifying_key,
             &key_id,
             permission,
         )
@@ -368,91 +368,24 @@ async fn test_bootstrap_with_invalid_keys() {
         .await
         .unwrap();
 
-    // Generate a valid public key for comparison
+    // Generate a valid public key for testing
     let (_signing_key, verifying_key) = generate_keypair();
-    let valid_public_key = verifying_key.to_string();
-
-    println!("🧪 TEST: Testing empty public key");
-    let result = sync
-        .sync_with_peer_for_bootstrap_with_key(
-            &server_addr,
-            &tree_id,
-            "", // Empty public key
-            "test_key",
-            Permission::Write(5),
-        )
-        .await;
-
-    assert!(
-        result.is_err(),
-        "Bootstrap with empty public key should fail"
-    );
-    let err = result.unwrap_err();
-    assert!(
-        err.to_string().contains("Public key cannot be empty"),
-        "Error should mention empty public key, got: {err}"
-    );
-    println!("✅ Empty public key correctly rejected");
-
-    println!("🧪 TEST: Testing malformed public key");
-    let result = sync
-        .sync_with_peer_for_bootstrap_with_key(
-            &server_addr,
-            &tree_id,
-            "not_a_valid_public_key", // Invalid format
-            "test_key",
-            Permission::Write(5),
-        )
-        .await;
-
-    assert!(
-        result.is_err(),
-        "Bootstrap with malformed public key should fail"
-    );
-    let err = result.unwrap_err();
-    assert!(
-        err.to_string().contains("Invalid public key format"),
-        "Error should mention invalid format, got: {err}"
-    );
-    println!("✅ Malformed public key correctly rejected");
 
     println!("🧪 TEST: Testing empty key name");
     let result = sync
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &valid_public_key,
+            &verifying_key,
             "", // Empty key name
             Permission::Write(5),
         )
         .await;
 
     assert!(result.is_err(), "Bootstrap with empty key name should fail");
-    let err = result.unwrap_err();
-    assert!(
-        err.to_string().contains("Key name cannot be empty"),
-        "Error should mention empty key name, got: {err}"
-    );
     println!("✅ Empty key name correctly rejected");
 
-    println!("🧪 TEST: Testing invalid public key with valid-looking but wrong format");
-    let result = sync
-        .sync_with_peer_for_bootstrap_with_key(
-            &server_addr,
-            &tree_id,
-            "ed25519:not_base64!@#$", // Has prefix but invalid base64
-            "test_key",
-            Permission::Write(5),
-        )
-        .await;
-
-    assert!(
-        result.is_err(),
-        "Bootstrap with invalid base64 in public key should fail"
-    );
-    println!("✅ Invalid base64 public key correctly rejected");
-
-    println!("✅ TEST: All invalid key validations passed");
+    println!("✅ TEST: Key name validation passed");
 
     // Cleanup
     server_sync.stop_server().await.unwrap();
@@ -506,7 +439,7 @@ async fn test_full_e2e_bootstrap_with_database_instances() {
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &client_key_id,
+            &client_verifying_key,
             &client_key_id,
             Permission::Read,
         )
@@ -605,7 +538,7 @@ async fn test_incremental_sync_after_bootstrap_with_key() {
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &client_key_id,
+            &client_verifying_key,
             &client_key_id,
             Permission::Write(5),
         )

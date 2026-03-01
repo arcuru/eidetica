@@ -116,7 +116,8 @@ impl Sync {
     /// ```no_run
     /// # use eidetica::*;
     /// # use eidetica::sync::{SyncPeerInfo, Address, AuthParams};
-    /// # async fn example(sync: sync::Sync, peer_pubkey: String, tree_id: entry::ID) -> Result<()> {
+    /// # use eidetica::auth::PublicKey;
+    /// # async fn example(sync: sync::Sync, peer_pubkey: PublicKey, tree_id: entry::ID) -> Result<()> {
     /// // Register peer for syncing
     /// let handle = sync.register_sync_peer(SyncPeerInfo {
     ///     peer_pubkey,
@@ -141,25 +142,22 @@ impl Sync {
     pub async fn register_sync_peer(&self, info: SyncPeerInfo) -> Result<SyncHandle> {
         let txn = self.sync_tree.new_transaction().await?;
         let peer_mgr = PeerManager::new(&txn);
+        let pk_str = info.peer_pubkey.to_string();
 
         // Register peer if it doesn't exist
-        if peer_mgr.get_peer_info(&info.peer_pubkey).await?.is_none() {
+        if peer_mgr.get_peer_info(&pk_str).await?.is_none() {
             peer_mgr
-                .register_peer(&info.peer_pubkey, info.display_name.as_deref())
+                .register_peer(&pk_str, info.display_name.as_deref())
                 .await?;
         }
 
         // Add all address hints
         for addr in &info.addresses {
-            peer_mgr
-                .add_address(&info.peer_pubkey, addr.clone())
-                .await?;
+            peer_mgr.add_address(&pk_str, addr.clone()).await?;
         }
 
         // Register the tree/peer relationship
-        peer_mgr
-            .add_tree_sync(&info.peer_pubkey, &info.tree_id)
-            .await?;
+        peer_mgr.add_tree_sync(&pk_str, &info.tree_id).await?;
 
         // TODO: Store auth params if provided for bootstrap
         // For now, auth is passed during the actual sync handshake via on_local_write callback

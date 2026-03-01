@@ -143,6 +143,7 @@ For persistent sync relationships:
 # extern crate eidetica;
 # extern crate tokio;
 # use eidetica::sync::{SyncPeerInfo, Address};
+# use eidetica::auth::PublicKey;
 # use eidetica::{Instance, backend::database::Sqlite, crdt::Doc};
 #
 # #[tokio::main]
@@ -156,7 +157,7 @@ For persistent sync relationships:
 # let db = user.create_database(Doc::new(), &default_key).await?;
 # let tree_id = db.root_id().clone();
 # let sync = instance.sync().expect("Sync enabled");
-# let peer_pubkey = "ed25519:abc123".to_string();
+# let peer_pubkey = PublicKey::random();
 // Register a peer for automatic background sync
 let handle = sync.register_sync_peer(SyncPeerInfo {
     peer_pubkey,

@@ -149,7 +149,7 @@ const TRANSPORT_STATE_STORE: &str = "transport_state";
 #[derive(Debug, Clone)]
 pub struct AuthParams {
     /// The public key making the request
-    pub requesting_key: String,
+    pub requesting_key: PublicKey,
     /// The name/ID of the requesting key
     pub requesting_key_name: String,
     /// The permission level being requested
@@ -162,7 +162,7 @@ pub struct AuthParams {
 #[derive(Debug, Clone)]
 pub struct SyncPeerInfo {
     /// The peer's public key
-    pub peer_pubkey: String,
+    pub peer_pubkey: PublicKey,
     /// The tree/database to sync
     pub tree_id: ID,
     /// Initial address hints where the peer might be found
@@ -179,21 +179,21 @@ pub struct SyncPeerInfo {
 #[derive(Debug, Clone)]
 pub struct SyncHandle {
     tree_id: ID,
-    peer_pubkey: String,
+    peer_pubkey: PublicKey,
     sync: Sync,
 }
 
 impl SyncHandle {
     /// Get the current sync status.
     pub async fn status(&self) -> Result<SyncStatus> {
-        self.sync
-            .get_sync_status(&self.tree_id, &self.peer_pubkey)
-            .await
+        let pk_str = self.peer_pubkey.to_string();
+        self.sync.get_sync_status(&self.tree_id, &pk_str).await
     }
 
     /// Add another address hint for this peer.
     pub async fn add_address(&self, address: Address) -> Result<()> {
-        self.sync.add_peer_address(&self.peer_pubkey, address).await
+        let pk_str = self.peer_pubkey.to_string();
+        self.sync.add_peer_address(&pk_str, address).await
     }
 
     /// Block until initial sync completes (has local data).
@@ -216,7 +216,7 @@ impl SyncHandle {
     }
 
     /// Get the peer public key.
-    pub fn peer_pubkey(&self) -> &str {
+    pub fn peer_pubkey(&self) -> &PublicKey {
         &self.peer_pubkey
     }
 }

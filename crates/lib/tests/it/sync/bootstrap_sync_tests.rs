@@ -287,7 +287,6 @@ async fn test_bootstrap_malformed_request_data() {
 
     // Generate a test keypair for bootstrap requests
     let (_, test_verifying_key) = generate_keypair();
-    let test_pubkey = test_verifying_key.to_string();
 
     // Test 1: Invalid tree ID format
     let malformed_tree_id = ID::from("invalid_tree_format");
@@ -295,7 +294,7 @@ async fn test_bootstrap_malformed_request_data() {
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &malformed_tree_id,
-            &test_pubkey,
+            &test_verifying_key,
             "client_key",
             Permission::Write(5),
         )
@@ -312,7 +311,7 @@ async fn test_bootstrap_malformed_request_data() {
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &test_tree_id,
-            &test_pubkey,
+            &test_verifying_key,
             "", // Empty key name
             Permission::Write(5),
         )
@@ -352,7 +351,6 @@ async fn test_bootstrap_conflicting_tree_ids() {
 
     // Generate a test keypair for bootstrap request
     let (_, test_verifying_key) = generate_keypair();
-    let test_pubkey = test_verifying_key.to_string();
 
     // Try to bootstrap with a different tree ID than what exists
     let different_tree_id = ID::from("different_tree_that_doesnt_exist");
@@ -360,7 +358,7 @@ async fn test_bootstrap_conflicting_tree_ids() {
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &different_tree_id,
-            &test_pubkey,
+            &test_verifying_key,
             "client_key",
             Permission::Write(5),
         )

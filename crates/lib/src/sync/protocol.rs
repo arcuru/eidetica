@@ -71,11 +71,11 @@ pub struct SyncTreeRequest {
     /// Our current tips (empty vec signals bootstrap needed)
     pub our_tips: Vec<ID>,
     /// Device public key of the requesting peer (used for automatic tree/peer relationship tracking)
-    pub peer_pubkey: Option<String>,
+    pub peer_pubkey: Option<PublicKey>,
     // Note: requesting_key is unverified but this is safe - see handler.rs
     // handle_bootstrap_request() for detailed explanation.
     /// Authentication key requesting access (for bootstrap)
-    pub requesting_key: Option<String>,
+    pub requesting_key: Option<PublicKey>,
     /// Key name/identifier for the requesting key
     pub requesting_key_name: Option<String>,
     /// Desired permission level for bootstrap
@@ -159,5 +159,5 @@ pub struct RequestContext {
     pub remote_address: Option<Address>,
     /// The public key of the peer making this request.
     /// Set after successful handshake to identify the authenticated peer.
-    pub peer_pubkey: Option<String>,
+    pub peer_pubkey: Option<PublicKey>,
 }

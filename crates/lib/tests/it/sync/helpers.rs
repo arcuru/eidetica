@@ -356,7 +356,7 @@ pub fn create_bootstrap_request(
         tree_id: tree_id.clone(),
         our_tips: vec![], // Empty tips = bootstrap needed
         peer_pubkey: None,
-        requesting_key: Some(requesting_key.to_string()),
+        requesting_key: Some(PublicKey::from_prefixed_string(requesting_key).unwrap()),
         requesting_key_name: Some(key_name.to_string()),
         requested_permission: Some(permission),
     })

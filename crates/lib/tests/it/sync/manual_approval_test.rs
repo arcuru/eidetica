@@ -50,7 +50,7 @@ async fn test_manual_approval_stores_pending_request() {
     let pending_requests = sync.pending_bootstrap_requests().await.unwrap();
     let (_, stored_request) = &pending_requests[0];
     assert_eq!(stored_request.tree_id, tree_id);
-    assert_eq!(stored_request.requesting_pubkey, test_key.to_string());
+    assert_eq!(stored_request.requesting_pubkey, test_key);
     assert_eq!(stored_request.requesting_key_name, "laptop_key");
     assert_eq!(
         stored_request.requested_permission,
@@ -185,7 +185,7 @@ async fn test_reject_bootstrap_request() {
         tree_id: tree_id.clone(),
         our_tips: vec![], // Empty tips = bootstrap needed
         peer_pubkey: None,
-        requesting_key: Some(test_key.to_string()),
+        requesting_key: Some(test_key.clone()),
         requesting_key_name: Some("laptop_key".to_string()),
         requested_permission: Some(AuthPermission::Write(5)),
     });
@@ -269,7 +269,7 @@ async fn test_list_bootstrap_requests_by_status() {
         tree_id: tree_id.clone(),
         our_tips: vec![],
         peer_pubkey: None,
-        requesting_key: Some(test_key.to_string()),
+        requesting_key: Some(test_key.clone()),
         requesting_key_name: Some("test_key".to_string()),
         requested_permission: Some(AuthPermission::Write(5)),
     });
@@ -329,7 +329,7 @@ async fn test_duplicate_bootstrap_requests_same_client() {
         tree_id: tree_id.clone(),
         our_tips: vec![], // Empty tips = bootstrap needed
         peer_pubkey: None,
-        requesting_key: Some(test_key.to_string()),
+        requesting_key: Some(test_key.clone()),
         requesting_key_name: Some("laptop_key".to_string()),
         requested_permission: Some(AuthPermission::Write(5)),
     });
@@ -347,7 +347,7 @@ async fn test_duplicate_bootstrap_requests_same_client() {
         tree_id: tree_id.clone(),
         our_tips: vec![], // Empty tips = bootstrap needed
         peer_pubkey: None,
-        requesting_key: Some(test_key.to_string()),
+        requesting_key: Some(test_key.clone()),
         requesting_key_name: Some("laptop_key".to_string()),
         requested_permission: Some(AuthPermission::Write(5)),
     });
@@ -383,7 +383,7 @@ async fn test_duplicate_bootstrap_requests_same_client() {
     // Verify all requests have correct details
     for (_, request) in &pending_requests {
         assert_eq!(request.tree_id, tree_id);
-        assert_eq!(request.requesting_pubkey, test_key.to_string());
+        assert_eq!(request.requesting_pubkey, test_key);
         assert_eq!(request.requesting_key_name, "laptop_key");
         assert_eq!(request.requested_permission, AuthPermission::Write(5));
         assert!(matches!(request.status, RequestStatus::Pending));
@@ -464,7 +464,7 @@ async fn test_malformed_permission_requests() {
             tree_id: tree_id.clone(),
             our_tips: vec![],
             peer_pubkey: None,
-            requesting_key: Some(test_key.to_string()),
+            requesting_key: Some(test_key.clone()),
             requesting_key_name: Some(format!("key_for_{}", description.replace(" ", "_"))),
             requested_permission: Some(*permission),
         });
@@ -1130,7 +1130,7 @@ async fn test_client_retry_after_approval() {
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &client_key_str,
+            &client_key_id,
             &client_key_str,
             AuthPermission::Write(5),
         )
@@ -1170,7 +1170,7 @@ async fn test_client_retry_after_approval() {
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &client_key_str,
+            &client_key_id,
             &client_key_str,
             AuthPermission::Write(5),
         )
@@ -1238,7 +1238,7 @@ async fn test_client_denied_after_rejection() {
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &client_key_str,
+            &client_key_id,
             &client_key_str,
             AuthPermission::Write(5),
         )
@@ -1277,7 +1277,7 @@ async fn test_client_denied_after_rejection() {
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &client_key_str,
+            &client_key_id,
             &client_key_str,
             AuthPermission::Write(5),
         )
@@ -1337,7 +1337,7 @@ async fn test_bootstrap_api_equivalence() {
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &client_key_str,
+            &client_key_id,
             &client_key_str,
             AuthPermission::Write(5),
         )
