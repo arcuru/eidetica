@@ -28,10 +28,13 @@ pub use crate::context::TestContext;
 /// - "inmemory" or unset: InMemory backend (default)
 /// - "sqlite": SQLite in-memory backend (requires `sqlite` feature)
 /// - "postgres": PostgreSQL backend (requires `postgres` feature and TEST_POSTGRES_URL)
+/// - "service": RemoteBackend over Unix socket to an in-process daemon
+///   (requires `service` feature and unix)
 ///
 /// # Panics
 /// Panics if TEST_BACKEND=sqlite but the `sqlite` feature is not enabled.
 /// Panics if TEST_BACKEND=postgres but the `postgres` feature is not enabled.
+/// Panics if TEST_BACKEND=service but the `service` feature is not enabled or not on unix.
 ///
 /// # Example
 /// ```bash
@@ -44,6 +47,9 @@ pub use crate::context::TestContext;
 /// # Run tests with PostgreSQL
 /// TEST_BACKEND=postgres TEST_POSTGRES_URL="host=localhost dbname=eidetica_test" \
 ///   cargo test --features postgres
+///
+/// # Run tests through the service (daemon) RPC layer
+/// TEST_BACKEND=service cargo test --features service
 /// ```
 /// Creates a test backend based on TEST_BACKEND env var
 pub async fn test_backend() -> Box<dyn BackendImpl> {
@@ -80,11 +86,73 @@ pub async fn test_backend() -> Box<dyn BackendImpl> {
                 panic!("TEST_BACKEND=postgres requires the 'postgres' feature to be enabled")
             }
         }
+        Ok("service") => {
+            #[cfg(all(unix, feature = "service"))]
+            {
+                Box::new(start_service_backend().await)
+            }
+            #[cfg(not(all(unix, feature = "service")))]
+            {
+                panic!(
+                    "TEST_BACKEND=service requires unix and the 'service' feature to be enabled"
+                )
+            }
+        }
         Ok("inmemory") | Ok("") | Err(_) => Box::new(InMemory::new()),
         Ok(other) => {
-            panic!("Unknown TEST_BACKEND value: {other}. Supported: inmemory, sqlite, postgres")
+            panic!(
+                "Unknown TEST_BACKEND value: {other}. Supported: inmemory, sqlite, postgres, service"
+            )
         }
     }
+}
+
+/// Starts a new service daemon and returns a `RemoteBackend` connected to it.
+///
+/// Each call starts its own daemon on a unique Unix socket, maintaining the same
+/// isolation semantics as other backends. Prefers SQLite in-memory if the `sqlite`
+/// feature is enabled, otherwise falls back to the bare `InMemory` backend.
+#[cfg(all(unix, feature = "service"))]
+async fn start_service_backend() -> eidetica::service::RemoteBackend {
+    use eidetica::backend::BackendImpl;
+    use eidetica::Instance;
+    use eidetica::service::server::ServiceServer;
+
+    let dir = tempfile::tempdir().unwrap();
+    let socket_path = dir.keep().join("test-service.sock");
+
+    let path_for_spawn = socket_path.clone();
+    tokio::spawn(async move {
+        let backend: Box<dyn BackendImpl> = {
+            #[cfg(feature = "sqlite")]
+            {
+                use eidetica::backend::database::Sqlite;
+                Box::new(Sqlite::in_memory().await.expect("Failed to create SQLite backend"))
+            }
+            #[cfg(not(feature = "sqlite"))]
+            {
+                Box::new(InMemory::new())
+            }
+        };
+        let instance = Instance::open(backend)
+            .await
+            .expect("Failed to create service instance");
+        let (_tx, rx) = tokio::sync::watch::channel(());
+        let server = ServiceServer::new(instance, path_for_spawn);
+        let _ = server.run(rx).await;
+    });
+
+    // Wait for the server to be ready by retrying connection
+    for attempt in 0..50 {
+        match eidetica::service::RemoteBackend::connect(&socket_path).await {
+            Ok(backend) => return backend,
+            Err(_) if attempt < 49 => {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            Err(e) => panic!("Failed to connect to service backend after retries: {e}"),
+        }
+    }
+    unreachable!()
 }
 
 /// Creates a basic Instance with no users or keys.

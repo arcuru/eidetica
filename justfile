@@ -78,7 +78,7 @@ serve-clean port='3000':
 # Testing
 # =============================================================================
 
-# Run tests: [filter], sqlite, postgres, all-backends, doc, full, ignored, minimal, todo
+# Run tests: [filter], sqlite, inmemory, service, postgres, all-backends, doc, full, ignored, minimal, todo
 test *args:
     #!/usr/bin/env bash
     set -e
@@ -101,6 +101,9 @@ test *args:
             ;;
         inmemory)
             TEST_BACKEND=inmemory cargo nextest run --workspace --all-features --no-fail-fast --status-level fail $rest
+            ;;
+        service)
+            TEST_BACKEND=service cargo nextest run --workspace --all-features --no-fail-fast --status-level fail $rest
             ;;
         postgres)
             CONTAINER_NAME="eidetica-test-postgres"
@@ -136,6 +139,8 @@ test *args:
             just test
             echo "=== Testing InMemory backend ==="
             just test inmemory
+            echo "=== Testing Service backend ==="
+            just test service
             echo "=== Testing PostgreSQL backend ==="
             just test postgres
             ;;
