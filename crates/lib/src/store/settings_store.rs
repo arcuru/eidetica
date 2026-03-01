@@ -180,10 +180,33 @@ impl SettingsStore {
     /// # Returns
     /// Result indicating success or failure
     pub async fn set_auth_key(&self, pubkey: &str, key: AuthKey) -> Result<()> {
-        if pubkey != "*" {
-            PublicKey::from_prefixed_string(pubkey)?;
-        }
+        PublicKey::from_prefixed_string(pubkey)?;
         self.inner.set(format!("auth.keys.{pubkey}"), key).await
+    }
+
+    /// Set the global authentication permission
+    ///
+    /// Stores the global permission at the `auth.global` path, separate from
+    /// individual key entries in the `auth.keys` namespace.
+    ///
+    /// # Arguments
+    /// * `key` - The AuthKey containing the global permission level and status
+    ///
+    /// # Returns
+    /// Result indicating success or failure
+    pub async fn set_global_auth_key(&self, key: AuthKey) -> Result<()> {
+        self.inner.set("auth.global", key).await
+    }
+
+    /// Get the global authentication permission
+    ///
+    /// Reads from the `auth.global` path via an auth snapshot.
+    ///
+    /// # Returns
+    /// AuthKey if the global permission is configured, or error if not present
+    pub async fn get_global_auth_key(&self) -> Result<AuthKey> {
+        let auth_settings = self.auth_snapshot().await?;
+        auth_settings.get_global_key()
     }
 
     /// Get an authentication key from the settings by public key

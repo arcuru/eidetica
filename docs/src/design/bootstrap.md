@@ -234,12 +234,9 @@ Wildcard permissions are managed through the standard `AuthSettings` API using `
 <!-- Code block ignored: API interface showing function signatures without bodies -->
 
 ```rust,ignore
-// Set wildcard permission - use "*" as both key name and pubkey
+// Set global permission
 let mut auth_settings = AuthSettings::new();
-auth_settings.add_key("*", AuthKey::active("*", Permission::Write(10))?)?;
-
-// Remove wildcard permission
-auth_settings.remove_key("*")?;
+auth_settings.set_global_permission(AuthKey::active(None, Permission::Write(10)));
 ```
 
 ### Bootstrap API

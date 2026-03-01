@@ -292,14 +292,14 @@ impl SyncHandlerImpl {
             return Ok(false); // No auth required
         }
 
-        // Auth is configured - check if there's an Active global "*" permission
-        if let Ok(global_key) = auth_settings.get_key_by_pubkey("*")
+        // Auth is configured - check if there's an Active global permission
+        if let Ok(global_key) = auth_settings.get_global_key()
             && *global_key.status() == KeyStatus::Active
         {
             debug!(
                 tree_id = %tree_id,
                 global_permission = ?global_key.permissions(),
-                "Database has global '*' permission - allowing unauthenticated access"
+                "Database has global permission - allowing unauthenticated access"
             );
             return Ok(false); // Global permission allows unauthenticated access
         }

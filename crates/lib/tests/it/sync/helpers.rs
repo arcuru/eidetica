@@ -296,7 +296,7 @@ pub async fn setup_global_wildcard_server() -> (Instance, User, PublicKey, Datab
 
     // Add global wildcard permission
     settings_store
-        .set_auth_key("*", AuthKey::active(None, AuthPermission::Admin(0)))
+        .set_global_auth_key(AuthKey::active(None, AuthPermission::Admin(0)))
         .await
         .unwrap();
 
@@ -612,7 +612,7 @@ pub async fn set_global_wildcard_permission_with_level(
     let tx = database.new_transaction().await?;
     let db_settings = tx.get_settings()?;
     db_settings
-        .set_auth_key("*", AuthKey::active(None, permission))
+        .set_global_auth_key(AuthKey::active(None, permission))
         .await?;
     tx.commit().await?;
     Ok(())
@@ -812,7 +812,7 @@ pub async fn setup_public_sync_enabled_server(
         .await
         .unwrap();
 
-    // Add auth keys: device key, user's key, and wildcard permission
+    // Add auth keys: device key and user's key
     let server_key_id_str = server_key_id.to_string();
     crate::helpers::add_auth_keys(
         &server_database,
@@ -825,8 +825,14 @@ pub async fn setup_public_sync_enabled_server(
                 &server_key_id_str,
                 AuthKey::active(None, AuthPermission::Admin(0)),
             ),
-            ("*", AuthKey::active(None, AuthPermission::Read)),
         ],
+    )
+    .await;
+
+    // Add global wildcard permission
+    crate::helpers::set_global_auth_key(
+        &server_database,
+        AuthKey::active(None, AuthPermission::Read),
     )
     .await;
 

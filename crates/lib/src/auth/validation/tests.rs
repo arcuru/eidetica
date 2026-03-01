@@ -25,6 +25,12 @@ fn create_test_auth_with_key(pubkey: &str, auth_key: &AuthKey) -> AuthSettings {
     auth_settings
 }
 
+fn create_test_auth_with_global(auth_key: &AuthKey) -> AuthSettings {
+    let mut auth_settings = AuthSettings::new();
+    auth_settings.set_global_permission(auth_key.clone());
+    auth_settings
+}
+
 #[tokio::test]
 async fn test_basic_key_resolution() {
     let mut validator = AuthValidator::new();
@@ -687,20 +693,19 @@ async fn test_global_permission_with_pubkey_hint() {
     let (signing_key, verifying_key) = generate_keypair();
     let actual_pubkey = format_public_key(&verifying_key);
 
-    // Create settings with global "*" permission
+    // Create settings with global permission
     let global_auth_key = AuthKey::active(None, Permission::Write(10));
 
-    let settings = create_test_auth_with_key("*", &global_auth_key);
+    let settings = create_test_auth_with_global(&global_auth_key);
 
     // Create an entry that uses global permission with actual signer pubkey in hint
     let mut entry = Entry::root_builder()
         .build()
         .expect("Root entry should build successfully");
 
-    // Use "*:pubkey" format in hint to indicate global permission with actual signer
-    let global_pubkey = format!("*:{}", actual_pubkey);
+    // Use SigKey::global to indicate global permission with actual signer
     entry.sig = SigInfo {
-        key: SigKey::from_pubkey(&global_pubkey),
+        key: SigKey::global(&actual_pubkey),
         sig: None,
     };
 
@@ -721,12 +726,12 @@ async fn test_global_permission_without_pubkey_fails() {
     let mut validator = AuthValidator::new();
     let (signing_key, _) = generate_keypair();
 
-    // Create settings with global "*" permission
+    // Create settings with global permission
     let global_auth_key = AuthKey::active(None, Permission::Write(10));
 
-    let settings = create_test_auth_with_key("*", &global_auth_key);
+    let settings = create_test_auth_with_global(&global_auth_key);
 
-    // Create an entry that uses global permission but doesn't include pubkey in hint
+    // Create an entry that uses a name hint "*" without pubkey - should fail
     let mut entry = Entry::root_builder()
         .build()
         .expect("Root entry should build successfully");
@@ -754,14 +759,13 @@ async fn test_global_permission_resolver() {
     let public_key = PrivateKey::generate().public_key();
     let actual_pubkey = public_key.to_prefixed_string();
 
-    // Create settings with global "*" permission
+    // Create settings with global permission
     let global_auth_key = AuthKey::active(None, Permission::Write(10));
 
-    let settings = create_test_auth_with_key("*", &global_auth_key);
+    let settings = create_test_auth_with_global(&global_auth_key);
 
-    // Test resolving "*:pubkey" format - should succeed
-    let global_pubkey = format!("*:{}", actual_pubkey);
-    let sig_key = SigKey::from_pubkey(&global_pubkey);
+    // Test resolving global hint - should succeed
+    let sig_key = SigKey::global(&actual_pubkey);
 
     let result = validator.resolve_sig_key(&sig_key, &settings, None).await;
 
@@ -782,17 +786,16 @@ async fn test_global_permission_insufficient_perms() {
     let (signing_key, verifying_key) = generate_keypair();
     let actual_pubkey = format_public_key(&verifying_key);
 
-    // Create settings with global "*" permission but only Read access
+    // Create settings with global permission but only Read access
     let global_auth_key = AuthKey::active(
         None,
         Permission::Read, // Only read permission
     );
 
-    let settings = create_test_auth_with_key("*", &global_auth_key);
+    let settings = create_test_auth_with_global(&global_auth_key);
 
     // Test that global permissions still respect the permission level
-    let global_pubkey = format!("*:{}", actual_pubkey);
-    let sig_key = SigKey::from_pubkey(&global_pubkey);
+    let sig_key = SigKey::global(&actual_pubkey);
 
     let result = validator.resolve_sig_key(&sig_key, &settings, None).await;
     assert!(result.is_ok(), "Resolution should succeed");
@@ -807,7 +810,7 @@ async fn test_global_permission_insufficient_perms() {
         .expect("Root entry should build successfully");
 
     entry.sig = SigInfo {
-        key: SigKey::from_pubkey(&global_pubkey),
+        key: SigKey::global(&actual_pubkey),
         sig: None,
     };
 
@@ -833,9 +836,9 @@ async fn test_global_permission_vs_specific_key() {
     let specific_key = AuthKey::active(Some("specific_key"), Permission::Admin(5));
     auth_settings.add_key(&pubkey1, specific_key).unwrap();
 
-    // Add global permission
+    // Set global permission
     let global_key = AuthKey::active(None, Permission::Write(10));
-    auth_settings.add_key("*", global_key).unwrap();
+    auth_settings.set_global_permission(global_key);
 
     // Test 1: Entry signed with specific key should work normally
     let mut entry1 = Entry::root_builder()
@@ -856,9 +859,8 @@ async fn test_global_permission_vs_specific_key() {
     let mut entry2 = Entry::root_builder()
         .build()
         .expect("Root entry should build successfully");
-    let global_pubkey2 = format!("*:{}", pubkey2);
     entry2.sig = SigInfo::builder()
-        .key(SigKey::from_pubkey(&global_pubkey2)) // Different key using global permission
+        .key(SigKey::global(&pubkey2)) // Different key using global permission
         .build();
     let signature2 = sign_entry(&entry2, &signing_key2).unwrap();
     entry2.sig.sig = Some(signature2);

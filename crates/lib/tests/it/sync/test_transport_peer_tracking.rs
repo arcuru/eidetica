@@ -17,7 +17,7 @@ use eidetica::{
 };
 
 use super::helpers::*;
-use crate::helpers::{add_auth_key, setup_empty_db};
+use crate::helpers::{set_global_auth_key, setup_empty_db};
 
 /// Test automatic peer tracking: when client syncs with server, server should
 /// automatically track the tree/peer relationship WITHOUT manual setup.
@@ -41,7 +41,7 @@ async fn test_server_automatically_tracks_peers_that_sync_trees() {
 
     let server_sync = server_instance.sync().unwrap();
 
-    // Create a database with wildcard "*" permission to allow unauthenticated sync
+    // Create a database with global permission to allow unauthenticated sync
     let mut db_settings = Doc::new();
     db_settings.set("name", "test_database");
 
@@ -50,13 +50,8 @@ async fn test_server_automatically_tracks_peers_that_sync_trees() {
         .await
         .unwrap();
 
-    // Add wildcard "*" permission
-    add_auth_key(
-        &server_db,
-        "*",
-        AuthKey::active(Some("*"), Permission::Read),
-    )
-    .await;
+    // Add global permission
+    set_global_auth_key(&server_db, AuthKey::active(None, Permission::Read)).await;
 
     let tree_id = server_db.root_id().clone();
 

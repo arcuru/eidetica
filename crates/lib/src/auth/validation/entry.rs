@@ -65,8 +65,9 @@ impl AuthValidator {
             return Ok(false);
         }
 
-        // Check if auth is configured
-        let has_auth = !auth_settings.get_all_keys()?.is_empty();
+        // Check if auth is configured (keys or global permission)
+        let has_auth =
+            !auth_settings.get_all_keys()?.is_empty() || auth_settings.has_global_permission();
 
         // Handle unsigned entries
         if entry.sig.is_unsigned() {

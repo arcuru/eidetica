@@ -409,9 +409,9 @@ fn test_key_hint_types() {
 
     // Test global hint
     let hint = KeyHint::global(&pubkey);
-    assert_eq!(hint.pubkey, Some(format!("*:{}", pubkey)));
+    assert_eq!(hint.pubkey, Some(pubkey.clone()));
     assert!(hint.is_global());
-    assert_eq!(hint.global_actual_pubkey(), Some(pubkey.as_str()));
+    assert!(hint.is_set());
 
     // Test empty hint
     let hint = KeyHint::default();

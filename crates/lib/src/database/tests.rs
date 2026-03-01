@@ -19,7 +19,7 @@ async fn test_find_sigkeys_returns_sorted_by_permission() -> Result<()> {
     let txn = db.new_transaction().await?;
     let settings_store = txn.get_settings()?;
     settings_store
-        .set_auth_key("*", AuthKey::active(None, Permission::Write(10)))
+        .set_global_auth_key(AuthKey::active(None, Permission::Write(10)))
         .await?;
     txn.commit().await?;
 

@@ -23,7 +23,7 @@ use crate::{
 ///
 /// Keys are stored by pubkey in the "keys" sub-object.
 /// Delegations are stored by root tree ID in the "delegations" sub-object.
-/// Global permission uses the special "*" pubkey.
+/// Global permission is stored in the "global" sub-object.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthSettings {
     /// Doc data from _settings.auth - this is a view, not the authoritative copy
@@ -68,10 +68,8 @@ impl AuthSettings {
     pub fn add_key(&mut self, pubkey: impl Into<String>, key: AuthKey) -> Result<()> {
         let pubkey = pubkey.into();
 
-        // Validate pubkey format (allow "*" for global)
-        if pubkey != "*" {
-            PublicKey::from_prefixed_string(&pubkey)?;
-        }
+        // Validate pubkey format
+        PublicKey::from_prefixed_string(&pubkey)?;
 
         // Check if key already exists
         if self.get_key_by_pubkey(&pubkey).is_ok() {
@@ -86,10 +84,8 @@ impl AuthSettings {
     pub fn overwrite_key(&mut self, pubkey: impl Into<String>, key: AuthKey) -> Result<()> {
         let pubkey = pubkey.into();
 
-        // Validate pubkey format (allow "*" for global)
-        if pubkey != "*" {
-            PublicKey::from_prefixed_string(&pubkey)?;
-        }
+        // Validate pubkey format
+        PublicKey::from_prefixed_string(&pubkey)?;
 
         self.inner.set(format!("keys.{pubkey}"), key);
         Ok(())
@@ -233,6 +229,38 @@ impl AuthSettings {
         Ok(result)
     }
 
+    // ==================== Global Permission ====================
+
+    /// Set the global permission
+    ///
+    /// Stores the global permission at the `global` path, separate from
+    /// individual key entries in the `keys` namespace.
+    pub fn set_global_permission(&mut self, key: AuthKey) {
+        self.inner.set("global", key);
+    }
+
+    /// Get the global permission AuthKey
+    ///
+    /// Reads from the `global` path.
+    pub fn get_global_key(&self) -> Result<AuthKey> {
+        match self.inner.get("global") {
+            Some(Value::Doc(doc)) => AuthKey::try_from(doc).map_err(|e| {
+                AuthError::InvalidKeyFormat {
+                    reason: e.to_string(),
+                }
+                .into()
+            }),
+            Some(_) => Err(AuthError::InvalidKeyFormat {
+                reason: "global key is not a Doc".to_string(),
+            }
+            .into()),
+            None => Err(AuthError::KeyNotFound {
+                key_name: "global".to_string(),
+            }
+            .into()),
+        }
+    }
+
     // ==================== Key Hint Resolution ====================
 
     /// Resolve a key hint to matching authentication info
@@ -248,13 +276,20 @@ impl AuthSettings {
     /// and attempt signature verification with each until one succeeds.
     pub fn resolve_hint(&self, hint: &KeyHint) -> Result<Vec<ResolvedAuth>> {
         // Handle global permission
-        if let Some(actual_pubkey) = hint.global_actual_pubkey() {
+        if hint.is_global() {
             // Global hint - check that global permission exists
             let global_key =
-                self.get_key_by_pubkey("*")
+                self.get_global_key()
                     .map_err(|_| AuthError::InvalidAuthConfiguration {
-                        reason: "Global '*' hint used but no global permission configured"
-                            .to_string(),
+                        reason: "Global hint used but no global permission configured".to_string(),
+                    })?;
+
+            // The actual pubkey is directly in hint.pubkey
+            let actual_pubkey =
+                hint.pubkey
+                    .as_deref()
+                    .ok_or_else(|| AuthError::InvalidAuthConfiguration {
+                        reason: "Global hint has no pubkey".to_string(),
                     })?;
 
             // Return ResolvedAuth with actual pubkey and global permission
@@ -305,14 +340,14 @@ impl AuthSettings {
 
     // ==================== Permission Helpers ====================
 
-    /// Check if global "*" permission exists and is active
+    /// Check if global permission exists and is active
     pub fn has_global_permission(&self) -> bool {
         self.get_global_permission().is_some()
     }
 
-    /// Get global "*" permission level if it exists and is active
+    /// Get global permission level if it exists and is active
     pub fn get_global_permission(&self) -> Option<Permission> {
-        if let Ok(key) = self.get_key_by_pubkey("*")
+        if let Ok(key) = self.get_global_key()
             && *key.status() == KeyStatus::Active
         {
             Some(*key.permissions())
@@ -321,7 +356,7 @@ impl AuthSettings {
         }
     }
 
-    /// Check if global "*" permission grants sufficient access
+    /// Check if global permission grants sufficient access
     pub fn global_permission_grants_access(&self, requested_permission: &Permission) -> bool {
         if let Some(global_perm) = self.get_global_permission() {
             global_perm >= *requested_permission
@@ -357,14 +392,14 @@ impl AuthSettings {
             results.push((SigKey::from_pubkey(pubkey), *auth_key.permissions()));
         }
 
-        // Check if global "*" permission exists
+        // Check if global permission exists
         if let Some(global_perm) = self.get_global_permission() {
             results.push((SigKey::global(pubkey), global_perm));
         }
 
         // FIXME: Check delegation paths
         // This would search for delegation paths that could grant access
-        // to device_pubkey. For now, we only support searching direct keys and global "*".
+        // to device_pubkey. For now, we only support searching direct keys and global.
 
         // Sort by permission, highest first (reverse sort since Permission Ord has higher > lower)
         results.sort_by(|a, b| b.1.cmp(&a.1));
@@ -503,9 +538,9 @@ mod tests {
         assert!(!settings.has_global_permission());
         assert_eq!(settings.get_global_permission(), None);
 
-        // Add global Write(10) permission
+        // Set global Write(10) permission
         let global_key = AuthKey::active(None, Permission::Write(10));
-        settings.add_key("*", global_key).unwrap();
+        settings.set_global_permission(global_key);
 
         // Global permission should now be detected
         assert!(settings.has_global_permission());
@@ -565,10 +600,8 @@ mod tests {
     fn test_resolve_hint_global() {
         let mut settings = AuthSettings::new();
 
-        // Add global permission
-        settings
-            .add_key("*", AuthKey::active(None, Permission::Write(10)))
-            .unwrap();
+        // Set global permission
+        settings.set_global_permission(AuthKey::active(None, Permission::Write(10)));
 
         let actual_pubkey = generate_public_key();
         let hint = KeyHint::global(&actual_pubkey);
@@ -600,10 +633,8 @@ mod tests {
         let results = settings.find_all_sigkeys_for_pubkey(&pubkey);
         assert_eq!(results.len(), 1);
 
-        // Add global permission
-        settings
-            .add_key("*", AuthKey::active(None, Permission::Write(10)))
-            .unwrap();
+        // Set global permission
+        settings.set_global_permission(AuthKey::active(None, Permission::Write(10)));
 
         let results = settings.find_all_sigkeys_for_pubkey(&pubkey);
         assert_eq!(results.len(), 2);
@@ -659,10 +690,8 @@ mod tests {
         // Other key should not have access
         assert!(!settings.can_access(&other_pubkey, &Permission::Read));
 
-        // Add global permission
-        settings
-            .add_key("*", AuthKey::active(None, Permission::Read))
-            .unwrap();
+        // Set global permission
+        settings.set_global_permission(AuthKey::active(None, Permission::Read));
 
         // Other key should now have read access via global
         assert!(settings.can_access(&other_pubkey, &Permission::Read));

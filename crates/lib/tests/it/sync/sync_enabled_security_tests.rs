@@ -20,7 +20,7 @@ use eidetica::{
 };
 
 use super::helpers;
-use crate::helpers::add_auth_key;
+use crate::helpers::set_global_auth_key;
 
 /// Test that bootstrap requests are rejected for databases without sync enabled.
 #[tokio::test]
@@ -126,7 +126,7 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
         .await
         .unwrap();
 
-    // Create database with wildcard "*" permission to allow unauthenticated sync
+    // Create database with global permission to allow unauthenticated sync
     // (We're testing sync-enabled checks, not authentication)
     let mut settings = Doc::new();
     settings.set("name", "test_database");
@@ -137,13 +137,8 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
         .unwrap();
     let tree_id = server_database.root_id().clone();
 
-    // Add wildcard "*" permission
-    add_auth_key(
-        &server_database,
-        "*",
-        AuthKey::active(Some("*"), Permission::Read),
-    )
-    .await;
+    // Add global permission
+    set_global_auth_key(&server_database, AuthKey::active(None, Permission::Read)).await;
 
     // Add database with sync ENABLED initially
     server_user
@@ -190,7 +185,7 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
     );
 
     // Load the database on client to get tips for incremental sync
-    // Use global "*" permission (configured above with Permission::Read)
+    // Use global permission (configured above with Permission::Read)
     let (reader_key, _) = generate_keypair();
     let client_db = Database::open(
         client_instance.clone(),
@@ -276,7 +271,7 @@ async fn test_sync_succeeds_when_enabled() {
         .await
         .unwrap();
 
-    // Create database with wildcard "*" permission to allow unauthenticated sync
+    // Create database with global permission to allow unauthenticated sync
     // (We're testing sync-enabled checks, not authentication)
     let mut settings = Doc::new();
     settings.set("name", "test_database");
@@ -287,13 +282,8 @@ async fn test_sync_succeeds_when_enabled() {
         .unwrap();
     let tree_id = server_database.root_id().clone();
 
-    // Add wildcard "*" permission
-    add_auth_key(
-        &server_database,
-        "*",
-        AuthKey::active(Some("*"), Permission::Read),
-    )
-    .await;
+    // Add global permission
+    set_global_auth_key(&server_database, AuthKey::active(None, Permission::Read)).await;
 
     // Add test data
     {

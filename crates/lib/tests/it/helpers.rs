@@ -298,3 +298,11 @@ pub async fn add_auth_keys(db: &Database, keys: &[(&str, AuthKey)]) {
     }
     txn.commit().await.unwrap();
 }
+
+/// Set the global auth key on a database via a settings transaction.
+pub async fn set_global_auth_key(db: &Database, key: AuthKey) {
+    let txn = db.new_transaction().await.unwrap();
+    let settings = txn.get_settings().unwrap();
+    settings.set_global_auth_key(key).await.unwrap();
+    txn.commit().await.unwrap();
+}

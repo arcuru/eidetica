@@ -110,9 +110,9 @@ Allow anyone to read your database:
 let settings_store = transaction.get_settings()?;
 
 // Global permission for public read access
-// The "*" key means any valid signature is accepted
+// Any valid signature is accepted
 let public_key = AuthKey::active(None, Permission::Read);
-settings_store.set_auth_key("*", public_key).await?;
+settings_store.set_global_auth_key(public_key).await?;
 
 transaction.commit().await?;
 # Ok(())
@@ -147,7 +147,7 @@ let settings_store = transaction.get_settings()?;
 
 // Global permission allows any device to read and write
 let collaborative_key = AuthKey::active(None, Permission::Write(10));
-settings_store.set_auth_key("*", collaborative_key).await?;
+settings_store.set_global_auth_key(collaborative_key).await?;
 
 transaction.commit().await?;
 # Ok(())
@@ -717,7 +717,7 @@ settings_store.set_auth_key(&admin_public_key, AuthKey::active(
 )).await?;
 
 // Add global wildcard permission for automatic bootstrap
-settings_store.set_auth_key("*", AuthKey::active(
+settings_store.set_global_auth_key(AuthKey::active(
     None,
     Permission::Write(10),  // Allows Read and Write(11+) requests
 )).await?;

@@ -549,11 +549,11 @@ settings.set("name", "Team Chat");
 let key_id = user.get_default_key()?;
 let database = user.create_database(settings, &key_id)?;
 
-// Add global wildcard permission so anyone can join and write
+// Add global permission so anyone can join and write
 let tx = database.new_transaction()?;
 let settings_store = tx.get_settings()?;
-let global_key = auth::AuthKey::active("*", auth::Permission::Write(10))?;
-settings_store.set_auth_key("*", global_key)?;
+let global_key = auth::AuthKey::active(None, auth::Permission::Write(10));
+settings_store.set_global_auth_key(global_key)?;
 tx.commit()?;
 
 println!("Chat room created with ID: {}", database.root_id());

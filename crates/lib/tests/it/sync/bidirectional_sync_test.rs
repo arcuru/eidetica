@@ -18,7 +18,7 @@ use eidetica::{
 use serde::{Deserialize, Serialize};
 
 use super::helpers::enable_sync_for_instance_database;
-use crate::helpers::{add_auth_keys, test_instance_with_user_and_key};
+use crate::helpers::{add_auth_keys, set_global_auth_key, test_instance_with_user_and_key};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ChatMessage {
@@ -78,7 +78,7 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
         .await
         .expect("Failed to create database on device1");
 
-    // Add auth keys: user's key, device key for sync handler, and global wildcard permission
+    // Add auth keys: user's key and device key for sync handler
     let device1_key_id_str = device1_key_id.to_string();
     add_auth_keys(
         &device1_database,
@@ -91,8 +91,14 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
                 &device1_device_pubkey,
                 AuthKey::active(Some("device"), Permission::Admin(10)),
             ),
-            ("*", AuthKey::active(Some("*"), Permission::Admin(10))),
         ],
+    )
+    .await;
+
+    // Add global wildcard permission
+    set_global_auth_key(
+        &device1_database,
+        AuthKey::active(None, Permission::Admin(10)),
     )
     .await;
 

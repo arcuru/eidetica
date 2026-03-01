@@ -330,7 +330,7 @@ impl Database {
         match key.identity() {
             SigKey::Direct(hint) if hint.is_global() => {
                 // Verify the embedded pubkey matches the actual signing key
-                if let Some(embedded_pubkey) = hint.global_actual_pubkey()
+                if let Some(embedded_pubkey) = hint.pubkey.as_deref()
                     && embedded_pubkey != actual_pubkey
                 {
                     return Err(Error::Auth(AuthError::SigningKeyMismatch {

@@ -730,9 +730,8 @@ async fn test_bootstrap_auto_detects_global_wildcard_permission() {
     {
         let tx = db.new_transaction().await.unwrap();
         let settings_store = tx.get_settings().unwrap();
-        let global_auth_key = AuthKey::active(Some("*"), Permission::Read);
         settings_store
-            .set_auth_key("*", global_auth_key)
+            .set_global_auth_key(AuthKey::active(None, Permission::Read))
             .await
             .unwrap();
         tx.commit().await.unwrap();
@@ -819,9 +818,8 @@ async fn test_bootstrap_uses_highest_permission_when_key_has_multiple() {
             .unwrap();
 
         // Add global wildcard with Read permission
-        let global_auth_key = AuthKey::active(Some("*"), Permission::Read);
         settings_store
-            .set_auth_key("*", global_auth_key)
+            .set_global_auth_key(AuthKey::active(None, Permission::Read))
             .await
             .unwrap();
 

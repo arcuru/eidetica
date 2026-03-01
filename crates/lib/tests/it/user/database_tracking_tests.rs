@@ -11,7 +11,7 @@ use eidetica::{
 };
 
 use super::helpers::{login_user, setup_instance};
-use crate::helpers::add_auth_key;
+use crate::helpers::set_global_auth_key;
 
 /// Test tracking a database
 #[tokio::test]
@@ -33,7 +33,7 @@ async fn test_track_database() -> Result<()> {
     let db = Database::create(&instance, alice_key, db_settings).await?;
 
     // Add global Write permission (signing key is already Admin(0))
-    add_auth_key(&db, "*", AuthKey::active(None, Permission::Write(10))).await;
+    set_global_auth_key(&db, AuthKey::active(None, Permission::Write(10))).await;
     let db_id = db.root_id().clone();
 
     // Track the database
@@ -100,7 +100,7 @@ async fn test_list_databases() -> Result<()> {
         let db = Database::create(&instance, alice_key, db_settings).await?;
 
         // Add global Write permission (signing key is already Admin(0))
-        add_auth_key(&db, "*", AuthKey::active(None, Permission::Write(10))).await;
+        set_global_auth_key(&db, AuthKey::active(None, Permission::Write(10))).await;
 
         user.track_database(db.root_id().clone(), &user_key, SyncSettings::disabled())
             .await?;
@@ -132,7 +132,7 @@ async fn test_get_tracked_database() -> Result<()> {
     let db_id = db.root_id().clone();
 
     // Add global Write permission (signing key is already Admin(0))
-    add_auth_key(&db, "*", AuthKey::active(None, Permission::Write(10))).await;
+    set_global_auth_key(&db, AuthKey::active(None, Permission::Write(10))).await;
 
     // Add database
     user.track_database(
@@ -172,7 +172,7 @@ async fn test_update_tracked_database() -> Result<()> {
     let db_id = db.root_id().clone();
 
     // Add global Write permission (signing key is already Admin(0))
-    add_auth_key(&db, "*", AuthKey::active(None, Permission::Write(10))).await;
+    set_global_auth_key(&db, AuthKey::active(None, Permission::Write(10))).await;
 
     // Add database with initial settings
     user.track_database(db_id.clone(), &user_key, SyncSettings::disabled())
@@ -214,7 +214,7 @@ async fn test_untrack_database() -> Result<()> {
     let db_id = db.root_id().clone();
 
     // Add global Write permission (signing key is already Admin(0))
-    add_auth_key(&db, "*", AuthKey::active(None, Permission::Write(10))).await;
+    set_global_auth_key(&db, AuthKey::active(None, Permission::Write(10))).await;
 
     // Add database
     user.track_database(db_id.clone(), &user_key, SyncSettings::disabled())
@@ -251,7 +251,7 @@ async fn test_load_tracked_database() -> Result<()> {
     let db_id = db.root_id().clone();
 
     // Add global Write permission (signing key is already Admin(0))
-    add_auth_key(&db, "*", AuthKey::active(None, Permission::Write(10))).await;
+    set_global_auth_key(&db, AuthKey::active(None, Permission::Write(10))).await;
 
     // Add to user's tracked databases
     user.track_database(db_id.clone(), &user_key, SyncSettings::disabled())
@@ -287,7 +287,7 @@ async fn test_update_tracked_valid_key_change() -> Result<()> {
     let db_id = db.root_id().clone();
 
     // Add global Write permission (signing key is already Admin(0))
-    add_auth_key(&db, "*", AuthKey::active(None, Permission::Write(10))).await;
+    set_global_auth_key(&db, AuthKey::active(None, Permission::Write(10))).await;
 
     // Add database with key1
     user.track_database(db_id.clone(), &key1, SyncSettings::disabled())
@@ -330,7 +330,7 @@ async fn test_update_tracked_nonexistent_key_fails() -> Result<()> {
     let db_id = db.root_id().clone();
 
     // Add global Write permission (signing key is already Admin(0))
-    add_auth_key(&db, "*", AuthKey::active(None, Permission::Write(10))).await;
+    set_global_auth_key(&db, AuthKey::active(None, Permission::Write(10))).await;
 
     // Add database
     user.track_database(db_id.clone(), &user_key, SyncSettings::disabled())
@@ -416,7 +416,7 @@ async fn test_update_tracked_auto_creates_mapping() -> Result<()> {
     let db_id = db.root_id().clone();
 
     // Add global Write permission (signing key is already Admin(0))
-    add_auth_key(&db, "*", AuthKey::active(None, Permission::Write(10))).await;
+    set_global_auth_key(&db, AuthKey::active(None, Permission::Write(10))).await;
 
     // Add database with key1 (creates mapping: key1 -> "*")
     user.track_database(db_id.clone(), &key1, SyncSettings::disabled())

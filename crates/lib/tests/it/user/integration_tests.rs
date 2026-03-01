@@ -7,7 +7,7 @@
 //! - database_operations_tests: Database CRUD operations
 
 use super::helpers::*;
-use crate::helpers::{add_auth_keys, test_instance};
+use crate::helpers::{set_global_auth_key, test_instance};
 use eidetica::{
     Database,
     auth::{Permission, types::AuthKey},
@@ -284,11 +284,7 @@ async fn test_collaborative_database_with_global_permissions() {
     let db_id = alice_db.root_id().clone();
 
     // Add global Write permission (signing key is already Admin(0))
-    add_auth_keys(
-        &alice_db,
-        &[("*", AuthKey::active(Some("*"), Permission::Write(10)))],
-    )
-    .await;
+    set_global_auth_key(&alice_db, AuthKey::active(None, Permission::Write(10))).await;
 
     // Alice writes initial data
     {
@@ -453,11 +449,7 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
     let db_id = alice_db.root_id().clone();
 
     // Add global Write permission (signing key is already Admin(0))
-    add_auth_keys(
-        &alice_db,
-        &[("*", AuthKey::active(Some("*"), Permission::Write(10)))],
-    )
-    .await;
+    set_global_auth_key(&alice_db, AuthKey::active(None, Permission::Write(10))).await;
 
     // Alice writes initial data
     {

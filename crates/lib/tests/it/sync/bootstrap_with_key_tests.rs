@@ -559,11 +559,11 @@ async fn test_full_e2e_bootstrap_with_database_instances() {
         "Client key should not be added individually when global wildcard permission exists"
     );
 
-    // Verify global wildcard permission exists
+    // Verify global permission exists
     let global_auth_key = settings_store
-        .get_auth_key("*")
+        .get_global_auth_key()
         .await
-        .expect("Global wildcard permission should exist");
+        .expect("Global permission should exist");
 
     assert_eq!(global_auth_key.status(), &KeyStatus::Active);
 

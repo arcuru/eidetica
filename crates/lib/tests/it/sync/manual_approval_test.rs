@@ -502,7 +502,7 @@ async fn test_bootstrap_with_global_permission_auto_approval() {
         crate::helpers::test_instance_with_user_and_key("server_user", Some("server_admin")).await;
     server_instance.enable_sync().await.unwrap();
 
-    // Create database with global '*' permission for Write(10) and admin key
+    // Create database with global permission for Write(10) and admin key
     let mut settings = Doc::new();
     settings.set("name", "Test Global Permission DB");
 
@@ -511,11 +511,10 @@ async fn test_bootstrap_with_global_permission_auto_approval() {
         .await
         .unwrap();
 
-    // Add global '*' permission
-    crate::helpers::add_auth_key(
+    // Add global permission
+    crate::helpers::set_global_auth_key(
         &database,
-        "*",
-        AuthKey::active(Some("*"), AuthPermission::Write(10)),
+        AuthKey::active(None, AuthPermission::Write(10)),
     )
     .await;
     let tree_id = database.root_id().clone();
@@ -725,13 +724,9 @@ async fn test_bootstrap_with_existing_global_permission_no_duplicate() {
         .await
         .unwrap();
 
-    // Add global '*' permission
-    crate::helpers::add_auth_key(
-        &database,
-        "*",
-        AuthKey::active(Some("*"), AuthPermission::Write(5)),
-    )
-    .await;
+    // Add global permission
+    crate::helpers::set_global_auth_key(&database, AuthKey::active(None, AuthPermission::Write(5)))
+        .await;
     let tree_id = database.root_id().clone();
 
     // Set up sync system
@@ -764,22 +759,26 @@ async fn test_bootstrap_with_existing_global_permission_no_duplicate() {
         other => panic!("Expected Bootstrap response, got: {other:?}"),
     }
 
-    // Verify no new key was added - should still only have admin + global key
+    // Verify no new key was added - should still only have admin key (global is separate)
     let settings_store = database.get_settings().await.unwrap();
     let auth_settings = settings_store.auth_snapshot().await.unwrap();
 
-    // Should have exactly 2 keys (admin + global "*" key)
+    // Should have exactly 1 key (admin only; global is stored separately)
     let all_keys = auth_settings.get_all_keys().unwrap();
     let key_count = all_keys.len();
     assert_eq!(
         key_count,
-        2,
-        "Should have exactly 2 keys (admin + global '*'), got: {key_count}. Keys: {:?}",
+        1,
+        "Should have exactly 1 key (admin only), got: {key_count}. Keys: {:?}",
         all_keys.keys().collect::<Vec<_>>()
     );
 
-    // Verify the global key is still there
-    assert!(all_keys.contains_key("*"), "Global key should still exist");
+    // Verify the global key is still there via dedicated accessor
+    let global_key = auth_settings.get_global_key();
+    assert!(
+        global_key.is_ok(),
+        "Global key should still exist via get_global_key()"
+    );
 
     println!(
         "✅ Bootstrap with existing global permission works correctly without adding duplicate key"
@@ -820,7 +819,7 @@ async fn test_bootstrap_global_permission_client_cannot_create_entries_bug() {
         crate::helpers::test_instance_with_user_and_key("server_user", Some("server_admin")).await;
     server_instance.enable_sync().await.unwrap();
 
-    // Create database with global '*' permission allowing Write(5)
+    // Create database with global permission allowing Write(5)
     let mut settings = Doc::new();
     settings.set("name", "Global Permission Bug Test DB");
 
@@ -829,13 +828,9 @@ async fn test_bootstrap_global_permission_client_cannot_create_entries_bug() {
         .await
         .unwrap();
 
-    // Add global '*' permission
-    crate::helpers::add_auth_key(
-        &database,
-        "*",
-        AuthKey::active(Some("*"), AuthPermission::Write(5)),
-    )
-    .await;
+    // Add global permission
+    crate::helpers::set_global_auth_key(&database, AuthKey::active(None, AuthPermission::Write(5)))
+        .await;
     let tree_id = database.root_id().clone();
 
     // Setup client instance
@@ -924,9 +919,9 @@ async fn test_global_permission_enables_transactions() {
     let txn = database.new_transaction().await.unwrap();
     let settings_store = txn.get_settings().unwrap();
 
-    // Add global '*' permission
+    // Add global permission
     settings_store
-        .set_auth_key("*", AuthKey::active(Some("*"), AuthPermission::Write(10)))
+        .set_global_auth_key(AuthKey::active(None, AuthPermission::Write(10)))
         .await
         .unwrap();
 

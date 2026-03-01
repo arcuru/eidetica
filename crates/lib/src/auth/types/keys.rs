@@ -180,6 +180,10 @@ pub struct DelegationStep {
     pub tips: Vec<ID>,
 }
 
+fn is_false(v: &bool) -> bool {
+    !v
+}
+
 /// Key hint for resolving the signer
 ///
 /// Contains explicit fields for each hint type. Exactly one hint field
@@ -187,13 +191,15 @@ pub struct DelegationStep {
 /// in AuthSettings for signature verification.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct KeyHint {
-    /// Public key hint: "ed25519:ABC..." or "*:ed25519:ABC..." for global
-    /// For global permissions, it must contain "*:" followed by the FULL pubkey
+    /// Public key hint: "ed25519:ABC..."
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pubkey: Option<String>,
     /// Name hint: "alice_laptop" - searches keys where name matches
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Whether this hint refers to the global permission
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_global: bool,
     // TODO: Fingerprint hint (future): "7F8A9B3C..." - matches hash of pubkey
     // This is used in other systems and may be a better option than matching/revealing
     // the full pubkey
@@ -207,6 +213,7 @@ impl KeyHint {
         Self {
             pubkey: Some(pubkey.into()),
             name: None,
+            is_global: false,
         }
     }
 
@@ -215,32 +222,27 @@ impl KeyHint {
         Self {
             pubkey: None,
             name: Some(name.into()),
+            is_global: false,
         }
     }
 
     /// Create a global permission hint with actual signer pubkey
-    /// Format: "*:ed25519:ABC..."
     pub fn global(actual_pubkey: impl Into<String>) -> Self {
         Self {
-            pubkey: Some(format!("*:{}", actual_pubkey.into())),
+            pubkey: Some(actual_pubkey.into()),
             name: None,
+            is_global: true,
         }
     }
 
     /// Check if this is a global permission hint
     pub fn is_global(&self) -> bool {
-        self.pubkey.as_ref().is_some_and(|pk| pk.starts_with("*:"))
-    }
-
-    /// Extract the actual pubkey from a global hint
-    /// Returns None if not a global hint or no pubkey set
-    pub fn global_actual_pubkey(&self) -> Option<&str> {
-        self.pubkey.as_ref().and_then(|pk| pk.strip_prefix("*:"))
+        self.is_global
     }
 
     /// Check if any hint field is set
     ///
-    /// Returns `true` if at least one of `pubkey` or `name` is `Some`.
+    /// Returns `true` if at least one of `pubkey`, `name`, or `is_global` is set.
     ///
     /// # Unsigned Entry Detection
     ///
@@ -267,12 +269,14 @@ impl KeyHint {
     /// assert!(with_name.is_set());
     /// ```
     pub fn is_set(&self) -> bool {
-        self.pubkey.is_some() || self.name.is_some()
+        self.pubkey.is_some() || self.name.is_some() || (self.is_global && self.pubkey.is_some())
     }
 
     /// Get the hint type as a string (for error messages)
     pub fn hint_type(&self) -> &'static str {
-        if self.pubkey.is_some() {
+        if self.is_global && self.pubkey.is_some() {
+            "global"
+        } else if self.pubkey.is_some() {
             "pubkey"
         } else if self.name.is_some() {
             "name"
