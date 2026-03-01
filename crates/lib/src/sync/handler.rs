@@ -377,7 +377,7 @@ impl SyncHandlerImpl {
     /// Result indicating success or failure of registration
     async fn register_incoming_peer(
         &self,
-        peer_pubkey: &str,
+        peer_pubkey: &PublicKey,
         display_name: Option<&str>,
         advertised_addresses: &[Address],
         remote_address: &Option<Address>,
@@ -435,10 +435,9 @@ impl SyncHandlerImpl {
         let sync_tree = self.get_sync_tree().await?;
         let txn = sync_tree.new_transaction().await?;
         let peer_manager = PeerManager::new(&txn);
-        let pk_str = peer_pubkey.to_string();
 
         // Add the tree sync relationship
-        peer_manager.add_tree_sync(&pk_str, tree_id).await?;
+        peer_manager.add_tree_sync(peer_pubkey, tree_id).await?;
         txn.commit().await?;
 
         debug!(tree_id = %tree_id, peer_pubkey = %peer_pubkey, "Tracked tree/peer sync relationship");
@@ -497,8 +496,7 @@ impl SyncHandlerImpl {
             let available_trees = self.get_available_trees().await;
 
             // Register the peer and add their addresses to our peer list
-            let request_pubkey_str = request.public_key.to_string();
-            match self.register_incoming_peer(&request_pubkey_str, request.display_name.as_deref(), &request.listen_addresses, &context.remote_address).await {
+            match self.register_incoming_peer(&request.public_key, request.display_name.as_deref(), &request.listen_addresses, &context.remote_address).await {
                 Ok(()) => {
                     debug!(peer_pubkey = %request.public_key, "Successfully registered incoming peer");
                 }

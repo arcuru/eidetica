@@ -186,14 +186,14 @@ pub struct SyncHandle {
 impl SyncHandle {
     /// Get the current sync status.
     pub async fn status(&self) -> Result<SyncStatus> {
-        let pk_str = self.peer_pubkey.to_string();
-        self.sync.get_sync_status(&self.tree_id, &pk_str).await
+        self.sync
+            .get_sync_status(&self.tree_id, &self.peer_pubkey)
+            .await
     }
 
     /// Add another address hint for this peer.
     pub async fn add_address(&self, address: Address) -> Result<()> {
-        let pk_str = self.peer_pubkey.to_string();
-        self.sync.add_peer_address(&pk_str, address).await
+        self.sync.add_peer_address(&self.peer_pubkey, address).await
     }
 
     /// Block until initial sync completes (has local data).

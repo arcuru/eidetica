@@ -8,6 +8,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use crate::Result;
 use crate::auth::crypto::PublicKey;
 
 /// A peer's unique identifier, derived from their public key.
@@ -26,6 +27,11 @@ impl PeerId {
     /// Get the underlying string representation.
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// Parse the underlying string back into a [`PublicKey`].
+    pub fn to_public_key(&self) -> Result<PublicKey> {
+        PublicKey::from_prefixed_string(&self.0).map_err(Into::into)
     }
 }
 

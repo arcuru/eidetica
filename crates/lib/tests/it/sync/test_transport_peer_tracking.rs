@@ -83,7 +83,7 @@ async fn test_server_automatically_tracks_peers_that_sync_trees() {
         .unwrap();
 
     // Get client's device public key
-    let client_pubkey = client_sync.get_device_pubkey().unwrap().to_string();
+    let client_pubkey = client_sync.get_device_pubkey().unwrap();
 
     // IMPORTANT: Server needs to know about the client peer for tracking to work
     // (This would normally happen via handshake, but we're testing just the sync request)
@@ -102,7 +102,7 @@ async fn test_server_automatically_tracks_peers_that_sync_trees() {
     let server_addr = http_transport.get_server_address().unwrap();
 
     // Register server as a peer and add its address
-    let server_pubkey = server_sync.get_device_pubkey().unwrap().to_string();
+    let server_pubkey = server_sync.get_device_pubkey().unwrap();
     client_sync
         .register_peer(&server_pubkey, Some("Test Server"))
         .await

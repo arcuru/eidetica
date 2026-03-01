@@ -15,22 +15,20 @@ impl Sync {
     /// Register a new remote peer in the sync network.
     ///
     /// # Arguments
-    /// * `pubkey` - The peer's public key (formatted as ed25519:base64)
+    /// * `pubkey` - The peer's public key
     /// * `display_name` - Optional human-readable name for the peer
     ///
     /// # Returns
     /// A Result indicating success or an error.
     pub async fn register_peer(
         &self,
-        pubkey: impl Into<String>,
+        pubkey: &PublicKey,
         display_name: Option<&str>,
     ) -> Result<()> {
-        let pubkey_str = pubkey.into();
-
         // Store in sync tree via PeerManager
         let txn = self.sync_tree.new_transaction().await?;
         PeerManager::new(&txn)
-            .register_peer(&pubkey_str, display_name)
+            .register_peer(pubkey, display_name)
             .await?;
         txn.commit().await?;
 
@@ -46,14 +44,10 @@ impl Sync {
     ///
     /// # Returns
     /// A Result indicating success or an error.
-    pub async fn update_peer_status(
-        &self,
-        pubkey: impl AsRef<str>,
-        status: PeerStatus,
-    ) -> Result<()> {
+    pub async fn update_peer_status(&self, pubkey: &PublicKey, status: PeerStatus) -> Result<()> {
         let txn = self.sync_tree.new_transaction().await?;
         PeerManager::new(&txn)
-            .update_peer_status(pubkey.as_ref(), status)
+            .update_peer_status(pubkey, status)
             .await?;
         txn.commit().await?;
         Ok(())
@@ -66,9 +60,9 @@ impl Sync {
     ///
     /// # Returns
     /// The peer information if found, None otherwise.
-    pub async fn get_peer_info(&self, pubkey: impl AsRef<str>) -> Result<Option<PeerInfo>> {
+    pub async fn get_peer_info(&self, pubkey: &PublicKey) -> Result<Option<PeerInfo>> {
         let txn = self.sync_tree.new_transaction().await?;
-        PeerManager::new(&txn).get_peer_info(pubkey.as_ref()).await
+        PeerManager::new(&txn).get_peer_info(pubkey).await
         // No commit - just reading
     }
 
@@ -91,9 +85,9 @@ impl Sync {
     ///
     /// # Returns
     /// A Result indicating success or an error.
-    pub async fn remove_peer(&self, pubkey: impl AsRef<str>) -> Result<()> {
+    pub async fn remove_peer(&self, pubkey: &PublicKey) -> Result<()> {
         let txn = self.sync_tree.new_transaction().await?;
-        PeerManager::new(&txn).remove_peer(pubkey.as_ref()).await?;
+        PeerManager::new(&txn).remove_peer(pubkey).await?;
         txn.commit().await?;
         Ok(())
     }
@@ -142,22 +136,25 @@ impl Sync {
     pub async fn register_sync_peer(&self, info: SyncPeerInfo) -> Result<SyncHandle> {
         let txn = self.sync_tree.new_transaction().await?;
         let peer_mgr = PeerManager::new(&txn);
-        let pk_str = info.peer_pubkey.to_string();
 
         // Register peer if it doesn't exist
-        if peer_mgr.get_peer_info(&pk_str).await?.is_none() {
+        if peer_mgr.get_peer_info(&info.peer_pubkey).await?.is_none() {
             peer_mgr
-                .register_peer(&pk_str, info.display_name.as_deref())
+                .register_peer(&info.peer_pubkey, info.display_name.as_deref())
                 .await?;
         }
 
         // Add all address hints
         for addr in &info.addresses {
-            peer_mgr.add_address(&pk_str, addr.clone()).await?;
+            peer_mgr
+                .add_address(&info.peer_pubkey, addr.clone())
+                .await?;
         }
 
         // Register the tree/peer relationship
-        peer_mgr.add_tree_sync(&pk_str, &info.tree_id).await?;
+        peer_mgr
+            .add_tree_sync(&info.peer_pubkey, &info.tree_id)
+            .await?;
 
         // TODO: Store auth params if provided for bootstrap
         // For now, auth is passed during the actual sync handshake via on_local_write callback
@@ -186,7 +183,11 @@ impl Sync {
     ///
     /// # Returns
     /// Current sync status including whether we have local data.
-    pub async fn get_sync_status(&self, tree_id: &ID, _peer_pubkey: &str) -> Result<SyncStatus> {
+    pub async fn get_sync_status(
+        &self,
+        tree_id: &ID,
+        _peer_pubkey: &PublicKey,
+    ) -> Result<SyncStatus> {
         // Check if we have local data for this tree
         let backend = self.backend()?;
         let our_tips = backend.get_tips(tree_id).await.unwrap_or_default();
@@ -212,12 +213,12 @@ impl Sync {
     /// A Result indicating success or an error.
     pub async fn add_tree_sync(
         &self,
-        peer_pubkey: impl AsRef<str>,
+        peer_pubkey: &PublicKey,
         tree_root_id: impl AsRef<str>,
     ) -> Result<()> {
         let txn = self.sync_tree.new_transaction().await?;
         PeerManager::new(&txn)
-            .add_tree_sync(peer_pubkey.as_ref(), tree_root_id.as_ref())
+            .add_tree_sync(peer_pubkey, tree_root_id.as_ref())
             .await?;
         txn.commit().await?;
         Ok(())
@@ -233,12 +234,12 @@ impl Sync {
     /// A Result indicating success or an error.
     pub async fn remove_tree_sync(
         &self,
-        peer_pubkey: impl AsRef<str>,
+        peer_pubkey: &PublicKey,
         tree_root_id: impl AsRef<str>,
     ) -> Result<()> {
         let txn = self.sync_tree.new_transaction().await?;
         PeerManager::new(&txn)
-            .remove_tree_sync(peer_pubkey.as_ref(), tree_root_id.as_ref())
+            .remove_tree_sync(peer_pubkey, tree_root_id.as_ref())
             .await?;
         txn.commit().await?;
         Ok(())
@@ -251,11 +252,9 @@ impl Sync {
     ///
     /// # Returns
     /// A vector of tree root IDs synced with this peer.
-    pub async fn get_peer_trees(&self, peer_pubkey: impl AsRef<str>) -> Result<Vec<String>> {
+    pub async fn get_peer_trees(&self, peer_pubkey: &PublicKey) -> Result<Vec<String>> {
         let txn = self.sync_tree.new_transaction().await?;
-        PeerManager::new(&txn)
-            .get_peer_trees(peer_pubkey.as_ref())
-            .await
+        PeerManager::new(&txn).get_peer_trees(peer_pubkey).await
         // No commit - just reading
     }
 
@@ -311,16 +310,16 @@ impl Sync {
     /// A Result indicating success or an error.
     pub async fn update_peer_connection_state(
         &self,
-        pubkey: impl AsRef<str>,
+        pubkey: &PublicKey,
         state: ConnectionState,
     ) -> Result<()> {
         let txn = self.sync_tree.new_transaction().await?;
         let peer_manager = PeerManager::new(&txn);
 
         // Get current peer info
-        let mut peer_info = match peer_manager.get_peer_info(pubkey.as_ref()).await? {
+        let mut peer_info = match peer_manager.get_peer_info(pubkey).await? {
             Some(info) => info,
-            None => return Err(SyncError::PeerNotFound(pubkey.as_ref().to_string()).into()),
+            None => return Err(SyncError::PeerNotFound(pubkey.to_string()).into()),
         };
 
         // Update connection state
@@ -328,9 +327,7 @@ impl Sync {
         peer_info.touch_at(txn.now_rfc3339()?);
 
         // Save updated peer info
-        peer_manager
-            .update_peer_info(pubkey.as_ref(), peer_info)
-            .await?;
+        peer_manager.update_peer_info(pubkey, peer_info).await?;
         txn.commit().await?;
         Ok(())
     }
@@ -345,12 +342,12 @@ impl Sync {
     /// True if the tree is synced with the peer, false otherwise.
     pub async fn is_tree_synced_with_peer(
         &self,
-        peer_pubkey: impl AsRef<str>,
+        peer_pubkey: &PublicKey,
         tree_root_id: impl AsRef<str>,
     ) -> Result<bool> {
         let txn = self.sync_tree.new_transaction().await?;
         PeerManager::new(&txn)
-            .is_tree_synced_with_peer(peer_pubkey.as_ref(), tree_root_id.as_ref())
+            .is_tree_synced_with_peer(peer_pubkey, tree_root_id.as_ref())
             .await
         // No commit - just reading
     }
@@ -365,15 +362,11 @@ impl Sync {
     ///
     /// # Returns
     /// A Result indicating success or an error.
-    pub async fn add_peer_address(
-        &self,
-        peer_pubkey: impl AsRef<str>,
-        address: Address,
-    ) -> Result<()> {
+    pub async fn add_peer_address(&self, peer_pubkey: &PublicKey, address: Address) -> Result<()> {
         // Update sync tree via PeerManager
         let txn = self.sync_tree.new_transaction().await?;
         PeerManager::new(&txn)
-            .add_address(peer_pubkey.as_ref(), address)
+            .add_address(peer_pubkey, address)
             .await?;
         txn.commit().await?;
 
@@ -391,12 +384,12 @@ impl Sync {
     /// A Result indicating success or an error (true if removed, false if not found).
     pub async fn remove_peer_address(
         &self,
-        peer_pubkey: impl AsRef<str>,
+        peer_pubkey: &PublicKey,
         address: &Address,
     ) -> Result<bool> {
         let txn = self.sync_tree.new_transaction().await?;
         let result = PeerManager::new(&txn)
-            .remove_address(peer_pubkey.as_ref(), address)
+            .remove_address(peer_pubkey, address)
             .await?;
         txn.commit().await?;
         Ok(result)
@@ -412,12 +405,12 @@ impl Sync {
     /// A vector of addresses matching the criteria.
     pub async fn get_peer_addresses(
         &self,
-        peer_pubkey: impl AsRef<str>,
+        peer_pubkey: &PublicKey,
         transport_type: Option<&str>,
     ) -> Result<Vec<Address>> {
         let txn = self.sync_tree.new_transaction().await?;
         PeerManager::new(&txn)
-            .get_addresses(peer_pubkey.as_ref(), transport_type)
+            .get_addresses(peer_pubkey, transport_type)
             .await
         // No commit - just reading
     }

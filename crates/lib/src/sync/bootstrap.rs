@@ -60,15 +60,13 @@ impl Sync {
 
         // Connect to peer if not already connected
         let peer_pubkey = self.connect_to_peer(address).await?;
-        let peer_pubkey_str = peer_pubkey.to_string();
 
         // Store the address for this peer
-        self.add_peer_address(&peer_pubkey_str, address.clone())
-            .await?;
+        self.add_peer_address(&peer_pubkey, address.clone()).await?;
 
         // Sync tree with authentication
         self.sync_tree_with_peer_auth(
-            &peer_pubkey_str,
+            &peer_pubkey,
             tree_id,
             Some(requesting_public_key),
             Some(requesting_key_name),

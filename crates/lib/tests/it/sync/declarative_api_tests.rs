@@ -5,7 +5,7 @@
 
 use eidetica::{
     Database, Result,
-    auth::crypto::generate_keypair,
+    auth::crypto::{PublicKey, generate_keypair},
     crdt::Doc,
     sync::{Address, SyncPeerInfo},
 };
@@ -108,7 +108,6 @@ async fn test_sync_handle_add_address() -> Result<()> {
     let db = Database::create(&instance, signing_key, settings).await?;
 
     let (_, peer_verifying_key) = generate_keypair();
-    let peer_pubkey = peer_verifying_key.to_string();
 
     let handle = sync
         .register_sync_peer(SyncPeerInfo {
@@ -125,7 +124,7 @@ async fn test_sync_handle_add_address() -> Result<()> {
 
     // Verify initial address
     let peer = sync
-        .get_peer_info(&peer_pubkey)
+        .get_peer_info(&peer_verifying_key)
         .await?
         .expect("peer exists");
     assert_eq!(peer.addresses.len(), 1);
@@ -140,7 +139,7 @@ async fn test_sync_handle_add_address() -> Result<()> {
 
     // Verify both addresses exist
     let peer = sync
-        .get_peer_info(&peer_pubkey)
+        .get_peer_info(&peer_verifying_key)
         .await?
         .expect("peer exists");
     assert_eq!(peer.addresses.len(), 2);
@@ -161,7 +160,8 @@ async fn test_get_sync_status() -> Result<()> {
     let db = Database::create(&instance, signing_key, settings).await?;
 
     // Database::create() creates root entry, so should have local data
-    let status = sync.get_sync_status(db.root_id(), "fake_peer").await?;
+    let fake_peer = PublicKey::random();
+    let status = sync.get_sync_status(db.root_id(), &fake_peer).await?;
     assert!(
         status.has_local_data,
         "Created database should report has_local_data"

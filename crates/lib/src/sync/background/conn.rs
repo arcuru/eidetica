@@ -88,9 +88,11 @@ impl BackgroundSync {
                 let peer_manager = PeerManager::new(&txn);
 
                 // Try to register peer, but ignore if already exists
-                let peer_pubkey_str = handshake_resp.public_key.to_string();
                 match peer_manager
-                    .register_peer(&peer_pubkey_str, handshake_resp.display_name.as_deref())
+                    .register_peer(
+                        &handshake_resp.public_key,
+                        handshake_resp.display_name.as_deref(),
+                    )
                     .await
                 {
                     Ok(_) => {

@@ -44,8 +44,8 @@ async fn test_auto_sync_between_instances() -> Result<()> {
     sleep(Duration::from_millis(100)).await;
 
     // Get peer public keys
-    let peer1_pubkey = sync1.get_device_pubkey()?.to_string();
-    let peer2_pubkey = sync2.get_device_pubkey()?.to_string();
+    let peer1_pubkey = sync1.get_device_pubkey()?;
+    let peer2_pubkey = sync2.get_device_pubkey()?;
 
     println!("Instance 1 pubkey: {peer1_pubkey}");
     println!("Instance 2 pubkey: {peer2_pubkey}");
@@ -161,8 +161,8 @@ async fn test_bidirectional_auto_sync() -> Result<()> {
 
     sleep(Duration::from_millis(100)).await;
 
-    let peer1_pubkey = sync1.get_device_pubkey()?.to_string();
-    let peer2_pubkey = sync2.get_device_pubkey()?.to_string();
+    let peer1_pubkey = sync1.get_device_pubkey()?;
+    let peer2_pubkey = sync2.get_device_pubkey()?;
 
     // Register peers bidirectionally
     let address1 = Address::http(server1_addr);
@@ -307,8 +307,8 @@ async fn test_enable_sync_after_user_setup() -> Result<()> {
     let server_addr = sync2.get_server_address().await?;
     sleep(Duration::from_millis(100)).await;
 
-    let peer1_pubkey = sync1.get_device_pubkey()?.to_string();
-    let peer2_pubkey = sync2.get_device_pubkey()?.to_string();
+    let peer1_pubkey = sync1.get_device_pubkey()?;
+    let peer2_pubkey = sync2.get_device_pubkey()?;
 
     sync1
         .register_peer(&peer2_pubkey, Some("instance2"))
@@ -379,8 +379,8 @@ async fn test_auto_sync_after_restart() -> Result<()> {
     let server_addr = sync2.get_server_address().await?;
     sleep(Duration::from_millis(100)).await;
 
-    let peer1_pubkey = sync1.get_device_pubkey()?.to_string();
-    let peer2_pubkey = sync2.get_device_pubkey()?.to_string();
+    let peer1_pubkey = sync1.get_device_pubkey()?;
+    let peer2_pubkey = sync2.get_device_pubkey()?;
 
     sync1
         .register_peer(&peer2_pubkey, Some("instance2"))

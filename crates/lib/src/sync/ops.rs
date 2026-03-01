@@ -36,7 +36,7 @@ impl Sync {
     ///
     /// # Returns
     /// A Result indicating success or failure of the sync operation.
-    pub async fn sync_tree_with_peer(&self, peer_pubkey: &str, tree_id: &ID) -> Result<()> {
+    pub async fn sync_tree_with_peer(&self, peer_pubkey: &PublicKey, tree_id: &ID) -> Result<()> {
         // Get peer information and address
         let peer_info = self
             .get_peer_info(peer_pubkey)
@@ -567,15 +567,13 @@ impl Sync {
     pub async fn sync_with_peer(&self, address: &Address, tree_id: Option<&ID>) -> Result<()> {
         // Connect to peer if not already connected
         let peer_pubkey = self.connect_to_peer(address).await?;
-        let peer_pubkey_str = peer_pubkey.to_string();
 
         // Store the address for this peer (needed for sync_tree_with_peer)
-        self.add_peer_address(&peer_pubkey_str, address.clone())
-            .await?;
+        self.add_peer_address(&peer_pubkey, address.clone()).await?;
 
         if let Some(tree_id) = tree_id {
             // Sync specific tree
-            self.sync_tree_with_peer(&peer_pubkey_str, tree_id).await?;
+            self.sync_tree_with_peer(&peer_pubkey, tree_id).await?;
         } else {
             // TODO: Sync all available trees
             tracing::warn!(
@@ -624,7 +622,7 @@ impl Sync {
     /// A Result indicating success or failure.
     pub async fn sync_tree_with_peer_auth(
         &self,
-        peer_pubkey: &str,
+        peer_pubkey: &PublicKey,
         tree_id: &ID,
         requesting_key: Option<&PublicKey>,
         requesting_key_name: Option<&str>,

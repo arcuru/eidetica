@@ -163,7 +163,7 @@ async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
     println!("Server Iroh address: {iroh_addr:?}");
     println!("Server tree_id: {tree_id}");
 
-    let server_pubkey = server_sync.get_device_pubkey()?.to_string();
+    let server_pubkey = server_sync.get_device_pubkey()?;
 
     // === LEG 1: HTTP client bootstraps and adds data via HTTP ===
     println!("\n--- LEG 1: HTTP client syncs data TO server via HTTP ---");

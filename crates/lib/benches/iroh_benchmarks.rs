@@ -60,7 +60,7 @@ async fn setup_iroh_sync_pair() -> (Arc<Instance>, Sync, Arc<Instance>, Sync, Ad
 
     // Setup peer relationship
     let addr2 = sync2.get_server_address().await.unwrap();
-    let pubkey2 = sync2.get_device_pubkey().unwrap().to_string();
+    let pubkey2 = sync2.get_device_pubkey().unwrap();
 
     sync1
         .register_peer(&pubkey2, Some("bench_peer"))

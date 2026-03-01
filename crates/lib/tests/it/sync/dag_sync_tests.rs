@@ -467,8 +467,8 @@ async fn test_real_sync_transport_setup() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Get sync device public keys for peer registration
-    let sync1_pubkey = sync1.get_device_pubkey().unwrap().to_string();
-    let sync2_pubkey = sync2.get_device_pubkey().unwrap().to_string();
+    let sync1_pubkey = sync1.get_device_pubkey().unwrap();
+    let sync2_pubkey = sync2.get_device_pubkey().unwrap();
 
     // Create server address using the helper method
     let server_address = Address::http(server_addr);
@@ -748,8 +748,8 @@ async fn test_iroh_sync_end_to_end_no_relays() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Get device public keys for peer registration
-    let sync1_pubkey = sync1.get_device_pubkey().unwrap().to_string();
-    let sync2_pubkey = sync2.get_device_pubkey().unwrap().to_string();
+    let sync1_pubkey = sync1.get_device_pubkey().unwrap();
+    let sync2_pubkey = sync2.get_device_pubkey().unwrap();
 
     // Get server addresses (now containing full NodeAddr info with direct addresses)
     // This uses the same pattern as HTTP transport but returns serialized NodeAddr info
