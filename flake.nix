@@ -94,7 +94,7 @@
         };
 
         # Import package groups
-        mainPkgs = import ./nix/packages/main.nix {inherit craneLib releaseArgs;};
+        mainPkgs = import ./nix/packages/main.nix {inherit craneLib releaseArgs debugArgs;};
 
         testPkgs = import ./nix/packages/test.nix {inherit craneLib debugArgs baseArgs pkgs lib;};
         coveragePkgs = import ./nix/packages/coverage.nix {inherit craneLibNightly baseArgsNightly fenixNightly toolChainNightly eidLib pkgs lib;};
@@ -188,6 +188,7 @@
           # Main eidetica packages - nix build .#eidetica.{bin,image}
           eidetica = {
             bin = mainPkgs.eidetica-bin;
+            bin-debug = mainPkgs.eidetica-bin-debug;
             inherit (containerPkgs) image;
           };
 
@@ -220,8 +221,9 @@
 
         # CI checks - packages that run during `nix flake check`
         # Each check builds the corresponding .default from legacyPackages
-        # Excluded for performance: eidetica binary (release build), coverage, bench, integration, sanitize
+        # Excluded for performance: release builds, coverage, bench, integration, sanitize
         checks = {
+          build = mainPkgs.eidetica-bin-debug;
           test = testPkgs.builds.sqlite;
           lint = mkAggregate "lint" lintPkgs.defaults;
           doc = mkAggregate "doc" docPkgs.defaults;

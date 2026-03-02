@@ -2,6 +2,7 @@
 {
   craneLib,
   releaseArgs,
+  debugArgs,
 }: let
   eidetica-bin = craneLib.buildPackage (releaseArgs
     // {
@@ -13,6 +14,14 @@
         mainProgram = "eidetica";
       };
     });
+
+  # Debug build for CI checks (fast: reuses cargoArtifactsDebug)
+  eidetica-bin-debug = craneLib.buildPackage (debugArgs
+    // {
+      pname = "eidetica-bin-debug";
+      cargoExtraArgs = "-p eidetica-bin --all-features";
+      doCheck = false;
+    });
 in {
-  inherit eidetica-bin;
+  inherit eidetica-bin eidetica-bin-debug;
 }
