@@ -1,8 +1,8 @@
 # Required status check that blocks merging dependency update PRs during
 # their hold period. Passes immediately for non-deps/ branches. For deps/
-# branches, fails if the PR has the "on-hold" label. Works together with
-# the Hold Expiry workflow, which removes the label when the hold expires
-# and triggers a re-run of this check via the "unlabeled" event.
+# branches, queries the GitHub API for current labels and fails if the PR
+# has the "on-hold" label. Uses live label queries instead of event payload
+# data so that manual re-runs always see the current label state.
 #
 name: "Deps: Hold Gate"
 
@@ -23,7 +23,8 @@ jobs:
       - name: Check hold status
         env:
           HEAD_REF: ${{ github.head_ref }}
-          PR_LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           # Pass immediately for non-dependency branches
           if [[ ! "$HEAD_REF" =~ ^deps/ ]]; then
@@ -32,6 +33,11 @@ jobs:
           fi
 
           echo "Dependency branch detected: $HEAD_REF"
+
+          # Query current labels from the API (not the event payload, which
+          # is stale on manual re-runs)
+          PR_LABELS=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '[.labels[].name]')
+          echo "Current labels: $PR_LABELS"
 
           # Check for on-hold label
           if echo "$PR_LABELS" | jq -e 'index("on-hold")' > /dev/null 2>&1; then

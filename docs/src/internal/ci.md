@@ -151,16 +151,16 @@ Dependency update PRs are gated by a mandatory hold period to allow time for ups
 
 The hold system has two components:
 
-**[`dependency-hold.yml`](https://github.com/arcuru/eidetica/blob/main/.github/workflows/dependency-hold.yml)** — A PR status check that runs on every pull request to `main`. For branches that start with `deps/`, it checks whether the PR has the `on-hold` label. If the label is present, the check fails, blocking merge. For all other branches, it passes immediately. This job name (`dependency-hold`) is configured as a required status check in branch protection.
+**[`dependency-hold.yml`](https://github.com/arcuru/eidetica/blob/main/.github/workflows/dependency-hold.yml)** — A PR status check that runs on every pull request to `main`. For branches that start with `deps/`, it queries the GitHub API for the PR's current labels and fails if the `on-hold` label is present, blocking merge. For all other branches, it passes immediately. Live label queries (rather than event payload data) ensure manual re-runs always see current state. This job name (`Dependency Hold`) is configured as a required status check in branch protection.
 
-**[`update-hold.yml`](https://github.com/arcuru/eidetica/blob/main/.github/workflows/update-hold.yml)** — A daily workflow (07:00 UTC) that scans open PRs with the `on-hold` label. It parses the `<!-- hold-until: YYYY-MM-DD -->` comment from each PR body. When today's date meets or exceeds the hold date, it removes the `on-hold` label and posts a comment. The label removal triggers a re-run of `dependency-hold.yml`, which now passes.
+**[`update-hold.yml`](https://github.com/arcuru/eidetica/blob/main/.github/workflows/update-hold.yml)** — A daily workflow (07:00 UTC) that scans open PRs with the `on-hold` label. It parses the `<!-- hold-until: YYYY-MM-DD -->` comment from each PR body. When today's date meets or exceeds the hold date, it removes the `on-hold` label, creates a passing `Dependency Hold` check run on the PR's HEAD commit, and posts a comment.
 
 ```text
 Day 0:  cargo-update.yml creates PR with on-hold label
         dependency-hold.yml → FAIL (on-hold label present, merge blocked)
 
-Day 7:  update-hold.yml removes on-hold label
-        dependency-hold.yml → PASS (no on-hold label, merge allowed)
+Day 7:  update-hold.yml removes on-hold label + creates passing check run
+        Dependency Hold check → PASS (merge allowed)
 ```
 
 ### Required Setup

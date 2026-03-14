@@ -1,7 +1,9 @@
 # Daily check that releases expired dependency holds. Scans open PRs with
 # the "on-hold" label, parses the <!-- hold-until: YYYY-MM-DD --> comment
-# from the PR body, and removes the label when the date is reached. Label
-# removal triggers the Hold Gate workflow to re-run and pass.
+# from the PR body, and removes the label when the date is reached. After
+# label removal, creates a passing "Dependency Hold" check run on the PR's
+# HEAD commit so the required status check is satisfied without relying on
+# the unlabeled event (which GITHUB_TOKEN cannot trigger cross-workflow).
 #
 name: "Deps: Hold Expiry"
 
@@ -21,6 +23,7 @@ jobs:
     if: github.repository_owner == 'arcuru'
     permissions:
       pull-requests: write
+      checks: write
     steps:
       - name: Check and release expired holds
         run: |
@@ -52,6 +55,21 @@ jobs:
             if [[ ! "$TODAY" < "$HOLD_DATE" ]]; then
               echo "PR #$NUMBER: Hold expired, removing label."
               gh pr edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label on-hold
+
+              # Create a passing check run on the PR's HEAD commit so the
+              # required "Dependency Hold" status check is satisfied. We
+              # can't rely on the unlabeled event re-triggering the Hold
+              # Gate workflow because GITHUB_TOKEN events don't trigger
+              # other workflows (GitHub's anti-recursion policy).
+              HEAD_SHA=$(gh pr view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json headRefOid --jq '.headRefOid')
+              gh api "repos/$GITHUB_REPOSITORY/check-runs" --method POST \
+                -f name="Dependency Hold" \
+                -f head_sha="$HEAD_SHA" \
+                -f status="completed" \
+                -f conclusion="success" \
+                -f "output[title]=Hold expired" \
+                -f "output[summary]=Hold period expired (was until $HOLD_DATE). Dependency update may proceed."
+
               COMMENT="Hold period expired (was until $HOLD_DATE). Removing \`on-hold\` label — this PR is now eligible for merge."
               gh pr comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$COMMENT"
             else
