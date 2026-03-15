@@ -275,6 +275,7 @@
             fix = mkApp "${lintPkgs.runners.fix}/bin/eidetica-fix" "Run auto-fixes and format code";
             bench = mkApp "${benchPkgs.runners.default}/bin/bench-runner" "Run benchmarks interactively";
             coverage = mkApp "${coveragePkgs.runners.default}/bin/coverage-runner" "Run coverage interactively";
+            doc-links = mkApp "${docPkgs.runners.links-online}/bin/doc-links-online" "Check documentation links online";
 
             # Test runners - flat names (nested access via legacyPackages)
             # nix run .#test (default: no backend set), nix run .#test-sqlite, etc.

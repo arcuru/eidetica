@@ -355,16 +355,13 @@ doc action='api':
             ;;
         links)
             just doc book
-            # --exclude-path: don't check files in these directories
-            # --exclude 'rustdoc/': don't check links pointing to rustdoc (may not be built)
-            # Exclude 404.html: mdbook generates <base href="/"> which lychee can't resolve offline
-            lychee --offline --exclude-path 'rustdoc' --exclude-path '404.html' --exclude 'rustdoc/' docs/book
+            # --exclude-path: skip rustdoc (internal cross-refs break outside cargo doc), 404.html (<base href="/">), fonts (binary)
+            lychee --offline --exclude-path 'rustdoc' --exclude-path '404.html' --exclude-path 'fonts' docs/book
             ;;
         links-online)
             just doc book
-            # --exclude-path: don't check files in these directories
-            # --exclude 'rustdoc/': don't check links pointing to rustdoc (may not be built)
-            lychee --exclude-path 'rustdoc' --exclude-path 'fonts' --exclude 'rustdoc/' docs/book
+            # --exclude-path: skip rustdoc (internal cross-refs break outside cargo doc), 404.html (<base href="/">), fonts (binary)
+            lychee --exclude-path 'rustdoc' --exclude-path '404.html' --exclude-path 'fonts' docs/book
             ;;
         stats)
             tested=$(grep --recursive '```rust$' docs/src | wc --lines)

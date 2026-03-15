@@ -15,9 +15,20 @@
     filter = docsOrCargo;
   };
 
+  # TODO: --workspace docs are broken: eidetica-bin's binary is also named "eidetica", so its docs overwrite the library's in the output directory
   doc-api = craneLib.cargoDoc (debugArgs
     // {
-      cargoDocExtraArgs = "--workspace --all-features --no-deps";
+      cargoDocExtraArgs = "-p eidetica --all-features --no-deps";
+    });
+
+  # API docs with dev banner for deployed documentation
+  # Uses docSrc to include docs/rustdoc-header.html (filtered out by cleanCargoSource)
+  doc-api-dev = craneLib.cargoDoc (debugArgs
+    // {
+      pname = "doc-api-dev";
+      src = docSrc;
+      cargoDocExtraArgs = "-p eidetica --all-features --no-deps";
+      RUSTDOCFLAGS = "--html-in-header docs/rustdoc-header.html";
     });
 
   # Full docs including dependencies (slow, ~20min uncached)
@@ -27,33 +38,42 @@
       cargoDocExtraArgs = "--workspace --all-features";
     });
 
+  # Combined site: mdbook + rustdoc
+  mkSite = api:
+    pkgs.runCommand "doc-site" {} ''
+      cp -r ${doc-book} $out
+      chmod -R u+w $out
+      mkdir -p $out/rustdoc
+      cp -r ${api}/share/doc/* $out/rustdoc/
+    '';
+
+  doc-site = mkSite doc-api;
+  doc-site-dev = mkSite doc-api-dev;
+
+  # Common lychee args for link checking
+  # --exclude-path: skip directories with internal cross-references that break outside their original context
+  #   rustdoc: internal links (help.html → index.html) are valid in cargo doc output but break in our site layout
+  #   404.html: contains <base href="/"> which lychee can't resolve offline
+  #   fonts: binary woff2 files
+  # mdbook → rustdoc cross-links are still checked since they're in the mdbook HTML, not excluded paths
+  lycheeArgs = "--exclude-path 'rustdoc' --exclude-path '404.html' --exclude-path 'fonts'";
+
   doc-links =
     pkgs.runCommand "doc-links" {
-      nativeBuildInputs = [pkgs.mdbook pkgs.mdbook-mermaid pkgs.lychee];
-      src = docSrc;
+      nativeBuildInputs = [pkgs.lychee];
     } ''
-      cd $src
-      mdbook build docs -d $TMPDIR/book
-      # --exclude-path: don't check files in these directories
-      # --exclude: don't check links pointing to rustdoc (not built in this derivation)
-      lychee --offline --exclude-path 'rustdoc' --exclude-path '404.html' --exclude 'rustdoc/' $TMPDIR/book
+      lychee --offline ${lycheeArgs} ${doc-site}
       mkdir -p $out
       echo "Link check passed" > $out/result
     '';
 
-  doc-links-online =
-    pkgs.runCommand "doc-links-online" {
-      nativeBuildInputs = [pkgs.mdbook pkgs.mdbook-mermaid pkgs.lychee pkgs.cacert];
-      src = docSrc;
-    } ''
-      cd $src
-      mdbook build docs -d $TMPDIR/book
-      # --exclude-path: don't check files in these directories
-      # --exclude: don't check links pointing to rustdoc (not built in this derivation)
-      lychee --exclude-path 'rustdoc' --exclude-path 'fonts' --exclude 'rustdoc/' $TMPDIR/book
-      mkdir -p $out
-      echo "Online link check passed" > $out/result
+  doc-links-online-runner = pkgs.writeShellApplication {
+    name = "doc-links-online";
+    runtimeInputs = [pkgs.lychee pkgs.cacert];
+    text = ''
+      lychee ${lycheeArgs} ${doc-site}
     '';
+  };
 
   doc-book =
     pkgs.runCommand "book" {
@@ -96,12 +116,18 @@
 in {
   builds = {
     api = doc-api;
+    api-dev = doc-api-dev;
     api-full = doc-api-full;
+    site = doc-site;
+    site-dev = doc-site-dev;
     links = doc-links;
-    links-online = doc-links-online;
     test = doc-test;
     book = doc-book;
     booktest = doc-book-test;
+  };
+
+  runners = {
+    links-online = doc-links-online-runner;
   };
 
   # Fast doc checks for CI
