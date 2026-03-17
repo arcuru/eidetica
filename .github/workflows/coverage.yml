@@ -7,12 +7,8 @@ on:
 
 jobs:
   coverage:
-    name: Coverage (${{ matrix.backend }})
+    name: Coverage
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        backend: [sqlite, inmemory, postgres]
-      fail-fast: false
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.NIX_CACHE_AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.NIX_CACHE_AWS_SECRET_ACCESS_KEY }}
@@ -26,21 +22,42 @@ jobs:
         with:
           signing-key: ${{ secrets.NIX_CACHE_SIGNING_KEY }}
 
-      - name: Build coverage
+      - name: Coverage
         run: |
           nix-fast-build --skip-cached --no-nom --no-link \
             ${{ steps.nix.outputs.push-args }} \
-            -f '.#legacyPackages.x86_64-linux.coverage.${{ matrix.backend }}'
+            -f '.#legacyPackages.x86_64-linux.coverage.sqlite' \
+            -f '.#legacyPackages.x86_64-linux.coverage.inmemory' \
+            -f '.#legacyPackages.x86_64-linux.coverage.postgres'
 
       - name: Extract coverage data
         run: |
-          mkdir -p coverage
-          cp "$(nix path-info '.#coverage.${{ matrix.backend }}')/lcov.info" coverage/lcov.info
+          mkdir -p coverage/sqlite coverage/inmemory coverage/postgres
+          # Use fully-qualified system path to match the build step above
+          cp "$(nix path-info '.#legacyPackages.x86_64-linux.coverage.sqlite')/lcov.info" coverage/sqlite/lcov.info
+          cp "$(nix path-info '.#legacyPackages.x86_64-linux.coverage.inmemory')/lcov.info" coverage/inmemory/lcov.info
+          cp "$(nix path-info '.#legacyPackages.x86_64-linux.coverage.postgres')/lcov.info" coverage/postgres/lcov.info
 
-      - name: Upload to Codecov
+      - name: Upload coverage (sqlite)
         uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          flags: ${{ matrix.backend }}
-          files: coverage/lcov.info
+          flags: sqlite
+          files: coverage/sqlite/lcov.info
+          fail_ci_if_error: false
+
+      - name: Upload coverage (inmemory)
+        uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          flags: inmemory
+          files: coverage/inmemory/lcov.info
+          fail_ci_if_error: false
+
+      - name: Upload coverage (postgres)
+        uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          flags: postgres
+          files: coverage/postgres/lcov.info
           fail_ci_if_error: false

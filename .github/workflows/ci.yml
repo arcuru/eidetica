@@ -1,4 +1,4 @@
-name: Tests
+name: CI
 
 on:
   push:
@@ -8,8 +8,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  test:
-    name: Test (${{ matrix.system }})
+  ci:
+    name: CI (${{ matrix.system }})
     runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
@@ -32,13 +32,18 @@ jobs:
         with:
           signing-key: ${{ secrets.NIX_CACHE_SIGNING_KEY }}
 
-      - name: Build and test
+      - name: Lint
         run: |
           nix-fast-build --skip-cached --no-nom --no-link \
             ${{ steps.nix.outputs.push-args }} \
-            -f '.#legacyPackages.${{ matrix.system }}.test.all'
+            -f '.#legacyPackages.${{ matrix.system }}.lint.default' \
+            -f '.#checks.${{ matrix.system }}.treefmt'
+
+      - name: Test
+        run: |
           nix-fast-build --skip-cached --no-nom --no-link \
             ${{ steps.nix.outputs.push-args }} \
+            -f '.#legacyPackages.${{ matrix.system }}.test.all' \
             -f '.#legacyPackages.${{ matrix.system }}.eval.default'
 
       - name: Integration tests
@@ -47,3 +52,14 @@ jobs:
           nix-fast-build --skip-cached --no-nom --no-link \
             ${{ steps.nix.outputs.push-args }} \
             -f '.#legacyPackages.x86_64-linux.integration.default'
+
+      - name: Doc
+        run: |
+          nix-fast-build --skip-cached --no-nom --no-link \
+            ${{ steps.nix.outputs.push-args }} \
+            -f '.#legacyPackages.${{ matrix.system }}.doc.default'
+
+      - name: Remaining Checks
+        run: |
+          nix-fast-build --skip-cached --no-nom --no-link \
+            ${{ steps.nix.outputs.push-args }}
