@@ -1,14 +1,15 @@
-name: Container
+name: Release
 
 on:
-  # Trigger after Nix workflow completes on main branch
+  # Trigger after CI workflow completes on main branch
   workflow_run:
-    workflows: ["Tests"]
+    workflows: ["CI"]
     types: [completed]
     branches: ["main"]
   # Also trigger on releases
   release:
     types: [published]
+  workflow_dispatch:
 
 env:
   REGISTRY_GHCR: ghcr.io
@@ -17,31 +18,74 @@ env:
 
 jobs:
   build:
+    name: Build (${{ matrix.system }})
     runs-on: ${{ matrix.runner }}
-    # Only run if Nix workflow succeeded (or if triggered by release/dispatch)
     if: |
       github.repository_owner == 'arcuru' &&
-      (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
+      (github.event_name == 'workflow_dispatch' ||
+       github.event_name == 'release' ||
+       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'))
     strategy:
       matrix:
         include:
-          - runner: ubuntu-latest
+          - system: x86_64-linux
+            runner: ubuntu-latest
             platform: amd64
-          - runner: ubuntu-24.04-arm
+          - system: aarch64-linux
+            runner: ubuntu-24.04-arm
             platform: arm64
+      fail-fast: false
     permissions:
       contents: read
       packages: write
-
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.NIX_CACHE_AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.NIX_CACHE_AWS_SECRET_ACCESS_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Setup Nix
         uses: ./.github/actions/setup-nix
+        id: nix
+        with:
+          signing-key: ${{ secrets.NIX_CACHE_SIGNING_KEY }}
 
-      - name: Build container image with Nix
-        run: nix build .#eidetica.image
+      - name: Build and push artifacts
+        run: |
+          nix-fast-build --skip-cached --no-nom --no-link \
+            ${{ steps.nix.outputs.push-args }} \
+            -f '.#legacyPackages.${{ matrix.system }}.eidetica.bin' \
+            -f '.#legacyPackages.${{ matrix.system }}.eidetica.image'
+
+      - name: Install Bencher CLI
+        uses: bencherdev/bencher@8151077aa7b1bceaac11c4b308265417cae60e2b # v0.5.10
+
+      - name: Track Binary Size
+        if: github.event_name == 'release' || github.event_name == 'workflow_run'
+        run: |
+          BINARY_PATH=$(nix build .#eidetica.bin --no-link --print-out-paths)/bin/eidetica
+          bencher run \
+            --project eidetica \
+            --token '${{ secrets.BENCHER_API_TOKEN }}' \
+            --branch main \
+            --testbed '${{ matrix.system }}' \
+            --file-size "$BINARY_PATH" \
+            --adapter json \
+            "echo '{}'"
+
+      - name: Track Container Size
+        if: github.event_name == 'release' || github.event_name == 'workflow_run'
+        run: |
+          IMAGE_PATH=$(nix build .#eidetica.image --no-link --print-out-paths)
+          bencher run \
+            --project eidetica \
+            --token '${{ secrets.BENCHER_API_TOKEN }}' \
+            --branch main \
+            --testbed '${{ matrix.system }}' \
+            --file-size "$IMAGE_PATH" \
+            --adapter json \
+            "echo '{}'"
 
       - name: Log in to GHCR
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
@@ -58,9 +102,11 @@ jobs:
 
       - name: Load and push Nix base image
         id: nix-image
+        if: github.event_name == 'release' || github.event_name == 'workflow_run'
         run: |
+          IMAGE_PATH=$(nix build .#eidetica.image --no-link --print-out-paths)
           # Load image and capture the name
-          LOADED=$(docker load < ./result)
+          LOADED=$(docker load < "$IMAGE_PATH")
           # Extract image name from "Loaded image: name:tag"
           NIX_IMAGE=$(echo "$LOADED" | grep -oP 'Loaded image: \K.*')
           echo "Loaded Nix image: ${NIX_IMAGE}"
@@ -105,6 +151,7 @@ jobs:
           echo "FROM ${{ steps.nix-image.outputs.base_image }}" > Dockerfile.attestation
 
       - name: Build and push with attestations
+        if: github.event_name == 'release' || github.event_name == 'workflow_run'
         run: |
           for TAG in ${{ steps.tags.outputs.tags }}; do
             # Build with buildx to add SBOM and provenance attestations
@@ -122,7 +169,9 @@ jobs:
   manifest:
     runs-on: ubuntu-latest
     needs: build
-    if: github.repository_owner == 'arcuru'
+    if: |
+      github.repository_owner == 'arcuru' &&
+      (github.event_name == 'release' || github.event_name == 'workflow_run')
     permissions:
       contents: read
       packages: write
@@ -151,17 +200,19 @@ jobs:
         id: tags
         run: |
           TAGS=""
-          # Dev tag for workflow_run (after Nix completes on main)
+          # Dev tag for workflow_run (after CI completes on main)
           if [[ "${{ github.event_name }}" == "workflow_run" ]]; then
             TAGS="dev"
           fi
           # Release tags
           if [[ "${{ github.event_name }}" == "release" ]]; then
             VERSION="${{ github.event.release.tag_name }}"
-            VERSION="${VERSION#v}"
+            VERSION="${VERSION#v}"  # Remove 'v' prefix
             TAGS="${VERSION}"
+            # Add major.minor tag
             MINOR="${VERSION%.*}"
             TAGS="${TAGS} ${MINOR}"
+            # Add major tag (skip for v0.x)
             MAJOR="${MINOR%.*}"
             if [[ "$MAJOR" != "0" ]]; then
               TAGS="${TAGS} ${MAJOR}"
