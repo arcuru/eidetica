@@ -14,26 +14,21 @@ jobs:
       matrix:
         sanitizer: [asan, lsan]
       fail-fast: false
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.NIX_CACHE_AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.NIX_CACHE_AWS_SECRET_ACCESS_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@c5a866b6ab867e88becbed4467b93592bce69f8a # v21
-
-      - name: Setup Cachix
-        uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
+      - name: Setup Nix
+        uses: ./.github/actions/setup-nix
+        id: nix
         with:
-          name: eidetica
-          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
-
-      - name: Magic Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
-
-      - name: Install nix-fast-build
-        run: nix profile install nixpkgs#nix-fast-build
+          signing-key: ${{ secrets.NIX_CACHE_SIGNING_KEY }}
 
       - name: Run ${{ matrix.sanitizer }}
         run: |
           nix-fast-build --skip-cached --no-nom --no-link \
+            ${{ steps.nix.outputs.push-args }} \
             -f '.#legacyPackages.x86_64-linux.sanitize.${{ matrix.sanitizer }}'

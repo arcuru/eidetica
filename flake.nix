@@ -26,10 +26,10 @@
     };
   };
 
-  # Cachix binary cache configuration
+  # Binary cache configuration
   nixConfig = {
-    extra-substituters = ["https://eidetica.cachix.org"];
-    extra-trusted-public-keys = ["eidetica.cachix.org-1:EDr+F/9jkD8aeThjJ4W3+4Yj3MH9fPx6slVLxF1HNSs="];
+    extra-substituters = ["https://cache.eidetica.dev"];
+    extra-trusted-public-keys = ["cache.eidetica.dev-1:eND5gRJlbnool3ZLCWT2H8kkygWS8JcsU76HYXbWPBI="];
   };
 
   outputs = inputs @ {flake-parts, ...}:

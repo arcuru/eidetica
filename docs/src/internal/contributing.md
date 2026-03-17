@@ -59,7 +59,7 @@ Packages are organized into groups: `test`, `doc`, `lint`, `coverage`, `sanitize
 Each group supports `.#<group>.default` (fast), `.#<group>.all` (all), and `.#<group>.<name>` (specific).
 See [CI/Build Infrastructure](ci.md) for details.
 
-Binary caching via [Cachix](https://eidetica.cachix.org) speeds up builds by providing pre-built dependencies.
+Binary caching via a [binary cache](https://cache.eidetica.dev) speeds up builds by providing pre-built dependencies.
 
 ## Development Workflow
 
