@@ -41,7 +41,7 @@ The Nix flake defines reproducible builds and CI checks that run identically loc
 - `nix build` - Build the default package
 - `nix flake check` - Run all CI checks (audit, clippy, doc, test, etc.)
 
-Binary caching via [Cachix](https://eidetica.cachix.org) speeds up builds by providing pre-built dependencies.
+Binary caching via a [binary cache](https://cache.eidetica.dev) speeds up builds by providing pre-built dependencies.
 
 ## Nix Package Groups
 

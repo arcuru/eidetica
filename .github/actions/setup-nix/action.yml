@@ -1,0 +1,41 @@
+name: Setup Nix
+description: Install Nix with configured binary cache and push support
+
+inputs:
+  signing-key:
+    description: Nix store signing key for cache push
+    default: ""
+
+outputs:
+  push-args:
+    description: Extra nix-fast-build args for cache push
+    value: ${{ steps.push-setup.outputs.args }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@c5a866b6ab867e88becbed4467b93592bce69f8a # v21
+      with:
+        extra-conf: |
+          extra-substituters = https://cache.eidetica.dev
+          extra-trusted-public-keys = cache.eidetica.dev-1:eND5gRJlbnool3ZLCWT2H8kkygWS8JcsU76HYXbWPBI=
+
+    - name: Install nix-fast-build
+      shell: bash
+      run: nix profile install nixpkgs#nix-fast-build
+
+    - name: Configure cache push
+      id: push-setup
+      shell: bash
+      run: |
+        # Only push if a signing key is provided
+        if [ -n "$SIGNING_KEY" ]; then
+          echo "$SIGNING_KEY" > /tmp/nix-cache-key.pem
+          S3_URL='s3://cache-eidetica-dev?region=auto&endpoint=https://ab01ccd7fce6ab984e4c956734085680.r2.cloudflarestorage.com'
+          echo "args=--copy-to '$S3_URL' --option secret-key-files /tmp/nix-cache-key.pem" >> "$GITHUB_OUTPUT"
+        else
+          echo "args=" >> "$GITHUB_OUTPUT"
+        fi
+      env:
+        SIGNING_KEY: ${{ inputs.signing-key }}
