@@ -21,6 +21,7 @@ jobs:
         uses: bencherdev/bencher@8151077aa7b1bceaac11c4b308265417cae60e2b # v0.5.10
 
       - name: Run Benchmarks
+        if: github.event_name == 'push' || github.ref == 'refs/heads/main'
         run: |
           nix develop --command bencher run \
             --project eidetica \
