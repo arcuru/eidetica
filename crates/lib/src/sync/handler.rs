@@ -84,7 +84,7 @@ impl SyncHandlerImpl {
     async fn get_sync_tree(&self) -> Result<Database> {
         // Load sync tree with the device key
         let instance = self.instance()?;
-        let signing_key = instance.device_key().clone();
+        let signing_key = instance.signing_key()?.clone();
 
         Database::open(instance, &self.sync_tree_id, DatabaseKey::new(signing_key)).await
     }
@@ -336,7 +336,10 @@ impl SyncHandlerImpl {
             Err(_) => return false, // Fail closed
         };
 
-        let signing_key = instance.device_key().clone();
+        let signing_key = match instance.signing_key() {
+            Ok(k) => k.clone(),
+            Err(_) => return false, // Fail closed
+        };
 
         let sync_database = match Database::open(
             instance.clone(),
@@ -480,7 +483,13 @@ impl SyncHandlerImpl {
                     return SyncResponse::Error(format!("Failed to get instance: {e}"));
                 }
             };
-            let signing_key = instance.device_key().clone();
+            let signing_key = match instance.signing_key() {
+                Ok(k) => k.clone(),
+                Err(e) => {
+                    error!(error = %e, "Failed to get device key");
+                    return SyncResponse::Error(format!("Failed to get device key: {e}"));
+                }
+            };
 
             // Generate device ID and public key from signing key
             let public_key = signing_key.public_key();

@@ -21,7 +21,7 @@ async fn create_test_user_session() -> User {
         .unwrap();
 
     // Get device key from instance
-    let device_key = instance.device_key().clone();
+    let device_key = instance.signing_key().unwrap().clone();
 
     let mut db_settings = Doc::new();
     db_settings.set("name", "test_user_db");

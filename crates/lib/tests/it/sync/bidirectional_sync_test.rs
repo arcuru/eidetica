@@ -71,7 +71,7 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     settings.set("name", "Bidirectional Test Room");
 
     // Get device key for auth settings
-    let device1_device_pubkey = device1_instance.device_key().public_key();
+    let device1_device_pubkey = device1_instance.id();
 
     let device1_database = device1_user
         .create_database(settings, &device1_key_id)

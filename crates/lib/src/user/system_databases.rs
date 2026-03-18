@@ -153,7 +153,7 @@ pub async fn create_user(
     user_db_settings.set("description", format!("User database for {username}"));
 
     // Get device key for database creation (used as the signing key)
-    let device_private_key = instance.device_key().clone();
+    let device_private_key = instance.signing_key()?.clone();
 
     // Create database using device_key as the signing key.
     // Database::create bootstraps auth with device key as Admin(0).
@@ -432,7 +432,7 @@ mod tests {
             .unwrap();
 
         // Get the device key from the instance
-        let device_key = instance.device_key().clone();
+        let device_key = instance.signing_key().unwrap().clone();
 
         (instance, device_key)
     }
@@ -458,7 +458,7 @@ mod tests {
         assert_eq!(name, INSTANCE);
 
         // Verify auth settings - key is stored by pubkey
-        let device_pubkey = instance.device_key().public_key();
+        let device_pubkey = instance.id();
         let settings_store = SettingsStore::new(&transaction).unwrap();
         let auth_settings = settings_store.auth_snapshot().await.unwrap();
         let device_key = auth_settings.get_key_by_pubkey(&device_pubkey).unwrap();
@@ -513,7 +513,7 @@ mod tests {
         let users_db = create_users_database(&instance, &device_key).await.unwrap();
 
         // Verify device key has admin access - key is stored by pubkey
-        let device_pubkey = instance.device_key().public_key();
+        let device_pubkey = instance.id();
         let transaction = users_db.new_transaction().await.unwrap();
         let settings_store = SettingsStore::new(&transaction).unwrap();
         let auth_settings = settings_store.auth_snapshot().await.unwrap();

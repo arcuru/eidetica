@@ -201,7 +201,7 @@ async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
     let http_client_db = Database::open(
         http_client_instance.clone(),
         &tree_id,
-        DatabaseKey::global(http_client_instance.device_key().clone()),
+        DatabaseKey::global(http_client_instance.signing_key()?.clone()),
     )
     .await?;
 

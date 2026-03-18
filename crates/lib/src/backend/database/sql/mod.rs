@@ -38,7 +38,7 @@ use sqlx::any::AnyPoolOptions;
 
 use crate::Result;
 use crate::backend::errors::BackendError;
-use crate::backend::{BackendImpl, InstanceMetadata, VerificationStatus};
+use crate::backend::{BackendImpl, InstanceMetadata, InstanceSecrets, VerificationStatus};
 use crate::entry::{Entry, ID};
 
 /// Extension trait for sqlx Result types to simplify error handling.
@@ -487,6 +487,14 @@ impl BackendImpl for SqlxBackend {
 
     async fn set_instance_metadata(&self, metadata: &InstanceMetadata) -> Result<()> {
         storage::set_instance_metadata(self, metadata).await
+    }
+
+    async fn get_instance_secrets(&self) -> Result<Option<InstanceSecrets>> {
+        storage::get_instance_secrets(self).await
+    }
+
+    async fn set_instance_secrets(&self, secrets: &InstanceSecrets) -> Result<()> {
+        storage::set_instance_secrets(self, secrets).await
     }
 }
 

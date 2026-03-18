@@ -222,7 +222,7 @@ pub async fn setup_manual_approval_server() -> (Instance, User, PublicKey, Datab
     let mut settings = Doc::new();
     settings.set("name", "Bootstrap Test Database");
 
-    let device_pubkey = instance.device_key().public_key();
+    let device_pubkey = instance.id();
 
     let database = user
         .create_database(settings, &key_id)
@@ -274,7 +274,7 @@ pub async fn setup_global_wildcard_server() -> (Instance, User, PublicKey, Datab
     let mut settings = Doc::new();
     settings.set("name", "Bootstrap Test Database");
 
-    let device_pubkey = instance.device_key().public_key();
+    let device_pubkey = instance.id();
 
     let database = user
         .create_database(settings, &key_id)
@@ -468,7 +468,7 @@ pub async fn setup_server_with_bootstrap_database(
         .unwrap();
 
     // Add admin to the database's auth configuration so sync handler can modify the database
-    let device_pubkey = server_instance.device_key().public_key();
+    let device_pubkey = server_instance.id();
 
     // Add admin as Admin to the database (keyed by pubkey, name is "admin")
     let tx = server_database.new_transaction().await.unwrap();
@@ -664,7 +664,7 @@ pub async fn setup_sync_enabled_server(
     let tree_id = server_database.root_id().clone();
 
     // Add admin to the database's auth configuration so sync handler can modify the database
-    let device_pubkey = server_instance.device_key().public_key();
+    let device_pubkey = server_instance.id();
 
     // Add admin as Admin to the database (keyed by pubkey, name is "admin")
     let tx = server_database.new_transaction().await.unwrap();
@@ -748,7 +748,7 @@ pub async fn setup_sync_enabled_client(
 pub async fn enable_sync_for_instance_database(sync: &Sync, database_id: &ID) -> Result<()> {
     // Open the sync tree to set combined settings
     let instance = sync.instance()?;
-    let signing_key = instance.device_key().clone();
+    let signing_key = instance.signing_key()?.clone();
 
     let sync_database = Database::open(
         instance.clone(),
@@ -805,7 +805,7 @@ pub async fn setup_public_sync_enabled_server(
     let mut settings = Doc::new();
     settings.set("name", db_name);
 
-    let device_pubkey = server_instance.device_key().public_key();
+    let device_pubkey = server_instance.id();
 
     let server_database = server_user
         .create_database(settings, &server_key_id)

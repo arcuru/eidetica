@@ -10,7 +10,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use super::{InMemory, InMemoryInner, TreeTipsCache};
 use crate::{
     Error, Result,
-    backend::{InstanceMetadata, VerificationStatus, errors::BackendError},
+    backend::{InstanceMetadata, InstanceSecrets, VerificationStatus, errors::BackendError},
     entry::{Entry, ID},
 };
 
@@ -52,9 +52,12 @@ struct SerializableDatabase {
     entries: HashMap<ID, Entry>,
     #[serde(default)]
     verification_status: HashMap<ID, VerificationStatus>,
-    /// Instance metadata containing device key and system database IDs
+    /// Instance metadata containing device public key and system database IDs
     #[serde(default)]
     instance_metadata: Option<InstanceMetadata>,
+    /// Instance secrets containing the device signing key
+    #[serde(default)]
+    instance_secrets: Option<InstanceSecrets>,
     /// Generic key-value cache (not serialized - cache is rebuilt on load)
     #[serde(default)]
     cache: HashMap<String, String>,
@@ -77,6 +80,7 @@ impl Serialize for InMemory {
                 entries: inner.entries.clone(),
                 verification_status: inner.verification_status.clone(),
                 instance_metadata: inner.instance_metadata.clone(),
+                instance_secrets: inner.instance_secrets.clone(),
                 cache: crdt_cache.clone(),
                 tips: inner.tips.clone(),
             }
@@ -99,6 +103,7 @@ impl<'de> Deserialize<'de> for InMemory {
                 entries: serializable.entries,
                 verification_status: serializable.verification_status,
                 instance_metadata: serializable.instance_metadata,
+                instance_secrets: serializable.instance_secrets,
                 tips: serializable.tips,
             }),
             crdt_cache: RwLock::new(serializable.cache),
@@ -124,6 +129,7 @@ pub(crate) fn save_to_file<P: AsRef<Path>>(backend: &InMemory, path: P) -> Resul
             entries: inner.entries.clone(),
             verification_status: inner.verification_status.clone(),
             instance_metadata: inner.instance_metadata.clone(),
+            instance_secrets: inner.instance_secrets.clone(),
             cache: crdt_cache.clone(),
             tips: inner.tips.clone(),
         }

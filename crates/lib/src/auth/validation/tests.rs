@@ -335,9 +335,13 @@ async fn test_complete_delegation_workflow() {
     let (_, delegated_pubkey) = generate_keypair();
 
     // Create the delegated tree — device key bootstrapped as Admin(0), untouched
-    let delegated_tree = Database::create(&instance, instance.device_key().clone(), Doc::new())
-        .await
-        .unwrap();
+    let delegated_tree = Database::create(
+        &instance,
+        instance.signing_key().unwrap().clone(),
+        Doc::new(),
+    )
+    .await
+    .unwrap();
 
     // Add the delegated user key at Admin(5)
     let txn = delegated_tree.new_transaction().await.unwrap();
@@ -355,9 +359,13 @@ async fn test_complete_delegation_workflow() {
     let delegated_tips = delegated_tree.get_tips().await.unwrap();
 
     // Create the main tree — signing key bootstrapped as Admin(0)
-    let main_tree = Database::create(&instance, instance.device_key().clone(), Doc::new())
-        .await
-        .unwrap();
+    let main_tree = Database::create(
+        &instance,
+        instance.signing_key().unwrap().clone(),
+        Doc::new(),
+    )
+    .await
+    .unwrap();
 
     // Add delegation reference via follow-up transaction
     let txn = main_tree.new_transaction().await.unwrap();
@@ -426,14 +434,22 @@ async fn test_delegated_tree_requires_tips() {
         .expect("Failed to create test instance");
 
     // Create a simple delegated tree
-    let delegated_tree = Database::create(&instance, instance.device_key().clone(), Doc::new())
-        .await
-        .unwrap();
+    let delegated_tree = Database::create(
+        &instance,
+        instance.signing_key().unwrap().clone(),
+        Doc::new(),
+    )
+    .await
+    .unwrap();
 
     // Create the main tree — signing key bootstrapped as Admin(0)
-    let main_tree = Database::create(&instance, instance.device_key().clone(), Doc::new())
-        .await
-        .unwrap();
+    let main_tree = Database::create(
+        &instance,
+        instance.signing_key().unwrap().clone(),
+        Doc::new(),
+    )
+    .await
+    .unwrap();
 
     // Add delegation reference via follow-up transaction
     let txn = main_tree.new_transaction().await.unwrap();
@@ -506,9 +522,13 @@ async fn test_nested_delegation_with_permission_clamping() {
 
     // 1. Create the final user tree (deepest level)
     // Device key bootstrapped as Admin(0), untouched
-    let user_tree = Database::create(&instance, instance.device_key().clone(), Doc::new())
-        .await
-        .unwrap();
+    let user_tree = Database::create(
+        &instance,
+        instance.signing_key().unwrap().clone(),
+        Doc::new(),
+    )
+    .await
+    .unwrap();
 
     // Add the delegated user key at Admin(3)
     let txn = user_tree.new_transaction().await.unwrap();
@@ -525,9 +545,13 @@ async fn test_nested_delegation_with_permission_clamping() {
     let user_tips = user_tree.get_tips().await.unwrap();
 
     // 2. Create intermediate delegated tree that delegates to user tree
-    let intermediate_tree = Database::create(&instance, instance.device_key().clone(), Doc::new())
-        .await
-        .unwrap();
+    let intermediate_tree = Database::create(
+        &instance,
+        instance.signing_key().unwrap().clone(),
+        Doc::new(),
+    )
+    .await
+    .unwrap();
 
     // Add delegation to user tree (no key overwrite needed)
     let txn = intermediate_tree.new_transaction().await.unwrap();
@@ -551,9 +575,13 @@ async fn test_nested_delegation_with_permission_clamping() {
 
     // 3. Create main tree that delegates to intermediate tree
     // Signing key stays at Admin(0) — matches original test intent.
-    let main_tree = Database::create(&instance, instance.device_key().clone(), Doc::new())
-        .await
-        .unwrap();
+    let main_tree = Database::create(
+        &instance,
+        instance.signing_key().unwrap().clone(),
+        Doc::new(),
+    )
+    .await
+    .unwrap();
 
     // Add delegation to intermediate tree via follow-up transaction
     let txn = main_tree.new_transaction().await.unwrap();

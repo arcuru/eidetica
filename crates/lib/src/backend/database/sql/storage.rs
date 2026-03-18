@@ -4,7 +4,7 @@
 
 use crate::Result;
 use crate::backend::errors::BackendError;
-use crate::backend::{InstanceMetadata, VerificationStatus};
+use crate::backend::{InstanceMetadata, InstanceSecrets, VerificationStatus};
 use crate::entry::{Entry, ID};
 
 use super::{SqlxBackend, SqlxResultExt};
@@ -501,6 +501,54 @@ pub async fn set_instance_metadata(
         .execute(pool)
         .await
         .sql_context("Failed to set instance metadata")?;
+    }
+
+    Ok(())
+}
+
+// === Instance Secrets ===
+
+/// Get instance secrets if they exist.
+pub async fn get_instance_secrets(backend: &SqlxBackend) -> Result<Option<InstanceSecrets>> {
+    let pool = backend.pool();
+
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT data FROM instance_secrets WHERE singleton = 1")
+            .fetch_optional(pool)
+            .await
+            .sql_context("Failed to get instance secrets")?;
+
+    match row {
+        Some((json,)) => {
+            let secrets: InstanceSecrets = serde_json::from_str(&json)
+                .map_err(|e| BackendError::DeserializationFailed { source: e })?;
+            Ok(Some(secrets))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Set instance secrets.
+pub async fn set_instance_secrets(backend: &SqlxBackend, secrets: &InstanceSecrets) -> Result<()> {
+    let pool = backend.pool();
+    let json = serde_json::to_string(secrets)
+        .map_err(|e| BackendError::SerializationFailed { source: e })?;
+
+    if backend.is_sqlite() {
+        sqlx::query("INSERT OR REPLACE INTO instance_secrets (singleton, data) VALUES (1, $1)")
+            .bind(&json)
+            .execute(pool)
+            .await
+            .sql_context("Failed to set instance secrets")?;
+    } else {
+        sqlx::query(
+            "INSERT INTO instance_secrets (singleton, data) VALUES (1, $1)
+             ON CONFLICT (singleton) DO UPDATE SET data = EXCLUDED.data",
+        )
+        .bind(&json)
+        .execute(pool)
+        .await
+        .sql_context("Failed to set instance secrets")?;
     }
 
     Ok(())

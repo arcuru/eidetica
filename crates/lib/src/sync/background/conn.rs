@@ -29,7 +29,7 @@ impl BackgroundSync {
 
         // Get our device info from instance
         let instance = self.instance()?;
-        let public_key = instance.device_id();
+        let public_key = instance.id();
 
         // Build listen addresses from all running servers
         let listen_addresses: Vec<Address> = self

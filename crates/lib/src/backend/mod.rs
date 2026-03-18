@@ -15,26 +15,31 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Result,
-    auth::crypto::PrivateKey,
+    auth::crypto::{PrivateKey, PublicKey},
     entry::{Entry, ID},
 };
 
-/// Persistent metadata for an Eidetica instance.
+/// Persistent public metadata for an Eidetica instance.
 ///
 /// This struct consolidates all instance-level state that needs to persist across restarts:
-/// - The device signing key (cryptographic identity)
+/// - The device public key (cryptographic identity)
 /// - System database root IDs
 /// - Optional sync database root ID
 ///
 /// The presence of `InstanceMetadata` in a backend indicates an initialized instance.
 /// A backend without metadata is treated as uninitialized and may trigger instance creation.
+///
+/// This struct contains only public information and is safe to transmit over the wire
+/// (e.g., to remote clients via RPC). Private key material is stored separately in
+/// [`InstanceSecrets`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstanceMetadata {
-    /// Device signing key - the instance's cryptographic identity.
+    /// Device public key - the instance's cryptographic identity.
     ///
-    /// This key is generated once during instance creation and persists for the lifetime
-    /// of the instance. It is used to sign system database entries and for sync identity.
-    pub device_key: PrivateKey,
+    /// This is the public half of the device signing key, generated once during instance
+    /// creation and persisted for the lifetime of the instance. Used for identity
+    /// verification and sync peer identification.
+    pub id: PublicKey,
 
     /// Root ID of the _users system database.
     ///
@@ -50,6 +55,21 @@ pub struct InstanceMetadata {
     ///
     /// This database stores all sync-related state.
     pub sync_db: Option<ID>,
+}
+
+/// Private secrets for an Eidetica instance.
+///
+/// This struct holds the device signing key, which must never be transmitted
+/// over the wire or exposed to remote clients. It is stored separately from
+/// [`InstanceMetadata`] to enforce this boundary.
+// FIXME: Better secrets management everywhere for InstanceSecrets
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstanceSecrets {
+    /// Device signing key - the instance's private cryptographic identity.
+    ///
+    /// This key is generated once during instance creation and persists for the lifetime
+    /// of the instance. It is used to sign system database entries and for sync identity.
+    pub(crate) signing_key: PrivateKey,
 }
 
 // Category modules
@@ -476,7 +496,7 @@ pub trait BackendImpl: Send + Sync + Any {
 
     /// Set the instance metadata.
     ///
-    /// This is called during instance creation to persist the device key and
+    /// This is called during instance creation to persist the device public key and
     /// system database IDs. It may also be called when enabling sync to update
     /// the `sync_db` field.
     ///
@@ -486,4 +506,21 @@ pub trait BackendImpl: Send + Sync + Any {
     /// # Returns
     /// A `Result` indicating success or an error during storage.
     async fn set_instance_metadata(&self, metadata: &InstanceMetadata) -> Result<()>;
+
+    /// Get the instance secrets (private key material).
+    ///
+    /// Returns `None` if no secrets have been saved.
+    async fn get_instance_secrets(&self) -> Result<Option<InstanceSecrets>>;
+
+    /// Set the instance secrets (private key material).
+    ///
+    /// This is called during instance creation to persist the device signing key
+    /// separately from the public metadata.
+    ///
+    /// # Arguments
+    /// * `secrets` - The instance secrets to persist
+    ///
+    /// # Returns
+    /// A `Result` indicating success or an error during storage.
+    async fn set_instance_secrets(&self, secrets: &InstanceSecrets) -> Result<()>;
 }

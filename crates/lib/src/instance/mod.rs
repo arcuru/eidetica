@@ -16,7 +16,7 @@ use handle_trait::Handle;
 use crate::{
     Clock, Database, Entry, Result, SystemClock,
     auth::crypto::{PrivateKey, PublicKey},
-    backend::{BackendImpl, InstanceMetadata},
+    backend::{BackendImpl, InstanceMetadata, InstanceSecrets},
     database::DatabaseKey,
     entry::ID,
     sync::Sync,
@@ -81,12 +81,10 @@ pub(crate) struct InstanceInternal {
     /// Synchronization module for this database instance
     /// TODO: Overengineered, Sync can be created by default but disabled
     sync: std::sync::OnceLock<Arc<Sync>>,
-    /// Root ID of the _users system database
-    users_db_id: ID,
-    /// Root ID of the _databases system database
-    databases_db_id: ID,
-    /// Device signing key - the instance's cryptographic identity
-    device_key: PrivateKey,
+    /// Public instance metadata (device identity, system database IDs)
+    metadata: InstanceMetadata,
+    /// Private instance secrets (None for remote instances without key access)
+    secrets: Option<InstanceSecrets>,
     /// Per-database callbacks keyed by (WriteSource, tree_id)
     write_callbacks: Mutex<HashMap<CallbackKey, CallbackVec>>,
     /// Global callbacks keyed by WriteSource (triggered regardless of database)
@@ -99,8 +97,8 @@ impl std::fmt::Debug for InstanceInternal {
             .field("backend", &"<BackendDB>")
             .field("clock", &self.clock)
             .field("sync", &self.sync)
-            .field("users_db_id", &self.users_db_id)
-            .field("databases_db_id", &self.databases_db_id)
+            .field("metadata", &self.metadata)
+            .field("secrets", &self.secrets.is_some())
             .field(
                 "write_callbacks",
                 &format!(
@@ -239,14 +237,24 @@ impl Instance {
         // Check for existing InstanceMetadata
         match backend.get_instance_metadata().await? {
             Some(metadata) => {
-                // Existing backend: load from metadata
+                // Load secrets (contains the private key)
+                let secrets = backend.get_instance_secrets().await?;
+
+                // If secrets are present, verify they match the metadata
+                if let Some(ref secrets) = secrets {
+                    let derived_id = secrets.signing_key.public_key();
+                    if derived_id != metadata.id {
+                        return Err(InstanceError::DeviceKeyMismatch.into());
+                    }
+                }
+
+                // Existing backend: load from metadata + secrets
                 let inner = Arc::new(InstanceInternal {
                     backend: Backend::new(backend),
                     clock,
                     sync: std::sync::OnceLock::new(),
-                    users_db_id: metadata.users_db,
-                    databases_db_id: metadata.databases_db,
-                    device_key: metadata.device_key,
+                    metadata,
+                    secrets,
                     write_callbacks: Mutex::new(HashMap::new()),
                     global_write_callbacks: Mutex::new(HashMap::new()),
                 });
@@ -319,13 +327,11 @@ impl Instance {
         backend: Arc<dyn BackendImpl>,
         clock: Arc<dyn Clock>,
     ) -> Result<Self> {
-        use crate::{
-            auth::crypto::generate_keypair,
-            user::system_databases::{create_databases_tracking, create_users_database},
-        };
+        use crate::user::system_databases::{create_databases_tracking, create_users_database};
 
         // 1. Generate device key
-        let (device_key, _device_pubkey) = generate_keypair();
+        let device_key = PrivateKey::generate();
+        let device_id = device_key.public_key();
 
         // 2. Create system databases with device_key passed directly
         // Create a temporary Instance for database creation (databases will store full IDs later)
@@ -342,9 +348,15 @@ impl Instance {
                 backend: Backend::new(Arc::clone(&backend)),
                 clock: Arc::clone(&clock),
                 sync: std::sync::OnceLock::new(),
-                users_db_id: ID::default(), // Placeholder - system DBs don't exist yet
-                databases_db_id: ID::default(), // Placeholder - system DBs don't exist yet
-                device_key: device_key.clone(), // Use the actual key for signing
+                metadata: InstanceMetadata {
+                    id: device_id.clone(),
+                    users_db: ID::default(), // Placeholder - system DBs don't exist yet
+                    databases_db: ID::default(), // Placeholder - system DBs don't exist yet
+                    sync_db: None,
+                },
+                secrets: Some(InstanceSecrets {
+                    signing_key: device_key.clone(),
+                }),
                 write_callbacks: Mutex::new(HashMap::new()),
                 global_write_callbacks: Mutex::new(HashMap::new()),
             }),
@@ -352,9 +364,16 @@ impl Instance {
         let users_db = create_users_database(&temp_instance, &device_key).await?;
         let databases_db = create_databases_tracking(&temp_instance, &device_key).await?;
 
-        // 3. Save metadata (marks instance as initialized)
+        // 3. Save metadata and secrets (marks instance as initialized)
+        // NB: Ordering matters. Secrets are stored first, then Metadata.
+        // The presence of the Metadata indicates the instance is fully initialized.
+        let secrets = InstanceSecrets {
+            signing_key: device_key,
+        };
+        backend.set_instance_secrets(&secrets).await?;
+
         let metadata = InstanceMetadata {
-            device_key: device_key.clone(),
+            id: device_id,
             users_db: users_db.root_id().clone(),
             databases_db: databases_db.root_id().clone(),
             sync_db: None,
@@ -366,9 +385,8 @@ impl Instance {
             backend: Backend::new(backend),
             clock,
             sync: std::sync::OnceLock::new(),
-            users_db_id: users_db.root_id().clone(),
-            databases_db_id: databases_db.root_id().clone(),
-            device_key,
+            metadata,
+            secrets: Some(secrets),
             write_callbacks: Mutex::new(HashMap::new()),
             global_write_callbacks: Mutex::new(HashMap::new()),
         });
@@ -441,8 +459,8 @@ impl Instance {
     pub(crate) async fn users_db(&self) -> Result<Database> {
         Database::open(
             self.clone(),
-            &self.inner.users_db_id,
-            DatabaseKey::new(self.inner.device_key.clone()),
+            &self.inner.metadata.users_db,
+            DatabaseKey::new(self.signing_key()?.clone()),
         )
         .await
     }
@@ -501,7 +519,8 @@ impl Instance {
 
     // === Device Identity Management ===
     //
-    // The Instance's device identity is stored in InstanceMetadata and cached in memory.
+    // The Instance's public identity is stored in InstanceMetadata, and the private
+    // signing key is stored in InstanceSecrets. Both are cached in memory.
 
     /// Get the device signing key.
     ///
@@ -516,25 +535,39 @@ impl Instance {
     ///
     /// Similar to `Database::open_unauthenticated`, this is a controlled escape hatch
     /// for internal library operations. Use with care - prefer User API for normal operations.
+    ///
+    /// Returns an error if this is a remote Instance that does not have access to the
+    /// device key (e.g., connected via RPC where secrets are never transmitted).
     #[cfg(not(any(test, feature = "testing")))]
-    pub(crate) fn device_key(&self) -> &PrivateKey {
-        &self.inner.device_key
+    pub(crate) fn signing_key(&self) -> Result<&PrivateKey> {
+        self.inner
+            .secrets
+            .as_ref()
+            .map(|s| &s.signing_key)
+            .ok_or_else(|| InstanceError::DeviceKeyNotFound.into())
     }
 
     /// Test-only: Get the device signing key.
     ///
     /// This is exposed for testing purposes only. In production, use the User API.
+    ///
+    /// Returns an error if this is a remote Instance that does not have access to the
+    /// device key.
     #[cfg(any(test, feature = "testing"))]
-    pub fn device_key(&self) -> &PrivateKey {
-        &self.inner.device_key
+    pub fn signing_key(&self) -> Result<&PrivateKey> {
+        self.inner
+            .secrets
+            .as_ref()
+            .map(|s| &s.signing_key)
+            .ok_or_else(|| InstanceError::DeviceKeyNotFound.into())
     }
 
-    /// Get the device ID (public key).
+    /// Get the instance identity (public key).
     ///
     /// # Returns
-    /// The device's public key (device ID).
-    pub fn device_id(&self) -> PublicKey {
-        self.inner.device_key.public_key()
+    /// The instance's public key identity.
+    pub fn id(&self) -> PublicKey {
+        self.inner.metadata.id.clone()
     }
 
     // === Synchronization Management ===

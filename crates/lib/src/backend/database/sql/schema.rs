@@ -87,6 +87,12 @@ pub const CREATE_TABLES: &[&str] = &[
         singleton BIGINT PRIMARY KEY DEFAULT 1 CHECK (singleton = 1),
         data TEXT NOT NULL
     )",
+    // Instance secrets (singleton row pattern)
+    // Contains device signing key. Stored separately from metadata.
+    "CREATE TABLE IF NOT EXISTS instance_secrets (
+        singleton BIGINT PRIMARY KEY DEFAULT 1 CHECK (singleton = 1),
+        data TEXT NOT NULL
+    )",
     // CRDT state cache
     "CREATE TABLE IF NOT EXISTS crdt_cache (
         entry_id TEXT NOT NULL,

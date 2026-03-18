@@ -53,13 +53,16 @@ The system separates infrastructure management (Instance) from contextual operat
 
 ```text
 Instance (Infrastructure Layer)
-├── InstanceMetadata (persisted in backend)
-│   ├── device_key (SigningKey for Instance identity)
+├── InstanceMetadata (persisted in backend, public)
+│   ├── id (PublicKey for Instance identity)
 │   ├── users_db (ID of _users system database)
 │   ├── databases_db (ID of _databases system database)
 │   └── sync_db (ID of _sync database, if enabled)
 │
-├── System Databases (authenticated with device_key)
+├── InstanceSecrets (persisted in backend, private)
+│   └── signing_key (PrivateKey for signing operations)
+│
+├── System Databases (authenticated with signing_key)
 │   ├── _instance
 │   │   └── Instance configuration and metadata
 │   ├── _users (Table with UUID primary keys)
@@ -276,14 +279,14 @@ pub struct DatabaseTracking {
 
 ### System Databases
 
-The Instance manages four separate system databases, all authenticated with `device_key`:
+The Instance manages four separate system databases, all authenticated with `signing_key`:
 
 #### `_instance` System Database
 
 - **Type**: Separate database
 - **Purpose**: Instance configuration and management
 - **Structure**: Configuration settings, metadata, system policies
-- **Authentication**: `device_key` as Admin; admin users can be granted access
+- **Authentication**: `signing_key` as Admin; admin users can be granted access
 - **Access**: Admin users have Admin permission, regular users have Read permission
 - **Created**: On Instance initialization
 
@@ -292,7 +295,7 @@ The Instance manages four separate system databases, all authenticated with `dev
 - **Type**: Separate database
 - **Purpose**: User directory and authentication
 - **Structure**: Table with UUID primary keys, stores UserInfo (username field for login lookups)
-- **Authentication**: `device_key` as Admin
+- **Authentication**: `signing_key` as Admin
 - **Access**: Admin users can manage users
 - **Created**: On Instance initialization
 - **Note**: Username uniqueness enforced at application layer via search; see Race Conditions section
@@ -302,7 +305,7 @@ The Instance manages four separate system databases, all authenticated with `dev
 - **Type**: Separate database
 - **Purpose**: Instance-wide database registry and optimization
 - **Structure**: Table mapping database_id → DatabaseTracking
-- **Authentication**: `device_key` as Admin
+- **Authentication**: `signing_key` as Admin
 - **Maintenance**: Updated when users add/remove databases from preferences
 - **Benefits**: Fast discovery of databases, see which users care about each DB
 - **Created**: On Instance initialization
@@ -312,7 +315,7 @@ The Instance manages four separate system databases, all authenticated with `dev
 - **Type**: Separate database (existing)
 - **Purpose**: Synchronization configuration and bootstrap request management
 - **Structure**: Various subtrees for sync settings, peer info, bootstrap requests
-- **Authentication**: `device_key` as Admin
+- **Authentication**: `signing_key` as Admin
 - **Access**: Managed by Instance and Sync module
 - **Created**: When sync is enabled via `Instance::enable_sync()`
 
@@ -322,13 +325,13 @@ The Instance identity is separate from user management:
 
 #### Instance Identity
 
-The Instance uses `device_key` for its identity:
+The Instance identity is split across two persisted structures:
 
-- **Storage**: Stored in `InstanceMetadata` (persisted in backend alongside system database IDs)
-- **Purpose**: Instance sync identity and system database authentication
-- **Access**: Available to Instance on startup (no password required)
-- **Usage**: Used to authenticate to all system databases as Admin
-- **Persistence**: The `InstanceMetadata` also stores system database IDs for O(1) lookup on startup
+- **Public identity** (`InstanceMetadata.id`): The `PublicKey` used for sync peer identification and identity verification
+- **Signing key** (`InstanceSecrets.signing_key`): The `PrivateKey` used to sign system database entries. Stored separately and never transmitted over the wire.
+- **Access**: Both are available to the Instance on startup (no password required)
+- **Usage**: `signing_key` authenticates to all system databases as Admin; `id` identifies the instance to peers
+- **Persistence**: `InstanceMetadata` also stores system database IDs for O(1) lookup on startup
 
 #### User Management
 
@@ -358,8 +361,8 @@ Instance manages the multi-user infrastructure and system resources:
 **Initialization:**
 
 1. Check for existing `InstanceMetadata` in backend
-2. If new: generate `device_key`, create system databases, save `InstanceMetadata`
-3. If existing: load `InstanceMetadata` with device key and system database IDs
+2. If new: generate signing key, create system databases, save `InstanceSecrets` then `InstanceMetadata`
+3. If existing: load `InstanceMetadata` and `InstanceSecrets`, verify key matches public identity
 
 **Responsibilities:**
 
@@ -456,8 +459,9 @@ Instance manages infrastructure and user accounts:
 ```rust,ignore
 impl Instance {
     /// Create or open an instance
-    /// - Loads InstanceMetadata if exists, otherwise initializes new instance
-    /// - InstanceMetadata contains device_key and system database IDs
+    /// - Loads InstanceMetadata + InstanceSecrets if exists, otherwise initializes new instance
+    /// - InstanceMetadata contains public identity and system database IDs
+    /// - InstanceSecrets contains the signing key (stored separately, never transmitted)
     pub fn open(backend: Box<dyn BackendImpl>) -> Result<Self>;
 }
 ```
@@ -607,10 +611,10 @@ See [key_management.md](./key_management.md) for detailed implementation.
 2. System searches `_users` Table for existing username (race condition possible)
 3. System hashes password with Argon2id and random salt
 4. Generates default Ed25519 keypair for the user (kept in memory only)
-5. Uses instance `device_key` from InstanceMetadata
-6. Creates user database with authentication for both `device_key` (Admin) and user's key (Admin)
+5. Uses instance `signing_key` from InstanceSecrets
+6. Creates user database with authentication for both `signing_key` (Admin) and user's key (Admin)
 7. Encrypts user's private key with password-derived key (AES-256-GCM)
-8. Stores encrypted key in user database `keys` Table (using public key as identifier, signed with `device_key`)
+8. Stores encrypted key in user database `keys` Table (using public key as identifier, signed with `signing_key`)
 9. Creates UserInfo and inserts into `_users` Table (auto-generates UUID primary key)
 10. Returns user_uuid
 
@@ -619,13 +623,13 @@ See [key_management.md](./key_management.md) for detailed implementation.
 1. Admin calls `instance.create_user(username, None)`
 2. System searches `_users` Table for existing username (race condition possible)
 3. Generates default Ed25519 keypair for the user (kept in memory only)
-4. Uses instance `device_key` from InstanceMetadata
-5. Creates user database with authentication for both `device_key` (Admin) and user's key (Admin)
+4. Uses instance `signing_key` from InstanceSecrets
+5. Creates user database with authentication for both `signing_key` (Admin) and user's key (Admin)
 6. Stores unencrypted private key in user database `keys` Table (marked as Unencrypted)
 7. Creates UserInfo with None for password fields and inserts into `_users` Table
 8. Returns user_uuid
 
-**Note**: For password-protected users, the keypair is never stored unencrypted in the backend. For passwordless users, keys are stored unencrypted for instant access. The user database is authenticated with both the instance `device_key` (for admin operations) and the user's default key (for user ownership). Initial entries are signed with `device_key`.
+**Note**: For password-protected users, the keypair is never stored unencrypted in the backend. For passwordless users, keys are stored unencrypted for instant access. The user database is authenticated with both the instance `signing_key` (for admin operations) and the user's default key (for user ownership). Initial entries are signed with `signing_key`.
 
 ### Login Flow
 
@@ -758,10 +762,10 @@ The Users system provides the architectural context:
 
 ### Instance Identity Protection
 
-1. **Backend Security**: `device_key` stored in `InstanceMetadata` with appropriate file permissions
-2. **Limited Exposure**: `device_key` only used for system database authentication
+1. **Backend Security**: `signing_key` stored in `InstanceSecrets` (separate from public metadata) with appropriate file permissions
+2. **Limited Exposure**: `signing_key` only used for system database authentication, never transmitted over the wire
 3. **Audit Logging**: Log Instance-level operations on system databases
-4. **Key Rotation**: Support rotating `device_key` (requires updating all system databases)
+4. **Key Rotation**: Support rotating `signing_key` (requires updating all system databases and `InstanceMetadata.id`)
 
 ## Known Limitations
 
@@ -850,7 +854,7 @@ The Users system provides a clean separation between infrastructure (Instance) a
 - Instance manages infrastructure: user accounts, backend, system databases
 - User handles all contextual operations: database creation, key management
 - Separate system databases (`_instance`, `_users`, `_databases`, `_sync`)
-- Instance identity (`device_key`) stored in `InstanceMetadata` for system database authentication
+- Instance public identity (`id`) stored in `InstanceMetadata`, signing key stored separately in `InstanceSecrets`
 - Strong isolation between users
 
 **User Types:**
@@ -863,4 +867,4 @@ The Users system provides a clean separation between infrastructure (Instance) a
 - Clean separation: Instance = infrastructure, User = operations
 - All operations run in User context after login
 - Flexible authentication: users can have passwords or not
-- Instance restart loads `InstanceMetadata` (device key + system database IDs) for O(1) initialization
+- Instance restart loads `InstanceMetadata` + `InstanceSecrets` for O(1) initialization

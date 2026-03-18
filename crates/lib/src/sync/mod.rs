@@ -293,7 +293,7 @@ impl Sync {
     /// A new Sync instance with its own settings tree.
     pub async fn new(instance: Instance) -> Result<Self> {
         // Get device key from instance
-        let signing_key = instance.device_key().clone();
+        let signing_key = instance.signing_key()?.clone();
 
         let mut sync_settings = Doc::new();
         sync_settings.set("name", "_sync");
@@ -323,7 +323,7 @@ impl Sync {
     /// # Returns
     /// A Sync instance loaded from the existing tree.
     pub async fn load(instance: Instance, sync_tree_root_id: &ID) -> Result<Self> {
-        let device_key = instance.device_key().clone();
+        let device_key = instance.signing_key()?.clone();
 
         let sync_tree = Database::open(
             instance.handle(),
@@ -497,7 +497,7 @@ impl Sync {
     /// # Returns
     /// The device's public key.
     pub fn get_device_pubkey(&self) -> Result<PublicKey> {
-        Ok(self.instance()?.device_id())
+        Ok(self.instance()?.id())
     }
 }
 

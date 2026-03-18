@@ -84,6 +84,10 @@ pub enum InstanceError {
     #[error("Device key not found in instance metadata")]
     DeviceKeyNotFound,
 
+    /// Device key in secrets does not match the public key in metadata.
+    #[error("Device key in secrets does not match public key in metadata")]
+    DeviceKeyMismatch,
+
     /// No authentication configuration found.
     #[error("No authentication configuration found")]
     NoAuthConfiguration,

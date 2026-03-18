@@ -21,7 +21,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Result,
-    backend::{BackendImpl, InstanceMetadata, VerificationStatus, errors::BackendError},
+    backend::{
+        BackendImpl, InstanceMetadata, InstanceSecrets, VerificationStatus, errors::BackendError,
+    },
     entry::{Entry, ID},
 };
 
@@ -41,15 +43,17 @@ pub(crate) struct TreeTipsCache {
 pub(crate) struct InMemoryInner {
     pub(crate) entries: HashMap<ID, Entry>,
     pub(crate) verification_status: HashMap<ID, VerificationStatus>,
-    /// Instance metadata containing device key and system database IDs.
+    /// Instance metadata containing device public key and system database IDs.
     ///
     /// When `None`, the backend is uninitialized. When `Some`, contains the
-    /// device key and root IDs for system databases.
+    /// device public key and root IDs for system databases.
+    pub(crate) instance_metadata: Option<InstanceMetadata>,
+    /// Instance secrets containing the device signing key.
     ///
-    /// **Security Warning**: The device key is stored in memory without encryption.
+    /// **Security Warning**: The signing key is stored in memory without encryption.
     /// This is suitable for development/testing only. Production systems should use
     /// proper key management with encryption at rest.
-    pub(crate) instance_metadata: Option<InstanceMetadata>,
+    pub(crate) instance_secrets: Option<InstanceSecrets>,
     /// Cached tips grouped by tree: tree_id -> (tree_tips, subtree_name -> subtree_tips)
     pub(crate) tips: HashMap<ID, TreeTipsCache>,
 }
@@ -85,6 +89,7 @@ impl InMemory {
                 entries: HashMap::new(),
                 verification_status: HashMap::new(),
                 instance_metadata: None,
+                instance_secrets: None,
                 tips: HashMap::new(),
             }),
             crdt_cache: RwLock::new(HashMap::new()),
@@ -365,6 +370,17 @@ impl BackendImpl for InMemory {
     async fn set_instance_metadata(&self, metadata: &InstanceMetadata) -> Result<()> {
         let mut inner = self.inner.write().unwrap();
         inner.instance_metadata = Some(metadata.clone());
+        Ok(())
+    }
+
+    async fn get_instance_secrets(&self) -> Result<Option<InstanceSecrets>> {
+        let inner = self.inner.read().unwrap();
+        Ok(inner.instance_secrets.clone())
+    }
+
+    async fn set_instance_secrets(&self, secrets: &InstanceSecrets) -> Result<()> {
+        let mut inner = self.inner.write().unwrap();
+        inner.instance_secrets = Some(secrets.clone());
         Ok(())
     }
 

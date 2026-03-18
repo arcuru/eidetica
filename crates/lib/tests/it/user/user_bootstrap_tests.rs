@@ -57,7 +57,7 @@ async fn setup_user_with_database() -> Result<(Instance, User, Database, Sync, I
 
     // Add admin to the database's auth configuration so sync handler can modify the database
     let device_key_name = "admin";
-    let device_pubkey = instance.device_key().public_key();
+    let device_pubkey = instance.id();
 
     // Add admin as Admin to the database (keyed by pubkey, name is device_key_name)
     let tx = database
@@ -503,7 +503,7 @@ async fn test_multiple_users() {
 
     // Add admin to Alice's database for sync
     let device_key_name = "admin";
-    let device_pubkey = instance.device_key().public_key();
+    let device_pubkey = instance.id();
     let alice_tx = alice_db
         .new_transaction()
         .await
@@ -700,7 +700,7 @@ async fn test_user_without_admin_cannot_modify() {
 
     // Add admin to Alice's database for sync
     let device_key_name = "admin";
-    let device_pubkey = instance.device_key().public_key();
+    let device_pubkey = instance.id();
     let alice_tx = alice_db
         .new_transaction()
         .await

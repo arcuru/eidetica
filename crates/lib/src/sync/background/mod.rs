@@ -209,7 +209,7 @@ impl BackgroundSync {
     pub(super) async fn get_sync_tree(&self) -> Result<Database> {
         // Load sync tree with the device key
         let instance = self.instance()?;
-        let signing_key = instance.device_key().clone();
+        let signing_key = instance.signing_key()?.clone();
 
         Database::open(instance, &self.sync_tree_id, DatabaseKey::new(signing_key)).await
     }
@@ -745,7 +745,7 @@ impl BackgroundSync {
                 .map_err(|e| SyncError::BackendError(format!("Failed to get local tips: {e}")))?;
 
             // Get our device public key for automatic peer tracking
-            let our_device_pubkey = Some(instance.device_id());
+            let our_device_pubkey = Some(instance.id());
 
             debug!(peer = %peer_id, tree = %tree_id, our_tips = our_tips.len(), "Sending sync tree request");
 

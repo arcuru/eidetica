@@ -7,7 +7,7 @@ async fn test_device_id_functionality() {
     let (base_db, _sync) = setup().await;
 
     // Get device ID from Instance
-    let base_db_device_id = base_db.device_key().public_key().to_string();
+    let base_db_device_id = base_db.id().to_string();
 
     // Verify device ID format (should be ed25519:base64)
     assert!(base_db_device_id.starts_with("ed25519:"));
@@ -21,8 +21,8 @@ async fn test_device_id_unique_across_databases() {
     let (instance2, _user2) = crate::helpers::setup_db().await;
 
     // Device IDs should be different (each Instance generates its own unique device key)
-    let device_id_1 = instance1.device_key().public_key().to_string();
-    let device_id_2 = instance2.device_key().public_key().to_string();
+    let device_id_1 = instance1.id().to_string();
+    let device_id_2 = instance2.id().to_string();
 
     assert_ne!(device_id_1, device_id_2);
 }
