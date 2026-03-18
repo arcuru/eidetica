@@ -15,9 +15,9 @@ jobs:
       matrix:
         include:
           - system: x86_64-linux
-            runner: ubuntu-latest
+            runner: ubicloud-standard-8
           - system: aarch64-linux
-            runner: ubuntu-24.04-arm
+            runner: ubicloud-standard-8-arm
       fail-fast: false
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.NIX_CACHE_AWS_ACCESS_KEY_ID }}

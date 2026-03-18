@@ -19,7 +19,7 @@ concurrency:
 jobs:
   release-holds:
     name: Release Expired Holds
-    runs-on: ubuntu-latest
+    runs-on: ubicloud-standard-2
     if: github.repository_owner == 'arcuru'
     permissions:
       pull-requests: write

@@ -9,7 +9,7 @@ on:
 jobs:
   release-plz-release:
     name: Release-plz release
-    runs-on: ubuntu-latest
+    runs-on: ubicloud-standard-2
     if: ${{ github.repository_owner == 'arcuru' }}
     permissions:
       contents: write
@@ -37,7 +37,7 @@ jobs:
 
   release-plz-pr:
     name: Release-plz PR
-    runs-on: ubuntu-latest
+    runs-on: ubicloud-standard-2
     if: ${{ github.repository_owner == 'arcuru' }}
     permissions:
       contents: write
