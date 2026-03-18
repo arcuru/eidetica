@@ -8,7 +8,7 @@ on:
 jobs:
   sanitize:
     name: Sanitize (${{ matrix.sanitizer }})
-    runs-on: ubuntu-latest
+    runs-on: ubicloud-standard-4
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     strategy:
       matrix:

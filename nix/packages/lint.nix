@@ -47,7 +47,8 @@
       src = cleanSrc;
       filter = path: type:
         (type == "directory")
-        || (lib.hasSuffix ".yml" path && lib.hasInfix ".github/workflows" path);
+        || (lib.hasSuffix ".yml" path && lib.hasInfix ".github/workflows" path)
+        || (builtins.baseNameOf path == "actionlint.yaml");
     };
     dockerfile = lib.cleanSourceWith {
       src = cleanSrc;
@@ -149,7 +150,7 @@
       name = "actionlint";
       packages = [pkgs.actionlint pkgs.shellcheck pkgs.findutils];
       src = sources.github-actions;
-      command = ''find .github/workflows -name "*.yml" -exec actionlint {} +'';
+      command = ''find .github/workflows -name "*.yml" -exec actionlint -config-file .github/actionlint.yaml {} +'';
     };
 
     hadolint = mkSimpleLinter {

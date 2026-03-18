@@ -1,0 +1,17 @@
+# Ubicloud self-hosted runner labels for GitHub Actions.
+# actionlint doesn't know about custom runner labels, so we declare them here.
+# Full list: https://www.ubicloud.com/docs/github-actions-integration/runner-types
+self-hosted-runner:
+  labels:
+    # x64 runners
+    - ubicloud-standard-2
+    - ubicloud-standard-4
+    - ubicloud-standard-8
+    - ubicloud-standard-16
+    - ubicloud-standard-30
+    # arm64 runners
+    - ubicloud-standard-2-arm
+    - ubicloud-standard-4-arm
+    - ubicloud-standard-8-arm
+    - ubicloud-standard-16-arm
+    - ubicloud-standard-30-arm

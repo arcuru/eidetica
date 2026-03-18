@@ -29,10 +29,10 @@ jobs:
       matrix:
         include:
           - system: x86_64-linux
-            runner: ubuntu-latest
+            runner: ubicloud-standard-8
             platform: amd64
           - system: aarch64-linux
-            runner: ubuntu-24.04-arm
+            runner: ubicloud-standard-8-arm
             platform: arm64
       fail-fast: false
     permissions:
@@ -167,7 +167,7 @@ jobs:
           done
 
   manifest:
-    runs-on: ubuntu-latest
+    runs-on: ubicloud-standard-2
     needs: build
     if: |
       github.repository_owner == 'arcuru' &&

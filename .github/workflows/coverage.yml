@@ -8,7 +8,7 @@ on:
 jobs:
   coverage:
     name: Coverage
-    runs-on: ubuntu-latest
+    runs-on: ubicloud-standard-8
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.NIX_CACHE_AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.NIX_CACHE_AWS_SECRET_ACCESS_KEY }}

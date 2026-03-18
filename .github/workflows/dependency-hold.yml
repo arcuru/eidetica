@@ -18,7 +18,7 @@ concurrency:
 jobs:
   dependency-hold:
     name: Dependency Hold
-    runs-on: ubuntu-latest
+    runs-on: ubicloud-standard-2
     steps:
       - name: Check hold status
         env:
