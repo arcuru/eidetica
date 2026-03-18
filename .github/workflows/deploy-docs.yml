@@ -49,6 +49,7 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubicloud-standard-2
     needs: build
+    if: github.event_name == 'push' || github.ref == 'refs/heads/main'
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
