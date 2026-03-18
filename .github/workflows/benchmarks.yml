@@ -3,15 +3,13 @@ name: Benchmarks
 on:
   push:
     branches: ["main"]
-  pull_request:
-    branches: ["main"]
   workflow_dispatch:
 
 jobs:
-  benchmark-main:
-    name: Benchmark (Main)
+  benchmark:
+    name: Benchmark
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository_owner == 'arcuru'
+    if: github.repository_owner == 'arcuru'
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -32,36 +30,3 @@ jobs:
             --adapter rust_criterion \
             --err \
             "cargo bench --workspace"
-
-  benchmark-pr:
-    name: Benchmark (PR)
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request' && github.repository_owner == 'arcuru'
-    permissions:
-      pull-requests: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Setup Nix
-        uses: ./.github/actions/setup-nix
-
-      - name: Install Bencher CLI
-        uses: bencherdev/bencher@8151077aa7b1bceaac11c4b308265417cae60e2b # v0.5.10
-
-      - name: Run Benchmarks
-        run: |
-          nix develop --command bencher run \
-            --project eidetica \
-            --token '${{ secrets.BENCHER_API_TOKEN }}' \
-            --branch "$HEAD_REF" \
-            --start-point main \
-            --start-point-clone-thresholds \
-            --start-point-reset \
-            --testbed ubuntu-latest \
-            --adapter rust_criterion \
-            --err \
-            --github-actions '${{ secrets.GITHUB_TOKEN }}' \
-            "cargo bench --workspace"
-        env:
-          HEAD_REF: ${{ github.head_ref }}
