@@ -15,7 +15,7 @@ An app developer does not need to deal with anything else, just use the database
 
 It's not _quite_ all there yet, but I'm working on it. Peer-to-Peer connectivity is only minimal at the moment.
 
-Extensive, but largely LLM Generated/Human Curated documentation is maintained under docs/ and [hosted on github.io.](https://arcuru.github.io/eidetica)
+Extensive, but largely LLM Generated/Human Curated documentation is maintained under docs/ and [hosted at docs.eidetica.dev.](https://docs.eidetica.dev)
 
 Blog posts that I've written about Eidetica: [https://jackson.dev/tags/eidetica/](https://jackson.dev/tags/eidetica/)
 

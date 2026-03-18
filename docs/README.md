@@ -2,7 +2,7 @@
 
 This directory contains the mdbook-based documentation for Eidetica. Documentation is built and hosted by GitHub Pages on every commit to the main branch.
 
-View the documentation online: https://arcuru.github.io/eidetica/
+View the documentation online: https://docs.eidetica.dev
 
 ## Building and Testing
 
