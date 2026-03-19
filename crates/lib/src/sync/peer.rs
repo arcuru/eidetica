@@ -153,7 +153,7 @@ impl Sync {
 
         // Register the tree/peer relationship
         peer_mgr
-            .add_tree_sync(&info.peer_pubkey, &info.tree_id.to_string())
+            .add_tree_sync(&info.peer_pubkey, &info.tree_id)
             .await?;
 
         // TODO: Store auth params if provided for bootstrap
@@ -214,7 +214,7 @@ impl Sync {
     pub async fn add_tree_sync(&self, peer_pubkey: &PublicKey, tree_root_id: &ID) -> Result<()> {
         let txn = self.sync_tree.new_transaction().await?;
         PeerManager::new(&txn)
-            .add_tree_sync(peer_pubkey, &tree_root_id.to_string())
+            .add_tree_sync(peer_pubkey, tree_root_id)
             .await?;
         txn.commit().await?;
         Ok(())
@@ -231,7 +231,7 @@ impl Sync {
     pub async fn remove_tree_sync(&self, peer_pubkey: &PublicKey, tree_root_id: &ID) -> Result<()> {
         let txn = self.sync_tree.new_transaction().await?;
         PeerManager::new(&txn)
-            .remove_tree_sync(peer_pubkey, &tree_root_id.to_string())
+            .remove_tree_sync(peer_pubkey, tree_root_id)
             .await?;
         txn.commit().await?;
         Ok(())
@@ -244,7 +244,7 @@ impl Sync {
     ///
     /// # Returns
     /// A vector of tree root IDs synced with this peer.
-    pub async fn get_peer_trees(&self, peer_pubkey: &PublicKey) -> Result<Vec<String>> {
+    pub async fn get_peer_trees(&self, peer_pubkey: &PublicKey) -> Result<Vec<ID>> {
         let txn = self.sync_tree.new_transaction().await?;
         PeerManager::new(&txn).get_peer_trees(peer_pubkey).await
         // No commit - just reading
@@ -259,9 +259,7 @@ impl Sync {
     /// A vector of peer IDs that sync this tree.
     pub async fn get_tree_peers(&self, tree_root_id: &ID) -> Result<Vec<PeerId>> {
         let txn = self.sync_tree.new_transaction().await?;
-        PeerManager::new(&txn)
-            .get_tree_peers(&tree_root_id.to_string())
-            .await
+        PeerManager::new(&txn).get_tree_peers(tree_root_id).await
         // No commit - just reading
     }
 
@@ -339,7 +337,7 @@ impl Sync {
     ) -> Result<bool> {
         let txn = self.sync_tree.new_transaction().await?;
         PeerManager::new(&txn)
-            .is_tree_synced_with_peer(peer_pubkey, &tree_root_id.to_string())
+            .is_tree_synced_with_peer(peer_pubkey, tree_root_id)
             .await
         // No commit - just reading
     }

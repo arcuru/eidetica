@@ -437,9 +437,7 @@ impl SyncHandlerImpl {
         let peer_manager = PeerManager::new(&txn);
 
         // Add the tree sync relationship
-        peer_manager
-            .add_tree_sync(peer_pubkey, &tree_id.to_string())
-            .await?;
+        peer_manager.add_tree_sync(peer_pubkey, tree_id).await?;
         txn.commit().await?;
 
         debug!(tree_id = %tree_id, peer_pubkey = %peer_pubkey, "Tracked tree/peer sync relationship");

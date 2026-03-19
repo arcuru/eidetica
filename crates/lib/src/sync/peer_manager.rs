@@ -10,8 +10,8 @@ use super::{
     peer_types::{Address, ConnectionState, PeerInfo, PeerStatus},
 };
 use crate::{
-    Error, Result, Transaction, auth::crypto::PublicKey, crdt::doc::path, store::DocStore,
-    sync::PeerId,
+    Error, Result, Transaction, auth::crypto::PublicKey, crdt::doc::path, entry::ID,
+    store::DocStore, sync::PeerId,
 };
 
 /// Private constants for peer management subtree names
@@ -434,9 +434,10 @@ impl<'a> PeerManager<'a> {
     pub(super) async fn add_tree_sync(
         &self,
         peer_pubkey: &PublicKey,
-        tree_root_id: impl AsRef<str>,
+        tree_root_id: &ID,
     ) -> Result<()> {
         let pk_str = peer_pubkey.to_string();
+        let tree_root_str = tree_root_id.to_string();
 
         // First check if peer exists using path-based check
         let peers = self.txn.get_store::<DocStore>(PEERS_SUBTREE).await?;
@@ -447,7 +448,7 @@ impl<'a> PeerManager<'a> {
         let trees = self.txn.get_store::<DocStore>(TREES_SUBTREE).await?;
 
         // Get existing peer list for this tree, or create empty list
-        let peer_list_path = path!(tree_root_id.as_ref(), "peer_pubkeys");
+        let peer_list_path = path!(&tree_root_str, "peer_pubkeys");
         let peer_list_result = trees.get_path_as::<String>(&peer_list_path).await;
         let mut peer_pubkeys: Vec<String> = peer_list_result
             .ok()
@@ -464,13 +465,10 @@ impl<'a> PeerManager<'a> {
 
             // Also store tree_id for consistency
             trees
-                .set_path(
-                    path!(tree_root_id.as_ref(), "tree_id"),
-                    tree_root_id.as_ref().to_string(),
-                )
+                .set_path(path!(&tree_root_str, "tree_id"), tree_root_str.clone())
                 .await?;
         } else {
-            debug!(peer = %pk_str, tree = %tree_root_id.as_ref(), "Peer already syncing with tree");
+            debug!(peer = %pk_str, tree = %tree_root_str, "Peer already syncing with tree");
         }
 
         Ok(())
@@ -487,14 +485,15 @@ impl<'a> PeerManager<'a> {
     pub(super) async fn remove_tree_sync(
         &self,
         peer_pubkey: &PublicKey,
-        tree_root_id: impl AsRef<str>,
+        tree_root_id: &ID,
     ) -> Result<()> {
         let pk_str = peer_pubkey.to_string();
-        info!(peer = %pk_str, tree = %tree_root_id.as_ref(), "Removing tree sync relationship");
+        let tree_root_str = tree_root_id.to_string();
+        info!(peer = %pk_str, tree = %tree_root_str, "Removing tree sync relationship");
         let trees = self.txn.get_store::<DocStore>(TREES_SUBTREE).await?;
 
         // Get existing peer list for this tree
-        let peer_list_path = path!(tree_root_id.as_ref(), "peer_pubkeys");
+        let peer_list_path = path!(&tree_root_str, "peer_pubkeys");
         if let Ok(peer_list_json) = trees.get_path_as::<String>(&peer_list_path).await
             && let Ok(mut peer_pubkeys) = serde_json::from_str::<Vec<String>>(&peer_list_json)
         {
@@ -506,7 +505,7 @@ impl<'a> PeerManager<'a> {
                 // Peer was removed
                 if peer_pubkeys.is_empty() {
                     // Remove the entire tree record if no peers left
-                    trees.delete(tree_root_id.as_ref()).await?;
+                    trees.delete(&tree_root_str).await?;
                 } else {
                     // Update the peer list
                     let updated_json = serde_json::to_string(&peer_pubkeys).unwrap_or_default();
@@ -525,19 +524,20 @@ impl<'a> PeerManager<'a> {
     ///
     /// # Returns
     /// A vector of tree root IDs synced with this peer.
-    pub(super) async fn get_peer_trees(&self, peer_pubkey: &PublicKey) -> Result<Vec<String>> {
+    pub(super) async fn get_peer_trees(&self, peer_pubkey: &PublicKey) -> Result<Vec<ID>> {
         let pk_str = peer_pubkey.to_string();
         let trees = self.txn.get_store::<DocStore>(TREES_SUBTREE).await?;
         let all_trees = trees.get_all().await?;
         let mut synced_trees = Vec::new();
 
-        for tree_id in all_trees.keys() {
-            let peer_list_path = path!(tree_id, "peer_pubkeys");
+        for tree_id_str in all_trees.keys() {
+            let peer_list_path = path!(tree_id_str, "peer_pubkeys");
             if let Ok(peer_list_json) = trees.get_path_as::<String>(&peer_list_path).await
                 && let Ok(peer_pubkeys) = serde_json::from_str::<Vec<String>>(&peer_list_json)
                 && peer_pubkeys.contains(&pk_str)
+                && let Ok(id) = ID::parse(tree_id_str)
             {
-                synced_trees.push(tree_id.clone());
+                synced_trees.push(id);
             }
         }
 
@@ -551,12 +551,10 @@ impl<'a> PeerManager<'a> {
     ///
     /// # Returns
     /// A vector of peer public keys that sync this tree.
-    pub(super) async fn get_tree_peers(
-        &self,
-        tree_root_id: impl AsRef<str>,
-    ) -> Result<Vec<PeerId>> {
+    pub(super) async fn get_tree_peers(&self, tree_root_id: &ID) -> Result<Vec<PeerId>> {
+        let tree_root_str = tree_root_id.to_string();
         let trees = self.txn.get_store::<DocStore>(TREES_SUBTREE).await?;
-        let peer_list_path = path!(tree_root_id.as_ref(), "peer_pubkeys");
+        let peer_list_path = path!(&tree_root_str, "peer_pubkeys");
         let peer_list_result = trees.get_path_as::<String>(&peer_list_path).await;
         let string_vec: Vec<String> = peer_list_result
             .ok()
@@ -580,11 +578,12 @@ impl<'a> PeerManager<'a> {
     pub(super) async fn is_tree_synced_with_peer(
         &self,
         peer_pubkey: &PublicKey,
-        tree_root_id: impl AsRef<str>,
+        tree_root_id: &ID,
     ) -> Result<bool> {
         let pk_str = peer_pubkey.to_string();
+        let tree_root_str = tree_root_id.to_string();
         let trees = self.txn.get_store::<DocStore>(TREES_SUBTREE).await?;
-        let peer_list_path = path!(tree_root_id.as_ref(), "peer_pubkeys");
+        let peer_list_path = path!(&tree_root_str, "peer_pubkeys");
         match trees.get_path_as::<String>(&peer_list_path).await {
             Ok(peer_list_json) => {
                 if let Ok(peer_pubkeys) = serde_json::from_str::<Vec<String>>(&peer_list_json) {

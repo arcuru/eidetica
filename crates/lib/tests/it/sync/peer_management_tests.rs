@@ -158,7 +158,7 @@ async fn test_add_tree_sync() {
     // Verify tree was added
     let synced_trees = sync.get_peer_trees(&TEST_PEER_PUBKEY).await.unwrap();
     assert_eq!(synced_trees.len(), 1);
-    assert!(synced_trees.contains(&TEST_TREE_ROOT_ID.to_string()));
+    assert!(synced_trees.contains(&*TEST_TREE_ROOT_ID));
 }
 
 #[tokio::test]
@@ -181,8 +181,8 @@ async fn test_add_multiple_synced_trees() {
     // Verify both trees were added
     let synced_trees = sync.get_peer_trees(&TEST_PEER_PUBKEY).await.unwrap();
     assert_eq!(synced_trees.len(), 2);
-    assert!(synced_trees.contains(&TEST_TREE_ROOT_ID.to_string()));
-    assert!(synced_trees.contains(&TEST_TREE_ROOT_ID_2.to_string()));
+    assert!(synced_trees.contains(&*TEST_TREE_ROOT_ID));
+    assert!(synced_trees.contains(&*TEST_TREE_ROOT_ID_2));
 }
 
 #[tokio::test]
@@ -205,7 +205,7 @@ async fn test_add_duplicate_synced_tree() {
     // Verify tree is only listed once
     let synced_trees = sync.get_peer_trees(&TEST_PEER_PUBKEY).await.unwrap();
     assert_eq!(synced_trees.len(), 1);
-    assert!(synced_trees.contains(&TEST_TREE_ROOT_ID.to_string()));
+    assert!(synced_trees.contains(&*TEST_TREE_ROOT_ID));
 }
 
 #[tokio::test]
@@ -231,8 +231,8 @@ async fn test_remove_tree_sync() {
     // Verify only one tree remains
     let synced_trees = sync.get_peer_trees(&TEST_PEER_PUBKEY).await.unwrap();
     assert_eq!(synced_trees.len(), 1);
-    assert!(synced_trees.contains(&TEST_TREE_ROOT_ID_2.to_string()));
-    assert!(!synced_trees.contains(&TEST_TREE_ROOT_ID.to_string()));
+    assert!(synced_trees.contains(&*TEST_TREE_ROOT_ID_2));
+    assert!(!synced_trees.contains(&*TEST_TREE_ROOT_ID));
 }
 
 #[tokio::test]

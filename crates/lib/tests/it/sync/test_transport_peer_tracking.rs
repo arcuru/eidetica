@@ -137,7 +137,7 @@ async fn test_server_automatically_tracks_peers_that_sync_trees() {
     let peer_trees = server_sync.get_peer_trees(&client_pubkey).await.unwrap();
 
     assert!(
-        peer_trees.contains(&tree_id.to_string()),
+        peer_trees.contains(&tree_id),
         "AUTOMATIC TRACKING FAILED: Server did not automatically track that peer {client_pubkey} is syncing tree {tree_id}.\n\
          This means the server received a sync request from the client but did not record the relationship.\n\
          Expected: Server tracks the relationship automatically (no manual add_tree_sync needed)\n\

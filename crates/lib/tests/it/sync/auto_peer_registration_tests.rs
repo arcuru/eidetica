@@ -259,7 +259,7 @@ async fn test_bootstrap_sync_tracks_tree_peer_relationship() {
 
     // Verify tree can be found in peer's tree list
     let peer_trees = sync.get_peer_trees(&peer_verifying_key).await.unwrap();
-    assert!(peer_trees.contains(&tree_id.to_string()));
+    assert!(peer_trees.contains(&tree_id));
 }
 
 /// Test that tree/peer relationship is tracked during incremental sync
@@ -478,8 +478,8 @@ async fn test_multiple_trees_tracked_with_same_peer() {
     // Verify both trees are tracked
     let peer_trees = sync.get_peer_trees(&peer_verifying_key).await.unwrap();
     assert_eq!(peer_trees.len(), 2);
-    assert!(peer_trees.contains(&tree_id1.to_string()));
-    assert!(peer_trees.contains(&tree_id2.to_string()));
+    assert!(peer_trees.contains(&tree_id1));
+    assert!(peer_trees.contains(&tree_id2));
 }
 
 /// Test that HTTP transport correctly captures remote address in RequestContext

@@ -688,9 +688,7 @@ impl BackgroundSync {
 
             info!(peer = %peer_id, tree_count = sync_trees.len(), "Synchronizing trees with peer");
 
-            for tree_id_str in sync_trees {
-                // Convert string ID to entry ID
-                let tree_id = ID::parse(&tree_id_str)?;
+            for tree_id in sync_trees {
                 if let Err(e) = self.sync_tree_with_peer(peer_id, &tree_id, &address).await {
                     // Log tree sync failure but continue with other trees
                     tracing::error!("Failed to sync tree {tree_id} with peer {peer_id}: {e}");
