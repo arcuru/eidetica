@@ -11,6 +11,9 @@ jobs:
   ci:
     name: CI (${{ matrix.system }})
     runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       matrix:
         include:
@@ -31,6 +34,9 @@ jobs:
         id: nix
         with:
           signing-key: ${{ secrets.NIX_CACHE_SIGNING_KEY }}
+
+      - name: Setup Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
 
       - name: Lint
         run: |

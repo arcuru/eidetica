@@ -10,6 +10,9 @@ jobs:
     name: Sanitize (${{ matrix.sanitizer }})
     runs-on: ubicloud-standard-4
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       matrix:
         sanitizer: [asan, lsan]

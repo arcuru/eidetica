@@ -8,7 +8,10 @@ on:
 jobs:
   coverage:
     name: Coverage
-    runs-on: ubicloud-standard-8
+    runs-on: ubicloud-standard-16
+    permissions:
+      contents: read
+      id-token: write
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.NIX_CACHE_AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.NIX_CACHE_AWS_SECRET_ACCESS_KEY }}
