@@ -529,7 +529,7 @@ impl Database {
                     // Construct the delegation SigKey using the hint from the direct key
                     let delegation_sigkey = SigKey::Delegation {
                         path: vec![DelegationStep {
-                            tree: delegated_root_id.to_string(),
+                            tree: delegated_root_id.clone(),
                             tips: tips.clone(),
                         }],
                         hint: delegated_sk.hint().clone(),

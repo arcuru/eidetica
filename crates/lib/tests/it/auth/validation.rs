@@ -10,6 +10,7 @@ use eidetica::{
     },
     crdt::{Doc, doc::Value},
     database::DatabaseKey,
+    entry::ID,
     store::DocStore,
 };
 
@@ -568,7 +569,7 @@ async fn test_sigkey_tampering_invalidates_signature() {
     let mut tampered_delegation = entry.clone();
     tampered_delegation.sig.key = SigKey::Delegation {
         path: vec![DelegationStep {
-            tree: "fake_tree".to_string(),
+            tree: ID::from_bytes("fake_tree"),
             tips: vec![],
         }],
         hint: KeyHint::from_pubkey(&verifying_key),

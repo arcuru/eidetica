@@ -60,7 +60,7 @@ fn test_sig_info_serialization() {
 fn test_delegation_sig_key() {
     let sig_key = SigKey::Delegation {
         path: vec![DelegationStep {
-            tree: "example_tree_id".to_string(),
+            tree: ID::from_bytes("example_tree_id"),
             tips: vec![ID::from_bytes("abc123")],
         }],
         hint: KeyHint::from_name("KEY_LAPTOP"),
@@ -140,7 +140,7 @@ fn test_sig_key_direct_format() {
 fn test_sig_key_delegation_format() {
     let sig_key = SigKey::Delegation {
         path: vec![DelegationStep {
-            tree: "tree_id_123".to_string(),
+            tree: ID::from_bytes("tree_id_123"),
             tips: vec![ID::from_bytes("tip1"), ID::from_bytes("tip2")],
         }],
         hint: KeyHint::from_name("KEY_LAPTOP"),
@@ -158,7 +158,7 @@ fn test_sig_key_delegation_format() {
 fn test_sig_key_delegation_roundtrip() {
     let original = SigKey::Delegation {
         path: vec![DelegationStep {
-            tree: "tree_id_123".to_string(),
+            tree: ID::from_bytes("tree_id_123"),
             tips: vec![ID::from_bytes("tip1"), ID::from_bytes("tip2")],
         }],
         hint: KeyHint::from_name("KEY_LAPTOP"),
@@ -426,7 +426,7 @@ fn test_sig_key_hint_access() {
     // Test Delegation SigKey
     let delegation = SigKey::Delegation {
         path: vec![DelegationStep {
-            tree: "tree_id".to_string(),
+            tree: ID::from_bytes("tree_id"),
             tips: vec![],
         }],
         hint: KeyHint::from_name("final_key"),
@@ -438,7 +438,7 @@ fn test_sig_key_hint_access() {
 #[test]
 fn test_delegation_step_serialization() {
     let step = DelegationStep {
-        tree: "tree_123".to_string(),
+        tree: ID::from_bytes("tree_123"),
         tips: vec![ID::from_bytes("tip1"), ID::from_bytes("tip2")],
     };
 
@@ -611,7 +611,7 @@ fn test_sig_info_builder_missing_key() {
 fn test_sig_info_builder_delegation() {
     let delegation = SigKey::Delegation {
         path: vec![DelegationStep {
-            tree: "tree_id".to_string(),
+            tree: ID::from_bytes("tree_id"),
             tips: vec![ID::from_bytes("tip1")],
         }],
         hint: KeyHint::from_name("KEY_LAPTOP"),

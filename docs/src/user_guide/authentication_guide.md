@@ -471,7 +471,7 @@ let delegation_path = SigKey::Delegation {
     path: vec![
         // Step: Traverse to Alice's database (using its root ID)
         DelegationStep {
-            tree: user_db.root_id().to_string(),  // Root ID of delegated database
+            tree: user_db.root_id().clone(),  // Root ID of delegated database
             tips: user_tips,  // Tips for Alice's database
         },
     ],

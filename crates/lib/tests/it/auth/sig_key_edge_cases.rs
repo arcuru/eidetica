@@ -72,7 +72,7 @@ async fn test_direct_key_name_hint() -> Result<()> {
 async fn test_delegation_with_empty_tips_intermediate() -> Result<()> {
     let delegation_path = SigKey::Delegation {
         path: vec![DelegationStep {
-            tree: "intermediate".to_string(),
+            tree: ID::from_bytes("intermediate"),
             tips: vec![], // Empty tips for intermediate step
         }],
         hint: KeyHint::from_name("final_key"),
@@ -103,7 +103,7 @@ async fn test_delegation_with_duplicate_tips() -> Result<()> {
 
     let delegation_path = SigKey::Delegation {
         path: vec![DelegationStep {
-            tree: "delegate_tree".to_string(),
+            tree: ID::from_bytes("delegate_tree"),
             tips: duplicate_tips,
         }],
         hint: KeyHint::from_name("final_key"),
@@ -126,7 +126,7 @@ async fn test_delegation_with_long_key_names() -> Result<()> {
 
     let delegation_path = SigKey::Delegation {
         path: vec![DelegationStep {
-            tree: long_key.clone(),
+            tree: ID::from_bytes(&long_key),
             tips: vec![ID::from_bytes("tip1")],
         }],
         hint: KeyHint::from_name("final_key"),
@@ -148,7 +148,7 @@ async fn test_delegation_with_unicode_keys() -> Result<()> {
     for unicode_key in unicode_keys {
         let delegation_path = SigKey::Delegation {
             path: vec![DelegationStep {
-                tree: unicode_key.to_string(),
+                tree: ID::from_bytes(unicode_key),
                 tips: vec![ID::from_bytes("tip1")],
             }],
             hint: KeyHint::from_name("final_key"),
@@ -205,7 +205,7 @@ async fn test_deep_delegation_path_performance() -> Result<()> {
 
     for i in 0..9 {
         delegation_steps.push(DelegationStep {
-            tree: format!("delegate_level_{i}"),
+            tree: ID::from_bytes(format!("delegate_level_{i}")),
             tips: vec![ID::from_bytes(format!("tip_{i}"))],
         });
     }
@@ -267,7 +267,7 @@ async fn test_circular_delegation_simple() -> Result<()> {
     // Create delegation path that references the same tree
     let circular_delegation = SigKey::Delegation {
         path: vec![DelegationStep {
-            tree: "self_reference".to_string(),
+            tree: ID::from_bytes("self_reference"),
             tips: tree_tips,
         }],
         hint: KeyHint::from_pubkey(&key_id),
@@ -300,17 +300,17 @@ async fn test_delegation_step_serialization_edge_cases() -> Result<()> {
     let edge_cases = vec![
         // Normal case
         DelegationStep {
-            tree: "normal_tree".to_string(),
+            tree: ID::from_bytes("normal_tree"),
             tips: vec![ID::from_bytes("tip1")],
         },
         // Empty tips array
         DelegationStep {
-            tree: "empty_tips".to_string(),
+            tree: ID::from_bytes("empty_tips"),
             tips: vec![],
         },
         // Many tips
         DelegationStep {
-            tree: "many_tips".to_string(),
+            tree: ID::from_bytes("many_tips"),
             tips: (0..100)
                 .map(|i| ID::from_bytes(format!("tip_{i}")))
                 .collect(),

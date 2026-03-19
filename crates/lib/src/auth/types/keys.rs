@@ -175,7 +175,7 @@ impl TryFrom<&Doc> for AuthKey {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DelegationStep {
     /// Root entry ID of the delegated tree (used to look up the delegation in AuthSettings)
-    pub tree: String,
+    pub tree: ID,
     /// Tips of the delegated tree at time of signing
     pub tips: Vec<ID>,
 }

@@ -139,7 +139,7 @@ async fn test_delegation_corrupted_tree_references() -> Result<()> {
     // Try to resolve corrupted delegation
     let delegation_path = SigKey::Delegation {
         path: vec![DelegationStep {
-            tree: corrupted_root_id.to_string(),
+            tree: corrupted_root_id.clone(),
             tips: vec![ID::from_bytes("some_tip")],
         }],
         hint: KeyHint::from_name("some_key"),
@@ -200,7 +200,7 @@ async fn test_privilege_escalation_through_delegation() -> Result<()> {
     // Try to use admin key from delegated tree through restricted delegation
     let delegation_path = SigKey::Delegation {
         path: vec![DelegationStep {
-            tree: delegated_tree_root.to_string(),
+            tree: delegated_tree_root.clone(),
             tips: delegated_tips,
         }],
         hint: KeyHint::from_pubkey(&admin_key_id),
@@ -279,7 +279,7 @@ async fn test_delegation_with_tampered_tips() -> Result<()> {
     let fake_tips = vec![ID::from_bytes("fake_tip_1"), ID::from_bytes("fake_tip_2")];
     let delegation_path = SigKey::Delegation {
         path: vec![DelegationStep {
-            tree: delegated_tree_root.to_string(),
+            tree: delegated_tree_root.clone(),
             tips: fake_tips, // Using fake tips instead of real ones
         }],
         hint: KeyHint::from_pubkey(&user_key_id),
@@ -362,7 +362,7 @@ async fn test_delegation_mixed_key_statuses() -> Result<()> {
     // Test accessing active key through delegation
     let active_delegation = SigKey::Delegation {
         path: vec![DelegationStep {
-            tree: delegated_tree_root.to_string(),
+            tree: delegated_tree_root.clone(),
             tips: delegated_tips.clone(),
         }],
         hint: KeyHint::from_pubkey(&active_user_key_id),
@@ -383,7 +383,7 @@ async fn test_delegation_mixed_key_statuses() -> Result<()> {
     // Test accessing revoked key through delegation
     let revoked_delegation = SigKey::Delegation {
         path: vec![DelegationStep {
-            tree: delegated_tree_root.to_string(),
+            tree: delegated_tree_root.clone(),
             tips: delegated_tips,
         }],
         hint: KeyHint::from_pubkey(&revoked_key_id),
@@ -464,7 +464,7 @@ async fn test_error_message_consistency() {
         (
             SigKey::Delegation {
                 path: vec![DelegationStep {
-                    tree: "nonexistent".to_string(),
+                    tree: ID::from_bytes("nonexistent"),
                     tips: vec![ID::from_bytes("fake_tip")],
                 }],
                 hint: KeyHint::from_name("final"),

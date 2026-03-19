@@ -175,7 +175,7 @@ async fn test_delegated_tree_requires_backend() {
 
     let sig_key = SigKey::Delegation {
         path: vec![DelegationStep {
-            tree: "user1".to_string(),
+            tree: ID::from_bytes("user1"),
             tips: vec![ID::from_bytes("tip1")],
         }],
         hint: KeyHint::from_name("KEY_LAPTOP"),
@@ -191,25 +191,6 @@ async fn test_delegated_tree_requires_backend() {
             .to_string()
             .contains("Database required for delegated tree resolution")
     );
-}
-
-#[tokio::test]
-async fn test_delegation_path_rejects_wildcard_in_path() {
-    let mut validator = AuthValidator::new();
-    let auth_settings = AuthSettings::new();
-
-    let sig_key = SigKey::Delegation {
-        path: vec![DelegationStep {
-            tree: "*".to_string(), // Wildcard not allowed in path
-            tips: vec![ID::from_bytes("tip1")],
-        }],
-        hint: KeyHint::from_name("final_key"),
-    };
-
-    let result = validator
-        .resolve_sig_key(&sig_key, &auth_settings, None)
-        .await;
-    assert!(result.is_err());
 }
 
 #[tokio::test]
@@ -408,7 +389,7 @@ async fn test_complete_delegation_workflow() {
 
     let delegated_sig_key = SigKey::Delegation {
         path: vec![DelegationStep {
-            tree: delegated_tree.root_id().to_string(),
+            tree: delegated_tree.root_id().clone(),
             tips: delegated_tips,
         }],
         hint: KeyHint::from_pubkey(&delegated_pubkey),
@@ -487,7 +468,7 @@ async fn test_delegated_tree_requires_tips() {
     // Create a Delegation sig_key with empty tips
     let sig_key = SigKey::Delegation {
         path: vec![DelegationStep {
-            tree: delegated_tree.root_id().to_string(),
+            tree: delegated_tree.root_id().clone(),
             tips: vec![], // Empty tips should cause validation to fail
         }],
         hint: KeyHint::from_name("delegated_user"),
@@ -609,11 +590,11 @@ async fn test_nested_delegation_with_permission_clamping() {
     let nested_sig_key = SigKey::Delegation {
         path: vec![
             DelegationStep {
-                tree: intermediate_tree.root_id().to_string(),
+                tree: intermediate_tree.root_id().clone(),
                 tips: intermediate_tips,
             },
             DelegationStep {
-                tree: user_tree.root_id().to_string(),
+                tree: user_tree.root_id().clone(),
                 tips: user_tips,
             },
         ],

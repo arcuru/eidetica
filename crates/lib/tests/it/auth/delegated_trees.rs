@@ -76,7 +76,7 @@ async fn test_delegated_tree_basic_validation() -> Result<()> {
     // Create delegation path - DelegationStep uses root tree ID and tips
     let delegated_auth_id = SigKey::Delegation {
         path: vec![DelegationStep {
-            tree: delegated_tree.root_id().to_string(),
+            tree: delegated_tree.root_id().clone(),
             tips: delegated_tips,
         }],
         hint: KeyHint::from_pubkey(&delegated_key_ids[0]),
@@ -129,7 +129,7 @@ async fn test_delegated_tree_permission_clamping() -> Result<()> {
 
     let delegated_auth_id = SigKey::Delegation {
         path: vec![DelegationStep {
-            tree: delegated_tree.root_id().to_string(),
+            tree: delegated_tree.root_id().clone(),
             tips: delegated_tips,
         }],
         hint: KeyHint::from_pubkey(&delegated_key_ids[0]),
@@ -223,11 +223,11 @@ async fn test_nested_delegation() -> Result<()> {
     let nested_auth_id = SigKey::Delegation {
         path: vec![
             DelegationStep {
-                tree: org_tree_root.to_string(),
+                tree: org_tree_root.clone(),
                 tips: org_tips.clone(),
             },
             DelegationStep {
-                tree: user_tree_root.to_string(),
+                tree: user_tree_root.clone(),
                 tips: user_tips.clone(),
             },
         ],
@@ -303,7 +303,7 @@ async fn test_delegated_tree_with_revoked_keys() -> Result<()> {
 
     let delegated_auth_id = SigKey::Delegation {
         path: vec![DelegationStep {
-            tree: delegated_tree_root.to_string(),
+            tree: delegated_tree_root.clone(),
             tips: delegated_tips.clone(),
         }],
         hint: KeyHint::from_pubkey(&delegated_user_key),
@@ -393,7 +393,7 @@ async fn test_delegation_depth_limits() -> Result<()> {
     // Add 12 intermediate delegation steps (exceeds MAX_DELEGATION_DEPTH of 10)
     for _ in 0..12 {
         delegation_steps.push(DelegationStep {
-            tree: delegated_tree_root.to_string(),
+            tree: delegated_tree_root.clone(),
             tips: delegated_tips.clone(),
         });
     }
@@ -485,7 +485,7 @@ async fn test_delegated_tree_min_bound_upgrade() -> Result<()> {
 
     let auth_id = SigKey::Delegation {
         path: vec![DelegationStep {
-            tree: delegated_tree_root.to_string(),
+            tree: delegated_tree_root.clone(),
             tips: delegated_tips.clone(),
         }],
         hint: KeyHint::from_pubkey(&delegated_user_key),
@@ -567,7 +567,7 @@ async fn test_delegated_tree_priority_preservation() -> Result<()> {
 
     let auth_id = SigKey::Delegation {
         path: vec![DelegationStep {
-            tree: delegated_tree_root.to_string(),
+            tree: delegated_tree_root.clone(),
             tips: delegated_tips.clone(),
         }],
         hint: KeyHint::from_pubkey(&delegated_user_key),
@@ -608,7 +608,7 @@ async fn test_delegation_depth_limit_exact() -> Result<()> {
         ID::from_bytes("sha256:0000000000000000000000000000000000000000000000000000000000000000");
     for _ in 0..10 {
         delegation_steps.push(DelegationStep {
-            tree: bogus_root_id.to_string(),
+            tree: bogus_root_id.clone(),
             tips: tips.clone(),
         });
     }
@@ -703,7 +703,7 @@ async fn test_delegated_tree_invalid_tips() -> Result<()> {
 
     let auth_id = SigKey::Delegation {
         path: vec![DelegationStep {
-            tree: delegated_tree_root.to_string(),
+            tree: delegated_tree_root.clone(),
             tips: vec![bogus_tip],
         }],
         hint: KeyHint::from_pubkey(&delegated_user_key),
@@ -823,7 +823,7 @@ async fn open_via_delegation(
     let identity_db_tips = pair.identity_db.get_tips().await?;
     let delegation_sigkey = SigKey::Delegation {
         path: vec![DelegationStep {
-            tree: pair.identity_db.root_id().to_string(),
+            tree: pair.identity_db.root_id().clone(),
             tips: identity_db_tips,
         }],
         hint: KeyHint::from_pubkey(hint_key_id),
@@ -887,7 +887,7 @@ async fn test_delegated_write_user_api_flow() -> Result<()> {
     match identity {
         SigKey::Delegation { path, hint } => {
             assert_eq!(path.len(), 1);
-            assert_eq!(path[0].tree, pair.identity_db.root_id().to_string());
+            assert_eq!(path[0].tree, *pair.identity_db.root_id());
             assert_eq!(hint, &KeyHint::from_pubkey(&pair.user_key_id));
         }
         other => panic!("Expected delegation SigKey, got {other:?}"),
@@ -1057,7 +1057,7 @@ async fn test_delegated_write_secondary_identity_key() -> Result<()> {
     let identity_db_tips = identity_db.get_tips().await?;
     let delegation_sigkey = SigKey::Delegation {
         path: vec![DelegationStep {
-            tree: identity_db.root_id().to_string(),
+            tree: identity_db.root_id().clone(),
             tips: identity_db_tips,
         }],
         hint: KeyHint::from_pubkey(&secondary_key_id),

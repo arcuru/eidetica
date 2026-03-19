@@ -188,14 +188,6 @@ impl AuthSettings {
 
     /// Get a delegated tree reference by root tree ID
     pub fn get_delegated_tree(&self, root_id: &ID) -> Result<DelegatedTreeRef> {
-        self.get_delegated_tree_by_str(&root_id.to_string())
-    }
-
-    /// Get a delegated tree reference by root tree ID string
-    ///
-    /// This variant accepts a string directly, useful when the ID comes from
-    /// a `DelegationStep.tree` field which stores the root ID as a string.
-    pub fn get_delegated_tree_by_str(&self, root_id: &str) -> Result<DelegatedTreeRef> {
         match self.inner.get(format!("delegations.{root_id}")) {
             Some(Value::Doc(doc)) => DelegatedTreeRef::try_from(doc).map_err(|e| {
                 AuthError::InvalidAuthConfiguration {

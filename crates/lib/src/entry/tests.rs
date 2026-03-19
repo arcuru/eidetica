@@ -360,7 +360,7 @@ fn test_entry_dagcbor_roundtrip_delegation_sigkey() {
         sig: Some("dGVzdF9zaWduYXR1cmU=".to_string()),
         key: SigKey::Delegation {
             path: vec![DelegationStep {
-                tree: "delegated_tree_id".to_string(),
+                tree: ID::from_bytes("delegated_tree_id"),
                 tips: vec![ID::from_bytes("tip1"), ID::from_bytes("tip2")],
             }],
             hint: KeyHint::from_name("alice"),

@@ -278,7 +278,7 @@ pub fn create_delegation_path(steps: &[(&ID, Vec<ID>)], final_hint: KeyHint) -> 
     let delegation_steps: Vec<DelegationStep> = steps
         .iter()
         .map(|(root_id, tips)| DelegationStep {
-            tree: root_id.to_string(),
+            tree: (*root_id).clone(),
             tips: tips.clone(),
         })
         .collect();
@@ -343,7 +343,7 @@ impl DelegationChain {
         for tree in self.trees.iter() {
             let tips = tree.get_tips().await.expect("Failed to get tips");
             steps.push(DelegationStep {
-                tree: tree.root_id().to_string(),
+                tree: tree.root_id().clone(),
                 tips,
             });
         }
