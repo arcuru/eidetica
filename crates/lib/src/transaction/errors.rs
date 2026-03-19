@@ -6,6 +6,8 @@
 
 use thiserror::Error;
 
+use crate::entry::ID;
+
 /// Errors that can occur during transactions
 ///
 /// `TransactionError` represents failures specific to transactions that
@@ -25,7 +27,7 @@ pub enum TransactionError {
 
     /// Invalid tip provided to transaction
     #[error("Invalid tip for transaction: {tip_id}")]
-    InvalidTip { tip_id: String },
+    InvalidTip { tip_id: ID },
 
     /// Entry construction failed during commit
     #[error("Entry construction failed: {reason}")]

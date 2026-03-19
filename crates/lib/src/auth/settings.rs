@@ -200,7 +200,7 @@ impl AuthSettings {
             }
             .into()),
             None => Err(AuthError::DelegationNotFound {
-                tree_id: root_id.to_string(),
+                tree_id: root_id.clone(),
             }
             .into()),
         }

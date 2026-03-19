@@ -309,17 +309,16 @@ pub async fn test_tree_not_found_error(user: &User, non_existent_name: &str) {
     assert!(result.is_err(), "Expected error for non-existent tree");
 
     if let Err(Error::User(ref e)) = result {
-        if let UserError::DatabaseNotTracked { ref database_id } = **e {
-            // The error contains "name:{non_existent_name}" format
-            assert!(
-                database_id.contains(non_existent_name),
-                "Expected database_id to contain '{non_existent_name}', got '{database_id}'"
+        if let UserError::DatabaseNotFoundByName { ref name } = **e {
+            assert_eq!(
+                name, non_existent_name,
+                "Expected name '{non_existent_name}', got '{name}'"
             );
         } else {
-            panic!("Expected DatabaseNotTracked error, got: {e:?}");
+            panic!("Expected DatabaseNotFoundByName error, got: {e:?}");
         }
     } else {
-        panic!("Expected DatabaseNotTracked error, got an unexpected result");
+        panic!("Expected DatabaseNotFoundByName error, got an unexpected result");
     }
 }
 

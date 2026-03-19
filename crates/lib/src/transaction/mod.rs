@@ -195,7 +195,7 @@ impl Transaction {
             let entry = backend.get(tip_id).await?;
             if !entry.in_tree(database.root_id()) {
                 return Err(TransactionError::InvalidTip {
-                    tip_id: tip_id.to_string(),
+                    tip_id: tip_id.clone(),
                 }
                 .into());
             }

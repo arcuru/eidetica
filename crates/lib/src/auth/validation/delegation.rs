@@ -68,7 +68,7 @@ impl DelegationResolver {
             let root_id = delegated_tree_ref.tree.root.clone();
             let delegated_tree = Database::open_unauthenticated(root_id.clone(), instance)
                 .map_err(|e| AuthError::DelegatedTreeLoadFailed {
-                    tree_id: root_id.to_string(),
+                    tree_id: root_id.clone(),
                     source: Box::new(e),
                 })?;
 
@@ -86,7 +86,7 @@ impl DelegationResolver {
                 .await?;
             if !tips_valid {
                 return Err(AuthError::InvalidDelegationTips {
-                    tree_id: root_id.to_string(),
+                    tree_id: root_id.clone(),
                     claimed_tips: step.tips.clone(),
                 }
                 .into());

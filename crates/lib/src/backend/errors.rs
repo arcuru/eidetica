@@ -138,7 +138,7 @@ pub enum BackendError {
     #[error("Invalid tree reference: {tree_id}")]
     InvalidTreeReference {
         /// The invalid tree ID
-        tree_id: String,
+        tree_id: ID,
     },
 
     /// Database state inconsistency detected.
@@ -243,11 +243,11 @@ impl BackendError {
     }
 
     /// Get the tree ID if this error is about a specific tree.
-    pub fn tree_id(&self) -> Option<String> {
+    pub fn tree_id(&self) -> Option<&ID> {
         match self {
             BackendError::EntryNotInTree { tree_id, .. }
-            | BackendError::EntryNotInSubtree { tree_id, .. } => Some(tree_id.to_string()),
-            BackendError::InvalidTreeReference { tree_id } => Some(tree_id.clone()),
+            | BackendError::EntryNotInSubtree { tree_id, .. }
+            | BackendError::InvalidTreeReference { tree_id } => Some(tree_id),
             _ => None,
         }
     }

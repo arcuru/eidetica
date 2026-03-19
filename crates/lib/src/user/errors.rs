@@ -38,10 +38,13 @@ pub enum UserError {
     InsufficientPermissions,
 
     #[error("No admin key available for database: {database_id}")]
-    NoAdminKey { database_id: String },
+    NoAdminKey { database_id: ID },
 
     #[error("Database not tracked: {database_id}")]
-    DatabaseNotTracked { database_id: String },
+    DatabaseNotTracked { database_id: ID },
+
+    #[error("Database not found by name: {name}")]
+    DatabaseNotFoundByName { name: String },
 
     #[error("User account disabled: {username}")]
     UserDisabled { username: String },
@@ -79,6 +82,7 @@ impl UserError {
             UserError::UserNotFound { .. }
                 | UserError::KeyNotFound { .. }
                 | UserError::DatabaseNotTracked { .. }
+                | UserError::DatabaseNotFoundByName { .. }
         )
     }
 }

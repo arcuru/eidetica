@@ -330,8 +330,8 @@ impl User {
         }
 
         if matching.is_empty() {
-            Err(UserError::DatabaseNotTracked {
-                database_id: format!("name:{name}"),
+            Err(UserError::DatabaseNotFoundByName {
+                name: name.to_string(),
             }
             .into())
         } else {
@@ -916,7 +916,7 @@ impl User {
         let db_id_key = database_id.to_string();
         databases_table.get(&db_id_key).await.map_err(|_| {
             UserError::DatabaseNotTracked {
-                database_id: database_id.to_string(),
+                database_id: database_id.clone(),
             }
             .into()
         })
@@ -942,7 +942,7 @@ impl User {
         // Verify it exists before deleting
         if databases_table.get(&db_id_key).await.is_err() {
             return Err(UserError::DatabaseNotTracked {
-                database_id: database_id.to_string(),
+                database_id: database_id.clone(),
             }
             .into());
         }

@@ -73,7 +73,7 @@ pub enum AuthError {
     #[error("Failed to load delegated tree {tree_id}")]
     DelegatedTreeLoadFailed {
         /// The ID of the tree that failed to load
-        tree_id: String,
+        tree_id: ID,
         /// The underlying error
         #[source]
         source: Box<Error>,
@@ -85,7 +85,7 @@ pub enum AuthError {
     )]
     InvalidDelegationTips {
         /// The ID of the tree with invalid tips
-        tree_id: String,
+        tree_id: ID,
         /// The tips that were claimed but are invalid
         claimed_tips: Vec<ID>,
     },
@@ -94,7 +94,7 @@ pub enum AuthError {
     #[error("Delegation not found for tree: {tree_id}")]
     DelegationNotFound {
         /// The root tree ID of the delegation that was not found
-        tree_id: String,
+        tree_id: ID,
     },
 
     /// Attempted to revoke an entry that is not a key.
