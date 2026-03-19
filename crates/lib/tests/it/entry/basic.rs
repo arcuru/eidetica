@@ -7,7 +7,7 @@ fn test_entry_creation() {
     let root = "test_root";
     let entry = create_entry_with_parents(root, &["parent1"]);
 
-    assert_eq!(entry.root(), ID::from_bytes(root));
+    assert_eq!(entry.root(), Some(ID::from_bytes(root)));
     assert!(!entry.is_root()); // Regular entries are not root entries
 
     assert_has_parents(&entry, &["parent1"]); // Entry now has parents as required
@@ -17,7 +17,7 @@ fn test_entry_creation() {
 fn test_entry_toplevel_creation() {
     let entry = create_root_entry();
 
-    assert!(entry.root().is_empty());
+    assert!(entry.root().is_none());
     assert!(entry.is_root());
     assert!(entry.in_subtree(ROOT)); // Top-level entries have a "root" subtree
 }
@@ -27,10 +27,9 @@ fn test_in_tree_and_subtree() {
     let root = "test_root_subtrees";
     let entry = create_entry_with_subtree(root, "subtree1", "subtree_data");
 
-    // Root entries created with Entry::root_builder() have empty string as root
-    assert!(entry.in_tree(""));
-    assert!(entry.in_tree(entry.id())); // Also check by entry ID
-    assert!(!entry.in_tree("other_tree"));
+    // Root entries are in their own tree (by their own ID)
+    assert!(entry.in_tree(&entry.id())); // Check by entry ID
+    assert!(!entry.in_tree(&ID::from_bytes("other_tree")));
     assert!(entry.in_subtree("subtree1"));
     assert!(!entry.in_subtree("non_existent_subtree"));
 }

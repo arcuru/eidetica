@@ -194,7 +194,7 @@ impl Database {
         // Create temporary database for bootstrap with DatabaseKey.
         // This allows the bootstrap transaction to use the provided key directly.
         let temp_database_for_bootstrap = Database {
-            root: bootstrap_placeholder_id.clone().into(),
+            root: ID::from_bytes(bootstrap_placeholder_id.as_bytes()),
             instance: instance.downgrade(),
             key: Some(DatabaseKey::new(signing_key.clone())),
         };
@@ -294,7 +294,7 @@ impl Database {
     /// # async fn main() -> Result<()> {
     /// # let instance = Instance::open(Box::new(InMemory::new())).await?;
     /// # let (signing_key, _verifying_key) = generate_keypair();
-    /// # let root_id = "existing_database_root_id".into();
+    /// # let root_id = ID::from_bytes(b"existing_database_root_id");
     /// // Open database with pubkey identity (most common)
     /// let key = DatabaseKey::new(signing_key);
     /// let database = Database::open(instance, &root_id, key).await?;
@@ -333,7 +333,7 @@ impl Database {
         let actual_pubkey = key.public_key();
 
         match key.identity() {
-            SigKey::Direct(hint) if hint.is_global() => {
+            SigKey::Direct { hint } if hint.is_global() => {
                 // Verify the embedded pubkey matches the actual signing key
                 if let Some(embedded_pubkey) = &hint.pubkey
                     && *embedded_pubkey != actual_pubkey
@@ -351,7 +351,7 @@ impl Database {
                     })
                 })
             }
-            SigKey::Direct(hint) => match (&hint.pubkey, &hint.name) {
+            SigKey::Direct { hint } => match (&hint.pubkey, &hint.name) {
                 (Some(pubkey), _) => {
                     // Verify the claimed pubkey matches the actual signing key
                     if *pubkey != actual_pubkey {
@@ -460,7 +460,7 @@ impl Database {
     /// # async fn main() -> Result<()> {
     /// # let instance = Instance::open(Box::new(InMemory::new())).await?;
     /// # let (signing_key, pubkey) = generate_keypair();
-    /// # let root_id = "database_root_id".into();
+    /// # let root_id = ID::from_bytes(b"database_root_id");
     /// // Find all SigKeys this pubkey can use (sorted highest permission first)
     /// let sigkeys = Database::find_sigkeys(&instance, &root_id, &pubkey).await?;
     ///
@@ -836,9 +836,8 @@ impl Database {
     /// # let tree = user.create_database(Doc::new(), &key_id).await?;
     /// # let txn = tree.new_transaction().await?;
     /// let entry_id = txn.commit().await?;
-    /// let entry = tree.get_entry(&entry_id).await?;           // Using &String
-    /// let entry = tree.get_entry("some_entry_id").await?;     // Using &str
-    /// let entry = tree.get_entry(entry_id.clone()).await?;    // Using String
+    /// let entry = tree.get_entry(&entry_id).await?;           // Using &ID
+    /// let entry = tree.get_entry(entry_id.clone()).await?;    // Using ID
     /// println!("Entry signature: {:?}", entry.sig);
     /// # Ok(())
     /// # }
@@ -869,8 +868,7 @@ impl Database {
     /// If any entry exists but belongs to a different database, an error is returned.
     ///
     /// # Parameters
-    /// * `entry_ids` - An iterable of entry IDs to retrieve. Accepts any string or ID types
-    ///   that can be converted to `ID` (`&str`, `String`, `&ID`, etc.)
+    /// * `entry_ids` - An iterable of entry IDs to retrieve
     ///
     /// # Returns
     /// A `Result` containing a vector of `Entry` objects or an error if any entry is not found or not part of this database
@@ -889,7 +887,7 @@ impl Database {
     /// # let mut user = instance.login_user("test", None).await?;
     /// # let key_id = user.add_private_key(None).await?;
     /// # let tree = user.create_database(Doc::new(), &key_id).await?;
-    /// let entry_ids = vec!["id1", "id2", "id3"];
+    /// let entry_ids = vec![ID::from_bytes("id1"), ID::from_bytes("id2")];
     /// let entries = tree.get_entries(entry_ids).await?;
     /// # Ok(())
     /// # }
@@ -897,10 +895,9 @@ impl Database {
     pub async fn get_entries<I, T>(&self, entry_ids: I) -> Result<Vec<Entry>>
     where
         I: IntoIterator<Item = T>,
-        T: Into<ID>,
+        T: std::borrow::Borrow<ID>,
     {
-        // Collect IDs first to minimize conversions and avoid repeat work in iterator chain
-        let ids: Vec<ID> = entry_ids.into_iter().map(Into::into).collect();
+        let ids: Vec<ID> = entry_ids.into_iter().map(|t| t.borrow().clone()).collect();
         let instance = self.instance()?;
         let mut entries = Vec::with_capacity(ids.len());
 

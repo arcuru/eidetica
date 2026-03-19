@@ -88,9 +88,9 @@ mod tests {
 
         let peer1 = PeerId::new(PublicKey::random());
         let peer2 = PeerId::new(PublicKey::random());
-        let entry1 = ID::new("entry1");
-        let entry2 = ID::new("entry2");
-        let tree = ID::new("tree1");
+        let entry1 = ID::from_bytes("entry1");
+        let entry2 = ID::from_bytes("entry2");
+        let tree = ID::from_bytes("tree1");
 
         queue.enqueue(&peer1, entry1.clone(), tree.clone());
         queue.enqueue(&peer1, entry2.clone(), tree.clone());

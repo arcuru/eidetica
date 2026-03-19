@@ -293,61 +293,61 @@ impl KeyHint {
 /// Represents the path to resolve the signing key, either directly or through delegation.
 /// Uses explicit hint fields to point to the signer's public key.
 ///
-/// # JSON Format
+/// # Serialization Format
 ///
-/// Uses untagged serialization for compact JSON:
-/// - Direct: `{"pubkey": "ed25519:..."}`
-/// - Delegation: `{"path": [...], "pubkey": "ed25519:..."}`
-///
-/// The `path` field distinguishes `Delegation` from `Direct` during deserialization.
-///
-/// # Variant Ordering
-///
-/// `Delegation` must be listed before `Direct` because serde tries variants in order.
-/// Since `Direct` contains only optional fields, it would match any object if listed first.
+/// Uses externally tagged serialization (serde default):
+/// - Direct: `{"Direct": {"pubkey": "ed25519:..."}}`
+/// - Delegation: `{"Delegation": {"path": [...], "hint": {...}}}`
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(untagged)]
 pub enum SigKey {
-    // Note: Delegation must be listed before Direct for correct deserialization.
-    // The required `path` field distinguishes it; Direct would match anything if first.
+    /// Direct reference to a key in the current tree's _settings.auth
+    Direct {
+        /// Key hint for resolving the signer
+        hint: KeyHint,
+    },
     /// Delegation path through other trees
     Delegation {
         /// Path of delegation steps (tree references)
         path: Vec<DelegationStep>,
         /// Final signer hint (resolved in last delegated tree's auth)
-        #[serde(flatten)]
         hint: KeyHint,
     },
-    /// Direct reference to a key in the current tree's _settings.auth
-    Direct(KeyHint),
 }
 
 impl Default for SigKey {
     fn default() -> Self {
-        SigKey::Direct(KeyHint::default())
+        SigKey::Direct {
+            hint: KeyHint::default(),
+        }
     }
 }
 
 impl SigKey {
     /// Create a direct key reference from a pubkey
     pub fn from_pubkey(pubkey: &PublicKey) -> Self {
-        SigKey::Direct(KeyHint::from_pubkey(pubkey))
+        SigKey::Direct {
+            hint: KeyHint::from_pubkey(pubkey),
+        }
     }
 
     /// Create a direct key reference from a name
     pub fn from_name(name: impl Into<String>) -> Self {
-        SigKey::Direct(KeyHint::from_name(name))
+        SigKey::Direct {
+            hint: KeyHint::from_name(name),
+        }
     }
 
     /// Create a global permission key with actual signer pubkey
     pub fn global(actual_pubkey: &PublicKey) -> Self {
-        SigKey::Direct(KeyHint::global(actual_pubkey))
+        SigKey::Direct {
+            hint: KeyHint::global(actual_pubkey),
+        }
     }
 
     /// Get the key hint (for both Direct and Delegation variants)
     pub fn hint(&self) -> &KeyHint {
         match self {
-            SigKey::Direct(hint) => hint,
+            SigKey::Direct { hint } => hint,
             SigKey::Delegation { hint, .. } => hint,
         }
     }
@@ -355,7 +355,7 @@ impl SigKey {
     /// Get mutable reference to the key hint
     pub fn hint_mut(&mut self) -> &mut KeyHint {
         match self {
-            SigKey::Direct(hint) => hint,
+            SigKey::Direct { hint } => hint,
             SigKey::Delegation { hint, .. } => hint,
         }
     }
@@ -451,7 +451,7 @@ impl SigInfo {
     /// - Empty KeyHint (no pubkey, no name)
     /// - No signature
     pub fn is_unsigned(&self) -> bool {
-        matches!(self.key, SigKey::Direct(ref hint) if !hint.is_set()) && self.sig.is_none()
+        matches!(self.key, SigKey::Direct { ref hint } if !hint.is_set()) && self.sig.is_none()
     }
 
     /// Check if this represents a malformed/inconsistent signature state.
@@ -464,7 +464,7 @@ impl SigInfo {
     /// - Delegation with no signature (delegation always requires signature)
     pub fn malformed_reason(&self) -> Option<&'static str> {
         match &self.key {
-            SigKey::Direct(hint) => {
+            SigKey::Direct { hint } => {
                 if hint.is_set() && self.sig.is_none() {
                     Some("entry has key hint but no signature")
                 } else if !hint.is_set() && self.sig.is_some() {

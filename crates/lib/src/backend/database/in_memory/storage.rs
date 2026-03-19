@@ -48,12 +48,14 @@ pub(crate) fn put(
     entry: Entry,
 ) -> Result<()> {
     let entry_id = entry.id();
-    let tree_id = entry.root();
+    // For root entries, root() returns None, so tree_id is the entry's own ID.
+    // For non-root entries, tree_id is the root entry's ID.
+    let tree_id = entry.root().unwrap_or_else(|| entry_id.clone());
 
-    // SPECIAL CASE: For root entries (entry.root() == ""), we also need to update
+    // SPECIAL CASE: For root entries (entry.root() is None), we also need to update
     // tips for the tree whose ID is the entry's ID itself, since the root entry
     // becomes the root of a new tree.
-    let additional_tree_id = if tree_id.is_empty() {
+    let additional_tree_id = if entry.is_root() {
         Some(entry_id.clone())
     } else {
         None
@@ -89,10 +91,7 @@ pub(crate) fn put(
         let store_entries: Vec<&Entry> = inner
             .entries
             .values()
-            .filter(|e| {
-                (e.root() == tree_id || (e.is_root() && e.id() == tree_id))
-                    && e.subtrees().contains(&subtree_name)
-            })
+            .filter(|e| e.in_tree(&tree_id) && e.subtrees().contains(&subtree_name))
             .collect();
 
         // An entry is a store tip if no other entry in the store has it as a store parent
@@ -148,7 +147,7 @@ fn update_tips_for_tree(
     // Get all entries in this tree and recalculate which ones are actually tips
     let tree_entries: Vec<&Entry> = entries
         .values()
-        .filter(|e| e.root() == target_tree_id || (e.is_root() && e.id() == *target_tree_id))
+        .filter(|e| e.in_tree(target_tree_id))
         .collect();
 
     // An entry is a tip if no other entry in the same tree has it as a parent
@@ -177,8 +176,7 @@ fn update_tips_for_tree(
 pub(crate) fn is_tip(entries: &HashMap<ID, Entry>, tree: &ID, entry_id: &ID) -> bool {
     // Check if any other entry has this entry as its parent
     for other_entry in entries.values() {
-        if other_entry.root() == tree
-            && other_entry.parents().unwrap_or_default().contains(entry_id)
+        if other_entry.in_tree(tree) && other_entry.parents().unwrap_or_default().contains(entry_id)
         {
             return false;
         }
@@ -196,7 +194,7 @@ pub(crate) fn is_subtree_tip(
     entry_id: &ID,
 ) -> bool {
     for other_entry in entries.values() {
-        if other_entry.root() == tree
+        if other_entry.in_tree(tree)
             && other_entry.subtrees().contains(&subtree.to_string())
             && let Ok(store_parents) = other_entry.subtree_parents(subtree)
             && store_parents.contains(entry_id)

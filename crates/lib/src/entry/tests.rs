@@ -1,6 +1,7 @@
 //! Tests for Entry and EntryBuilder
 
 use super::*;
+use crate::auth::types::{DelegationStep, KeyHint, SigInfo, SigKey};
 
 #[test]
 fn test_validate_root_entry_without_parents_succeeds() {
@@ -70,7 +71,7 @@ fn test_validate_non_root_entry_with_parents_succeeds() {
 fn test_validate_empty_parent_id_fails() {
     // Empty parent IDs should be rejected
     let result = Entry::builder(ID::from_bytes("tree"))
-        .add_parent("") // Empty parent ID
+        .add_parent(ID::default()) // Empty parent ID
         .build();
     assert!(
         result.is_err(),
@@ -94,7 +95,7 @@ fn test_validate_subtree_with_empty_parent_id_fails() {
     // Subtrees with empty parent IDs should be rejected
     let result = Entry::root_builder()
         .set_subtree_data("messages", "test_data")
-        .set_subtree_parents("messages", vec!["".into()]) // Empty subtree parent ID
+        .set_subtree_parents("messages", vec![ID::default()]) // Empty subtree parent ID
         .build();
     assert!(
         result.is_err(),
@@ -331,4 +332,89 @@ fn test_subtreenode_serde_backwards_compatibility() {
         serialized.contains(r#""h":42"#),
         "Some(42) should serialize as h:42, not Some(42): {serialized}"
     );
+}
+
+#[test]
+fn test_entry_dagcbor_roundtrip_direct_sigkey() {
+    // Test DAG-CBOR roundtrip with a Direct SigKey (default, unsigned)
+    let entry = Entry::root_builder()
+        .set_subtree_data("users", r#"{"user1":"data"}"#)
+        .build()
+        .expect("Root entry should build successfully");
+
+    let bytes = serde_ipld_dagcbor::to_vec(&entry).unwrap();
+    let decoded: Entry = serde_ipld_dagcbor::from_slice(&bytes).unwrap();
+    assert_eq!(entry, decoded);
+
+    // Verify the ID can be computed and contains a valid CID
+    let id = entry.id();
+    let cid = id.as_cid().expect("ID should contain a CID");
+    assert_eq!(cid.version(), cid::Version::V1);
+    assert_eq!(cid.codec(), 0x71); // dag-cbor codec
+}
+
+#[test]
+fn test_entry_dagcbor_roundtrip_delegation_sigkey() {
+    // Test DAG-CBOR roundtrip with a Delegation SigKey (uses untagged enum + flatten)
+    let sig = SigInfo {
+        sig: Some("dGVzdF9zaWduYXR1cmU=".to_string()),
+        key: SigKey::Delegation {
+            path: vec![DelegationStep {
+                tree: "delegated_tree_id".to_string(),
+                tips: vec![ID::from_bytes("tip1"), ID::from_bytes("tip2")],
+            }],
+            hint: KeyHint::from_name("alice"),
+        },
+    };
+
+    let entry = Entry::builder(ID::from_bytes("tree_root"))
+        .add_parent(ID::from_bytes("parent_entry"))
+        .set_subtree_data("data_store", r#"{"key":"value"}"#)
+        .set_sig(sig)
+        .build()
+        .expect("Entry with delegation should build successfully");
+
+    let bytes = serde_ipld_dagcbor::to_vec(&entry).unwrap();
+    let decoded: Entry = serde_ipld_dagcbor::from_slice(&bytes).unwrap();
+    assert_eq!(entry, decoded);
+}
+
+#[test]
+fn test_entry_dagcbor_roundtrip_with_pubkey_sigkey() {
+    use crate::auth::crypto::PrivateKey;
+
+    // Test with a Direct SigKey using pubkey hint
+    let private_key = PrivateKey::generate();
+    let sig = SigInfo::from_pubkey(&private_key.public_key());
+
+    let entry = Entry::builder(ID::from_bytes("tree_root"))
+        .add_parent(ID::from_bytes("parent_entry"))
+        .set_subtree_data("store", "data")
+        .set_sig(sig)
+        .build()
+        .expect("Entry with pubkey sig should build successfully");
+
+    let bytes = serde_ipld_dagcbor::to_vec(&entry).unwrap();
+    let decoded: Entry = serde_ipld_dagcbor::from_slice(&bytes).unwrap();
+    assert_eq!(entry, decoded);
+}
+
+#[test]
+fn test_entry_to_dagcbor_method() {
+    let entry = Entry::root_builder()
+        .set_subtree_data("test", "value")
+        .build()
+        .expect("Root entry should build successfully");
+
+    // to_dagcbor() should produce valid CBOR
+    let bytes = entry
+        .to_dagcbor()
+        .expect("DAG-CBOR serialization should succeed");
+    let decoded: Entry = serde_ipld_dagcbor::from_slice(&bytes).unwrap();
+    assert_eq!(entry, decoded);
+
+    // id() should be deterministic
+    let id1 = entry.id();
+    let id2 = entry.id();
+    assert_eq!(id1, id2);
 }

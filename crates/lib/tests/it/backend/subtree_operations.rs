@@ -152,7 +152,11 @@ async fn test_backend_get_store_from_tips() {
 
     // --- Test with non-existent tip ---
     let subtree_bad_tip = backend
-        .get_store_from_tips(&root_entry_id, subtree_name, &["bad_tip_id".into()])
+        .get_store_from_tips(
+            &root_entry_id,
+            subtree_name,
+            &[ID::from_bytes("bad_tip_id")],
+        )
         .await
         .expect("Failed to get subtree with non-existent tip");
     assert!(
@@ -163,7 +167,7 @@ async fn test_backend_get_store_from_tips() {
     // --- Test with non-existent tree root ---
     // When given a valid tip but an invalid root (tree_id doesn't match),
     // the result should be empty because the tip doesn't belong to the specified tree.
-    let bad_root_id_2: ID = "bad_root".into();
+    let bad_root_id_2: ID = ID::from_bytes("bad_root");
     let subtree_bad_root = backend
         .get_store_from_tips(&bad_root_id_2, subtree_name, std::slice::from_ref(&e1_id))
         .await
@@ -682,7 +686,7 @@ async fn test_get_store_tips_up_to_entries_edge_cases() {
 
     // --- Edge case: non-existent entry ID ---
     // Backends may either return an error or an empty result for non-existent entries
-    let fake_id: ID = "nonexistent_entry_12345".into();
+    let fake_id: ID = ID::from_bytes("nonexistent_entry_12345");
     let result = backend
         .get_store_tips_up_to_entries(&root_id, subtree, &[fake_id])
         .await;

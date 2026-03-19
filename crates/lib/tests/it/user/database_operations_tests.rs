@@ -160,7 +160,7 @@ async fn test_find_key_for_nonexistent_database() {
     let user = login_user(&instance, &username, None).await;
 
     // Fake database ID
-    let fake_id = ID::from("nonexistent_database");
+    let fake_id = ID::from_bytes("nonexistent_database");
 
     // Should return None
     let result = user.find_key(&fake_id).expect("Should not error");
@@ -291,13 +291,10 @@ async fn test_database_root_id_format() {
 
     let database = create_named_database(&mut user, "Test").await;
 
-    // Root ID should be a valid SHA256 hash format
+    // Root ID should be a non-empty CID string
     let id_str = database.root_id().to_string();
-    assert!(
-        id_str.starts_with("sha256:"),
-        "Root ID should start with 'sha256:'"
-    );
-    assert!(id_str.len() > 7, "Root ID should have hash after prefix");
+    assert!(!id_str.is_empty(), "Root ID should be a non-empty string");
+    assert!(id_str.len() > 1, "Root ID should have content");
 }
 
 #[tokio::test]
@@ -471,7 +468,7 @@ async fn test_load_database_with_invalid_id() {
     let user = login_user(&instance, &username, None).await;
 
     // Try to load a database that doesn't exist
-    let fake_id = ID::from("sha256:nonexistent_database_id_12345678");
+    let fake_id = ID::from_bytes("sha256:nonexistent_database_id_12345678");
 
     let result = user.open_database(&fake_id).await;
 

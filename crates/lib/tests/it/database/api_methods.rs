@@ -3,7 +3,9 @@
 //! This module contains tests for Tree API methods including entry retrieval,
 //! authentication, validation, and error handling.
 
-use eidetica::{Database, auth::types::SigKey, crdt::Doc, database::DatabaseKey, store::DocStore};
+use eidetica::{
+    Database, auth::types::SigKey, crdt::Doc, database::DatabaseKey, entry::ID, store::DocStore,
+};
 
 use super::helpers::*;
 use crate::helpers::*;
@@ -58,18 +60,19 @@ async fn test_entry_retrieval_error_handling() {
     assert!(tree.get_entry(&entry_id).await.is_ok());
 
     // Test get_entry with non-existent entry (should fail with NotFound)
-    let result = tree.get_entry("non_existent_entry").await;
+    let non_existent = ID::from_bytes("non_existent_entry");
+    let result = tree.get_entry(non_existent.clone()).await;
     assert!(result.is_err());
     assert!(result.unwrap_err().is_not_found());
 
     // Test get_entries with mixed valid/invalid entries
-    let entry_ids = vec![entry_id.as_str(), "non_existent_entry"];
+    let entry_ids = vec![entry_id.clone(), non_existent.clone()];
     let result = tree.get_entries(entry_ids).await;
     assert!(result.is_err());
     assert!(result.unwrap_err().is_not_found());
 
     // Test auth verification with non-existent entry
-    let result = tree.verify_entry_signature("non_existent_entry").await;
+    let result = tree.verify_entry_signature(non_existent).await;
     assert!(result.is_err());
     assert!(result.unwrap_err().is_not_found());
 }

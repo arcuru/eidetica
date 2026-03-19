@@ -306,10 +306,10 @@ mod tests {
         assert!(err.is_already_exists());
 
         let err = InstanceError::EntryNotFound {
-            entry_id: ID::from("test-entry"),
+            entry_id: ID::from_bytes("test-entry"),
         };
         assert!(err.is_not_found());
-        assert_eq!(err.entry_id(), Some(&ID::from("test-entry")));
+        assert_eq!(err.entry_id(), Some(&ID::from_bytes("test-entry")));
 
         let err = InstanceError::AuthenticationRequired;
         assert!(err.is_authentication_error());

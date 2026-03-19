@@ -33,9 +33,10 @@ pub(crate) fn sort_entries_by_subtree_height(subtree: &str, entries: &mut [Entry
 
 /// Creates a cache key for CRDT state from entry ID and subtree.
 pub(crate) fn create_crdt_cache_key(entry_id: &ID, subtree: &str) -> String {
-    let mut key = String::with_capacity(5 + entry_id.as_str().len() + 1 + subtree.len());
+    let id_str = entry_id.to_string();
+    let mut key = String::with_capacity(5 + id_str.len() + 1 + subtree.len());
     key.push_str("crdt:");
-    key.push_str(entry_id.as_str());
+    key.push_str(&id_str);
     key.push(':');
     key.push_str(subtree);
     key

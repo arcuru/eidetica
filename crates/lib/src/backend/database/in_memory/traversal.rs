@@ -297,7 +297,7 @@ pub(crate) fn find_merge_base(
                     tracing::warn!(
                         entry_id = %entry_id,
                         tree_id = %tree,
-                        actual_tree = %entry.root(),
+                        actual_tree = ?entry.root(),
                         "Entry is not in the expected tree"
                     );
                     return Err(BackendError::EntryNotInTree {
@@ -490,7 +490,7 @@ pub(crate) fn get_tips(inner: &mut InMemoryInner, tree: &ID) -> Result<Vec<ID>> 
     let entry_info: Vec<_> = inner
         .entries
         .iter()
-        .filter(|(_, entry)| entry.root() == tree || (entry.is_root() && entry.id() == *tree))
+        .filter(|(_, entry)| entry.in_tree(tree))
         .map(|(id, entry)| (id.clone(), entry.is_root(), entry.id()))
         .collect();
 

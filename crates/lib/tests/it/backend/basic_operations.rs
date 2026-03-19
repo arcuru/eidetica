@@ -25,7 +25,7 @@ async fn test_backend_error_handling() {
     let backend = test_backend().await;
 
     // Test retrieving a non-existent entry
-    let non_existent_id: ID = "non_existent_id".into();
+    let non_existent_id: ID = ID::from_bytes("non_existent_id");
     let get_result = backend.get(&non_existent_id).await;
     assert!(get_result.is_err());
 

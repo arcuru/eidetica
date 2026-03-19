@@ -342,8 +342,8 @@ impl Instance {
                 backend: Backend::new(Arc::clone(&backend)),
                 clock: Arc::clone(&clock),
                 sync: std::sync::OnceLock::new(),
-                users_db_id: ID::from(""), // Placeholder - system DBs don't exist yet
-                databases_db_id: ID::from(""), // Placeholder - system DBs don't exist yet
+                users_db_id: ID::default(), // Placeholder - system DBs don't exist yet
+                databases_db_id: ID::default(), // Placeholder - system DBs don't exist yet
                 device_key: device_key.clone(), // Use the actual key for signing
                 write_callbacks: Mutex::new(HashMap::new()),
                 global_write_callbacks: Mutex::new(HashMap::new()),

@@ -95,10 +95,10 @@ async fn test_delegation_with_empty_tips_intermediate() -> Result<()> {
 #[tokio::test]
 async fn test_delegation_with_duplicate_tips() -> Result<()> {
     let duplicate_tips = vec![
-        ID::from("tip1"),
-        ID::from("tip2"),
-        ID::from("tip1"), // Duplicate
-        ID::from("tip3"),
+        ID::from_bytes("tip1"),
+        ID::from_bytes("tip2"),
+        ID::from_bytes("tip1"), // Duplicate
+        ID::from_bytes("tip3"),
     ];
 
     let delegation_path = SigKey::Delegation {
@@ -127,7 +127,7 @@ async fn test_delegation_with_long_key_names() -> Result<()> {
     let delegation_path = SigKey::Delegation {
         path: vec![DelegationStep {
             tree: long_key.clone(),
-            tips: vec![ID::from("tip1")],
+            tips: vec![ID::from_bytes("tip1")],
         }],
         hint: KeyHint::from_name("final_key"),
     };
@@ -149,7 +149,7 @@ async fn test_delegation_with_unicode_keys() -> Result<()> {
         let delegation_path = SigKey::Delegation {
             path: vec![DelegationStep {
                 tree: unicode_key.to_string(),
-                tips: vec![ID::from("tip1")],
+                tips: vec![ID::from_bytes("tip1")],
             }],
             hint: KeyHint::from_name("final_key"),
         };
@@ -167,11 +167,13 @@ async fn test_delegation_with_unicode_keys() -> Result<()> {
 #[tokio::test]
 async fn test_sig_info_with_signature_no_key() {
     let sig_info = SigInfo::builder()
-        .key(SigKey::Direct(KeyHint {
-            pubkey: None,
-            name: None,
-            is_global: false,
-        })) // Empty key
+        .key(SigKey::Direct {
+            hint: KeyHint {
+                pubkey: None,
+                name: None,
+                is_global: false,
+            },
+        }) // Empty key
         .sig("fake_signature")
         .build();
 
@@ -204,7 +206,7 @@ async fn test_deep_delegation_path_performance() -> Result<()> {
     for i in 0..9 {
         delegation_steps.push(DelegationStep {
             tree: format!("delegate_level_{i}"),
-            tips: vec![ID::from(format!("tip_{i}"))],
+            tips: vec![ID::from_bytes(format!("tip_{i}"))],
         });
     }
 
@@ -299,7 +301,7 @@ async fn test_delegation_step_serialization_edge_cases() -> Result<()> {
         // Normal case
         DelegationStep {
             tree: "normal_tree".to_string(),
-            tips: vec![ID::from("tip1")],
+            tips: vec![ID::from_bytes("tip1")],
         },
         // Empty tips array
         DelegationStep {
@@ -309,7 +311,9 @@ async fn test_delegation_step_serialization_edge_cases() -> Result<()> {
         // Many tips
         DelegationStep {
             tree: "many_tips".to_string(),
-            tips: (0..100).map(|i| ID::from(format!("tip_{i}"))).collect(),
+            tips: (0..100)
+                .map(|i| ID::from_bytes(format!("tip_{i}")))
+                .collect(),
         },
     ];
 

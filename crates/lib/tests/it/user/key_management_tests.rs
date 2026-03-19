@@ -303,7 +303,7 @@ async fn test_find_key_for_nonexistent_database() {
     let user = login_user(&instance, &username, None).await;
 
     // Create a fake database ID
-    let fake_db_id = ID::from("fake_database_id");
+    let fake_db_id = ID::from_bytes("fake_database_id");
 
     // Try to find key for nonexistent database
     let key = user
@@ -348,7 +348,7 @@ async fn test_get_database_sigkey_for_unmapped_database() {
     let key_id = add_user_key(&mut user, Some("Unmapped Key")).await;
 
     // Create a fake database ID
-    let fake_db_id = ID::from("fake_database_id");
+    let fake_db_id = ID::from_bytes("fake_database_id");
 
     // Try to get sigkey for database this key isn't mapped to
     let sigkey = user

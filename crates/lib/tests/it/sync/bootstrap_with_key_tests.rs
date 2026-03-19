@@ -181,7 +181,7 @@ async fn test_bootstrap_with_invalid_key_fails() {
         .unwrap();
 
     // Try to sync with a non-existent tree (should fail)
-    let fake_tree_id = ID::from("nonexistent_tree_id");
+    let fake_tree_id = ID::from_bytes("nonexistent_tree_id");
 
     let result = client_sync
         .sync_with_peer_for_bootstrap_with_key(

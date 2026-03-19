@@ -291,7 +291,8 @@ impl<'a> SyncStateManager<'a> {
     ) -> Result<SyncCursor> {
         let sync_state = self.txn.get_store::<DocStore>("sync_state").await?;
         let pk_str = peer_pubkey.to_string();
-        let cursor_path = path!("cursors", &pk_str as &str, tree_id.as_str());
+        let tree_id_str = tree_id.to_string();
+        let cursor_path = path!("cursors", &pk_str as &str, &tree_id_str as &str);
 
         match sync_state.get_path_as::<String>(&cursor_path).await {
             Ok(json) => serde_json::from_str(&json).map_err(|e| {
@@ -311,7 +312,8 @@ impl<'a> SyncStateManager<'a> {
     pub async fn update_sync_cursor(&self, cursor: &SyncCursor) -> Result<()> {
         let sync_state = self.txn.get_store::<DocStore>("sync_state").await?;
         let pk_str = cursor.peer_pubkey.to_string();
-        let cursor_path = path!("cursors", &pk_str as &str, cursor.tree_id.as_str());
+        let cursor_tree_id_str = cursor.tree_id.to_string();
+        let cursor_path = path!("cursors", &pk_str as &str, &cursor_tree_id_str as &str);
         let cursor_json = serde_json::to_string(cursor)?;
         sync_state.set_path(&cursor_path, cursor_json).await?;
         Ok(())

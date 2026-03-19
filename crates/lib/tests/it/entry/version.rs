@@ -8,9 +8,9 @@ fn entry_deserialize_wrong_version_fails() {
     // SigKey is now a struct with explicit hint fields
     let json = r#"{
         "_v": 99,
-        "tree": { "root": "", "parents": [] },
+        "tree": { "parents": [] },
         "subtrees": [],
-        "sig": {"key": {}}
+        "sig": {"key": {"Direct": {"hint": {}}}}
     }"#;
 
     let result: Result<Entry, _> = serde_json::from_str(json);
@@ -22,9 +22,9 @@ fn entry_deserialize_missing_version_defaults_to_v0() {
     // Entry without version field should default to v0 and succeed
     // SigKey is now a struct with explicit hint fields (untagged enum)
     let json = r#"{
-        "tree": { "root": "", "parents": [] },
+        "tree": { "parents": [] },
         "subtrees": [],
-        "sig": {"key": {}}
+        "sig": {"key": {"Direct": {"hint": {}}}}
     }"#;
 
     let result: Result<Entry, _> = serde_json::from_str(json);

@@ -214,7 +214,7 @@ async fn test_bootstrap_nonexistent_tree() {
         .register_transport("http", HttpTransport::builder())
         .await
         .unwrap();
-    let fake_tree_id = ID::from("fake_tree_id_that_doesnt_exist");
+    let fake_tree_id = ID::from_bytes("fake_tree_id_that_doesnt_exist");
 
     let result = client_sync
         .sync_with_peer(&server_addr, Some(&fake_tree_id))
@@ -289,7 +289,7 @@ async fn test_bootstrap_malformed_request_data() {
     let (_, test_verifying_key) = generate_keypair();
 
     // Test 1: Invalid tree ID format
-    let malformed_tree_id = ID::from("invalid_tree_format");
+    let malformed_tree_id = ID::from_bytes("invalid_tree_format");
     let result = client_sync
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
@@ -353,7 +353,7 @@ async fn test_bootstrap_conflicting_tree_ids() {
     let (_, test_verifying_key) = generate_keypair();
 
     // Try to bootstrap with a different tree ID than what exists
-    let different_tree_id = ID::from("different_tree_that_doesnt_exist");
+    let different_tree_id = ID::from_bytes("different_tree_that_doesnt_exist");
     let result = client_sync
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,

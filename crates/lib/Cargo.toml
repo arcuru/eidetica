@@ -26,9 +26,10 @@ ed25519-dalek = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-sha2 = { workspace = true }
 hex = { workspace = true }
-blake3 = { workspace = true }
+cid = { workspace = true }
+multihash-codetable = { workspace = true }
+serde_ipld_dagcbor = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true, features = ["serde"] }

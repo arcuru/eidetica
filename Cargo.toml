@@ -26,6 +26,9 @@ serde_json = "1"
 sha2 = "0.10"
 hex = "0.4"
 blake3 = "1.8"
+cid = { version = "0.11", features = ["serde", "std"] }
+multihash-codetable = { version = "0.1", features = ["sha2", "blake3"] }
+serde_ipld_dagcbor = "0.6"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = "0.3"

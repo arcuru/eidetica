@@ -362,7 +362,7 @@ async fn test_bidirectional_sync_flow() {
     let (base_db2, _sync2) = helpers::setup().await;
 
     let tree_id = "bidirectional_tree";
-    let _tree_id_val: ID = tree_id.into();
+    let _tree_id_val: ID = ID::from_bytes(tree_id);
 
     // Create different chains in each database
     let chain1 = create_linear_chain(tree_id, 3);

@@ -437,7 +437,9 @@ impl SyncHandlerImpl {
         let peer_manager = PeerManager::new(&txn);
 
         // Add the tree sync relationship
-        peer_manager.add_tree_sync(peer_pubkey, tree_id).await?;
+        peer_manager
+            .add_tree_sync(peer_pubkey, &tree_id.to_string())
+            .await?;
         txn.commit().await?;
 
         debug!(tree_id = %tree_id, peer_pubkey = %peer_pubkey, "Tracked tree/peer sync relationship");
@@ -840,7 +842,7 @@ impl SyncHandlerImpl {
         // Filter out the root from all_entries since we send it separately as root_entry
         let other_entries: Vec<_> = all_entries
             .into_iter()
-            .filter(|entry| entry.id() != tree_id)
+            .filter(|entry| entry.id() != *tree_id)
             .collect();
 
         info!(

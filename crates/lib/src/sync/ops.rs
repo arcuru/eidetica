@@ -423,7 +423,9 @@ impl Sync {
         }
 
         // Get list of peers for this database
-        let peers = peer_mgr.get_tree_peers(database.root_id()).await?;
+        let peers = peer_mgr
+            .get_tree_peers(&database.root_id().to_string())
+            .await?;
 
         if peers.is_empty() {
             debug!(database_id = %database.root_id(), "No peers configured for database");

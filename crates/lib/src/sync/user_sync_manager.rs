@@ -113,7 +113,7 @@ impl<'a> UserSyncManager<'a> {
                     "Missing preferences_db_id field".to_string(),
                 ))
             })?;
-        let prefs_db_id = ID::from(prefs_db_id_str.as_str());
+        let prefs_db_id = ID::parse(&prefs_db_id_str)?;
 
         // Get preferences tips
         let tips_json = user_tracking
@@ -123,8 +123,8 @@ impl<'a> UserSyncManager<'a> {
         let tips_strings: Vec<String> = serde_json::from_str(&tips_json).unwrap_or_default();
         let tips: Vec<ID> = tips_strings
             .into_iter()
-            .map(|s| ID::from(s.as_str()))
-            .collect();
+            .map(|s| ID::parse(&s))
+            .collect::<crate::Result<Vec<_>>>()?;
 
         Ok(Some((prefs_db_id, tips)))
     }
@@ -330,7 +330,7 @@ impl<'a> UserSyncManager<'a> {
                 });
 
                 if has_user {
-                    result.push(ID::from(db_id_str.as_str()));
+                    result.push(ID::parse(db_id_str)?);
                 }
             }
         }

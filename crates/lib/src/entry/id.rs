@@ -1,53 +1,30 @@
 //! Content-addressable identifier type used throughout Eidetica.
 //!
-//! The `ID` type represents a content-addressable hash that supports multiple algorithms
-//! including SHA-256, Blake3, and future hash types.
+//! The `ID` type wraps a CID (Content Identifier) from the IPLD/multiformats spec.
 
+use crate::Result;
+use cid::Cid;
+use multihash_codetable::{Code, MultihashDigest};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
-/// Hash algorithm identifier
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum HashAlgorithm {
-    /// SHA-256 (default for backward compatibility)
-    Sha256,
-    /// Blake3 (faster alternative)
-    Blake3,
-}
+// Codec values are taken from https://github.com/multiformats/multicodec
 
-impl HashAlgorithm {
-    /// Get the string prefix for this algorithm
-    pub fn prefix(&self) -> &'static str {
-        match self {
-            HashAlgorithm::Sha256 => "sha256",
-            HashAlgorithm::Blake3 => "blake3",
-        }
-    }
+/// DAG-CBOR codec identifier (0x71) for CIDs over DAG-CBOR encoded content.
+const DAG_CBOR_CODEC: u64 = 0x71;
 
-    /// Get expected hash length in bytes
-    pub fn hash_len(&self) -> usize {
-        match self {
-            HashAlgorithm::Sha256 => 32,
-            HashAlgorithm::Blake3 => 32,
-        }
-    }
-
-    /// Get expected hex string length
-    pub fn hex_len(&self) -> usize {
-        self.hash_len() * 2
-    }
-}
+/// Raw codec identifier (0x55) for CIDs over opaque/raw bytes.
+const RAW_CODEC: u64 = 0x55;
 
 /// Error types for ID parsing and validation
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IdError {
-    /// Invalid format - not a valid hex string or prefixed format
+    /// Invalid format - not a valid CID string
     InvalidFormat(String),
     /// Invalid length for the hash algorithm
     InvalidLength { expected: usize, got: usize },
-    /// Unknown hash algorithm prefix
+    /// Unknown hash algorithm
     UnknownAlgorithm(String),
-    /// Invalid hex characters
+    /// Invalid encoding
     InvalidHex(String),
 }
 
@@ -59,7 +36,7 @@ impl std::fmt::Display for IdError {
                 write!(f, "Invalid ID length: expected {expected}, got {got}")
             }
             IdError::UnknownAlgorithm(alg) => write!(f, "Unknown hash algorithm: {alg}"),
-            IdError::InvalidHex(s) => write!(f, "Invalid hex characters: {s}"),
+            IdError::InvalidHex(s) => write!(f, "Invalid encoding: {s}"),
         }
     }
 }
@@ -68,185 +45,94 @@ impl std::error::Error for IdError {}
 
 /// A content-addressable identifier for an `Entry` or other database object.
 ///
-/// Supports multiple hash algorithms including SHA-256 and Blake3. IDs can be created
-/// from raw data using various hash algorithms, or parsed from string representations.
+/// Wraps a CID v1 with the DAG-CBOR codec (0x71). Supports SHA-256 and Blake3
+/// hash algorithms via the multihash specification.
 ///
-/// String format:
-/// - Current: `sha256:deadbeef123...` or `blake3:abcdef456...` (algorithm prefix required)
-/// - Legacy: `deadbeef123...` (64 hex chars, assumed SHA-256, parsing only)
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ID {
-    /// String representation for compatibility and serialization
-    repr: String,
-    /// Cached algorithm for efficiency
-    algorithm: HashAlgorithm,
-}
+/// String format uses multibase base32lower encoding, producing strings like
+/// `bafyrei...` for dag-cbor + sha256 CIDs.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Default)]
+pub struct ID(Option<Cid>);
 
-/// Lexicographic ordering by string representation only.
 impl PartialOrd for ID {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-/// Lexicographic ordering by string representation only.
-///
-/// The `algorithm` field is intentionally excluded since it's derived from `repr`.
+/// Deterministic ordering: empty IDs sort before non-empty, then by CID fields.
 impl Ord for ID {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.repr.cmp(&other.repr)
-    }
-}
-
-impl Default for ID {
-    fn default() -> Self {
-        Self {
-            repr: String::new(),
-            algorithm: HashAlgorithm::Sha256,
+        match (&self.0, &other.0) {
+            (None, None) => std::cmp::Ordering::Equal,
+            (None, Some(_)) => std::cmp::Ordering::Less,
+            (Some(_), None) => std::cmp::Ordering::Greater,
+            (Some(a), Some(b)) => a.cmp(b),
         }
     }
 }
 
 impl ID {
-    /// Creates a new ID from any string-like input without validation.
+    /// Creates an ID by hashing DAG-CBOR encoded bytes with SHA-256.
     ///
-    /// For validated creation, use `parse()` or `try_from()`.
-    pub fn new(s: impl Into<String>) -> Self {
-        let repr = s.into();
-        let algorithm = Self::detect_algorithm(&repr);
-        Self { repr, algorithm }
+    /// This is the primary way to create an ID from serialized entry content.
+    pub fn from_dagcbor_bytes(data: impl AsRef<[u8]>) -> Self {
+        Self::from_dagcbor_bytes_with(data, Code::Sha2_256)
+    }
+
+    /// Creates an ID by hashing DAG-CBOR encoded bytes with the specified algorithm.
+    pub fn from_dagcbor_bytes_with(data: impl AsRef<[u8]>, code: Code) -> Self {
+        let mh = code.digest(data.as_ref());
+        Self(Some(Cid::new_v1(DAG_CBOR_CODEC, mh)))
     }
 
     /// Creates an ID by hashing the given bytes with SHA-256.
+    ///
+    /// Uses the raw codec (0x55) since the bytes are not DAG-CBOR encoded content.
     pub fn from_bytes(data: impl AsRef<[u8]>) -> Self {
-        Self::from_bytes_with(data, HashAlgorithm::Sha256)
+        // FIXME: ID::from_bytes is only really used in tests
+        Self::from_bytes_with(data, Code::Sha2_256)
     }
 
     /// Creates an ID by hashing the given bytes with the specified algorithm.
-    pub fn from_bytes_with(data: impl AsRef<[u8]>, algorithm: HashAlgorithm) -> Self {
-        let data = data.as_ref();
-        let hash_bytes = match algorithm {
-            HashAlgorithm::Sha256 => {
-                let mut hasher = Sha256::new();
-                hasher.update(data);
-                hasher.finalize().to_vec()
-            }
-            HashAlgorithm::Blake3 => blake3::hash(data).as_bytes().to_vec(),
-        };
-
-        let hex = hex::encode(&hash_bytes);
-        let repr = format!("{}:{}", algorithm.prefix(), hex);
-
-        Self { repr, algorithm }
+    ///
+    /// Uses the raw codec (0x55) since the bytes are not DAG-CBOR encoded content.
+    pub fn from_bytes_with(data: impl AsRef<[u8]>, code: Code) -> Self {
+        let mh = code.digest(data.as_ref());
+        Self(Some(Cid::new_v1(RAW_CODEC, mh)))
     }
 
-    /// Parses an ID from a string, validating the format.
+    /// Parses an ID from its string representation.
     ///
-    /// Requires algorithm prefix format: `algorithm:hexhash`
-    pub fn parse(s: &str) -> Result<Self, IdError> {
+    /// Accepts multibase-encoded CID strings (e.g., base32lower `bafyrei...`).
+    /// An empty string produces the default (empty) ID.
+    pub fn parse(s: &str) -> Result<Self> {
         if s.is_empty() {
             return Ok(Self::default());
         }
 
-        // Require prefixed format
-        let Some(colon_pos) = s.find(':') else {
-            return Err(IdError::InvalidFormat(
-                "ID must have algorithm prefix (e.g., 'sha256:' or 'blake3:')".to_string(),
-            ));
-        };
-
-        let (prefix, hex_part) = s.split_at(colon_pos);
-        let hex_part = &hex_part[1..]; // Skip the ':'
-
-        let algorithm = match prefix {
-            "sha256" => HashAlgorithm::Sha256,
-            "blake3" => HashAlgorithm::Blake3,
-            _ => return Err(IdError::UnknownAlgorithm(prefix.to_string())),
-        };
-
-        Self::validate_hex_format(hex_part, algorithm)?;
-
-        Ok(Self {
-            repr: s.to_string(),
-            algorithm,
-        })
+        let cid = Cid::try_from(s).map_err(|e| IdError::InvalidFormat(e.to_string()))?;
+        Ok(Self(Some(cid)))
     }
 
-    /// Validates that a hex string matches the expected format for an algorithm.
-    fn validate_hex_format(hex: &str, algorithm: HashAlgorithm) -> Result<(), IdError> {
-        let expected_len = algorithm.hex_len();
-
-        if hex.len() != expected_len {
-            return Err(IdError::InvalidLength {
-                expected: expected_len,
-                got: hex.len(),
-            });
-        }
-
-        // Check that all characters are valid lowercase hex
-        if !hex
-            .chars()
-            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
-        {
-            return Err(IdError::InvalidHex(hex.to_string()));
-        }
-
-        Ok(())
-    }
-
-    /// Detects the algorithm from a string representation (for parsing existing IDs).
-    fn detect_algorithm(s: &str) -> HashAlgorithm {
-        if let Some(colon_pos) = s.find(':') {
-            let prefix = &s[..colon_pos];
-            match prefix {
-                "blake3" => HashAlgorithm::Blake3,
-                _ => HashAlgorithm::Sha256, // Default fallback
-            }
-        } else {
-            HashAlgorithm::Sha256 // Default for empty/malformed IDs
-        }
-    }
-
-    /// Returns the ID as a string slice.
-    pub fn as_str(&self) -> &str {
-        &self.repr
-    }
-
-    /// Returns true if the ID is empty.
+    /// Returns true if the ID is empty (no CID).
     pub fn is_empty(&self) -> bool {
-        self.repr.is_empty()
+        self.0.is_none()
     }
 
-    /// Gets the hash algorithm used for this ID.
-    pub fn algorithm(&self) -> HashAlgorithm {
-        self.algorithm
+    /// Get the underlying CID, if present.
+    pub fn as_cid(&self) -> Option<&Cid> {
+        self.0.as_ref()
     }
 
-    /// Gets the raw hex string without the algorithm prefix.
-    pub fn hex(&self) -> &str {
-        if let Some(colon_pos) = self.repr.find(':') {
-            &self.repr[colon_pos + 1..]
-        } else {
-            &self.repr
-        }
-    }
-
-    /// Gets the hash bytes if the hex is valid.
-    pub fn as_bytes(&self) -> Result<Vec<u8>, hex::FromHexError> {
-        hex::decode(self.hex())
+    /// Get the multihash code used for this ID.
+    pub fn hash_code(&self) -> Option<u64> {
+        self.0.as_ref().map(|cid| cid.hash().code())
     }
 }
 
-// Backward compatibility trait implementations
-impl From<String> for ID {
-    fn from(s: String) -> Self {
-        Self::new(s)
-    }
-}
-
-impl From<&str> for ID {
-    fn from(s: &str) -> Self {
-        Self::new(s)
+impl From<Cid> for ID {
+    fn from(cid: Cid) -> Self {
+        Self(Some(cid))
     }
 }
 
@@ -256,90 +142,45 @@ impl From<&ID> for ID {
     }
 }
 
-impl AsRef<str> for ID {
-    fn as_ref(&self) -> &str {
-        &self.repr
-    }
-}
-
 impl std::fmt::Display for ID {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", &self.repr)
-    }
-}
-
-impl std::ops::Deref for ID {
-    type Target = str;
-
-    fn deref(&self) -> &Self::Target {
-        &self.repr
-    }
-}
-
-impl PartialEq<str> for ID {
-    fn eq(&self, other: &str) -> bool {
-        self.repr == other
-    }
-}
-
-impl PartialEq<&str> for ID {
-    fn eq(&self, other: &&str) -> bool {
-        self.repr == *other
-    }
-}
-
-impl PartialEq<String> for ID {
-    fn eq(&self, other: &String) -> bool {
-        &self.repr == other
-    }
-}
-
-impl PartialEq<ID> for str {
-    fn eq(&self, other: &ID) -> bool {
-        self == other.repr
-    }
-}
-
-impl PartialEq<ID> for &str {
-    fn eq(&self, other: &ID) -> bool {
-        *self == other.repr
-    }
-}
-
-impl PartialEq<ID> for String {
-    fn eq(&self, other: &ID) -> bool {
-        self == &other.repr
+        match &self.0 {
+            Some(cid) => {
+                // CID's default Display uses base32lower for v1 CIDs
+                // We want to use the defaults for consistency
+                write!(f, "{cid}")
+            }
+            None => Ok(()),
+        }
     }
 }
 
 impl From<ID> for String {
     fn from(id: ID) -> Self {
-        id.repr
-    }
-}
-
-impl PartialEq<&ID> for ID {
-    fn eq(&self, other: &&ID) -> bool {
-        self == *other
+        id.to_string()
     }
 }
 
 impl From<&ID> for String {
     fn from(id: &ID) -> Self {
-        id.repr.clone()
+        id.to_string()
     }
 }
 
-// Note: TryFrom implementations are not provided to avoid conflicts with blanket implementations.
-// Use ID::parse() directly for validated parsing.
-
-// Serialize/Deserialize implementations - serialize as string for compatibility
+// Serialize as a CID link (CBOR tag 42) in binary formats, or as a string in
+// human-readable formats (JSON). This allows IDs to be used as map keys in JSON
+// while still being proper IPLD links in DAG-CBOR.
 impl Serialize for ID {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        self.repr.serialize(serializer)
+        // For human-readable formats, serialize as a string (multibase CID)
+        if serializer.is_human_readable() {
+            self.to_string().serialize(serializer)
+        } else {
+            self.0.serialize(serializer)
+        }
     }
 }
 
@@ -348,8 +189,18 @@ impl<'de> Deserialize<'de> for ID {
     where
         D: serde::Deserializer<'de>,
     {
-        let s = String::deserialize(deserializer)?;
-        Ok(Self::new(s))
+        if deserializer.is_human_readable() {
+            let s = String::deserialize(deserializer)?;
+            if s.is_empty() {
+                Ok(Self(None))
+            } else {
+                Cid::try_from(s.as_str())
+                    .map(|cid| Self(Some(cid)))
+                    .map_err(serde::de::Error::custom)
+            }
+        } else {
+            Ok(Self(Option::<Cid>::deserialize(deserializer)?))
+        }
     }
 }
 
@@ -358,46 +209,45 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_sha256_prefixed_format() {
+    fn test_from_bytes_produces_cid() {
         let data = b"hello world";
         let id = ID::from_bytes(data);
 
-        // Should have sha256: prefix
-        assert!(id.as_str().starts_with("sha256:"));
-        assert_eq!(id.algorithm(), HashAlgorithm::Sha256);
-        assert_eq!(id.as_str().len(), 71); // "sha256:" (7) + hex (64) = 71
+        assert!(!id.is_empty());
+        let cid = id.as_cid().unwrap();
+        assert_eq!(cid.version(), cid::Version::V1);
+        assert_eq!(cid.codec(), RAW_CODEC);
+        // SHA-256 multihash code is 0x12
+        assert_eq!(cid.hash().code(), 0x12);
     }
 
     #[test]
-    fn test_blake3_prefixed_format() {
+    fn test_from_bytes_blake3() {
         let data = b"hello world";
-        let id = ID::from_bytes_with(data, HashAlgorithm::Blake3);
+        let id = ID::from_bytes_with(data, Code::Blake3_256);
 
-        // Should have blake3: prefix
-        assert!(id.as_str().starts_with("blake3:"));
-        assert_eq!(id.algorithm(), HashAlgorithm::Blake3);
+        assert!(!id.is_empty());
+        let cid = id.as_cid().unwrap();
+        assert_eq!(cid.version(), cid::Version::V1);
+        assert_eq!(cid.codec(), RAW_CODEC);
+        // Blake3-256 multihash code is 0x1e
+        assert_eq!(cid.hash().code(), 0x1e);
     }
 
     #[test]
-    fn test_parse_sha256_prefixed() {
-        let hex = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-        let prefixed = format!("sha256:{hex}");
-        let id = ID::parse(&prefixed).unwrap();
+    fn test_parse_roundtrip() {
+        let id = ID::from_bytes(b"test data");
+        let s = id.to_string();
 
-        assert_eq!(id.algorithm(), HashAlgorithm::Sha256);
-        assert_eq!(id.hex(), hex);
-        assert_eq!(id.as_str(), prefixed);
+        let parsed = ID::parse(&s).unwrap();
+        assert_eq!(id, parsed);
     }
 
     #[test]
-    fn test_parse_prefixed_blake3() {
-        let hex = "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262";
-        let prefixed = format!("blake3:{hex}");
-        let id = ID::parse(&prefixed).unwrap();
-
-        assert_eq!(id.algorithm(), HashAlgorithm::Blake3);
-        assert_eq!(id.hex(), hex);
-        assert_eq!(id.as_str(), prefixed);
+    fn test_parse_empty() {
+        let id = ID::parse("").unwrap();
+        assert!(id.is_empty());
+        assert_eq!(id, ID::default());
     }
 
     #[test]
@@ -410,53 +260,67 @@ mod tests {
         assert_eq!(id1, id2);
         // Different data should produce different IDs
         assert_ne!(id1, id3);
-
-        // Should be SHA-256 prefixed format
-        assert_eq!(id1.algorithm(), HashAlgorithm::Sha256);
     }
 
     #[test]
-    fn test_validation() {
-        // Too short
-        assert!(ID::parse("deadbeef").is_err());
-
-        // Missing algorithm prefix
-        assert!(
-            ID::parse("deadbeef12345678901234567890123456789012345678901234567890123456").is_err()
-        );
-
-        // Invalid hex characters
-        assert!(
-            ID::parse("sha256:deadbeef123456789012345678901234567890123456789012345678901234567g")
-                .is_err()
-        );
-
-        // Unknown algorithm
-        assert!(
-            ID::parse("unknown:deadbeef12345678901234567890123456789012345678901234567890123456")
-                .is_err()
-        );
-
-        // Valid cases
-        assert!(
-            ID::parse("sha256:deadbeef12345678901234567890123456789012345678901234567890123456")
-                .is_ok()
-        );
-        assert!(
-            ID::parse("blake3:deadbeef12345678901234567890123456789012345678901234567890123456")
-                .is_ok()
-        );
+    fn test_empty_id() {
+        let id = ID::default();
+        assert!(id.is_empty());
+        assert_eq!(id.to_string(), "");
     }
 
     #[test]
-    fn test_serialization() {
+    fn test_serialization_json() {
         let id = ID::from_bytes("test_data_serialization");
 
-        // Should serialize/deserialize as string
+        // Should serialize/deserialize via JSON
         let json = serde_json::to_string(&id).unwrap();
         let deserialized: ID = serde_json::from_str(&json).unwrap();
-
         assert_eq!(id, deserialized);
-        assert_eq!(id.algorithm(), deserialized.algorithm());
+    }
+
+    #[test]
+    fn test_serialization_dagcbor() {
+        let id = ID::from_bytes("test_data_cbor");
+
+        // Should serialize/deserialize via DAG-CBOR
+        let bytes = serde_ipld_dagcbor::to_vec(&id).unwrap();
+        let deserialized: ID = serde_ipld_dagcbor::from_slice(&bytes).unwrap();
+        assert_eq!(id, deserialized);
+    }
+
+    #[test]
+    fn test_empty_id_serialization() {
+        let id = ID::default();
+
+        // JSON roundtrip
+        let json = serde_json::to_string(&id).unwrap();
+        let deserialized: ID = serde_json::from_str(&json).unwrap();
+        assert_eq!(id, deserialized);
+        assert!(deserialized.is_empty());
+
+        // DAG-CBOR roundtrip
+        let bytes = serde_ipld_dagcbor::to_vec(&id).unwrap();
+        let deserialized: ID = serde_ipld_dagcbor::from_slice(&bytes).unwrap();
+        assert_eq!(id, deserialized);
+        assert!(deserialized.is_empty());
+    }
+
+    #[test]
+    fn test_ordering() {
+        let id1 = ID::from_bytes("aaa");
+        let id2 = ID::from_bytes("bbb");
+        let empty = ID::default();
+
+        // Empty is less than non-empty
+        assert!(empty < id1);
+        assert!(empty < id2);
+        assert!(id1 != id2);
+    }
+
+    #[test]
+    fn test_parse_invalid() {
+        // Invalid CID string
+        assert!(ID::parse("not-a-valid-cid").is_err());
     }
 }

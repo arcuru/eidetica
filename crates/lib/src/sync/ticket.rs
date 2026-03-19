@@ -20,10 +20,10 @@
 //! ```
 //! # use eidetica::sync::{DatabaseTicket, Address};
 //! # use eidetica::entry::ID;
-//! let id = ID::new("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+//! let id = ID::from_bytes(b"example database id");
 //! let ticket = DatabaseTicket::new(id);
 //! let url = ticket.to_string();
-//! assert!(url.starts_with("eidetica:?db=sha256:"));
+//! assert!(url.starts_with("eidetica:?db="));
 //!
 //! let parsed: DatabaseTicket = url.parse().unwrap();
 //! assert_eq!(parsed.database_id(), ticket.database_id());
@@ -156,7 +156,7 @@ impl fmt::Display for DatabaseTicket {
         write!(
             f,
             "{SCHEME}{DB_PARAM}={}",
-            encode_query_value(self.database_id.as_str())
+            encode_query_value(&self.database_id.to_string())
         )?;
 
         for addr in &self.addresses {
@@ -185,7 +185,7 @@ impl FromStr for DatabaseTicket {
                 DB_PARAM => {
                     // TODO: if `db` appears more than once, the last value
                     // silently wins.
-                    database_id = Some(ID::new(value.to_string()));
+                    database_id = Some(ID::parse(&value)?);
                 }
                 PR_PARAM => {
                     if let Some(addr) = decode_address(&value) {
@@ -243,11 +243,12 @@ mod tests {
     }
 
     fn sha256_id() -> ID {
-        ID::new(format!("sha256:{SHA256_HEX}"))
+        ID::from_bytes(SHA256_HEX.as_bytes())
     }
 
     fn blake3_id() -> ID {
-        ID::new(format!("blake3:{BLAKE3_HEX}"))
+        use multihash_codetable::Code;
+        ID::from_bytes_with(BLAKE3_HEX.as_bytes(), Code::Blake3_256)
     }
 
     #[test]
@@ -296,22 +297,14 @@ mod tests {
         // sha256 ID round-trips without transformation
         let ticket = DatabaseTicket::new(sha256_id());
         let url = ticket.to_string();
-        assert!(url.contains(&format!("db=sha256:{SHA256_HEX}")));
         let parsed: DatabaseTicket = url.parse().unwrap();
-        assert_eq!(
-            parsed.database_id().as_str(),
-            format!("sha256:{SHA256_HEX}")
-        );
+        assert_eq!(parsed.database_id(), ticket.database_id());
 
         // blake3 ID round-trips without transformation
         let ticket = DatabaseTicket::new(blake3_id());
         let url = ticket.to_string();
-        assert!(url.contains(&format!("db=blake3:{BLAKE3_HEX}")));
         let parsed: DatabaseTicket = url.parse().unwrap();
-        assert_eq!(
-            parsed.database_id().as_str(),
-            format!("blake3:{BLAKE3_HEX}")
-        );
+        assert_eq!(parsed.database_id(), ticket.database_id());
     }
 
     #[test]
@@ -328,19 +321,19 @@ mod tests {
 
     #[test]
     fn unknown_hash_algorithm_round_trips() {
-        // Future hash algorithms round-trip as opaque strings
-        let id = ID::new("future_hash:deadbeef");
-        let ticket = DatabaseTicket::new(id);
+        // CID-based IDs round-trip through ticket URLs
+        let id = ID::from_bytes(b"future_hash_test_data");
+        let ticket = DatabaseTicket::new(id.clone());
         let url = ticket.to_string();
-        assert!(url.contains("db=future_hash:deadbeef"));
         let parsed: DatabaseTicket = url.parse().unwrap();
-        assert_eq!(parsed.database_id().as_str(), "future_hash:deadbeef");
+        assert_eq!(*parsed.database_id(), id);
     }
 
     #[test]
     fn unknown_query_params_ignored() {
-        let url =
-            format!("eidetica:?db=sha256:{SHA256_HEX}&future_param=value&pr=http:localhost:8080");
+        let db_id = sha256_id();
+        let db_id_str = db_id.to_string();
+        let url = format!("eidetica:?db={db_id_str}&future_param=value&pr=http:localhost:8080");
         let parsed: DatabaseTicket = url.parse().unwrap();
         // Unknown params are silently ignored (forward compat)
         assert_eq!(parsed.addresses().len(), 1);
@@ -388,7 +381,10 @@ mod tests {
     fn display_format_no_hints() {
         let ticket = DatabaseTicket::new(sha256_id());
         let url = ticket.to_string();
-        assert_eq!(url, format!("eidetica:?db=sha256:{SHA256_HEX}"));
+        assert!(url.starts_with("eidetica:?db="));
+        // Verify round-trip
+        let parsed: DatabaseTicket = url.parse().unwrap();
+        assert_eq!(parsed.database_id(), ticket.database_id());
     }
 
     #[test]
@@ -396,16 +392,15 @@ mod tests {
         let ticket =
             DatabaseTicket::with_addresses(sha256_id(), vec![Address::http("localhost:8080")]);
         let url = ticket.to_string();
-        assert_eq!(
-            url,
-            format!("eidetica:?db=sha256:{SHA256_HEX}&pr=http:localhost:8080")
-        );
+        assert!(url.starts_with("eidetica:?db="));
+        assert!(url.ends_with("&pr=http:localhost:8080"));
     }
 
     #[test]
     fn malformed_pr_value_skipped() {
         // A pr value without : is silently skipped
-        let url = format!("eidetica:?db=sha256:{SHA256_HEX}&pr=no_colon_here");
+        let db_id_str = sha256_id().to_string();
+        let url = format!("eidetica:?db={db_id_str}&pr=no_colon_here");
         let parsed: DatabaseTicket = url.parse().unwrap();
         assert!(parsed.addresses().is_empty());
     }
@@ -419,9 +414,7 @@ mod tests {
         );
         let url = ticket.to_string();
         // Iroh addresses appear as EndpointTicket format in ticket URLs
-        assert!(url.starts_with(&format!(
-            "eidetica:?db=sha256:{SHA256_HEX}&pr=iroh:endpoint"
-        )));
+        assert!(url.contains("&pr=iroh:endpoint"));
         assert!(url.ends_with("&pr=http:192.168.1.1:8080"));
     }
 

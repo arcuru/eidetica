@@ -263,7 +263,7 @@ impl SettingsStore {
     /// # Returns
     /// Result indicating success or failure
     pub async fn add_delegated_tree(&self, tree_ref: DelegatedTreeRef) -> Result<()> {
-        let root_id = tree_ref.tree.root.as_str().to_string();
+        let root_id = tree_ref.tree.root.to_string();
         self.inner
             .set(format!("auth.delegations.{root_id}"), tree_ref)
             .await

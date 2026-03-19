@@ -59,7 +59,7 @@ async fn test_commits_work_with_sync_enabled() {
 
     // Verify the entry was actually committed
     let fetched = instance.backend().get(&entry_id).await.expect("Get entry");
-    assert_eq!(fetched.id(), &entry_id, "Entry should exist in backend");
+    assert_eq!(fetched.id(), entry_id, "Entry should exist in backend");
 }
 
 /// Test that multiple commits work correctly

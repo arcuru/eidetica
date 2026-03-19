@@ -18,7 +18,7 @@ pub use builder::EntryBuilder;
 pub use errors::EntryError;
 pub use id::ID;
 
-use crate::{Error, Result, auth::types::SigInfo, constants::ROOT, store::StoreError};
+use crate::{Result, auth::types::SigInfo, constants::ROOT, store::StoreError};
 
 use id::IdError;
 
@@ -36,7 +36,9 @@ fn is_zero(h: &u64) -> bool {
 #[derive(Default, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(super) struct TreeNode {
     /// The ID of the root `Entry` of the tree this node belongs to.
-    pub root: ID,
+    /// `None` for root entries (they are their own root).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub root: Option<ID>,
     /// IDs of the parent `Entry`s in the main tree history.
     /// The vector is kept sorted alphabetically.
     pub parents: Vec<ID>,
@@ -124,8 +126,8 @@ pub(super) struct SubTreeNode {
 /// `Entry::builder()` for regular entries or `Entry::root_builder()` for new top-level tree roots.
 ///
 /// ```
-/// # use eidetica::entry::{Entry, RawData};
-/// # let root_id: String = "some_root_id".to_string();
+/// # use eidetica::entry::{Entry, ID, RawData};
+/// # let root_id = ID::from_bytes("some_root_id");
 /// # let data: RawData = "{}".to_string();
 /// // For a regular entry:
 /// let builder = Entry::builder(root_id);
@@ -182,7 +184,7 @@ impl Entry {
     ///
     /// # Arguments
     /// * `root` - The `ID` of the root `Entry` of the tree this entry will belong to.
-    pub fn builder(root: impl Into<ID>) -> EntryBuilder {
+    pub fn builder(root: ID) -> EntryBuilder {
         EntryBuilder::new(root)
     }
 
@@ -197,18 +199,17 @@ impl Entry {
 
     /// Get the content-addressable ID of the entry.
     ///
-    /// The ID is calculated on demand by hashing the serialized JSON representation of the entry.
-    /// Because entries are immutable once created and their contents are deterministically
-    /// serialized, this ensures that identical entries will always have the same ID.
+    /// The ID is the CID of the DAG-CBOR serialized representation of the Entry.
     pub fn id(&self) -> ID {
-        // Entry itself derives Serialize and contains tree and subtrees.
-        // These are kept sorted and finalized by the EntryBuilder before Entry creation.
-        let json = serde_json::to_string(self).expect("Failed to serialize entry for hashing");
-        ID::from_bytes(json)
+        let bytes = self
+            .to_dagcbor()
+            .expect("Failed to serialize entry to DAG-CBOR for ID");
+        ID::from_dagcbor_bytes(bytes)
     }
 
     /// Get the ID of the root `Entry` of the tree this entry belongs to.
-    pub fn root(&self) -> ID {
+    /// Returns `None` for root entries.
+    pub fn root(&self) -> Option<ID> {
         self.tree.root.clone()
     }
 
@@ -220,7 +221,10 @@ impl Entry {
     ///
     /// This ensures that root entries are actual starting points of trees in the DAG.
     pub fn is_root(&self) -> bool {
-        self.subtrees.iter().any(|node| node.name == ROOT) && self.tree.parents.is_empty()
+        // FIXME: better identification of root entries
+        self.subtrees.iter().any(|node| node.name == ROOT)
+            && self.tree.parents.is_empty()
+            && self.tree.root.is_none()
     }
 
     /// Check if this entry contains data for a specific named subtree.
@@ -231,9 +235,9 @@ impl Entry {
     }
 
     /// Check if this entry belongs to a specific tree, identified by its root ID.
-    pub fn in_tree(&self, tree_id: impl AsRef<str>) -> bool {
+    pub fn in_tree(&self, tree_id: &ID) -> bool {
         // Entries that are roots exist in both trees
-        self.root() == tree_id.as_ref() || (self.id().as_str() == tree_id.as_ref())
+        self.tree.root.as_ref() == Some(tree_id) || self.id() == *tree_id
     }
 
     /// Get the names of all subtrees this entry contains data for.
@@ -331,11 +335,10 @@ impl Entry {
 
     /// Create canonical bytes for signing or ID generation.
     ///
-    /// This method serializes the entry to JSON with deterministic field ordering.
+    /// This method serializes the entry to DAG-CBOR with deterministic field ordering.
     /// For signing purposes, call `canonical_for_signing()` first.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>> {
-        let json = serde_json::to_string(self).map_err(Error::Serialize)?;
-        Ok(json.into_bytes())
+        self.to_dagcbor()
     }
 
     /// Create canonical bytes for signing (convenience method).
@@ -343,6 +346,18 @@ impl Entry {
     /// This combines `canonical_for_signing()` and `canonical_bytes()` for convenience.
     pub fn signing_bytes(&self) -> Result<Vec<u8>> {
         self.canonical_for_signing().canonical_bytes()
+    }
+
+    /// Serialize this entry to DAG-CBOR bytes.
+    ///
+    /// Returns the canonical DAG-CBOR encoding for CID computation.
+    pub fn to_dagcbor(&self) -> Result<Vec<u8>> {
+        serde_ipld_dagcbor::to_vec(self).map_err(|e| {
+            EntryError::SerializationFailed {
+                context: format!("DAG-CBOR serialization failed: {e}"),
+            }
+            .into()
+        })
     }
 
     /// Validate the structural integrity of this entry.
@@ -401,32 +416,13 @@ impl Entry {
     ///     }
     /// }
     /// ```
-    /// Validates that an ID is in the correct format for the hash algorithm used.
-    ///
-    /// This function now supports multiple hash algorithms and uses the structured
-    /// ID validation from the ID type itself.
+    /// Validates that an ID contains a valid CID.
     fn validate_id_format(id: &ID, context: &str) -> Result<()> {
-        // Use the ID's built-in validation by attempting to parse its string representation
-        // This ensures we validate according to the actual algorithm and format rules
-        if let Err(id_err) = ID::parse(id.as_str()) {
-            // Add context to the error and convert through the error system
-            let contextual_err = match &id_err {
-                IdError::InvalidFormat(_) => IdError::InvalidFormat(format!(
-                    "Invalid ID format in {}: {}",
-                    context,
-                    id.as_str()
-                )),
-                IdError::InvalidHex(_) => IdError::InvalidHex(format!(
-                    "Invalid hex characters in {} ID: {}",
-                    context,
-                    id.as_str()
-                )),
-                // For length and algorithm errors, the original error is sufficient
-                _ => id_err,
-            };
-            return Err(contextual_err.into());
+        if id.as_cid().is_none() {
+            return Err(
+                IdError::InvalidFormat(format!("Invalid ID in {context}: ID is empty")).into(),
+            );
         }
-
         Ok(())
     }
 
@@ -446,12 +442,13 @@ impl Entry {
             }.into());
         }
 
-        // Check if this is a root entry (will be true only if has ROOT marker AND no parents)
-        let is_root_entry = has_root_marker && self.tree.parents.is_empty();
+        // Check if this is a root entry (will be true only if has ROOT marker AND no parents AND no root)
+        let is_root_entry =
+            has_root_marker && self.tree.parents.is_empty() && self.tree.root.is_none();
 
-        // Validate root ID format (when not empty)
-        if !self.tree.root.is_empty() {
-            Self::validate_id_format(&self.tree.root, "tree root ID")?;
+        // Validate root ID format (when present)
+        if let Some(root_id) = &self.tree.root {
+            Self::validate_id_format(root_id, "tree root ID")?;
         }
 
         // Validate each subtree

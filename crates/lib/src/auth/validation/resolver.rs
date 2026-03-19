@@ -75,7 +75,7 @@ impl KeyResolver {
         }
 
         match sig_key {
-            SigKey::Direct(hint) => self.resolve_direct_key(hint, auth_settings),
+            SigKey::Direct { hint } => self.resolve_direct_key(hint, auth_settings),
             SigKey::Delegation { path, hint } => {
                 let instance = instance.ok_or_else(|| AuthError::DatabaseRequired {
                     operation: "delegated tree resolution".to_string(),

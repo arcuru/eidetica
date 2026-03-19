@@ -141,7 +141,7 @@ async fn test_verification_status_multiple_entries() {
 async fn test_verification_status_not_found_errors() {
     let backend = test_backend().await;
 
-    let nonexistent_id: ID = "nonexistent".into();
+    let nonexistent_id: ID = ID::from_bytes("nonexistent");
 
     // Test getting status for nonexistent entry
     let result = backend.get_verification_status(&nonexistent_id).await;

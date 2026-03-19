@@ -164,7 +164,7 @@ async fn test_backend_get_tree_from_tips() {
 
     // --- Test with non-existent tip ---
     let result = backend
-        .get_tree_from_tips(&root_id, &["bad_tip_id".into()])
+        .get_tree_from_tips(&root_id, &[ID::from_bytes("bad_tip_id")])
         .await;
     assert!(result.is_err(), "Non-existent tip should return an error");
     let err = result.unwrap_err();
@@ -176,7 +176,7 @@ async fn test_backend_get_tree_from_tips() {
     // --- Test with mismatched tree root ---
     // When given a valid tip but an invalid root (tree_id doesn't match),
     // the function should return an error because the tip doesn't belong to the specified tree.
-    let bad_root_id: ID = "bad_root".into();
+    let bad_root_id: ID = ID::from_bytes("bad_root");
     let result = backend
         .get_tree_from_tips(&bad_root_id, std::slice::from_ref(&e1_id))
         .await;

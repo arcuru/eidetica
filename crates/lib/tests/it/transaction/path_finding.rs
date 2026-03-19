@@ -653,11 +653,18 @@ async fn test_multi_tip_merge_state_caching() {
         .await
         .unwrap();
 
-    // Create the expected cache key (sorted tip IDs)
-    let mut sorted_tips = [diamond.left.as_str(), diamond.right.as_str()];
-    sorted_tips.sort();
-    let cache_key = format!("merge:{}", sorted_tips.join(":"));
-    let cache_id = ID::new(cache_key);
+    // Create the expected cache key (sorted by ID ordering, then converted to strings)
+    let mut sorted_ids = [diamond.left.clone(), diamond.right.clone()];
+    sorted_ids.sort();
+    let cache_key = format!(
+        "merge:{}",
+        sorted_ids
+            .iter()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>()
+            .join(":")
+    );
+    let cache_id = ID::from_bytes(cache_key);
 
     // Verify cache is empty before read
     let cached_before = ctx
@@ -749,11 +756,18 @@ async fn test_multi_tip_cache_key_is_order_independent() {
     let store1 = tx1.get_store::<DocStore>("data").await.unwrap();
     let _ = store1.get_all().await.unwrap();
 
-    // Get the cache key (sorted, so order doesn't matter)
-    let mut sorted_tips = [diamond.left.as_str(), diamond.right.as_str()];
-    sorted_tips.sort();
-    let cache_key = format!("merge:{}", sorted_tips.join(":"));
-    let cache_id = ID::new(cache_key);
+    // Get the cache key (sorted by ID ordering, then converted to strings)
+    let mut sorted_ids = [diamond.left.clone(), diamond.right.clone()];
+    sorted_ids.sort();
+    let cache_key = format!(
+        "merge:{}",
+        sorted_ids
+            .iter()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>()
+            .join(":")
+    );
+    let cache_id = ID::from_bytes(cache_key);
 
     // Verify cache was populated
     let cached = ctx

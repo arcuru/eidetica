@@ -1062,7 +1062,7 @@ async fn test_global_permission_enables_transactions() {
             // Verify the entry was created with global permission in SigInfo
             let entry = client_instance.backend().get(&entry_id).await.unwrap();
             match &entry.sig.key {
-                SigKey::Direct(hint) => {
+                SigKey::Direct { hint } => {
                     // Global permission is encoded as "*:ed25519:..." in the pubkey field
                     assert!(
                         entry.sig.key.is_global(),

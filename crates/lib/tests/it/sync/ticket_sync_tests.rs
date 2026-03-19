@@ -226,7 +226,7 @@ async fn test_sync_with_ticket_all_addresses_fail() {
     sync.accept_connections().await.unwrap();
 
     let fake_tree_id =
-        ID::new("sha256:0000000000000000000000000000000000000000000000000000000000000000");
+        ID::from_bytes("sha256:0000000000000000000000000000000000000000000000000000000000000000");
 
     let ticket = DatabaseTicket::with_addresses(
         fake_tree_id,
@@ -262,7 +262,7 @@ async fn test_sync_with_ticket_empty_addresses() {
     sync.accept_connections().await.unwrap();
 
     let fake_tree_id =
-        ID::new("sha256:0000000000000000000000000000000000000000000000000000000000000000");
+        ID::from_bytes("sha256:0000000000000000000000000000000000000000000000000000000000000000");
 
     // Ticket with no addresses
     let ticket = DatabaseTicket::new(fake_tree_id);

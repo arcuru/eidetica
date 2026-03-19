@@ -117,7 +117,7 @@ async fn test_auto_sync_between_instances() -> Result<()> {
     let synced_entry = synced_entry_result?;
     assert_eq!(
         synced_entry.id(),
-        &entry_id,
+        entry_id,
         "Synced entry ID should match original"
     );
 
@@ -241,7 +241,7 @@ async fn test_bidirectional_auto_sync() -> Result<()> {
     let alice_entry_on_2 = instance2.backend().get(&entry1_id).await?;
     assert_eq!(
         alice_entry_on_2.id(),
-        &entry1_id,
+        entry1_id,
         "Alice's entry should sync to instance2"
     );
     println!("✅ Alice's entry synced: instance1 → instance2");
@@ -250,7 +250,7 @@ async fn test_bidirectional_auto_sync() -> Result<()> {
     let bob_entry_on_1 = instance1.backend().get(&entry2_id).await?;
     assert_eq!(
         bob_entry_on_1.id(),
-        &entry2_id,
+        entry2_id,
         "Bob's entry should sync to instance1"
     );
     println!("✅ Bob's entry synced: instance2 → instance1");

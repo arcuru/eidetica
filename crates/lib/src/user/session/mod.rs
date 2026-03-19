@@ -242,7 +242,9 @@ impl User {
             key_id: key_id.clone(),
             sync_settings: SyncSettings::disabled(),
         };
-        databases_table.set(database.root_id(), tracked).await?;
+        databases_table
+            .set(&database.root_id().to_string(), tracked)
+            .await?;
 
         tx.commit().await?;
 

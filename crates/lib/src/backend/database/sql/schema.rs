@@ -24,7 +24,8 @@ use super::{SqlxBackend, SqlxResultExt};
 /// Current schema version.
 ///
 /// Increment this when making schema changes that require migration.
-pub const SCHEMA_VERSION: i64 = 1;
+/// Version 0 is fully unstable and should not be used in production.
+pub const SCHEMA_VERSION: i64 = 0;
 
 /// SQL statements to create the schema tables.
 ///
@@ -43,7 +44,7 @@ pub const CREATE_TABLES: &[&str] = &[
         is_root BIGINT NOT NULL DEFAULT 0,
         verification_status BIGINT NOT NULL DEFAULT 0,
         height BIGINT NOT NULL DEFAULT 0,
-        entry_json TEXT NOT NULL
+        entry_cbor BYTEA NOT NULL
     )",
     // Tree parent relationships (main tree DAG edges)
     // Each entry can have multiple parents for merge commits
@@ -121,9 +122,11 @@ pub const CREATE_INDEXES: &[&str] = &[
 pub async fn initialize(backend: &SqlxBackend) -> Result<()> {
     let pool = backend.pool();
 
-    // Create tables
+    // Create tables, adapting dialect-specific types
+    let blob_type = if backend.is_sqlite() { "BLOB" } else { "BYTEA" };
     for statement in CREATE_TABLES {
-        sqlx::query(statement)
+        let statement = statement.replace("BLOB", blob_type);
+        sqlx::query(&statement)
             .execute(pool)
             .await
             .sql_context("Schema creation failed")?;

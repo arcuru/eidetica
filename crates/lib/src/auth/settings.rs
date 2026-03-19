@@ -181,14 +181,14 @@ impl AuthSettings {
     /// The delegation is stored by root tree ID, extracted from `tree_ref.tree.root`.
     /// This ensures collision-resistant storage similar to key storage by pubkey.
     pub fn add_delegated_tree(&mut self, tree_ref: DelegatedTreeRef) -> Result<()> {
-        let root_id = tree_ref.tree.root.as_str().to_string();
+        let root_id = tree_ref.tree.root.to_string();
         self.inner.set(format!("delegations.{root_id}"), tree_ref);
         Ok(())
     }
 
     /// Get a delegated tree reference by root tree ID
     pub fn get_delegated_tree(&self, root_id: &ID) -> Result<DelegatedTreeRef> {
-        self.get_delegated_tree_by_str(root_id.as_str())
+        self.get_delegated_tree_by_str(&root_id.to_string())
     }
 
     /// Get a delegated tree reference by root tree ID string
@@ -226,7 +226,7 @@ impl AuthSettings {
                 if let Value::Doc(doc) = value
                     && let Ok(tree_ref) = DelegatedTreeRef::try_from(doc)
                 {
-                    let root_id = ID::new(root_id_str);
+                    let root_id = ID::parse(root_id_str)?;
                     result.insert(root_id, tree_ref);
                 }
             }

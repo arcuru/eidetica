@@ -26,9 +26,9 @@ use crate::helpers::{test_instance, test_instance_with_user};
 async fn test_delegation_without_backend() {
     // Create a delegation path with a fake root ID
     let fake_root_id =
-        ID::new("sha256:0000000000000000000000000000000000000000000000000000000000000001");
+        ID::from_bytes("sha256:0000000000000000000000000000000000000000000000000000000000000001");
     let delegation_path = create_delegation_path(
-        &[(&fake_root_id, vec![ID::from("tip1")])],
+        &[(&fake_root_id, vec![ID::from_bytes("tip1")])],
         KeyHint::from_name("final_key"),
     );
 
@@ -59,7 +59,7 @@ async fn test_delegation_nonexistent_tree() -> Result<()> {
     let txn = tree.new_transaction().await?;
     let settings_store = txn.get_store::<DocStore>("_settings").await?;
 
-    let nonexistent_root_id = ID::from("nonexistent_root");
+    let nonexistent_root_id = ID::from_bytes("nonexistent_root");
     let nonexistent_delegation = DelegatedTreeRef {
         permission_bounds: PermissionBounds {
             min: None,
@@ -67,13 +67,13 @@ async fn test_delegation_nonexistent_tree() -> Result<()> {
         },
         tree: TreeReference {
             root: nonexistent_root_id.clone(),
-            tips: vec![ID::from("nonexistent_tip")],
+            tips: vec![ID::from_bytes("nonexistent_tip")],
         },
     };
 
     let mut new_auth_settings = tree.get_settings().await?.get_all().await?;
     // Store by root ID (the new storage format)
-    new_auth_settings.set_json(nonexistent_root_id.as_str(), nonexistent_delegation)?;
+    new_auth_settings.set_json(nonexistent_root_id.to_string(), nonexistent_delegation)?;
     settings_store
         .set_value("auth", Value::Doc(new_auth_settings))
         .await?;
@@ -81,7 +81,10 @@ async fn test_delegation_nonexistent_tree() -> Result<()> {
 
     // Try to resolve delegation to non-existent tree
     let delegation_path = create_delegation_path(
-        &[(&nonexistent_root_id, vec![ID::from("nonexistent_tip")])],
+        &[(
+            &nonexistent_root_id,
+            vec![ID::from_bytes("nonexistent_tip")],
+        )],
         KeyHint::from_name("some_key"),
     );
 
@@ -118,13 +121,16 @@ async fn test_delegation_corrupted_tree_references() -> Result<()> {
 
     // Add corrupted delegation (invalid tips) - store under a valid-looking root ID
     let corrupted_root_id =
-        ID::new("sha256:corrupted0000000000000000000000000000000000000000000000000000");
+        ID::from_bytes("sha256:corrupted0000000000000000000000000000000000000000000000000000");
     let mut corrupted_delegate = Doc::new();
     corrupted_delegate.set("permission-bounds", "invalid");
     corrupted_delegate.set("tree", "not_a_tree_ref");
 
     let mut new_auth_settings = tree.get_settings().await?.get_all().await?;
-    new_auth_settings.set(corrupted_root_id.as_str(), Value::Doc(corrupted_delegate));
+    new_auth_settings.set(
+        corrupted_root_id.to_string(),
+        Value::Doc(corrupted_delegate),
+    );
     settings_store
         .set_value("auth", Value::Doc(new_auth_settings))
         .await?;
@@ -134,7 +140,7 @@ async fn test_delegation_corrupted_tree_references() -> Result<()> {
     let delegation_path = SigKey::Delegation {
         path: vec![DelegationStep {
             tree: corrupted_root_id.to_string(),
-            tips: vec![ID::from("some_tip")],
+            tips: vec![ID::from_bytes("some_tip")],
         }],
         hint: KeyHint::from_name("some_key"),
     };
@@ -270,7 +276,7 @@ async fn test_delegation_with_tampered_tips() -> Result<()> {
     txn.commit().await?;
 
     // Try to use delegation with fake/tampered tips
-    let fake_tips = vec![ID::from("fake_tip_1"), ID::from("fake_tip_2")];
+    let fake_tips = vec![ID::from_bytes("fake_tip_1"), ID::from_bytes("fake_tip_2")];
     let delegation_path = SigKey::Delegation {
         path: vec![DelegationStep {
             tree: delegated_tree_root.to_string(),
@@ -446,18 +452,20 @@ async fn test_error_message_consistency() {
             "empty",
         ),
         (
-            SigKey::Direct(KeyHint {
-                pubkey: None,
-                name: None,
-                is_global: false,
-            }),
+            SigKey::Direct {
+                hint: KeyHint {
+                    pubkey: None,
+                    name: None,
+                    is_global: false,
+                },
+            },
             "empty",
         ),
         (
             SigKey::Delegation {
                 path: vec![DelegationStep {
                     tree: "nonexistent".to_string(),
-                    tips: vec![ID::from("fake_tip")],
+                    tips: vec![ID::from_bytes("fake_tip")],
                 }],
                 hint: KeyHint::from_name("final"),
             },

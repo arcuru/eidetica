@@ -176,7 +176,7 @@ async fn test_delegated_tree_requires_backend() {
     let sig_key = SigKey::Delegation {
         path: vec![DelegationStep {
             tree: "user1".to_string(),
-            tips: vec![ID::new("tip1")],
+            tips: vec![ID::from_bytes("tip1")],
         }],
         hint: KeyHint::from_name("KEY_LAPTOP"),
     };
@@ -201,7 +201,7 @@ async fn test_delegation_path_rejects_wildcard_in_path() {
     let sig_key = SigKey::Delegation {
         path: vec![DelegationStep {
             tree: "*".to_string(), // Wildcard not allowed in path
-            tips: vec![ID::new("tip1")],
+            tips: vec![ID::from_bytes("tip1")],
         }],
         hint: KeyHint::from_name("final_key"),
     };
@@ -465,7 +465,7 @@ async fn test_delegated_tree_requires_tips() {
             },
             tree: TreeReference {
                 root: delegated_tree.root_id().clone(),
-                tips: vec![ID::new("some_tip")],
+                tips: vec![ID::from_bytes("some_tip")],
             },
         })
         .await

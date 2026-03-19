@@ -61,7 +61,7 @@ fn test_delegation_sig_key() {
     let sig_key = SigKey::Delegation {
         path: vec![DelegationStep {
             tree: "example_tree_id".to_string(),
-            tips: vec![ID::new("abc123")],
+            tips: vec![ID::from_bytes("abc123")],
         }],
         hint: KeyHint::from_name("KEY_LAPTOP"),
     };
@@ -141,7 +141,7 @@ fn test_sig_key_delegation_format() {
     let sig_key = SigKey::Delegation {
         path: vec![DelegationStep {
             tree: "tree_id_123".to_string(),
-            tips: vec![ID::new("tip1"), ID::new("tip2")],
+            tips: vec![ID::from_bytes("tip1"), ID::from_bytes("tip2")],
         }],
         hint: KeyHint::from_name("KEY_LAPTOP"),
     };
@@ -159,7 +159,7 @@ fn test_sig_key_delegation_roundtrip() {
     let original = SigKey::Delegation {
         path: vec![DelegationStep {
             tree: "tree_id_123".to_string(),
-            tips: vec![ID::new("tip1"), ID::new("tip2")],
+            tips: vec![ID::from_bytes("tip1"), ID::from_bytes("tip2")],
         }],
         hint: KeyHint::from_name("KEY_LAPTOP"),
     };
@@ -186,8 +186,8 @@ fn test_sig_info_nested_value_roundtrip() {
 #[test]
 fn test_tree_reference_nested_value_content() {
     let tree_ref = TreeReference {
-        root: ID::new("root123"),
-        tips: vec![ID::new("tip1"), ID::new("tip2")],
+        root: ID::from_bytes("root123"),
+        tips: vec![ID::from_bytes("tip1"), ID::from_bytes("tip2")],
     };
 
     let mut nested = Doc::new();
@@ -235,8 +235,8 @@ fn test_delegated_tree_ref_serialization() {
     let tree_ref = DelegatedTreeRef {
         permission_bounds: bounds,
         tree: TreeReference {
-            root: ID::new("root123"),
-            tips: vec![ID::new("tip1")],
+            root: ID::from_bytes("root123"),
+            tips: vec![ID::from_bytes("tip1")],
         },
     };
 
@@ -318,8 +318,8 @@ fn test_delegated_tree_ref_complete_roundtrip() {
             min: Some(Permission::Read),
         },
         tree: TreeReference {
-            root: ID::new("root123"),
-            tips: vec![ID::new("tip1"), ID::new("tip2")],
+            root: ID::from_bytes("root123"),
+            tips: vec![ID::from_bytes("tip1"), ID::from_bytes("tip2")],
         },
     };
 
@@ -439,7 +439,7 @@ fn test_sig_key_hint_access() {
 fn test_delegation_step_serialization() {
     let step = DelegationStep {
         tree: "tree_123".to_string(),
-        tips: vec![ID::new("tip1"), ID::new("tip2")],
+        tips: vec![ID::from_bytes("tip1"), ID::from_bytes("tip2")],
     };
 
     let json = serde_json::to_string(&step).unwrap();
@@ -612,7 +612,7 @@ fn test_sig_info_builder_delegation() {
     let delegation = SigKey::Delegation {
         path: vec![DelegationStep {
             tree: "tree_id".to_string(),
-            tips: vec![ID::new("tip1")],
+            tips: vec![ID::from_bytes("tip1")],
         }],
         hint: KeyHint::from_name("KEY_LAPTOP"),
     };
@@ -701,7 +701,9 @@ fn test_sig_info_malformed_reason() {
     // Malformed: signature but no hint (Direct with empty hint)
     let sig_no_hint = SigInfo {
         sig: Some("signature".to_string()),
-        key: SigKey::Direct(KeyHint::default()),
+        key: SigKey::Direct {
+            hint: KeyHint::default(),
+        },
     };
     assert_eq!(
         sig_no_hint.malformed_reason(),

@@ -268,16 +268,16 @@ mod tests {
     #[test]
     fn test_error_helpers() {
         let err = BackendError::EntryNotFound {
-            id: ID::from("test-entry"),
+            id: ID::from_bytes("test-entry"),
         };
         assert!(err.is_not_found());
-        assert_eq!(err.entry_id(), Some(&ID::from("test-entry")));
+        assert_eq!(err.entry_id(), Some(&ID::from_bytes("test-entry")));
 
         let err = BackendError::CycleDetected {
-            entry_id: ID::from("cycle-entry"),
+            entry_id: ID::from_bytes("cycle-entry"),
         };
         assert!(err.is_integrity_error());
-        assert_eq!(err.entry_id(), Some(&ID::from("cycle-entry")));
+        assert_eq!(err.entry_id(), Some(&ID::from_bytes("cycle-entry")));
 
         let err = BackendError::FileIo {
             source: std::io::Error::new(std::io::ErrorKind::NotFound, "test"),
@@ -298,12 +298,12 @@ mod tests {
     #[test]
     fn test_error_conversion() {
         let db_err = BackendError::EntryNotFound {
-            id: ID::from("test"),
+            id: ID::from_bytes("test"),
         };
         let err: crate::Error = db_err.into();
         match err {
             crate::Error::Backend(BackendError::EntryNotFound { id }) => {
-                assert_eq!(id.to_string(), "test")
+                assert_eq!(id, ID::from_bytes("test"))
             }
             _ => panic!("Unexpected error variant"),
         }

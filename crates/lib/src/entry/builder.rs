@@ -15,13 +15,13 @@ use crate::{Result, auth::types::SigInfo, constants::ROOT, crdt::Doc, store::Sto
 ///
 /// # Parameter Type Efficiency
 ///
-/// The builder uses `impl Into<ID>` and `impl Into<RawData>` for parameters, allowing you to pass
-/// string literals, `&str`, `String`, or the appropriate types without unnecessary conversions:
+/// The builder uses `ID` and `impl Into<RawData>` for parameters:
 ///
 /// ```ignore
-/// // Efficient - no unnecessary .to_string() calls needed
-/// let entry = Entry::builder("root_id")
-///     .add_parent("parent1")
+/// use eidetica::entry::ID;
+///
+/// let entry = Entry::builder(ID::from_bytes("root_id"))
+///     .add_parent(ID::from_bytes("parent1"))
 ///     .set_subtree_data("users", "user_data")
 ///     .build();
 /// ```
@@ -32,22 +32,20 @@ use crate::{Result, auth::types::SigInfo, constants::ROOT, crdt::Doc, store::Sto
 /// 1. Ownership chaining: Each method returns `self` for chained calls.
 ///    ```
 ///    # use eidetica::Entry;
-///    # let root_id = "root_id".to_string();
-///    # let data = "data".to_string();
-///    let entry = Entry::builder(root_id)
-///        .set_subtree_data("users".to_string(), "user_data".to_string())
-///        .add_parent("parent_id".to_string())
+///    # use eidetica::entry::ID;
+///    let entry = Entry::builder(ID::from_bytes("root_id"))
+///        .set_subtree_data("users", "user_data")
+///        .add_parent(ID::from_bytes("parent_id"))
 ///        .build();
 ///    ```
 ///
 /// 2. Mutable reference: Methods ending in `_mut` modify the builder in place.
 ///    ```
 ///    # use eidetica::Entry;
-///    # let root_id = "root_id".to_string();
-///    # let data = "data".to_string();
-///    let mut builder = Entry::builder(root_id);
-///    builder.set_subtree_data_mut("users".to_string(), "user_data".to_string());
-///    builder.add_parent_mut("parent_id".to_string());
+///    # use eidetica::entry::ID;
+///    let mut builder = Entry::builder(ID::from_bytes("root_id"));
+///    builder.set_subtree_data_mut("users", "user_data");
+///    builder.add_parent_mut(ID::from_bytes("parent_id"));
 ///    let entry = builder.build();
 ///    ```
 ///
@@ -55,10 +53,11 @@ use crate::{Result, auth::types::SigInfo, constants::ROOT, crdt::Doc, store::Sto
 ///
 /// ```
 /// use eidetica::Entry;
+/// use eidetica::entry::ID;
 ///
 /// // Create a builder for a regular entry
-/// let entry = Entry::builder("root_id")
-///     .add_parent("parent1")
+/// let entry = Entry::builder(ID::from_bytes("root_id"))
+///     .add_parent(ID::from_bytes("parent1"))
 ///     .set_subtree_data("users", "user_data")
 ///     .build();
 ///
@@ -82,10 +81,10 @@ impl EntryBuilder {
     ///
     /// Note: It's generally preferred to use the static `Entry::builder()` method
     /// instead of calling this constructor directly.
-    pub fn new(root: impl Into<ID>) -> Self {
+    pub fn new(root: ID) -> Self {
         Self {
             tree: TreeNode {
-                root: root.into(),
+                root: if root.is_empty() { None } else { Some(root) },
                 parents: Vec::new(),
                 metadata: None,
                 height: 0,
@@ -103,7 +102,7 @@ impl EntryBuilder {
     /// Note: It's generally preferred to use the static `Entry::root_builder()` method
     /// instead of calling this constructor directly.
     pub fn new_top_level() -> Self {
-        let mut builder = Self::new("");
+        let mut builder = Self::new(ID::default());
         // Add a special subtree that identifies this as a root entry
         builder.set_subtree_data_mut(ROOT, "");
 
@@ -331,8 +330,8 @@ impl EntryBuilder {
     ///
     /// # Returns
     /// A mutable reference to self for method chaining.
-    pub fn set_root(mut self, root: impl Into<String>) -> Self {
-        self.tree.root = root.into().into();
+    pub fn set_root(mut self, root: ID) -> Self {
+        self.tree.root = if root.is_empty() { None } else { Some(root) };
         self
     }
 
@@ -344,8 +343,8 @@ impl EntryBuilder {
     ///
     /// # Returns
     /// A mutable reference to self for method chaining.
-    pub fn set_root_mut(&mut self, root: impl Into<String>) -> &mut Self {
-        self.tree.root = root.into().into();
+    pub fn set_root_mut(&mut self, root: ID) -> &mut Self {
+        self.tree.root = if root.is_empty() { None } else { Some(root) };
         self
     }
 
@@ -366,16 +365,16 @@ impl EntryBuilder {
 
     /// Add a single parent ID to the main tree history.
     /// Parents will be sorted and duplicates handled during the `build()` process.
-    pub fn add_parent(mut self, parent_id: impl Into<String>) -> Self {
-        self.tree.parents.push(parent_id.into().into());
+    pub fn add_parent(mut self, parent_id: ID) -> Self {
+        self.tree.parents.push(parent_id);
         self
     }
 
     /// Mutable reference version of add_parent.
     /// Add a single parent ID to the main tree history.
     /// Parents will be sorted and duplicates handled during the `build()` process.
-    pub fn add_parent_mut(&mut self, parent_id: impl Into<String>) -> &mut Self {
-        self.tree.parents.push(parent_id.into().into());
+    pub fn add_parent_mut(&mut self, parent_id: ID) -> &mut Self {
+        self.tree.parents.push(parent_id);
         self
     }
 
@@ -449,24 +448,19 @@ impl EntryBuilder {
     /// If the subtree does not exist, it will be created with no data (`None`).
     /// Parent IDs will be sorted and de-duplicated during the `build()` process.
     /// The list of subtrees will be sorted by name when `build()` is called.
-    pub fn add_subtree_parent(
-        mut self,
-        subtree_name: impl Into<String>,
-        parent_id: impl Into<String>,
-    ) -> Self {
+    pub fn add_subtree_parent(mut self, subtree_name: impl Into<String>, parent_id: ID) -> Self {
         let subtree_name = subtree_name.into();
-        let parent_id = parent_id.into();
         if let Some(node) = self
             .subtrees
             .iter_mut()
             .find(|node| node.name == subtree_name)
         {
-            node.parents.push(parent_id.into());
+            node.parents.push(parent_id);
         } else {
             self.subtrees.push(SubTreeNode {
                 name: subtree_name,
                 data: None,
-                parents: vec![parent_id.into()],
+                parents: vec![parent_id],
                 height: None,
             });
         }
@@ -481,21 +475,20 @@ impl EntryBuilder {
     pub fn add_subtree_parent_mut(
         &mut self,
         subtree_name: impl Into<String>,
-        parent_id: impl Into<String>,
+        parent_id: ID,
     ) -> &mut Self {
         let subtree_name = subtree_name.into();
-        let parent_id = parent_id.into();
         if let Some(node) = self
             .subtrees
             .iter_mut()
             .find(|node| node.name == subtree_name)
         {
-            node.parents.push(parent_id.into());
+            node.parents.push(parent_id);
         } else {
             self.subtrees.push(SubTreeNode {
                 name: subtree_name,
                 data: None,
-                parents: vec![parent_id.into()],
+                parents: vec![parent_id],
                 height: None,
             });
         }
@@ -555,7 +548,8 @@ impl EntryBuilder {
     /// # Example
     ///
     /// ```ignore
-    /// let builder = Entry::builder("root_id");
+    /// use eidetica::entry::ID;
+    /// let builder = Entry::builder(ID::from_bytes("root_id"));
     /// assert!(builder.metadata().is_none());
     ///
     /// let builder = builder.set_metadata(r#"{"custom": "data"}"#);

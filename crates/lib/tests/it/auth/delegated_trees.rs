@@ -605,7 +605,7 @@ async fn test_delegation_depth_limit_exact() -> Result<()> {
     // Add 10 intermediate delegation steps (reaches MAX_DELEGATION_DEPTH of 10)
     // Using a non-existent ID - test will fail
     let bogus_root_id =
-        ID::new("sha256:0000000000000000000000000000000000000000000000000000000000000000");
+        ID::from_bytes("sha256:0000000000000000000000000000000000000000000000000000000000000000");
     for _ in 0..10 {
         delegation_steps.push(DelegationStep {
             tree: bogus_root_id.to_string(),
@@ -663,7 +663,7 @@ async fn test_delegated_tree_invalid_tips() -> Result<()> {
     .await?;
 
     // Fake tip that does not exist
-    let bogus_tip = ID::new("nonexistent_tip_hash");
+    let bogus_tip = ID::from_bytes("nonexistent_tip_hash");
 
     // Main tree with delegation using bogus tip using SettingsStore API
     let main_tree = user.create_database(Doc::new(), &main_admin_key).await?;

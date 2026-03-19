@@ -13,16 +13,19 @@ use super::{SqlxBackend, SqlxResultExt};
 pub async fn get(backend: &SqlxBackend, id: &ID) -> Result<Entry> {
     let pool = backend.pool();
 
-    let row: Option<(String,)> = sqlx::query_as("SELECT entry_json FROM entries WHERE id = $1")
+    let row: Option<(Vec<u8>,)> = sqlx::query_as("SELECT entry_cbor FROM entries WHERE id = $1")
         .bind(id.to_string())
         .fetch_optional(pool)
         .await
         .sql_context("Failed to get entry")?;
 
     match row {
-        Some((json,)) => {
-            let entry: Entry = serde_json::from_str(&json)
-                .map_err(|e| BackendError::DeserializationFailed { source: e })?;
+        Some((bytes,)) => {
+            let entry: Entry =
+                serde_ipld_dagcbor::from_slice(&bytes).map_err(|e| BackendError::SqlxError {
+                    reason: format!("CBOR deserialization failed: {e}"),
+                    source: None,
+                })?;
             Ok(entry)
         }
         None => Err(BackendError::EntryNotFound { id: id.clone() }.into()),
@@ -60,19 +63,16 @@ pub async fn put(
 
     let pool = backend.pool();
     let id = entry.id();
-    let raw_tree_id = entry.root();
     let is_root = entry.is_root();
 
-    // For root entries, the tree_id to store is the entry's own ID
-    // (entry.root() returns empty string for roots)
-    let tree_id = if is_root {
-        id.clone()
-    } else {
-        raw_tree_id.clone()
-    };
+    // For root entries, the tree_id is the entry's own ID.
+    // For non-root entries, entry.root() returns Some(root_id).
+    let tree_id = entry.root().unwrap_or_else(|| id.clone());
 
-    let entry_json = serde_json::to_string(&entry)
-        .map_err(|e| BackendError::SerializationFailed { source: e })?;
+    let entry_cbor = serde_ipld_dagcbor::to_vec(&entry).map_err(|e| BackendError::SqlxError {
+        reason: format!("CBOR serialization failed: {e}"),
+        source: None,
+    })?;
 
     let status_int: i64 = match verification_status {
         VerificationStatus::Verified => 0,
@@ -114,7 +114,7 @@ pub async fn put(
     let is_root_int: i64 = if is_root { 1 } else { 0 };
     let tree_height = entry.height() as i64;
     sqlx::query(
-        "INSERT INTO entries (id, tree_id, is_root, verification_status, height, entry_json)
+        "INSERT INTO entries (id, tree_id, is_root, verification_status, height, entry_cbor)
          VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(id.to_string())
@@ -122,7 +122,7 @@ pub async fn put(
     .bind(is_root_int)
     .bind(status_int)
     .bind(tree_height)
-    .bind(&entry_json)
+    .bind(&entry_cbor)
     .execute(&mut *tx)
     .await
     .sql_context("Failed to insert entry")?;
@@ -383,7 +383,7 @@ pub async fn get_entries_by_verification_status(
             .await
             .sql_context("Failed to get entries by status")?;
 
-    Ok(rows.into_iter().map(|(id,)| ID::from(id)).collect())
+    rows.into_iter().map(|(id,)| ID::parse(&id)).collect()
 }
 
 /// Get all root entry IDs.
@@ -395,23 +395,26 @@ pub async fn all_roots(backend: &SqlxBackend) -> Result<Vec<ID>> {
         .await
         .sql_context("Failed to get all roots")?;
 
-    Ok(rows.into_iter().map(|(id,)| ID::from(id)).collect())
+    rows.into_iter().map(|(id,)| ID::parse(&id)).collect()
 }
 
 /// Get all entries in a tree, sorted by height.
 pub async fn get_tree(backend: &SqlxBackend, tree: &ID) -> Result<Vec<Entry>> {
     let pool = backend.pool();
 
-    let rows: Vec<(String,)> = sqlx::query_as("SELECT entry_json FROM entries WHERE tree_id = $1")
+    let rows: Vec<(Vec<u8>,)> = sqlx::query_as("SELECT entry_cbor FROM entries WHERE tree_id = $1")
         .bind(tree.to_string())
         .fetch_all(pool)
         .await
         .sql_context("Failed to get tree")?;
 
     let mut entries = Vec::with_capacity(rows.len());
-    for (json,) in rows {
-        let entry: Entry = serde_json::from_str(&json)
-            .map_err(|e| BackendError::DeserializationFailed { source: e })?;
+    for (bytes,) in rows {
+        let entry: Entry =
+            serde_ipld_dagcbor::from_slice(&bytes).map_err(|e| BackendError::SqlxError {
+                reason: format!("CBOR deserialization failed: {e}"),
+                source: None,
+            })?;
         entries.push(entry);
     }
 
@@ -426,8 +429,8 @@ pub async fn get_store(backend: &SqlxBackend, tree: &ID, store: &str) -> Result<
     let pool = backend.pool();
 
     // Use subtrees table and sort by height directly in SQL
-    let rows: Vec<(String,)> = sqlx::query_as(
-        "SELECT e.entry_json
+    let rows: Vec<(Vec<u8>,)> = sqlx::query_as(
+        "SELECT e.entry_cbor
          FROM entries e
          JOIN subtrees s ON s.entry_id = e.id
          WHERE e.tree_id = $1 AND s.store_name = $2
@@ -440,9 +443,12 @@ pub async fn get_store(backend: &SqlxBackend, tree: &ID, store: &str) -> Result<
     .sql_context("Failed to get store")?;
 
     let mut entries = Vec::with_capacity(rows.len());
-    for (json,) in rows {
-        let entry: Entry = serde_json::from_str(&json)
-            .map_err(|e| BackendError::DeserializationFailed { source: e })?;
+    for (bytes,) in rows {
+        let entry: Entry =
+            serde_ipld_dagcbor::from_slice(&bytes).map_err(|e| BackendError::SqlxError {
+                reason: format!("CBOR deserialization failed: {e}"),
+                source: None,
+            })?;
         entries.push(entry);
     }
 

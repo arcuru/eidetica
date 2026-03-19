@@ -29,7 +29,7 @@ pub async fn get_store_tips(backend: &SqlxBackend, tree: &ID, store: &str) -> Re
             .await
             .sql_context("Failed to get store tips")?;
 
-    Ok(rows.into_iter().map(|(id,)| ID::from(id)).collect())
+    rows.into_iter().map(|(id,)| ID::parse(&id)).collect()
 }
 
 /// Get store tips that are reachable from the given main tree entries.
@@ -106,7 +106,7 @@ pub async fn get_store_tips_up_to_entries(
         .await
         .sql_context("Failed to get store tips up to entries")?;
 
-    Ok(rows.into_iter().map(|(id,)| ID::from(id)).collect())
+    rows.into_iter().map(|(id,)| ID::parse(&id)).collect()
 }
 
 /// Depth limit for ancestor traversal in find_merge_base.
@@ -271,7 +271,7 @@ async fn collect_ancestors_from_frontier(
     let mut at_boundary: HashSet<ID> = HashSet::new();
 
     for (id_str, height, depth) in rows {
-        let id = ID::from(id_str);
+        let id = ID::parse(&id_str)?;
         ancestors.push((id.clone(), height));
 
         // Entries at max depth are candidates for the new frontier
@@ -382,7 +382,7 @@ pub async fn collect_root_to_target(
 
         // Follow first parent (for a simple linear path)
         // For complex DAGs, this should collect all ancestors
-        current = ID::from(parent_rows[0].0.clone());
+        current = ID::parse(&parent_rows[0].0)?;
     }
 
     path.reverse();
@@ -438,13 +438,13 @@ pub async fn get_tree_from_tips(
     for (tip_id_str, exists_at_all, in_tree) in &validation_rows {
         if *exists_at_all == 0 {
             return Err(BackendError::EntryNotFound {
-                id: ID::from(tip_id_str.clone()),
+                id: ID::parse(tip_id_str)?,
             }
             .into());
         }
         if *in_tree == 0 {
             return Err(BackendError::EntryNotInTree {
-                entry_id: ID::from(tip_id_str.clone()),
+                entry_id: ID::parse(tip_id_str)?,
                 tree_id: tree.clone(),
             }
             .into());
@@ -466,13 +466,13 @@ pub async fn get_tree_from_tips(
             FROM ancestors a
             JOIN tree_parents tp ON tp.child_id = a.id
         )
-        SELECT e.entry_json, e.height
+        SELECT e.entry_cbor, e.height
         FROM ancestors a
         JOIN entries e ON e.id = a.id
         ORDER BY e.height ASC, a.id ASC"
     );
 
-    let mut query = sqlx::query_as::<_, (String, i64)>(&sql).bind(tree.to_string());
+    let mut query = sqlx::query_as::<_, (Vec<u8>, i64)>(&sql).bind(tree.to_string());
 
     for tip in tips {
         query = query.bind(tip.to_string());
@@ -485,9 +485,12 @@ pub async fn get_tree_from_tips(
 
     // Deserialize entries (already sorted by height)
     let mut entries = Vec::with_capacity(rows.len());
-    for (json, _height) in rows {
-        let entry: Entry = serde_json::from_str(&json)
-            .map_err(|e| BackendError::DeserializationFailed { source: e })?;
+    for (bytes, _height) in rows {
+        let entry: Entry =
+            serde_ipld_dagcbor::from_slice(&bytes).map_err(|e| BackendError::SqlxError {
+                reason: format!("CBOR deserialization failed: {e}"),
+                source: None,
+            })?;
         entries.push(entry);
     }
 
@@ -518,7 +521,7 @@ pub async fn get_store_from_tips(
 
     // Single query using recursive CTE to:
     // 1. Collect all ancestors from tips
-    // 2. Join with entries to get full entry JSON
+    // 2. Join with entries to get full entry CBOR
     // 3. Join with subtrees to get height for sorting
     // 4. Filter by tree_id
     let sql = format!(
@@ -536,14 +539,14 @@ pub async fn get_store_from_tips(
             FROM ancestors a
             JOIN store_parents sp ON sp.child_id = a.id AND sp.store_name = $2
         )
-        SELECT e.entry_json, st.height
+        SELECT e.entry_cbor, st.height
         FROM ancestors a
         JOIN entries e ON e.id = a.id
         JOIN subtrees st ON st.entry_id = a.id AND st.store_name = $2
         ORDER BY st.height ASC, a.id ASC"
     );
 
-    let mut query = sqlx::query_as::<_, (String, i64)>(&sql)
+    let mut query = sqlx::query_as::<_, (Vec<u8>, i64)>(&sql)
         .bind(tree.to_string())
         .bind(store);
 
@@ -558,9 +561,12 @@ pub async fn get_store_from_tips(
 
     // Deserialize entries (already sorted by height)
     let mut entries = Vec::with_capacity(rows.len());
-    for (json, _height) in rows {
-        let entry: Entry = serde_json::from_str(&json)
-            .map_err(|e| BackendError::DeserializationFailed { source: e })?;
+    for (bytes, _height) in rows {
+        let entry: Entry =
+            serde_ipld_dagcbor::from_slice(&bytes).map_err(|e| BackendError::SqlxError {
+                reason: format!("CBOR deserialization failed: {e}"),
+                source: None,
+            })?;
         entries.push(entry);
     }
 
@@ -592,7 +598,7 @@ pub async fn get_sorted_store_parents(
     .await
     .sql_context("Failed to get sorted store parents")?;
 
-    Ok(rows.into_iter().map(|(id, _)| ID::from(id)).collect())
+    rows.into_iter().map(|(id, _)| ID::parse(&id)).collect()
 }
 
 /// Get all entries between from_id and to_ids in a store.
@@ -656,5 +662,5 @@ pub async fn get_path_from_to(
         .await
         .sql_context("Failed to get path from to")?;
 
-    Ok(rows.into_iter().map(|(id, _)| ID::from(id)).collect())
+    rows.into_iter().map(|(id, _)| ID::parse(&id)).collect()
 }

@@ -55,18 +55,13 @@ fn create_merge_cache_id(tip_ids: &[ID]) -> ID {
     let mut sorted_tips = tip_ids.to_vec();
     sorted_tips.sort();
 
-    // Format: merge:{tip1}:{tip2}:...
-    let capacity = 5 + sorted_tips
-        .iter()
-        .map(|id| id.as_str().len() + 1)
-        .sum::<usize>();
-    let mut key = String::with_capacity(capacity);
-    key.push_str("merge");
+    // Create a deterministic cache key by hashing the sorted tip IDs
+    let mut key = String::from("merge");
     for tip in &sorted_tips {
         key.push(':');
-        key.push_str(tip.as_str());
+        key.push_str(&tip.to_string());
     }
-    ID::new(key)
+    ID::from_bytes(key.as_bytes())
 }
 
 /// Trait for encrypting/decrypting subtree data transparently
@@ -407,11 +402,18 @@ impl Transaction {
     /// # Arguments
     /// * `root` - The tree root ID to set (use empty string for top-level roots)
     pub(crate) fn set_entry_root(&self, root: impl Into<String>) -> Result<()> {
+        // FIXME: This is only called by Database::create()
         let mut builder_ref = self.entry_builder.lock().unwrap();
         let builder = builder_ref
             .as_mut()
             .ok_or(TransactionError::TransactionAlreadyCommitted)?;
-        builder.set_root_mut(root.into());
+        let root_str: String = root.into();
+        let root_id = if root_str.is_empty() {
+            ID::default()
+        } else {
+            ID::parse(&root_str)?
+        };
+        builder.set_root_mut(root_id);
         Ok(())
     }
 

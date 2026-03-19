@@ -35,7 +35,7 @@ use crate::{
 /// use eidetica::backend::database::InMemory;
 ///
 /// let backend = InMemory::new();
-/// let missing_ids = vec![ID::from("tip1"), ID::from("tip2")];
+/// let missing_ids = vec![ID::from_bytes("tip1"), ID::from_bytes("tip2")];
 /// let missing = collect_missing_ancestors(&backend, &missing_ids).await?;
 /// // Returns IDs of entries that need to be fetched from peer
 /// ```
@@ -112,8 +112,8 @@ pub async fn collect_missing_ancestors(
 /// use eidetica::backend::database::InMemory;
 ///
 /// let backend = InMemory::new();
-/// let our_tips = vec![ID::from("tip1"), ID::from("tip2")];
-/// let their_tips = vec![ID::from("common_ancestor")];
+/// let our_tips = vec![ID::from_bytes("tip1"), ID::from_bytes("tip2")];
+/// let their_tips = vec![ID::from_bytes("common_ancestor")];
 /// let to_send = collect_ancestors_to_send(&backend, &our_tips, &their_tips).await?;
 /// // Returns entries that peer needs, excluding what they already have
 /// ```
@@ -191,7 +191,7 @@ mod tests {
     #[tokio::test]
     async fn test_collect_missing_ancestors_not_found() {
         let backend = create_test_backend();
-        let missing_id = ID::from("missing123");
+        let missing_id = ID::from_bytes("missing123");
 
         let result = collect_missing_ancestors(backend.as_ref(), std::slice::from_ref(&missing_id))
             .await

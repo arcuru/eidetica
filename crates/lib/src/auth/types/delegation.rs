@@ -39,10 +39,10 @@ impl From<TreeReference> for Value {
 impl From<TreeReference> for Doc {
     fn from(tree_ref: TreeReference) -> Doc {
         let mut doc = Doc::new();
-        doc.set("root", tree_ref.root.as_str());
+        doc.set("root", tree_ref.root.to_string());
         let mut tips_doc = Doc::new();
         for (i, tip) in tree_ref.tips.iter().enumerate() {
-            tips_doc.set(i.to_string(), tip.as_str());
+            tips_doc.set(i.to_string(), tip.to_string());
         }
         doc.set("tips", tips_doc);
         doc
@@ -58,7 +58,7 @@ impl TryFrom<&Doc> for TreeReference {
             .ok_or_else(|| CRDTError::ElementNotFound {
                 key: "root".to_string(),
             })?;
-        let root = ID::new(root_str);
+        let root = ID::parse(root_str)?;
 
         let mut tips = Vec::new();
         if let Some(Value::Doc(tips_doc)) = doc.get("tips") {
@@ -71,7 +71,10 @@ impl TryFrom<&Doc> for TreeReference {
                 })
                 .collect();
             entries.sort_by_key(|(idx, _)| *idx);
-            tips = entries.into_iter().map(|(_, s)| ID::new(s)).collect();
+            tips = entries
+                .into_iter()
+                .map(|(_, s)| ID::parse(s))
+                .collect::<crate::Result<Vec<_>>>()?;
         }
 
         Ok(TreeReference { root, tips })

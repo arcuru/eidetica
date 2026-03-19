@@ -15,7 +15,7 @@ fn test_dual_api_patterns() {
         .expect("Entry should build successfully");
 
     // Verify the entry was built correctly
-    assert_eq!(entry.root(), ID::from_bytes("root_id"));
+    assert_eq!(entry.root(), Some(ID::from_bytes("root_id")));
     assert!(entry.in_subtree("subtree1"));
     assert_eq!(entry.data("subtree1").unwrap(), "subtree_data1");
     assert_has_parents(&entry, &["parent1", "parent2"]);
@@ -37,7 +37,7 @@ fn test_dual_api_patterns() {
     let entry2 = builder.build().expect("Entry should build successfully");
 
     // Verify the entry was built correctly
-    assert_eq!(entry2.root(), ID::from_bytes("root_id2"));
+    assert_eq!(entry2.root(), Some(ID::from_bytes("root_id2")));
     assert!(entry2.in_subtree("subtree2"));
     assert_eq!(entry2.data("subtree2").unwrap(), "subtree_data2");
     assert_has_parents(&entry2, &["parent3", "parent4"]);
@@ -209,7 +209,7 @@ fn test_entrybuilder_edge_cases() {
 
     // Empty root entry (created with Entry::root_builder)
     let empty_entry = create_empty_entry();
-    assert_eq!(empty_entry.root(), ""); // Default root should be empty string
+    assert!(empty_entry.root().is_none()); // Root entries have no root
     assert_no_parents(&empty_entry); // Root entries have no parents
     assert!(empty_entry.is_root()); // Should be a root entry
     assert!(empty_entry.in_subtree("_root")); // Root entries have the _root subtree

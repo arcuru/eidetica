@@ -2,6 +2,7 @@
 
 use eidetica::{
     auth::crypto::PublicKey,
+    entry::ID,
     sync::{Address, PeerId, PeerStatus},
 };
 
@@ -13,8 +14,8 @@ use std::sync::LazyLock;
 static TEST_PEER_PUBKEY: LazyLock<PublicKey> = LazyLock::new(PublicKey::random);
 
 static TEST_PEER_PUBKEY_2: LazyLock<PublicKey> = LazyLock::new(PublicKey::random);
-const TEST_TREE_ROOT_ID: &str = "tree_root_id_123";
-const TEST_TREE_ROOT_ID_2: &str = "tree_root_id_456";
+static TEST_TREE_ROOT_ID: LazyLock<ID> = LazyLock::new(|| ID::from_bytes("tree_root_id_123"));
+static TEST_TREE_ROOT_ID_2: LazyLock<ID> = LazyLock::new(|| ID::from_bytes("tree_root_id_456"));
 
 #[tokio::test]
 async fn test_peer_registration() {
@@ -150,7 +151,7 @@ async fn test_add_tree_sync() {
         .unwrap();
 
     // Add synced tree
-    sync.add_tree_sync(&TEST_PEER_PUBKEY, TEST_TREE_ROOT_ID)
+    sync.add_tree_sync(&TEST_PEER_PUBKEY, &TEST_TREE_ROOT_ID)
         .await
         .unwrap();
 
@@ -170,10 +171,10 @@ async fn test_add_multiple_synced_trees() {
         .unwrap();
 
     // Add multiple synced trees
-    sync.add_tree_sync(&TEST_PEER_PUBKEY, TEST_TREE_ROOT_ID)
+    sync.add_tree_sync(&TEST_PEER_PUBKEY, &TEST_TREE_ROOT_ID)
         .await
         .unwrap();
-    sync.add_tree_sync(&TEST_PEER_PUBKEY, TEST_TREE_ROOT_ID_2)
+    sync.add_tree_sync(&TEST_PEER_PUBKEY, &TEST_TREE_ROOT_ID_2)
         .await
         .unwrap();
 
@@ -194,10 +195,10 @@ async fn test_add_duplicate_synced_tree() {
         .unwrap();
 
     // Add same tree twice
-    sync.add_tree_sync(&TEST_PEER_PUBKEY, TEST_TREE_ROOT_ID)
+    sync.add_tree_sync(&TEST_PEER_PUBKEY, &TEST_TREE_ROOT_ID)
         .await
         .unwrap();
-    sync.add_tree_sync(&TEST_PEER_PUBKEY, TEST_TREE_ROOT_ID)
+    sync.add_tree_sync(&TEST_PEER_PUBKEY, &TEST_TREE_ROOT_ID)
         .await
         .unwrap();
 
@@ -215,15 +216,15 @@ async fn test_remove_tree_sync() {
     sync.register_peer(&TEST_PEER_PUBKEY, Some("Test Peer"))
         .await
         .unwrap();
-    sync.add_tree_sync(&TEST_PEER_PUBKEY, TEST_TREE_ROOT_ID)
+    sync.add_tree_sync(&TEST_PEER_PUBKEY, &TEST_TREE_ROOT_ID)
         .await
         .unwrap();
-    sync.add_tree_sync(&TEST_PEER_PUBKEY, TEST_TREE_ROOT_ID_2)
+    sync.add_tree_sync(&TEST_PEER_PUBKEY, &TEST_TREE_ROOT_ID_2)
         .await
         .unwrap();
 
     // Remove one tree
-    sync.remove_tree_sync(&TEST_PEER_PUBKEY, TEST_TREE_ROOT_ID)
+    sync.remove_tree_sync(&TEST_PEER_PUBKEY, &TEST_TREE_ROOT_ID)
         .await
         .unwrap();
 
@@ -247,26 +248,26 @@ async fn test_get_tree_peers() {
         .unwrap();
 
     // Add same tree to both peers
-    sync.add_tree_sync(&TEST_PEER_PUBKEY, TEST_TREE_ROOT_ID)
+    sync.add_tree_sync(&TEST_PEER_PUBKEY, &TEST_TREE_ROOT_ID)
         .await
         .unwrap();
-    sync.add_tree_sync(&TEST_PEER_PUBKEY_2, TEST_TREE_ROOT_ID)
+    sync.add_tree_sync(&TEST_PEER_PUBKEY_2, &TEST_TREE_ROOT_ID)
         .await
         .unwrap();
 
     // Add different tree to one peer
-    sync.add_tree_sync(&TEST_PEER_PUBKEY, TEST_TREE_ROOT_ID_2)
+    sync.add_tree_sync(&TEST_PEER_PUBKEY, &TEST_TREE_ROOT_ID_2)
         .await
         .unwrap();
 
     // Verify peers for first tree
-    let peers = sync.get_tree_peers(TEST_TREE_ROOT_ID).await.unwrap();
+    let peers = sync.get_tree_peers(&TEST_TREE_ROOT_ID).await.unwrap();
     assert_eq!(peers.len(), 2);
     assert!(peers.contains(&PeerId::new(TEST_PEER_PUBKEY.clone())));
     assert!(peers.contains(&PeerId::new(TEST_PEER_PUBKEY_2.clone())));
 
     // Verify peers for second tree
-    let peers = sync.get_tree_peers(TEST_TREE_ROOT_ID_2).await.unwrap();
+    let peers = sync.get_tree_peers(&TEST_TREE_ROOT_ID_2).await.unwrap();
     assert_eq!(peers.len(), 1);
     assert!(peers.contains(&PeerId::new(TEST_PEER_PUBKEY.clone())));
 }
@@ -283,25 +284,25 @@ async fn test_is_tree_synced_with_peer() {
     // Initially no trees are synced
     assert!(
         !sync
-            .is_tree_synced_with_peer(&TEST_PEER_PUBKEY, TEST_TREE_ROOT_ID)
+            .is_tree_synced_with_peer(&TEST_PEER_PUBKEY, &TEST_TREE_ROOT_ID)
             .await
             .unwrap()
     );
 
     // Add a synced tree
-    sync.add_tree_sync(&TEST_PEER_PUBKEY, TEST_TREE_ROOT_ID)
+    sync.add_tree_sync(&TEST_PEER_PUBKEY, &TEST_TREE_ROOT_ID)
         .await
         .unwrap();
 
     // Verify tree is now synced
     assert!(
-        sync.is_tree_synced_with_peer(&TEST_PEER_PUBKEY, TEST_TREE_ROOT_ID)
+        sync.is_tree_synced_with_peer(&TEST_PEER_PUBKEY, &TEST_TREE_ROOT_ID)
             .await
             .unwrap()
     );
     assert!(
         !sync
-            .is_tree_synced_with_peer(&TEST_PEER_PUBKEY, TEST_TREE_ROOT_ID_2)
+            .is_tree_synced_with_peer(&TEST_PEER_PUBKEY, &TEST_TREE_ROOT_ID_2)
             .await
             .unwrap()
     );
@@ -468,7 +469,7 @@ async fn test_peer_removal_cleans_all_data() {
     sync.register_peer(&TEST_PEER_PUBKEY, Some("Test Peer"))
         .await
         .unwrap();
-    sync.add_tree_sync(&TEST_PEER_PUBKEY, TEST_TREE_ROOT_ID)
+    sync.add_tree_sync(&TEST_PEER_PUBKEY, &TEST_TREE_ROOT_ID)
         .await
         .unwrap();
 
