@@ -21,9 +21,12 @@ eidetica:?db=<database_id>&pr=<transport_address>&pr=<transport_address>
 ### Database ID
 
 The database ID is stored as-is in the `db` query parameter, no encoding or
-transformation is applied. The ID format (`sha256:hex`, `blake3:hex`) passes
-through opaquely. The ticket format does not need to understand the ID's
-internal structure.
+transformation is applied. The ID is a multibase-encoded
+[CID (Content Identifier)][cid-spec] string (e.g., `bafyrei...` for
+base32lower). The ticket format does not need to understand the ID's internal
+structure.
+
+[cid-spec]: https://github.com/multiformats/cid
 
 ### Peer Address Hints
 
@@ -46,13 +49,13 @@ same transport type (e.g., different network interfaces).
 Database ID only (no hints):
 
 ```text
-eidetica:?db=sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+eidetica:?db=bafyreigdp67stqosn2o75rp3ina35czxl36g5a2d4v4tofwkl5yd4qrk4a
 ```
 
 With transport hints:
 
 ```text
-eidetica:?db=sha256:e3b0c44...855&pr=iroh:endpoint...&pr=http:192.168.1.1:8080
+eidetica:?db=bafyrei...&pr=iroh:endpoint...&pr=http:192.168.1.1:8080
 ```
 
 ## Future Features
@@ -69,7 +72,7 @@ detectable:
 tips=<count>:<tip_id>,<tip_id>,...
 ```
 
-For example, `tips=2:sha256:abc,sha256:def`. If the count doesn't match the
+For example, `tips=2:bafyrei...,bafyrei...`. If the count doesn't match the
 number of parsed tip IDs the parameter is discarded as truncated. A receiver
 can use the tips to sync to a known state or verify they reached the expected
 point. Not needed for normal use.

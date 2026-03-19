@@ -88,9 +88,9 @@ let sync = instance.sync().unwrap();
 sync.register_transport("http", HttpTransport::builder().bind("0.0.0.0:8080")).await?;
 sync.accept_connections().await?;
 
-// Generate a shareable ticket URL for this database
+// Generate a shareable ticket URI for this database
 let ticket = sync.create_ticket(&database.root_id()).await?;
-println!("Share this: {ticket}"); // eidetica:?db=sha256:...&pr=http:192.168.1.1:8080
+println!("Share this: {ticket}"); // eidetica:?db=bafyrei...&pr=http:192.168.1.1:8080
 
 // Connect from another instance using the ticket
 let client_sync = client_instance.sync().unwrap();

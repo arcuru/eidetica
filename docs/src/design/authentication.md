@@ -371,7 +371,7 @@ Keys are always stored by their public key string. The `name` field is optional 
       "delegations": {
         "team@example.com": {
           "permission_bounds": { "max": { "Write": 10 } },
-          "tree": { "root": "sha256:...", "tips": ["sha256:..."] }
+          "tree": { "root": "bafyrei...", "tips": ["bafyrei..."] }
         }
       }
     }

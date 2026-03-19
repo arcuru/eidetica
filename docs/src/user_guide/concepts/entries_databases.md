@@ -6,7 +6,7 @@ The basic units of data and organization in Eidetica.
 
 Entries are the fundamental building blocks in Eidetica. An Entry represents an atomic unit of data with the following characteristics:
 
-- **Content-addressable**: Each entry has a unique ID derived from its content, similar to Git commits.
+- **Content-addressable**: Each entry has a unique ID (a [CID](https://docs.ipfs.tech/concepts/content-addressing/)) derived from its content, similar to Git commits. The ID is computed by serializing the entry to [DAG-CBOR](https://ipld.io/docs/codecs/known/dag-cbor/) and hashing.
 - **Immutable**: Once created, entries cannot be modified.
 - **Parent references**: Entries maintain references to their parent entries, forming a directed acyclic graph (DAG).
 - **Database association**: Each entry belongs to a database and can reference parent entries within both the main database and stores.

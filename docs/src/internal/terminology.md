@@ -6,8 +6,9 @@ Eidetica uses two naming schemes:
 
 Trees and Subtrees. These align with the names used inside of an Entry:
 
-- **TreeNode**: Main tree node within an Entry (root ID, parent references, metadata)
+- **TreeNode**: Main tree node within an Entry (root CID, parent references, metadata)
 - **SubTreeNode**: Named subtree nodes within an Entry (name, parents, data payload)
+- **ID**: A wrapper around a CID (Content Identifier). Entries are serialized to DAG-CBOR and hashed to produce their CID. The string representation uses multibase base32lower encoding (`bafyrei...`).
 
 Use these when discussing Entry internals, Merkle-DAG structure, or serialized data format.
 

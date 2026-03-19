@@ -65,8 +65,8 @@ Each layer builds on the ones below, providing progressively higher-level abstra
 At the core of Eidetica is a directed acyclic graph (DAG) of immutable Entry objects:
 
 - Each Entry represents a point-in-time snapshot of data and has:
-  - A unique ID derived from its content (making it content-addressable)
-  - Links to parent entries (forming the graph structure)
+  - A unique [CID](https://docs.ipfs.tech/concepts/content-addressing/) derived from its content (making it content-addressable)
+  - Links to parent entries via CID references (forming the graph structure)
   - Data payloads organized by store
   - Metadata for database and store relationships
 
@@ -75,18 +75,15 @@ At the core of Eidetica is a directed acyclic graph (DAG) of immutable Entry obj
   - Efficient verification of data integrity
   - Conflict resolution when merging concurrent changes
 
-## IPFS Inspiration and Future Direction
+## IPLD Data Model
 
-While Eidetica draws inspiration from IPFS (InterPlanetary File System), it currently uses its own implementation patterns:
+Eidetica uses the [IPLD](https://ipld.io/) (InterPlanetary Linked Data) data model for content addressing and serialization:
 
-- IPFS is a content-addressed, distributed storage system where data is identified by cryptographic hashes
-- OrbitDB (which inspired Eidetica) uses IPFS for backend storage and distribution
+- **CIDs** (Content Identifiers): Every entry is identified by a CID — a self-describing hash that encodes the hash algorithm (Blake3, SHA-256, etc), the content codec (DAG-CBOR), and the hash digest. CID strings look like `bafyrei...` (base32lower encoding).
+- **DAG-CBOR**: Entries are serialized using [DAG-CBOR](https://ipld.io/docs/codecs/known/dag-cbor/), a deterministic subset of CBOR that ensures identical content always produces identical bytes (and therefore identical CIDs).
+- **Multihash**: Hash algorithm agility via the [multihash](https://multiformats.io/multihash/) specification. SHA-256 is the default; Blake3 is also supported.
 
-Eidetica's future plans include:
-
-- Developing efficient internal APIs for transferring objects between Eidetica instances
-- Potential IPFS-compatible addressing for distributed storage
-- More efficient synchronization mechanisms than traditional IPFS
+This aligns Eidetica with the broader content-addressed ecosystem (IPFS, Filecoin, libp2p) and makes entries interoperable with IPLD-aware tools.
 
 ## Stores: A Core Innovation
 

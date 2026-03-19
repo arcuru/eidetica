@@ -2,7 +2,7 @@
 
 Eidetica organizes data in a layered Merkle-DAG called a **Tree**. A Tree consists of Entries that form the main DAG, and each Entry can contain data for multiple subtrees. Each subtree forms its own independent DAG across the Entries.
 
-Each Entry is **immutable** and **content-addressable** - its ID is a cryptographic hash of its contents. Parent references are these secure hashes, forming the Merkle structure.
+Each Entry is **immutable** and **content-addressable**. Its ID is a [CID](https://docs.ipfs.tech/concepts/content-addressing/) (Content Identifier) computed by serializing the entry to DAG-CBOR and creating a CID pointing to that deterministic representation. Parent references use these CIDs, forming the Merkle structure.
 
 For simplicity, let's walk through an example Tree with 4 Entries.
 

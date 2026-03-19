@@ -39,7 +39,7 @@ Example output:
 
 ```
 🚀 Eidetica Chat Room Created!
-📍 Room Address: eidetica:?db=sha256:abc...&pr=iroh:endpoint...
+📍 Room Address: eidetica:?db=bafyrei...&pr=iroh:endpoint...
 👤 Username: alice
 
 Share this address with others to invite them to the chat.
@@ -105,7 +105,7 @@ cargo run -- --username alice
 
 # App displays:
 # 🚀 Eidetica Chat Room Created!
-# 📍 Room Address: eidetica:?db=sha256:abc...&pr=iroh:endpoint...
+# 📍 Room Address: eidetica:?db=bafyrei...&pr=iroh:endpoint...
 # 👤 Username: alice
 #
 # Share this address with others to invite them to the chat.
@@ -120,7 +120,7 @@ cargo run -- --username alice
 cd examples/chat
 
 # Paste Alice's ticket URL as the first argument
-cargo run -- 'eidetica:?db=sha256:abc...&pr=iroh:endpoint...' --username bob
+cargo run -- 'eidetica:?db=bafyrei...&pr=iroh:endpoint...' --username bob
 
 # Chat interface starts immediately - start chatting!
 ```
