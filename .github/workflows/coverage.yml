@@ -24,7 +24,7 @@ jobs:
 
       - name: Coverage
         run: |
-          nix-fast-build --skip-cached --no-nom --no-link \
+          nix-fast-build --no-nom --no-link \
             ${{ steps.nix.outputs.push-args }} \
             -f '.#legacyPackages.x86_64-linux.coverage.sqlite' \
             -f '.#legacyPackages.x86_64-linux.coverage.inmemory' \
