@@ -4,7 +4,6 @@ use eidetica::{
     Database, Registered,
     auth::crypto::generate_keypair,
     crdt::{Doc, doc::Value},
-    database::DatabaseKey,
     store::{DocStore, Table},
 };
 
@@ -573,7 +572,7 @@ async fn test_index_survives_database_reload() {
 
     // Reload database from same instance to test persistence
     // Reopen with the same key that was used to create
-    let database = Database::open(instance.clone(), &root_id, DatabaseKey::new(private_key))
+    let database = Database::open(instance.clone(), &root_id, private_key)
         .await
         .unwrap();
 

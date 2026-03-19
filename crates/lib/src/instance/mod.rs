@@ -17,7 +17,6 @@ use crate::{
     Clock, Database, Entry, Result, SystemClock,
     auth::crypto::{PrivateKey, PublicKey},
     backend::{BackendImpl, InstanceMetadata, InstanceSecrets},
-    database::DatabaseKey,
     entry::ID,
     sync::Sync,
     user::User,
@@ -460,7 +459,7 @@ impl Instance {
         Database::open(
             self.clone(),
             &self.inner.metadata.users_db,
-            DatabaseKey::new(self.signing_key()?.clone()),
+            self.signing_key()?.clone(),
         )
         .await
     }

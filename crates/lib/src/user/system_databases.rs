@@ -19,7 +19,6 @@ use crate::{
     },
     constants::{DATABASES, INSTANCE, USERS},
     crdt::Doc,
-    database::DatabaseKey,
     store::Table,
 };
 
@@ -365,7 +364,7 @@ pub async fn login_user(
     let user_database = Database::open(
         instance.handle(),
         &user_info.user_database_id,
-        DatabaseKey::new(default_signing_key),
+        default_signing_key,
     )
     .await?;
 

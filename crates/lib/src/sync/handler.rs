@@ -23,7 +23,6 @@ use crate::{
         KeyStatus, Permission,
         crypto::{PublicKey, create_challenge_response, generate_challenge},
     },
-    database::DatabaseKey,
     entry::ID,
     store::SettingsStore,
     sync::error::SyncError,
@@ -85,8 +84,7 @@ impl SyncHandlerImpl {
         // Load sync tree with the device key
         let instance = self.instance()?;
         let signing_key = instance.signing_key()?.clone();
-
-        Database::open(instance, &self.sync_tree_id, DatabaseKey::new(signing_key)).await
+        Database::open(instance, &self.sync_tree_id, signing_key).await
     }
 
     /// Store a bootstrap request in the sync database for manual approval.
@@ -341,16 +339,11 @@ impl SyncHandlerImpl {
             Err(_) => return false, // Fail closed
         };
 
-        let sync_database = match Database::open(
-            instance.clone(),
-            &self.sync_tree_id,
-            DatabaseKey::new(signing_key),
-        )
-        .await
-        {
-            Ok(db) => db,
-            Err(_) => return false, // Fail closed
-        };
+        let sync_database =
+            match Database::open(instance.clone(), &self.sync_tree_id, signing_key).await {
+                Ok(db) => db,
+                Err(_) => return false, // Fail closed
+            };
 
         let transaction = match sync_database.new_transaction().await {
             Ok(tx) => tx,

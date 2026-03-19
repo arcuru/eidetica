@@ -4,7 +4,6 @@ use eidetica::{
     Database,
     auth::types::{AuthKey, Permission, SigKey},
     crdt::Doc,
-    database::DatabaseKey,
     store::DocStore,
 };
 
@@ -202,13 +201,9 @@ async fn test_multi_key_authentication() {
         .get_signing_key(&key_id2)
         .expect("Failed to get signing key")
         .clone();
-    let tree_with_key2 = Database::open(
-        instance.clone(),
-        tree.root_id(),
-        DatabaseKey::new(signing_key2_for_load),
-    )
-    .await
-    .expect("Failed to load database with key2");
+    let tree_with_key2 = Database::open(instance.clone(), tree.root_id(), signing_key2_for_load)
+        .await
+        .expect("Failed to load database with key2");
 
     let txn2 = tree_with_key2
         .new_transaction()

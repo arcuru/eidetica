@@ -4,7 +4,6 @@ use eidetica::{
     Database,
     auth::{types::AuthKey, types::Permission, types::SigKey},
     crdt::Doc,
-    database::DatabaseKey,
     store::DocStore,
 };
 
@@ -117,13 +116,9 @@ async fn test_validation_pipeline_with_concurrent_settings_changes() {
         .expect("Failed to get KEY2 signing key")
         .clone();
 
-    let tree_with_key2 = Database::open(
-        instance.clone(),
-        tree.root_id(),
-        DatabaseKey::new(key2_signing_key),
-    )
-    .await
-    .expect("Failed to reload database with KEY2");
+    let tree_with_key2 = Database::open(instance.clone(), tree.root_id(), key2_signing_key)
+        .await
+        .expect("Failed to reload database with KEY2");
 
     // Create operation with KEY2 (should work after settings change)
     let txn2 = tree_with_key2

@@ -95,6 +95,16 @@ impl DatabaseKey {
     }
 }
 
+impl From<PrivateKey> for DatabaseKey {
+    /// Convert a `PrivateKey` into a `DatabaseKey` with pubkey-derived identity.
+    ///
+    /// This is equivalent to [`DatabaseKey::new`] and covers the most common case
+    /// where the key's identity in auth settings is its own public key.
+    fn from(signing_key: PrivateKey) -> Self {
+        Self::new(signing_key)
+    }
+}
+
 /// Represents a collection of related entries, like a traditional database or a branch in a version control system.
 ///
 /// Each `Database` is identified by the ID of its root `Entry` and manages the history of data
@@ -287,7 +297,6 @@ impl Database {
     /// # Example
     /// ```rust,no_run
     /// # use eidetica::*;
-    /// # use eidetica::database::DatabaseKey;
     /// # use eidetica::backend::database::InMemory;
     /// # use eidetica::auth::crypto::generate_keypair;
     /// # #[tokio::main]
@@ -295,16 +304,20 @@ impl Database {
     /// # let instance = Instance::open(Box::new(InMemory::new())).await?;
     /// # let (signing_key, _verifying_key) = generate_keypair();
     /// # let root_id = ID::from_bytes(b"existing_database_root_id");
-    /// // Open database with pubkey identity (most common)
-    /// let key = DatabaseKey::new(signing_key);
-    /// let database = Database::open(instance, &root_id, key).await?;
+    /// // Open database with a PrivateKey that has Direct access
+    /// let database = Database::open(instance, &root_id, signing_key).await?;
     ///
     /// // All transactions automatically use the provided key
     /// let tx = database.new_transaction().await?;
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn open(instance: Instance, root_id: &ID, key: DatabaseKey) -> Result<Self> {
+    pub async fn open(
+        instance: Instance,
+        root_id: &ID,
+        key: impl Into<DatabaseKey>,
+    ) -> Result<Self> {
+        let key = key.into();
         let temp_db = Self::open_unauthenticated(root_id.clone(), &instance)?;
         temp_db.validate_key(&key).await?;
 

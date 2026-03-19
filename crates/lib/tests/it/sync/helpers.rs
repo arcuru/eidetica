@@ -10,7 +10,6 @@ use eidetica::{
     Database, Entry, Error, Instance, Result,
     auth::{AuthKey, Permission as AuthPermission, crypto::PublicKey},
     crdt::Doc,
-    database::DatabaseKey,
     entry::ID,
     path,
     store::DocStore,
@@ -750,12 +749,8 @@ pub async fn enable_sync_for_instance_database(sync: &Sync, database_id: &ID) ->
     let instance = sync.instance()?;
     let signing_key = instance.signing_key()?.clone();
 
-    let sync_database = Database::open(
-        instance.clone(),
-        sync.sync_tree_root_id(),
-        DatabaseKey::new(signing_key),
-    )
-    .await?;
+    let sync_database =
+        Database::open(instance.clone(), sync.sync_tree_root_id(), signing_key).await?;
 
     let tx = sync_database.new_transaction().await?;
     let database_users = tx.get_store::<DocStore>("database_users").await?;

@@ -3,9 +3,7 @@
 //! This module contains tests for Tree API methods including entry retrieval,
 //! authentication, validation, and error handling.
 
-use eidetica::{
-    Database, auth::types::SigKey, crdt::Doc, database::DatabaseKey, entry::ID, store::DocStore,
-};
+use eidetica::{Database, auth::types::SigKey, crdt::Doc, entry::ID, store::DocStore};
 
 use super::helpers::*;
 use crate::helpers::*;
@@ -346,12 +344,8 @@ async fn test_verify_entry_signature_unauthorized_key() {
 
     // Database::open should fail because the unauthorized key is not in the tree's auth settings
     // and no global permission exists
-    let open_result = Database::open(
-        instance.clone(),
-        tree.root_id(),
-        DatabaseKey::new(unauthorized_signing_key),
-    )
-    .await;
+    let open_result =
+        Database::open(instance.clone(), tree.root_id(), unauthorized_signing_key).await;
 
     assert!(open_result.is_err());
     let error_msg = open_result.unwrap_err().to_string();

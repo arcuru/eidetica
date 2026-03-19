@@ -97,7 +97,6 @@ use crate::{
     Database, Instance, Result, WeakInstance,
     auth::{Permission, crypto::PublicKey},
     crdt::{Doc, doc::Value},
-    database::DatabaseKey,
     entry::ID,
     instance::backend::Backend,
     store::{DocStore, Registry},
@@ -325,12 +324,7 @@ impl Sync {
     pub async fn load(instance: Instance, sync_tree_root_id: &ID) -> Result<Self> {
         let device_key = instance.signing_key()?.clone();
 
-        let sync_tree = Database::open(
-            instance.handle(),
-            sync_tree_root_id,
-            DatabaseKey::new(device_key),
-        )
-        .await?;
+        let sync_tree = Database::open(instance.handle(), sync_tree_root_id, device_key).await?;
 
         let sync = Self {
             background_tx: OnceLock::new(),
