@@ -169,7 +169,7 @@ async fn test_backend_get_tree_from_tips() {
     assert!(result.is_err(), "Non-existent tip should return an error");
     let err = result.unwrap_err();
     assert!(
-        matches!(err, Error::Backend(BackendError::EntryNotFound { .. })),
+        matches!(err, Error::Backend(ref e) if matches!(**e, BackendError::EntryNotFound { .. })),
         "Expected EntryNotFound error, got: {err:?}"
     );
 
@@ -183,7 +183,7 @@ async fn test_backend_get_tree_from_tips() {
     assert!(result.is_err(), "Mismatched tree should return an error");
     let err = result.unwrap_err();
     assert!(
-        matches!(err, Error::Backend(BackendError::EntryNotInTree { .. })),
+        matches!(err, Error::Backend(ref e) if matches!(**e, BackendError::EntryNotInTree { .. })),
         "Expected EntryNotInTree error, got: {err:?}"
     );
 

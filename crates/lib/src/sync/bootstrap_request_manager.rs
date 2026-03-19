@@ -108,7 +108,7 @@ impl<'a> BootstrapRequestManager<'a> {
 
         match requests.get(request_id).await {
             Ok(request) => Ok(Some(request)),
-            Err(Error::Store(StoreError::KeyNotFound { .. })) => Ok(None),
+            Err(Error::Store(ref e)) if matches!(**e, StoreError::KeyNotFound { .. }) => Ok(None),
             Err(e) => Err(e),
         }
     }

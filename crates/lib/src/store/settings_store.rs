@@ -576,7 +576,7 @@ mod tests {
         let nonexistent_pubkey = PublicKey::random();
         let result = settings_store.get_auth_key(&nonexistent_pubkey).await;
         assert!(result.is_err());
-        if let Err(Error::Auth(auth_err)) = result {
+        if let Err(Error::Auth(ref auth_err)) = result {
             assert!(auth_err.is_not_found());
         } else {
             panic!("Expected Auth(KeyNotFound) error");

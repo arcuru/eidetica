@@ -530,7 +530,7 @@ async fn test_instance_create_strict_fails_on_existing() -> Result<(), Error> {
 
     // Verify error type
     if let Err(err) = result {
-        if let crate::Error::Instance(instance_err) = err {
+        if let crate::Error::Instance(ref instance_err) = err {
             assert!(
                 instance_err.is_already_exists(),
                 "Error should be InstanceAlreadyExists"

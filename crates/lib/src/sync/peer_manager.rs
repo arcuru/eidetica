@@ -53,7 +53,7 @@ impl<'a> PeerManager<'a> {
         // Check if peer already exists using path-based check
         if peers.contains_path(path!(&pk_str)).await {
             debug!(peer = %pk_str, "Peer already registered, skipping");
-            return Err(Error::Sync(SyncError::PeerAlreadyExists(pk_str)));
+            return Err(Error::Sync(Box::new(SyncError::PeerAlreadyExists(pk_str))));
         }
 
         debug!(peer = %pk_str, display_name = ?display_name, "Registering new peer");
@@ -114,7 +114,7 @@ impl<'a> PeerManager<'a> {
 
         // Check if peer exists
         if !peers.contains_path_str(&pk_str).await {
-            return Err(Error::Sync(SyncError::PeerNotFound(pk_str)));
+            return Err(Error::Sync(Box::new(SyncError::PeerNotFound(pk_str))));
         }
 
         // Update all peer fields
@@ -210,7 +210,7 @@ impl<'a> PeerManager<'a> {
 
         // Check if peer exists
         if !peers.contains_path_str(&pk_str).await {
-            return Err(Error::Sync(SyncError::PeerNotFound(pk_str)));
+            return Err(Error::Sync(Box::new(SyncError::PeerNotFound(pk_str))));
         }
 
         // Update status using path-based modification
@@ -255,9 +255,9 @@ impl<'a> PeerManager<'a> {
             .get_path_as::<String>(path!(pk_str, "pubkey"))
             .await
             .map_err(|_| {
-                Error::Sync(SyncError::SerializationError(
+                Error::Sync(Box::new(SyncError::SerializationError(
                     "Missing pubkey field".to_string(),
-                ))
+                )))
             })?;
 
         let display_name = peers
@@ -269,18 +269,18 @@ impl<'a> PeerManager<'a> {
             .get_path_as::<String>(path!(pk_str, "first_seen"))
             .await
             .map_err(|_| {
-                Error::Sync(SyncError::SerializationError(
+                Error::Sync(Box::new(SyncError::SerializationError(
                     "Missing first_seen field".to_string(),
-                ))
+                )))
             })?;
 
         let last_seen = peers
             .get_path_as::<String>(path!(pk_str, "last_seen"))
             .await
             .map_err(|_| {
-                Error::Sync(SyncError::SerializationError(
+                Error::Sync(Box::new(SyncError::SerializationError(
                     "Missing last_seen field".to_string(),
-                ))
+                )))
             })?;
 
         let status_str = peers
@@ -441,7 +441,7 @@ impl<'a> PeerManager<'a> {
         // First check if peer exists using path-based check
         let peers = self.txn.get_store::<DocStore>(PEERS_SUBTREE).await?;
         if !peers.contains_path_str(&pk_str).await {
-            return Err(Error::Sync(SyncError::PeerNotFound(pk_str)));
+            return Err(Error::Sync(Box::new(SyncError::PeerNotFound(pk_str))));
         }
 
         let trees = self.txn.get_store::<DocStore>(TREES_SUBTREE).await?;
@@ -617,7 +617,7 @@ impl<'a> PeerManager<'a> {
 
         // Check if peer exists
         if !peers.contains_path_str(&pk_str).await {
-            return Err(Error::Sync(SyncError::PeerNotFound(pk_str)));
+            return Err(Error::Sync(Box::new(SyncError::PeerNotFound(pk_str))));
         }
 
         // Get current addresses
@@ -665,7 +665,7 @@ impl<'a> PeerManager<'a> {
 
         // Check if peer exists
         if !peers.contains_path_str(&pk_str).await {
-            return Err(Error::Sync(SyncError::PeerNotFound(pk_str)));
+            return Err(Error::Sync(Box::new(SyncError::PeerNotFound(pk_str))));
         }
 
         // Get current addresses

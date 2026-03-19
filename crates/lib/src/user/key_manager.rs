@@ -704,7 +704,7 @@ mod tests {
         if let Err(err) = result {
             assert!(matches!(
                 err,
-                Error::User(UserError::DecryptionFailed { .. })
+                Error::User(ref e) if matches!(**e, UserError::DecryptionFailed { .. })
             ));
         }
     }
@@ -732,7 +732,7 @@ mod tests {
         };
         assert!(matches!(
             err,
-            Error::User(UserError::DecryptionFailed { .. })
+            Error::User(ref e) if matches!(**e, UserError::DecryptionFailed { .. })
         ));
         assert!(
             err.to_string().contains("Unsupported encryption algorithm"),

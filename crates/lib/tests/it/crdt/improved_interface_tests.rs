@@ -187,34 +187,34 @@ fn test_complex_nested_structures() -> Result<()> {
 
     // Test deep path access with type inference
     let username: String = doc.get_as(path!("app.users.123.name")).ok_or_else(|| {
-        Error::CRDT(CRDTError::ElementNotFound {
+        Error::CRDT(Box::new(CRDTError::ElementNotFound {
             key: "app.users.123.name".to_string(),
-        })
+        }))
     })?;
     assert_eq!(username, "Test User");
 
     let can_read: bool = doc
         .get_as(path!("app.users.123.permissions.read"))
         .ok_or_else(|| {
-            Error::CRDT(CRDTError::ElementNotFound {
+            Error::CRDT(Box::new(CRDTError::ElementNotFound {
                 key: "app.users.123.permissions.read".to_string(),
-            })
+            }))
         })?;
     assert!(can_read);
 
     let can_write: bool = doc
         .get_as(path!("app.users.123.permissions.write"))
         .ok_or_else(|| {
-            Error::CRDT(CRDTError::ElementNotFound {
+            Error::CRDT(Box::new(CRDTError::ElementNotFound {
                 key: "app.users.123.permissions.write".to_string(),
-            })
+            }))
         })?;
     assert!(!can_write);
 
     let max_users: i64 = doc.get_as(path!("app.config.max_users")).ok_or_else(|| {
-        Error::CRDT(CRDTError::ElementNotFound {
+        Error::CRDT(Box::new(CRDTError::ElementNotFound {
             key: "app.config.max_users".to_string(),
-        })
+        }))
     })?;
     assert_eq!(max_users, 1000);
 
@@ -242,9 +242,9 @@ fn test_interface_comparison() -> Result<()> {
 
     // New method way (most ergonomic) - use ok_or_else to convert Option to Result for ?
     let method_way: String = doc.get_as("message").ok_or_else(|| {
-        Error::CRDT(CRDTError::ElementNotFound {
+        Error::CRDT(Box::new(CRDTError::ElementNotFound {
             key: "message".to_string(),
-        })
+        }))
     })?;
     assert_eq!(method_way, "Hello World");
 

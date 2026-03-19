@@ -391,7 +391,7 @@ impl SyncHandlerImpl {
             Ok(()) => {
                 info!(peer_pubkey = %peer_pubkey, "Registered new incoming peer");
             }
-            Err(Error::Sync(SyncError::PeerAlreadyExists(_))) => {
+            Err(Error::Sync(ref e)) if matches!(**e, SyncError::PeerAlreadyExists(_)) => {
                 debug!(peer_pubkey = %peer_pubkey, "Peer already registered, updating addresses");
             }
             Err(e) => return Err(e),

@@ -56,6 +56,12 @@ pub mod y_crdt {
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// Common error type for the Eidetica library.
+///
+/// All domain-specific error variants are boxed to keep `Result<T, Error>` small
+/// on the stack. The box allocation only occurs on the error (cold) path.
+///
+/// `#[error(transparent)]` works with `Box<impl Error>` because `thiserror`
+/// delegates `Display` and `source()` through the wrapper.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("I/O error: {0}")]
@@ -66,66 +72,66 @@ pub enum Error {
 
     /// Structured authentication errors from the auth module
     #[error(transparent)]
-    Auth(auth::AuthError),
+    Auth(Box<auth::AuthError>),
 
     /// Structured database errors from the backend module
     #[error(transparent)]
-    Backend(backend::BackendError),
+    Backend(Box<backend::BackendError>),
 
     /// Structured base database errors from the instance module
     #[error(transparent)]
-    Instance(instance::InstanceError),
+    Instance(Box<instance::InstanceError>),
 
     /// Structured CRDT errors from the crdt module
     #[error(transparent)]
-    CRDT(crdt::CRDTError),
+    CRDT(Box<crdt::CRDTError>),
 
     /// Structured subtree errors from the store module
     #[error(transparent)]
-    Store(store::StoreError),
+    Store(Box<store::StoreError>),
 
     /// Structured transaction errors from the transaction module
     #[error(transparent)]
-    Transaction(transaction::TransactionError),
+    Transaction(Box<transaction::TransactionError>),
 
     /// Structured synchronization errors from the sync module
     #[error(transparent)]
-    Sync(sync::SyncError),
+    Sync(Box<sync::SyncError>),
 
     /// Structured entry errors from the entry module
     #[error(transparent)]
-    Entry(entry::EntryError),
+    Entry(Box<entry::EntryError>),
 
     /// Structured ID errors from the entry::id module
     #[error(transparent)]
-    Id(entry::id::IdError),
+    Id(Box<entry::id::IdError>),
 
     /// Structured user errors from the user module
     #[error(transparent)]
-    User(user::UserError),
+    User(Box<user::UserError>),
 }
 
 impl From<sync::SyncError> for Error {
     fn from(err: sync::SyncError) -> Self {
-        Error::Sync(err)
+        Error::Sync(Box::new(err))
     }
 }
 
 impl From<entry::EntryError> for Error {
     fn from(err: entry::EntryError) -> Self {
-        Error::Entry(err)
+        Error::Entry(Box::new(err))
     }
 }
 
 impl From<entry::id::IdError> for Error {
     fn from(err: entry::id::IdError) -> Self {
-        Error::Id(err)
+        Error::Id(Box::new(err))
     }
 }
 
 impl From<user::UserError> for Error {
     fn from(err: user::UserError) -> Self {
-        Error::User(err)
+        Error::User(Box::new(err))
     }
 }
 

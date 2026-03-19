@@ -143,7 +143,7 @@ impl TransactionError {
 // Conversion from TransactionError to the main Error type
 impl From<TransactionError> for crate::Error {
     fn from(err: TransactionError) -> Self {
-        crate::Error::Transaction(err)
+        crate::Error::Transaction(Box::new(err))
     }
 }
 

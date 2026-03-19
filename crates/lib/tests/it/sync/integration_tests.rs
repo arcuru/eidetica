@@ -127,7 +127,7 @@ async fn test_sync_without_transport_enabled() {
     assert!(result.is_err());
     let err = result.unwrap_err();
     match err {
-        Error::Sync(sync_err) => {
+        Error::Sync(ref sync_err) => {
             assert!(sync_err.is_configuration_error());
         }
         _ => panic!("Expected Sync error, got {err:?}"),
@@ -143,7 +143,7 @@ async fn test_sync_server_without_transport_enabled() {
     assert!(result.is_err());
     let err = result.unwrap_err();
     match err {
-        Error::Sync(sync_err) => {
+        Error::Sync(ref sync_err) => {
             assert!(sync_err.is_configuration_error());
         }
         _ => panic!("Expected Sync error, got {err:?}"),

@@ -132,6 +132,6 @@ impl StoreError {
 // Conversion from SubtreeError to the main Error type
 impl From<StoreError> for Error {
     fn from(err: StoreError) -> Self {
-        Error::Store(err)
+        Error::Store(Box::new(err))
     }
 }

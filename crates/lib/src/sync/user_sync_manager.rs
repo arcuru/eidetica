@@ -109,9 +109,9 @@ impl<'a> UserSyncManager<'a> {
             .get_path_as::<String>(path!(user_uuid.as_ref(), "preferences_db_id"))
             .await
             .map_err(|_| {
-                Error::Sync(SyncError::SerializationError(
+                Error::Sync(Box::new(SyncError::SerializationError(
                     "Missing preferences_db_id field".to_string(),
-                ))
+                )))
             })?;
         let prefs_db_id = ID::parse(&prefs_db_id_str)?;
 
@@ -362,7 +362,7 @@ impl<'a> UserSyncManager<'a> {
         let db_id_str = database_id.to_string();
 
         let settings_json = serde_json::to_string(settings)
-            .map_err(|e| Error::Sync(SyncError::SerializationError(e.to_string())))?;
+            .map_err(|e| Error::Sync(Box::new(SyncError::SerializationError(e.to_string()))))?;
 
         database_users
             .set_path(path!(&db_id_str, "combined_settings"), settings_json)
@@ -396,9 +396,9 @@ impl<'a> UserSyncManager<'a> {
         match database_users.get_path_as::<String>(&settings_path).await {
             Ok(settings_json) => {
                 let settings = serde_json::from_str(&settings_json).map_err(|e| {
-                    Error::Sync(SyncError::SerializationError(format!(
+                    Error::Sync(Box::new(SyncError::SerializationError(format!(
                         "Failed to parse combined settings: {e}"
-                    )))
+                    ))))
                 })?;
                 Ok(Some(settings))
             }

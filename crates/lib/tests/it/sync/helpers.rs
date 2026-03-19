@@ -770,7 +770,7 @@ pub async fn enable_sync_for_instance_database(sync: &Sync, database_id: &ID) ->
 
     let db_id_str = database_id.to_string();
     let settings_json = serde_json::to_string(&settings)
-        .map_err(|e| Error::Sync(SyncError::SerializationError(e.to_string())))?;
+        .map_err(|e| Error::Sync(Box::new(SyncError::SerializationError(e.to_string()))))?;
 
     database_users
         .set_path(path!(&db_id_str, "combined_settings"), settings_json)

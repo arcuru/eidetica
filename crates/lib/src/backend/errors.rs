@@ -257,7 +257,7 @@ impl BackendError {
 impl From<BackendError> for crate::Error {
     fn from(err: BackendError) -> Self {
         // Use the new structured Backend variant
-        crate::Error::Backend(err)
+        crate::Error::Backend(Box::new(err))
     }
 }
 
@@ -302,9 +302,12 @@ mod tests {
         };
         let err: crate::Error = db_err.into();
         match err {
-            crate::Error::Backend(BackendError::EntryNotFound { id }) => {
-                assert_eq!(id, ID::from_bytes("test"))
-            }
+            crate::Error::Backend(e) => match *e {
+                BackendError::EntryNotFound { id } => {
+                    assert_eq!(id, ID::from_bytes("test"))
+                }
+                _ => panic!("Unexpected error variant"),
+            },
             _ => panic!("Unexpected error variant"),
         }
     }

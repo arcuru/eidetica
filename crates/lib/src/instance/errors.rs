@@ -280,7 +280,7 @@ impl InstanceError {
 impl From<InstanceError> for crate::Error {
     fn from(err: InstanceError) -> Self {
         // Use the new structured Base variant
-        crate::Error::Instance(err)
+        crate::Error::Instance(Box::new(err))
     }
 }
 
@@ -336,9 +336,12 @@ mod tests {
         };
         let err: crate::Error = base_err.into();
         match err {
-            crate::Error::Instance(InstanceError::DatabaseNotFound { name }) => {
-                assert_eq!(name, "test")
-            }
+            crate::Error::Instance(e) => match *e {
+                InstanceError::DatabaseNotFound { name } => {
+                    assert_eq!(name, "test")
+                }
+                _ => panic!("Unexpected error variant"),
+            },
             _ => panic!("Unexpected error variant"),
         }
     }

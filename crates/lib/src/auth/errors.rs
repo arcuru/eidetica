@@ -261,7 +261,7 @@ impl AuthError {
 impl From<AuthError> for Error {
     fn from(err: AuthError) -> Self {
         // Use the new structured Auth variant
-        Error::Auth(err)
+        Error::Auth(Box::new(err))
     }
 }
 
@@ -299,7 +299,10 @@ mod tests {
         };
         let err: Error = auth_err.into();
         match err {
-            Error::Auth(AuthError::KeyNotFound { key_name: id }) => assert_eq!(id, "test"),
+            Error::Auth(e) => match *e {
+                AuthError::KeyNotFound { key_name: id } => assert_eq!(id, "test"),
+                _ => panic!("Unexpected error variant"),
+            },
             _ => panic!("Unexpected error variant"),
         }
     }

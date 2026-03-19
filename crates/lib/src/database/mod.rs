@@ -168,11 +168,11 @@ impl Database {
 
         // Reject preconfigured auth — Database::create owns auth bootstrapping entirely.
         if initial_settings.get("auth").is_some() {
-            return Err(Error::Auth(AuthError::InvalidAuthConfiguration {
+            return Err(Error::Auth(Box::new(AuthError::InvalidAuthConfiguration {
                 reason: "initial_settings must not contain auth configuration; \
                          Database::create bootstraps auth with the signing key as Admin(0)"
                     .to_string(),
-            }));
+            })));
         }
 
         // Bootstrap auth with the signing key as Admin(0)
@@ -338,29 +338,29 @@ impl Database {
                 if let Some(embedded_pubkey) = &hint.pubkey
                     && *embedded_pubkey != actual_pubkey
                 {
-                    return Err(Error::Auth(AuthError::SigningKeyMismatch {
+                    return Err(Error::Auth(Box::new(AuthError::SigningKeyMismatch {
                         reason: format!(
                             "signing key derives pubkey '{actual_pubkey}' \
                                  but global identity claims '{embedded_pubkey}'"
                         ),
-                    }));
+                    })));
                 }
                 auth_settings.get_global_permission().ok_or_else(|| {
-                    Error::Auth(AuthError::InvalidAuthConfiguration {
+                    Error::Auth(Box::new(AuthError::InvalidAuthConfiguration {
                         reason: "Global '*' permission not configured".to_string(),
-                    })
+                    }))
                 })
             }
             SigKey::Direct { hint } => match (&hint.pubkey, &hint.name) {
                 (Some(pubkey), _) => {
                     // Verify the claimed pubkey matches the actual signing key
                     if *pubkey != actual_pubkey {
-                        return Err(Error::Auth(AuthError::SigningKeyMismatch {
+                        return Err(Error::Auth(Box::new(AuthError::SigningKeyMismatch {
                             reason: format!(
                                 "signing key derives pubkey '{actual_pubkey}' \
                                  but identity claims '{pubkey}'"
                             ),
-                        }));
+                        })));
                     }
                     let auth_key = auth_settings.get_key_by_pubkey(pubkey)?;
                     Ok(*auth_key.permissions())
@@ -368,9 +368,9 @@ impl Database {
                 (_, Some(name)) => {
                     let matches = auth_settings.find_keys_by_name(name);
                     if matches.is_empty() {
-                        return Err(Error::Auth(AuthError::KeyNotFound {
+                        return Err(Error::Auth(Box::new(AuthError::KeyNotFound {
                             key_name: name.clone(),
-                        }));
+                        })));
                     }
                     // Find the named key whose pubkey matches our actual signing key
                     let actual_pubkey_str = actual_pubkey.to_string();
@@ -378,18 +378,18 @@ impl Database {
                         .iter()
                         .find(|(pk, _)| *pk == actual_pubkey_str)
                         .ok_or_else(|| {
-                            Error::Auth(AuthError::SigningKeyMismatch {
+                            Error::Auth(Box::new(AuthError::SigningKeyMismatch {
                                 reason: format!(
                                     "signing key derives pubkey '{actual_pubkey}' \
                                      but no key named '{name}' has that pubkey"
                                 ),
-                            })
+                            }))
                         })?;
                     Ok(*auth_key.permissions())
                 }
-                _ => Err(Error::Auth(AuthError::InvalidAuthConfiguration {
+                _ => Err(Error::Auth(Box::new(AuthError::InvalidAuthConfiguration {
                     reason: "DatabaseKey has empty identity hint".to_string(),
-                })),
+                }))),
             },
             SigKey::Delegation { .. } => {
                 // Resolve delegation path through AuthValidator
@@ -399,9 +399,9 @@ impl Database {
                     .resolve_sig_key(key.identity(), &auth_settings, Some(&instance))
                     .await
                     .map_err(|e| {
-                        Error::Auth(AuthError::InvalidAuthConfiguration {
+                        Error::Auth(Box::new(AuthError::InvalidAuthConfiguration {
                             reason: format!("Delegation resolution failed: {e}"),
-                        })
+                        }))
                     })?;
 
                 // Find a resolved auth whose pubkey matches our signing key
@@ -410,12 +410,12 @@ impl Database {
                     .find(|ra| ra.public_key == actual_pubkey)
                     .map(|ra| ra.effective_permission)
                     .ok_or_else(|| {
-                        Error::Auth(AuthError::SigningKeyMismatch {
+                        Error::Auth(Box::new(AuthError::SigningKeyMismatch {
                             reason: format!(
                                 "signing key derives pubkey '{actual_pubkey}' \
                                  but no resolved delegation key matches"
                             ),
-                        })
+                        }))
                     })
             }
         }
@@ -667,7 +667,7 @@ impl Database {
     pub(crate) fn instance(&self) -> Result<Instance> {
         self.instance
             .upgrade()
-            .ok_or_else(|| Error::Instance(InstanceError::InstanceDropped))
+            .ok_or_else(|| Error::Instance(Box::new(InstanceError::InstanceDropped)))
     }
 
     /// Get a reference to the backend

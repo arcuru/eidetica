@@ -149,7 +149,7 @@ impl From<PathError> for CRDTError {
 // Conversion from CRDTError to the main Error type
 impl From<CRDTError> for crate::Error {
     fn from(err: CRDTError) -> Self {
-        crate::Error::CRDT(err)
+        crate::Error::CRDT(Box::new(err))
     }
 }
 

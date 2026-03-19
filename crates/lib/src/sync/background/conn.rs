@@ -98,7 +98,7 @@ impl BackgroundSync {
                     Ok(_) => {
                         txn.commit().await?;
                     }
-                    Err(Error::Sync(SyncError::PeerAlreadyExists(_))) => {
+                    Err(Error::Sync(ref e)) if matches!(**e, SyncError::PeerAlreadyExists(_)) => {
                         // Peer already exists, that's fine - just continue with handshake result
                     }
                     Err(e) => return Err(e),

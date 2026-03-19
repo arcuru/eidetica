@@ -422,7 +422,7 @@ impl DocStore {
 impl From<PathError> for Error {
     fn from(err: PathError) -> Self {
         // Convert PathError to CRDTError first, then to main Error
-        Error::CRDT(err.into())
+        Error::CRDT(Box::new(err.into()))
     }
 }
 

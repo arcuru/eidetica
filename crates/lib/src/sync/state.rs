@@ -296,10 +296,10 @@ impl<'a> SyncStateManager<'a> {
 
         match sync_state.get_path_as::<String>(&cursor_path).await {
             Ok(json) => serde_json::from_str(&json).map_err(|e| {
-                Error::Store(StoreError::SerializationFailed {
+                Error::Store(Box::new(StoreError::SerializationFailed {
                     store: "sync_state".to_string(),
                     reason: format!("Invalid cursor JSON: {e}"),
-                })
+                }))
             }),
             Err(_) => {
                 // Create new cursor
@@ -335,10 +335,10 @@ impl<'a> SyncStateManager<'a> {
 
         match sync_state.get_path_as::<String>(&metadata_path).await {
             Ok(json) => serde_json::from_str(&json).map_err(|e| {
-                Error::Store(StoreError::SerializationFailed {
+                Error::Store(Box::new(StoreError::SerializationFailed {
                     store: "sync_state".to_string(),
                     reason: format!("Invalid metadata JSON: {e}"),
-                })
+                }))
             }),
             Err(_) => {
                 // Create new metadata
