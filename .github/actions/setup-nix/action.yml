@@ -18,8 +18,7 @@ runs:
       uses: DeterminateSystems/nix-installer-action@c5a866b6ab867e88becbed4467b93592bce69f8a # v21
       with:
         extra-conf: |
-          extra-substituters = https://cache.eidetica.dev
-          extra-trusted-public-keys = cache.eidetica.dev-1:eND5gRJlbnool3ZLCWT2H8kkygWS8JcsU76HYXbWPBI=
+          accept-flake-config = true
 
     - name: Install nix-fast-build
       shell: bash
