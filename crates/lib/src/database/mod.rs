@@ -202,9 +202,9 @@ impl Database {
         // Create the transaction - it will use the provided key automatically
         let txn = temp_database_for_bootstrap.new_transaction().await?;
 
-        // IMPORTANT: For the root entry, we need to set the database root to empty string
+        // IMPORTANT: For the root entry, we need to set the database root to empty/default
         // so that is_root() returns true and all_roots() can find it
-        txn.set_entry_root("")?;
+        txn.set_entry_root(ID::default())?;
 
         // Populate the SETTINGS and ROOT subtrees for the very first entry
         txn.update_subtree(SETTINGS, &serde_json::to_string(&initial_settings)?)

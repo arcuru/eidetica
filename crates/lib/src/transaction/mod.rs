@@ -400,20 +400,14 @@ impl Transaction {
     /// has an empty tree.root field, making it a proper top-level root.
     ///
     /// # Arguments
-    /// * `root` - The tree root ID to set (use empty string for top-level roots)
-    pub(crate) fn set_entry_root(&self, root: impl Into<String>) -> Result<()> {
+    /// * `root` - The tree root ID to set (use `ID::default()` for top-level roots)
+    pub(crate) fn set_entry_root(&self, root: ID) -> Result<()> {
         // FIXME: This is only called by Database::create()
         let mut builder_ref = self.entry_builder.lock().unwrap();
         let builder = builder_ref
             .as_mut()
             .ok_or(TransactionError::TransactionAlreadyCommitted)?;
-        let root_str: String = root.into();
-        let root_id = if root_str.is_empty() {
-            ID::default()
-        } else {
-            ID::parse(&root_str)?
-        };
-        builder.set_root_mut(root_id);
+        builder.set_root_mut(root);
         Ok(())
     }
 
