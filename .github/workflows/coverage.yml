@@ -26,17 +26,14 @@ jobs:
         run: |
           nix-fast-build --no-nom --no-link \
             ${{ steps.nix.outputs.push-args }} \
-            -f '.#legacyPackages.x86_64-linux.coverage.sqlite' \
-            -f '.#legacyPackages.x86_64-linux.coverage.inmemory' \
-            -f '.#legacyPackages.x86_64-linux.coverage.postgres'
+            -f '.#legacyPackages.x86_64-linux.coverage'
 
       - name: Extract coverage data
         run: |
           mkdir -p coverage/sqlite coverage/inmemory coverage/postgres
-          # Use fully-qualified system path to match the build step above
-          cp "$(nix path-info '.#legacyPackages.x86_64-linux.coverage.sqlite')/lcov.info" coverage/sqlite/lcov.info
-          cp "$(nix path-info '.#legacyPackages.x86_64-linux.coverage.inmemory')/lcov.info" coverage/inmemory/lcov.info
-          cp "$(nix path-info '.#legacyPackages.x86_64-linux.coverage.postgres')/lcov.info" coverage/postgres/lcov.info
+          cp "$(nix build --no-link --print-out-paths '.#legacyPackages.x86_64-linux.coverage.sqlite')/lcov.info" coverage/sqlite/lcov.info
+          cp "$(nix build --no-link --print-out-paths '.#legacyPackages.x86_64-linux.coverage.inmemory')/lcov.info" coverage/inmemory/lcov.info
+          cp "$(nix build --no-link --print-out-paths '.#legacyPackages.x86_64-linux.coverage.postgres')/lcov.info" coverage/postgres/lcov.info
 
       - name: Upload coverage (sqlite)
         uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5

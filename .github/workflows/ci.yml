@@ -36,14 +36,18 @@ jobs:
         run: |
           nix-fast-build --skip-cached --no-nom --no-link \
             ${{ steps.nix.outputs.push-args }} \
-            -f '.#legacyPackages.${{ matrix.system }}.lint.default' \
+            -f '.#legacyPackages.${{ matrix.system }}.lint.default'
+          nix-fast-build --skip-cached --no-nom --no-link \
+            ${{ steps.nix.outputs.push-args }} \
             -f '.#checks.${{ matrix.system }}.treefmt'
 
       - name: Test
         run: |
           nix-fast-build --skip-cached --no-nom --no-link \
             ${{ steps.nix.outputs.push-args }} \
-            -f '.#legacyPackages.${{ matrix.system }}.test.all' \
+            -f '.#legacyPackages.${{ matrix.system }}.test.all'
+          nix-fast-build --skip-cached --no-nom --no-link \
+            ${{ steps.nix.outputs.push-args }} \
             -f '.#legacyPackages.${{ matrix.system }}.eval.default'
 
       - name: Integration tests
