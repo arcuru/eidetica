@@ -19,9 +19,6 @@ pub enum UserError {
     #[error("Invalid password")]
     InvalidPassword,
 
-    #[error("Password verification failed")]
-    PasswordVerificationFailed,
-
     #[error("Key not found: {key_id}")]
     KeyNotFound { key_id: String },
 

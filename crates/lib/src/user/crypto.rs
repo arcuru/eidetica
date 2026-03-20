@@ -1,17 +1,14 @@
 //! Cryptographic functions for user system
 //!
-//! Provides password hashing and key encryption using:
-//! - Argon2id for password hashing
+//! Provides key derivation and encryption using:
+//! - Argon2id for key derivation from password + salt
 //! - AES-256-GCM for key encryption
 
 use aes_gcm::{
     Aes256Gcm, KeyInit, Nonce,
     aead::{Aead, AeadCore, OsRng},
 };
-use argon2::{
-    Argon2,
-    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core},
-};
+use argon2::{Argon2, password_hash::SaltString};
 use zeroize::Zeroize;
 
 use super::errors::UserError;
@@ -31,59 +28,17 @@ pub const KEY_LENGTH: usize = 32;
 /// # Returns
 /// A base64-encoded salt string suitable for `derive_encryption_key`.
 pub fn generate_salt() -> String {
+    use argon2::password_hash::rand_core;
     SaltString::generate(&mut rand_core::OsRng)
         .as_str()
         .to_string()
-}
-
-/// Hash a password using Argon2id
-///
-/// # Arguments
-/// * `password` - The password to hash
-///
-/// # Returns
-/// A tuple of (password_hash, salt_string) where:
-/// - password_hash is the Argon2 hash string (PHC format)
-/// - salt_string is the random salt used (base64 encoded string)
-pub fn hash_password(password: impl AsRef<str>) -> Result<(String, String)> {
-    let salt = SaltString::generate(&mut rand_core::OsRng);
-
-    let argon2 = Argon2::default();
-
-    let password_hash = argon2
-        .hash_password(password.as_ref().as_bytes(), &salt)
-        .map_err(|e| UserError::EncryptionFailed {
-            reason: format!("Password hashing failed: {e}"),
-        })?
-        .to_string();
-
-    let salt_string = salt.as_str().to_string();
-
-    Ok((password_hash, salt_string))
-}
-
-/// Verify a password against its hash
-///
-/// # Arguments
-/// * `password` - The password to verify
-/// * `password_hash` - The stored password hash (PHC format)
-///
-/// # Returns
-/// Ok(()) if password is correct, Err otherwise
-pub fn verify_password(password: impl AsRef<str>, password_hash: impl AsRef<str>) -> Result<()> {
-    let parsed_hash = PasswordHash::new(password_hash.as_ref())
-        .map_err(|_| UserError::PasswordVerificationFailed)?;
-
-    Argon2::default()
-        .verify_password(password.as_ref().as_bytes(), &parsed_hash)
-        .map_err(|_| UserError::InvalidPassword.into())
 }
 
 /// Derive an encryption key from a password and salt using Argon2id
 ///
 /// # Arguments
 /// * `password` - The user's password
-/// * `salt` - The salt string (base64 encoded, from hash_password)
+/// * `salt` - The salt string (base64 encoded, from `generate_salt`)
 ///
 /// # Returns
 /// A 32-byte encryption key suitable for AES-256
@@ -255,32 +210,16 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore)] // Argon2 is extremely slow under Miri
-    fn test_password_hash_and_verify() {
-        let password = "test_password_123";
+    fn test_generate_salt() {
+        let salt1 = generate_salt();
+        let salt2 = generate_salt();
 
-        let (hash, _salt) = hash_password(password).unwrap();
+        // Salts should be the correct length
+        assert_eq!(salt1.len(), SALT_LENGTH);
+        assert_eq!(salt2.len(), SALT_LENGTH);
 
-        // Verify correct password
-        assert!(verify_password(password, &hash).is_ok());
-
-        // Verify incorrect password
-        assert!(verify_password("wrong_password", &hash).is_err());
-    }
-
-    #[test]
-    #[cfg_attr(miri, ignore)] // Argon2 is extremely slow under Miri
-    fn test_password_hash_unique() {
-        let password = "test_password_123";
-
-        let (hash1, _) = hash_password(password).unwrap();
-        let (hash2, _) = hash_password(password).unwrap();
-
-        // Hashes should be different (different salts)
-        assert_ne!(hash1, hash2);
-
-        // But both should verify
-        assert!(verify_password(password, &hash1).is_ok());
-        assert!(verify_password(password, &hash2).is_ok());
+        // Salts should be different
+        assert_ne!(salt1, salt2);
     }
 
     #[test]
@@ -288,7 +227,7 @@ mod tests {
     fn test_key_encryption_round_trip() {
         let (private_key, _) = generate_keypair();
         let password = "encryption_password";
-        let (_, salt) = hash_password(password).unwrap();
+        let salt = generate_salt();
 
         // Derive encryption key
         let encryption_key = derive_encryption_key(password, &salt).unwrap();
@@ -309,7 +248,7 @@ mod tests {
         let (private_key, _) = generate_keypair();
         let password1 = "password1";
         let password2 = "password2";
-        let (_, salt) = hash_password(password1).unwrap();
+        let salt = generate_salt();
 
         // Encrypt with password1
         let encryption_key1 = derive_encryption_key(password1, &salt).unwrap();
@@ -328,7 +267,7 @@ mod tests {
     fn test_nonce_uniqueness() {
         let (private_key, _) = generate_keypair();
         let password = "password";
-        let (_, salt) = hash_password(password).unwrap();
+        let salt = generate_salt();
         let encryption_key = derive_encryption_key(password, &salt).unwrap();
 
         // Encrypt same key twice
