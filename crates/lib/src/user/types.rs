@@ -12,12 +12,28 @@ use crate::{
     entry::ID,
 };
 
+/// Credentials for unlocking a user's root signing key.
+///
+/// For password-protected users, contains the salt (for Argon2id key derivation)
+/// and the encrypted root key (AES-256-GCM). Decryption failure IS password
+/// verification — no separate password hash is needed.
+/// For passwordless users, contains the unencrypted root key directly.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UserCredentials {
+    /// Public key (available without decryption)
+    pub root_key_id: PublicKey,
+
+    /// Encrypted or unencrypted root private key
+    pub root_key: KeyStorage,
+
+    /// Salt for Argon2id key derivation (None for passwordless)
+    pub password_salt: Option<String>,
+}
+
 /// User information stored in _users database
 ///
 /// Users are stored in a Table with auto-generated UUID primary keys.
 /// The username field is used for login and must be unique.
-///
-/// Passwordless users have None for password fields.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UserInfo {
     /// Unique username (login identifier)
@@ -26,13 +42,8 @@ pub struct UserInfo {
     /// ID of the user's private database
     pub user_database_id: ID,
 
-    /// Password hash (using Argon2id)
-    /// None for passwordless users
-    pub password_hash: Option<String>,
-
-    /// Salt for password hashing (base64 encoded string)
-    /// None for passwordless users
-    pub password_salt: Option<String>,
+    /// Credentials containing the user's root signing key
+    pub credentials: UserCredentials,
 
     /// User account creation timestamp (Unix timestamp)
     pub created_at: i64,

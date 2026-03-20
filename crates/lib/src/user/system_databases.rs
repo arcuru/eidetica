@@ -6,10 +6,10 @@ use handle_trait::Handle;
 
 use super::{
     User,
-    crypto::{derive_encryption_key, encrypt_private_key, hash_password},
+    crypto::{derive_encryption_key, encrypt_private_key},
     errors::UserError,
     key_manager::UserKeyManager,
-    types::{KeyStorage, UserInfo, UserKey, UserStatus},
+    types::{KeyStorage, UserCredentials, UserInfo, UserKey, UserStatus},
 };
 use crate::{
     Database, Instance, Result,
@@ -192,96 +192,85 @@ pub async fn create_user(
         .into());
     }
 
-    // 1. Hash password if provided
-    let (password_hash, password_salt) = match password {
-        Some(pwd) => {
-            let (hash, salt) = hash_password(pwd)?;
-            (Some(hash), Some(salt))
-        }
-        None => (None, None),
-    };
-
-    // 2. Generate default keypair for this user (kept in memory only)
+    // 1. Generate default keypair for this user
     let (user_private_key, user_public_key) = generate_keypair();
-    // 3. Create user database with the user's key in auth (device key added automatically)
+
+    // 2. Create user database with the user's key as owner (Admin(0))
     let mut user_db_settings = Doc::new();
     user_db_settings.set("name", format!("_user_{username}"));
     user_db_settings.set("type", "user");
     user_db_settings.set("description", format!("User database for {username}"));
 
-    // Get device key for database creation (used as the signing key)
-    let device_private_key = instance.signing_key()?.clone();
-
-    // Create database using device_key as the signing key.
-    // Database::create bootstraps auth with device key as Admin(0).
-    let user_database = Database::create(instance, device_private_key, user_db_settings).await?;
+    let user_database =
+        Database::create(instance, user_private_key.clone(), user_db_settings).await?;
     let user_database_id = user_database.root_id().clone();
 
-    // Add user's key as an equal owner
-    // FIXME: can we restrict the Device ID's ownership?
-    let user_public_key_ref = user_public_key.clone();
+    // 3. Grant device key Read permission on user database (for sync access).
+    // User is already Admin(0) via Database::create above.
+    let device_pubkey = instance.id();
     user_database
         .with_transaction(|txn| async move {
             let settings = txn.get_settings()?;
             settings
                 .set_auth_key(
-                    &user_public_key_ref,
-                    AuthKey::active(Some("user"), Permission::Admin(0)),
+                    &device_pubkey,
+                    AuthKey::active(Some("device"), Permission::Read),
                 )
                 .await
         })
         .await?;
 
-    // 4. Store user's private key (encrypted or unencrypted based on password)
-    let user_key = match (password, &password_salt) {
-        (Some(pwd), Some(salt)) => {
-            // Password-protected: encrypt the key
-            let encryption_key = derive_encryption_key(pwd, salt)?;
+    // 4. Build UserCredentials — encrypt root key if password provided
+    let (root_key, password_salt) = match password {
+        Some(pwd) => {
+            let salt_string = super::crypto::generate_salt();
+            let encryption_key = derive_encryption_key(pwd, &salt_string)?;
             let (ciphertext, nonce) = encrypt_private_key(&user_private_key, &encryption_key)?;
-
-            UserKey {
-                key_id: user_public_key.clone(),
-                storage: KeyStorage::Encrypted {
+            (
+                KeyStorage::Encrypted {
                     algorithm: "aes-256-gcm".to_string(),
                     ciphertext,
                     nonce,
                 },
-                display_name: Some("Default Key".to_string()),
-                created_at: instance.clock().now_secs(),
-                last_used: None,
-                is_default: true, // First key is always default
-                database_sigkeys: std::collections::HashMap::new(),
-            }
+                Some(salt_string),
+            )
         }
-        _ => {
-            // Passwordless: store unencrypted
-            UserKey {
-                key_id: user_public_key.clone(),
-                storage: KeyStorage::Unencrypted {
-                    key: user_private_key,
-                },
-                display_name: Some("Default Key".to_string()),
-                created_at: instance.clock().now_secs(),
-                last_used: None,
-                is_default: true, // First key is always default
-                database_sigkeys: std::collections::HashMap::new(),
-            }
-        }
+        None => (
+            KeyStorage::Unencrypted {
+                key: user_private_key,
+            },
+            None,
+        ),
     };
 
+    let credentials = UserCredentials {
+        root_key_id: user_public_key.clone(),
+        root_key,
+        password_salt,
+    };
+
+    // 5. Store root key metadata in user database's keys table
+    let root_user_key = UserKey {
+        key_id: user_public_key,
+        storage: credentials.root_key.clone(),
+        display_name: Some("Root Key".to_string()),
+        created_at: instance.clock().now_secs(),
+        last_used: None,
+        is_default: true,
+        database_sigkeys: std::collections::HashMap::new(),
+    };
     user_database
         .with_transaction(|tx| async move {
             let keys_table = tx.get_store::<Table<UserKey>>("keys").await?;
-            keys_table.insert(user_key).await
+            keys_table.insert(root_user_key).await
         })
         .await?;
 
-    // 5. Create UserInfo
+    // 6. Create UserInfo
     let user_info = UserInfo {
         username: username.to_string(),
         user_database_id,
-        password_hash,
-        password_salt,
+        credentials,
         created_at: instance.clock().now_secs(),
         status: UserStatus::Active,
     };
@@ -368,13 +357,13 @@ pub async fn login_user(
         .into());
     }
 
-    // 2. Verify password compatibility
-    let is_passwordless = user_info.password_hash.is_none();
+    // 2. Verify password compatibility and construct root UserKey from credentials
+    let creds = &user_info.credentials;
+    let is_passwordless = creds.password_salt.is_none();
     match (password, is_passwordless) {
-        (Some(pwd), false) => {
-            // Password provided for password-protected user: verify it
-            let password_hash = user_info.password_hash.as_ref().unwrap();
-            super::crypto::verify_password(pwd, password_hash)?;
+        (Some(_), false) => {
+            // Password provided for password-protected user: OK
+            // Decryption of the root key IS password verification
         }
         (None, true) => {
             // No password for passwordless user: OK
@@ -392,54 +381,52 @@ pub async fn login_user(
         }
     }
 
-    // 3. Temporarily open user's private database to read keys (unauthenticated read)
-    let temp_user_database = Database::open(instance, &user_info.user_database_id).await?;
-
-    // 4. Load keys from user database
-    let keys_table = temp_user_database
-        .get_store_viewer::<Table<UserKey>>("keys")
-        .await?;
-    let keys: Vec<UserKey> = keys_table
-        .search(|_| true)
-        .await? // Get all keys
-        .into_iter()
-        .map(|(_, key)| key)
-        .collect();
-
-    // 5. Create UserKeyManager
-    let key_manager = if let Some(pwd) = password {
-        // Password-protected: decrypt keys
-        let password_salt =
-            user_info
+    // 3. Decrypt root signing key from credentials (decryption IS password verification)
+    let root_signing_key = match (&creds.root_key, password) {
+        (
+            KeyStorage::Encrypted {
+                ciphertext, nonce, ..
+            },
+            Some(pwd),
+        ) => {
+            let salt = creds
                 .password_salt
                 .as_ref()
                 .ok_or_else(|| UserError::PasswordRequired {
                     operation: "decrypt keys for password-protected user".to_string(),
                 })?;
-        UserKeyManager::new(pwd, password_salt, keys)?
-    } else {
-        // Passwordless: load unencrypted keys
-        UserKeyManager::new_passwordless(keys)?
+            let encryption_key = derive_encryption_key(pwd, salt)?;
+            super::crypto::decrypt_private_key(ciphertext, nonce, &encryption_key)?
+        }
+        (KeyStorage::Unencrypted { key }, None) => key.clone(),
+        _ => return Err(UserError::InvalidPassword.into()),
     };
 
-    // 6. Re-open user database with the user's default key using open()
-    // This configures the database to use DatabaseKey with the user's key
-    // so all operations work without needing keys in the backend
-    let default_key_id = key_manager
-        .get_default_key_id()
-        .ok_or(UserError::NoKeysAvailable)?;
-    let default_signing_key = key_manager
-        .get_signing_key(&default_key_id)
-        .ok_or_else(|| UserError::KeyNotFound {
-            key_id: default_key_id.to_string(),
-        })?
-        .clone();
-
+    // 4. Open user database authenticated with decrypted root key
     let user_database = Database::open(instance, &user_info.user_database_id)
         .await?
-        .with_key(default_signing_key);
+        .with_key(root_signing_key);
 
-    // 7. Update last_login in separate table
+    // 5. Load all keys from user database into key manager
+    // TODO: load keys lazily
+    let keys_table = user_database
+        .get_store_viewer::<Table<UserKey>>("keys")
+        .await?;
+    let all_keys: Vec<UserKey> = keys_table
+        .search(|_| true)
+        .await?
+        .into_iter()
+        .map(|(_, key)| key)
+        .collect();
+
+    let key_manager = if let Some(pwd) = password {
+        let salt = creds.password_salt.as_ref().unwrap();
+        UserKeyManager::new(pwd, salt, all_keys)?
+    } else {
+        UserKeyManager::new_passwordless(all_keys)?
+    };
+
+    // 6. Update last_login in separate table
     // TODO: this is a log, so it will grow unbounded over time and should probably be moved to a log table
     let now = instance.clock().now_secs();
     let user_uuid_ref = user_uuid.clone();
@@ -450,7 +437,7 @@ pub async fn login_user(
         })
         .await?;
 
-    // 8. Create User session
+    // 7. Create User session
     Ok(User::new(
         user_uuid,
         user_info,
@@ -610,8 +597,11 @@ mod tests {
         // Verify user info
         assert_eq!(user_info.username, "alice");
         assert_eq!(user_info.status, UserStatus::Active);
-        assert!(user_info.password_hash.is_some());
-        assert!(user_info.password_salt.is_some());
+        assert!(user_info.credentials.password_salt.is_some());
+        assert!(matches!(
+            user_info.credentials.root_key,
+            KeyStorage::Encrypted { .. }
+        ));
         assert!(!user_uuid.is_empty());
 
         // Verify user was stored in _users database
@@ -636,8 +626,11 @@ mod tests {
         // Verify user info
         assert_eq!(user_info.username, "bob");
         assert_eq!(user_info.status, UserStatus::Active);
-        assert!(user_info.password_hash.is_none());
-        assert!(user_info.password_salt.is_none());
+        assert!(user_info.credentials.password_salt.is_none());
+        assert!(matches!(
+            user_info.credentials.root_key,
+            KeyStorage::Unencrypted { .. }
+        ));
         assert!(!user_uuid.is_empty());
 
         // Verify user was stored in _users database
