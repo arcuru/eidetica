@@ -26,6 +26,16 @@ pub const NONCE_LENGTH: usize = 12;
 /// Derived key length for AES-256 (32 bytes)
 pub const KEY_LENGTH: usize = 32;
 
+/// Generate a random salt string for Argon2id key derivation.
+///
+/// # Returns
+/// A base64-encoded salt string suitable for `derive_encryption_key`.
+pub fn generate_salt() -> String {
+    SaltString::generate(&mut rand_core::OsRng)
+        .as_str()
+        .to_string()
+}
+
 /// Hash a password using Argon2id
 ///
 /// # Arguments
