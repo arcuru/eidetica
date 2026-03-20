@@ -8,16 +8,20 @@
 //! - **[`Instance`](crate::Instance)**: Manages infrastructure (user accounts, system databases, backends)
 //! - **[`User`]**: Handles contextual operations (database access, key management) via sessions
 //!
-//! Each user has a private database (`user:<username>`) storing:
-//! - **keys**: Encrypted Ed25519 keypairs with per-database SigKey mappings
+//! The user's root signing key is stored in `_users` as [`types::UserCredentials`]
+//! (encrypted or unencrypted). Each user has a private database (`_user_<username>`)
+//! owned by the user's root key (Admin(0)), with the device key granted Read permission.
+//! The private database stores:
+//! - **keys**: Additional Ed25519 keypairs with per-database SigKey mappings
 //! - **databases**: Tracked databases with sync preferences
 //! - **settings**: User configuration
 //!
 //! # Key Management
 //!
-//! Keys are Ed25519 keypairs, encrypted at rest using the user's password (Argon2id).
-//! Each key can authenticate with multiple databases via SigKey mappings, which are
-//! auto-discovered when tracking a database.
+//! Keys are Ed25519 keypairs. The root key is encrypted at rest using the user's password
+//! (Argon2id key derivation + AES-256-GCM). Decryption failure IS password verification —
+//! no separate password hash is stored. Each key can authenticate with multiple databases
+//! via SigKey mappings, which are auto-discovered when tracking a database.
 //!
 //! # Sync Settings
 //!

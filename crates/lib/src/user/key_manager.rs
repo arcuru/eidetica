@@ -319,7 +319,7 @@ impl ZeroizeOnDrop for UserKeyManager {}
 mod tests {
     use super::*;
     use crate::auth::crypto::generate_keypair;
-    use crate::user::crypto::{encrypt_private_key, hash_password};
+    use crate::user::crypto::{encrypt_private_key, generate_salt};
     use crate::{Clock, Error, SystemClock};
 
     fn create_test_user_key(signing_key: &PrivateKey, encryption_key: &[u8]) -> UserKey {
@@ -345,7 +345,7 @@ mod tests {
     #[cfg_attr(miri, ignore)] // Argon2 is extremely slow under Miri
     fn test_key_manager_new() {
         let password = "test_password";
-        let (_, salt) = hash_password(password).unwrap();
+        let salt = generate_salt();
         let encryption_key = derive_encryption_key(password, &salt).unwrap();
 
         // Create some test keys
@@ -371,7 +371,7 @@ mod tests {
     #[cfg_attr(miri, ignore)] // Argon2 is extremely slow under Miri
     fn test_key_manager_get_signing_key() {
         let password = "test_password";
-        let (_, salt) = hash_password(password).unwrap();
+        let salt = generate_salt();
         let encryption_key = derive_encryption_key(password, &salt).unwrap();
 
         let (key1, pub1) = generate_keypair();
@@ -388,7 +388,7 @@ mod tests {
     #[cfg_attr(miri, ignore)] // Argon2 is extremely slow under Miri
     fn test_key_manager_signing_key_produces_correct_public_key() {
         let password = "test_password";
-        let (_, salt) = hash_password(password).unwrap();
+        let salt = generate_salt();
         let encryption_key = derive_encryption_key(password, &salt).unwrap();
 
         let (key1, pub_key1) = generate_keypair();
@@ -405,7 +405,7 @@ mod tests {
     #[cfg_attr(miri, ignore)] // Argon2 is extremely slow under Miri
     fn test_key_manager_multiple_keys() {
         let password = "test_password";
-        let (_, salt) = hash_password(password).unwrap();
+        let salt = generate_salt();
         let encryption_key = derive_encryption_key(password, &salt).unwrap();
 
         // Create multiple keys
@@ -469,7 +469,7 @@ mod tests {
     #[cfg_attr(miri, ignore)] // Argon2 is extremely slow under Miri
     fn test_key_manager_add_key() {
         let password = "test_password";
-        let (_, salt) = hash_password(password).unwrap();
+        let salt = generate_salt();
         let encryption_key = derive_encryption_key(password, &salt).unwrap();
 
         let (key1, _) = generate_keypair();
@@ -492,7 +492,7 @@ mod tests {
     #[cfg_attr(miri, ignore)] // Argon2 is extremely slow under Miri
     fn test_key_manager_serialize_keys() {
         let password = "test_password";
-        let (_, salt) = hash_password(password).unwrap();
+        let salt = generate_salt();
         let encryption_key = derive_encryption_key(password, &salt).unwrap();
 
         let (key1, pub1) = generate_keypair();
@@ -524,7 +524,7 @@ mod tests {
     #[cfg_attr(miri, ignore)] // Argon2 is extremely slow under Miri
     fn test_key_manager_serialize_keys_sorted() {
         let password = "test_password";
-        let (_, salt) = hash_password(password).unwrap();
+        let salt = generate_salt();
         let encryption_key = derive_encryption_key(password, &salt).unwrap();
 
         let (key1, _) = generate_keypair();
@@ -553,7 +553,7 @@ mod tests {
     #[cfg_attr(miri, ignore)] // Argon2 is extremely slow under Miri
     fn test_key_manager_clear() {
         let password = "test_password";
-        let (_, salt) = hash_password(password).unwrap();
+        let salt = generate_salt();
         let encryption_key = derive_encryption_key(password, &salt).unwrap();
 
         let (key1, pub1) = generate_keypair();
@@ -576,7 +576,7 @@ mod tests {
     #[cfg_attr(miri, ignore)] // Argon2 is extremely slow under Miri
     fn test_key_manager_list_key_ids() {
         let password = "test_password";
-        let (_, salt) = hash_password(password).unwrap();
+        let salt = generate_salt();
         let encryption_key = derive_encryption_key(password, &salt).unwrap();
 
         let (key1, pub1) = generate_keypair();
@@ -596,7 +596,7 @@ mod tests {
     #[cfg_attr(miri, ignore)] // Argon2 is extremely slow under Miri
     fn test_key_manager_list_key_ids_sorted_by_timestamp() {
         let password = "test_password";
-        let (_, salt) = hash_password(password).unwrap();
+        let salt = generate_salt();
         let encryption_key = derive_encryption_key(password, &salt).unwrap();
 
         // Create keys with specific timestamps
@@ -671,7 +671,7 @@ mod tests {
     #[cfg_attr(miri, ignore)] // Argon2 is extremely slow under Miri
     fn test_key_manager_get_metadata() {
         let password = "test_password";
-        let (_, salt) = hash_password(password).unwrap();
+        let salt = generate_salt();
         let encryption_key = derive_encryption_key(password, &salt).unwrap();
 
         let (key1, pub1) = generate_keypair();
@@ -689,7 +689,7 @@ mod tests {
     fn test_key_manager_wrong_password() {
         let correct_password = "correct_password";
         let wrong_password = "wrong_password";
-        let (_, salt) = hash_password(correct_password).unwrap();
+        let salt = generate_salt();
         let encryption_key = derive_encryption_key(correct_password, &salt).unwrap();
 
         // Create keys with correct password
@@ -713,7 +713,7 @@ mod tests {
     #[cfg_attr(miri, ignore)] // Argon2 is extremely slow under Miri
     fn test_key_manager_rejects_unknown_encryption_algorithm() {
         let password = "test_password";
-        let (_, salt) = hash_password(password).unwrap();
+        let salt = generate_salt();
         let encryption_key = derive_encryption_key(password, &salt).unwrap();
 
         let (key1, _) = generate_keypair();
