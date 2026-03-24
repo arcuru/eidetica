@@ -9,23 +9,16 @@ jobs:
   coverage:
     name: Coverage
     runs-on: ubicloud-standard-8
-    env:
-      AWS_ACCESS_KEY_ID: ${{ secrets.NIX_CACHE_AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.NIX_CACHE_AWS_SECRET_ACCESS_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Setup Nix
         uses: ./.github/actions/setup-nix
-        id: nix
-        with:
-          signing-key: ${{ secrets.NIX_CACHE_SIGNING_KEY }}
 
       - name: Coverage
         run: |
           nix-fast-build --no-nom --no-link \
-            ${{ steps.nix.outputs.push-args }} \
             -f '.#legacyPackages.x86_64-linux.coverage'
 
       - name: Extract coverage data

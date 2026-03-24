@@ -23,6 +23,7 @@ concurrency:
 jobs:
   flake-update:
     name: Flake Update
+    environment: automation
     runs-on: ubicloud-standard-2
     if: github.repository_owner == 'arcuru'
     permissions:

@@ -19,6 +19,7 @@ env:
 jobs:
   build:
     name: Build (${{ matrix.system }})
+    environment: publish
     runs-on: ${{ matrix.runner }}
     if: |
       github.repository_owner == 'arcuru' &&
@@ -39,8 +40,8 @@ jobs:
       contents: read
       packages: write
     env:
-      AWS_ACCESS_KEY_ID: ${{ secrets.NIX_CACHE_AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.NIX_CACHE_AWS_SECRET_ACCESS_KEY }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.NIX_CACHE_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.NIX_CACHE_SECRET_ACCESS_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -51,12 +52,27 @@ jobs:
         with:
           signing-key: ${{ secrets.NIX_CACHE_SIGNING_KEY }}
 
-      - name: Build and push artifacts
+      # Build release artifacts from source without cache substitution to
+      # prevent cache poisoning from affecting published artifacts. Results
+      # are pushed to the cache afterward so other consumers still benefit.
+      - name: Build and push release artifacts
         run: |
           nix-fast-build --skip-cached --no-nom --no-link \
             ${{ steps.nix.outputs.push-args }} \
-            -f '.#legacyPackages.${{ matrix.system }}.eidetica.bin' \
+            --option substitute false \
+            -f '.#legacyPackages.${{ matrix.system }}.eidetica.bin'
+          nix-fast-build --skip-cached --no-nom --no-link \
+            ${{ steps.nix.outputs.push-args }} \
+            --option substitute false \
             -f '.#legacyPackages.${{ matrix.system }}.eidetica.image'
+
+      # Warm the cache with all remaining flake check outputs so subsequent CI
+      # runs are faster. Cache substitution is fine here since these are
+      # not published artifacts.
+      - name: Warm CI cache
+        run: |
+          nix-fast-build --skip-cached --no-nom --no-link \
+            ${{ steps.nix.outputs.push-args }}
 
       - name: Install Bencher CLI
         uses: bencherdev/bencher@8151077aa7b1bceaac11c4b308265417cae60e2b # v0.5.10
@@ -167,6 +183,8 @@ jobs:
           done
 
   manifest:
+    name: Manifest
+    environment: release
     runs-on: ubicloud-standard-2
     needs: build
     if: |

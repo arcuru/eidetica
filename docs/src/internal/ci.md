@@ -12,17 +12,14 @@ Fuzz / simulation testing are planned for the future.
 
 The primary CI runs on GitHub with these workflows:
 
-- **[tests.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/tests.yml)**: Main test pipeline (format, build, test, doc tests, book tests, minimal features)
-- **[lint.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/lint.yml)**: Linting checks (clippy, deny, formatting)
-- **[doc.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/doc.yml)**: Documentation building and testing
+- **[ci.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/ci.yml)**: Main CI pipeline (lint, test, integration tests, docs)
+- **[release.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/release.yml)**: Release pipeline (build, publish container images, create manifests)
 - **[sanitizers.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/sanitizers.yml)**: Memory and thread sanitizer checks
 - **[benchmarks.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/benchmarks.yml)**: Performance benchmarks
-- **[container.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/container.yml)**: Container image building
-- **[artifacts.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/artifacts.yml)**: Build artifact management
 - **[coverage.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/coverage.yml)**: Multi-backend code coverage tracking via Codecov
 - **[deploy-docs.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/deploy-docs.yml)**: Documentation deployment to GitHub Pages
 - **[release-plz.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/release-plz.yml)**: Automated releases and crates.io publishing
-- **[codeberg.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/codeberg.yml)**: Codeberg mirror sync
+- **[codeberg.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/codeberg.yml)**: Codeberg mirror sync (main branch only)
 - **[security-audit.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/security-audit.yml)**: Daily advisory scanning
 - **[cargo-update.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/cargo-update.yml)**: Monthly cargo dependency updates
 - **[flake-update.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/flake-update.yml)**: Monthly Nix flake input updates
@@ -41,7 +38,10 @@ The Nix flake defines reproducible builds and CI checks that run identically loc
 - `nix build` - Build the default package
 - `nix flake check` - Run all CI checks (audit, clippy, doc, test, etc.)
 
-Binary caching via a [binary cache](https://cache.eidetica.dev) speeds up builds by providing pre-built dependencies.
+Binary caching via a [nix binary cache](https://wiki.nixos.org/wiki/Binary_Cache) speeds up builds by providing pre-built dependencies. It is located at:
+
+- URL - `https://cache.eidetica.dev`
+- Public Key - `cache.eidetica.dev-1:eND5gRJlbnool3ZLCWT2H8kkygWS8JcsU76HYXbWPBI=`
 
 ## Nix Package Groups
 
@@ -170,3 +170,27 @@ The hold mechanism requires repository configuration:
 - An `on-hold` label in GitHub repo settings
 - A `dependencies` label (for categorization)
 - `Dependency Hold` added as a required status check in branch protection for `main` (displayed as `Deps: Hold Gate / Dependency Hold` in the checks UI)
+
+## Secret Management
+
+Secrets are scoped to [GitHub Environments](https://docs.github.com/en/actions/deployment/targeting-different-environments/using-environments-for-deployment) with branch restrictions rather than stored as repo-level secrets. This limits the blast radius of a compromised workflow or action.
+
+### Environments
+
+| Environment    | Secrets                                                                                                                    | Purpose                                          |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| `publish`      | `NIX_CACHE_ACCESS_KEY_ID`, `NIX_CACHE_SECRET_ACCESS_KEY`, `NIX_CACHE_SIGNING_KEY`, `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN` | Release builds, cache push, container publishing |
+| `release`      | `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`                                                                                    | Container manifest creation                      |
+| `automation`   | `PAT_TOKEN`                                                                                                                | PR creation with elevated permissions            |
+| `mirror`       | `GIT_SSH_PRIVATE_KEY`                                                                                                      | Codeberg mirror sync                             |
+| _(repo-level)_ | `CODECOV_TOKEN`, `BENCHER_API_TOKEN`                                                                                       | Low-risk upload-only tokens                      |
+
+All environments are restricted to the `main` branch. Low-risk tokens that can only upload metrics or coverage data remain at the repo level.
+
+### Cache Push Isolation
+
+Only the release workflow (`release.yml`) has cache push credentials. CI, coverage, and sanitizer workflows are fully secretless — they read from the public cache but never write to it. This means the Nix cache signing key exists in a single environment (`publish`), and all cache contents are built from source by the release job.
+
+### Release Build Integrity
+
+The release workflow builds published artifacts (binary and container image) from source using `--option substitute false`, bypassing the Nix binary cache entirely. This prevents a cache poisoning attack from affecting published artifacts. The from-source results are pushed to the cache afterward, along with CI debug artifacts (lint, test, doc targets), so subsequent CI runs and developer builds benefit from caching.

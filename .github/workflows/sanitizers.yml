@@ -14,21 +14,14 @@ jobs:
       matrix:
         sanitizer: [asan, lsan]
       fail-fast: false
-    env:
-      AWS_ACCESS_KEY_ID: ${{ secrets.NIX_CACHE_AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.NIX_CACHE_AWS_SECRET_ACCESS_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Setup Nix
         uses: ./.github/actions/setup-nix
-        id: nix
-        with:
-          signing-key: ${{ secrets.NIX_CACHE_SIGNING_KEY }}
 
       - name: Run ${{ matrix.sanitizer }}
         run: |
           nix-fast-build --skip-cached --no-nom --no-link \
-            ${{ steps.nix.outputs.push-args }} \
             -f '.#legacyPackages.x86_64-linux.sanitize.${{ matrix.sanitizer }}'

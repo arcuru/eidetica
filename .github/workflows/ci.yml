@@ -19,51 +19,38 @@ jobs:
           - system: aarch64-linux
             runner: ubicloud-standard-8-arm
       fail-fast: false
-    env:
-      AWS_ACCESS_KEY_ID: ${{ secrets.NIX_CACHE_AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.NIX_CACHE_AWS_SECRET_ACCESS_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Setup Nix
         uses: ./.github/actions/setup-nix
-        id: nix
-        with:
-          signing-key: ${{ secrets.NIX_CACHE_SIGNING_KEY }}
 
       - name: Lint
         run: |
           nix-fast-build --skip-cached --no-nom --no-link \
-            ${{ steps.nix.outputs.push-args }} \
             -f '.#legacyPackages.${{ matrix.system }}.lint.default'
           nix-fast-build --skip-cached --no-nom --no-link \
-            ${{ steps.nix.outputs.push-args }} \
             -f '.#checks.${{ matrix.system }}.treefmt'
 
       - name: Test
         run: |
           nix-fast-build --skip-cached --no-nom --no-link \
-            ${{ steps.nix.outputs.push-args }} \
             -f '.#legacyPackages.${{ matrix.system }}.test.all'
           nix-fast-build --skip-cached --no-nom --no-link \
-            ${{ steps.nix.outputs.push-args }} \
             -f '.#legacyPackages.${{ matrix.system }}.eval.default'
 
       - name: Integration tests
         if: matrix.system == 'x86_64-linux'
         run: |
           nix-fast-build --skip-cached --no-nom --no-link \
-            ${{ steps.nix.outputs.push-args }} \
             -f '.#legacyPackages.x86_64-linux.integration.default'
 
       - name: Doc
         run: |
           nix-fast-build --skip-cached --no-nom --no-link \
-            ${{ steps.nix.outputs.push-args }} \
             -f '.#legacyPackages.${{ matrix.system }}.doc.default'
 
       - name: Remaining Checks
         run: |
-          nix-fast-build --skip-cached --no-nom --no-link \
-            ${{ steps.nix.outputs.push-args }}
+          nix-fast-build --skip-cached --no-nom --no-link
