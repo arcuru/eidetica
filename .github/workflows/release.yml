@@ -52,18 +52,19 @@ jobs:
         with:
           signing-key: ${{ secrets.NIX_CACHE_SIGNING_KEY }}
 
-      # Build release artifacts from source without cache substitution to
-      # prevent cache poisoning from affecting published artifacts. Results
-      # are pushed to the cache afterward so other consumers still benefit.
+      # Build release artifacts using only the official NixOS cache, excluding
+      # our own cache to prevent cache poisoning from affecting published
+      # artifacts. Results are pushed to the cache afterward so other
+      # consumers still benefit.
       - name: Build and push release artifacts
         run: |
           nix-fast-build --skip-cached --no-nom --no-link \
             ${{ steps.nix.outputs.push-args }} \
-            --option substitute false \
+            --option substituters 'https://cache.nixos.org' \
             -f '.#legacyPackages.${{ matrix.system }}.eidetica.bin'
           nix-fast-build --skip-cached --no-nom --no-link \
             ${{ steps.nix.outputs.push-args }} \
-            --option substitute false \
+            --option substituters 'https://cache.nixos.org' \
             -f '.#legacyPackages.${{ matrix.system }}.eidetica.image'
 
       # Warm the cache with all remaining flake check outputs so subsequent CI
