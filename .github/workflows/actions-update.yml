@@ -63,6 +63,19 @@ jobs:
               return
             fi
 
+            # dtolnay/rust-toolchain uses branches, not releases; track master branch directly
+            if [ "$OWNER/$REPO" = "dtolnay/rust-toolchain" ]; then
+              NEW_SHA=$(gh api "repos/$OWNER/$REPO/branches/master" --jq '.commit.sha' 2>/dev/null || true)
+              if [ -z "$NEW_SHA" ] || [ "$NEW_SHA" = "$CURRENT_SHA" ]; then
+                return
+              fi
+              sed -i "s|${OWNER}/${REPO}@${CURRENT_SHA} # ${CURRENT_TAG}|${OWNER}/${REPO}@${NEW_SHA} # ${CURRENT_TAG}|g" "$FILE"
+              if ! git diff --quiet "$FILE"; then
+                CHANGES="${CHANGES}- \`${OWNER}/${REPO}\`: updated master SHA (in \`$(basename "$FILE")\`)\n"
+              fi
+              return
+            fi
+
             # Get latest release
             LATEST=$(gh api "repos/$OWNER/$REPO/releases/latest" --jq '.tag_name' 2>/dev/null || true)
             if [ -z "$LATEST" ]; then
