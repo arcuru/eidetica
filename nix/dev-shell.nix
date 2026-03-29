@@ -55,7 +55,6 @@ in
 
         # Release management
         release-plz # Automated releases
-        git-cliff # Changelog generation
 
         # Performance analysis
         cargo-flamegraph # Profiling

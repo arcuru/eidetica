@@ -2,9 +2,6 @@
 # https://release-plz.dev/docs/config
 
 [workspace]
-# Use the existing git-cliff configuration
-changelog_config = ".config/cliff.toml"
-
 # Unified versioning: all crates in the workspace share the same version
 # This enables tags like vX.Y.Z instead of <crate>-vX.Y.Z
 git_tag_name = "v{{ version }}"
@@ -29,6 +26,9 @@ After merging, all packages will be automatically published to crates.io and a G
 
 # Add labels to release PRs for easier filtering
 pr_labels = ["release"]
+
+# Use git-cliff for changelog generation (all commits between tags)
+changelog_config = ".config/cliff.toml"
 
 # Customize GitHub release
 git_release_type = "auto"  # Automatically determine if it's a pre-release based on version

@@ -17,6 +17,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
         with:
@@ -50,6 +52,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
         with:
@@ -61,7 +65,7 @@ jobs:
         id: check-pr
         if: github.event_name == 'push'
         run: |
-          PR_EXISTS=$(gh pr list --repo "$GITHUB_REPOSITORY" --head release-plz --state open --json number --jq 'length')
+          PR_EXISTS=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --json number,headRefName --jq '[.[] | select(.headRefName | startswith("release-plz"))] | length')
           echo "exists=$PR_EXISTS" >> "$GITHUB_OUTPUT"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

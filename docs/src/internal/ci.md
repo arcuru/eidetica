@@ -13,7 +13,7 @@ Fuzz / simulation testing are planned for the future.
 The primary CI runs on GitHub with these workflows:
 
 - **[ci.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/ci.yml)**: Main CI pipeline (lint, test, integration tests, docs)
-- **[release.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/release.yml)**: Release pipeline (build, publish container images, create manifests)
+- **[publish.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/publish.yml)**: Publish pipeline (container images, cache warming, size tracking)
 - **[sanitizers.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/sanitizers.yml)**: Memory and thread sanitizer checks
 - **[benchmarks.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/benchmarks.yml)**: Performance benchmarks
 - **[coverage.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/coverage.yml)**: Multi-backend code coverage tracking via Codecov
@@ -189,8 +189,103 @@ All environments are restricted to the `main` branch. Low-risk tokens that can o
 
 ### Cache Push Isolation
 
-Only the release workflow (`release.yml`) has cache push credentials. CI, coverage, and sanitizer workflows are fully secretless — they read from the public cache but never write to it. This means the Nix cache signing key exists in a single environment (`publish`), and all cache contents are built from source by the release job.
+Only the publish workflow (`publish.yml`) has cache push credentials. CI, coverage, and sanitizer workflows are fully secretless — they read from the public cache but never write to it. This means the Nix cache signing key exists in a single environment (`publish`), and all cache contents are built from source by the publish job.
 
 ### Release Build Integrity
 
-The release workflow builds published artifacts (binary and container image) from source using `--option substitute false`, bypassing the Nix binary cache entirely. This prevents a cache poisoning attack from affecting published artifacts. The from-source results are pushed to the cache afterward, along with CI debug artifacts (lint, test, doc targets), so subsequent CI runs and developer builds benefit from caching.
+The publish workflow builds artifacts (binary and container image) from source using `--option substituters 'https://cache.nixos.org'`, bypassing the project's own binary cache entirely. This prevents a cache poisoning attack from affecting published artifacts. The from-source results are pushed to the cache afterward, along with CI debug artifacts (lint, test, doc targets on dev runs), so subsequent CI runs and developer builds benefit from caching.
+
+## Releasing
+
+Releases are automated via [release-plz](https://release-plz.dev/) and configured in [`.config/release-plz.toml`](https://github.com/arcuru/eidetica/blob/main/.config/release-plz.toml). The process uses unified workspace versioning — all crates share a single version and tags follow the `v<major>.<minor>.<patch>` format.
+
+### Publish Workflow
+
+A single [`publish.yml`](https://github.com/arcuru/eidetica/blob/main/.github/workflows/publish.yml) workflow handles all artifact publishing. It is triggered in three ways:
+
+1. **After CI passes on main** (`workflow_run`) — pushes `dev`-tagged container images, warms the Nix binary cache, and tracks binary/container sizes. This runs on every push to main, exercising the same build and publish pipeline that releases use.
+
+2. **After a GitHub release is published** (`release: published`) — pushes versioned container images (e.g. `1.2.3`, `1.2`, `latest`) and updates the Docker Hub description. Triggered by release-plz creating a release.
+
+3. **Manual retry** (`workflow_dispatch`) — accepts a release tag name (e.g. `v1.2.3`) and re-runs the release publish pipeline. Used to retry a failed release without re-creating the GitHub release.
+
+On release day, triggers 1 and 2 both fire independently — the `workflow_run` from the merge to main, and the `release` event from release-plz tagging. This is intentional: the dev run validates the pipeline on every push, and the release run publishes the versioned artifacts.
+
+### Release Flow
+
+```mermaid
+flowchart TD
+    A["Trigger release PR
+    (manual workflow_dispatch)"] --> B["Review and merge PR
+    (human review)"]
+    B --> C["CI passes on main"]
+    B --> D["release-plz detects
+    version bump"]
+    C --> E["publish.yml
+    (workflow_run)"]
+    E --> F["Build from source +
+    warm cache + dev images +
+    Bencher size tracking"]
+    D --> G["Publish to crates.io +
+    create GitHub release + tag"]
+    G --> H["publish.yml
+    (release event)"]
+    H --> I["Build from source + push
+    versioned container images"]
+```
+
+### Step-by-Step
+
+1. **Trigger a release PR** — Manually run the [`Release-plz`](https://github.com/arcuru/eidetica/blob/main/.github/workflows/release-plz.yml) workflow via GitHub Actions (`Actions` → `Release-plz` → `Run workflow`). This runs `release-plz release-pr`, which:
+   - Analyzes commits since the last release to determine the version bump
+   - Updates version numbers in `Cargo.toml` files
+   - Generates the changelog using release-plz's built-in changelog generator
+   - Opens a PR titled `chore: release v<version>` with the `release` label
+
+2. **Review the release PR** — The PR body includes a checklist:
+   - Review the version bump (previous → next)
+   - Review semver compatibility
+   - Edit `CHANGELOG.md` to add custom commentary or highlights
+   - Ensure CI passes
+
+   > **Note:** Subsequent pushes to `main` while the PR is open will cause release-plz to update the PR (re-analyze commits, adjust version if needed).
+
+3. **Merge the PR** — Merging triggers two independent pipelines:
+   - **[`publish.yml`](https://github.com/arcuru/eidetica/blob/main/.github/workflows/publish.yml)**: After CI passes on main, builds from source, warms the Nix binary cache, pushes `dev`-tagged container images, and tracks sizes via Bencher.
+   - **[`release-plz.yml`](https://github.com/arcuru/eidetica/blob/main/.github/workflows/release-plz.yml)**: Detects the version bump and runs `release-plz release`.
+
+4. **Automatic publishing** — The `release-plz release` job:
+   - Publishes the crate to [crates.io](https://crates.io/crates/eidetica) via trusted publishing
+   - Creates a GitHub release with tag `v<version>` and a release body containing the changelog, install instructions, and documentation links
+
+5. **Container image publishing** — The GitHub release triggers `publish.yml` again via the `release: published` event. This:
+   - Builds Nix binary and OCI container image for x86_64 and aarch64
+   - Pushes versioned container images to GHCR and Docker Hub (e.g., `1.2.3`, `1.2`, `latest`)
+   - Creates multi-arch manifests
+   - Attaches SBOM and provenance attestations
+   - Updates Docker Hub repository description
+
+   If this workflow fails partway through, it can be manually retried via `workflow_dispatch` with the release tag name (e.g., `v1.2.3`). The retry checks out the tagged commit to ensure the build matches the release.
+
+### Container Image Tags
+
+| Trigger                  | Tags pushed                                                      | Registries        |
+| ------------------------ | ---------------------------------------------------------------- | ----------------- |
+| CI passes on main        | `dev`                                                            | GHCR + Docker Hub |
+| GitHub release published | `<version>`, `<major>.<minor>`, `latest`\* (+ `<major>` for v1+) | GHCR + Docker Hub |
+
+\* `latest` is only pushed when the release is the highest non-prerelease version (determined via the GitHub Releases API). Backport releases for older branches do not overwrite `latest`.
+
+### Configuration
+
+| File                                | Purpose                                           |
+| ----------------------------------- | ------------------------------------------------- |
+| `.config/release-plz.toml`          | Version strategy, PR/release templates, changelog |
+| `.github/workflows/release-plz.yml` | Release automation workflow                       |
+| `.github/workflows/publish.yml`     | Artifact building and container image publishing  |
+
+### Notes
+
+- The `release-plz-pr` job only updates an existing release PR on push to main — it does not create new ones automatically. New release cycles are initiated via `workflow_dispatch`.
+- All publish runs build artifacts from source without the project's own Nix cache substitution to prevent cache poisoning (see [Release Build Integrity](#release-build-integrity)).
+- The dev path (every push to main) exercises the same build and publish pipeline as releases, providing continuous validation of the release infrastructure.
