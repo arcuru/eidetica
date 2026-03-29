@@ -179,7 +179,7 @@ lint +tools='clippy audit typos statix deadnix shellcheck yamllint actionlint ha
                 ;;
             audit)
                 echo "=== Running audit (cargo-deny) ==="
-                cargo deny check
+                cargo deny check --config .config/deny.toml
                 ;;
             typos)
                 echo "=== Running typos ==="

@@ -32,7 +32,7 @@ jobs:
         id: audit
         run: |
           set +e
-          OUTPUT=$(nix develop --command cargo deny check advisories 2>&1)
+          OUTPUT=$(nix develop --command cargo deny check --config .config/deny.toml advisories 2>&1)
           EXIT_CODE=$?
           echo "$OUTPUT"
           {
@@ -70,7 +70,7 @@ jobs:
 
           </details>
 
-          **Action required:** Review the advisories above and update affected dependencies or add ignore entries to `deny.toml` if appropriate.
+          **Action required:** Review the advisories above and update affected dependencies or add ignore entries to `.config/deny.toml` if appropriate.
 
           _Last checked: __TIMESTAMP___
           ISSUE_EOF

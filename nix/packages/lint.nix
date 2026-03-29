@@ -197,8 +197,12 @@
 
     deny = craneLib.cargoDeny (baseArgs
       // {
+        # Use unfiltered source so deny.toml is available (baseArgs excludes it)
+        src = craneLib.cleanCargoSource ../..;
         cargoDenyExtraArgs = "--workspace --all-features";
-        cargoDenyChecks = "bans licenses sources";
+        # --config must go after `check` (it's a subcommand flag);
+        # crane only interpolates cargoDenyChecks there, so we prepend it
+        cargoDenyChecks = "--config .config/deny.toml bans licenses sources";
       });
 
     # cargo-udeps: find unused dependencies

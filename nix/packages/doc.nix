@@ -9,7 +9,8 @@
   # This prevents rebuilds when unrelated files (like nix/) change
   docsFilter = path: _type: builtins.match ".*/docs/.*" path != null;
   docsOrCargo = path: type:
-    (docsFilter path type) || (craneLib.filterCargoSources path type);
+    !(type == "directory" && builtins.baseNameOf path == ".config")
+    && ((docsFilter path type) || (craneLib.filterCargoSources path type));
   docSrc = lib.cleanSourceWith {
     src = ../..;
     filter = docsOrCargo;

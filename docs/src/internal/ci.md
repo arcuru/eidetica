@@ -116,7 +116,7 @@ The [`security-audit.yml`](https://github.com/arcuru/eidetica/blob/main/.github/
 - On failure: creates or updates a GitHub issue with the `security` label containing the full advisory output
 - On success: auto-closes any existing security advisory issue
 
-The `deny.toml` configuration contains an ignore list for known advisories from transitive dependencies (e.g., unmaintained crates pulled in by iroh). The CI lint target (`nix build .#lint.deny`) checks `bans licenses sources` but not `advisories` — advisories are excluded from regular CI because new advisories appear without code changes and would cause flaky builds. The dedicated daily workflow fills this gap.
+The `.config/deny.toml` configuration contains an ignore list for known advisories from transitive dependencies (e.g., unmaintained crates pulled in by iroh). The CI lint target (`nix build .#lint.deny`) checks `bans licenses sources` but not `advisories` — advisories are excluded from regular CI because new advisories appear without code changes and would cause flaky builds. The dedicated daily workflow fills this gap.
 
 ### Update Workflows
 

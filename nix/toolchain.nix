@@ -39,7 +39,13 @@
   baseArgs =
     {
       # Clean source to include only Rust-relevant files
-      src = craneLib.cleanCargoSource ../.;
+      # Exclude .config/ (linter/tool configs) so config-only changes
+      # don't invalidate all cargo artifacts
+      src = lib.cleanSourceWith {
+        src = craneLib.cleanCargoSource ../.;
+        filter = path: type:
+          !(type == "directory" && builtins.baseNameOf path == ".config");
+      };
       strictDeps = true;
       nativeBuildInputs =
         [pkgs.pkg-config]
@@ -103,7 +109,11 @@
   # Nightly base args for sanitizer builds (need -Z flags)
   baseArgsNightly =
     {
-      src = craneLibNightly.cleanCargoSource ../.;
+      src = lib.cleanSourceWith {
+        src = craneLibNightly.cleanCargoSource ../.;
+        filter = path: type:
+          !(type == "directory" && builtins.baseNameOf path == ".config");
+      };
       strictDeps = true;
       nativeBuildInputs =
         [pkgs.pkg-config]
