@@ -57,9 +57,10 @@ const PR_PARAM: &str = "pr";
 /// eidetica:?db=sha256:abc...&pr=http:192.168.1.1:8080&pr=iroh:endpointABC...
 /// ```
 ///
-/// The database ID is passed through as an opaque string. Peer addresses
-/// use the transport's native encoding, prefixed by the transport name and
-/// a colon if the encoding doesn't already include it.
+/// The database ID is passed through as an opaque string. If `db` appears
+/// more than once, the last value wins. Peer addresses use the transport's
+/// native encoding, prefixed by the transport name and a colon if the
+/// encoding doesn't already include it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(into = "String", try_from = "String")]
 pub struct DatabaseTicket {
@@ -183,8 +184,7 @@ impl FromStr for DatabaseTicket {
         for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
             match key.as_ref() {
                 DB_PARAM => {
-                    // TODO: if `db` appears more than once, the last value
-                    // silently wins.
+                    // If `db` appears more than once, the last value wins.
                     database_id = Some(ID::parse(&value)?);
                 }
                 PR_PARAM => {
