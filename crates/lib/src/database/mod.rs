@@ -261,7 +261,6 @@ impl Database {
     /// # Returns
     /// A `Result` containing the new `Database` instance or an error.
     pub(crate) fn open_unauthenticated(id: ID, instance: &Instance) -> Result<Self> {
-        // TODO: Audit all usages of this function
         Ok(Self {
             root: id,
             instance: instance.downgrade(),

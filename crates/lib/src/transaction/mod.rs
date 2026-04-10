@@ -377,13 +377,12 @@ impl Transaction {
 
     /// Set the tree root field for the entry being built.
     ///
-    /// This is primarily used during tree creation to ensure the root entry
-    /// has an empty tree.root field, making it a proper top-level root.
+    /// Called by `Database::create()` to override the placeholder root with
+    /// `ID::default()`, making the entry a proper top-level root.
     ///
     /// # Arguments
     /// * `root` - The tree root ID to set (use `ID::default()` for top-level roots)
     pub(crate) fn set_entry_root(&self, root: ID) -> Result<()> {
-        // FIXME: This is only called by Database::create()
         let mut builder_ref = self.entry_builder.lock().unwrap();
         let builder = builder_ref
             .as_mut()
