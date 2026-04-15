@@ -5,6 +5,8 @@
 //! the history and relationships between entries. Database holds a weak reference to its
 //! parent Instance, accessing storage and coordination services through that handle.
 
+use std::future::Future;
+
 use rand::{Rng, RngCore, distributions::Alphanumeric};
 use serde_json;
 
@@ -766,6 +768,64 @@ impl Database {
         }
 
         Ok(txn)
+    }
+
+    /// Execute a closure within a transaction and commit the result.
+    ///
+    /// This is a convenience wrapper for the common pattern of creating a transaction,
+    /// performing store operations, and committing. The transaction is committed after
+    /// the closure returns `Ok`. If the closure returns `Err`, the transaction is
+    /// dropped without committing.
+    ///
+    /// For read-only access, use [`get_store_viewer`](Self::get_store_viewer) instead.
+    ///
+    /// # Arguments
+    /// * `f` - A closure that receives the [`Transaction`] and performs store operations.
+    ///   The closure should return `Ok(R)` on success.
+    ///
+    /// # Returns
+    /// On success, returns the value produced by the closure after committing.
+    /// The commit ID is not returned; use [`new_transaction`](Self::new_transaction)
+    /// directly if you need it.
+    ///
+    /// # Errors
+    /// Returns an error if transaction creation, the closure, or commit fails.
+    /// If the closure fails, the transaction is not committed.
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// # use eidetica::*;
+    /// # use eidetica::store::Table;
+    /// # use serde::{Serialize, Deserialize};
+    /// # #[derive(Clone, Serialize, Deserialize)]
+    /// # struct Todo { title: String }
+    /// # async fn example(db: Database) -> Result<()> {
+    /// // Insert a record and get its generated key
+    /// let key = db.with_transaction(|txn| async move {
+    ///     let store = txn.get_store::<Table<Todo>>("todos").await?;
+    ///     store.insert(Todo { title: "Buy milk".into() }).await
+    /// }).await?;
+    ///
+    /// // Multiple operations in one atomic transaction
+    /// db.with_transaction(|txn| async move {
+    ///     let store = txn.get_store::<Table<Todo>>("todos").await?;
+    ///     store.insert(Todo { title: "First".into() }).await?;
+    ///     store.insert(Todo { title: "Second".into() }).await?;
+    ///     Ok(())
+    /// }).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn with_transaction<F, Fut, R>(&self, f: F) -> Result<R>
+    where
+        F: FnOnce(Transaction) -> Fut + Send,
+        Fut: Future<Output = Result<R>> + Send,
+    {
+        let txn = self.new_transaction().await?;
+        let commit_handle = txn.clone();
+        let result = f(txn).await?;
+        commit_handle.commit().await?;
+        Ok(result)
     }
 
     /// Insert an entry into the database without modifying it.

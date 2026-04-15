@@ -153,6 +153,54 @@ Using a `Transaction` follows a distinct lifecycle:
 
     _After `commit()`, the `txn` variable is no longer valid._
 
+## Convenience: `with_transaction`
+
+For the common pattern of "create a transaction, do some work, commit," `Database::with_transaction` handles the lifecycle for you:
+
+```rust
+# extern crate eidetica;
+# extern crate tokio;
+# extern crate serde;
+# use eidetica::{backend::database::Sqlite, Instance, crdt::Doc, store::Table};
+# use serde::{Serialize, Deserialize};
+#
+# #[derive(Clone, Debug, Serialize, Deserialize)]
+# struct User {
+#     name: String,
+# }
+#
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
+# let backend = Sqlite::in_memory().await?;
+# let instance = Instance::open(Box::new(backend)).await?;
+# instance.create_user("alice", None).await?;
+# let mut user = instance.login_user("alice", None).await?;
+# let mut settings = Doc::new();
+# settings.set("name", "test");
+# let default_key = user.get_default_key()?;
+# let database = user.create_database(settings, &default_key).await?;
+#
+// Insert a record and get its generated key
+let user_id = database.with_transaction(|txn| async move {
+    let users = txn.get_store::<Table<User>>("users").await?;
+    users.insert(User { name: "Alice".into() }).await
+}).await?;
+
+// Multiple operations in one atomic transaction
+database.with_transaction(|txn| async move {
+    let users = txn.get_store::<Table<User>>("users").await?;
+    users.insert(User { name: "Bob".into() }).await?;
+    users.insert(User { name: "Charlie".into() }).await?;
+    Ok(())
+}).await?;
+# Ok(())
+# }
+```
+
+The closure receives the `Transaction`, and `with_transaction` commits it after the closure returns `Ok`. If the closure returns `Err`, the transaction is dropped without committing — no partial writes.
+
+Use `with_transaction` when you don't need the commit ID. If you need the `ID` of the committed entry (e.g., for tracking DAG structure), use `new_transaction()` and `commit()` directly.
+
 ## Managing Database Settings
 
 Within transactions, you can manage database settings using `SettingsStore`. This provides type-safe access to database configuration and authentication settings:
@@ -333,4 +381,4 @@ if let Ok(_user) = users_viewer.get(&user_id).await {
 
 A `SubtreeViewer` provides read-only access based on the latest committed state (tips) of that specific store at the time the viewer is created. It does _not_ allow modifications and does not require a `commit()`.
 
-Choose `Transaction` when you need to make changes or require a transaction-like boundary for multiple reads/writes. Choose `SubtreeViewer` for simple, read-only access to the latest state.
+Choose `with_transaction` for the common case of writing to one or more stores and committing. Use `new_transaction()` directly when you need the commit ID or complex control flow. Choose `get_store_viewer` for simple, read-only access to the latest state.

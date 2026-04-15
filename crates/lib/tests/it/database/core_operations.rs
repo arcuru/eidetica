@@ -3,10 +3,16 @@
 //! This module contains tests for fundamental Tree operations including
 //! entry creation, subtree operations, atomic operations, and tip management.
 
-use eidetica::{constants::SETTINGS, store::DocStore};
+use eidetica::{constants::SETTINGS, store::DocStore, store::Table};
+use serde::{Deserialize, Serialize};
 
 use super::helpers::*;
 use crate::helpers::*;
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct Item {
+    name: String,
+}
 
 #[tokio::test]
 async fn test_insert_into_tree() {
@@ -761,4 +767,166 @@ async fn test_new_transaction_with_multiple_tips() {
         merge_parents.contains(&branch2_id),
         "Merge should have branch2 as parent"
     );
+}
+
+// ===== with_transaction tests =====
+
+#[tokio::test]
+async fn test_with_transaction_basic() {
+    let (_instance, tree) = setup_tree().await;
+
+    tree.with_transaction(|txn| async move {
+        let store = txn.get_store::<Table<Item>>("items").await?;
+        store
+            .insert(Item {
+                name: "test".into(),
+            })
+            .await?;
+        Ok(())
+    })
+    .await
+    .expect("with_transaction should succeed");
+
+    // Verify the data was committed
+    let viewer = tree
+        .get_store_viewer::<Table<Item>>("items")
+        .await
+        .expect("Failed to get viewer");
+    let results = viewer.search(|_| true).await.expect("Failed to search");
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].1.name, "test");
+}
+
+#[tokio::test]
+async fn test_with_transaction_returns_value() {
+    let (_instance, tree) = setup_tree().await;
+
+    let key = tree
+        .with_transaction(|txn| async move {
+            let store = txn.get_store::<Table<Item>>("items").await?;
+            store
+                .insert(Item {
+                    name: "hello".into(),
+                })
+                .await
+        })
+        .await
+        .expect("with_transaction should succeed");
+
+    // The returned key should be usable to retrieve the record
+    let viewer = tree
+        .get_store_viewer::<Table<Item>>("items")
+        .await
+        .expect("Failed to get viewer");
+    let item = viewer.get(&key).await.expect("Failed to get by key");
+    assert_eq!(item.name, "hello");
+}
+
+#[tokio::test]
+async fn test_with_transaction_rollback_on_error() {
+    let (_instance, tree) = setup_tree().await;
+
+    // First, insert one item so the store exists
+    tree.with_transaction(|txn| async move {
+        let store = txn.get_store::<Table<Item>>("items").await?;
+        store
+            .insert(Item {
+                name: "existing".into(),
+            })
+            .await?;
+        Ok(())
+    })
+    .await
+    .expect("Setup should succeed");
+
+    // Now attempt a transaction that fails
+    let result: eidetica::Result<()> = tree
+        .with_transaction(|txn| async move {
+            let store = txn.get_store::<Table<Item>>("items").await?;
+            store
+                .insert(Item {
+                    name: "should_not_persist".into(),
+                })
+                .await?;
+            Err(std::io::Error::other("intentional failure").into())
+        })
+        .await;
+
+    assert!(result.is_err(), "Transaction should have failed");
+
+    // Verify only the original item exists
+    let viewer = tree
+        .get_store_viewer::<Table<Item>>("items")
+        .await
+        .expect("Failed to get viewer");
+    let results = viewer.search(|_| true).await.expect("Failed to search");
+    assert_eq!(
+        results.len(),
+        1,
+        "Failed transaction should not persist data"
+    );
+    assert_eq!(results[0].1.name, "existing");
+}
+
+#[tokio::test]
+async fn test_with_transaction_multiple_operations() {
+    let (_instance, tree) = setup_tree().await;
+
+    tree.with_transaction(|txn| async move {
+        let store = txn.get_store::<Table<Item>>("items").await?;
+        store.insert(Item { name: "a".into() }).await?;
+        store.insert(Item { name: "b".into() }).await?;
+        store.insert(Item { name: "c".into() }).await?;
+        Ok(())
+    })
+    .await
+    .expect("with_transaction should succeed");
+
+    let viewer = tree
+        .get_store_viewer::<Table<Item>>("items")
+        .await
+        .expect("Failed to get viewer");
+    let results = viewer.search(|_| true).await.expect("Failed to search");
+    assert_eq!(results.len(), 3, "All three inserts should be committed");
+}
+
+#[tokio::test]
+async fn test_with_transaction_multiple_stores() {
+    let (_instance, tree) = setup_tree().await;
+
+    tree.with_transaction(|txn| async move {
+        let items = txn.get_store::<Table<Item>>("items").await?;
+        items
+            .insert(Item {
+                name: "item1".into(),
+            })
+            .await?;
+
+        let meta = txn.get_store::<DocStore>("metadata").await?;
+        meta.set("count", "1").await?;
+        Ok(())
+    })
+    .await
+    .expect("with_transaction should succeed");
+
+    // Verify both stores received their data
+    let items_viewer = tree
+        .get_store_viewer::<Table<Item>>("items")
+        .await
+        .expect("Failed to get items viewer");
+    let results = items_viewer
+        .search(|_| true)
+        .await
+        .expect("Failed to search items");
+    assert_eq!(results.len(), 1);
+
+    let meta_viewer = tree
+        .get_store_viewer::<DocStore>("metadata")
+        .await
+        .expect("Failed to get metadata viewer");
+    let count = meta_viewer
+        .get_string("count")
+        .await
+        .expect("Failed to get count");
+    assert_eq!(count, "1");
 }

@@ -242,11 +242,14 @@ impl Sync {
 
     /// Save persisted state for a named transport instance.
     async fn save_transport_state(&self, name: &str, state: &Doc) -> Result<()> {
-        let tx = self.sync_tree.new_transaction().await?;
-        let store = tx.get_store::<DocStore>(TRANSPORT_STATE_STORE).await?;
-        store.set(name, Value::Doc(state.clone())).await?;
-        tx.commit().await?;
-        Ok(())
+        let name = name.to_string();
+        let state = state.clone();
+        self.sync_tree
+            .with_transaction(|tx| async move {
+                let store = tx.get_store::<DocStore>(TRANSPORT_STATE_STORE).await?;
+                store.set(&name, Value::Doc(state)).await
+            })
+            .await
     }
 
     /// Start the background sync engine.
