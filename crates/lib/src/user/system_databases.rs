@@ -161,15 +161,18 @@ pub async fn create_user(
 
     // Add user's key as an equal owner
     // FIXME: can we restrict the Device ID's ownership?
-    let txn = user_database.new_transaction().await?;
-    let settings = txn.get_settings()?;
-    settings
-        .set_auth_key(
-            &user_public_key,
-            AuthKey::active(Some("user"), Permission::Admin(0)),
-        )
+    let user_public_key_ref = user_public_key.clone();
+    user_database
+        .with_transaction(|txn| async move {
+            let settings = txn.get_settings()?;
+            settings
+                .set_auth_key(
+                    &user_public_key_ref,
+                    AuthKey::active(Some("user"), Permission::Admin(0)),
+                )
+                .await
+        })
         .await?;
-    txn.commit().await?;
 
     // 4. Store user's private key (encrypted or unencrypted based on password)
     let user_key = match (password, &password_salt) {
@@ -208,10 +211,12 @@ pub async fn create_user(
         }
     };
 
-    let tx = user_database.new_transaction().await?;
-    let keys_table = tx.get_store::<Table<UserKey>>("keys").await?;
-    keys_table.insert(user_key).await?;
-    tx.commit().await?;
+    user_database
+        .with_transaction(|tx| async move {
+            let keys_table = tx.get_store::<Table<UserKey>>("keys").await?;
+            keys_table.insert(user_key).await
+        })
+        .await?;
 
     // 5. Create UserInfo
     let user_info = UserInfo {
@@ -370,12 +375,14 @@ pub async fn login_user(
 
     // 7. Update last_login in separate table
     // TODO: this is a log, so it will grow unbounded over time and should probably be moved to a log table
-    let tx = users_db.new_transaction().await?;
-    let last_login_table = tx.get_store::<Table<i64>>("last_login").await?;
-    last_login_table
-        .set(&user_uuid, instance.clock().now_secs())
+    let now = instance.clock().now_secs();
+    let user_uuid_ref = user_uuid.clone();
+    users_db
+        .with_transaction(|tx| async move {
+            let last_login_table = tx.get_store::<Table<i64>>("last_login").await?;
+            last_login_table.set(&user_uuid_ref, now).await
+        })
         .await?;
-    tx.commit().await?;
 
     // 8. Create User session
     Ok(User::new(
