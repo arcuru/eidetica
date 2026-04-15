@@ -19,6 +19,8 @@ runs:
       with:
         extra-conf: |
           accept-flake-config = true
+          extra-substituters = https://cache.eidetica.dev
+          extra-trusted-public-keys = cache.eidetica.dev-1:eND5gRJlbnool3ZLCWT2H8kkygWS8JcsU76HYXbWPBI=
 
     - name: Install nix-fast-build
       shell: bash
