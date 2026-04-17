@@ -4,7 +4,6 @@ ignore = [
     # Ignore these unmaintained crates that come from iroh dependencies
     "RUSTSEC-2023-0089", # atomic-polyfill unmaintained (via iroh)
     "RUSTSEC-2024-0436", # paste unmaintained (via iroh)
-    "RUSTSEC-2026-0049", # rustls-webpki CRL matching bug, fixed in >=0.103.10 (via iroh)
 ]
 
 [bans]
