@@ -99,11 +99,7 @@ jobs:
           nix-fast-build --skip-cached --no-nom --no-link \
             ${{ steps.nix.outputs.push-args }} \
             --option substituters 'https://cache.nixos.org' \
-            -f '.#legacyPackages.${{ matrix.system }}.eidetica.bin'
-          nix-fast-build --skip-cached --no-nom --no-link \
-            ${{ steps.nix.outputs.push-args }} \
-            --option substituters 'https://cache.nixos.org' \
-            -f '.#legacyPackages.${{ matrix.system }}.eidetica.image'
+            -f '.#legacyPackages.${{ matrix.system }}.eidetica.release'
 
       # Warm the cache with all remaining flake check outputs so subsequent CI
       # runs are faster. Only needed on the dev path (every push to main) —
