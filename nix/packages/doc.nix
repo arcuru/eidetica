@@ -61,7 +61,7 @@
 
   doc-links =
     pkgs.runCommand "doc-links" {
-      nativeBuildInputs = [pkgs.lychee];
+      nativeBuildInputs = [pkgs.lychee pkgs.cacert];
     } ''
       lychee --offline ${lycheeArgs} ${doc-site}
       mkdir -p $out
