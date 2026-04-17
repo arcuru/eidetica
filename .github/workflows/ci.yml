@@ -9,16 +9,8 @@ on:
 
 jobs:
   ci:
-    name: CI (${{ matrix.system }})
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      matrix:
-        include:
-          - system: x86_64-linux
-            runner: ubicloud-standard-8
-          - system: aarch64-linux
-            runner: ubicloud-standard-8-arm
-      fail-fast: false
+    name: CI (x86_64-linux)
+    runs-on: ubicloud-standard-8
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -26,31 +18,27 @@ jobs:
       - name: Setup Nix
         uses: ./.github/actions/setup-nix
 
-      - name: Lint
+      - name: Checks
         run: |
-          nix-fast-build --skip-cached --no-nom --no-link \
-            -f '.#legacyPackages.${{ matrix.system }}.lint.default'
-          nix-fast-build --skip-cached --no-nom --no-link \
-            -f '.#checks.${{ matrix.system }}.treefmt'
-
-      - name: Test
-        run: |
-          nix-fast-build --skip-cached --no-nom --no-link \
-            -f '.#legacyPackages.${{ matrix.system }}.test.all'
-          nix-fast-build --skip-cached --no-nom --no-link \
-            -f '.#legacyPackages.${{ matrix.system }}.eval.default'
+          nix-fast-build --skip-cached --no-nom --no-link
 
       - name: Integration tests
-        if: matrix.system == 'x86_64-linux'
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         run: |
           nix-fast-build --skip-cached --no-nom --no-link \
             -f '.#legacyPackages.x86_64-linux.integration.default'
 
-      - name: Doc
-        run: |
-          nix-fast-build --skip-cached --no-nom --no-link \
-            -f '.#legacyPackages.${{ matrix.system }}.doc.default'
+  ci-arm:
+    name: CI (aarch64-linux)
+    if: github.event_name != 'pull_request'
+    runs-on: ubicloud-standard-8-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Remaining Checks
+      - name: Setup Nix
+        uses: ./.github/actions/setup-nix
+
+      - name: Checks
         run: |
           nix-fast-build --skip-cached --no-nom --no-link

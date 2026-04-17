@@ -220,11 +220,11 @@
         };
 
         # CI checks - packages that run during `nix flake check`
-        # Each check builds the corresponding .default from legacyPackages
+        # All checks build in parallel via nix-fast-build for CI efficiency
         # Excluded for performance: release builds, coverage, bench, integration, sanitize
         checks = {
           build = mainPkgs.eidetica-bin-debug;
-          test = testPkgs.builds.sqlite;
+          test = mkAll "test" testPkgs.builds;
           lint = mkAggregate "lint" lintPkgs.defaults;
           doc = mkAggregate "doc" docPkgs.defaults;
           eval = mkAggregate "eval" nixTests.eval;
