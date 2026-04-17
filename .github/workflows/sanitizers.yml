@@ -1,15 +1,15 @@
 name: Sanitizers
 
 on:
-  push:
-    branches: ["main"]
+  schedule:
+    - cron: "0 6 * * 1" # Weekly on Monday at 06:00 UTC
   workflow_dispatch:
 
 jobs:
   sanitize:
     name: Sanitize (${{ matrix.sanitizer }})
     runs-on: ubicloud-standard-4
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.repository_owner == 'arcuru'
     strategy:
       matrix:
         sanitizer: [asan, lsan]
