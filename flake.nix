@@ -190,6 +190,10 @@
             bin = mainPkgs.eidetica-bin;
             bin-debug = mainPkgs.eidetica-bin-debug;
             inherit (containerPkgs) image;
+            release = mkAggregate "eidetica-release" {
+              inherit (mainPkgs) eidetica-bin;
+              inherit (containerPkgs) image;
+            };
           };
 
           # Default package (eidetica binary)
