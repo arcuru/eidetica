@@ -34,7 +34,7 @@ A database can grant universal permissions by setting a global permission in its
 
 <!-- Code block ignored: Simplified view of AuthSettings structure -->
 
-```rust,ignore
+```text
 // AuthSettings stores data in a Doc with three sub-objects:
 //   "keys"        - per-key auth entries (SigKey → AuthKey)
 //   "delegations" - delegated tree references

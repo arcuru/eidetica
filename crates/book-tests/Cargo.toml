@@ -1,0 +1,20 @@
+[package]
+name = "eidetica-book-tests"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+description = "Doctests for the eidetica mdbook documentation"
+
+# build.rs auto-discovers markdown files in docs/src/
+build = "build.rs"
+
+[dependencies]
+eidetica = { path = "../lib", features = ["full"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+serde = { workspace = true }
+chrono = { workspace = true }
+iroh = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }

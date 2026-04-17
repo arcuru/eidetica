@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/lib", "crates/bin", "examples/*"]
+members = ["crates/lib", "crates/bin", "crates/book-tests", "examples/*"]
 resolver = "2"
 
 [workspace.package]

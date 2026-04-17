@@ -1468,6 +1468,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "eidetica-book-tests"
+version = "0.2.0"
+dependencies = [
+ "chrono",
+ "eidetica",
+ "iroh",
+ "serde",
+ "tokio",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "either"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
