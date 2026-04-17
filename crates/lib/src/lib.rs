@@ -38,7 +38,7 @@ pub use clock::{ClockHold, FixedClock};
 pub use database::{Database, DatabaseKey};
 pub use entry::{Entry, ID};
 pub use height::HeightStrategy;
-pub use instance::{Instance, WeakInstance};
+pub use instance::{Instance, WeakInstance, WriteEvent, WriteSource};
 pub use store::{Registered, Store};
 /// Re-export fundamental types for easier access.
 pub use transaction::Transaction;

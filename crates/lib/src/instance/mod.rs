@@ -45,6 +45,88 @@ pub enum WriteSource {
     Remote,
 }
 
+/// Context provided to write callbacks describing what changed in the database.
+///
+/// For local writes (transaction commits), this contains a single entry.
+/// For remote writes (sync), this may contain a batch of entries that were
+/// received and stored together.
+///
+/// # Catching up on missed writes
+///
+/// The `previous_tips` field contains the DAG tips of the database *before* the
+/// write(s) that triggered this callback. Consumers can use this to determine
+/// exactly what changed by walking the DAG from the current tips back to these
+/// previous tips. This is analogous to `git log previous_tip..HEAD`.
+///
+/// This design means callbacks never need to "miss" writes — even if multiple
+/// entries are batched (as in sync), the consumer can reconstruct the full set
+/// of changes from the tip diff.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// # use eidetica::instance::WriteEvent;
+/// # fn example(event: &WriteEvent) {
+/// // Check what stores were touched
+/// for entry in event.entries() {
+///     if entry.in_subtree("messages") {
+///         // A write touched the "messages" store
+///     }
+/// }
+///
+/// // Use previous_tips to find what's new
+/// let prev = event.previous_tips();
+/// // Walk DAG from current tips back to prev to find all new entries
+/// # }
+/// ```
+#[derive(Debug, Clone)]
+pub struct WriteEvent {
+    /// The entries written in this event. For local writes, this is always
+    /// exactly one entry. For remote sync, this is the full batch of entries
+    /// that were received and stored together.
+    entries: Vec<Entry>,
+    /// The DAG tips of the database immediately before this write.
+    /// Consumers can diff current tips against these to determine what changed.
+    previous_tips: Vec<ID>,
+    /// Whether this write originated locally or from a remote sync.
+    source: WriteSource,
+}
+
+impl WriteEvent {
+    /// Get the entries written in this event.
+    ///
+    /// For local writes (transaction commits), this always contains exactly one entry.
+    /// For remote writes (sync), this contains the full batch of entries received together.
+    pub fn entries(&self) -> &[Entry] {
+        &self.entries
+    }
+
+    /// Get the DAG tips of the database before this write.
+    ///
+    /// Use these to determine what changed: walk from the database's current tips
+    /// back to these previous tips to find all new entries.
+    pub fn previous_tips(&self) -> &[ID] {
+        &self.previous_tips
+    }
+
+    /// The source of this write (local commit or remote sync).
+    pub fn source(&self) -> WriteSource {
+        self.source
+    }
+
+    /// Convenience: get the single entry for a local write callback.
+    ///
+    /// For local writes this always returns `Some`. For remote writes with
+    /// multiple entries, returns `None` — use [`entries()`](Self::entries) instead.
+    pub fn entry(&self) -> Option<&Entry> {
+        if self.entries.len() == 1 {
+            self.entries.first()
+        } else {
+            None
+        }
+    }
+}
+
 /// Type alias for async write callback return type.
 ///
 /// We use a boxed future for callbacks. The future is `Send` since internal
@@ -53,11 +135,24 @@ pub type AsyncWriteCallbackFuture<'a> = Pin<Box<dyn Future<Output = Result<()>> 
 
 /// Async callback function type for write operations.
 ///
-/// Receives the entry that was written, the database it was written to, and the instance.
-/// Returns a boxed future that resolves to a Result.
-/// Used for both local and remote write callbacks.
+/// Receives a [`WriteEvent`] describing the write, the database it was written to,
+/// and the instance. Returns a boxed future that resolves to a Result.
+///
+/// # Callback contract
+///
+/// - **Local writes**: The callback fires once per transaction commit. The
+///   [`WriteEvent`] contains exactly one entry.
+/// - **Remote writes**: The callback fires once per sync batch. The
+///   [`WriteEvent`] may contain multiple entries that were received together.
+/// - **Ordering**: Callbacks are executed sequentially. If one callback returns
+///   an error, subsequent callbacks still execute (errors are logged).
+/// - **State**: When the callback fires, all entries in the event are already
+///   persisted to the backend. The database is in a consistent state.
+/// - **Previous tips**: [`WriteEvent::previous_tips()`] provides the DAG tips
+///   from before the write. Consumers should use these to determine what
+///   changed rather than relying on the entry list being exhaustive.
 pub type AsyncWriteCallback = Arc<
-    dyn for<'a> Fn(&'a Entry, &'a Database, &'a Instance) -> AsyncWriteCallbackFuture<'a>
+    dyn for<'a> Fn(&'a WriteEvent, &'a Database, &'a Instance) -> AsyncWriteCallbackFuture<'a>
         + Send
         + std::marker::Sync,
 >;
@@ -620,12 +715,12 @@ impl Instance {
         let sync_for_callback = Arc::clone(&sync_arc);
         self.register_global_write_callback(
             WriteSource::Local,
-            move |entry, database, instance| {
+            move |event, database, instance| {
                 let sync = Arc::clone(&sync_for_callback);
-                let entry = entry.clone();
+                let event = event.clone();
                 let database = database.clone();
                 let instance = instance.clone();
-                async move { sync.on_local_write(&entry, &database, &instance).await }
+                async move { sync.on_local_write(&event, &database, &instance).await }
             },
         )?;
 
@@ -685,7 +780,7 @@ impl Instance {
         callback: F,
     ) -> Result<()>
     where
-        F: for<'a> Fn(&'a Entry, &'a Database, &'a Instance) -> Fut
+        F: for<'a> Fn(&'a WriteEvent, &'a Database, &'a Instance) -> Fut
             + Send
             + std::marker::Sync
             + 'static,
@@ -696,8 +791,8 @@ impl Instance {
             .entry((source, tree_id))
             .or_default()
             .push(Arc::new(
-                move |entry: &Entry, database: &Database, instance: &Instance| {
-                    let fut = callback(entry, database, instance);
+                move |event: &WriteEvent, database: &Database, instance: &Instance| {
+                    let fut = callback(event, database, instance);
                     Box::pin(fut) as AsyncWriteCallbackFuture<'_>
                 },
             ));
@@ -722,7 +817,7 @@ impl Instance {
         callback: F,
     ) -> Result<()>
     where
-        F: for<'a> Fn(&'a Entry, &'a Database, &'a Instance) -> Fut
+        F: for<'a> Fn(&'a WriteEvent, &'a Database, &'a Instance) -> Fut
             + Send
             + std::marker::Sync
             + 'static,
@@ -730,8 +825,8 @@ impl Instance {
     {
         let mut callbacks = self.inner.global_write_callbacks.lock().unwrap();
         callbacks.entry(source).or_default().push(Arc::new(
-            move |entry: &Entry, database: &Database, instance: &Instance| {
-                let fut = callback(entry, database, instance);
+            move |event: &WriteEvent, database: &Database, instance: &Instance| {
+                let fut = callback(event, database, instance);
                 Box::pin(fut) as AsyncWriteCallbackFuture<'_>
             },
         ));
@@ -761,17 +856,86 @@ impl Instance {
         entry: Entry,
         source: WriteSource,
     ) -> Result<()> {
-        // 1. Persist to backend storage
+        // 1. Capture tips before the write so callbacks know what changed
+        let previous_tips = self.get_tips(tree_id).await.unwrap_or_default();
+
+        // 2. Persist to backend storage
         self.backend().put(verification, entry.clone()).await?;
 
-        // 2. Look up and execute callbacks based on write source
-        // Clone the callbacks to avoid holding the lock while executing callbacks.
+        // 3. Build event and fire callbacks
+        let event = WriteEvent {
+            entries: vec![entry],
+            previous_tips,
+            source,
+        };
+        self.fire_write_callbacks(tree_id, &event).await;
+
+        Ok(())
+    }
+
+    /// Store a batch of remotely-received entries and fire callbacks once.
+    ///
+    /// This is the correct way to ingest entries from sync. All entries are
+    /// persisted first, then callbacks fire exactly once with the full batch
+    /// and the tips from before ingestion. This ensures:
+    ///
+    /// - The database is fully consistent when callbacks execute
+    /// - Callbacks fire once per sync exchange, not once per entry
+    /// - `previous_tips` lets consumers reconstruct exactly what changed
+    ///
+    /// Entries that fail to store are logged and skipped — remaining entries
+    /// are still stored and callbacks still fire for whatever was persisted.
+    pub async fn put_remote_entries(&self, tree_id: &ID, entries: Vec<Entry>) -> Result<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+
+        // 1. Capture tips before any writes
+        let previous_tips = self.get_tips(tree_id).await.unwrap_or_default();
+
+        // 2. Store all entries
+        let mut stored_entries = Vec::with_capacity(entries.len());
+        for entry in entries {
+            match self
+                .backend()
+                .put(crate::backend::VerificationStatus::Verified, entry.clone())
+                .await
+            {
+                Ok(_) => stored_entries.push(entry),
+                Err(e) => {
+                    tracing::error!(
+                        tree_id = %tree_id,
+                        entry_id = %entry.id(),
+                        "Failed to store remote entry: {}", e
+                    );
+                }
+            }
+        }
+
+        // 3. Fire callbacks once for the whole batch
+        if !stored_entries.is_empty() {
+            let event = WriteEvent {
+                entries: stored_entries,
+                previous_tips,
+                source: WriteSource::Remote,
+            };
+            self.fire_write_callbacks(tree_id, &event).await;
+        }
+
+        Ok(())
+    }
+
+    /// Dispatch callbacks for a write event.
+    ///
+    /// Looks up per-database and global callbacks for the event's source,
+    /// executes them sequentially, and logs any errors without stopping.
+    async fn fire_write_callbacks(&self, tree_id: &ID, event: &WriteEvent) {
         let per_db_callbacks = self
             .inner
             .write_callbacks
             .lock()
             .unwrap()
-            .get(&(source, tree_id.clone()))
+            .get(&(event.source, tree_id.clone()))
             .cloned();
 
         let global_callbacks = self
@@ -779,48 +943,46 @@ impl Instance {
             .global_write_callbacks
             .lock()
             .unwrap()
-            .get(&source)
+            .get(&event.source)
             .cloned();
 
-        // 3. Execute callbacks if any are registered
         let has_callbacks = per_db_callbacks.is_some() || global_callbacks.is_some();
-        if has_callbacks {
-            // Create a Database handle for the callbacks
-            // Use open_readonly since we only need it for callback context
-            let database = Database::open_unauthenticated(tree_id.clone(), self)?;
+        if !has_callbacks {
+            return;
+        }
 
-            // Execute per-database callbacks
-            if let Some(callbacks) = per_db_callbacks {
-                for callback in callbacks {
-                    if let Err(e) = callback(&entry, &database, self).await {
-                        tracing::error!(
-                            tree_id = %tree_id,
-                            entry_id = %entry.id(),
-                            source = ?source,
-                            "Per-database callback failed: {}", e
-                        );
-                        // Continue executing other callbacks even if one fails
-                    }
-                }
+        // Create a Database handle for the callbacks
+        let database = match Database::open_unauthenticated(tree_id.clone(), self) {
+            Ok(db) => db,
+            Err(e) => {
+                tracing::error!(tree_id = %tree_id, "Failed to open database for callbacks: {}", e);
+                return;
             }
+        };
 
-            // Execute global callbacks
-            if let Some(callbacks) = global_callbacks {
-                for callback in callbacks {
-                    if let Err(e) = callback(&entry, &database, self).await {
-                        tracing::error!(
-                            tree_id = %tree_id,
-                            entry_id = %entry.id(),
-                            source = ?source,
-                            "Global callback failed: {}", e
-                        );
-                        // Continue executing other callbacks even if one fails
-                    }
+        if let Some(callbacks) = per_db_callbacks {
+            for callback in callbacks {
+                if let Err(e) = callback(event, &database, self).await {
+                    tracing::error!(
+                        tree_id = %tree_id,
+                        source = ?event.source,
+                        "Per-database callback failed: {}", e
+                    );
                 }
             }
         }
 
-        Ok(())
+        if let Some(callbacks) = global_callbacks {
+            for callback in callbacks {
+                if let Err(e) = callback(event, &database, self).await {
+                    tracing::error!(
+                        tree_id = %tree_id,
+                        source = ?event.source,
+                        "Global callback failed: {}", e
+                    );
+                }
+            }
+        }
     }
 
     /// Downgrade to a weak reference.
