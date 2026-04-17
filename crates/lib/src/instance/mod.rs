@@ -885,11 +885,7 @@ impl Instance {
     ///
     /// Entries that fail to store are logged and skipped — remaining entries
     /// are still stored and callbacks still fire for whatever was persisted.
-    pub async fn put_remote_entries(
-        &self,
-        tree_id: &ID,
-        entries: Vec<Entry>,
-    ) -> Result<()> {
+    pub async fn put_remote_entries(&self, tree_id: &ID, entries: Vec<Entry>) -> Result<()> {
         if entries.is_empty() {
             return Ok(());
         }
@@ -902,10 +898,7 @@ impl Instance {
         for entry in entries {
             match self
                 .backend()
-                .put(
-                    crate::backend::VerificationStatus::Verified,
-                    entry.clone(),
-                )
+                .put(crate::backend::VerificationStatus::Verified, entry.clone())
                 .await
             {
                 Ok(_) => stored_entries.push(entry),

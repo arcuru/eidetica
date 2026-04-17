@@ -4,9 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use super::*;
 use crate::{
-    auth::crypto::generate_keypair,
-    backend::database::InMemory,
-    instance::WriteSource,
+    auth::crypto::generate_keypair, backend::database::InMemory, instance::WriteSource,
     store::DocStore,
 };
 
@@ -182,7 +180,10 @@ async fn test_local_write_event_contains_single_entry() {
 
     let counts = entry_counts.lock().unwrap();
     assert_eq!(counts.len(), 1);
-    assert_eq!(counts[0], 1, "local write events should contain exactly one entry");
+    assert_eq!(
+        counts[0], 1,
+        "local write events should contain exactly one entry"
+    );
 }
 
 #[tokio::test]
@@ -314,9 +315,7 @@ async fn test_callback_error_does_not_block_other_callbacks() {
 
     // First callback always errors
     db.on_local_write(move |_event, _db, _instance| {
-        Box::pin(async move {
-            Err(crate::Error::Io(std::io::Error::other("test error")))
-        })
+        Box::pin(async move { Err(crate::Error::Io(std::io::Error::other("test error"))) })
     })
     .unwrap();
 
