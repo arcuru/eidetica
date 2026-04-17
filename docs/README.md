@@ -22,20 +22,19 @@ The documentation includes compilable examples using the actual Eidetica API. Th
 
 ### How It Works
 
-The documentation testing system works as follows:
+The `eidetica-book-tests` crate (`crates/book-tests/`) auto-discovers all markdown
+files in `docs/src/` via a build script and includes them as doc comments using
+`#[doc = include_str!()]`. This lets `cargo test --doc` compile and run every
+fenced Rust code block through cargo's normal dependency resolution.
 
-1. Examples use `extern crate eidetica;` to access the real library
-2. `just doc test` builds eidetica with all features enabled
-3. mdbook uses `-L target/debug/deps` to find compiled dependencies
-4. Build process ensures only one eidetica configuration exists
-
-### Build Process
+This approach avoids the E0464 "multiple rlib candidates" errors that occur with
+`mdbook test -L`, which breaks when cargo builds dependencies with different
+feature sets (common in workspaces with complex dependency trees).
 
 ```bash
 just doc test
-├── rm -f target/debug/deps/libeidetica-*.rlib target/debug/deps/libeidetica-*.rmeta
-├── cargo build -p eidetica                    # Builds single eidetica configuration
-└── mdbook test docs -L target/debug/deps      # Tests examples against built library
+├── just doc links                              # Check documentation links
+└── cargo test --doc -p eidetica-book-tests     # Test all book examples
 ```
 
 ### Testing Strategy
@@ -149,8 +148,7 @@ Document the current architecture, APIs, and behavior patterns without historica
 If book tests fail:
 
 1. Check imports use valid module paths from the eidetica crate
-2. Verify examples have proper `extern crate` declarations
-3. Run `just doc test` separately to isolate issues
-4. Some features may require specific feature flags
+2. Run `just doc test` separately to isolate issues
+3. New markdown files in `docs/src/` are auto-discovered; no manual registration needed
 
 Tested examples use the real API directly, ensuring documentation stays accurate as the codebase evolves.

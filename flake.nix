@@ -169,7 +169,7 @@
               all = mkAll "sanitize" sanitizePkgs.builds;
             };
 
-          # Documentation group - nix build .#doc.default (fast), .#doc.api, .#doc.book, .#doc.booktest
+          # Documentation group - nix build .#doc.default (fast), .#doc.api, .#doc.book, .#doc.test
           doc =
             docPkgs.builds
             // {

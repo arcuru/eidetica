@@ -345,9 +345,7 @@ doc action='api':
             ;;
         test)
             just doc links
-            rm --force target/debug/deps/libeidetica-*.rlib target/debug/deps/libeidetica-*.rmeta
-            cargo build --package eidetica
-            RUST_LOG=error mdbook test docs --library-path target/debug/deps
+            cargo test --doc -p eidetica-book-tests
             ;;
         clean)
             mdbook clean docs

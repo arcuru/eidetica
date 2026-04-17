@@ -85,33 +85,15 @@
       mdbook build docs -d $out
     '';
 
-  doc-book-test = craneLib.mkCargoDerivation (debugArgs
-    // {
-      pname = "book-test";
-      src = docSrc;
-      nativeBuildInputs = debugArgs.nativeBuildInputs ++ [pkgs.mdbook];
-      buildPhaseCargoCommand = ''
-        rm -f target/debug/deps/libeidetica-*.rlib target/debug/deps/libeidetica-*.rmeta
-        cargo build -p eidetica
-      '';
-      doCheck = true;
-      checkPhase = ''
-        runHook preCheck
-        cd docs
-        mdbook test . -L ../target/debug/deps
-        runHook postCheck
-      '';
-      doInstallCargoArtifacts = false;
-      installPhase = ''
-        runHook preInstall
-        mkdir -p $out
-        echo "Documentation examples tested successfully" > $out/result
-        runHook postInstall
-      '';
-    });
-
+  # All doc tests: both Rust doc comments and mdbook code examples.
+  # Uses docSrc (includes docs/ directory) so the book-tests crate can
+  # find the markdown files. The book-tests crate auto-discovers all
+  # markdown files in docs/src/ and tests their fenced code blocks through
+  # cargo's dependency resolution, avoiding E0464 "multiple rlib candidates"
+  # errors that plague `mdbook test -L`.
   doc-test = craneLib.cargoTest (debugArgs
     // {
+      src = docSrc;
       cargoTestExtraArgs = "--doc --workspace --all-features";
     });
 in {
@@ -124,7 +106,6 @@ in {
     links = doc-links;
     test = doc-test;
     book = doc-book;
-    booktest = doc-book-test;
   };
 
   runners = {
@@ -135,7 +116,6 @@ in {
   defaults = {
     api = doc-api;
     test = doc-test;
-    booktest = doc-book-test;
     links = doc-links;
   };
 }
