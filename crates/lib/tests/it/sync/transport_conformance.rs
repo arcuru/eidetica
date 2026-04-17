@@ -98,26 +98,30 @@ async fn setup_sync_hooks(
     // Clone sync instances and peer pubkeys for use in callbacks
     let sync1_clone = sync1.clone();
     let peer2_pk = peer2_pubkey.clone();
-    tree1.on_local_write(move |entry, db, _instance| {
+    tree1.on_local_write(move |event, db, _instance| {
         let sync = sync1_clone.clone();
         let peer = PeerId::new(peer2_pk.clone());
-        let entry_id = entry.id();
+        let entries: Vec<_> = event.entries().to_vec();
         let tree_id = db.root_id().clone();
         async move {
-            sync.queue_entry_for_sync(&peer, &entry_id, &tree_id)?;
+            for entry in &entries {
+                sync.queue_entry_for_sync(&peer, &entry.id(), &tree_id)?;
+            }
             Ok(())
         }
     })?;
 
     let sync2_clone = sync2.clone();
     let peer1_pk = peer1_pubkey.clone();
-    tree2.on_local_write(move |entry, db, _instance| {
+    tree2.on_local_write(move |event, db, _instance| {
         let sync = sync2_clone.clone();
         let peer = PeerId::new(peer1_pk.clone());
-        let entry_id = entry.id();
+        let entries: Vec<_> = event.entries().to_vec();
         let tree_id = db.root_id().clone();
         async move {
-            sync.queue_entry_for_sync(&peer, &entry_id, &tree_id)?;
+            for entry in &entries {
+                sync.queue_entry_for_sync(&peer, &entry.id(), &tree_id)?;
+            }
             Ok(())
         }
     })?;

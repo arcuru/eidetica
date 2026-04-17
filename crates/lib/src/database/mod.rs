@@ -21,7 +21,7 @@ use crate::{
     constants::{ROOT, SETTINGS},
     crdt::Doc,
     entry::{Entry, ID},
-    instance::{WriteSource, backend::Backend, errors::InstanceError},
+    instance::{WriteEvent, WriteSource, backend::Backend, errors::InstanceError},
     store::{SettingsStore, Store},
 };
 
@@ -563,16 +563,24 @@ impl Database {
         self.key.as_ref().map(|k| &k.identity)
     }
 
-    /// Register an Instance-wide callback to be invoked when entries are written locally to this database.
+    /// Register a callback to be invoked when entries are written locally to this database.
     ///
     /// Local writes are those originating from transaction commits in the current Instance.
-    /// The callback receives the entry, database, and instance as parameters, providing
-    /// full context for any coordination or side effects needed.
+    /// The callback receives a [`WriteEvent`] (which always contains exactly one entry for
+    /// local writes), the database, and the instance.
     ///
     /// **Important:** This callback is registered at the Instance level and will fire for all local
     /// writes to the database tree (identified by root ID), regardless of which Database handle
     /// performed the write. Multiple Database handles pointing to the same root ID share the same
     /// set of callbacks.
+    ///
+    /// # Callback contract
+    ///
+    /// - Fires once per transaction commit
+    /// - The database is in a consistent state when the callback executes
+    /// - [`WriteEvent::previous_tips()`] contains the DAG tips from before the commit,
+    ///   allowing consumers to determine exactly what changed
+    /// - Errors in callbacks are logged but do not prevent other callbacks from running
     ///
     /// # Arguments
     /// * `callback` - Function to invoke on local writes to this database tree
@@ -593,11 +601,14 @@ impl Database {
     /// # let signing_key = PrivateKey::generate();
     /// # let database = Database::create(&instance, signing_key, Doc::new()).await?;
     ///
-    /// database.on_local_write(|entry, db, _instance| {
+    /// database.on_local_write(|event, db, _instance| {
+    ///     let entry = event.entry().unwrap();
     ///     let entry_id = entry.id().clone();
     ///     let db_id = db.root_id().clone();
+    ///     let prev_tips = event.previous_tips().to_vec();
     ///     Box::pin(async move {
     ///         println!("Entry {} written to database {}", entry_id, db_id);
+    ///         println!("Previous tips: {:?}", prev_tips);
     ///         Ok(())
     ///     })
     /// })?;
@@ -606,7 +617,7 @@ impl Database {
     /// ```
     pub fn on_local_write<F, Fut>(&self, callback: F) -> Result<()>
     where
-        F: for<'a> Fn(&'a Entry, &'a Database, &'a Instance) -> Fut
+        F: for<'a> Fn(&'a WriteEvent, &'a Database, &'a Instance) -> Fut
             + Send
             + std::marker::Sync
             + 'static,
@@ -616,15 +627,26 @@ impl Database {
         instance.register_write_callback(WriteSource::Local, self.root_id().clone(), callback)
     }
 
-    /// Register an Instance-wide callback to be invoked when entries are written remotely to this database.
+    /// Register a callback to be invoked when entries are synced remotely to this database.
     ///
     /// Remote writes are those originating from sync or replication from other nodes.
-    /// The callback receives the entry, database, and instance as parameters.
+    /// The callback receives a [`WriteEvent`] containing the full batch of entries
+    /// that were received and stored together.
     ///
     /// **Important:** This callback is registered at the Instance level and will fire for all remote
     /// writes to the database tree (identified by root ID), regardless of which Database handle
     /// registered the callback. Multiple Database handles pointing to the same root ID share the same
     /// set of callbacks.
+    ///
+    /// # Callback contract
+    ///
+    /// - Fires once per sync exchange, **not** once per entry — a sync that transfers
+    ///   50 entries triggers one callback invocation
+    /// - All entries are fully persisted before the callback fires
+    /// - [`WriteEvent::previous_tips()`] contains the DAG tips from before the sync,
+    ///   allowing consumers to determine exactly what changed
+    /// - [`WriteEvent::entries()`] contains the batch of entries received in this sync
+    /// - Errors in callbacks are logged but do not prevent other callbacks from running
     ///
     /// # Arguments
     /// * `callback` - Function to invoke on remote writes to this database tree
@@ -645,11 +667,13 @@ impl Database {
     /// # let signing_key = PrivateKey::generate();
     /// # let database = Database::create(&instance, signing_key, Doc::new()).await?;
     ///
-    /// database.on_remote_write(|entry, db, _instance| {
-    ///     let entry_id = entry.id().clone();
+    /// database.on_remote_write(|event, db, _instance| {
+    ///     let entries = event.entries().to_vec();
+    ///     let prev_tips = event.previous_tips().to_vec();
     ///     let db_id = db.root_id().clone();
     ///     Box::pin(async move {
-    ///         println!("Remote entry {} synced to database {}", entry_id, db_id);
+    ///         println!("{} entries synced to database {}", entries.len(), db_id);
+    ///         println!("Previous tips: {:?}", prev_tips);
     ///         Ok(())
     ///     })
     /// })?;
@@ -658,7 +682,7 @@ impl Database {
     /// ```
     pub fn on_remote_write<F, Fut>(&self, callback: F) -> Result<()>
     where
-        F: for<'a> Fn(&'a Entry, &'a Database, &'a Instance) -> Fut
+        F: for<'a> Fn(&'a WriteEvent, &'a Database, &'a Instance) -> Fut
             + Send
             + std::marker::Sync
             + 'static,
