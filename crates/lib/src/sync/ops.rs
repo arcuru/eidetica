@@ -689,7 +689,7 @@ impl Sync {
                 all_entries.extend(bootstrap_response.all_entries);
 
                 let instance = self.instance()?;
-                instance.put_remote_entries(&tree_id, all_entries).await?;
+                instance.put_remote_entries(tree_id, all_entries).await?;
 
                 info!(peer = %peer_pubkey, tree = %tree_id, "Bootstrap sync completed successfully");
             }

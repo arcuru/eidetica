@@ -127,7 +127,8 @@ async fn setup_callback_test() -> (Instance, Database) {
 async fn test_local_write_callback_fires() {
     let (_instance, db) = setup_callback_test().await;
 
-    let events: Arc<Mutex<Vec<(Vec<crate::entry::ID>, WriteSource)>>> = Arc::new(Mutex::new(Vec::new()));
+    type EventRecord = (Vec<crate::entry::ID>, WriteSource);
+    let events: Arc<Mutex<Vec<EventRecord>>> = Arc::new(Mutex::new(Vec::new()));
     let events_clone = events.clone();
 
     db.on_local_write(move |event, _db, _instance| {
