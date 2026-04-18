@@ -190,10 +190,11 @@
             bin = mainPkgs.eidetica-bin;
             bin-debug = mainPkgs.eidetica-bin-debug;
             inherit (containerPkgs) image;
-            release = mkAggregate "eidetica-release" {
-              inherit (mainPkgs) eidetica-bin;
-              inherit (containerPkgs) image;
-            };
+            release = pkgs.runCommand "eidetica-release" {} ''
+              mkdir -p $out/bin $out/image
+              ln -s ${mainPkgs.eidetica-bin}/bin/* $out/bin/
+              ln -s ${containerPkgs.image} $out/image/eidetica-image.tar.gz
+            '';
           };
 
           # Default package (eidetica binary)
