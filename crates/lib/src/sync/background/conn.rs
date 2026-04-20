@@ -128,6 +128,18 @@ impl BackgroundSync {
     ) -> Result<()> {
         trace!(tree_id = %response.tree_id, "Processing bootstrap response");
 
+        // Integrity check: the root entry's content must hash to the declared
+        // tree_id. Cross-algorithm bootstraps fail loudly here; supporting them
+        // requires multi-CID-per-entry storage (see issue #37).
+        let derived = response.root_entry.id();
+        if derived != response.tree_id {
+            return Err(SyncError::InvalidEntry(format!(
+                "root entry content hashes to {} but bootstrap response declares tree_id {}",
+                derived, response.tree_id
+            ))
+            .into());
+        }
+
         // Store root entry first
         let instance = self.instance()?;
         instance
@@ -170,18 +182,13 @@ impl BackgroundSync {
         // Note: Height-based sorting would require tree context
         // For now, we rely on the sender to provide entries in correct order
 
+        // Per-entry hash integrity isn't meaningful here: these entries arrive
+        // without declared IDs, and we store them under whatever `entry.id()`
+        // derives locally. Substitution of individual entries would fail the
+        // parent-existence check below (a forged entry's children wouldn't
+        // connect to genuine parents). Root-level integrity is verified against
+        // the declared tree_id in the bootstrap handler.
         for entry in entries {
-            // Basic validation: check that entry ID matches content
-            let calculated_id = entry.id();
-            if entry.id() != calculated_id {
-                return Err(SyncError::InvalidEntry(format!(
-                    "Entry ID {} doesn't match calculated ID {}",
-                    entry.id(),
-                    calculated_id
-                ))
-                .into());
-            }
-
             // Verify parent entries exist before storing children
             if let Ok(parents) = entry.parents() {
                 for parent_id in &parents {

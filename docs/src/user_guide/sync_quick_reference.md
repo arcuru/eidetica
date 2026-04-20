@@ -156,7 +156,7 @@ use eidetica::sync::{Address, DatabaseTicket};
 sync.sync_with_peer(&Address::http("peer.example.com:8080"), Some(&tree_id)).await?;
 
 // Or using a ticket (contains address + database ID)
-let ticket: DatabaseTicket = "eidetica:?db=bafyrei...&pr=http:peer.example.com:8080".parse()?;
+let ticket: DatabaseTicket = "eidetica:?db=bafyr4i...&pr=http:peer.example.com:8080".parse()?;
 sync.sync_with_ticket(&ticket).await?;
 
 // This automatically:
@@ -276,7 +276,7 @@ println!("Room ID: {}", tree_id);
 use eidetica::sync::{Address, DatabaseTicket};
 
 // Join someone else's database using a ticket
-let ticket: DatabaseTicket = "eidetica:?db=bafyrei...&pr=http:peer.example.com:8080".parse()?;
+let ticket: DatabaseTicket = "eidetica:?db=bafyr4i...&pr=http:peer.example.com:8080".parse()?;
 sync.sync_with_ticket(&ticket).await?;
 
 // Or use a typed Address with an explicit tree ID

@@ -45,7 +45,7 @@ use eidetica::sync::{Address, DatabaseTicket};
 sync.sync_with_peer(&Address::http("127.0.0.1:8080"), Some(&tree_id)).await?;
 
 // Or using a ticket (contains both address and database ID)
-let ticket: DatabaseTicket = "eidetica:?db=bafyrei...&pr=http:127.0.0.1:8080".parse()?;
+let ticket: DatabaseTicket = "eidetica:?db=bafyr4i...&pr=http:127.0.0.1:8080".parse()?;
 sync.sync_with_ticket(&ticket).await?;
 ```
 

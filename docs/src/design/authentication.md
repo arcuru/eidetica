@@ -371,7 +371,7 @@ Keys are always stored by their public key string. The `name` field is optional 
       "delegations": {
         "team@example.com": {
           "permission_bounds": { "max": { "Write": 10 } },
-          "tree": { "root": "bafyrei...", "tips": ["bafyrei..."] }
+          "tree": { "root": "bafyr4i...", "tips": ["bafyr4i..."] }
         }
       }
     }
@@ -757,7 +757,7 @@ graph TD
 ### Cryptographic Assumptions
 
 - **Ed25519 Security**: Default to ed25519 signatures with explicit key type storage
-- **Hash Function Security**: SHA-256 for content addressing
+- **Hash Function Security**: BLAKE3 for content addressing
 - **Key Storage**: Private keys must be securely stored by clients
 - **Network Security**: Assumption of eventually consistent but potentially unreliable network
 

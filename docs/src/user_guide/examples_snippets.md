@@ -612,7 +612,7 @@ for (_, msg) in all_messages {
 use eidetica::sync::{Address, DatabaseTicket, transports::http::HttpTransport};
 
 // Join an existing room using a ticket URL
-let ticket: DatabaseTicket = "eidetica:?db=bafyrei...&pr=http:127.0.0.1:8080".parse()?;
+let ticket: DatabaseTicket = "eidetica:?db=bafyr4i...&pr=http:127.0.0.1:8080".parse()?;
 let room_id = ticket.database_id().clone();
 let address = ticket.addresses().first().unwrap().clone();
 

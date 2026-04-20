@@ -400,7 +400,7 @@ settings.add_delegated_tree(DelegatedTreeRef {
 
 This creates an entry in the project database's auth settings:
 
-- **Key**: The root entry ID of Alice's database (a CID string, e.g., `bafyrei...`)
+- **Key**: The root entry ID of Alice's database (a CID string, e.g., `bafyr4i...`)
 - **Value**: DelegatedTreeRef with permission bounds and tree reference
 
 #### Signing Key Names

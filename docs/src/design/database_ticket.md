@@ -22,7 +22,7 @@ eidetica:?db=<database_id>&pr=<transport_address>&pr=<transport_address>
 
 The database ID is stored as-is in the `db` query parameter, no encoding or
 transformation is applied. The ID is a multibase-encoded
-[CID (Content Identifier)][cid-spec] string (e.g., `bafyrei...` for
+[CID (Content Identifier)][cid-spec] string (e.g., `bafyr4i...` for
 base32lower). The ticket format does not need to understand the ID's internal
 structure.
 
@@ -49,13 +49,13 @@ same transport type (e.g., different network interfaces).
 Database ID only (no hints):
 
 ```text
-eidetica:?db=bafyreigdp67stqosn2o75rp3ina35czxl36g5a2d4v4tofwkl5yd4qrk4a
+eidetica:?db=bafyr4ihkr4ld3m4gqkjf4reryxsy2s5tkbxprqkow6fin2iiyvreuzzab4
 ```
 
 With transport hints:
 
 ```text
-eidetica:?db=bafyrei...&pr=iroh:endpoint...&pr=http:192.168.1.1:8080
+eidetica:?db=bafyr4i...&pr=iroh:endpoint...&pr=http:192.168.1.1:8080
 ```
 
 ## Future Features
@@ -72,7 +72,7 @@ detectable:
 tips=<count>:<tip_id>,<tip_id>,...
 ```
 
-For example, `tips=2:bafyrei...,bafyrei...`. If the count doesn't match the
+For example, `tips=2:bafyr4i...,bafyr4i...`. If the count doesn't match the
 number of parsed tip IDs the parameter is discarded as truncated. A receiver
 can use the tips to sync to a known state or verify they reached the expected
 point. Not needed for normal use.

@@ -89,7 +89,7 @@ sync.accept_connections().await?;
 
 // Generate a shareable ticket URI for this database
 let ticket = sync.create_ticket(&database.root_id()).await?;
-println!("Share this: {ticket}"); // eidetica:?db=bafyrei...&pr=http:192.168.1.1:8080
+println!("Share this: {ticket}"); // eidetica:?db=bafyr4i...&pr=http:192.168.1.1:8080
 
 // Connect from another instance using the ticket
 let client_sync = client_instance.sync().unwrap();

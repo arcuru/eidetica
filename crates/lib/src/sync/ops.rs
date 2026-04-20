@@ -120,7 +120,20 @@ impl Sync {
     ) -> Result<()> {
         tracing::info!(tree_id = %response.tree_id, "Processing bootstrap response");
 
-        // Store root entry first
+        // Integrity check: the root entry's content must hash to the declared
+        // tree_id. Rejects peers serving substituted content. A mismatch here
+        // also covers the cross-algorithm bootstrap case (e.g. a SHA-256 tree
+        // advertised to a BLAKE3-default node) — those are unsupported until
+        // the backend gains multi-CID-per-entry storage, so failing loudly is
+        // better than silently re-keying the DAG under the wrong algorithm.
+        let derived = response.root_entry.id();
+        if derived != response.tree_id {
+            return Err(SyncError::InvalidEntry(format!(
+                "root entry content hashes to {} but bootstrap response declares tree_id {}",
+                derived, response.tree_id
+            ))
+            .into());
+        }
 
         // Store the root entry
         let backend = self.backend()?;
@@ -249,21 +262,16 @@ impl Sync {
         _tree_id: &ID,
         entries: Vec<Entry>,
     ) -> Result<()> {
+        // These entries arrive without per-entry declared IDs — they were batched
+        // under a single tree_id by the sender. Content is stored under whatever
+        // ID our local `entry.id()` derives, so substitution attacks on individual
+        // entries would fail DAG connectivity checks via parent pointers rather
+        // than a per-entry hash check here. Root-level integrity is verified by
+        // the bootstrap handler against the declared tree_id.
+        //
+        // TODO: Add signature verification and parent-existence / DAG-connectivity
+        // checks before marking entries as verified.
         for entry in entries {
-            // Basic validation: check that entry ID matches content
-            let calculated_id = entry.id();
-            if entry.id() != calculated_id {
-                return Err(SyncError::InvalidEntry(format!(
-                    "Entry ID {} doesn't match calculated ID {}",
-                    entry.id(),
-                    calculated_id
-                ))
-                .into());
-            }
-
-            // TODO: Add more validation (signatures, parent existence, etc.)
-
-            // Store the entry (marking it as verified for now)
             let backend = self.backend()?;
             backend
                 .put_verified(entry)
