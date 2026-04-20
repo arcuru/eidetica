@@ -79,11 +79,11 @@ At the core of Eidetica is a directed acyclic graph (DAG) of immutable Entry obj
 
 Eidetica uses the [IPLD](https://ipld.io/) (InterPlanetary Linked Data) data model for content addressing and serialization:
 
-- **CIDs** (Content Identifiers): Every entry is identified by a CID — a self-describing hash that encodes the hash algorithm (Blake3, SHA-256, etc), the content codec (DAG-CBOR), and the hash digest. CID strings look like `bafyrei...` (base32lower encoding).
+- **CIDs** (Content Identifiers): Every entry is identified by a CID — a self-describing hash that encodes the hash algorithm, the content codec (DAG-CBOR), and the hash digest. CID strings look like `bafyr4i...` (base32lower encoding).
 - **DAG-CBOR**: Entries are serialized using [DAG-CBOR](https://ipld.io/docs/codecs/known/dag-cbor/), a deterministic subset of CBOR that ensures identical content always produces identical bytes (and therefore identical CIDs).
-- **Multihash**: Hash algorithm agility via the [multihash](https://multiformats.io/multihash/) specification. SHA-256 is the default; Blake3 is also supported.
+- **Multihash**: The CID format carries the hash algorithm in a self-describing prefix via the [multihash](https://multiformats.io/multihash/) specification. **BLAKE3 is the hash algorithm used throughout eidetica** — a database must use a single hash algorithm end-to-end, because parent pointers inside entries reference CIDs that must match the algorithm used to key entries in storage. Cross-algorithm trees (e.g., bootstrapping a pre-BLAKE3 database from a peer) are not supported without explicit multi-CID-per-entry support in the backend.
 
-This aligns Eidetica with the broader content-addressed ecosystem (IPFS, Filecoin, libp2p) and makes entries interoperable with IPLD-aware tools.
+This aligns Eidetica with the broader content-addressed ecosystem (IPFS, Filecoin, libp2p) and makes entries interoperable with IPLD-aware tools. BLAKE3 is also used as the content-addressing hash by [iroh](https://iroh.computer/), the P2P transport Eidetica uses for sync.
 
 ## Stores: A Core Innovation
 

@@ -45,11 +45,12 @@ impl std::error::Error for IdError {}
 
 /// A content-addressable identifier for an `Entry` or other database object.
 ///
-/// Wraps a CID v1 with the DAG-CBOR codec (0x71). Supports SHA-256 and Blake3
-/// hash algorithms via the multihash specification.
+/// Wraps a CID v1. Hash algorithm is self-describing via the multihash specification;
+/// BLAKE3 is the default for newly-created IDs, but any multihash algorithm present
+/// in an existing CID will be preserved through parsing and serialization.
 ///
-/// String format uses multibase base32lower encoding, producing strings like
-/// `bafyrei...` for dag-cbor + sha256 CIDs.
+/// String format uses multibase base32lower encoding, producing CID strings like
+/// `bafyr4i...` (dag-cbor + blake3).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Default)]
 pub struct ID(Option<Cid>);
 
@@ -72,11 +73,11 @@ impl Ord for ID {
 }
 
 impl ID {
-    /// Creates an ID by hashing DAG-CBOR encoded bytes with SHA-256.
+    /// Creates an ID by hashing DAG-CBOR encoded bytes with BLAKE3.
     ///
     /// This is the primary way to create an ID from serialized entry content.
     pub fn from_dagcbor_bytes(data: impl AsRef<[u8]>) -> Self {
-        Self::from_dagcbor_bytes_with(data, Code::Sha2_256)
+        Self::from_dagcbor_bytes_with(data, Code::Blake3_256)
     }
 
     /// Creates an ID by hashing DAG-CBOR encoded bytes with the specified algorithm.
@@ -85,12 +86,12 @@ impl ID {
         Self(Some(Cid::new_v1(DAG_CBOR_CODEC, mh)))
     }
 
-    /// Creates an ID by hashing the given bytes with SHA-256.
+    /// Creates an ID by hashing the given bytes with BLAKE3.
     ///
     /// Uses the raw codec (0x55) since the bytes are not DAG-CBOR encoded content.
+    /// Used for opaque blobs and non-entry identifiers.
     pub fn from_bytes(data: impl AsRef<[u8]>) -> Self {
-        // FIXME: ID::from_bytes is only really used in tests
-        Self::from_bytes_with(data, Code::Sha2_256)
+        Self::from_bytes_with(data, Code::Blake3_256)
     }
 
     /// Creates an ID by hashing the given bytes with the specified algorithm.
@@ -103,7 +104,7 @@ impl ID {
 
     /// Parses an ID from its string representation.
     ///
-    /// Accepts multibase-encoded CID strings (e.g., base32lower `bafyrei...`).
+    /// Accepts multibase-encoded CID strings (e.g., base32lower `bafyr4i...`).
     /// An empty string produces the default (empty) ID.
     pub fn parse(s: &str) -> Result<Self> {
         if s.is_empty() {
@@ -217,21 +218,21 @@ mod tests {
         let cid = id.as_cid().unwrap();
         assert_eq!(cid.version(), cid::Version::V1);
         assert_eq!(cid.codec(), RAW_CODEC);
-        // SHA-256 multihash code is 0x12
-        assert_eq!(cid.hash().code(), 0x12);
+        // Default is BLAKE3 (multihash code 0x1e)
+        assert_eq!(cid.hash().code(), 0x1e);
     }
 
     #[test]
-    fn test_from_bytes_blake3() {
+    fn test_from_bytes_sha256() {
         let data = b"hello world";
-        let id = ID::from_bytes_with(data, Code::Blake3_256);
+        let id = ID::from_bytes_with(data, Code::Sha2_256);
 
         assert!(!id.is_empty());
         let cid = id.as_cid().unwrap();
         assert_eq!(cid.version(), cid::Version::V1);
         assert_eq!(cid.codec(), RAW_CODEC);
-        // Blake3-256 multihash code is 0x1e
-        assert_eq!(cid.hash().code(), 0x1e);
+        // SHA-256 multihash code is 0x12
+        assert_eq!(cid.hash().code(), 0x12);
     }
 
     #[test]
