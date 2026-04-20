@@ -151,23 +151,30 @@ impl SyncHandler for SyncHandlerImpl {
                 let count = entries.len();
                 info!(count = count, "Received entries for synchronization");
 
-                // Get instance once before loop
                 let instance = match self.instance() {
                     Ok(i) => i,
                     Err(e) => return SyncResponse::Error(format!("Instance dropped: {e}")),
                 };
 
-                // Store entries in the backend as unverified (from sync)
-                let mut stored_count = 0usize;
+                // Group entries by tree_id so we can fire callbacks per-database
+                let mut by_tree: std::collections::HashMap<ID, Vec<crate::Entry>> =
+                    std::collections::HashMap::new();
                 for entry in entries {
-                    match instance.backend().put_unverified(entry.clone()).await {
+                    // Root entries use their own ID as the tree_id
+                    let tree_id = entry.root().unwrap_or_else(|| entry.id());
+                    by_tree.entry(tree_id).or_default().push(entry.clone());
+                }
+
+                let mut stored_count = 0usize;
+                for (tree_id, tree_entries) in by_tree {
+                    let batch_size = tree_entries.len();
+                    match instance.put_remote_entries(&tree_id, tree_entries).await {
                         Ok(_) => {
-                            stored_count += 1;
-                            trace!(entry_id = %entry.id(), "Stored entry successfully");
+                            stored_count += batch_size;
+                            debug!(tree_id = %tree_id, count = batch_size, "Stored entries successfully");
                         }
                         Err(e) => {
-                            error!(entry_id = %entry.id(), error = %e, "Failed to store entry");
-                            // Continue processing other entries rather than failing completely
+                            error!(tree_id = %tree_id, error = %e, "Failed to store entries batch");
                         }
                     }
                 }
