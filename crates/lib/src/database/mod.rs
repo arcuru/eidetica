@@ -219,10 +219,9 @@ impl Database {
         txn.set_entry_root(ID::default())?;
 
         // Populate the SETTINGS and ROOT subtrees for the very first entry
-        txn.update_subtree(SETTINGS, &serde_json::to_string(&initial_settings)?)
+        txn.update_subtree(SETTINGS, serde_json::to_vec(&initial_settings)?)
             .await?;
-        txn.update_subtree(ROOT, &serde_json::to_string(&"".to_string())?)
-            .await?; // Standard practice for root entry's _root
+        txn.update_subtree(ROOT, serde_json::to_vec("")?).await?; // Standard practice for root entry's _root
 
         // Add entropy to the entry metadata to ensure unique database IDs even with identical settings
         txn.set_metadata_entropy(rand::thread_rng().next_u64())?;

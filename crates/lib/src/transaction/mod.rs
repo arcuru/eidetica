@@ -25,7 +25,6 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use base64ct::{Base64, Encoding};
 pub use errors::TransactionError;
 use serde::{Deserialize, Serialize};
 
@@ -80,7 +79,8 @@ fn create_merge_cache_id(tip_ids: &[ID]) -> ID {
 ///
 /// The trait operates on raw bytes, allowing implementations to define their own
 /// wire format. For example, AES-GCM implementations typically use `nonce || ciphertext`.
-/// The Transaction handles base64 encoding/decoding for storage.
+/// Entry subtree payloads are opaque bytes, so ciphertext is stored verbatim with no
+/// additional encoding.
 ///
 /// # Example
 ///
@@ -107,13 +107,16 @@ pub(crate) trait Encryptor: Send + Sync {
     /// * `ciphertext` - Encrypted data in implementation-defined format
     ///
     /// # Returns
-    /// Plaintext bytes (typically UTF-8 encoded JSON for CRDT data)
+    /// Plaintext bytes in whatever format the wrapped store produces (e.g.
+    /// JSON for `DocStore`/`Table`, binary Yrs updates for `YDoc`).
     fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>>;
 
     /// Encrypt plaintext bytes to ciphertext bytes
     ///
     /// # Arguments
-    /// * `plaintext` - Data to encrypt (typically UTF-8 encoded JSON for CRDT data)
+    /// * `plaintext` - Bytes to encrypt; format is whatever the wrapped store
+    ///   produces (JSON, binary CRDT update, etc.). The Encryptor itself does
+    ///   not interpret the bytes.
     ///
     /// # Returns
     /// Encrypted data in implementation-defined format
@@ -290,46 +293,24 @@ impl Transaction {
         Ok(())
     }
 
-    /// Decrypt data if an encryptor is registered, otherwise return as-is.
+    /// Decrypt bytes if an encryptor is registered, otherwise return them unchanged.
     ///
-    /// This is used throughout Transaction to transparently decrypt encrypted data
-    /// before deserializing into CRDT types. Encrypted data is stored as base64-encoded
-    /// bytes in the entry.
-    fn decrypt_if_needed(&self, subtree: &str, data: &str) -> Result<String> {
+    /// This is used throughout Transaction to transparently decrypt encrypted payloads
+    /// before deserializing into CRDT types.
+    fn decrypt_if_needed(&self, subtree: &str, data: &[u8]) -> Result<Vec<u8>> {
         if let Some(encryptor) = self.encryptors.lock().unwrap().get(subtree) {
-            // Decode base64 to get ciphertext bytes
-            let ciphertext =
-                Base64::decode_vec(data).map_err(|e| StoreError::DeserializationFailed {
-                    store: subtree.to_string(),
-                    reason: format!("Failed to decode base64: {e}"),
-                })?;
-            // Decrypt the data
-            let plaintext_bytes = encryptor.decrypt(&ciphertext)?;
-            // Convert to UTF-8 string
-            String::from_utf8(plaintext_bytes).map_err(|e| {
-                StoreError::DeserializationFailed {
-                    store: subtree.to_string(),
-                    reason: format!("Invalid UTF-8 in decrypted data: {e}"),
-                }
-                .into()
-            })
+            encryptor.decrypt(data)
         } else {
-            // No encryptor, return as-is
-            Ok(data.to_string())
+            Ok(data.to_vec())
         }
     }
 
-    /// Encrypts data if an encryptor is registered for the subtree.
-    /// Returns the original data unchanged if no encryptor is registered.
-    fn encrypt_if_needed(&self, subtree: &str, plaintext: &str) -> Result<String> {
+    /// Encrypt bytes if an encryptor is registered for the subtree, otherwise return them unchanged.
+    fn encrypt_if_needed(&self, subtree: &str, plaintext: &[u8]) -> Result<Vec<u8>> {
         if let Some(encryptor) = self.encryptors.lock().unwrap().get(subtree) {
-            // Encrypt the data
-            let ciphertext = encryptor.encrypt(plaintext.as_bytes())?;
-            // Encode as base64 for storage
-            Ok(Base64::encode_string(&ciphertext))
+            encryptor.encrypt(plaintext)
         } else {
-            // No encryptor, return as-is
-            Ok(plaintext.to_string())
+            Ok(plaintext.to_vec())
         }
     }
 
@@ -427,7 +408,7 @@ impl Transaction {
         // Parse existing metadata if present, or create new
         let mut metadata = builder
             .metadata()
-            .and_then(|m| serde_json::from_str::<EntryMetadata>(m).ok())
+            .and_then(|m| serde_json::from_slice::<EntryMetadata>(m).ok())
             .unwrap_or_else(|| EntryMetadata {
                 settings_tips: Vec::new(),
                 entropy: None,
@@ -437,7 +418,7 @@ impl Transaction {
         metadata.entropy = Some(entropy);
 
         // Serialize and set metadata
-        let metadata_json = serde_json::to_string(&metadata)?;
+        let metadata_json = serde_json::to_vec(&metadata)?;
         builder.set_metadata_mut(metadata_json);
 
         Ok(())
@@ -462,10 +443,10 @@ impl Transaction {
     pub(crate) async fn update_subtree(
         &self,
         subtree: impl AsRef<str>,
-        data: impl AsRef<str>,
+        data: impl Into<Vec<u8>>,
     ) -> Result<()> {
         let subtree = subtree.as_ref();
-        let data = data.as_ref();
+        let data = data.into();
 
         // Check if we need to fetch tips (check without holding borrow across await)
         let needs_tips = {
@@ -491,7 +472,7 @@ impl Transaction {
             .as_mut()
             .ok_or(TransactionError::TransactionAlreadyCommitted)?;
 
-        builder.set_subtree_data_mut(subtree.to_string(), data.to_string());
+        builder.set_subtree_data_mut(subtree.to_string(), data);
         if let Some(tips) = tips {
             builder.set_subtree_parents_mut(subtree, tips);
         }
@@ -630,10 +611,10 @@ impl Transaction {
             .ok_or(TransactionError::TransactionAlreadyCommitted)?;
 
         if let Ok(data) = builder.data(subtree_name) {
-            if data.trim().is_empty() {
+            if data.is_empty() {
                 Ok(None)
             } else {
-                serde_json::from_str(data).map(Some).map_err(|e| {
+                serde_json::from_slice(data).map(Some).map_err(|e| {
                     TransactionError::StoreDeserializationFailed {
                         store: subtree_name.to_string(),
                         reason: e.to_string(),
@@ -779,7 +760,7 @@ impl Transaction {
             .await?
         {
             let decrypted = self.decrypt_if_needed(subtree_name, &cached_state)?;
-            let result: T = serde_json::from_str(&decrypted)?;
+            let result: T = serde_json::from_slice(&decrypted)?;
             return Ok(result);
         }
 
@@ -809,7 +790,7 @@ impl Transaction {
             .await?;
 
         // Cache the computed merge result
-        let serialized = serde_json::to_string(&result)?;
+        let serialized = serde_json::to_vec(&result)?;
         let to_cache = self.encrypt_if_needed(subtree_name, &serialized)?;
         // FIXME: Multiple tips in the cache is a hack
         // cache_crdt_state is supposed to take in (ID, subtree, data)
@@ -857,7 +838,7 @@ impl Transaction {
             {
                 // Decrypt cached state if encryptor is registered
                 let decrypted = self.decrypt_if_needed(subtree_name, &cached_state)?;
-                let result: T = serde_json::from_str(&decrypted)?;
+                let result: T = serde_json::from_slice(&decrypted)?;
                 return Ok(result);
             }
 
@@ -879,7 +860,7 @@ impl Transaction {
                 let local_data = if let Ok(data) = entry.data(subtree_name) {
                     // Decrypt before deserializing
                     let plaintext = self.decrypt_if_needed(subtree_name, data)?;
-                    serde_json::from_str::<T>(&plaintext)?
+                    serde_json::from_slice::<T>(&plaintext)?
                 } else {
                     T::default()
                 };
@@ -887,7 +868,7 @@ impl Transaction {
             }
 
             // Step 4: Cache only the final result (encrypted if encryptor is registered)
-            let serialized_state = serde_json::to_string(&result)?;
+            let serialized_state = serde_json::to_vec(&result)?;
             let to_cache = self.encrypt_if_needed(subtree_name, &serialized_state)?;
             self.db
                 .backend()?
@@ -923,7 +904,7 @@ impl Transaction {
             let local_data = if let Ok(data) = entry.data(subtree_name) {
                 // Decrypt before deserializing
                 let plaintext = self.decrypt_if_needed(subtree_name, data)?;
-                serde_json::from_str::<T>(&plaintext)?
+                serde_json::from_slice::<T>(&plaintext)?
             } else {
                 T::default()
             };
@@ -1015,13 +996,13 @@ impl Transaction {
                 .as_ref()
                 .ok_or(TransactionError::TransactionAlreadyCommitted)?;
 
-            let index_data_opt = builder.data(INDEX).ok().map(String::from);
+            let index_data_opt = builder.data(INDEX).ok().cloned();
             let main_parents = builder.parents().unwrap_or_default();
             let existing_subtrees = builder.subtrees();
 
             // Find missing subtrees
             let missing = if let Some(ref index_data) = index_data_opt
-                && let Ok(index_doc) = serde_json::from_str::<Doc>(index_data)
+                && let Ok(index_doc) = serde_json::from_slice::<Doc>(index_data)
             {
                 index_doc
                     .keys()
@@ -1077,7 +1058,7 @@ impl Transaction {
         // Parse existing metadata if present, or create new
         let mut metadata = builder
             .metadata()
-            .and_then(|m| serde_json::from_str::<EntryMetadata>(m).ok())
+            .and_then(|m| serde_json::from_slice::<EntryMetadata>(m).ok())
             .unwrap_or_else(|| EntryMetadata {
                 settings_tips: Vec::new(),
                 entropy: None,
@@ -1087,7 +1068,7 @@ impl Transaction {
         metadata.settings_tips = settings_tips;
 
         // Serialize the metadata
-        let metadata_json = serde_json::to_string(&metadata)?;
+        let metadata_json = serde_json::to_vec(&metadata)?;
 
         // Add metadata to the entry builder
         builder.set_metadata_mut(metadata_json);
@@ -1117,18 +1098,12 @@ impl Transaction {
         {
             let encryptors = self.encryptors.lock().unwrap();
             for subtree_name in builder.subtrees() {
-                if let Some(encryptor) = encryptors.get(&subtree_name) {
-                    // Get the plaintext data from the builder
-                    if let Ok(plaintext_data) = builder.data(&subtree_name)
-                        && !plaintext_data.trim().is_empty()
-                    {
-                        // Encrypt the plaintext data (as bytes)
-                        let ciphertext = encryptor.encrypt(plaintext_data.as_bytes())?;
-                        // Encode as base64 for storage
-                        let encoded = Base64::encode_string(&ciphertext);
-                        // Update the builder with encrypted data
-                        builder.set_subtree_data_mut(subtree_name.clone(), encoded);
-                    }
+                if let Some(encryptor) = encryptors.get(&subtree_name)
+                    && let Ok(plaintext_data) = builder.data(&subtree_name)
+                    && !plaintext_data.is_empty()
+                {
+                    let ciphertext = encryptor.encrypt(plaintext_data)?;
+                    builder.set_subtree_data_mut(subtree_name.clone(), ciphertext);
                 }
             }
         }

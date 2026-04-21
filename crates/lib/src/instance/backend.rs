@@ -156,14 +156,14 @@ impl Backend {
         &self,
         entry_id: &ID,
         store: &str,
-    ) -> Result<Option<String>> {
+    ) -> Result<Option<Vec<u8>>> {
         self.backend_impl
             .get_cached_crdt_state(entry_id, store)
             .await
     }
 
     /// Cache CRDT state
-    pub async fn cache_crdt_state(&self, entry_id: &ID, store: &str, state: String) -> Result<()> {
+    pub async fn cache_crdt_state(&self, entry_id: &ID, store: &str, state: Vec<u8>) -> Result<()> {
         self.backend_impl
             .cache_crdt_state(entry_id, store, state)
             .await

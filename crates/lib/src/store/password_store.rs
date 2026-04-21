@@ -10,9 +10,12 @@
 //! Encryption is transparent to the wrapped store. Data flows as:
 //!
 //! ```text
-//! Write: WrappedStore.put() → JSON → encrypt() → base64 → stored in entry
-//! Read:  entry data → base64 decode → decrypt() → JSON → WrappedStore CRDT merge
+//! Write: WrappedStore.put() → serialized bytes → encrypt() → ciphertext → stored in entry
+//! Read:  entry data → decrypt() → serialized bytes → WrappedStore CRDT merge
 //! ```
+//!
+//! Entry payloads are opaque bytes (`RawData = Vec<u8>`), so ciphertext is stored
+//! verbatim without an additional text encoding (e.g. base64).
 //!
 //! The underlying CRDT (e.g., Doc) handles merging of decrypted data from multiple
 //! entry tips. `PasswordStore<S>` delegates `Store::Data` to `S::Data` — encryption

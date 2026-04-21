@@ -437,8 +437,8 @@ impl YDoc {
         let update = txn.encode_state_as_update_v1(&yrs::StateVector::default());
 
         let yrs_binary = YrsBinary::new(update);
-        let serialized = serde_json::to_string(&yrs_binary)?;
-        self.txn.update_subtree(&self.name, &serialized).await
+        let serialized = serde_json::to_vec(&yrs_binary)?;
+        self.txn.update_subtree(&self.name, serialized).await
     }
 
     /// Saves the document state using efficient differential encoding.
@@ -480,8 +480,8 @@ impl YDoc {
         // Only save if there are actual changes
         if !diff_update.is_empty() {
             let yrs_binary = YrsBinary::new(diff_update);
-            let serialized = serde_json::to_string(&yrs_binary)?;
-            self.txn.update_subtree(&self.name, &serialized).await?;
+            let serialized = serde_json::to_vec(&yrs_binary)?;
+            self.txn.update_subtree(&self.name, serialized).await?;
         }
 
         Ok(())

@@ -132,7 +132,7 @@ pub struct Entry {
 struct TreeNode {
     pub root: ID,                   // Root entry ID of the database
     pub parents: Vec<ID>,           // Parent entry IDs in main database history
-    pub metadata: Option<RawData>,  // Structured metadata (settings tips, entropy)
+    pub metadata: Option<RawData>,  // Opaque metadata bytes (settings tips, entropy)
 }
 ```
 
@@ -142,11 +142,16 @@ struct TreeNode {
 
 ```rust,ignore
 struct SubTreeNode {
-    pub name: String,        // Store name (e.g., "_settings")
-    pub parents: Vec<ID>,    // Parent entries in store history
-    pub data: RawData,       // Serialized store data
+    pub name: String,             // Store name (e.g., "_settings")
+    pub parents: Vec<ID>,         // Parent entries in store history
+    pub data: Option<RawData>,    // Opaque payload bytes in the store's chosen format
 }
 ```
+
+`RawData` is `Vec<u8>` — the entry layer treats payloads as opaque bytes. Each `Store`
+owns the encoding of its own payload (JSON for `DocStore`/`Table`, binary Yrs updates for
+`YDoc`, ciphertext for `PasswordStore`, etc.). Encoded as a CBOR byte string (major
+type 2) in DAG-CBOR for IPLD interop.
 
 ## Authentication Settings
 

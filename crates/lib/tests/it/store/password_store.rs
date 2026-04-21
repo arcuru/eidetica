@@ -135,8 +135,6 @@ async fn test_password_store_encrypt_decrypt_roundtrip() {
 
 #[tokio::test]
 async fn test_password_store_data_is_encrypted_in_backend() {
-    use base64ct::{Base64, Encoding};
-
     let (_instance, database) = setup_tree().await;
 
     let tx = database.new_transaction().await.unwrap();
@@ -158,22 +156,27 @@ async fn test_password_store_data_is_encrypted_in_backend() {
     let entry = backend.get(&entry_id).await.unwrap();
     let stored_data = entry.data("secrets").unwrap();
 
-    // Stored data should be base64-encoded, not contain plaintext
-    assert!(!stored_data.contains("THIS_IS_SECRET"));
-    assert!(!stored_data.contains("secret_key"));
-
-    // Should be valid base64 and decode to at least 12 bytes (nonce size)
-    let decoded = Base64::decode_vec(stored_data).unwrap();
+    // Stored data is raw ciphertext bytes; it must not contain plaintext.
     assert!(
-        decoded.len() >= 12,
+        !stored_data
+            .windows("THIS_IS_SECRET".len())
+            .any(|w| w == b"THIS_IS_SECRET")
+    );
+    assert!(
+        !stored_data
+            .windows("secret_key".len())
+            .any(|w| w == b"secret_key")
+    );
+
+    // Format is `nonce || ciphertext`; nonce alone is 12 bytes.
+    assert!(
+        stored_data.len() >= 12,
         "Encrypted data should have at least nonce (12 bytes)"
     );
 }
 
 #[tokio::test]
 async fn test_password_store_cache_is_encrypted() {
-    use base64ct::{Base64, Encoding};
-
     let (_instance, database) = setup_tree().await;
 
     // Create initial entry with data
@@ -203,33 +206,31 @@ async fn test_password_store_cache_is_encrypted() {
         .await
         .unwrap()
     {
-        // Cache should NOT contain plaintext values
+        // Cache holds raw ciphertext bytes; no plaintext should leak.
+        let contains_bytes = |needle: &[u8]| cached.windows(needle.len()).any(|w| w == needle);
         assert!(
-            !cached.contains("value1"),
+            !contains_bytes(b"value1"),
             "Cache should not contain plaintext 'value1'"
         );
         assert!(
-            !cached.contains("value2"),
+            !contains_bytes(b"value2"),
             "Cache should not contain plaintext 'value2'"
         );
         assert!(
-            !cached.contains("key1"),
+            !contains_bytes(b"key1"),
             "Cache should not contain plaintext 'key1'"
         );
 
-        // Cache should be valid base64 (encrypted data)
-        let decoded = Base64::decode_vec(&cached);
+        // Ciphertext is `nonce || encrypted`; nonce alone is 12 bytes.
         assert!(
-            decoded.is_ok(),
-            "Cached data should be valid base64-encoded encrypted data"
+            cached.len() >= 12,
+            "Cached ciphertext should have at least nonce (12 bytes)"
         );
     }
 }
 
 #[tokio::test]
 async fn test_password_store_nonce_uniqueness() {
-    use base64ct::{Base64, Encoding};
-
     let (_instance, database) = setup_tree().await;
 
     let entry_id1 = create_password_docstore_with_data(
@@ -251,14 +252,11 @@ async fn test_password_store_nonce_uniqueness() {
     let entry1 = backend.get(&entry_id1).await.unwrap();
     let entry2 = backend.get(&entry_id2).await.unwrap();
 
-    // Encrypted data is stored as base64-encoded (nonce || ciphertext)
-    let encoded1 = entry1.data("secrets1").unwrap();
-    let encoded2 = entry2.data("secrets2").unwrap();
+    // Encrypted data is stored as raw bytes: `nonce || ciphertext`.
+    let bytes1 = entry1.data("secrets1").unwrap();
+    let bytes2 = entry2.data("secrets2").unwrap();
 
-    let bytes1 = Base64::decode_vec(encoded1).unwrap();
-    let bytes2 = Base64::decode_vec(encoded2).unwrap();
-
-    // First 12 bytes are the nonce
+    // First 12 bytes are the nonce.
     let nonce1 = &bytes1[..12];
     let nonce2 = &bytes2[..12];
     let ciphertext1 = &bytes1[12..];

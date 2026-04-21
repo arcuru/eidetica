@@ -34,7 +34,7 @@ async fn test_settings_tips_in_metadata() {
     let metadata = entry1.metadata().expect("Entry should have metadata");
 
     // Parse metadata and verify settings_tips field exists
-    let metadata_obj: serde_json::Value = serde_json::from_str(metadata).unwrap();
+    let metadata_obj: serde_json::Value = serde_json::from_slice(metadata).unwrap();
     let settings_tips_array = metadata_obj
         .get("settings_tips")
         .expect("Should have settings_tips");
@@ -66,8 +66,8 @@ async fn test_settings_tips_in_metadata() {
     let metadata2 = entry2.metadata().expect("Entry2 should have metadata");
     let metadata3 = entry3.metadata().expect("Entry3 should have metadata");
 
-    let metadata2_obj: serde_json::Value = serde_json::from_str(metadata2).unwrap();
-    let metadata3_obj: serde_json::Value = serde_json::from_str(metadata3).unwrap();
+    let metadata2_obj: serde_json::Value = serde_json::from_slice(metadata2).unwrap();
+    let metadata3_obj: serde_json::Value = serde_json::from_slice(metadata3).unwrap();
 
     let settings_tips2 = metadata2_obj
         .get("settings_tips")
@@ -115,7 +115,7 @@ async fn test_entry_get_settings_from_subtree() {
     // Entry shouldn't know about settings - that's Transaction's job
     // But we can verify the entry has the _settings subtree data
     let settings_data = root_entry.data("_settings").unwrap();
-    let parsed_settings: Doc = serde_json::from_str(settings_data).unwrap();
+    let parsed_settings: Doc = serde_json::from_slice(settings_data).unwrap();
 
     // Verify the settings contain what we expect
     match parsed_settings.get("name").unwrap() {
@@ -169,7 +169,7 @@ async fn test_settings_tips_propagation() {
     // Parse settings tips from metadata
     let parse_tips = |entry: &Entry| -> Vec<String> {
         if let Some(metadata_str) = entry.metadata()
-            && let Ok(metadata_obj) = serde_json::from_str::<serde_json::Value>(metadata_str)
+            && let Ok(metadata_obj) = serde_json::from_slice::<serde_json::Value>(metadata_str)
             && let Some(tips_array) = metadata_obj.get("settings_tips")
         {
             return tips_array
@@ -264,7 +264,7 @@ async fn test_settings_metadata_with_complex_operations() {
     // Helper function to parse settings tips from entry
     let parse_settings_tips = |entry: &Entry| -> Vec<String> {
         if let Some(metadata_str) = entry.metadata() {
-            let metadata_obj: serde_json::Value = serde_json::from_str(metadata_str).unwrap();
+            let metadata_obj: serde_json::Value = serde_json::from_slice(metadata_str).unwrap();
             if let Some(tips_array) = metadata_obj.get("settings_tips") {
                 return tips_array
                     .as_array()
@@ -367,7 +367,7 @@ async fn test_settings_metadata_with_branching() {
     let metadata_str = merge_entry
         .metadata()
         .expect("Merge entry should have metadata");
-    let metadata_obj: serde_json::Value = serde_json::from_str(metadata_str).unwrap();
+    let metadata_obj: serde_json::Value = serde_json::from_slice(metadata_str).unwrap();
     let settings_tips = metadata_obj
         .get("settings_tips")
         .expect("Should have settings_tips")
@@ -426,7 +426,7 @@ async fn test_metadata_consistency_across_operations() {
     // Parse and compare settings tips
     let get_settings_tips = |entry: &Entry| -> Vec<String> {
         let metadata_str = entry.metadata().unwrap();
-        let metadata_obj: serde_json::Value = serde_json::from_str(metadata_str).unwrap();
+        let metadata_obj: serde_json::Value = serde_json::from_slice(metadata_str).unwrap();
         metadata_obj
             .get("settings_tips")
             .unwrap()

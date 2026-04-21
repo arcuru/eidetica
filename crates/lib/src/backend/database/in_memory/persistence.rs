@@ -58,9 +58,11 @@ struct SerializableDatabase {
     /// Instance secrets containing the device signing key
     #[serde(default)]
     instance_secrets: Option<InstanceSecrets>,
-    /// Generic key-value cache (not serialized - cache is rebuilt on load)
+    /// CRDT state cache. Serialized with the rest of the database; if the field
+    /// is missing on load it defaults to empty and is rebuilt lazily as reads
+    /// recompute and re-cache state.
     #[serde(default)]
-    cache: HashMap<String, String>,
+    cache: HashMap<String, Vec<u8>>,
     /// Cached tips grouped by tree
     #[serde(default)]
     tips: HashMap<ID, TreeTipsCache>,

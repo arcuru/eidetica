@@ -44,7 +44,7 @@ fn test_entry_parents() {
 
     // Create entry with subtree and subtree parents
     let subtree_name = "subtree1";
-    let subtree_data = "subtree_data";
+    let subtree_data: &[u8] = b"subtree_data";
     let entry_with_subtree_parents =
         create_entry_with_subtree_parents(root, subtree_name, subtree_data, &["subtree_parent"]);
 

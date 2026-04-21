@@ -8,7 +8,7 @@ fn test_entry_add_subtree() {
 
     // Part 1: Create entry using the builder pattern directly
     let subtree_name = "subtree1";
-    let subtree_data = "subtree_data";
+    let subtree_data: &[u8] = b"subtree_data";
 
     // Use the builder pattern with direct chaining (no variable)
     let entry = Entry::builder(ID::from_bytes(root))
@@ -24,7 +24,7 @@ fn test_entry_add_subtree() {
 
     // Verify subtree data
     let fetched_data = entry.data(subtree_name).unwrap();
-    assert_eq!(fetched_data, subtree_data);
+    assert_eq!(fetched_data.as_slice(), subtree_data);
 
     // Check subtree parents
     assert_subtree_no_parents(&entry, subtree_name); // New subtree has no parents initially
@@ -33,7 +33,7 @@ fn test_entry_add_subtree() {
     let mut builder = Entry::builder(ID::from_bytes(root));
     builder.add_parent_mut(ID::from_bytes("main_parent")); // Add parent for valid non-root entry
     builder.set_subtree_data_mut(subtree_name, subtree_data);
-    let new_subtree_data = "new_subtree_data";
+    let new_subtree_data: &[u8] = b"new_subtree_data";
     builder.set_subtree_data_mut(subtree_name, new_subtree_data);
 
     // Build the entry
@@ -46,7 +46,7 @@ fn test_entry_add_subtree() {
 
     // Verify data was overwritten
     let fetched_new_data = new_entry.data(subtree_name).unwrap();
-    assert_eq!(fetched_new_data, new_subtree_data);
+    assert_eq!(fetched_new_data.as_slice(), new_subtree_data);
 }
 
 #[test]
@@ -58,11 +58,11 @@ fn test_entry_with_multiple_subtrees() {
     builder.add_parent_mut(ID::from_bytes("main_parent")); // Add parent for valid non-root entry
 
     // Add several subtrees
-    let subtrees = [
-        ("users", "user_data"),
-        ("posts", "post_data"),
-        ("comments", "comment_data"),
-        ("ratings", "rating_data"),
+    let subtrees: [(&str, &[u8]); 4] = [
+        ("users", b"user_data"),
+        ("posts", b"post_data"),
+        ("comments", b"comment_data"),
+        ("ratings", b"rating_data"),
     ];
 
     for (name, data) in subtrees.iter() {
@@ -86,7 +86,7 @@ fn test_entry_with_multiple_subtrees() {
     // Verify each subtree has the right data
     for (name, data) in subtrees.iter() {
         assert!(entry.in_subtree(name));
-        assert_eq!(entry.data(name).unwrap(), data);
+        assert_eq!(entry.data(name).unwrap().as_slice(), *data);
     }
 
     // Try to access a non-existent subtree
@@ -108,9 +108,9 @@ fn test_entry_remove_empty_subtrees() {
     // Apply remove_empty_subtrees via builder reconstruction
     let mut builder = Entry::builder(ID::from_bytes(root));
     builder.add_parent_mut(ID::from_bytes("main_parent")); // Add parent for valid non-root entry
-    builder.set_subtree_data_mut("sub1", "data1");
-    builder.set_subtree_data_mut("sub2_empty", "");
-    builder.set_subtree_data_mut("sub3", "data3");
+    builder.set_subtree_data_mut("sub1", b"data1");
+    builder.set_subtree_data_mut("sub2_empty", b"");
+    builder.set_subtree_data_mut("sub3", b"data3");
     builder
         .remove_empty_subtrees_mut()
         .expect("remove_empty_subtrees_mut should succeed");
@@ -119,14 +119,14 @@ fn test_entry_remove_empty_subtrees() {
         .expect("Entry with empty subtrees removed should build successfully");
 
     // Verify empty subtree was removed and remaining data is intact
-    assert_subtrees_with_data(&entry, &[("sub1", "data1"), ("sub3", "data3")]);
+    assert_subtrees_with_data(&entry, &[("sub1", b"data1"), ("sub3", b"data3")]);
     assert!(!entry.in_subtree("sub2_empty"));
 }
 
 #[test]
 fn test_subtrees_are_sorted() {
     // Create entry with subtrees in reverse order
-    let entry = create_entry_with_subtrees("root_id", &[("c", "{}"), ("a", "{}"), ("b", "{}")]);
+    let entry = create_entry_with_subtrees("root_id", &[("c", b"{}"), ("a", b"{}"), ("b", b"{}")]);
 
     // Verify subtrees are sorted alphabetically (including the automatic _root subtree)
     let subtrees = entry.subtrees();
@@ -148,7 +148,7 @@ fn test_entrybuilder_subtree_parent_methods() {
     // Create a builder with a subtree
     let mut builder = Entry::builder(ID::from_bytes("test_root"))
         .add_parent(ID::from_bytes("main_parent")) // Add parent for valid non-root entry
-        .set_subtree_data("subtree1", "data1");
+        .set_subtree_data("subtree1", b"data1");
 
     // Add first subtree parent with mutable method
     builder.add_subtree_parent_mut("subtree1", ID::from_bytes("sp1"));
@@ -167,7 +167,7 @@ fn test_entrybuilder_subtree_parent_methods() {
     // Also test adding to an existing list of subtree parents
     let entry2 = Entry::builder(ID::from_bytes("test_root"))
         .add_parent(ID::from_bytes("main_parent")) // Add parent for valid non-root entry
-        .set_subtree_data("subtree1", "data1")
+        .set_subtree_data("subtree1", b"data1")
         .set_subtree_parents(
             "subtree1",
             vec![ID::from_bytes("sp1"), ID::from_bytes("sp2")],
@@ -194,7 +194,7 @@ fn test_subtree_empty_name_rejected() {
     // Empty string is reserved, it cannot be used as a subtree name.
     let entry_result = Entry::builder(ID::from_bytes("test_root"))
         .add_parent(ID::from_bytes("main_parent"))
-        .set_subtree_data("", "empty_subtree_data")
+        .set_subtree_data("", b"empty_subtree_data")
         .build();
 
     assert!(

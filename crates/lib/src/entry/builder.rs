@@ -15,14 +15,15 @@ use crate::{Result, auth::types::SigInfo, constants::ROOT, crdt::Doc, store::Sto
 ///
 /// # Parameter Type Efficiency
 ///
-/// The builder uses `ID` and `impl Into<RawData>` for parameters:
+/// The builder uses `ID` for parent references and `impl Into<Vec<u8>>` for payload data.
+/// Payloads are opaque bytes — each `Store` owns its own encoding (JSON, CBOR, raw, etc.).
 ///
 /// ```ignore
 /// use eidetica::entry::ID;
 ///
 /// let entry = Entry::builder(ID::from_bytes("root_id"))
 ///     .add_parent(ID::from_bytes("parent1"))
-///     .set_subtree_data("users", "user_data")
+///     .set_subtree_data("users", b"user_data".to_vec())
 ///     .build();
 /// ```
 ///
@@ -34,7 +35,7 @@ use crate::{Result, auth::types::SigInfo, constants::ROOT, crdt::Doc, store::Sto
 ///    # use eidetica::Entry;
 ///    # use eidetica::entry::ID;
 ///    let entry = Entry::builder(ID::from_bytes("root_id"))
-///        .set_subtree_data("users", "user_data")
+///        .set_subtree_data("users", b"user_data".to_vec())
 ///        .add_parent(ID::from_bytes("parent_id"))
 ///        .build();
 ///    ```
@@ -44,7 +45,7 @@ use crate::{Result, auth::types::SigInfo, constants::ROOT, crdt::Doc, store::Sto
 ///    # use eidetica::Entry;
 ///    # use eidetica::entry::ID;
 ///    let mut builder = Entry::builder(ID::from_bytes("root_id"));
-///    builder.set_subtree_data_mut("users", "user_data");
+///    builder.set_subtree_data_mut("users", b"user_data".to_vec());
 ///    builder.add_parent_mut(ID::from_bytes("parent_id"));
 ///    let entry = builder.build();
 ///    ```
@@ -58,12 +59,12 @@ use crate::{Result, auth::types::SigInfo, constants::ROOT, crdt::Doc, store::Sto
 /// // Create a builder for a regular entry
 /// let entry = Entry::builder(ID::from_bytes("root_id"))
 ///     .add_parent(ID::from_bytes("parent1"))
-///     .set_subtree_data("users", "user_data")
+///     .set_subtree_data("users", b"user_data".to_vec())
 ///     .build();
 ///
 /// // Create a builder for a top-level root entry
 /// let root_entry = Entry::root_builder()
-///     .set_subtree_data("users", "initial_user_data")
+///     .set_subtree_data("users", b"initial_user_data".to_vec())
 ///     .build();
 /// ```
 #[derive(Clone, Debug)]
@@ -104,12 +105,12 @@ impl EntryBuilder {
     pub fn new_top_level() -> Self {
         let mut builder = Self::new(ID::default());
         // Add a special subtree that identifies this as a root entry
-        builder.set_subtree_data_mut(ROOT, "");
+        builder.set_subtree_data_mut(ROOT, b"");
 
         // Add random entropy to metadata to ensure unique IDs for each root entry
         let entropy: u64 = rand::thread_rng().r#gen();
         let metadata_json = format!(r#"{{"entropy":{entropy}}}"#);
-        builder.set_metadata_mut(&metadata_json);
+        builder.set_metadata_mut(metadata_json);
 
         builder
     }
@@ -198,19 +199,10 @@ impl EntryBuilder {
     ///
     /// # Arguments
     /// * `name` - The name of the subtree (e.g., "users", "products").
-    /// * `data` - `RawData` (serialized string) specific to this entry for the named subtree.
+    /// * `data` - Opaque payload bytes for this entry in the named subtree. Each `Store`
+    ///   owns the format of its own payload; the entry layer treats the bytes as opaque.
     pub fn set_subtree_data(mut self, name: impl Into<String>, data: impl Into<RawData>) -> Self {
-        let name = name.into();
-        if let Some(node) = self.subtrees.iter_mut().find(|node| node.name == name) {
-            node.data = Some(data.into());
-        } else {
-            self.subtrees.push(SubTreeNode {
-                name,
-                data: Some(data.into()),
-                parents: vec![],
-                height: None,
-            });
-        }
+        self.set_subtree_data_mut(name, data);
         self
     }
 
@@ -220,19 +212,20 @@ impl EntryBuilder {
     ///
     /// # Arguments
     /// * `name` - The name of the subtree (e.g., "users", "products").
-    /// * `data` - `RawData` (serialized string) specific to this entry for the named subtree.
+    /// * `data` - Opaque payload bytes for this entry in the named subtree.
     pub fn set_subtree_data_mut(
         &mut self,
         name: impl Into<String>,
         data: impl Into<RawData>,
     ) -> &mut Self {
         let name = name.into();
+        let data = data.into();
         if let Some(node) = self.subtrees.iter_mut().find(|node| node.name == name) {
-            node.data = Some(data.into());
+            node.data = Some(data);
         } else {
             self.subtrees.push(SubTreeNode {
                 name,
-                data: Some(data.into()),
+                data: Some(data),
                 parents: vec![],
                 height: None,
             });
@@ -303,13 +296,14 @@ impl EntryBuilder {
         if let Some(index_node) = self.subtrees.iter().find(|node| node.name == "_index") {
             // If _index has data, deserialize it and get all keys
             if let Some(data) = &index_node.data {
-                // Try to deserialize as a Doc to get the keys
-                let doc = serde_json::from_str::<Doc>(data).map_err(|e| {
+                // _index is a first-party subtree owned by the entry layer, so JSON is
+                // the canonical encoding here.
+                let doc = serde_json::from_slice::<Doc>(data).map_err(|e| {
                     EntryError::InvalidIndexData {
                         reason: format!(
-                            "Failed to deserialize _index subtree data: {} (data preview: {})",
+                            "Failed to deserialize _index subtree data: {} (data preview: {:?})",
                             e,
-                            data.chars().take(100).collect::<String>()
+                            &data[..data.len().min(100)]
                         ),
                     }
                 })?;
@@ -505,11 +499,11 @@ impl EntryBuilder {
     /// subtree, allowing for efficient verification in sparse checkout scenarios.
     ///
     /// # Arguments
-    /// * `metadata` - `RawData` (serialized string) for the main tree node metadata.
+    /// * `metadata` - Opaque metadata bytes for the main tree node.
     ///
     /// # Returns
     /// Self for method chaining.
-    pub fn set_metadata(mut self, metadata: impl Into<String>) -> Self {
+    pub fn set_metadata(mut self, metadata: impl Into<RawData>) -> Self {
         self.tree.metadata = Some(metadata.into());
         self
     }
@@ -517,19 +511,12 @@ impl EntryBuilder {
     /// Mutable reference version of set_metadata.
     /// Set the metadata for this entry's tree node.
     ///
-    /// Metadata is optional information attached to an entry that is not part of the
-    /// main data model and is not merged between entries. It's used primarily for
-    /// improving efficiency of operations and for experimentation.
-    ///
-    /// For example, metadata can contain references to the current tips of the settings
-    /// subtree, allowing for efficient verification in sparse checkout scenarios.
-    ///
     /// # Arguments
-    /// * `metadata` - `RawData` (serialized string) for the main tree node metadata.
+    /// * `metadata` - Opaque metadata bytes for the main tree node.
     ///
     /// # Returns
     /// A mutable reference to self for method chaining.
-    pub fn set_metadata_mut(&mut self, metadata: impl Into<String>) -> &mut Self {
+    pub fn set_metadata_mut(&mut self, metadata: impl Into<RawData>) -> &mut Self {
         self.tree.metadata = Some(metadata.into());
         self
     }
@@ -552,7 +539,7 @@ impl EntryBuilder {
     /// let builder = Entry::builder(ID::from_bytes("root_id"));
     /// assert!(builder.metadata().is_none());
     ///
-    /// let builder = builder.set_metadata(r#"{"custom": "data"}"#);
+    /// let builder = builder.set_metadata(br#"{"custom": "data"}"#.to_vec());
     /// assert!(builder.metadata().is_some());
     /// ```
     pub fn metadata(&self) -> Option<&RawData> {
