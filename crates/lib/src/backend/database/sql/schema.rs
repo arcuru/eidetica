@@ -54,13 +54,14 @@ pub const CREATE_TABLES: &[&str] = &[
         PRIMARY KEY (child_id, parent_id)
     )",
     // Subtrees - denormalized subtree data for efficient queries
-    // Replaces store_memberships with additional columns for height and data
+    // Replaces store_memberships with additional columns for height and data.
+    // `data` is the opaque payload bytes for each store (format chosen by the store).
     "CREATE TABLE IF NOT EXISTS subtrees (
         tree_id TEXT NOT NULL,
         entry_id TEXT NOT NULL,
         store_name TEXT NOT NULL,
         height BIGINT NOT NULL,
-        data TEXT,
+        data BLOB,
         PRIMARY KEY (entry_id, store_name)
     )",
     // Store parent relationships (per-store DAG edges)
@@ -94,10 +95,11 @@ pub const CREATE_TABLES: &[&str] = &[
         data TEXT NOT NULL
     )",
     // CRDT state cache
+    // `state` holds the serialized CRDT state in the store's chosen format (opaque bytes).
     "CREATE TABLE IF NOT EXISTS crdt_cache (
         entry_id TEXT NOT NULL,
         store_name TEXT NOT NULL,
-        state TEXT NOT NULL,
+        state BLOB NOT NULL,
         PRIMARY KEY (entry_id, store_name)
     )",
 ];

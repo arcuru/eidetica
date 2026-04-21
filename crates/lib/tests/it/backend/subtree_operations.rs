@@ -11,7 +11,7 @@ async fn test_backend_subtree_operations() {
 
     // Create a root entry with a subtree
     let root_entry = Entry::root_builder()
-        .set_subtree_data("subtree1", "root_subtree1_data")
+        .set_subtree_data("subtree1", b"root_subtree1_data")
         .build()
         .expect("Entry should build successfully");
     let root_id = root_entry.id();
@@ -20,7 +20,7 @@ async fn test_backend_subtree_operations() {
     // Create child entry with subtree
     let child_entry = Entry::builder(root_id.clone())
         .add_parent(root_id.clone())
-        .set_subtree_data("subtree1", "child_subtree1_data")
+        .set_subtree_data("subtree1", b"child_subtree1_data")
         .add_subtree_parent("subtree1", root_id.clone())
         .build()
         .expect("Entry should build successfully");
@@ -53,7 +53,7 @@ async fn test_backend_get_store_from_tips() {
     // e2b: has subtree (subtree height 1)
 
     let entry_root = Entry::root_builder()
-        .set_subtree_data(subtree_name, "root_sub_data")
+        .set_subtree_data(subtree_name, b"root_sub_data")
         .set_subtree_height(subtree_name, Some(0)) // Subtree root
         .build()
         .expect("Entry should build successfully");
@@ -71,7 +71,7 @@ async fn test_backend_get_store_from_tips() {
     let e2a = Entry::builder(root_entry_id.clone())
         .add_parent(e1_id.clone())
         .set_height(2) // Tree height
-        .set_subtree_data(subtree_name, "e2a_sub_data")
+        .set_subtree_data(subtree_name, b"e2a_sub_data")
         .add_subtree_parent(subtree_name, root_entry_id.clone())
         .set_subtree_height(subtree_name, Some(1)) // Subtree height (child of subtree root)
         .build()
@@ -82,7 +82,7 @@ async fn test_backend_get_store_from_tips() {
     let e2b = Entry::builder(root_entry_id.clone())
         .add_parent(e1_id.clone())
         .set_height(2) // Tree height
-        .set_subtree_data(subtree_name, "e2b_sub_data")
+        .set_subtree_data(subtree_name, b"e2b_sub_data")
         .add_subtree_parent(subtree_name, root_entry_id.clone())
         .set_subtree_height(subtree_name, Some(1)) // Subtree height (child of subtree root)
         .build()
@@ -212,7 +212,7 @@ async fn test_get_store_tips() {
     // Add entry A with subtree "sub1"
     let entry_a = Entry::builder(root_id.clone())
         .add_parent(root_id.clone())
-        .set_subtree_data("sub1", "A sub1 data")
+        .set_subtree_data("sub1", b"A sub1 data")
         .build()
         .expect("Entry should build successfully");
     let id_a = entry_a.id();
@@ -226,7 +226,7 @@ async fn test_get_store_tips() {
     // Add entry B with subtree "sub1" as child of A
     let entry_b = Entry::builder(root_id.clone())
         .add_parent(id_a.clone())
-        .set_subtree_data("sub1", "B sub1 data")
+        .set_subtree_data("sub1", b"B sub1 data")
         .add_subtree_parent("sub1", id_a.clone())
         .build()
         .expect("Entry should build successfully");
@@ -241,7 +241,7 @@ async fn test_get_store_tips() {
     // Add entry C with subtree "sub2" (different subtree)
     let entry_c = Entry::builder(root_id.clone())
         .add_parent(root_id.clone())
-        .set_subtree_data("sub2", "C sub2 data")
+        .set_subtree_data("sub2", b"C sub2 data")
         .build()
         .expect("Entry should build successfully");
     let id_c = entry_c.id();
@@ -261,9 +261,9 @@ async fn test_get_store_tips() {
     let entry_d = Entry::builder(root_id.clone())
         .add_parent(id_b.clone())
         .add_parent(id_c.clone())
-        .set_subtree_data("sub1", "D sub1 data")
+        .set_subtree_data("sub1", b"D sub1 data")
         .add_subtree_parent("sub1", id_b.clone())
-        .set_subtree_data("sub2", "D sub2 data")
+        .set_subtree_data("sub2", b"D sub2 data")
         .add_subtree_parent("sub2", id_c.clone())
         .build()
         .expect("Entry should build successfully");
@@ -303,7 +303,7 @@ async fn test_get_store_tips_up_to_entries_linear_chain() {
 
     // Build linear chain: root -> A -> B -> C -> D
     let root = Entry::root_builder()
-        .set_subtree_data(subtree, "root_data")
+        .set_subtree_data(subtree, b"root_data")
         .build()
         .unwrap();
     let root_id = root.id();
@@ -311,7 +311,7 @@ async fn test_get_store_tips_up_to_entries_linear_chain() {
 
     let entry_a = Entry::builder(root_id.clone())
         .add_parent(root_id.clone())
-        .set_subtree_data(subtree, "a_data")
+        .set_subtree_data(subtree, b"a_data")
         .add_subtree_parent(subtree, root_id.clone())
         .build()
         .unwrap();
@@ -320,7 +320,7 @@ async fn test_get_store_tips_up_to_entries_linear_chain() {
 
     let entry_b = Entry::builder(root_id.clone())
         .add_parent(id_a.clone())
-        .set_subtree_data(subtree, "b_data")
+        .set_subtree_data(subtree, b"b_data")
         .add_subtree_parent(subtree, id_a.clone())
         .build()
         .unwrap();
@@ -329,7 +329,7 @@ async fn test_get_store_tips_up_to_entries_linear_chain() {
 
     let entry_c = Entry::builder(root_id.clone())
         .add_parent(id_b.clone())
-        .set_subtree_data(subtree, "c_data")
+        .set_subtree_data(subtree, b"c_data")
         .add_subtree_parent(subtree, id_b.clone())
         .build()
         .unwrap();
@@ -338,7 +338,7 @@ async fn test_get_store_tips_up_to_entries_linear_chain() {
 
     let entry_d = Entry::builder(root_id.clone())
         .add_parent(id_c.clone())
-        .set_subtree_data(subtree, "d_data")
+        .set_subtree_data(subtree, b"d_data")
         .add_subtree_parent(subtree, id_c.clone())
         .build()
         .unwrap();
@@ -412,7 +412,7 @@ async fn test_get_store_tips_up_to_entries_diamond_pattern() {
 
     // Build diamond: root -> A, B -> C
     let root = Entry::root_builder()
-        .set_subtree_data(subtree, "root_data")
+        .set_subtree_data(subtree, b"root_data")
         .build()
         .unwrap();
     let root_id = root.id();
@@ -420,7 +420,7 @@ async fn test_get_store_tips_up_to_entries_diamond_pattern() {
 
     let entry_a = Entry::builder(root_id.clone())
         .add_parent(root_id.clone())
-        .set_subtree_data(subtree, "a_data")
+        .set_subtree_data(subtree, b"a_data")
         .add_subtree_parent(subtree, root_id.clone())
         .build()
         .unwrap();
@@ -429,7 +429,7 @@ async fn test_get_store_tips_up_to_entries_diamond_pattern() {
 
     let entry_b = Entry::builder(root_id.clone())
         .add_parent(root_id.clone())
-        .set_subtree_data(subtree, "b_data")
+        .set_subtree_data(subtree, b"b_data")
         .add_subtree_parent(subtree, root_id.clone())
         .build()
         .unwrap();
@@ -439,7 +439,7 @@ async fn test_get_store_tips_up_to_entries_diamond_pattern() {
     let entry_c = Entry::builder(root_id.clone())
         .add_parent(id_a.clone())
         .add_parent(id_b.clone())
-        .set_subtree_data(subtree, "c_data")
+        .set_subtree_data(subtree, b"c_data")
         .add_subtree_parent(subtree, id_a.clone())
         .add_subtree_parent(subtree, id_b.clone())
         .build()
@@ -521,8 +521,8 @@ async fn test_get_store_tips_up_to_entries_multiple_subtrees() {
 
     // Build tree with two parallel branches
     let root = Entry::root_builder()
-        .set_subtree_data("sub1", "root_sub1")
-        .set_subtree_data("sub2", "root_sub2")
+        .set_subtree_data("sub1", b"root_sub1")
+        .set_subtree_data("sub2", b"root_sub2")
         .build()
         .unwrap();
     let root_id = root.id();
@@ -531,7 +531,7 @@ async fn test_get_store_tips_up_to_entries_multiple_subtrees() {
     // Branch 1: root -> A -> C (sub1 only)
     let entry_a = Entry::builder(root_id.clone())
         .add_parent(root_id.clone())
-        .set_subtree_data("sub1", "a_sub1")
+        .set_subtree_data("sub1", b"a_sub1")
         .add_subtree_parent("sub1", root_id.clone())
         .build()
         .unwrap();
@@ -540,7 +540,7 @@ async fn test_get_store_tips_up_to_entries_multiple_subtrees() {
 
     let entry_c = Entry::builder(root_id.clone())
         .add_parent(id_a.clone())
-        .set_subtree_data("sub1", "c_sub1")
+        .set_subtree_data("sub1", b"c_sub1")
         .add_subtree_parent("sub1", id_a.clone())
         .build()
         .unwrap();
@@ -550,7 +550,7 @@ async fn test_get_store_tips_up_to_entries_multiple_subtrees() {
     // Branch 2: root -> B -> D (sub2 only)
     let entry_b = Entry::builder(root_id.clone())
         .add_parent(root_id.clone())
-        .set_subtree_data("sub2", "b_sub2")
+        .set_subtree_data("sub2", b"b_sub2")
         .add_subtree_parent("sub2", root_id.clone())
         .build()
         .unwrap();
@@ -559,7 +559,7 @@ async fn test_get_store_tips_up_to_entries_multiple_subtrees() {
 
     let entry_d = Entry::builder(root_id.clone())
         .add_parent(id_b.clone())
-        .set_subtree_data("sub2", "d_sub2")
+        .set_subtree_data("sub2", b"d_sub2")
         .add_subtree_parent("sub2", id_b.clone())
         .build()
         .unwrap();
@@ -651,7 +651,7 @@ async fn test_get_store_tips_up_to_entries_edge_cases() {
 
     // Build simple chain: root -> A -> B
     let root = Entry::root_builder()
-        .set_subtree_data(subtree, "root_data")
+        .set_subtree_data(subtree, b"root_data")
         .build()
         .unwrap();
     let root_id = root.id();
@@ -659,7 +659,7 @@ async fn test_get_store_tips_up_to_entries_edge_cases() {
 
     let entry_a = Entry::builder(root_id.clone())
         .add_parent(root_id.clone())
-        .set_subtree_data(subtree, "a_data")
+        .set_subtree_data(subtree, b"a_data")
         .add_subtree_parent(subtree, root_id.clone())
         .build()
         .unwrap();
@@ -668,7 +668,7 @@ async fn test_get_store_tips_up_to_entries_edge_cases() {
 
     let entry_b = Entry::builder(root_id.clone())
         .add_parent(id_a.clone())
-        .set_subtree_data(subtree, "b_data")
+        .set_subtree_data(subtree, b"b_data")
         .add_subtree_parent(subtree, id_a.clone())
         .build()
         .unwrap();
@@ -731,7 +731,7 @@ async fn test_get_store_tips_up_to_entries_complex_dag() {
 
     // Build the complex DAG
     let root = Entry::root_builder()
-        .set_subtree_data(subtree, "root_data")
+        .set_subtree_data(subtree, b"root_data")
         .build()
         .unwrap();
     let root_id = root.id();
@@ -740,7 +740,7 @@ async fn test_get_store_tips_up_to_entries_complex_dag() {
     // Level 1: A, B, C
     let entry_a = Entry::builder(root_id.clone())
         .add_parent(root_id.clone())
-        .set_subtree_data(subtree, "a_data")
+        .set_subtree_data(subtree, b"a_data")
         .add_subtree_parent(subtree, root_id.clone())
         .build()
         .unwrap();
@@ -749,7 +749,7 @@ async fn test_get_store_tips_up_to_entries_complex_dag() {
 
     let entry_b = Entry::builder(root_id.clone())
         .add_parent(root_id.clone())
-        .set_subtree_data(subtree, "b_data")
+        .set_subtree_data(subtree, b"b_data")
         .add_subtree_parent(subtree, root_id.clone())
         .build()
         .unwrap();
@@ -758,7 +758,7 @@ async fn test_get_store_tips_up_to_entries_complex_dag() {
 
     let entry_c = Entry::builder(root_id.clone())
         .add_parent(root_id.clone())
-        .set_subtree_data(subtree, "c_data")
+        .set_subtree_data(subtree, b"c_data")
         .add_subtree_parent(subtree, root_id.clone())
         .build()
         .unwrap();
@@ -768,7 +768,7 @@ async fn test_get_store_tips_up_to_entries_complex_dag() {
     // Level 2: D (child of A), E (child of A, B), F (child of B, C), G (child of C)
     let entry_d = Entry::builder(root_id.clone())
         .add_parent(id_a.clone())
-        .set_subtree_data(subtree, "d_data")
+        .set_subtree_data(subtree, b"d_data")
         .add_subtree_parent(subtree, id_a.clone())
         .build()
         .unwrap();
@@ -778,7 +778,7 @@ async fn test_get_store_tips_up_to_entries_complex_dag() {
     let entry_e = Entry::builder(root_id.clone())
         .add_parent(id_a.clone())
         .add_parent(id_b.clone())
-        .set_subtree_data(subtree, "e_data")
+        .set_subtree_data(subtree, b"e_data")
         .add_subtree_parent(subtree, id_a.clone())
         .add_subtree_parent(subtree, id_b.clone())
         .build()
@@ -789,7 +789,7 @@ async fn test_get_store_tips_up_to_entries_complex_dag() {
     let entry_f = Entry::builder(root_id.clone())
         .add_parent(id_b.clone())
         .add_parent(id_c.clone())
-        .set_subtree_data(subtree, "f_data")
+        .set_subtree_data(subtree, b"f_data")
         .add_subtree_parent(subtree, id_b.clone())
         .add_subtree_parent(subtree, id_c.clone())
         .build()
@@ -799,7 +799,7 @@ async fn test_get_store_tips_up_to_entries_complex_dag() {
 
     let entry_g = Entry::builder(root_id.clone())
         .add_parent(id_c.clone())
-        .set_subtree_data(subtree, "g_data")
+        .set_subtree_data(subtree, b"g_data")
         .add_subtree_parent(subtree, id_c.clone())
         .build()
         .unwrap();
@@ -810,7 +810,7 @@ async fn test_get_store_tips_up_to_entries_complex_dag() {
     let entry_h = Entry::builder(root_id.clone())
         .add_parent(id_d.clone())
         .add_parent(id_e.clone())
-        .set_subtree_data(subtree, "h_data")
+        .set_subtree_data(subtree, b"h_data")
         .add_subtree_parent(subtree, id_d.clone())
         .add_subtree_parent(subtree, id_e.clone())
         .build()
@@ -821,7 +821,7 @@ async fn test_get_store_tips_up_to_entries_complex_dag() {
     let entry_i = Entry::builder(root_id.clone())
         .add_parent(id_f.clone())
         .add_parent(id_g.clone())
-        .set_subtree_data(subtree, "i_data")
+        .set_subtree_data(subtree, b"i_data")
         .add_subtree_parent(subtree, id_f.clone())
         .add_subtree_parent(subtree, id_g.clone())
         .build()

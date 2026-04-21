@@ -62,7 +62,7 @@ pub fn create_entry_with_parents(root: &str, parents: &[&str]) -> Entry {
 /// Used for testing subtree operations and data organization.
 ///
 /// Note: The `root` parameter is ignored as root_builder always uses empty string.
-pub fn create_entry_with_subtrees(_root: &str, subtrees: &[(&str, &str)]) -> Entry {
+pub fn create_entry_with_subtrees(_root: &str, subtrees: &[(&str, &[u8])]) -> Entry {
     let mut builder = Entry::root_builder();
     for (name, data) in subtrees {
         builder.set_subtree_data_mut(*name, *data);
@@ -76,7 +76,7 @@ pub fn create_entry_with_subtrees(_root: &str, subtrees: &[(&str, &str)]) -> Ent
 pub fn create_entry_with_subtree_parents(
     root: &str,
     subtree_name: &str,
-    data: &str,
+    data: &[u8],
     parents: &[&str],
 ) -> Entry {
     Entry::builder(ID::from_bytes(root))
@@ -151,7 +151,7 @@ pub fn assert_has_subtrees(entry: &Entry, expected_subtrees: &[&str]) {
 }
 
 /// Assert that an entry has the expected subtrees with their data
-pub fn assert_subtrees_with_data(entry: &Entry, expected: &[(&str, &str)]) {
+pub fn assert_subtrees_with_data(entry: &Entry, expected: &[(&str, &[u8])]) {
     let subtrees = entry.subtrees();
     assert_eq!(subtrees.len(), expected.len());
     for (name, expected_data) in expected {
@@ -160,7 +160,7 @@ pub fn assert_subtrees_with_data(entry: &Entry, expected: &[(&str, &str)]) {
             "Missing subtree: {name}"
         );
         assert_eq!(
-            entry.data(name).unwrap(),
+            entry.data(name).unwrap().as_slice(),
             *expected_data,
             "Wrong data for subtree {name}"
         );

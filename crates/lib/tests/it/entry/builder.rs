@@ -8,7 +8,7 @@ fn test_dual_api_patterns() {
     // This pattern takes self and returns Self, allowing method chaining
     let entry = Entry::builder(ID::from_bytes("root_id"))
         .set_parents(vec![ID::from_bytes("parent1"), ID::from_bytes("parent2")])
-        .set_subtree_data("subtree1", "subtree_data1")
+        .set_subtree_data("subtree1", b"subtree_data1")
         .set_subtree_parents("subtree1", vec![ID::from_bytes("subtree_parent1")])
         .add_subtree_parent("subtree1", ID::from_bytes("subtree_parent2"))
         .build()
@@ -17,7 +17,7 @@ fn test_dual_api_patterns() {
     // Verify the entry was built correctly
     assert_eq!(entry.root(), Some(ID::from_bytes("root_id")));
     assert!(entry.in_subtree("subtree1"));
-    assert_eq!(entry.data("subtree1").unwrap(), "subtree_data1");
+    assert_eq!(entry.data("subtree1").unwrap(), b"subtree_data1");
     assert_has_parents(&entry, &["parent1", "parent2"]);
     assert_subtree_has_parents(&entry, "subtree1", &["subtree_parent1", "subtree_parent2"]);
 
@@ -29,7 +29,7 @@ fn test_dual_api_patterns() {
     // Use the _mut methods for modifications
     builder
         .set_parents_mut(vec![ID::from_bytes("parent3"), ID::from_bytes("parent4")])
-        .set_subtree_data_mut("subtree2", "subtree_data2")
+        .set_subtree_data_mut("subtree2", b"subtree_data2")
         .set_subtree_parents_mut("subtree2", vec![ID::from_bytes("subtree_parent3")])
         .add_subtree_parent_mut("subtree2", ID::from_bytes("subtree_parent4"));
 
@@ -39,7 +39,7 @@ fn test_dual_api_patterns() {
     // Verify the entry was built correctly
     assert_eq!(entry2.root(), Some(ID::from_bytes("root_id2")));
     assert!(entry2.in_subtree("subtree2"));
-    assert_eq!(entry2.data("subtree2").unwrap(), "subtree_data2");
+    assert_eq!(entry2.data("subtree2").unwrap(), b"subtree_data2");
     assert_has_parents(&entry2, &["parent3", "parent4"]);
     assert_subtree_has_parents(&entry2, "subtree2", &["subtree_parent3", "subtree_parent4"]);
 }
@@ -51,7 +51,7 @@ fn test_entrybuilder_api_consistency() {
     // First entry using ownership chaining API
     let entry1 = Entry::builder(ID::from_bytes("root"))
         .set_parents(vec![ID::from_bytes("parent1"), ID::from_bytes("parent2")])
-        .set_subtree_data("subtree1", "data1")
+        .set_subtree_data("subtree1", b"data1")
         .set_subtree_parents("subtree1", vec![ID::from_bytes("sp1")])
         .add_parent(ID::from_bytes("parent3"))
         .add_subtree_parent("subtree1", ID::from_bytes("sp2"))
@@ -84,8 +84,8 @@ fn test_entrybuilder_empty_subtree_removal() {
     // Create a builder with one subtree with data and one with empty data
     let builder = Entry::builder(ID::from_bytes("root"))
         .add_parent(ID::from_bytes("main_parent")) // Add parent for valid non-root entry
-        .set_subtree_data("subtree1", "data1")
-        .set_subtree_data("empty", "");
+        .set_subtree_data("subtree1", b"data1")
+        .set_subtree_data("empty", b"");
 
     // Create two copies to test each API
     let entry1 = builder
@@ -157,7 +157,7 @@ fn test_entrybuilder_parent_deduplication() {
             ID::from_bytes("parent2"),
             ID::from_bytes("parent1"),
         ])
-        .set_subtree_data("subtree1", "data1")
+        .set_subtree_data("subtree1", b"data1")
         .set_subtree_parents(
             "subtree1",
             vec![

@@ -450,11 +450,11 @@ impl BackendImpl for SqlxBackend {
         traversal::get_store_from_tips(self, tree, store, tips).await
     }
 
-    async fn get_cached_crdt_state(&self, entry_id: &ID, store: &str) -> Result<Option<String>> {
+    async fn get_cached_crdt_state(&self, entry_id: &ID, store: &str) -> Result<Option<Vec<u8>>> {
         storage::get_cached_crdt_state(self, entry_id, store).await
     }
 
-    async fn cache_crdt_state(&self, entry_id: &ID, store: &str, state: String) -> Result<()> {
+    async fn cache_crdt_state(&self, entry_id: &ID, store: &str, state: Vec<u8>) -> Result<()> {
         storage::cache_crdt_state(self, entry_id, store, state).await
     }
 

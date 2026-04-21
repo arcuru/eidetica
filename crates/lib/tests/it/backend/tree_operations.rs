@@ -43,7 +43,7 @@ async fn test_backend_complex_tree_structure() {
         let c_entry = Entry::builder(root_id.clone())
             .add_parent(a_id.clone())
             .add_parent(b_id.clone())
-            .set_subtree_data("branch", "c")
+            .set_subtree_data("branch", b"c")
             .build()
             .expect("Merge entry should build successfully");
         let c_id = c_entry.id();
@@ -105,7 +105,7 @@ async fn test_backend_get_tree_from_tips() {
 
     let e2a_entry = Entry::builder(root_id.clone())
         .add_parent(e1_id.clone())
-        .set_subtree_data("branch", "a")
+        .set_subtree_data("branch", b"a")
         .set_height(2) // Grandchild of root
         .build()
         .expect("E2a entry should build successfully");
@@ -114,7 +114,7 @@ async fn test_backend_get_tree_from_tips() {
 
     let e2b_entry = Entry::builder(root_id.clone())
         .add_parent(e1_id.clone())
-        .set_subtree_data("branch", "b")
+        .set_subtree_data("branch", b"b")
         .set_height(2) // Grandchild of root
         .build()
         .expect("E2b entry should build successfully");

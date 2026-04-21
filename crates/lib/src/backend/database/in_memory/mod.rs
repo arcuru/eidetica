@@ -78,7 +78,7 @@ pub struct InMemory {
     pub(crate) inner: RwLock<InMemoryInner>,
     /// CRDT state cache, independent of core data.
     /// Kept separate because it has no coupling to entries/tips lifecycle.
-    pub(crate) crdt_cache: RwLock<HashMap<String, String>>,
+    pub(crate) crdt_cache: RwLock<HashMap<String, Vec<u8>>>,
 }
 
 impl InMemory {
@@ -384,11 +384,11 @@ impl BackendImpl for InMemory {
         Ok(())
     }
 
-    async fn get_cached_crdt_state(&self, entry_id: &ID, subtree: &str) -> Result<Option<String>> {
+    async fn get_cached_crdt_state(&self, entry_id: &ID, subtree: &str) -> Result<Option<Vec<u8>>> {
         cache::get_cached_crdt_state(self, entry_id, subtree)
     }
 
-    async fn cache_crdt_state(&self, entry_id: &ID, subtree: &str, state: String) -> Result<()> {
+    async fn cache_crdt_state(&self, entry_id: &ID, subtree: &str, state: Vec<u8>) -> Result<()> {
         cache::cache_crdt_state(self, entry_id, subtree, state)
     }
 

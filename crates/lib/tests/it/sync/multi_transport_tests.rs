@@ -279,7 +279,8 @@ async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
     );
 
     // Verify data integrity by checking the subtree data
-    let data = synced_entry.data("multi_transport_data")?.as_str();
+    let data_bytes = synced_entry.data("multi_transport_data")?;
+    let data = std::str::from_utf8(data_bytes).unwrap();
     assert!(
         data.contains("http_to_iroh_test_value"),
         "Synced entry should contain expected data, got: {data}"
