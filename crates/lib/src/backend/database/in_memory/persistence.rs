@@ -60,7 +60,7 @@ struct SerializableDatabase {
     instance_secrets: Option<InstanceSecrets>,
     /// Generic key-value cache (not serialized - cache is rebuilt on load)
     #[serde(default)]
-    cache: HashMap<String, String>,
+    cache: HashMap<String, Vec<u8>>,
     /// Cached tips grouped by tree
     #[serde(default)]
     tips: HashMap<ID, TreeTipsCache>,

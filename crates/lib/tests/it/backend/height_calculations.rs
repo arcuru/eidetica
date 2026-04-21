@@ -28,7 +28,7 @@ fn test_height_stored_in_entry() {
     // Create entry with subtree height
     let entry_with_subtree = Entry::builder(root_id.clone())
         .add_parent(root_id.clone())
-        .set_subtree_data("test_store", "data")
+        .set_subtree_data("test_store", b"data")
         .set_subtree_height("test_store", Some(3))
         .build()
         .expect("Entry should build successfully");
@@ -51,7 +51,7 @@ fn test_height_serialization() {
     let entry = Entry::builder(root_id.clone())
         .add_parent(root_id.clone())
         .set_height(42)
-        .set_subtree_data("store1", "data")
+        .set_subtree_data("store1", b"data")
         .set_subtree_height("store1", Some(7))
         .build()
         .expect("Entry should build successfully");
@@ -108,7 +108,7 @@ fn test_subtree_height_inheritance() {
     let entry = Entry::builder(root_id.clone())
         .add_parent(root_id.clone())
         .set_height(42) // Tree height
-        .set_subtree_data("test_store", "data")
+        .set_subtree_data("test_store", b"data")
         // Note: not setting subtree height, so it defaults to None (inherit)
         .build()
         .expect("Entry should build successfully");
@@ -134,9 +134,9 @@ fn test_subtree_independent_height_vs_inherited() {
     let entry = Entry::builder(root_id.clone())
         .add_parent(root_id.clone())
         .set_height(100) // Tree height
-        .set_subtree_data("inherited_store", "data1")
+        .set_subtree_data("inherited_store", b"data1")
         // inherited_store height not set, defaults to None (inherit)
-        .set_subtree_data("independent_store", "data2")
+        .set_subtree_data("independent_store", b"data2")
         .set_subtree_height("independent_store", Some(5)) // Independent height
         .build()
         .expect("Entry should build successfully");

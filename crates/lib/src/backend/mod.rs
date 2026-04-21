@@ -411,19 +411,20 @@ pub trait BackendImpl: Send + Sync + Any {
     /// * `store` - The name of the store
     ///
     /// # Returns
-    /// A `Result` containing an `Option<String>`. Returns `None` if not cached.
-    async fn get_cached_crdt_state(&self, entry_id: &ID, store: &str) -> Result<Option<String>>;
+    /// A `Result` containing an `Option<Vec<u8>>`. Returns `None` if not cached.
+    /// The bytes are the serialized CRDT state in the store's chosen format.
+    async fn get_cached_crdt_state(&self, entry_id: &ID, store: &str) -> Result<Option<Vec<u8>>>;
 
     /// Cache CRDT state for a store at a specific entry.
     ///
     /// # Arguments
     /// * `entry_id` - The entry ID where the state should be cached
     /// * `store` - The name of the store
-    /// * `state` - The serialized CRDT state to cache
+    /// * `state` - The serialized CRDT state to cache (opaque bytes)
     ///
     /// # Returns
     /// A `Result` indicating success or an error during storage.
-    async fn cache_crdt_state(&self, entry_id: &ID, store: &str, state: String) -> Result<()>;
+    async fn cache_crdt_state(&self, entry_id: &ID, store: &str, state: Vec<u8>) -> Result<()>;
 
     /// Clear all cached CRDT states.
     ///

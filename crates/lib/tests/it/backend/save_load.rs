@@ -100,7 +100,7 @@ async fn test_save_load_with_various_entries() {
     // Child 1
     let child1 = Entry::builder(root_id.clone())
         .add_parent(root_id.clone())
-        .set_subtree_data("child", "1")
+        .set_subtree_data("child", b"1")
         .build()
         .expect("Child entry should build successfully");
     let child1_id = child1.id();
@@ -109,7 +109,7 @@ async fn test_save_load_with_various_entries() {
     // Child 2
     let child2 = Entry::builder(root_id.clone())
         .add_parent(root_id.clone())
-        .set_subtree_data("child", "2")
+        .set_subtree_data("child", b"2")
         .build()
         .expect("Child entry should build successfully");
     let child2_id = child2.id();
@@ -126,7 +126,7 @@ async fn test_save_load_with_various_entries() {
     // Entry with subtree
     let entry_with_subtree = Entry::builder(root_id.clone())
         .add_parent(root_id.clone())
-        .set_subtree_data("subtree1", "subtree_data")
+        .set_subtree_data("subtree1", b"subtree_data")
         .build()
         .expect("Entry with subtree should build successfully");
     let entry_with_subtree_id = entry_with_subtree.id();
@@ -161,7 +161,7 @@ async fn test_save_load_with_various_entries() {
     let loaded_entry_with_subtree = loaded_backend.get(&entry_with_subtree_id).await.unwrap();
     assert_eq!(
         loaded_entry_with_subtree.data("subtree1").unwrap(),
-        "subtree_data"
+        b"subtree_data"
     );
 
     // Check tips match

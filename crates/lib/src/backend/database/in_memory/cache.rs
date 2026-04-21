@@ -47,7 +47,7 @@ pub(crate) fn get_cached_crdt_state(
     backend: &InMemory,
     entry_id: &ID,
     subtree: &str,
-) -> Result<Option<String>> {
+) -> Result<Option<Vec<u8>>> {
     let key = create_crdt_cache_key(entry_id, subtree);
     let cache = backend.crdt_cache.read().unwrap();
     Ok(cache.get(&key).cloned())
@@ -58,7 +58,7 @@ pub(crate) fn cache_crdt_state(
     backend: &InMemory,
     entry_id: &ID,
     subtree: &str,
-    state: String,
+    state: Vec<u8>,
 ) -> Result<()> {
     let key = create_crdt_cache_key(entry_id, subtree);
     let mut cache = backend.crdt_cache.write().unwrap();

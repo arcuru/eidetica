@@ -153,7 +153,7 @@ pub async fn put(
             &id,
             &store_name,
             subtree_height,
-            subtree_data.as_ref().map(|s| s.as_str()),
+            subtree_data.map(|v| v.as_slice()),
         )
         .await?;
 
@@ -220,7 +220,7 @@ async fn insert_subtree(
     entry_id: &ID,
     store_name: &str,
     height: i64,
-    data: Option<&str>,
+    data: Option<&[u8]>,
 ) -> Result<()> {
     let sql = if backend.is_sqlite() {
         "INSERT OR IGNORE INTO subtrees (tree_id, entry_id, store_name, height, data)
@@ -235,7 +235,7 @@ async fn insert_subtree(
         .bind(entry_id.to_string())
         .bind(store_name)
         .bind(height)
-        .bind(data)
+        .bind(data.map(|b| b.to_vec()))
         .execute(&mut **tx)
         .await
         .sql_context("Failed to insert subtree")?;
@@ -561,10 +561,10 @@ pub async fn get_cached_crdt_state(
     backend: &SqlxBackend,
     entry_id: &ID,
     store: &str,
-) -> Result<Option<String>> {
+) -> Result<Option<Vec<u8>>> {
     let pool = backend.pool();
 
-    let row: Option<(String,)> =
+    let row: Option<(Vec<u8>,)> =
         sqlx::query_as("SELECT state FROM crdt_cache WHERE entry_id = $1 AND store_name = $2")
             .bind(entry_id.to_string())
             .bind(store)
@@ -580,7 +580,7 @@ pub async fn cache_crdt_state(
     backend: &SqlxBackend,
     entry_id: &ID,
     store: &str,
-    state: String,
+    state: Vec<u8>,
 ) -> Result<()> {
     let pool = backend.pool();
 

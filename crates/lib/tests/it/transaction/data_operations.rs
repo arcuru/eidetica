@@ -175,7 +175,7 @@ async fn test_metadata_for_settings_entries() {
 
     // Verify data entry has metadata with settings_tips field
     let metadata = data_entry.metadata().unwrap();
-    let metadata_obj: serde_json::Value = serde_json::from_str(metadata).unwrap();
+    let metadata_obj: serde_json::Value = serde_json::from_slice(metadata).unwrap();
     assert!(
         metadata_obj.get("settings_tips").is_some(),
         "Metadata should include settings_tips field"

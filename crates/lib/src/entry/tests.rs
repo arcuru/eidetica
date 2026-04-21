@@ -94,7 +94,7 @@ fn test_validate_empty_parent_id_fails() {
 fn test_validate_subtree_with_empty_parent_id_fails() {
     // Subtrees with empty parent IDs should be rejected
     let result = Entry::root_builder()
-        .set_subtree_data("messages", "test_data")
+        .set_subtree_data("messages", b"test_data")
         .set_subtree_parents("messages", vec![ID::default()]) // Empty subtree parent ID
         .build();
     assert!(
@@ -120,7 +120,7 @@ fn test_validate_non_root_with_empty_subtree_parents_logs_but_passes() {
     // This is deferred to transaction layer for deeper validation
     let entry = Entry::builder(ID::from_bytes("tree"))
         .add_parent(ID::from_bytes("main_parent"))
-        .set_subtree_data("messages", "test_data")
+        .set_subtree_data("messages", b"test_data")
         .set_subtree_parents("messages", vec![]) // Empty subtree parents
         .build()
         .expect("Entry with main parent should build successfully");
@@ -147,7 +147,7 @@ fn test_validate_non_root_with_empty_subtree_parents_logs_but_passes() {
 fn test_validate_root_entry_with_empty_subtree_parents_succeeds() {
     // Root entries can have empty subtree parents (they establish subtree roots)
     let entry = Entry::root_builder()
-        .set_subtree_data("messages", "test_data")
+        .set_subtree_data("messages", b"test_data")
         .set_subtree_parents("messages", vec![]) // Empty subtree parents - valid for root
         .build()
         .expect("Root entry should build successfully");
@@ -166,7 +166,7 @@ fn test_validate_settings_subtree_follows_standard_rules() {
 
     // Root entry with empty settings subtree parents should be valid
     let root_entry = Entry::root_builder()
-        .set_subtree_data("_settings", "auth_config")
+        .set_subtree_data("_settings", b"auth_config")
         .set_subtree_parents("_settings", vec![]) // Empty - valid for root
         .build()
         .expect("Root entry should build successfully");
@@ -180,7 +180,7 @@ fn test_validate_settings_subtree_follows_standard_rules() {
     // (deeper validation deferred to transaction layer)
     let non_root_entry = Entry::builder(ID::from_bytes("tree"))
         .add_parent(ID::from_bytes("main_parent"))
-        .set_subtree_data("_settings", "auth_config")
+        .set_subtree_data("_settings", b"auth_config")
         .set_subtree_parents("_settings", vec![]) // Empty - logs but passes entry validation
         .build()
         .expect("Entry with main parent should build successfully");
@@ -196,9 +196,9 @@ fn test_validate_multiple_subtrees_with_mixed_parent_scenarios() {
     // Test entry with multiple subtrees having different parent scenarios
     let entry = Entry::builder(ID::from_bytes("tree"))
         .add_parent(ID::from_bytes("main_parent"))
-        .set_subtree_data("messages", "msg_data")
+        .set_subtree_data("messages", b"msg_data")
         .set_subtree_parents("messages", vec![ID::from_bytes("msg_parent")]) // Valid parent
-        .set_subtree_data("users", "user_data")
+        .set_subtree_data("users", b"user_data")
         .set_subtree_parents("users", vec![]) // Empty parents - deferred validation
         .build()
         .expect("Entry with main parent should build successfully");
@@ -228,7 +228,7 @@ fn test_validate_multiple_subtrees_with_mixed_parent_scenarios() {
 fn test_validate_root_subtree_marker_skipped() {
     // The "_root" marker subtree should be skipped during validation
     let entry = Entry::root_builder()
-        .set_subtree_data("other_subtree", "data")
+        .set_subtree_data("other_subtree", b"data")
         .build()
         .expect("Root entry should build successfully");
 
@@ -246,43 +246,29 @@ fn test_validate_root_subtree_marker_skipped() {
 }
 
 #[test]
-fn test_subtreenode_serde_backwards_compatibility() {
-    // Test that SubTreeNode can deserialize old format (data as direct string)
-    // and new format (data as None/Some)
+fn test_subtreenode_serde_roundtrip() {
+    // Verify SubTreeNode round-trips through DAG-CBOR with the opaque-bytes payload.
 
-    // Old format: data field present with direct string value
-    let old_format_with_data = r#"{
-        "name": "test_subtree",
-        "parents": [],
-        "data": "some data"
-    }"#;
-    let node: SubTreeNode =
-        serde_json::from_str(old_format_with_data).expect("Should deserialize old format");
-    assert_eq!(node.name, "test_subtree");
-    assert_eq!(node.data, Some("some data".to_string()));
-
-    // Old format: data field missing entirely
-    let old_format_no_data = r#"{
+    // Missing data field deserializes as None.
+    let no_data = r#"{
         "name": "test_subtree",
         "parents": []
     }"#;
     let node: SubTreeNode =
-        serde_json::from_str(old_format_no_data).expect("Should deserialize with missing data");
+        serde_json::from_str(no_data).expect("Should deserialize with missing data");
     assert_eq!(node.name, "test_subtree");
     assert_eq!(node.data, None);
 
-    // New format: data explicitly null
-    let new_format_null_data = r#"{
+    // Explicit null data deserializes as None.
+    let null_data = r#"{
         "name": "test_subtree",
         "parents": [],
         "data": null
     }"#;
-    let node: SubTreeNode =
-        serde_json::from_str(new_format_null_data).expect("Should deserialize null data");
-    assert_eq!(node.name, "test_subtree");
+    let node: SubTreeNode = serde_json::from_str(null_data).expect("Should deserialize null data");
     assert_eq!(node.data, None);
 
-    // Verify serialization: None data should not produce "data" field
+    // None data is skipped in serialization.
     let node_with_none = SubTreeNode {
         name: "test".to_string(),
         parents: vec![],
@@ -291,24 +277,22 @@ fn test_subtreenode_serde_backwards_compatibility() {
     };
     let serialized = serde_json::to_string(&node_with_none).unwrap();
     assert!(
-        !serialized.contains("data"),
+        !serialized.contains("\"data\""),
         "None data should be skipped in serialization: {serialized}"
     );
 
-    // Verify serialization: Some data should produce "data" field
-    let node_with_data = SubTreeNode {
+    // Bytes round-trip through DAG-CBOR (which is the on-wire format).
+    let node_with_bytes = SubTreeNode {
         name: "test".to_string(),
         parents: vec![],
-        data: Some("content".to_string()),
+        data: Some(b"content".to_vec()),
         height: None,
     };
-    let serialized = serde_json::to_string(&node_with_data).unwrap();
-    assert!(
-        serialized.contains(r#""data":"content""#),
-        "Some data should be serialized: {serialized}"
-    );
+    let cbor = serde_ipld_dagcbor::to_vec(&node_with_bytes).unwrap();
+    let decoded: SubTreeNode = serde_ipld_dagcbor::from_slice(&cbor).unwrap();
+    assert_eq!(decoded, node_with_bytes);
 
-    // Verify height serialization: None should be omitted, Some(n) should serialize as just n
+    // Height None is omitted; Some(n) serializes as `h: n`.
     let node_no_height = SubTreeNode {
         name: "test".to_string(),
         parents: vec![],
@@ -334,11 +318,44 @@ fn test_subtreenode_serde_backwards_compatibility() {
     );
 }
 
+/// Verify that subtree payloads are encoded as CBOR byte string (major type 2),
+/// not as a CBOR array of u8. This is required for IPLD / DAG-CBOR interop —
+/// other IPLD implementations expect major type 2 for byte data.
+#[test]
+fn test_subtree_data_is_cbor_byte_string() {
+    let payload = b"hello";
+    let entry = Entry::root_builder()
+        .set_subtree_data("test", payload.to_vec())
+        .build()
+        .expect("Root entry should build successfully");
+
+    let bytes = entry.to_dagcbor().expect("DAG-CBOR serialization");
+
+    // Find the payload bytes in the CBOR output. The byte string header for a
+    // 5-byte payload is 0x45 (major type 2, length 5). If RawData were encoded
+    // as an array of u8, we'd instead see 0x85 followed by per-byte CBOR encodings.
+    let mut found = false;
+    for window in bytes.windows(payload.len() + 1) {
+        if window[0] == 0x45 && &window[1..] == payload {
+            found = true;
+            break;
+        }
+    }
+    assert!(
+        found,
+        "Expected subtree payload to be encoded as CBOR byte string (major type 2) with header 0x45; got bytes: {bytes:02x?}"
+    );
+
+    // And round-trip still works.
+    let decoded: Entry = serde_ipld_dagcbor::from_slice(&bytes).unwrap();
+    assert_eq!(entry, decoded);
+}
+
 #[test]
 fn test_entry_dagcbor_roundtrip_direct_sigkey() {
     // Test DAG-CBOR roundtrip with a Direct SigKey (default, unsigned)
     let entry = Entry::root_builder()
-        .set_subtree_data("users", r#"{"user1":"data"}"#)
+        .set_subtree_data("users", br#"{"user1":"data"}"#)
         .build()
         .expect("Root entry should build successfully");
 
@@ -369,7 +386,7 @@ fn test_entry_dagcbor_roundtrip_delegation_sigkey() {
 
     let entry = Entry::builder(ID::from_bytes("tree_root"))
         .add_parent(ID::from_bytes("parent_entry"))
-        .set_subtree_data("data_store", r#"{"key":"value"}"#)
+        .set_subtree_data("data_store", br#"{"key":"value"}"#)
         .set_sig(sig)
         .build()
         .expect("Entry with delegation should build successfully");
@@ -389,7 +406,7 @@ fn test_entry_dagcbor_roundtrip_with_pubkey_sigkey() {
 
     let entry = Entry::builder(ID::from_bytes("tree_root"))
         .add_parent(ID::from_bytes("parent_entry"))
-        .set_subtree_data("store", "data")
+        .set_subtree_data("store", b"data")
         .set_sig(sig)
         .build()
         .expect("Entry with pubkey sig should build successfully");
@@ -402,7 +419,7 @@ fn test_entry_dagcbor_roundtrip_with_pubkey_sigkey() {
 #[test]
 fn test_entry_to_dagcbor_method() {
     let entry = Entry::root_builder()
-        .set_subtree_data("test", "value")
+        .set_subtree_data("test", b"value")
         .build()
         .expect("Root entry should build successfully");
 

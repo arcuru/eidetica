@@ -190,7 +190,11 @@ where
     if let Ok(synced_entry1) = &entry1_in_db2 {
         println!("Successfully found synced entry 1: {}", synced_entry1.id());
 
-        if let Some(data) = synced_entry1.data("data").ok().map(|d| d.as_str()) {
+        if let Some(data) = synced_entry1
+            .data("data")
+            .ok()
+            .and_then(|d| std::str::from_utf8(d).ok())
+        {
             println!("Synced entry 1 data: {data}");
             assert!(data.contains("Alice"), "Entry 1 should contain Alice data");
         }
@@ -199,7 +203,11 @@ where
     if let Ok(synced_entry2) = &entry2_in_db2 {
         println!("Successfully found synced entry 2: {}", synced_entry2.id());
 
-        if let Some(data) = synced_entry2.data("data").ok().map(|d| d.as_str()) {
+        if let Some(data) = synced_entry2
+            .data("data")
+            .ok()
+            .and_then(|d| std::str::from_utf8(d).ok())
+        {
             println!("Synced entry 2 data: {data}");
             assert!(data.contains("Bob"), "Entry 2 should contain Bob data");
         }
@@ -271,7 +279,10 @@ where
 
     // If both worked, verify data integrity
     if let Ok(synced_entry) = db2_entry_in_db1
-        && let Some(data) = synced_entry.data("data").ok().map(|d| d.as_str())
+        && let Some(data) = synced_entry
+            .data("data")
+            .ok()
+            .and_then(|d| std::str::from_utf8(d).ok())
     {
         assert!(
             data.contains("db2"),
@@ -280,7 +291,10 @@ where
     }
 
     if let Ok(synced_entry) = db1_entry_in_db2
-        && let Some(data) = synced_entry.data("data").ok().map(|d| d.as_str())
+        && let Some(data) = synced_entry
+            .data("data")
+            .ok()
+            .and_then(|d| std::str::from_utf8(d).ok())
     {
         assert!(
             data.contains("db1"),

@@ -541,7 +541,7 @@ mod tests {
 
         // Inspect raw entry data - entry 2 should NOT contain key A (incremental)
         let entry2 = database.get_entry(&entry_id_2).await.unwrap();
-        let raw_2: Doc = serde_json::from_str(entry2.data("_settings").unwrap()).unwrap();
+        let raw_2: Doc = serde_json::from_slice(entry2.data("_settings").unwrap()).unwrap();
 
         assert!(
             raw_2.get(format!("auth.keys.{pubkey_a}")).is_none(),

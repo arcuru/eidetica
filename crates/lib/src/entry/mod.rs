@@ -22,10 +22,13 @@ use crate::{Result, auth::types::SigInfo, constants::ROOT, store::StoreError};
 
 use id::IdError;
 
-/// Represents serialized data, typically JSON, provided by the user.
+/// Opaque payload bytes embedded in an `Entry`.
 ///
-/// This allows users to manage their own data structures and serialization formats.
-pub type RawData = String;
+/// Each `Store` owns the format of its own payload (JSON, CBOR, raw binary, etc.);
+/// the entry layer treats `RawData` as a byte string and does not interpret it.
+///
+/// Encoded as a CBOR byte string (major type 2) in DAG-CBOR for IPLD compatibility.
+pub type RawData = Vec<u8>;
 
 /// Helper to check if tree height is zero for serde skip_serializing_if
 fn is_zero(h: &u64) -> bool {
@@ -49,6 +52,7 @@ pub(super) struct TreeNode {
     ///
     /// Metadata is optional and may not be present in all entries. Future versions
     /// may extend metadata to include additional information.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "serde_bytes")]
     pub metadata: Option<RawData>,
     /// Height of this entry in the tree DAG (longest path from root).
     /// Root entries have height 0, children have max(parent heights) + 1.
@@ -71,7 +75,7 @@ pub(super) struct SubTreeNode {
     /// This is used when there is information needed for this subtree found somewhere else (e.g. the `_index`)
     ///
     /// `Some(data)` contains the actual serialized data for this subtree.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "serde_bytes")]
     pub data: Option<RawData>,
     /// Height of this entry in the subtree DAG.
     ///
@@ -110,7 +114,7 @@ pub(super) struct SubTreeNode {
 ///
 /// // Create a new root entry (standalone entry that starts a new DAG)
 /// let entry = Entry::root_builder()
-///     .set_subtree_data("users", r#"{"user1":"data"}"#)
+///     .set_subtree_data("users", br#"{"user1":"data"}"#.to_vec())
 ///     .build()
 ///     .expect("Entry should build successfully");
 ///
@@ -128,7 +132,7 @@ pub(super) struct SubTreeNode {
 /// ```
 /// # use eidetica::entry::{Entry, ID, RawData};
 /// # let root_id = ID::from_bytes("some_root_id");
-/// # let data: RawData = "{}".to_string();
+/// # let data: RawData = b"{}".to_vec();
 /// // For a regular entry:
 /// let builder = Entry::builder(root_id);
 ///

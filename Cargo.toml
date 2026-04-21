@@ -22,6 +22,7 @@ base64ct = { version = "1.8", features = ["std"] }
 ed25519-dalek = { version = "2", default-features = false, features = ["rand_core", "serde", "zeroize"] }
 rand = "0.8"
 serde = { version = "1.0.228", features = ["derive"] }
+serde_bytes = "0.11"
 serde_json = "1"
 sha2 = "0.10"
 hex = "0.4"
