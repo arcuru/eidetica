@@ -240,8 +240,8 @@ impl DocStore {
             // Setting the root of this Doc's named subtree.
             // The value must be a node.
             if let Value::Doc(node) = value {
-                let serialized_data = serde_json::to_string(&node)?;
-                return self.txn.update_subtree(&self.name, &serialized_data).await;
+                let serialized_data = serde_json::to_vec(&node)?;
+                return self.txn.update_subtree(&self.name, serialized_data).await;
             } else {
                 return Err(StoreError::TypeMismatch {
                     store: self.name.clone(),
@@ -267,7 +267,7 @@ impl DocStore {
         // Use Doc::set which now creates intermediate nodes automatically
         subtree_data.set(&path_str, value);
 
-        let serialized_data = serde_json::to_string(&subtree_data)?;
-        self.txn.update_subtree(&self.name, &serialized_data).await
+        let serialized_data = serde_json::to_vec(&subtree_data)?;
+        self.txn.update_subtree(&self.name, serialized_data).await
     }
 }

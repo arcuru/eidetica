@@ -172,13 +172,11 @@ where
 
         // Serialize and update the transaction
         let serialized_data =
-            serde_json::to_string(&data).map_err(|e| StoreError::SerializationFailed {
+            serde_json::to_vec(&data).map_err(|e| StoreError::SerializationFailed {
                 store: self.name.clone(),
                 reason: format!("Failed to serialize subtree data: {e}"),
             })?;
-        self.txn
-            .update_subtree(&self.name, &serialized_data)
-            .await?;
+        self.txn.update_subtree(&self.name, serialized_data).await?;
 
         // Return the primary key
         Ok(primary_key)
@@ -215,11 +213,11 @@ where
 
         // Serialize and update the transaction
         let serialized_data =
-            serde_json::to_string(&data).map_err(|e| StoreError::SerializationFailed {
+            serde_json::to_vec(&data).map_err(|e| StoreError::SerializationFailed {
                 store: self.name.clone(),
                 reason: format!("Failed to serialize subtree data: {e}"),
             })?;
-        self.txn.update_subtree(&self.name, &serialized_data).await
+        self.txn.update_subtree(&self.name, serialized_data).await
     }
 
     /// Deletes a row from the Table by its primary key.
@@ -255,13 +253,11 @@ where
 
         // Serialize and update the transaction
         let serialized_data =
-            serde_json::to_string(&data).map_err(|e| StoreError::SerializationFailed {
+            serde_json::to_vec(&data).map_err(|e| StoreError::SerializationFailed {
                 store: self.name.clone(),
                 reason: format!("Failed to serialize subtree data: {e}"),
             })?;
-        self.txn
-            .update_subtree(&self.name, &serialized_data)
-            .await?;
+        self.txn.update_subtree(&self.name, serialized_data).await?;
 
         // Return true since we confirmed the record existed
         Ok(true)

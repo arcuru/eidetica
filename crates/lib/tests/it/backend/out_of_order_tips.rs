@@ -72,7 +72,7 @@ async fn test_store_tips_out_of_order_arrival() {
 
     // Create and store root A with store data
     let entry_a = Entry::root_builder()
-        .set_subtree_data(store_name, "data_a")
+        .set_subtree_data(store_name, b"data_a")
         .build()
         .expect("Root entry should build");
     let id_a = entry_a.id();
@@ -86,7 +86,7 @@ async fn test_store_tips_out_of_order_arrival() {
     // Build entry B (store parent: A) but DON'T store it yet
     let entry_b = Entry::builder(id_a.clone())
         .add_parent(id_a.clone())
-        .set_subtree_data(store_name, "data_b")
+        .set_subtree_data(store_name, b"data_b")
         .add_subtree_parent(store_name, id_a.clone())
         .build()
         .expect("Entry B should build");
@@ -95,7 +95,7 @@ async fn test_store_tips_out_of_order_arrival() {
     // Build and store entry C (store parent: B) BEFORE storing B
     let entry_c = Entry::builder(id_a.clone())
         .add_parent(id_b.clone())
-        .set_subtree_data(store_name, "data_c")
+        .set_subtree_data(store_name, b"data_c")
         .add_subtree_parent(store_name, id_b.clone())
         .build()
         .expect("Entry C should build");

@@ -53,8 +53,8 @@ fn test_entrybuilder_id_stability() {
     // First entry with parents and subtrees added in one order
     let entry1 = Entry::builder(ID::from_bytes("test_root"))
         .set_parents(vec![ID::from_bytes("parent1"), ID::from_bytes("parent2")])
-        .set_subtree_data("subtree1", "data1")
-        .set_subtree_data("subtree2", "data2")
+        .set_subtree_data("subtree1", b"data1")
+        .set_subtree_data("subtree2", b"data2")
         .set_subtree_parents("subtree1", vec![ID::from_bytes("sp1")])
         .build()
         .expect("Entry should build successfully for ID stability test");
@@ -62,16 +62,16 @@ fn test_entrybuilder_id_stability() {
     // Second entry with identical content but added in reverse order
     let entry2 = Entry::builder(ID::from_bytes("test_root"))
         .set_parents(vec![ID::from_bytes("parent2"), ID::from_bytes("parent1")]) // Reversed
-        .set_subtree_data("subtree2", "data2") // Reversed
-        .set_subtree_data("subtree1", "data1")
+        .set_subtree_data("subtree2", b"data2") // Reversed
+        .set_subtree_data("subtree1", b"data1")
         .set_subtree_parents("subtree1", vec![ID::from_bytes("sp1")])
         .build()
         .expect("Entry should build successfully for ID stability test");
 
     // Third entry with the same content but subtree parents set after subtree data
     let entry3 = Entry::builder(ID::from_bytes("test_root"))
-        .set_subtree_data("subtree1", "data1")
-        .set_subtree_data("subtree2", "data2")
+        .set_subtree_data("subtree1", b"data1")
+        .set_subtree_data("subtree2", b"data2")
         .set_parents(vec![ID::from_bytes("parent1"), ID::from_bytes("parent2")])
         .set_subtree_parents("subtree1", vec![ID::from_bytes("sp1")])
         .build()

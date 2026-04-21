@@ -104,11 +104,11 @@ This is what enables [metadata to travel with data](#metadata-travels-with-data)
 2. **Verification**: The Entry is verified by the Merkle-DAG properties of the subtree's parent tree
 3. **Sync Completeness**: When syncing a subtree's DAG, all Entries pertaining to that subtree are included, including any `_index` metadata about it
 
-To support this constraint, `SubTreeNode.data` is `Option<RawData>`:
+To support this constraint, `SubTreeNode.data` is `Option<RawData>`, where `RawData` is opaque bytes (`Vec<u8>`):
 
 - `None`: Subtree participates in this Entry but makes no data changes
-- `Some("")`: Explicit empty data (e.g., CRDT tombstone)
-- `Some(data)`: Actual serialized data
+- `Some(vec![])`: Explicit empty data (e.g., CRDT tombstone)
+- `Some(data)`: Actual serialized bytes in the store's chosen format (JSON, CBOR, raw binary, etc.)
 
 This allows subtrees to appear in Entries purely to satisfy the constraint without requiring data changes.
 

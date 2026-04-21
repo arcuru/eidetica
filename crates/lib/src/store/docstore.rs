@@ -213,8 +213,8 @@ impl DocStore {
         data.set(&key, value);
 
         // Serialize and update the transaction
-        let serialized = serde_json::to_string(&data)?;
-        self.txn.update_subtree(&self.name, &serialized).await
+        let serialized = serde_json::to_vec(&data)?;
+        self.txn.update_subtree(&self.name, serialized).await
     }
 
     /// Sets a key-value pair (HashMap-like API).
@@ -249,8 +249,8 @@ impl DocStore {
         data.set(&key, value);
 
         // Serialize and update the transaction
-        let serialized = serde_json::to_string(&data)?;
-        self.txn.update_subtree(&self.name, &serialized).await?;
+        let serialized = serde_json::to_vec(&data)?;
+        self.txn.update_subtree(&self.name, serialized).await?;
 
         Ok(previous)
     }
@@ -278,8 +278,8 @@ impl DocStore {
         data.set(&key, value);
 
         // Serialize and update the transaction
-        let serialized = serde_json::to_string(&data)?;
-        self.txn.update_subtree(&self.name, &serialized).await
+        let serialized = serde_json::to_vec(&data)?;
+        self.txn.update_subtree(&self.name, serialized).await
     }
 
     /// Convenience method to set a string value.
@@ -852,8 +852,8 @@ impl DocStore {
         data.set(&path, value);
 
         // Serialize and update the transaction
-        let serialized = serde_json::to_string(&data)?;
-        self.txn.update_subtree(&self.name, &serialized).await
+        let serialized = serde_json::to_vec(&data)?;
+        self.txn.update_subtree(&self.name, serialized).await
     }
 
     /// Sets a value at the given path with string paths for runtime normalization
@@ -979,8 +979,8 @@ impl DocStore {
         data.remove(key_str);
 
         // Serialize and update the transaction
-        let serialized = serde_json::to_string(&data)?;
-        self.txn.update_subtree(&self.name, &serialized).await?;
+        let serialized = serde_json::to_vec(&data)?;
+        self.txn.update_subtree(&self.name, serialized).await?;
         Ok(true)
     }
 
