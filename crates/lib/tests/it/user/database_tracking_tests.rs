@@ -447,3 +447,147 @@ async fn test_update_tracked_auto_creates_mapping() -> Result<()> {
 
     Ok(())
 }
+
+/// Test enable_sync flips the user's sync preference to true
+#[tokio::test]
+async fn test_enable_sync_flips_preference() -> Result<()> {
+    let instance = setup_instance().await;
+
+    instance.create_user("test_user", None).await?;
+    let mut user = login_user(&instance, "test_user", None).await;
+    let user_key = user.get_default_key()?;
+
+    let (alice_key, _) = generate_keypair();
+    let mut db_settings = Doc::new();
+    db_settings.set("name", "test_db");
+    let db = Database::create(&instance, alice_key, db_settings).await?;
+    let db_id = db.root_id().clone();
+    set_global_auth_key(&db, AuthKey::active(None, Permission::Write(10))).await;
+
+    // Track with sync disabled initially
+    user.track_database(db_id.clone(), &user_key, SyncSettings::disabled())
+        .await?;
+    assert!(!user.is_sync_enabled(&db_id).await?);
+
+    // Enable
+    user.enable_sync(&db_id).await?;
+    assert!(user.is_sync_enabled(&db_id).await?);
+    let tracked = user.database(&db_id).await?;
+    assert!(tracked.sync_settings.sync_enabled);
+
+    Ok(())
+}
+
+/// Test disable_sync flips the user's sync preference to false
+#[tokio::test]
+async fn test_disable_sync_flips_preference() -> Result<()> {
+    let instance = setup_instance().await;
+
+    instance.create_user("test_user", None).await?;
+    let mut user = login_user(&instance, "test_user", None).await;
+    let user_key = user.get_default_key()?;
+
+    let (alice_key, _) = generate_keypair();
+    let mut db_settings = Doc::new();
+    db_settings.set("name", "test_db");
+    let db = Database::create(&instance, alice_key, db_settings).await?;
+    let db_id = db.root_id().clone();
+    set_global_auth_key(&db, AuthKey::active(None, Permission::Write(10))).await;
+
+    user.track_database(db_id.clone(), &user_key, SyncSettings::enabled())
+        .await?;
+    assert!(user.is_sync_enabled(&db_id).await?);
+
+    user.disable_sync(&db_id).await?;
+    assert!(!user.is_sync_enabled(&db_id).await?);
+
+    Ok(())
+}
+
+/// Test that toggling sync preserves other sync settings
+#[tokio::test]
+async fn test_toggle_sync_preserves_other_settings() -> Result<()> {
+    let instance = setup_instance().await;
+
+    instance.create_user("test_user", None).await?;
+    let mut user = login_user(&instance, "test_user", None).await;
+    let user_key = user.get_default_key()?;
+
+    let (alice_key, _) = generate_keypair();
+    let mut db_settings = Doc::new();
+    db_settings.set("name", "test_db");
+    let db = Database::create(&instance, alice_key, db_settings).await?;
+    let db_id = db.root_id().clone();
+    set_global_auth_key(&db, AuthKey::active(None, Permission::Write(10))).await;
+
+    // Track with on_commit + custom interval
+    user.track_database(
+        db_id.clone(),
+        &user_key,
+        SyncSettings::on_commit().with_interval(45),
+    )
+    .await?;
+
+    // Disable, then re-enable — other fields should round-trip
+    user.disable_sync(&db_id).await?;
+    user.enable_sync(&db_id).await?;
+
+    let tracked = user.database(&db_id).await?;
+    assert!(tracked.sync_settings.sync_enabled);
+    assert!(tracked.sync_settings.sync_on_commit);
+    assert_eq!(tracked.sync_settings.interval_seconds, Some(45));
+
+    Ok(())
+}
+
+/// Test enable/disable on an untracked database errors; is_sync_enabled returns false
+#[tokio::test]
+async fn test_sync_toggle_on_untracked_database() -> Result<()> {
+    let instance = setup_instance().await;
+
+    instance.create_user("test_user", None).await?;
+    let mut user = login_user(&instance, "test_user", None).await;
+
+    let (alice_key, _) = generate_keypair();
+    let mut db_settings = Doc::new();
+    db_settings.set("name", "untracked_db");
+    let db = Database::create(&instance, alice_key, db_settings).await?;
+    let db_id = db.root_id().clone();
+
+    // is_sync_enabled returns false rather than erroring
+    assert!(!user.is_sync_enabled(&db_id).await?);
+
+    // enable/disable both error with DatabaseNotTracked
+    assert!(user.enable_sync(&db_id).await.is_err());
+    assert!(user.disable_sync(&db_id).await.is_err());
+
+    Ok(())
+}
+
+/// Test that repeated enable is a no-op (idempotent)
+#[tokio::test]
+async fn test_enable_sync_is_idempotent() -> Result<()> {
+    let instance = setup_instance().await;
+
+    instance.create_user("test_user", None).await?;
+    let mut user = login_user(&instance, "test_user", None).await;
+    let user_key = user.get_default_key()?;
+
+    let (alice_key, _) = generate_keypair();
+    let mut db_settings = Doc::new();
+    db_settings.set("name", "test_db");
+    let db = Database::create(&instance, alice_key, db_settings).await?;
+    let db_id = db.root_id().clone();
+    set_global_auth_key(&db, AuthKey::active(None, Permission::Write(10))).await;
+
+    user.track_database(db_id.clone(), &user_key, SyncSettings::enabled())
+        .await?;
+
+    user.enable_sync(&db_id).await?;
+    user.enable_sync(&db_id).await?;
+    user.enable_sync(&db_id).await?;
+
+    assert!(user.is_sync_enabled(&db_id).await?);
+
+    Ok(())
+}

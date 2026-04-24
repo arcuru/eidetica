@@ -20,6 +20,8 @@
 //! - **`database()`** - Get a specific tracked database
 //! - **`track_database()`** - Add or update a tracked database (upsert)
 //! - **`untrack_database()`** - Remove a database from your tracked list
+//! - **`enable_sync()` / `disable_sync()`** - Toggle this user's sync preference for a tracked database
+//! - **`is_sync_enabled()`** - Check this user's sync preference for a database
 //!
 //! ## Key-Database Mappings
 //!
@@ -920,6 +922,109 @@ impl User {
             }
             .into()
         })
+    }
+
+    /// Enable sync for a tracked database.
+    ///
+    /// Sets `sync_enabled = true` on the user's preference for this database,
+    /// preserving `sync_on_commit`, `interval_seconds`, and `properties`.
+    /// Propagates the change to the host-level combined sync state by
+    /// calling [`Sync::sync_user`] if sync is attached to the instance.
+    ///
+    /// No-op if already enabled.
+    ///
+    /// # Errors
+    /// Returns `DatabaseNotTracked` if the database is not in the user's list.
+    pub async fn enable_sync(&mut self, database_id: &ID) -> Result<()> {
+        self.set_sync_enabled(database_id, true).await
+    }
+
+    /// Disable sync for a tracked database.
+    ///
+    /// Sets `sync_enabled = false` on the user's preference for this database,
+    /// preserving other sync settings. Propagates to the host via
+    /// [`Sync::sync_user`] if sync is attached.
+    ///
+    /// The host-level combined state is OR'd across all users on the instance,
+    /// so another user with sync enabled for the same database will keep the
+    /// host serving it.
+    ///
+    /// No-op if already disabled.
+    ///
+    /// # Errors
+    /// Returns `DatabaseNotTracked` if the database is not in the user's list.
+    pub async fn disable_sync(&mut self, database_id: &ID) -> Result<()> {
+        self.set_sync_enabled(database_id, false).await
+    }
+
+    /// Check whether this user has sync enabled for a tracked database.
+    ///
+    /// Returns this user's own preference, not the host's combined state.
+    /// A `false` result means this user is not personally sharing the database;
+    /// another user on the same instance may still have sync enabled for it.
+    ///
+    /// Returns `Ok(false)` for databases not tracked by this user.
+    pub async fn is_sync_enabled(&self, database_id: &ID) -> Result<bool> {
+        let databases_table = self
+            .user_database()
+            .get_store_viewer::<Table<TrackedDatabase>>("databases")
+            .await?;
+        let db_id_key = database_id.to_string();
+        match databases_table.get(&db_id_key).await {
+            Ok(tracked) => Ok(tracked.sync_settings.sync_enabled),
+            Err(_) => Ok(false),
+        }
+    }
+
+    /// Internal helper backing [`Self::enable_sync`] and [`Self::disable_sync`].
+    ///
+    /// Reads the user's existing `TrackedDatabase`, updates only
+    /// `sync_settings.sync_enabled`, and writes it back in a single transaction.
+    /// All other fields on `TrackedDatabase` (`key_id`, `sync_on_commit`,
+    /// `interval_seconds`, `properties`) are preserved as-is.
+    ///
+    /// Short-circuits without touching the user database when `sync_enabled`
+    /// already matches `enabled`, so repeated calls don't create churn in the
+    /// preferences DAG or trigger redundant `Sync::sync_user` propagation.
+    ///
+    /// On a real change, after the preferences commit succeeds, this calls
+    /// [`Sync::sync_user`] when sync is attached to the instance so the
+    /// host-level combined sync state (computed across all users by
+    /// `merge_sync_settings`) updates immediately rather than waiting for
+    /// the background worker.
+    ///
+    /// # Errors
+    /// Returns `DatabaseNotTracked` if the database is not in the user's
+    /// tracked list. The error is intentionally indistinguishable from a
+    /// transaction read error on the tracking table — both are degenerate
+    /// states from the caller's perspective.
+    async fn set_sync_enabled(&mut self, database_id: &ID, enabled: bool) -> Result<()> {
+        let tx = self.user_database.new_transaction().await?;
+        let databases_table = tx.get_store::<Table<TrackedDatabase>>("databases").await?;
+        let db_id_key = database_id.to_string();
+
+        let mut tracked =
+            databases_table
+                .get(&db_id_key)
+                .await
+                .map_err(|_| UserError::DatabaseNotTracked {
+                    database_id: database_id.clone(),
+                })?;
+
+        if tracked.sync_settings.sync_enabled == enabled {
+            return Ok(());
+        }
+
+        tracked.sync_settings.sync_enabled = enabled;
+        databases_table.set(&db_id_key, tracked).await?;
+        tx.commit().await?;
+
+        if let Some(sync) = self.instance.sync() {
+            sync.sync_user(&self.user_uuid, self.user_database.root_id())
+                .await?;
+        }
+
+        Ok(())
     }
 
     /// Stop tracking a database.
