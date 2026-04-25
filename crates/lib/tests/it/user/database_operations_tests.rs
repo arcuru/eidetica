@@ -8,7 +8,15 @@
 
 use super::helpers::*;
 
-use eidetica::{auth::crypto::generate_keypair, crdt::Doc, entry::ID, store::DocStore};
+use eidetica::{
+    auth::{
+        crypto::generate_keypair,
+        types::{AuthKey, Permission, SigKey},
+    },
+    crdt::Doc,
+    entry::ID,
+    store::DocStore,
+};
 
 // ===== CREATE DATABASE TESTS =====
 
@@ -572,4 +580,105 @@ async fn test_user_can_discover_own_databases() {
     assert!(found_a.is_ok(), "Should find Project A");
     assert!(found_b.is_ok(), "Should find Project B");
     assert!(found_c.is_ok(), "Should find Project C");
+}
+
+// ===== OPEN_DATABASE_WITH_KEY TESTS =====
+
+#[tokio::test]
+async fn test_open_database_with_key_selects_requested_key() {
+    let (instance, username) = setup_instance_with_user("octavia", None).await;
+    let mut user = login_user(&instance, &username, None).await;
+
+    // key1 = default key (created with the user). Create DB with it (Admin(0)).
+    let keys = user.list_keys().expect("list keys");
+    let key1 = keys[0].clone();
+    let database = create_named_database(&mut user, "multi_key_db").await;
+    let db_id = database.root_id().clone();
+
+    // Add a second key and authorize it as Write in the database's auth settings.
+    let key2 = add_user_key(&mut user, Some("agent_key")).await;
+    let tx = database.new_transaction().await.expect("new transaction");
+    tx.get_settings()
+        .expect("settings store")
+        .set_auth_key(&key2, AuthKey::active(None, Permission::Write(10)))
+        .await
+        .expect("authorize key2");
+    tx.commit().await.expect("commit auth change");
+
+    // Map key2 locally so the user can open the DB with it.
+    user.map_key(&key2, &db_id, SigKey::from_pubkey(&key2))
+        .await
+        .expect("map key2");
+
+    // Each explicit selection produces a Database bound to the requested identity.
+    let opened_with_key1 = user
+        .open_database_with_key(&db_id, &key1)
+        .await
+        .expect("open with key1");
+    assert_eq!(
+        opened_with_key1.auth_identity(),
+        Some(&SigKey::from_pubkey(&key1)),
+        "open_database_with_key(&key1) should bind key1's identity"
+    );
+
+    let opened_with_key2 = user
+        .open_database_with_key(&db_id, &key2)
+        .await
+        .expect("open with key2");
+    assert_eq!(
+        opened_with_key2.auth_identity(),
+        Some(&SigKey::from_pubkey(&key2)),
+        "open_database_with_key(&key2) should bind key2's identity"
+    );
+}
+
+#[tokio::test]
+async fn test_open_database_with_key_errors_when_user_does_not_hold_key() {
+    let (instance, username) = setup_instance_with_user("portia", None).await;
+    let mut user = login_user(&instance, &username, None).await;
+
+    let database = create_named_database(&mut user, "db").await;
+    let db_id = database.root_id().clone();
+
+    // A pubkey the user does not hold.
+    let (_priv, foreign_pubkey) = generate_keypair();
+
+    let result = user.open_database_with_key(&db_id, &foreign_pubkey).await;
+    assert!(
+        result.is_err(),
+        "Opening with a pubkey not in the user's key manager should error"
+    );
+}
+
+#[tokio::test]
+async fn test_open_database_with_key_errors_when_key_lacks_mapping() {
+    let (instance, username) = setup_instance_with_user("quinn", None).await;
+    let mut user = login_user(&instance, &username, None).await;
+
+    let database = create_named_database(&mut user, "db").await;
+    let db_id = database.root_id().clone();
+
+    // Held by the user, but never mapped to this database.
+    let unmapped_key = add_user_key(&mut user, Some("unmapped")).await;
+
+    let result = user.open_database_with_key(&db_id, &unmapped_key).await;
+    assert!(
+        result.is_err(),
+        "Opening with a held key that has no mapping for this DB should error"
+    );
+}
+
+#[tokio::test]
+async fn test_open_database_with_key_errors_on_nonexistent_database() {
+    let (instance, username) = setup_instance_with_user("riley", None).await;
+    let user = login_user(&instance, &username, None).await;
+
+    let key = user.list_keys().expect("list keys")[0].clone();
+    let fake_id = ID::from_bytes("nonexistent_database");
+
+    let result = user.open_database_with_key(&fake_id, &key).await;
+    assert!(
+        result.is_err(),
+        "Opening a nonexistent database should error"
+    );
 }

@@ -10,6 +10,7 @@
 //!
 //! - **`create_database()`** - Create a new database
 //! - **`open_database()`** - Open an existing database
+//! - **`open_database_with_key()`** - Open with an explicitly chosen user key
 //! - **`find_database()`** - Search for databases by name
 //!
 //! ## Tracked Databases
@@ -278,9 +279,6 @@ impl User {
     /// - Returns an error if no SigKey mapping exists
     /// - Returns an error if the key is not in the UserKeyManager
     pub async fn open_database(&self, root_id: &ID) -> Result<Database> {
-        // Validate the root exists
-        self.instance.backend().get(root_id).await?;
-
         // Find an appropriate key for this database
         let key_id =
             self.find_key(root_id)?
@@ -288,15 +286,48 @@ impl User {
                     database_id: root_id.clone(),
                 })?;
 
+        self.open_database_with_key(root_id, &key_id).await
+    }
+
+    /// Open an existing database with an explicitly chosen key.
+    ///
+    /// Equivalent to `open_database`, but selects the user's signing key by
+    /// public key instead of relying on `find_key`'s iteration order. Use this
+    /// when the user holds multiple authorized keys for a database and you
+    /// need writes signed by a specific one (e.g. agent-as-signer scenarios
+    /// where cryptographic provenance matters, not just authorization).
+    ///
+    /// The `key_id` is purely a selector into this user's `UserKeyManager`;
+    /// no crypto material is passed in.
+    ///
+    /// # Arguments
+    /// * `root_id` - The root entry ID of the database
+    /// * `key_id` - Public key of the user-held key to sign with
+    ///
+    /// # Returns
+    /// The opened Database configured to use the specified key
+    ///
+    /// # Errors
+    /// - Returns an error if the root entry does not exist
+    /// - Returns an error if the user does not hold a key with that pubkey
+    /// - Returns an error if the key has no SigKey mapping for this database
+    pub async fn open_database_with_key(
+        &self,
+        root_id: &ID,
+        key_id: &PublicKey,
+    ) -> Result<Database> {
+        // Validate the root exists
+        self.instance.backend().get(root_id).await?;
+
         // Get the SigningKey from UserKeyManager
-        let signing_key = self.key_manager.get_signing_key(&key_id).ok_or_else(|| {
+        let signing_key = self.key_manager.get_signing_key(key_id).ok_or_else(|| {
             super::errors::UserError::KeyNotFound {
                 key_id: key_id.to_string(),
             }
         })?;
 
         // Get the SigKey mapping for this database
-        let sigkey = self.key_mapping(&key_id, root_id)?.ok_or_else(|| {
+        let sigkey = self.key_mapping(key_id, root_id)?.ok_or_else(|| {
             super::errors::UserError::NoSigKeyMapping {
                 key_id: key_id.to_string(),
                 database_id: root_id.clone(),
