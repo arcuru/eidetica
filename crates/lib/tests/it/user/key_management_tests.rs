@@ -801,3 +801,89 @@ async fn test_multiple_manual_mappings_persist() {
         "key3->db3 mapping should persist"
     );
 }
+
+// ===== DISPLAY NAME ACCESSOR TESTS =====
+
+#[tokio::test]
+async fn test_key_display_name_returns_set_name() {
+    let (instance, username) = setup_instance_with_user("zelda", None).await;
+    let mut user = login_user(&instance, &username, None).await;
+
+    let key = add_user_key(&mut user, Some("agent_alice")).await;
+
+    assert_eq!(user.key_display_name(&key), Some("agent_alice"));
+}
+
+#[tokio::test]
+async fn test_key_display_name_returns_none_when_unset() {
+    let (instance, username) = setup_instance_with_user("aaron", None).await;
+    let mut user = login_user(&instance, &username, None).await;
+
+    let key = add_user_key(&mut user, None).await;
+
+    assert_eq!(user.key_display_name(&key), None);
+}
+
+#[tokio::test]
+async fn test_key_display_name_returns_none_for_unknown_pubkey() {
+    let (instance, username) = setup_instance_with_user("brigid", None).await;
+    let user = login_user(&instance, &username, None).await;
+
+    let (_priv, foreign_pubkey) = generate_keypair();
+
+    assert_eq!(user.key_display_name(&foreign_pubkey), None);
+}
+
+#[tokio::test]
+async fn test_find_keys_by_display_name_returns_matches() {
+    let (instance, username) = setup_instance_with_user("clara", None).await;
+    let mut user = login_user(&instance, &username, None).await;
+
+    let alice_key = add_user_key(&mut user, Some("agent_alice")).await;
+    let _bob_key = add_user_key(&mut user, Some("agent_bob")).await;
+
+    let found = user.find_keys_by_display_name("agent_alice");
+    assert_eq!(found, vec![alice_key]);
+}
+
+#[tokio::test]
+async fn test_find_keys_by_display_name_returns_all_duplicates() {
+    let (instance, username) = setup_instance_with_user("dahlia", None).await;
+    let mut user = login_user(&instance, &username, None).await;
+
+    let key_a = add_user_key(&mut user, Some("shared")).await;
+    let key_b = add_user_key(&mut user, Some("shared")).await;
+    let _key_c = add_user_key(&mut user, Some("other")).await;
+
+    let found = user.find_keys_by_display_name("shared");
+    assert_eq!(found.len(), 2);
+    assert!(found.contains(&key_a));
+    assert!(found.contains(&key_b));
+}
+
+#[tokio::test]
+async fn test_find_keys_by_display_name_skips_unnamed_keys() {
+    let (instance, username) = setup_instance_with_user("evelyn", None).await;
+    let mut user = login_user(&instance, &username, None).await;
+
+    // Two keys with no display_name plus one named.
+    let _unnamed_a = add_user_key(&mut user, None).await;
+    let _unnamed_b = add_user_key(&mut user, None).await;
+    let named = add_user_key(&mut user, Some("only_one")).await;
+
+    // Empty string should not match keys with `display_name = None`.
+    assert!(user.find_keys_by_display_name("").is_empty());
+
+    // Named lookup still works.
+    assert_eq!(user.find_keys_by_display_name("only_one"), vec![named]);
+}
+
+#[tokio::test]
+async fn test_find_keys_by_display_name_no_match() {
+    let (instance, username) = setup_instance_with_user("fiona", None).await;
+    let mut user = login_user(&instance, &username, None).await;
+
+    let _key = add_user_key(&mut user, Some("present")).await;
+
+    assert!(user.find_keys_by_display_name("absent").is_empty());
+}
