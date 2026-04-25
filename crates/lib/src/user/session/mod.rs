@@ -623,6 +623,43 @@ impl User {
             .ok_or_else(|| Error::from(InstanceError::AuthenticationRequired))
     }
 
+    /// Get the display name set for a key.
+    ///
+    /// Display names are caller-supplied human-readable labels passed to
+    /// `add_private_key`. They have no cryptographic significance and are
+    /// not unique across keys. Returns `None` if the user does not hold a
+    /// key with this pubkey, or if it was added without a display name.
+    ///
+    /// # Arguments
+    /// * `key_id` - Public key of a key held by this user
+    pub fn key_display_name(&self, key_id: &PublicKey) -> Option<&str> {
+        self.key_manager
+            .get_key_metadata(key_id)
+            .and_then(|metadata| metadata.display_name.as_deref())
+    }
+
+    /// Find user-held keys whose display name matches `name`.
+    ///
+    /// Display names are not unique, so this returns every key whose
+    /// `display_name` exactly matches the provided string. Keys without a
+    /// display name are never returned. Returns an empty `Vec` when there
+    /// are no matches.
+    ///
+    /// # Arguments
+    /// * `name` - Exact display name to match
+    pub fn find_keys_by_display_name(&self, name: &str) -> Vec<PublicKey> {
+        self.key_manager
+            .list_key_ids()
+            .into_iter()
+            .filter(|key_id| {
+                self.key_manager
+                    .get_key_metadata(key_id)
+                    .and_then(|metadata| metadata.display_name.as_deref())
+                    == Some(name)
+            })
+            .collect()
+    }
+
     /// Get a signing key by its ID.
     ///
     /// # Arguments
