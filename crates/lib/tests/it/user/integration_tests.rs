@@ -659,3 +659,74 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
 
     println!("\n✅ TEST COMPLETED: User API end-to-end collaborative database with sync works!");
 }
+
+/// `user.share()` on an instance with a running HTTP transport returns a
+/// ticket populated with the server's address — verifies the wiring through
+/// `Sync::create_ticket` rather than the empty-fallback branch.
+#[tokio::test]
+async fn test_share_with_attached_sync_includes_server_addresses() {
+    let instance = test_instance().await;
+    instance.enable_sync().await.expect("Failed to enable sync");
+
+    let sync = instance.sync().expect("Sync should be attached");
+    sync.register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
+        .await
+        .expect("Failed to register HTTP transport");
+    sync.accept_connections()
+        .await
+        .expect("Failed to start sync server");
+
+    instance
+        .create_user("alice", None)
+        .await
+        .expect("Failed to create alice");
+    let mut alice = instance
+        .login_user("alice", None)
+        .await
+        .expect("Failed to login alice");
+    let alice_key = alice.get_default_key().expect("Get default key");
+
+    let mut db_settings = Doc::new();
+    db_settings.set("name", "shared_db");
+    let db = alice
+        .create_database(db_settings, &alice_key)
+        .await
+        .expect("Failed to create database");
+    let db_id = db.root_id().clone();
+    set_global_auth_key(&db, AuthKey::active(None, Permission::Write(10))).await;
+
+    let ticket = alice.share(&db_id).await.expect("share should succeed");
+
+    assert_eq!(ticket.database_id(), &db_id);
+    assert!(
+        alice
+            .is_sync_enabled(&db_id)
+            .await
+            .expect("is_sync_enabled"),
+        "share() should leave sync enabled for the database"
+    );
+    assert!(
+        ticket
+            .addresses()
+            .iter()
+            .any(|a| a.transport_type == "http"),
+        "Ticket should include the running HTTP transport's address"
+    );
+
+    let ticket2 = alice
+        .share(&db_id)
+        .await
+        .expect("second share should succeed");
+    assert_eq!(
+        ticket, ticket2,
+        "repeated share() should produce equivalent tickets"
+    );
+    assert!(
+        alice
+            .is_sync_enabled(&db_id)
+            .await
+            .expect("is_sync_enabled")
+    );
+
+    sync.stop_server().await.expect("Failed to stop server");
+}

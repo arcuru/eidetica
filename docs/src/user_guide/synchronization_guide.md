@@ -52,6 +52,26 @@ sync.sync_with_ticket(&ticket).await?;
 The system automatically detects whether you need full bootstrap or incremental sync.
 Tickets embed the database ID, so `sync_with_ticket` requires no separate tree ID.
 
+### 4. Share a Database
+
+Producing a ticket for a peer to import is one call:
+
+```rust,ignore
+// On the host: enable sync for the database and build a ticket for handoff
+let ticket = user.share(&database_id).await?;
+println!("Send this to your peer: {}", ticket);
+```
+
+`User::share` atomically flips the user's sync preference on for the
+database and produces a `DatabaseTicket` populated with the addresses of
+every running transport. It errors if sync isn't attached or no transport
+is registered, so a returned ticket is guaranteed to point at something
+reachable. Preconditions are checked before any mutation, so a failed
+`share()` leaves the user's sync state unchanged.
+
+A peer who receives the ticket calls `sync.sync_with_ticket(&ticket)` as
+shown in step 3.
+
 ## Connection Architecture
 
 The sync system separates **outbound** and **inbound** connection handling:

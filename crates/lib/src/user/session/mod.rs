@@ -22,6 +22,7 @@
 //! - **`untrack_database()`** - Remove a database from your tracked list
 //! - **`enable_sync()` / `disable_sync()`** - Toggle this user's sync preference for a tracked database
 //! - **`is_sync_enabled()`** - Check this user's sync preference for a database
+//! - **`share()`** - Atomically enable sync and build a `DatabaseTicket` for handoff
 //!
 //! ## Key-Database Mappings
 //!
@@ -46,7 +47,7 @@ use crate::{
     entry::ID,
     instance::{InstanceError, backend::Backend},
     store::Table,
-    sync::{BootstrapRequest, DatabaseTicket, Sync},
+    sync::{BootstrapRequest, DatabaseTicket, Sync, SyncError},
     user::{SyncSettings, TrackedDatabase, UserError},
 };
 
@@ -955,6 +956,37 @@ impl User {
     /// Returns `DatabaseNotTracked` if the database is not in the user's list.
     pub async fn disable_sync(&mut self, database_id: &ID) -> Result<()> {
         self.set_sync_enabled(database_id, false).await
+    }
+
+    /// Enable sync for a tracked database and return a [`DatabaseTicket`]
+    /// for handoff.
+    ///
+    /// Atomic version of [`Self::enable_sync`] followed by ticket construction.
+    /// The ticket carries the database ID plus any peer addresses that the
+    /// instance's sync transports are currently advertising; a peer that
+    /// imports the ticket via [`Sync::sync_with_ticket`](crate::sync::Sync::sync_with_ticket)
+    /// will be able to fetch the database immediately.
+    ///
+    /// Preconditions are checked before any state is mutated, so a failed
+    /// `share()` leaves the user's sync preference unchanged.
+    ///
+    /// # Errors
+    /// - [`SyncError::SyncNotEnabled`] if sync is not attached to the instance
+    ///   (call [`Instance::enable_sync`](crate::Instance::enable_sync) first).
+    /// - [`SyncError::NoTransportEnabled`] if sync is attached but no transport
+    ///   has been registered.
+    /// - [`UserError::DatabaseNotTracked`] if the database is not in the user's
+    ///   tracked list.
+    pub async fn share(&mut self, database_id: &ID) -> Result<DatabaseTicket> {
+        if self.instance.sync().is_none() {
+            return Err(SyncError::SyncNotEnabled.into());
+        }
+        self.enable_sync(database_id).await?;
+        let sync = self
+            .instance
+            .sync()
+            .expect("sync presence checked at function entry");
+        sync.create_ticket(database_id).await
     }
 
     /// Check whether this user has sync enabled for a tracked database.
