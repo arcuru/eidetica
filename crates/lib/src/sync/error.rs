@@ -13,6 +13,10 @@ pub enum SyncError {
     #[error("No transport enabled. Call enable_http_transport() first")]
     NoTransportEnabled,
 
+    /// Sync has not been enabled on the Instance.
+    #[error("Sync is not enabled on this Instance. Call Instance::enable_sync() first")]
+    SyncNotEnabled,
+
     /// Attempted to start a server when one is already running.
     #[error("Server already running on {address}")]
     ServerAlreadyRunning { address: String },
