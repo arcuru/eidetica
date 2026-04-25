@@ -117,7 +117,34 @@ pub async fn create_ticket(&self, database_id: &ID) -> Result<DatabaseTicket>
 ```
 
 Collects server addresses from all running transports and bundles them with
-the database ID into a `DatabaseTicket`.
+the database ID into a `DatabaseTicket`. Lower-level helper that does not
+touch user-level sync preferences.
+
+### `User::share`
+
+Atomic high-level API for the common "make this database shareable and hand
+out a ticket" operation:
+
+<!-- Code block ignored: API signature illustration, not compilable standalone -->
+
+```rust,ignore
+pub async fn share(&mut self, database_id: &ID) -> Result<DatabaseTicket>
+```
+
+Equivalent to calling [`User::enable_sync`](./users.md) followed by
+`Sync::create_ticket`, but as a single call so that a `track_database` →
+`enable_sync` → ticket-build sequence can't be accidentally split. This is
+the recommended way to produce a shareable ticket.
+
+Preconditions (sync attached to the instance, database tracked by the user)
+are checked before any state is mutated, so a failed `share()` leaves the
+user's sync preference unchanged. Errors:
+
+- `SyncError::SyncNotEnabled` — sync is not attached to the instance.
+- `SyncError::NoTransportEnabled` — sync is attached but no transport
+  has been registered yet.
+- `UserError::DatabaseNotTracked` — the database is not in the user's
+  tracked list.
 
 ## Forward Compatibility
 

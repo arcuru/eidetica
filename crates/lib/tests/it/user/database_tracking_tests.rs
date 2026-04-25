@@ -591,3 +591,57 @@ async fn test_enable_sync_is_idempotent() -> Result<()> {
 
     Ok(())
 }
+
+/// share() errors with SyncNotEnabled when the instance has no sync attached,
+/// and leaves the user's sync preference unchanged
+#[tokio::test]
+async fn test_share_without_sync_attached_errors() -> Result<()> {
+    let instance = setup_instance().await;
+
+    instance.create_user("test_user", None).await?;
+    let mut user = login_user(&instance, "test_user", None).await;
+    let user_key = user.get_default_key()?;
+
+    let (alice_key, _) = generate_keypair();
+    let mut db_settings = Doc::new();
+    db_settings.set("name", "test_db");
+    let db = Database::create(&instance, alice_key, db_settings).await?;
+    let db_id = db.root_id().clone();
+    set_global_auth_key(&db, AuthKey::active(None, Permission::Write(10))).await;
+
+    user.track_database(db_id.clone(), &user_key, SyncSettings::disabled())
+        .await?;
+    assert!(!user.is_sync_enabled(&db_id).await?);
+
+    let err = user.share(&db_id).await.expect_err("share should error");
+    match &err {
+        eidetica::Error::Sync(boxed)
+            if matches!(**boxed, eidetica::sync::SyncError::SyncNotEnabled) => {}
+        other => panic!("expected SyncNotEnabled, got: {other:?}"),
+    }
+
+    // Precondition check is before mutation: sync preference unchanged
+    assert!(!user.is_sync_enabled(&db_id).await?);
+
+    Ok(())
+}
+
+/// share() on an untracked database errors with DatabaseNotTracked
+#[tokio::test]
+async fn test_share_on_untracked_database_errors() -> Result<()> {
+    let instance = setup_instance().await;
+    instance.enable_sync().await?;
+
+    instance.create_user("test_user", None).await?;
+    let mut user = login_user(&instance, "test_user", None).await;
+
+    let (alice_key, _) = generate_keypair();
+    let mut db_settings = Doc::new();
+    db_settings.set("name", "untracked_db");
+    let db = Database::create(&instance, alice_key, db_settings).await?;
+    let db_id = db.root_id().clone();
+
+    assert!(user.share(&db_id).await.is_err());
+
+    Ok(())
+}
