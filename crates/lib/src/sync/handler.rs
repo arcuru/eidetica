@@ -645,11 +645,16 @@ impl SyncHandlerImpl {
         requested_permission: Option<Permission>,
     ) -> SyncResponse {
         // SECURITY: Check if database has sync enabled (FIRST CHECK - before anything else)
-        // This prevents information leakage about database existence
+        // This prevents information leakage about database existence: the gate
+        // returns false both for databases that are absent and for databases that
+        // are present-but-not-tracked-for-sync, and we deliberately respond with
+        // the same opaque "Tree not found" to peers in either case.
         if !self.is_database_sync_enabled(tree_id).await {
             warn!(
                 tree_id = %tree_id,
-                "Sync request for non-sync-enabled database - rejecting as not found"
+                requesting_key = ?requesting_key,
+                requesting_key_name = ?requesting_key_name,
+                "Bootstrap request rejected: database is absent or has no user with sync enabled (responding as not-found)"
             );
             return SyncResponse::Error(format!("Tree not found: {tree_id}"));
         }
@@ -662,7 +667,12 @@ impl SyncHandlerImpl {
         let _root_entry = match instance.backend().get(tree_id).await {
             Ok(entry) => entry,
             Err(e) if e.is_not_found() => {
-                warn!(tree_id = %tree_id, "Tree not found for bootstrap");
+                warn!(
+                    tree_id = %tree_id,
+                    requesting_key = ?requesting_key,
+                    requesting_key_name = ?requesting_key_name,
+                    "Bootstrap request rejected: a user has this tree marked sync-enabled but the backend has no root entry for it"
+                );
                 return SyncResponse::Error(format!("Tree not found: {tree_id}"));
             }
             Err(e) => {
@@ -864,11 +874,15 @@ impl SyncHandlerImpl {
     /// Handle incremental sync request
     async fn handle_incremental_sync(&self, tree_id: &ID, peer_tips: &[ID]) -> SyncResponse {
         // SECURITY: Check if database has sync enabled (FIRST CHECK - before anything else)
-        // This prevents information leakage about database existence
+        // This prevents information leakage about database existence: the gate
+        // returns false both for databases that are absent and for databases that
+        // are present-but-not-tracked-for-sync, and we deliberately respond with
+        // the same opaque "Tree not found" to peers in either case.
         if !self.is_database_sync_enabled(tree_id).await {
             warn!(
                 tree_id = %tree_id,
-                "Incremental sync request for non-sync-enabled database - rejecting as not found"
+                peer_tip_count = peer_tips.len(),
+                "Incremental sync request rejected: database is absent or has no user with sync enabled (responding as not-found)"
             );
             return SyncResponse::Error(format!("Tree not found: {tree_id}"));
         }
