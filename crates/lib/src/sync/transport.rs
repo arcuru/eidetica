@@ -344,6 +344,10 @@ impl Sync {
     /// The ticket contains the database ID and address hints from all running
     /// transport servers.
     ///
+    /// For the common case of producing a ticket as part of starting to share
+    /// a database, prefer [`User::share`](crate::user::User::share), which
+    /// atomically enables sync and builds the ticket in one call.
+    ///
     /// # Arguments
     /// * `database_id` - The ID of the database to create a ticket for
     ///

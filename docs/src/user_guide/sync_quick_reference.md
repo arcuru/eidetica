@@ -242,9 +242,13 @@ db.sync()?.update_peer_status(&peer_key, PeerStatus::Inactive)?;
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
+# use eidetica::sync::transports::http::HttpTransport;
 # let backend = Box::new(Sqlite::in_memory().await?);
 # let instance = Instance::open(backend).await?;
 # instance.enable_sync().await?;
+# let sync = instance.sync().expect("Sync enabled");
+# sync.register_transport("http", HttpTransport::builder().bind("127.0.0.1:0")).await?;
+# sync.accept_connections().await?;
 # instance.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 // Create a database to share
@@ -254,7 +258,7 @@ settings.set("description", "A room for team discussions");
 
 let default_key = user.get_default_key()?;
 let database = user.create_database(settings, &default_key).await?;
-let tree_id = database.root_id();
+let database_id = database.root_id().clone();
 
 // Add some initial data
 let txn = database.new_transaction().await?;
@@ -262,8 +266,10 @@ let store = txn.get_store::<DocStore>("messages").await?;
 store.set("welcome", "Welcome to the room!").await?;
 txn.commit().await?;
 
-// Share the tree_id with others
-println!("Room ID: {}", tree_id);
+// Enable sync and produce a shareable ticket in one call. The ticket
+// embeds the database ID plus every running transport's address.
+let ticket = user.share(&database_id).await?;
+println!("Share this ticket with peers: {}", ticket);
 # Ok(())
 # }
 ```
