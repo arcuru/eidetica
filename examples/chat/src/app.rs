@@ -108,16 +108,12 @@ impl App {
         // Database from User API already has auth key configured
 
         // Generate a shareable ticket URL for this room
-        let room_address = if let Some(sync) = self.instance.sync() {
-            match sync.create_ticket(database.root_id()).await {
-                Ok(ticket) => ticket.to_string(),
-                Err(e) => {
-                    tracing::warn!("Failed to create ticket with addresses: {e}");
-                    DatabaseTicket::new(database.root_id().clone()).to_string()
-                }
+        let room_address = match self.user.share(database.root_id()).await {
+            Ok(ticket) => ticket.to_string(),
+            Err(e) => {
+                tracing::warn!("Failed to share database: {e}");
+                DatabaseTicket::new(database.root_id().clone()).to_string()
             }
-        } else {
-            DatabaseTicket::new(database.root_id().clone()).to_string()
         };
 
         // Cache the room name for the UI (since get_name is async)
