@@ -399,7 +399,7 @@ impl AuthSettings {
         // because it requires async Instance access to load delegated tree auth settings.
 
         // Sort by permission, highest first (reverse sort since Permission Ord has higher > lower)
-        results.sort_by(|a, b| b.1.cmp(&a.1));
+        results.sort_by_key(|b| std::cmp::Reverse(b.1));
         results
     }
 

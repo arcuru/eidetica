@@ -50,7 +50,7 @@ in
 
         # Code formatting and quality
         alejandra # Nix formatter
-        nodePackages.prettier # General formatter
+        prettier # General formatter
         typos # Spell checker
 
         # Release management

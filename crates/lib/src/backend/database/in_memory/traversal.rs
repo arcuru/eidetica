@@ -346,7 +346,7 @@ pub(crate) fn find_merge_base(
         candidates.push((id, height));
     }
     // Sort by height descending (highest first = closest to tips)
-    candidates.sort_by(|a, b| b.1.cmp(&a.1));
+    candidates.sort_by_key(|b| std::cmp::Reverse(b.1));
 
     tracing::trace!(
         candidate_count = candidates.len(),
