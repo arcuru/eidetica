@@ -6,17 +6,16 @@
 #      via Bencher. This runs on every push to main, exercising the same build
 #      and publish pipeline that releases use.
 #
-#   2. release (published): After release-plz creates a GitHub release and tag.
-#      Pushes versioned container images (e.g. 1.2.3, 1.2, latest) and updates
-#      the Docker Hub description.
-#
-#   3. workflow_dispatch: Manual retry for a failed release. Accepts a tag name
+#   2. workflow_dispatch: Triggered by the release-plz workflow after a release
+#      is created, or manually for retrying a failed release. Accepts a tag name
 #      input and publishes versioned container images for that tag.
 #
-# On release day, both triggers 1 and 2 fire independently — the workflow_run
-# from the merge to main, and the release event from release-plz tagging. This
-# is intentional: the dev run validates the pipeline, and the release run
-# publishes the versioned artifacts.
+#   3. release (published): Kept as a fallback trigger in case the release is
+#      created with a token that fires events (e.g. a PAT or GitHub App token).
+#
+# Note: release-plz uses GITHUB_TOKEN, so releases it creates do not fire the
+# release event (GitHub Actions limitation). The release-plz workflow explicitly
+# dispatches this workflow instead.
 
 name: Publish
 
