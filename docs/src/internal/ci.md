@@ -205,11 +205,9 @@ A single [`publish.yml`](https://github.com/arcuru/eidetica/blob/main/.github/wo
 
 1. **After CI passes on main** (`workflow_run`) — pushes `dev`-tagged container images, warms the Nix binary cache, and tracks binary/container sizes. This runs on every push to main, exercising the same build and publish pipeline that releases use.
 
-2. **After a GitHub release is published** (`release: published`) — pushes versioned container images (e.g. `1.2.3`, `1.2`, `latest`) and updates the Docker Hub description. Triggered by release-plz creating a release.
+2. **After a release is created** (`workflow_dispatch`) — triggered by the release-plz workflow after publishing to crates.io and creating a GitHub release. Accepts a tag name and pushes versioned container images (e.g. `1.2.3`, `1.2`, `latest`). Can also be triggered manually to retry a failed release.
 
-3. **Manual retry** (`workflow_dispatch`) — accepts a release tag name (e.g. `v1.2.3`) and re-runs the release publish pipeline. Used to retry a failed release without re-creating the GitHub release.
-
-On release day, triggers 1 and 2 both fire independently — the `workflow_run` from the merge to main, and the `release` event from release-plz tagging. This is intentional: the dev run validates the pipeline on every push, and the release run publishes the versioned artifacts.
+3. **Fallback** (`release: published`) — kept as a fallback trigger in case the release is created with a token that fires events (e.g. a PAT or GitHub App token). Under normal operation, release-plz uses `GITHUB_TOKEN`, which does not fire the `release` event due to a GitHub Actions limitation, so the explicit `workflow_dispatch` from trigger 2 is the primary release path.
 
 ### Release Flow
 
@@ -228,8 +226,9 @@ flowchart TD
     Bencher size tracking"]
     D --> G["Publish to crates.io +
     create GitHub release + tag"]
-    G --> H["publish.yml
-    (release event)"]
+    G --> H["release-plz dispatches
+    publish.yml
+    (workflow_dispatch)"]
     H --> I["Build from source + push
     versioned container images"]
 ```
@@ -257,8 +256,9 @@ flowchart TD
 4. **Automatic publishing** — The `release-plz release` job:
    - Publishes the crate to [crates.io](https://crates.io/crates/eidetica) via trusted publishing
    - Creates a GitHub release with tag `v<version>` and a release body containing the changelog, install instructions, and documentation links
+   - Dispatches `publish.yml` via `workflow_dispatch` with the release tag name
 
-5. **Container image publishing** — The GitHub release triggers `publish.yml` again via the `release: published` event. This:
+5. **Container image publishing** — The dispatched `publish.yml` run:
    - Builds Nix binary and OCI container image for x86_64 and aarch64
    - Pushes versioned container images to GHCR and Docker Hub (e.g., `1.2.3`, `1.2`, `latest`)
    - Creates multi-arch manifests
@@ -269,10 +269,10 @@ flowchart TD
 
 ### Container Image Tags
 
-| Trigger                  | Tags pushed                                                      | Registries        |
-| ------------------------ | ---------------------------------------------------------------- | ----------------- |
-| CI passes on main        | `dev`                                                            | GHCR + Docker Hub |
-| GitHub release published | `<version>`, `<major>.<minor>`, `latest`\* (+ `<major>` for v1+) | GHCR + Docker Hub |
+| Trigger                | Tags pushed                                                      | Registries        |
+| ---------------------- | ---------------------------------------------------------------- | ----------------- |
+| CI passes on main      | `dev`                                                            | GHCR + Docker Hub |
+| Release (via dispatch) | `<version>`, `<major>.<minor>`, `latest`\* (+ `<major>` for v1+) | GHCR + Docker Hub |
 
 \* `latest` is only pushed when the release is the highest non-prerelease version (determined via the GitHub Releases API). Backport releases for older branches do not overwrite `latest`.
 
