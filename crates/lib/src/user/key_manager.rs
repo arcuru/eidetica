@@ -214,7 +214,7 @@ impl UserKeyManager {
         }
 
         // Sort by key_id string representation for deterministic output
-        serialized.sort_by(|a, b| a.key_id.to_string().cmp(&b.key_id.to_string()));
+        serialized.sort_by_key(|a| a.key_id.to_string());
 
         Ok(serialized)
     }
