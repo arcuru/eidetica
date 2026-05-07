@@ -1029,14 +1029,17 @@ impl User {
     /// Enable sync for a tracked database and return a [`DatabaseTicket`]
     /// for handoff.
     ///
-    /// Atomic version of [`Self::enable_sync`] followed by ticket construction.
-    /// The ticket carries the database ID plus any peer addresses that the
-    /// instance's sync transports are currently advertising; a peer that
-    /// imports the ticket via [`Sync::sync_with_ticket`](crate::sync::Sync::sync_with_ticket)
-    /// will be able to fetch the database immediately.
+    /// Equivalent to building a ticket via
+    /// [`Sync::create_ticket`](crate::sync::Sync::create_ticket) and then
+    /// calling [`Self::enable_sync`], in a single call. The ticket carries the
+    /// database ID plus any peer addresses that the instance's sync transports
+    /// are currently advertising; a peer that imports the ticket via
+    /// [`Sync::sync_with_ticket`](crate::sync::Sync::sync_with_ticket) will be
+    /// able to fetch the database immediately.
     ///
-    /// Preconditions are checked before any state is mutated, so a failed
-    /// `share()` leaves the user's sync preference unchanged.
+    /// All preconditions (sync attached, transport registered) are checked
+    /// before any user state is mutated, so a failed `share()` leaves the
+    /// user's sync preference unchanged.
     ///
     /// # Errors
     /// - [`SyncError::SyncNotEnabled`] if sync is not attached to the instance
@@ -1046,6 +1049,9 @@ impl User {
     /// - [`UserError::DatabaseNotTracked`] if the database is not in the user's
     ///   tracked list.
     pub async fn share(&mut self, database_id: &ID) -> Result<DatabaseTicket> {
+        // Build the ticket first: this is the only step that can fail with
+        // NoTransportEnabled / SyncNotEnabled, and it doesn't touch user state.
+        // enable_sync runs last so any error path leaves preferences unchanged.
         let sync = self.instance.sync().ok_or(SyncError::SyncNotEnabled)?;
         let ticket = sync.create_ticket(database_id).await?;
         self.enable_sync(database_id).await?;

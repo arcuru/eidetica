@@ -18,6 +18,7 @@ use crate::sync::{
 use crate::{
     Error, Result,
     auth::crypto::{PublicKey, generate_challenge, verify_challenge_response},
+    backend::VerificationStatus,
     entry::Entry,
 };
 
@@ -140,16 +141,14 @@ impl BackgroundSync {
             .into());
         }
 
-        // Store root entry first
-        let instance = self.instance()?;
-        instance
-            .backend()
-            .put_verified(response.root_entry)
-            .await
-            .map_err(|e| SyncError::BackendError(format!("Failed to store root entry: {e}")))?;
+        // Combine root entry with all other entries into a single batch
+        let mut all_entries = Vec::with_capacity(1 + response.all_entries.len());
+        all_entries.push(response.root_entry);
+        all_entries.extend(response.all_entries);
 
-        // Store all other entries
-        self.store_received_entries(response.all_entries).await?;
+        // Store all entries and fire callbacks once
+        self.store_received_entries(&response.tree_id, all_entries)
+            .await?;
 
         info!(tree_id = %response.tree_id, "Bootstrap completed successfully");
         Ok(())
@@ -162,19 +161,24 @@ impl BackgroundSync {
     ) -> Result<()> {
         trace!(tree_id = %response.tree_id, "Processing incremental response");
 
-        // Store missing entries
-        self.store_received_entries(response.missing_entries)
+        // Store missing entries and fire callbacks
+        self.store_received_entries(&response.tree_id, response.missing_entries)
             .await?;
-
-        // Note: We could use their_tips for further optimization in the future
-        // For now, the next sync cycle will handle any remaining differences
 
         debug!(tree_id = %response.tree_id, "Incremental sync completed");
         Ok(())
     }
 
-    /// Store received entries from peer with proper DAG ordering
-    pub(super) async fn store_received_entries(&self, entries: Vec<Entry>) -> Result<()> {
+    /// Validate and store received entries from peer, firing remote write callbacks.
+    ///
+    /// Validates entry integrity and parent existence, then stores the batch
+    /// through `Instance::put_remote_entries` which fires callbacks once for the
+    /// entire batch.
+    pub(super) async fn store_received_entries(
+        &self,
+        tree_id: &crate::entry::ID,
+        entries: Vec<Entry>,
+    ) -> Result<()> {
         if entries.is_empty() {
             return Ok(());
         }
@@ -188,11 +192,18 @@ impl BackgroundSync {
         // parent-existence check below (a forged entry's children wouldn't
         // connect to genuine parents). Root-level integrity is verified against
         // the declared tree_id in the bootstrap handler.
-        for entry in entries {
-            // Verify parent entries exist before storing children
+        //
+        // Parents may be either already-stored or earlier in this same batch
+        // (bootstrap ships chains of new entries together), so we accept both.
+        let in_batch: std::collections::HashSet<crate::entry::ID> =
+            entries.iter().map(|e| e.id()).collect();
+        let instance = self.instance()?;
+        for entry in &entries {
             if let Ok(parents) = entry.parents() {
                 for parent_id in &parents {
-                    let instance = self.instance()?;
+                    if in_batch.contains(parent_id) {
+                        continue;
+                    }
                     if let Err(e) = instance.backend().get(parent_id).await {
                         if e.is_not_found() {
                             return Err(SyncError::InvalidEntry(format!(
@@ -213,15 +224,16 @@ impl BackgroundSync {
                     }
                 }
             }
-
-            // Store the entry
-            let instance = self.instance()?;
-            instance
-                .backend()
-                .put_verified(entry)
-                .await
-                .map_err(|e| SyncError::BackendError(format!("Failed to store entry: {e}")))?;
         }
+
+        // Bootstrap/incremental sync paths historically marked these entries
+        // Verified after the parent-existence check above. That hasn't changed
+        // here, but the verification gap (no signature check) is tracked via
+        // the TODO in `Sync::store_received_entries`.
+        instance
+            .put_remote_entries(tree_id, VerificationStatus::Verified, entries)
+            .await
+            .map_err(|e| SyncError::BackendError(format!("Failed to store entries: {e}")))?;
 
         Ok(())
     }

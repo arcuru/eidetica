@@ -15,8 +15,8 @@ use super::{
     user_sync_manager::UserSyncManager,
 };
 use crate::{
-    Database, Entry, Instance, Result, auth::Permission, auth::crypto::PublicKey, entry::ID,
-    store::DocStore,
+    Database, Entry, Result, auth::Permission, auth::crypto::PublicKey,
+    backend::VerificationStatus, entry::ID, store::DocStore,
 };
 
 use super::utils::collect_ancestors_to_send;
@@ -135,15 +135,13 @@ impl Sync {
             .into());
         }
 
-        // Store the root entry
-        let backend = self.backend()?;
-        backend
-            .put_verified(response.root_entry.clone())
-            .await
-            .map_err(|e| SyncError::BackendError(format!("Failed to store root entry: {e}")))?;
+        // Combine root entry with all other entries into a single batch
+        let mut all_entries = Vec::with_capacity(1 + response.all_entries.len());
+        all_entries.push(response.root_entry);
+        all_entries.extend(response.all_entries);
 
-        // Store all other entries using existing method
-        self.store_received_entries(&response.tree_id, response.all_entries)
+        // Store all entries and fire callbacks once
+        self.store_received_entries(&response.tree_id, all_entries)
             .await?;
 
         tracing::info!(tree_id = %response.tree_id, "Bootstrap completed successfully");
@@ -256,10 +254,10 @@ impl Sync {
         }
     }
 
-    /// Validate and store received entries from a peer.
+    /// Validate and store received entries from a peer, firing remote write callbacks.
     pub(super) async fn store_received_entries(
         &self,
-        _tree_id: &ID,
+        tree_id: &ID,
         entries: Vec<Entry>,
     ) -> Result<()> {
         // These entries arrive without per-entry declared IDs — they were batched
@@ -271,13 +269,15 @@ impl Sync {
         //
         // TODO: Add signature verification and parent-existence / DAG-connectivity
         // checks before marking entries as verified.
-        for entry in entries {
-            let backend = self.backend()?;
-            backend
-                .put_verified(entry)
-                .await
-                .map_err(|e| SyncError::BackendError(format!("Failed to store entry: {e}")))?;
-        }
+
+        // Store entries and fire callbacks via Instance::put_remote_entries.
+        // Marked Verified to match prior behavior; the TODO above tracks the
+        // signature-verification gap.
+        let instance = self.instance()?;
+        instance
+            .put_remote_entries(tree_id, VerificationStatus::Verified, entries)
+            .await
+            .map_err(|e| SyncError::BackendError(format!("Failed to store entries: {e}")))?;
 
         Ok(())
     }
@@ -388,17 +388,15 @@ impl Sync {
     /// This is the core method that implements automatic sync-on-commit behavior.
     ///
     /// # Arguments
-    /// * `entry` - The newly committed entry
-    /// * `database` - The database where the entry was committed
-    /// * `_instance` - The instance (unused but required by callback signature)
+    /// * `event` - The write event containing the newly committed entries
+    /// * `database` - The database where the entries were committed
     ///
     /// # Returns
     /// Ok(()) on success, or an error if settings lookup fails
     pub(crate) async fn on_local_write(
         &self,
-        entry: &Entry,
+        event: &crate::instance::WriteEvent,
         database: &Database,
-        _instance: &Instance,
     ) -> Result<()> {
         // Early return if background sync not running
         if self.background_tx.get().is_none() {
@@ -438,19 +436,21 @@ impl Sync {
             return Ok(());
         }
 
-        // Queue entry for sync with each peer
-        let entry_id = entry.id();
+        // Queue each entry for sync with each peer
         let tree_id = database.root_id();
 
-        debug!(
-            database_id = %tree_id,
-            entry_id = %entry_id,
-            peer_count = peers.len(),
-            "Queueing entry for automatic sync"
-        );
+        for entry in event.entries() {
+            let entry_id = entry.id();
+            debug!(
+                database_id = %tree_id,
+                entry_id = %entry_id,
+                peer_count = peers.len(),
+                "Queueing entry for automatic sync"
+            );
 
-        for peer_id in peers {
-            self.queue_entry_for_sync(&peer_id, &entry_id, tree_id)?;
+            for peer_id in &peers {
+                self.queue_entry_for_sync(peer_id, &entry_id, tree_id)?;
+            }
         }
 
         Ok(())
@@ -695,14 +695,15 @@ impl Sync {
             SyncResponse::Bootstrap(bootstrap_response) => {
                 info!(peer = %peer_pubkey, tree = %tree_id, entry_count = bootstrap_response.all_entries.len() + 1, "Received bootstrap response");
 
-                // Store the root entry
-                let backend = self.backend()?;
-                backend.put_verified(bootstrap_response.root_entry).await?;
+                // Store root + all entries as a single batch with callback dispatch
+                let mut all_entries = Vec::with_capacity(1 + bootstrap_response.all_entries.len());
+                all_entries.push(bootstrap_response.root_entry);
+                all_entries.extend(bootstrap_response.all_entries);
 
-                // Store all other entries
-                for entry in bootstrap_response.all_entries {
-                    backend.put_unverified(entry).await?;
-                }
+                let instance = self.instance()?;
+                instance
+                    .put_remote_entries(tree_id, VerificationStatus::Verified, all_entries)
+                    .await?;
 
                 info!(peer = %peer_pubkey, tree = %tree_id, "Bootstrap sync completed successfully");
             }
