@@ -174,9 +174,13 @@ pub enum SyncError {
 }
 
 impl SyncError {
-    /// Check if this is a configuration error (no transport enabled).
+    /// Check if this is a configuration error: the sync stack isn't ready
+    /// (sync not attached or no transport registered).
     pub fn is_configuration_error(&self) -> bool {
-        matches!(self, SyncError::NoTransportEnabled)
+        matches!(
+            self,
+            SyncError::NoTransportEnabled | SyncError::SyncNotEnabled
+        )
     }
 
     /// Check if this is a server lifecycle error.

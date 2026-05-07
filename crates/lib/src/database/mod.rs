@@ -23,7 +23,7 @@ use crate::{
     constants::{ROOT, SETTINGS},
     crdt::Doc,
     entry::{Entry, ID},
-    instance::{WriteSource, backend::Backend, errors::InstanceError},
+    instance::{WriteCallback, WriteEvent, backend::Backend, errors::InstanceError},
     store::{SettingsStore, Store},
 };
 
@@ -565,74 +565,39 @@ impl Database {
         self.key.as_ref().map(|k| &k.identity)
     }
 
-    /// Register an Instance-wide callback to be invoked when entries are written locally to this database.
+    /// Register a callback to be invoked when entries are written to this database.
     ///
-    /// Local writes are those originating from transaction commits in the current Instance.
-    /// The callback receives the entry, database, and instance as parameters, providing
-    /// full context for any coordination or side effects needed.
+    /// The callback fires for **both** local writes (transaction commits) and remote
+    /// writes (sync). Branch on [`WriteEvent::source`](crate::WriteEvent::source) inside
+    /// the closure if you only care about one.
     ///
-    /// **Important:** This callback is registered at the Instance level and will fire for all local
-    /// writes to the database tree (identified by root ID), regardless of which Database handle
-    /// performed the write. Multiple Database handles pointing to the same root ID share the same
-    /// set of callbacks.
+    /// Returns a [`WriteCallback`] handle. **Drop it to unregister.** Call
+    /// [`WriteCallback::detach`] to leave the callback registered for the life
+    /// of the [`Instance`] without holding the handle.
     ///
-    /// # Arguments
-    /// * `callback` - Function to invoke on local writes to this database tree
+    /// **Important:** Callbacks are registered at the Instance level and fire for all
+    /// writes to the database tree (identified by root ID), regardless of which
+    /// `Database` handle performed the write or registered the callback.
     ///
-    /// # Returns
-    /// A Result indicating success or failure
+    /// # Callback contract
     ///
-    /// # Example
-    /// ```rust,no_run
-    /// # use eidetica::*;
-    /// # use eidetica::crdt::Doc;
-    /// # use eidetica::backend::database::InMemory;
-    /// # use eidetica::auth::crypto::PrivateKey;
-    /// # #[tokio::main]
-    /// # async fn main() -> Result<()> {
-    /// let instance = Instance::open(Box::new(InMemory::new())).await?;
-    /// # let settings = eidetica::crdt::Doc::new();
-    /// # let signing_key = PrivateKey::generate();
-    /// # let database = Database::create(&instance, signing_key, Doc::new()).await?;
-    ///
-    /// database.on_local_write(|entry, db, _instance| {
-    ///     let entry_id = entry.id().clone();
-    ///     let db_id = db.root_id().clone();
-    ///     Box::pin(async move {
-    ///         println!("Entry {} written to database {}", entry_id, db_id);
-    ///         Ok(())
-    ///     })
-    /// })?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn on_local_write<F, Fut>(&self, callback: F) -> Result<()>
-    where
-        F: for<'a> Fn(&'a Entry, &'a Database, &'a Instance) -> Fut
-            + Send
-            + std::marker::Sync
-            + 'static,
-        Fut: std::future::Future<Output = Result<()>> + Send + 'static,
-    {
-        let instance = self.instance()?;
-        instance.register_write_callback(WriteSource::Local, self.root_id().clone(), callback)
-    }
-
-    /// Register an Instance-wide callback to be invoked when entries are written remotely to this database.
-    ///
-    /// Remote writes are those originating from sync or replication from other nodes.
-    /// The callback receives the entry, database, and instance as parameters.
-    ///
-    /// **Important:** This callback is registered at the Instance level and will fire for all remote
-    /// writes to the database tree (identified by root ID), regardless of which Database handle
-    /// registered the callback. Multiple Database handles pointing to the same root ID share the same
-    /// set of callbacks.
-    ///
-    /// # Arguments
-    /// * `callback` - Function to invoke on remote writes to this database tree
-    ///
-    /// # Returns
-    /// A Result indicating success or failure
+    /// - **Local writes**: fires once per transaction commit; the [`WriteEvent`]
+    ///   contains exactly one entry.
+    /// - **Remote writes**: fires once per sync batch (not per entry); the
+    ///   [`WriteEvent`] may contain multiple entries received together.
+    /// - All entries in the event are fully persisted before the callback fires.
+    /// - [`WriteEvent::previous_tips`] contains the DAG tips from before the
+    ///   write, so consumers can determine exactly what changed.
+    /// - Errors are logged but do not prevent other callbacks from running.
+    /// - The `db` argument is a **read-only** [`Database`] handle (no
+    ///   [`DatabaseKey`] configured): you can read settings, entries, and
+    ///   metadata, but cannot commit transactions through it. To write from
+    ///   inside a callback, resolve through `db.instance()?` and open the
+    ///   database with the appropriate key.
+    /// - **Reentrance**: writes are serialized per-tree via an async lock
+    ///   that is held while callbacks run. A callback must not commit a
+    ///   transaction on the same tree it was invoked for — that would
+    ///   deadlock. Spawn a task or write to a different tree instead.
     ///
     /// # Example
     /// ```rust,no_run
@@ -643,31 +608,40 @@ impl Database {
     /// # #[tokio::main]
     /// # async fn main() -> Result<()> {
     /// let instance = Instance::open(Box::new(InMemory::new())).await?;
-    /// # let settings = eidetica::crdt::Doc::new();
     /// # let signing_key = PrivateKey::generate();
     /// # let database = Database::create(&instance, signing_key, Doc::new()).await?;
     ///
-    /// database.on_remote_write(|entry, db, _instance| {
-    ///     let entry_id = entry.id().clone();
+    /// let cb = database.on_write(|event, db| {
+    ///     let count = event.entries().len();
+    ///     let source = event.source();
     ///     let db_id = db.root_id().clone();
-    ///     Box::pin(async move {
-    ///         println!("Remote entry {} synced to database {}", entry_id, db_id);
+    ///     async move {
+    ///         println!("{count} entries written to {db_id} ({source:?})");
     ///         Ok(())
-    ///     })
+    ///     }
     /// })?;
+    ///
+    /// // Drop `cb` to unregister, or:
+    /// cb.detach(); // keep registered for the life of the Instance
     /// # Ok(())
     /// # }
     /// ```
-    pub fn on_remote_write<F, Fut>(&self, callback: F) -> Result<()>
+    ///
+    /// If a callback needs the [`Instance`], call [`Database::instance`] on
+    /// the `db` argument.
+    pub fn on_write<F, Fut>(&self, callback: F) -> Result<WriteCallback>
     where
-        F: for<'a> Fn(&'a Entry, &'a Database, &'a Instance) -> Fut
-            + Send
-            + std::marker::Sync
-            + 'static,
+        F: for<'a> Fn(&'a WriteEvent, &'a Database) -> Fut + Send + std::marker::Sync + 'static,
         Fut: std::future::Future<Output = Result<()>> + Send + 'static,
     {
         let instance = self.instance()?;
-        instance.register_write_callback(WriteSource::Remote, self.root_id().clone(), callback)
+        let tree_id = self.root_id().clone();
+        let id = instance.register_write_callback(tree_id.clone(), callback);
+        Ok(WriteCallback::new_per_database(
+            instance.downgrade(),
+            tree_id,
+            id,
+        ))
     }
 
     /// Get the ID of the root entry
@@ -677,9 +651,9 @@ impl Database {
 
     /// Upgrade the weak instance reference to a strong reference.
     ///
-    /// # Returns
-    /// A `Result` containing the Instance or an error if the Instance has been dropped.
-    pub(crate) fn instance(&self) -> Result<Instance> {
+    /// `Database` holds a [`WeakInstance`](crate::WeakInstance), so this can
+    /// fail if the owning [`Instance`] has already been dropped.
+    pub fn instance(&self) -> Result<Instance> {
         self.instance
             .upgrade()
             .ok_or_else(|| Error::Instance(Box::new(InstanceError::InstanceDropped)))

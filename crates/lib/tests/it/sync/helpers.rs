@@ -158,10 +158,14 @@ pub struct HttpTransportFactory;
 #[async_trait]
 impl TransportFactory for HttpTransportFactory {
     async fn create_sync(&self, instance: Instance) -> Result<Sync> {
-        let sync = Sync::new(instance).await?;
+        // Go through instance.enable_sync() so the global write callback that
+        // routes local commits into Sync::on_local_write is registered. Then
+        // attach the test transport.
+        instance.enable_sync().await?;
+        let sync = instance.sync().expect("sync attached after enable_sync");
         sync.register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
             .await?;
-        Ok(sync)
+        Ok((*sync).clone())
     }
 
     fn create_address(&self, server_addr: &str) -> Address {
@@ -179,13 +183,14 @@ pub struct IrohTransportFactory;
 #[async_trait]
 impl TransportFactory for IrohTransportFactory {
     async fn create_sync(&self, instance: Instance) -> Result<Sync> {
-        let sync = Sync::new(instance).await?;
+        instance.enable_sync().await?;
+        let sync = instance.sync().expect("sync attached after enable_sync");
         sync.register_transport(
             "iroh",
             IrohTransport::builder().relay_mode(RelayMode::Disabled),
         )
         .await?;
-        Ok(sync)
+        Ok((*sync).clone())
     }
 
     fn create_address(&self, server_addr: &str) -> Address {

@@ -4,6 +4,8 @@
 //! sync requests and generate responses. These handlers can be
 //! used by any transport implementation through the SyncHandler trait.
 
+use std::collections::BTreeMap;
+
 use async_trait::async_trait;
 use tracing::{Instrument, debug, error, info, info_span, trace, warn};
 
@@ -18,11 +20,12 @@ use super::{
     user_sync_manager::UserSyncManager,
 };
 use crate::{
-    Database, Error, Instance, Result, WeakInstance,
+    Database, Entry, Error, Instance, Result, WeakInstance,
     auth::{
         KeyStatus, Permission,
         crypto::{PublicKey, create_challenge_response, generate_challenge},
     },
+    backend::VerificationStatus,
     entry::ID,
     store::SettingsStore,
     sync::error::SyncError,
@@ -151,23 +154,46 @@ impl SyncHandler for SyncHandlerImpl {
                 let count = entries.len();
                 info!(count = count, "Received entries for synchronization");
 
-                // Get instance once before loop
                 let instance = match self.instance() {
                     Ok(i) => i,
                     Err(e) => return SyncResponse::Error(format!("Instance dropped: {e}")),
                 };
 
-                // Store entries in the backend as unverified (from sync)
-                let mut stored_count = 0usize;
+                // Group entries by tree_id so we can fire callbacks per-database.
+                // BTreeMap so iteration order is deterministic (sorted by id);
+                // sender order within a tree is preserved by per-tree push order.
+                //
+                // Root entries declare an empty `tree.root` and act as their
+                // own tree_id. Non-root entries always carry a tree_id;
+                // well-formed peers should never send a non-root entry with
+                // `root() == None`. If they do, the entry ends up filed under
+                // its own id and parent-existence checks downstream reject it.
+                let mut by_tree: BTreeMap<ID, Vec<Entry>> = BTreeMap::new();
                 for entry in entries {
-                    match instance.backend().put_unverified(entry.clone()).await {
-                        Ok(_) => {
-                            stored_count += 1;
-                            trace!(entry_id = %entry.id(), "Stored entry successfully");
+                    let tree_id = entry.root().unwrap_or_else(|| entry.id());
+                    by_tree.entry(tree_id).or_default().push(entry.clone());
+                }
+
+                let mut stored_count = 0usize;
+                for (tree_id, tree_entries) in by_tree {
+                    let batch_size = tree_entries.len();
+                    // Entries arrive over the wire without per-entry signature
+                    // verification. Store as Failed (the project's current
+                    // stand-in for "Unverified"; see the TODO on
+                    // `VerificationStatus`) so a future re-verification pass
+                    // can promote them. Matches the prior `put_unverified`
+                    // behavior of this handler before it was unified through
+                    // `put_remote_entries`.
+                    match instance
+                        .put_remote_entries(&tree_id, VerificationStatus::Failed, tree_entries)
+                        .await
+                    {
+                        Ok(n) => {
+                            stored_count += n;
+                            debug!(tree_id = %tree_id, requested = batch_size, stored = n, "Stored entries");
                         }
                         Err(e) => {
-                            error!(entry_id = %entry.id(), error = %e, "Failed to store entry");
-                            // Continue processing other entries rather than failing completely
+                            error!(tree_id = %tree_id, error = %e, "Failed to store entries batch");
                         }
                     }
                 }

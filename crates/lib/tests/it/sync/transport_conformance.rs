@@ -10,8 +10,8 @@ use eidetica::{
     auth::crypto::PublicKey,
     crdt::Doc,
     store::DocStore,
-    sync::{PeerId, Sync},
-    user::User,
+    sync::Sync,
+    user::{User, types::SyncSettings},
 };
 use tokio::time::sleep;
 
@@ -74,7 +74,18 @@ where
     Ok((sync1, sync2, peer1_pubkey, peer2_pubkey))
 }
 
-/// Set up trees with bidirectional sync hooks
+/// Set up trees with bidirectional sync wiring.
+///
+/// Relies on the standard sync-on-commit machinery:
+/// - `instance.enable_sync()` (done by the transport factory) registers the
+///   global write callback that routes local commits into `Sync::on_local_write`.
+/// - `user.track_database(..., SyncSettings::on_commit())` flips the user's
+///   preferences (overwriting the `disabled()` defaults set by
+///   `create_database`) and propagates them to combined settings.
+/// - `sync.add_tree_sync(peer, tree)` associates each peer with the tree.
+///
+/// The Instance's global callback then queues entries on every local commit
+/// automatically — no manual `on_write` hooks needed.
 #[allow(clippy::too_many_arguments)]
 async fn setup_sync_hooks(
     user1: &mut User,
@@ -89,38 +100,18 @@ async fn setup_sync_hooks(
     let mut settings1 = Doc::new();
     settings1.set("name", "test_tree_1");
     let tree1 = user1.create_database(settings1, key_id1).await?;
+    user1
+        .track_database(tree1.root_id().clone(), key_id1, SyncSettings::on_commit())
+        .await?;
+    sync1.add_tree_sync(peer2_pubkey, tree1.root_id()).await?;
 
     let mut settings2 = Doc::new();
     settings2.set("name", "test_tree_2");
     let tree2 = user2.create_database(settings2, key_id2).await?;
-
-    // Set up sync callbacks using WriteCallback directly
-    // Clone sync instances and peer pubkeys for use in callbacks
-    let sync1_clone = sync1.clone();
-    let peer2_pk = peer2_pubkey.clone();
-    tree1.on_local_write(move |entry, db, _instance| {
-        let sync = sync1_clone.clone();
-        let peer = PeerId::new(peer2_pk.clone());
-        let entry_id = entry.id();
-        let tree_id = db.root_id().clone();
-        async move {
-            sync.queue_entry_for_sync(&peer, &entry_id, &tree_id)?;
-            Ok(())
-        }
-    })?;
-
-    let sync2_clone = sync2.clone();
-    let peer1_pk = peer1_pubkey.clone();
-    tree2.on_local_write(move |entry, db, _instance| {
-        let sync = sync2_clone.clone();
-        let peer = PeerId::new(peer1_pk.clone());
-        let entry_id = entry.id();
-        let tree_id = db.root_id().clone();
-        async move {
-            sync.queue_entry_for_sync(&peer, &entry_id, &tree_id)?;
-            Ok(())
-        }
-    })?;
+    user2
+        .track_database(tree2.root_id().clone(), key_id2, SyncSettings::on_commit())
+        .await?;
+    sync2.add_tree_sync(peer1_pubkey, tree2.root_id()).await?;
 
     Ok((tree1, tree2))
 }
