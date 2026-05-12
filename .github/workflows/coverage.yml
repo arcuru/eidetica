@@ -5,10 +5,14 @@ on:
     - cron: "0 6 * * 1" # Weekly on Monday at 06:00 UTC
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   coverage:
     name: Coverage
     runs-on: ubicloud-standard-8
+    if: github.repository_owner == 'arcuru'
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
