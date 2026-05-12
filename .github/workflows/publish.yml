@@ -33,6 +33,9 @@ on:
         required: true
         type: string
 
+permissions:
+  contents: read
+
 env:
   REGISTRY_GHCR: ghcr.io
   REGISTRY_DOCKER: docker.io
@@ -94,20 +97,26 @@ jobs:
       # prevent cache poisoning from affecting published artifacts. Results are
       # pushed to the cache.
       - name: Build and push release artifacts
+        env:
+          PUSH_ARGS: ${{ steps.nix.outputs.push-args }}
+          SYSTEM: ${{ matrix.system }}
         run: |
+          # shellcheck disable=SC2086 # PUSH_ARGS expands into multiple flags
           nix-fast-build --skip-cached --no-nom --no-link \
-            ${{ steps.nix.outputs.push-args }} \
+            $PUSH_ARGS \
             --option substituters 'https://cache.nixos.org' \
-            -f '.#legacyPackages.${{ matrix.system }}.eidetica.release'
+            -f ".#legacyPackages.${SYSTEM}.eidetica.release"
 
       # Warm the cache with all remaining flake check outputs so subsequent CI
       # runs are faster. Only needed on the dev path (every push to main) —
       # release runs only build the release artifacts.
       - name: Warm CI cache
         if: github.event_name == 'workflow_run'
+        env:
+          PUSH_ARGS: ${{ steps.nix.outputs.push-args }}
         run: |
-          nix-fast-build --skip-cached --no-nom --no-link \
-            ${{ steps.nix.outputs.push-args }}
+          # shellcheck disable=SC2086 # PUSH_ARGS expands into multiple flags
+          nix-fast-build --skip-cached --no-nom --no-link $PUSH_ARGS
 
       - name: Install Bencher CLI
         if: github.event_name == 'workflow_run'
@@ -115,13 +124,16 @@ jobs:
 
       - name: Track artifact sizes
         if: github.event_name == 'workflow_run'
+        env:
+          BENCHER_TOKEN: ${{ secrets.BENCHER_API_TOKEN }}
+          SYSTEM: ${{ matrix.system }}
         run: |
           BINARY_PATH=$(nix build .#eidetica.bin --no-link --print-out-paths)/bin/eidetica
           bencher run \
             --project eidetica \
-            --token '${{ secrets.BENCHER_API_TOKEN }}' \
+            --token "$BENCHER_TOKEN" \
             --branch main \
-            --testbed '${{ matrix.system }}' \
+            --testbed "$SYSTEM" \
             --file-size "$BINARY_PATH" \
             --adapter json \
             "echo '{}'"
@@ -129,9 +141,9 @@ jobs:
           IMAGE_PATH=$(nix build .#eidetica.image --no-link --print-out-paths)
           bencher run \
             --project eidetica \
-            --token '${{ secrets.BENCHER_API_TOKEN }}' \
+            --token "$BENCHER_TOKEN" \
             --branch main \
-            --testbed '${{ matrix.system }}' \
+            --testbed "$SYSTEM" \
             --file-size "$IMAGE_PATH" \
             --adapter json \
             "echo '{}'"
@@ -151,6 +163,8 @@ jobs:
 
       - name: Load and push Nix base image
         id: nix-image
+        env:
+          PLATFORM: ${{ matrix.platform }}
         run: |
           IMAGE_PATH=$(nix build .#eidetica.image --no-link --print-out-paths)
           # Load image and capture the name
@@ -160,10 +174,11 @@ jobs:
           echo "Loaded Nix image: ${NIX_IMAGE}"
 
           # Push base image to GHCR (buildx needs it accessible from registry)
-          BASE_TAG="nix-base-${{ matrix.platform }}"
-          docker tag "${NIX_IMAGE}" "${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${BASE_TAG}"
-          docker push "${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${BASE_TAG}"
-          echo "base_image=${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${BASE_TAG}" >> "$GITHUB_OUTPUT"
+          BASE_TAG="nix-base-${PLATFORM}"
+          BASE_IMAGE="${REGISTRY_GHCR}/${IMAGE_NAME}:${BASE_TAG}"
+          docker tag "${NIX_IMAGE}" "${BASE_IMAGE}"
+          docker push "${BASE_IMAGE}"
+          echo "base_image=${BASE_IMAGE}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
@@ -193,22 +208,26 @@ jobs:
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
 
       - name: Create attestation wrapper Dockerfile
+        env:
+          BASE_IMAGE: ${{ steps.nix-image.outputs.base_image }}
         run: |
           # Create a minimal Dockerfile that uses the pushed Nix base image
           # This allows buildx to add SBOM and provenance attestations
-          echo "FROM ${{ steps.nix-image.outputs.base_image }}" > Dockerfile.attestation
+          echo "FROM ${BASE_IMAGE}" > Dockerfile.attestation
 
       - name: Build and push with attestations
+        env:
+          TAGS: ${{ steps.tags.outputs.tags }}
         run: |
-          for TAG in ${{ steps.tags.outputs.tags }}; do
+          for TAG in $TAGS; do
             # Build with buildx to add SBOM and provenance attestations
             # Push to both registries with attestations embedded
             docker buildx build \
               --file Dockerfile.attestation \
               --sbom=true \
               --provenance=mode=max \
-              --tag "${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${TAG}" \
-              --tag "${{ env.IMAGE_NAME }}:${TAG}" \
+              --tag "${REGISTRY_GHCR}/${IMAGE_NAME}:${TAG}" \
+              --tag "${IMAGE_NAME}:${TAG}" \
               --push \
               .
           done
@@ -278,31 +297,34 @@ jobs:
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
 
       - name: Create and push manifests
+        env:
+          TAGS: ${{ steps.tags.outputs.tags }}
         run: |
-          for TAG in ${{ steps.tags.outputs.tags }}; do
+          for TAG in $TAGS; do
             # Create multi-arch manifest for GHCR using imagetools (handles manifest lists with attestations)
             docker buildx imagetools create \
-              --tag "${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${TAG}" \
-              "${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${TAG}-amd64" \
-              "${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${TAG}-arm64"
+              --tag "${REGISTRY_GHCR}/${IMAGE_NAME}:${TAG}" \
+              "${REGISTRY_GHCR}/${IMAGE_NAME}:${TAG}-amd64" \
+              "${REGISTRY_GHCR}/${IMAGE_NAME}:${TAG}-arm64"
 
             # Create multi-arch manifest for Docker Hub
             docker buildx imagetools create \
-              --tag "${{ env.IMAGE_NAME }}:${TAG}" \
-              "${{ env.IMAGE_NAME }}:${TAG}-amd64" \
-              "${{ env.IMAGE_NAME }}:${TAG}-arm64"
+              --tag "${IMAGE_NAME}:${TAG}" \
+              "${IMAGE_NAME}:${TAG}-amd64" \
+              "${IMAGE_NAME}:${TAG}-arm64"
           done
 
       - name: Cleanup intermediate images
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO_OWNER: ${{ github.repository_owner }}
         run: |
           # Delete the nix-base-* intermediate images from GHCR
           for PLATFORM in amd64 arm64; do
             echo "Deleting nix-base-${PLATFORM}..."
-            gh api --method DELETE "/users/${{ github.repository_owner }}/packages/container/eidetica/versions/$(
-              gh api "/users/${{ github.repository_owner }}/packages/container/eidetica/versions" \
+            gh api --method DELETE "/users/${REPO_OWNER}/packages/container/eidetica/versions/$(
+              gh api "/users/${REPO_OWNER}/packages/container/eidetica/versions" \
                 --jq ".[] | select(.metadata.container.tags[] == \"nix-base-${PLATFORM}\") | .id"
             )" 2>/dev/null || echo "Could not delete nix-base-${PLATFORM} (may not exist or lack permissions)"
           done
