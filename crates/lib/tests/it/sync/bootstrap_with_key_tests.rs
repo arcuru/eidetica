@@ -452,13 +452,10 @@ async fn test_full_e2e_bootstrap_with_database_instances() {
     // Verify client successfully bootstrapped and can load the database
     // Use global permission (server has global permission configured)
     let (reader_key, _) = generate_keypair();
-    let client_database = Database::open(
-        client_instance.clone(),
-        &tree_id,
-        DatabaseKey::global(reader_key),
-    )
-    .await
-    .expect("Client should be able to load the database after bootstrap");
+    let client_database = Database::open(&client_instance, &tree_id)
+        .await
+        .expect("Client should be able to load the database after bootstrap")
+        .with_key(DatabaseKey::global(reader_key));
 
     println!("✅ Client: Successfully loaded database after bootstrap");
 

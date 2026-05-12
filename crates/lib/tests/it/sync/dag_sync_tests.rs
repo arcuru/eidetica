@@ -674,13 +674,10 @@ async fn test_sync_protocol_implementation() {
     // Reload the tree to get the latest state
     // Use global permission (public database with Permission::Read)
     let (reader_key, _) = generate_keypair();
-    let tree2 = Database::open(
-        base_db2.clone(),
-        &tree_root_id,
-        DatabaseKey::global(reader_key),
-    )
-    .await
-    .unwrap();
+    let tree2 = Database::open(&base_db2, &tree_root_id)
+        .await
+        .unwrap()
+        .with_key(DatabaseKey::global(reader_key));
 
     // Verify ALL synced data is correct
     {

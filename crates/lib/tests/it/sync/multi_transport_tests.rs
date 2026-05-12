@@ -198,12 +198,11 @@ async fn test_http_and_iroh_sync_interoperability() -> Result<()> {
     // HTTP client opens the database using the global permission
     // The global permission allows any key to write, so we use the client's device key
     // with a global SigKey
-    let http_client_db = Database::open(
-        http_client_instance.clone(),
-        &tree_id,
-        DatabaseKey::global(http_client_instance.signing_key()?.clone()),
-    )
-    .await?;
+    let http_client_db = Database::open(&http_client_instance, &tree_id)
+        .await?
+        .with_key(DatabaseKey::global(
+            http_client_instance.signing_key()?.clone(),
+        ));
 
     let entry_id = {
         let tx = http_client_db.new_transaction().await?;

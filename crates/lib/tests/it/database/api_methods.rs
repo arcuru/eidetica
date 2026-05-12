@@ -337,18 +337,21 @@ async fn test_verify_entry_signature_unauthorized_key() {
 
     assert_entry_authentication(&tree, &authorized_entry_id, &authorized_key_id.to_string()).await;
 
-    // Test with unauthorized key (should fail at open because key is not in tree's auth settings)
+    // Test with unauthorized key (open succeeds but permission check should fail)
     let unauthorized_signing_key = user
         .get_signing_key(&unauthorized_key_id)
         .expect("Failed to get unauthorized signing key");
 
-    // Database::open should fail because the unauthorized key is not in the tree's auth settings
-    // and no global permission exists
-    let open_result =
-        Database::open(instance.clone(), tree.root_id(), unauthorized_signing_key).await;
+    // Database::open succeeds (no key validation at open time)
+    // but current_permission should fail because the key is not in the tree's auth settings
+    let unauthorized_db = Database::open(&instance, tree.root_id())
+        .await
+        .expect("open should succeed without key validation")
+        .with_key(unauthorized_signing_key);
 
-    assert!(open_result.is_err());
-    let error_msg = open_result.unwrap_err().to_string();
+    let perm_result = unauthorized_db.current_permission().await;
+    assert!(perm_result.is_err());
+    let error_msg = perm_result.unwrap_err().to_string();
     assert!(
         error_msg.contains("not found") || error_msg.contains("no global permission"),
         "Expected error about key not found, got: {error_msg}"

@@ -237,62 +237,18 @@ impl Database {
         })
     }
 
-    /// Opens a database for read-only access, bypassing authentication validation.
+    /// Opens an existing database by its root ID.
     ///
-    /// # Internal Use Only
-    ///
-    /// This method bypasses authentication validation and is intended for internal
-    /// operations that require reading database state (loading settings, checking
-    /// permissions, resolving delegations, etc.).
-    ///
-    /// These operations should only be performed by the server/instance administrator,
-    /// but we don't verify that yet. Future versions may add admin permission checks.
-    ///
-    /// # Behavior
-    ///
-    /// - No authentication validation is performed
-    /// - The resulting database has no key source, so commits will fail
-    /// - Used internally for system operations that need read access
-    ///
-    /// # Arguments
-    /// * `id` - The `ID` of the root entry.
-    /// * `instance` - Instance handle for storage and coordination
-    ///
-    /// # Returns
-    /// A `Result` containing the new `Database` instance or an error.
-    pub(crate) fn open_unauthenticated(id: ID, instance: &Instance) -> Result<Self> {
-        Ok(Self {
-            root: id,
-            instance: instance.downgrade(),
-            key: None,
-        })
-    }
-
-    /// Opens an existing `Database` with a `DatabaseKey`.
-    ///
-    /// This constructor opens an existing database by its root ID and configures it to use
-    /// a `DatabaseKey` for all subsequent operations. This is used in the User
-    /// context where keys are managed by UserKeyManager and already decrypted in memory.
-    ///
-    /// # Key Management
-    ///
-    /// This constructor uses **user-managed keys**:
-    /// - The key is provided directly (e.g., from UserKeyManager)
-    /// - Uses `DatabaseKey` for all subsequent operations
-    /// - No backend key storage needed
-    ///
-    /// Note: To **create** a new database with user-managed keys, use `create()`.
-    /// This method is for **opening existing** databases.
-    ///
-    /// To discover which SigKey to use for a given public key, use `Database::find_sigkeys()`.
+    /// Verifies the root entry exists in the backend, then returns a handle
+    /// for read-only access. To perform authenticated writes, chain
+    /// `.with_key(key)` after opening.
     ///
     /// # Arguments
     /// * `instance` - Instance handle for storage and coordination
-    /// * `root_id` - The root entry ID of the existing database to open
-    /// * `key` - A `DatabaseKey` combining signing key and auth identity
+    /// * `root_id` - The root entry ID of the database to open
     ///
-    /// # Returns
-    /// A `Result` containing the `Database` instance configured with the `DatabaseKey`
+    /// # Errors
+    /// Returns an error if the root entry does not exist in the backend.
     ///
     /// # Example
     /// ```rust,no_run
@@ -304,28 +260,43 @@ impl Database {
     /// # let instance = Instance::open(Box::new(InMemory::new())).await?;
     /// # let (signing_key, _verifying_key) = generate_keypair();
     /// # let root_id = ID::from_bytes(b"existing_database_root_id");
-    /// // Open database with a PrivateKey that has Direct access
-    /// let database = Database::open(instance, &root_id, signing_key).await?;
+    /// // Open database for reading
+    /// let db = Database::open(&instance, &root_id).await?;
     ///
-    /// // All transactions automatically use the provided key
-    /// let tx = database.new_transaction().await?;
+    /// // Open database with a signing key for writes
+    /// let db = Database::open(&instance, &root_id).await?.with_key(signing_key);
+    /// let tx = db.new_transaction().await?;
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn open(
-        instance: Instance,
-        root_id: &ID,
-        key: impl Into<DatabaseKey>,
-    ) -> Result<Self> {
-        let key = key.into();
-        let temp_db = Self::open_unauthenticated(root_id.clone(), &instance)?;
-        temp_db.validate_key(&key).await?;
+    pub async fn open(instance: &Instance, root_id: &ID) -> Result<Self> {
+        // Verify the root entry exists. Surfaces "database doesn't exist"
+        // at open time instead of at first read/write.
+        instance.backend().get(root_id).await?;
 
         Ok(Self {
             root: root_id.clone(),
             instance: instance.downgrade(),
-            key: Some(key),
+            key: None,
         })
+    }
+
+    /// Attach a signing key to this database handle.
+    ///
+    /// The key is stored for use by future transactions. No validation is
+    /// performed; invalid keys will cause errors at commit time or when
+    /// calling [`current_permission`](Self::current_permission).
+    ///
+    /// Calling `with_key` again replaces any previously-attached key — the
+    /// most recent call wins.
+    ///
+    /// To discover which `SigKey` identity to use for a given public key,
+    /// use [`Database::find_sigkeys`].
+    pub fn with_key(self, key: impl Into<DatabaseKey>) -> Self {
+        Self {
+            key: Some(key.into()),
+            ..self
+        }
     }
 
     /// Validate a `DatabaseKey` against this database's auth settings.
@@ -334,10 +305,9 @@ impl Database {
     /// 1. The signing key derives to the public key claimed by the identity
     /// 2. The identity exists in the database's auth settings
     ///
-    /// Returns the effective permission for the validated key.
-    ///
-    /// Used by `Database::open` (on an unauthenticated temp db) to fail fast
-    /// on invalid keys, and by `current_permission` to look up permissions.
+    /// Returns the effective permission for the validated key. Callers wanting
+    /// to fail fast on an invalid key should call
+    /// [`current_permission`](Self::current_permission), which wraps this.
     async fn validate_key(&self, key: &DatabaseKey) -> Result<Permission> {
         let settings_store = self.get_settings().await?;
         let auth_settings = settings_store.auth_snapshot().await?;
@@ -480,7 +450,7 @@ impl Database {
     /// // Use the first available SigKey (highest permission)
     /// if let Some((sigkey, _permission)) = sigkeys.first() {
     ///     let key = DatabaseKey::with_identity(signing_key, sigkey.clone());
-    ///     let database = Database::open(instance, &root_id, key).await?;
+    ///     let database = Database::open(&instance, &root_id).await?.with_key(key);
     /// }
     /// # Ok(())
     /// # }
@@ -493,7 +463,7 @@ impl Database {
         use crate::auth::{permission::clamp_permission, types::DelegationStep};
 
         // Create temporary database to load settings (no key source needed for reading)
-        let temp_db = Self::open_unauthenticated(root_id.clone(), instance)?;
+        let temp_db = Self::open(instance, root_id).await?;
 
         // Load auth settings
         let settings_store = temp_db.get_settings().await?;
@@ -507,11 +477,10 @@ impl Database {
         if let Ok(delegated_trees) = auth_settings.get_all_delegated_trees() {
             for (delegated_root_id, delegated_tree_ref) in &delegated_trees {
                 // Load the delegated tree's auth settings
-                let delegated_db =
-                    match Self::open_unauthenticated(delegated_root_id.clone(), instance) {
-                        Ok(db) => db,
-                        Err(_) => continue,
-                    };
+                let delegated_db = match Self::open(instance, delegated_root_id).await {
+                    Ok(db) => db,
+                    Err(_) => continue,
+                };
                 let delegated_settings = match delegated_db.get_settings().await {
                     Ok(s) => s,
                     Err(_) => continue,
@@ -1006,7 +975,7 @@ impl Database {
     ///
     /// Returns the effective permission for the key that was configured when opening
     /// or creating this database. This uses the already-resolved identity stored in
-    /// the database's `DatabaseKey`, ensuring consistency with `Database::open`.
+    /// the database's `DatabaseKey`.
     ///
     /// # Returns
     /// The effective Permission for the configured signing key.

@@ -223,8 +223,8 @@ impl Transaction {
 
     /// Set signing key directly for user context (internal API).
     ///
-    /// This method is used when a Database is created with a user-provided key
-    /// (via `Database::open()`). The provided SigningKey is already
+    /// This method is used when a Database has a key attached
+    /// (via `Database::open().with_key()`). The provided SigningKey is already
     /// decrypted and ready to use, eliminating the need for backend key lookup.
     ///
     /// # Arguments

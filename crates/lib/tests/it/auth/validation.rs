@@ -36,13 +36,10 @@ async fn test_authentication_validation_revoked_key() {
         .expect("Failed to get revoked key")
         .clone();
 
-    let tree_with_revoked_key = Database::open(
-        instance.clone(),
-        tree.root_id(),
-        DatabaseKey::with_name(revoked_signing_key, "REVOKED_KEY"),
-    )
-    .await
-    .expect("Failed to load tree with revoked key");
+    let tree_with_revoked_key = Database::open(&instance, tree.root_id())
+        .await
+        .expect("Failed to load tree with revoked key")
+        .with_key(DatabaseKey::with_name(revoked_signing_key, "REVOKED_KEY"));
 
     let txn = tree_with_revoked_key
         .new_transaction()
@@ -81,13 +78,10 @@ async fn test_permission_checking_admin_operations() {
         .expect("Failed to get write key")
         .clone();
 
-    let tree_with_write_key = Database::open(
-        instance.clone(),
-        tree.root_id(),
-        DatabaseKey::with_name(write_signing_key, "WRITE_KEY"),
-    )
-    .await
-    .expect("Failed to load tree with write key");
+    let tree_with_write_key = Database::open(&instance, tree.root_id())
+        .await
+        .expect("Failed to load tree with write key")
+        .with_key(DatabaseKey::with_name(write_signing_key, "WRITE_KEY"));
 
     test_operation_succeeds(
         &tree_with_write_key,
@@ -102,13 +96,13 @@ async fn test_permission_checking_admin_operations() {
         .expect("Failed to get secondary admin key")
         .clone();
 
-    let tree_with_secondary_admin_key = Database::open(
-        instance.clone(),
-        tree.root_id(),
-        DatabaseKey::with_name(secondary_admin_signing_key, "SECONDARY_ADMIN_KEY"),
-    )
-    .await
-    .expect("Failed to load tree with secondary admin key");
+    let tree_with_secondary_admin_key = Database::open(&instance, tree.root_id())
+        .await
+        .expect("Failed to load tree with secondary admin key")
+        .with_key(DatabaseKey::with_name(
+            secondary_admin_signing_key,
+            "SECONDARY_ADMIN_KEY",
+        ));
 
     test_operation_succeeds(
         &tree_with_secondary_admin_key,
@@ -266,13 +260,10 @@ async fn test_entry_validation_with_mixed_key_states() {
         .expect("Failed to get active key")
         .clone();
 
-    let tree_with_active_key = Database::open(
-        instance.clone(),
-        tree.root_id(),
-        DatabaseKey::with_name(active_signing_key, "ACTIVE_KEY"),
-    )
-    .await
-    .expect("Failed to load tree with active key");
+    let tree_with_active_key = Database::open(&instance, tree.root_id())
+        .await
+        .expect("Failed to load tree with active key")
+        .with_key(DatabaseKey::with_name(active_signing_key, "ACTIVE_KEY"));
 
     assert_operation_permissions(
         &tree_with_active_key,
@@ -288,13 +279,10 @@ async fn test_entry_validation_with_mixed_key_states() {
         .expect("Failed to get revoked key")
         .clone();
 
-    let tree_with_revoked_key = Database::open(
-        instance.clone(),
-        tree.root_id(),
-        DatabaseKey::with_name(revoked_signing_key, "REVOKED_KEY"),
-    )
-    .await
-    .expect("Failed to load tree with revoked key");
+    let tree_with_revoked_key = Database::open(&instance, tree.root_id())
+        .await
+        .expect("Failed to load tree with revoked key")
+        .with_key(DatabaseKey::with_name(revoked_signing_key, "REVOKED_KEY"));
 
     assert_operation_permissions(
         &tree_with_revoked_key,

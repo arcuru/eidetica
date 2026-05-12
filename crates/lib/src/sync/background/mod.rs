@@ -209,7 +209,9 @@ impl BackgroundSync {
         // Load sync tree with the device key
         let instance = self.instance()?;
         let signing_key = instance.signing_key()?.clone();
-        Database::open(instance, &self.sync_tree_id, signing_key).await
+        Ok(Database::open(&instance, &self.sync_tree_id)
+            .await?
+            .with_key(signing_key))
     }
 
     /// Get the minimum sync interval from all tracked databases

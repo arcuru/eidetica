@@ -323,8 +323,7 @@ pub async fn login_user(
     }
 
     // 3. Temporarily open user's private database to read keys (unauthenticated read)
-    let temp_user_database =
-        Database::open_unauthenticated(user_info.user_database_id.clone(), instance)?;
+    let temp_user_database = Database::open(instance, &user_info.user_database_id).await?;
 
     // 4. Load keys from user database
     let keys_table = temp_user_database
@@ -366,12 +365,9 @@ pub async fn login_user(
         })?
         .clone();
 
-    let user_database = Database::open(
-        instance.handle(),
-        &user_info.user_database_id,
-        default_signing_key,
-    )
-    .await?;
+    let user_database = Database::open(instance, &user_info.user_database_id)
+        .await?
+        .with_key(default_signing_key);
 
     // 7. Update last_login in separate table
     // TODO: this is a log, so it will grow unbounded over time and should probably be moved to a log table

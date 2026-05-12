@@ -201,9 +201,10 @@ async fn test_multi_key_authentication() {
         .get_signing_key(&key_id2)
         .expect("Failed to get signing key")
         .clone();
-    let tree_with_key2 = Database::open(instance.clone(), tree.root_id(), signing_key2_for_load)
+    let tree_with_key2 = Database::open(&instance, tree.root_id())
         .await
-        .expect("Failed to load database with key2");
+        .expect("Failed to load database with key2")
+        .with_key(signing_key2_for_load);
 
     let txn2 = tree_with_key2
         .new_transaction()

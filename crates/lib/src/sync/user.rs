@@ -64,7 +64,7 @@ impl Sync {
 
         // Open user's preferences database (read-only)
         let instance = self.instance.upgrade().ok_or(SyncError::InstanceDropped)?;
-        let prefs_db = Database::open_unauthenticated(preferences_db_id.clone(), &instance)?;
+        let prefs_db = Database::open(&instance, preferences_db_id).await?;
         let current_tips = prefs_db.get_tips().await?;
 
         // Check if preferences have changed via tip comparison
@@ -132,7 +132,7 @@ impl Sync {
             for uuid in &users {
                 // Read preferences from each user's database
                 if let Some((user_prefs_db_id, _)) = user_mgr.get_tracked_user_state(uuid).await? {
-                    let user_db = Database::open_unauthenticated(user_prefs_db_id, &instance)?;
+                    let user_db = Database::open(&instance, &user_prefs_db_id).await?;
                     let user_table = user_db
                         .get_store_viewer::<Table<TrackedDatabase>>("databases")
                         .await?;

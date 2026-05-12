@@ -1032,13 +1032,13 @@ async fn test_global_permission_enables_transactions() {
     let (sigkey, _permission) = &sigkeys[0];
     assert!(sigkey.is_global(), "Should resolve to global permission");
 
-    let client_db = Database::open(
-        client_instance.clone(),
-        &tree_id,
-        DatabaseKey::with_identity(client_signing_key, sigkey.clone()),
-    )
-    .await
-    .expect("Client should be able to load database");
+    let client_db = Database::open(&client_instance, &tree_id)
+        .await
+        .expect("Client should be able to load database")
+        .with_key(DatabaseKey::with_identity(
+            client_signing_key,
+            sigkey.clone(),
+        ));
 
     // Create a transaction and commit data
     let transaction = client_db.new_transaction().await.unwrap();
