@@ -1,9 +1,3 @@
-# Required status check that blocks merging dependency update PRs during
-# their hold period. Passes immediately for non-deps/ branches. For deps/
-# branches, queries the GitHub API for current labels and fails if the PR
-# has the "on-hold" label. Uses live label queries instead of event payload
-# data so that manual re-runs always see the current label state.
-#
 name: "Deps: Hold Gate"
 
 on:
@@ -14,38 +8,8 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: deps-hold-gate-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
-
 jobs:
-  dependency-hold:
-    name: Dependency Hold
-    runs-on: ubicloud-standard-2
-    steps:
-      - name: Check hold status
-        env:
-          HEAD_REF: ${{ github.head_ref }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # Pass immediately for non-dependency branches
-          if [[ ! "$HEAD_REF" =~ ^deps/ ]]; then
-            echo "Not a dependency branch, skipping hold check."
-            exit 0
-          fi
-
-          echo "Dependency branch detected: $HEAD_REF"
-
-          # Query current labels from the API (not the event payload, which
-          # is stale on manual re-runs)
-          PR_LABELS=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '[.labels[].name]')
-          echo "Current labels: $PR_LABELS"
-
-          # Check for on-hold label
-          if echo "$PR_LABELS" | jq -e 'index("on-hold")' > /dev/null 2>&1; then
-            echo "::error::This dependency update is on hold. The on-hold label will be automatically removed after the hold period expires."
-            exit 1
-          fi
-
-          echo "No hold in effect, dependency update may proceed."
+  hold:
+    uses: arcuru/actions/.github/workflows/dependency-hold.yml@a7c938293186c1ba82fc32921d10c71734d1d21c # v0.1.0
+    with:
+      runs-on: ubicloud-standard-2
