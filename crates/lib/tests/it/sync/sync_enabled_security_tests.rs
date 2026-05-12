@@ -187,13 +187,10 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
     // Load the database on client to get tips for incremental sync
     // Use global permission (configured above with Permission::Read)
     let (reader_key, _) = generate_keypair();
-    let client_db = Database::open(
-        client_instance.clone(),
-        &tree_id,
-        DatabaseKey::global(reader_key),
-    )
-    .await
-    .unwrap();
+    let client_db = Database::open(&client_instance, &tree_id)
+        .await
+        .unwrap()
+        .with_key(DatabaseKey::global(reader_key));
     let client_tips = client_instance
         .backend()
         .get_tips(client_db.root_id())
@@ -333,13 +330,10 @@ async fn test_sync_succeeds_when_enabled() {
     // Verify data was synced
     // Use global permission (configured with Permission::Read)
     let (reader_key, _) = generate_keypair();
-    let client_db = Database::open(
-        client_instance.clone(),
-        &tree_id,
-        DatabaseKey::global(reader_key),
-    )
-    .await
-    .unwrap();
+    let client_db = Database::open(&client_instance, &tree_id)
+        .await
+        .unwrap()
+        .with_key(DatabaseKey::global(reader_key));
     let doc_store = client_db
         .get_store_viewer::<DocStore>("data")
         .await

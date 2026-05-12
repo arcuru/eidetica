@@ -572,9 +572,10 @@ async fn test_index_survives_database_reload() {
 
     // Reload database from same instance to test persistence
     // Reopen with the same key that was used to create
-    let database = Database::open(instance.clone(), &root_id, private_key)
+    let database = Database::open(&instance, &root_id)
         .await
-        .unwrap();
+        .unwrap()
+        .with_key(private_key);
 
     // Verify index is intact using viewer (read-only)
     let viewer = database

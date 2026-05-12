@@ -605,12 +605,9 @@ impl Instance {
     ///
     /// This constructs a Database instance on-the-fly to avoid circular references.
     pub(crate) async fn users_db(&self) -> Result<Database> {
-        Database::open(
-            self.clone(),
-            &self.inner.metadata.users_db,
-            self.signing_key()?.clone(),
-        )
-        .await
+        Ok(Database::open(self, &self.inner.metadata.users_db)
+            .await?
+            .with_key(self.signing_key()?.clone()))
     }
 
     // === User Management ===
@@ -681,7 +678,7 @@ impl Instance {
     /// These operations should only be performed by the server/instance administrator,
     /// but we don't verify that yet. Future versions may add admin permission checks.
     ///
-    /// Similar to `Database::open_unauthenticated`, this is a controlled escape hatch
+    /// Similar to `Database::open` (without a key), this is a controlled escape hatch
     /// for internal library operations. Use with care - prefer User API for normal operations.
     ///
     /// Returns an error if this is a remote Instance that does not have access to the
@@ -1039,7 +1036,7 @@ impl Instance {
         }
 
         // Create a Database handle for the callbacks
-        let database = match Database::open_unauthenticated(tree_id.clone(), self) {
+        let database = match Database::open(self, tree_id).await {
             Ok(db) => db,
             Err(e) => {
                 tracing::error!(tree_id = %tree_id, "Failed to open database for callbacks: {}", e);

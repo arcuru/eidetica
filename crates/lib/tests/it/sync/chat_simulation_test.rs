@@ -158,13 +158,13 @@ async fn test_chat_app_authenticated_bootstrap() {
         .expect("Should have signing key")
         .clone();
 
-    let client_database = Database::open(
-        client_instance.clone(),
-        &tree_id,
-        DatabaseKey::with_identity(client_signing_key, sigkey.clone()),
-    )
-    .await
-    .expect("Client should load database");
+    let client_database = Database::open(&client_instance, &tree_id)
+        .await
+        .expect("Client should load database")
+        .with_key(DatabaseKey::with_identity(
+            client_signing_key,
+            sigkey.clone(),
+        ));
 
     // Verify client can read the initial message
     {
@@ -273,13 +273,13 @@ async fn test_global_key_bootstrap() {
         .expect("Should have signing key")
         .clone();
 
-    let client_database = Database::open(
-        client_instance.clone(),
-        &tree_id,
-        DatabaseKey::with_identity(client_signing_key, sigkey.clone()),
-    )
-    .await
-    .expect("Client should load database");
+    let client_database = Database::open(&client_instance, &tree_id)
+        .await
+        .expect("Client should load database")
+        .with_key(DatabaseKey::with_identity(
+            client_signing_key,
+            sigkey.clone(),
+        ));
 
     // Client writes using global permission
     {
@@ -395,13 +395,10 @@ async fn test_multiple_databases_sync() {
 
         // Open and verify room name
         let (reader_key, _) = generate_keypair();
-        let database = Database::open(
-            client_instance.clone(),
-            room_id,
-            DatabaseKey::global(reader_key),
-        )
-        .await
-        .unwrap_or_else(|e| panic!("Failed to load room {}: {e}", i + 1));
+        let database = Database::open(&client_instance, room_id)
+            .await
+            .unwrap_or_else(|e| panic!("Failed to load room {}: {e}", i + 1))
+            .with_key(DatabaseKey::global(reader_key));
 
         let settings = database.get_settings().await.unwrap();
         let name = settings.get_string("name").await.unwrap();

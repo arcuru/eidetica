@@ -116,9 +116,10 @@ async fn test_validation_pipeline_with_concurrent_settings_changes() {
         .expect("Failed to get KEY2 signing key")
         .clone();
 
-    let tree_with_key2 = Database::open(instance.clone(), tree.root_id(), key2_signing_key)
+    let tree_with_key2 = Database::open(&instance, tree.root_id())
         .await
-        .expect("Failed to reload database with KEY2");
+        .expect("Failed to reload database with KEY2")
+        .with_key(key2_signing_key);
 
     // Create operation with KEY2 (should work after settings change)
     let txn2 = tree_with_key2

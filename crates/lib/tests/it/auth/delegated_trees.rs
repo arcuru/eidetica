@@ -797,8 +797,9 @@ async fn setup_delegation_pair(
 
     let delegation_ref = create_delegation_ref(&identity_db, max_permission, None).await?;
     let admin_db_key = DatabaseKey::new(admin_signing_key.clone());
-    let target_db_authed =
-        Database::open(instance.clone(), target_db.root_id(), admin_db_key).await?;
+    let target_db_authed = Database::open(instance, target_db.root_id())
+        .await?
+        .with_key(admin_db_key);
     let txn = target_db_authed.new_transaction().await?;
     txn.get_settings()?
         .add_delegated_tree(delegation_ref)
@@ -829,7 +830,9 @@ async fn open_via_delegation(
         hint: KeyHint::from_pubkey(hint_key_id),
     };
     let db_key = DatabaseKey::with_identity(signing_key, delegation_sigkey);
-    Database::open(instance.clone(), pair.target_db.root_id(), db_key).await
+    Ok(Database::open(instance, pair.target_db.root_id())
+        .await?
+        .with_key(db_key))
 }
 
 /// Test writing entries via delegation identity using the Database API directly
@@ -989,8 +992,9 @@ async fn test_delegated_entry_validation_across_instances() -> Result<()> {
 
     // Open target_db on instance B with the admin key to read settings
     let admin_db_key = DatabaseKey::new(pair.admin_signing_key);
-    let target_db_b =
-        Database::open(instance_b.clone(), pair.target_db.root_id(), admin_db_key).await?;
+    let target_db_b = Database::open(&instance_b, pair.target_db.root_id())
+        .await?
+        .with_key(admin_db_key);
 
     let settings_b = target_db_b.get_settings().await?;
     let auth_settings_b = settings_b.auth_snapshot().await?;
@@ -1045,8 +1049,9 @@ async fn test_delegated_write_secondary_identity_key() -> Result<()> {
 
     let delegation_ref = create_delegation_ref(&identity_db, Permission::Write(10), None).await?;
     let admin_db_key = DatabaseKey::new(admin_signing_key);
-    let target_db_authed =
-        Database::open(instance.clone(), target_db.root_id(), admin_db_key).await?;
+    let target_db_authed = Database::open(&instance, target_db.root_id())
+        .await?
+        .with_key(admin_db_key);
     let txn = target_db_authed.new_transaction().await?;
     txn.get_settings()?
         .add_delegated_tree(delegation_ref)
@@ -1066,8 +1071,9 @@ async fn test_delegated_write_secondary_identity_key() -> Result<()> {
     let secondary_signing_key = user.get_signing_key(&secondary_key_id)?;
     let delegation_db_key =
         DatabaseKey::with_identity(secondary_signing_key, delegation_sigkey.clone());
-    let target_via_delegation =
-        Database::open(instance.clone(), target_db.root_id(), delegation_db_key).await?;
+    let target_via_delegation = Database::open(&instance, target_db.root_id())
+        .await?
+        .with_key(delegation_db_key);
 
     // Verify the database is using the secondary key's delegation identity
     assert_eq!(

@@ -36,7 +36,6 @@
 //! This explicit approach ensures predictable behavior and avoids ambiguity about which
 //! keys have access to which databases.
 
-use handle_trait::Handle;
 use std::collections::HashMap;
 
 use super::{UserKeyManager, types::UserInfo};
@@ -317,9 +316,6 @@ impl User {
         root_id: &ID,
         key_id: &PublicKey,
     ) -> Result<Database> {
-        // Validate the root exists
-        self.instance.backend().get(root_id).await?;
-
         // Get the SigningKey from UserKeyManager
         let signing_key = self.key_manager.get_signing_key(key_id).ok_or_else(|| {
             super::errors::UserError::KeyNotFound {
@@ -337,7 +333,7 @@ impl User {
 
         // Create Database with user-provided key using resolved SigKey identity
         let key = DatabaseKey::with_identity(signing_key.clone(), sigkey);
-        Database::open(self.instance.handle(), root_id, key).await
+        Ok(Database::open(&self.instance, root_id).await?.with_key(key))
     }
 
     /// Find databases by name among the user's tracked databases.

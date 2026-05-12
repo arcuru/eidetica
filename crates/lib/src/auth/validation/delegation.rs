@@ -66,11 +66,12 @@ impl DelegationResolver {
             let delegated_tree_ref = current_auth_settings.get_delegated_tree(&step.tree)?;
 
             let root_id = delegated_tree_ref.tree.root.clone();
-            let delegated_tree = Database::open_unauthenticated(root_id.clone(), instance)
-                .map_err(|e| AuthError::DelegatedTreeLoadFailed {
+            let delegated_tree = Database::open(instance, &root_id).await.map_err(|e| {
+                AuthError::DelegatedTreeLoadFailed {
                     tree_id: root_id.clone(),
                     source: Box::new(e),
-                })?;
+                }
+            })?;
 
             // Validate tips
             let current_tips = current_backend.get_tips(&root_id).await.map_err(|e| {

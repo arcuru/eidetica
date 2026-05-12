@@ -261,7 +261,9 @@ impl Sync {
         }
 
         // Load the existing database with the user's signing key
-        let database = Database::open(self.instance()?, &request.tree_id, key.clone()).await?;
+        let database = Database::open(&self.instance()?, &request.tree_id)
+            .await?
+            .with_key(key.clone());
 
         // Explicitly check that the approving user has Admin permission
         // This provides clear error messages and fails fast before modifying the database
@@ -368,7 +370,9 @@ impl Sync {
         }
 
         // Load the existing database with the user's signing key to validate permissions
-        let database = Database::open(self.instance()?, &request.tree_id, key.clone()).await?;
+        let database = Database::open(&self.instance()?, &request.tree_id)
+            .await?
+            .with_key(key.clone());
 
         // Check that the rejecting user has Admin permission
         let permission = database.current_permission().await?;

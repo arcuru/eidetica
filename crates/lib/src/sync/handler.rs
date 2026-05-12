@@ -87,7 +87,9 @@ impl SyncHandlerImpl {
         // Load sync tree with the device key
         let instance = self.instance()?;
         let signing_key = instance.signing_key()?.clone();
-        Database::open(instance, &self.sync_tree_id, signing_key).await
+        Ok(Database::open(&instance, &self.sync_tree_id)
+            .await?
+            .with_key(signing_key))
     }
 
     /// Store a bootstrap request in the sync database for manual approval.
@@ -232,7 +234,7 @@ impl SyncHandlerImpl {
         tree_id: &ID,
         requesting_pubkey: &PublicKey,
     ) -> Result<Option<Permission>> {
-        let database = Database::open_unauthenticated(tree_id.clone(), &self.instance()?)?;
+        let database = Database::open(&self.instance()?, tree_id).await?;
         let transaction = database.new_transaction().await?;
         let settings_store = SettingsStore::new(&transaction)?;
         let auth_settings = settings_store.auth_snapshot().await?;
@@ -266,8 +268,7 @@ impl SyncHandlerImpl {
         requesting_pubkey: &PublicKey,
         requested_permission: &Permission,
     ) -> Result<bool> {
-        // Use open_unauthenticated since we only need to read auth settings
-        let database = Database::open_unauthenticated(tree_id.clone(), &self.instance()?)?;
+        let database = Database::open(&self.instance()?, tree_id).await?;
         let settings_store = database.get_settings().await?;
 
         let auth_settings = settings_store.auth_snapshot().await?;
@@ -301,7 +302,7 @@ impl SyncHandlerImpl {
     /// - `Ok(false)` if database allows unauthenticated access (no auth or has global permission)
     /// - `Err` if the check fails
     async fn check_if_database_has_auth(&self, tree_id: &ID) -> Result<bool> {
-        let database = Database::open_unauthenticated(tree_id.clone(), &self.instance()?)?;
+        let database = Database::open(&self.instance()?, tree_id).await?;
         let transaction = database.new_transaction().await?;
         let settings_store = SettingsStore::new(&transaction)?;
 
@@ -365,11 +366,10 @@ impl SyncHandlerImpl {
             Err(_) => return false, // Fail closed
         };
 
-        let sync_database =
-            match Database::open(instance.clone(), &self.sync_tree_id, signing_key).await {
-                Ok(db) => db,
-                Err(_) => return false, // Fail closed
-            };
+        let sync_database = match Database::open(&instance, &self.sync_tree_id).await {
+            Ok(db) => db.with_key(signing_key),
+            Err(_) => return false, // Fail closed
+        };
 
         let transaction = match sync_database.new_transaction().await {
             Ok(tx) => tx,
