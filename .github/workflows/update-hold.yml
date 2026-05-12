@@ -1,10 +1,3 @@
-# Daily check that releases expired dependency holds. Scans open PRs with
-# the "on-hold" label, parses the <!-- hold-until: YYYY-MM-DD --> comment
-# from the PR body, and removes the label when the date is reached. After
-# label removal, creates a passing "Dependency Hold" check run on the PR's
-# HEAD commit so the required status check is satisfied without relying on
-# the unlabeled event (which GITHUB_TOKEN cannot trigger cross-workflow).
-#
 name: "Deps: Hold Expiry"
 
 on:
@@ -12,69 +5,11 @@ on:
     - cron: "0 7 * * *"
   workflow_dispatch:
 
-concurrency:
-  group: deps-hold-expiry
-  cancel-in-progress: true
+permissions:
+  contents: read
 
 jobs:
-  release-holds:
-    name: Release Expired Holds
-    runs-on: ubicloud-standard-2
-    if: github.repository_owner == 'arcuru'
-    permissions:
-      pull-requests: write
-      checks: write
-    steps:
-      - name: Check and release expired holds
-        run: |
-          TODAY=$(date -u +%Y-%m-%d)
-          echo "Today: $TODAY"
-
-          # Get all open PRs with on-hold label
-          PRS=$(gh pr list --repo "$GITHUB_REPOSITORY" --label on-hold --state open --json number,body --jq '.[]')
-
-          if [ -z "$PRS" ]; then
-            echo "No PRs with on-hold label found."
-            exit 0
-          fi
-
-          echo "$PRS" | jq -c '.' | while read -r PR; do
-            NUMBER=$(echo "$PR" | jq -r '.number')
-            BODY=$(echo "$PR" | jq -r '.body')
-
-            # Extract hold-until date from HTML comment (POSIX-compatible, no grep -P)
-            HOLD_DATE=$(echo "$BODY" | sed -n 's/.*<!-- hold-until: \([0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}\).*/\1/p' | head -n1)
-
-            if [ -z "$HOLD_DATE" ]; then
-              echo "PR #$NUMBER: No hold-until date found, skipping."
-              continue
-            fi
-
-            echo "PR #$NUMBER: Hold until $HOLD_DATE"
-
-            if [[ ! "$TODAY" < "$HOLD_DATE" ]]; then
-              echo "PR #$NUMBER: Hold expired, removing label."
-              gh pr edit "$NUMBER" --repo "$GITHUB_REPOSITORY" --remove-label on-hold
-
-              # Create a passing check run on the PR's HEAD commit so the
-              # required "Dependency Hold" status check is satisfied. We
-              # can't rely on the unlabeled event re-triggering the Hold
-              # Gate workflow because GITHUB_TOKEN events don't trigger
-              # other workflows (GitHub's anti-recursion policy).
-              HEAD_SHA=$(gh pr view "$NUMBER" --repo "$GITHUB_REPOSITORY" --json headRefOid --jq '.headRefOid')
-              gh api "repos/$GITHUB_REPOSITORY/check-runs" --method POST \
-                -f name="Dependency Hold" \
-                -f head_sha="$HEAD_SHA" \
-                -f status="completed" \
-                -f conclusion="success" \
-                -f "output[title]=Hold expired" \
-                -f "output[summary]=Hold period expired (was until $HOLD_DATE). Dependency update may proceed."
-
-              COMMENT="Hold period expired (was until $HOLD_DATE). Removing \`on-hold\` label — this PR is now eligible for merge."
-              gh pr comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body "$COMMENT"
-            else
-              echo "PR #$NUMBER: Still on hold until $HOLD_DATE."
-            fi
-          done
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  update-hold:
+    uses: arcuru/actions/.github/workflows/update-hold.yml@a7c938293186c1ba82fc32921d10c71734d1d21c # v0.1.0
+    with:
+      runs-on: ubicloud-standard-2
