@@ -15,8 +15,6 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: "pages"
@@ -25,6 +23,9 @@ concurrency:
 jobs:
   build:
     runs-on: ubicloud-standard-2
+    if: github.repository_owner == 'arcuru'
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -49,7 +50,11 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubicloud-standard-2
     needs: build
-    if: github.event_name == 'push' || github.ref == 'refs/heads/main'
+    if: github.repository_owner == 'arcuru' && (github.event_name == 'push' || github.ref == 'refs/heads/main')
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
