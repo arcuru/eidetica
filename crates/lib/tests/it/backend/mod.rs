@@ -1,4 +1,5 @@
 mod basic_operations;
+mod concurrent_writes;
 mod height_calculations;
 mod helpers;
 mod out_of_order_tips;

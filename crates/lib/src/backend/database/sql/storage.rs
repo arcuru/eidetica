@@ -79,11 +79,34 @@ pub async fn put(
         VerificationStatus::Failed => 1,
     };
 
-    // Use a transaction for atomicity
+    // Use a transaction for atomicity.
+    //
+    // For SQLite, immediately upgrade to BEGIN IMMEDIATE so the write lock is
+    // taken at transaction start rather than at first-INSERT time. sqlx's
+    // default `pool.begin()` issues BEGIN DEFERRED for SQLite, which starts
+    // as a read transaction. If two such transactions both read and then race
+    // to upgrade to a write transaction, the loser receives SQLITE_BUSY
+    // (code 5) or SQLITE_BUSY_SNAPSHOT (code 517) immediately — SQLite skips
+    // its busy_handler in this case to prevent deadlock, so `busy_timeout`
+    // does not help.
+    //
+    // BEGIN IMMEDIATE acquires the RESERVED lock up-front. Contending
+    // transactions wait at BEGIN time (where busy_handler IS invoked, so the
+    // configured busy_timeout applies) rather than failing mid-tx.
+    //
+    // The depth tracking in sqlx's Transaction state machine remains
+    // consistent: it still sees one BEGIN ... COMMIT pair from its
+    // perspective; the COMMIT we issue below is invisible to it.
     let mut tx = pool
         .begin()
         .await
         .sql_context("Failed to begin transaction")?;
+    if backend.is_sqlite() {
+        sqlx::query("COMMIT; BEGIN IMMEDIATE")
+            .execute(&mut *tx)
+            .await
+            .sql_context("Failed to upgrade to IMMEDIATE transaction")?;
+    }
 
     // Check if entry already exists - entries are content-addressable and immutable
     let existing_status: Option<(i64,)> =
