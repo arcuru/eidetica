@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   flake-update:
-    uses: arcuru/actions/.github/workflows/flake-update.yml@a7c938293186c1ba82fc32921d10c71734d1d21c # v0.1.0
+    uses: arcuru/actions/.github/workflows/flake-update.yml@31c804a9c15602300e5e292e80cac1ad5512a21a # v0.2.0
     with:
       hold-days: ${{ inputs.hold_days || '7' }}
       runs-on: ubicloud-standard-2
