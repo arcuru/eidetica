@@ -17,13 +17,14 @@ use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::UnixStream;
 use tokio::sync::Mutex;
 
+use crate::auth::types::SigKey;
 use crate::backend::{InstanceMetadata, VerificationStatus};
 use crate::entry::{Entry, ID};
 use crate::instance::WriteSource;
 use crate::service::error::service_error_to_eidetica_error;
 use crate::service::protocol::{
-    Handshake, HandshakeAck, PROTOCOL_VERSION, ServiceRequest, ServiceResponse, read_frame,
-    write_frame,
+    AuthenticatedRequest, BackendOp, Handshake, HandshakeAck, PROTOCOL_VERSION, ServiceRequest,
+    ServiceResponse, read_frame, write_frame,
 };
 
 /// Internal state for a remote connection, wrapped in Arc for Clone.
@@ -111,6 +112,23 @@ impl RemoteConnection {
         }
     }
 
+    /// Wrap a `BackendOp` in the `Authenticated` envelope and send it.
+    ///
+    /// The `root_id` and `identity` fields are placeholders in chunk 2 — chunk 4
+    /// will populate them from the connection's logged-in session state. The
+    /// server currently ignores both (chunk 3 will tighten this with
+    /// per-request permission checks).
+    async fn backend_request(&self, op: BackendOp) -> crate::Result<ServiceResponse> {
+        self.request_ok(ServiceRequest::Authenticated(Box::new(
+            AuthenticatedRequest {
+                root_id: ID::default(),
+                identity: SigKey::default(),
+                request: op,
+            },
+        )))
+        .await
+    }
+
     // === Response extraction helpers ===
 
     fn expect_entry(resp: ServiceResponse) -> crate::Result<Entry> {
@@ -152,14 +170,14 @@ impl RemoteConnection {
 
     pub async fn get(&self, id: &ID) -> crate::Result<Entry> {
         let resp = self
-            .request_ok(ServiceRequest::Get { id: id.clone() })
+            .backend_request(BackendOp::Get { id: id.clone() })
             .await?;
         Self::expect_entry(resp)
     }
 
     pub async fn get_verification_status(&self, id: &ID) -> crate::Result<VerificationStatus> {
         let resp = self
-            .request_ok(ServiceRequest::GetVerificationStatus { id: id.clone() })
+            .backend_request(BackendOp::GetVerificationStatus { id: id.clone() })
             .await?;
         match resp {
             ServiceResponse::VerificationStatus(vs) => Ok(vs),
@@ -173,7 +191,7 @@ impl RemoteConnection {
         entry: Entry,
     ) -> crate::Result<()> {
         let resp = self
-            .request_ok(ServiceRequest::Put {
+            .backend_request(BackendOp::Put {
                 verification_status,
                 entry,
             })
@@ -187,7 +205,7 @@ impl RemoteConnection {
         verification_status: VerificationStatus,
     ) -> crate::Result<()> {
         let resp = self
-            .request_ok(ServiceRequest::UpdateVerificationStatus {
+            .backend_request(BackendOp::UpdateVerificationStatus {
                 id: id.clone(),
                 verification_status,
             })
@@ -200,21 +218,21 @@ impl RemoteConnection {
         status: VerificationStatus,
     ) -> crate::Result<Vec<ID>> {
         let resp = self
-            .request_ok(ServiceRequest::GetEntriesByVerificationStatus { status })
+            .backend_request(BackendOp::GetEntriesByVerificationStatus { status })
             .await?;
         Self::expect_ids(resp)
     }
 
     pub async fn get_tips(&self, tree: &ID) -> crate::Result<Vec<ID>> {
         let resp = self
-            .request_ok(ServiceRequest::GetTips { tree: tree.clone() })
+            .backend_request(BackendOp::GetTips { tree: tree.clone() })
             .await?;
         Self::expect_ids(resp)
     }
 
     pub async fn get_store_tips(&self, tree: &ID, store: &str) -> crate::Result<Vec<ID>> {
         let resp = self
-            .request_ok(ServiceRequest::GetStoreTips {
+            .backend_request(BackendOp::GetStoreTips {
                 tree: tree.clone(),
                 store: store.to_string(),
             })
@@ -229,7 +247,7 @@ impl RemoteConnection {
         main_entries: &[ID],
     ) -> crate::Result<Vec<ID>> {
         let resp = self
-            .request_ok(ServiceRequest::GetStoreTipsUpToEntries {
+            .backend_request(BackendOp::GetStoreTipsUpToEntries {
                 tree: tree.clone(),
                 store: store.to_string(),
                 main_entries: main_entries.to_vec(),
@@ -239,7 +257,7 @@ impl RemoteConnection {
     }
 
     pub async fn all_roots(&self) -> crate::Result<Vec<ID>> {
-        let resp = self.request_ok(ServiceRequest::AllRoots).await?;
+        let resp = self.backend_request(BackendOp::AllRoots).await?;
         Self::expect_ids(resp)
     }
 
@@ -250,7 +268,7 @@ impl RemoteConnection {
         entry_ids: &[ID],
     ) -> crate::Result<ID> {
         let resp = self
-            .request_ok(ServiceRequest::FindMergeBase {
+            .backend_request(BackendOp::FindMergeBase {
                 tree: tree.clone(),
                 store: store.to_string(),
                 entry_ids: entry_ids.to_vec(),
@@ -266,7 +284,7 @@ impl RemoteConnection {
         target_entry: &ID,
     ) -> crate::Result<Vec<ID>> {
         let resp = self
-            .request_ok(ServiceRequest::CollectRootToTarget {
+            .backend_request(BackendOp::CollectRootToTarget {
                 tree: tree.clone(),
                 store: store.to_string(),
                 target_entry: target_entry.clone(),
@@ -277,14 +295,14 @@ impl RemoteConnection {
 
     pub async fn get_tree(&self, tree: &ID) -> crate::Result<Vec<Entry>> {
         let resp = self
-            .request_ok(ServiceRequest::GetTree { tree: tree.clone() })
+            .backend_request(BackendOp::GetTree { tree: tree.clone() })
             .await?;
         Self::expect_entries(resp)
     }
 
     pub async fn get_store(&self, tree: &ID, store: &str) -> crate::Result<Vec<Entry>> {
         let resp = self
-            .request_ok(ServiceRequest::GetStore {
+            .backend_request(BackendOp::GetStore {
                 tree: tree.clone(),
                 store: store.to_string(),
             })
@@ -294,7 +312,7 @@ impl RemoteConnection {
 
     pub async fn get_tree_from_tips(&self, tree: &ID, tips: &[ID]) -> crate::Result<Vec<Entry>> {
         let resp = self
-            .request_ok(ServiceRequest::GetTreeFromTips {
+            .backend_request(BackendOp::GetTreeFromTips {
                 tree: tree.clone(),
                 tips: tips.to_vec(),
             })
@@ -309,7 +327,7 @@ impl RemoteConnection {
         tips: &[ID],
     ) -> crate::Result<Vec<Entry>> {
         let resp = self
-            .request_ok(ServiceRequest::GetStoreFromTips {
+            .backend_request(BackendOp::GetStoreFromTips {
                 tree: tree.clone(),
                 store: store.to_string(),
                 tips: tips.to_vec(),
@@ -324,7 +342,7 @@ impl RemoteConnection {
         store: &str,
     ) -> crate::Result<Option<Vec<u8>>> {
         let resp = self
-            .request_ok(ServiceRequest::GetCachedCrdtState {
+            .backend_request(BackendOp::GetCachedCrdtState {
                 entry_id: entry_id.clone(),
                 store: store.to_string(),
             })
@@ -342,7 +360,7 @@ impl RemoteConnection {
         state: Vec<u8>,
     ) -> crate::Result<()> {
         let resp = self
-            .request_ok(ServiceRequest::CacheCrdtState {
+            .backend_request(BackendOp::CacheCrdtState {
                 entry_id: entry_id.clone(),
                 store: store.to_string(),
                 state,
@@ -352,7 +370,7 @@ impl RemoteConnection {
     }
 
     pub async fn clear_crdt_cache(&self) -> crate::Result<()> {
-        let resp = self.request_ok(ServiceRequest::ClearCrdtCache).await?;
+        let resp = self.backend_request(BackendOp::ClearCrdtCache).await?;
         Self::expect_ok(resp)
     }
 
@@ -363,7 +381,7 @@ impl RemoteConnection {
         store: &str,
     ) -> crate::Result<Vec<ID>> {
         let resp = self
-            .request_ok(ServiceRequest::GetSortedStoreParents {
+            .backend_request(BackendOp::GetSortedStoreParents {
                 tree_id: tree_id.clone(),
                 entry_id: entry_id.clone(),
                 store: store.to_string(),
@@ -380,7 +398,7 @@ impl RemoteConnection {
         to_ids: &[ID],
     ) -> crate::Result<Vec<ID>> {
         let resp = self
-            .request_ok(ServiceRequest::GetPathFromTo {
+            .backend_request(BackendOp::GetPathFromTo {
                 tree_id: tree_id.clone(),
                 store: store.to_string(),
                 from_id: from_id.clone(),
@@ -400,7 +418,7 @@ impl RemoteConnection {
 
     pub async fn set_instance_metadata(&self, metadata: &InstanceMetadata) -> crate::Result<()> {
         let resp = self
-            .request_ok(ServiceRequest::SetInstanceMetadata {
+            .backend_request(BackendOp::SetInstanceMetadata {
                 metadata: metadata.clone(),
             })
             .await?;
@@ -417,7 +435,7 @@ impl RemoteConnection {
         source: WriteSource,
     ) -> crate::Result<()> {
         let resp = self
-            .request_ok(ServiceRequest::NotifyEntryWritten {
+            .backend_request(BackendOp::NotifyEntryWritten {
                 tree_id: tree_id.clone(),
                 entry_id: entry_id.clone(),
                 source,
