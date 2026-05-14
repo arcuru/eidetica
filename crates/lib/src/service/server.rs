@@ -21,15 +21,20 @@ use crate::user::system_databases::lookup_user_pubkey;
 /// Per-connection authentication state.
 ///
 /// A connection moves `PreAuth → AwaitingProof → Authenticated` on a successful
-/// `LoginUser` / `LoginProve` exchange. A failed proof drops the connection
-/// back to `PreAuth` so the client can retry without reconnecting. Any other
-/// request while in `AwaitingProof` also resets the state so a half-finished
-/// login can't be exploited mid-flight.
+/// `TrustedLoginUser` / `TrustedLoginProve` exchange. A failed proof drops the
+/// connection back to `PreAuth` so the client can retry without reconnecting.
+/// Any other request while in `AwaitingProof` also resets the state so a
+/// half-finished login can't be exploited mid-flight.
+///
+/// "Trusted" refers to the assumption that whoever can reach this socket is
+/// already authorised by filesystem permissions (mode 0600 under
+/// `$XDG_RUNTIME_DIR`); see the protocol module docs and the Service
+/// Architecture brain doc § Trusted login threat model.
 #[derive(Debug, Clone)]
 enum ConnectionState {
     /// No login attempt yet, or last attempt failed/abandoned.
     PreAuth,
-    /// `LoginUser` succeeded; waiting for the client's `LoginProve`.
+    /// `TrustedLoginUser` succeeded; waiting for the client's `TrustedLoginProve`.
     AwaitingProof {
         username: String,
         user_uuid: String,
@@ -201,10 +206,12 @@ async fn dispatch_inner(
 ) -> crate::Result<ServiceResponse> {
     match request {
         // === Pre-auth: login handshake ===
-        ServiceRequest::LoginUser { username } => {
-            handle_login_user(instance, state, username).await
+        ServiceRequest::TrustedLoginUser { username } => {
+            handle_trusted_login_user(instance, state, username).await
         }
-        ServiceRequest::LoginProve { signature } => handle_login_prove(state, &signature),
+        ServiceRequest::TrustedLoginProve { signature } => {
+            handle_trusted_login_prove(state, &signature)
+        }
 
         // === Pre-auth: server identity ===
         ServiceRequest::GetInstanceMetadata => {
@@ -238,9 +245,9 @@ async fn dispatch_inner(
     }
 }
 
-/// Handle `ServiceRequest::LoginUser`: look up the user's expected pubkey, mint
+/// Handle `ServiceRequest::TrustedLoginUser`: look up the user's expected pubkey, mint
 /// a challenge, and move the connection into `AwaitingProof`.
-async fn handle_login_user(
+async fn handle_trusted_login_user(
     instance: &Instance,
     state: &mut ConnectionState,
     username: String,
@@ -264,13 +271,13 @@ async fn handle_login_user(
         challenge: challenge.clone(),
         expected_pubkey,
     };
-    Ok(ServiceResponse::LoginChallenge { challenge })
+    Ok(ServiceResponse::TrustedLoginChallenge { challenge })
 }
 
-/// Handle `ServiceRequest::LoginProve`: verify the signature against the
+/// Handle `ServiceRequest::TrustedLoginProve`: verify the signature against the
 /// stored challenge and either transition to `Authenticated` or drop back
 /// to `PreAuth`.
-fn handle_login_prove(
+fn handle_trusted_login_prove(
     state: &mut ConnectionState,
     signature: &[u8],
 ) -> crate::Result<ServiceResponse> {
@@ -288,7 +295,7 @@ fn handle_login_prove(
                 *state = other;
                 return Err(crate::Error::Io(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
-                    "LoginProve received outside of AwaitingProof state",
+                    "TrustedLoginProve received outside of AwaitingProof state",
                 )));
             }
         };
@@ -300,7 +307,7 @@ fn handle_login_prove(
                 user_uuid,
                 session_pubkey: expected_pubkey,
             };
-            Ok(ServiceResponse::LoginOk)
+            Ok(ServiceResponse::TrustedLoginOk)
         }
         Err(e) => {
             // Already reset to PreAuth via the mem::replace above.
