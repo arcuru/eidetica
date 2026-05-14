@@ -6,18 +6,29 @@
 //! ## Request shape
 //!
 //! `ServiceRequest` is a flat enum holding pre-authentication lifecycle messages
-//! (`LoginUser`, `LoginProve`), pre-auth queries that are safe before login
-//! (`GetInstanceMetadata`, `ListUsers`, `CreateUser`), and an `Authenticated`
-//! wrapper that carries every storage operation. The wrapper bundles the
-//! `(root_id, identity)` scope so the server can validate each backend op
-//! against the connection's session pubkey and the target database's auth
-//! settings. Pre-auth verification of the session pubkey happens once at login
-//! via a challenge-response handshake.
+//! (`TrustedLoginUser`, `TrustedLoginProve`), pre-auth queries that are safe
+//! before login (`GetInstanceMetadata`, `ListUsers`, `CreateUser`), and an
+//! `Authenticated` wrapper that carries every storage operation. The wrapper
+//! bundles the `(root_id, identity)` scope so the server can validate each
+//! backend op against the connection's session pubkey and the target database's
+//! auth settings. Pre-auth verification of the session pubkey happens once at
+//! login via a challenge-response handshake.
 //!
-//! For chunk 2 the wrapper is recognised by the server but the auth fields are
-//! not yet enforced — chunk 3 lands the connection state machine that uses
-//! them. Clients populate `root_id`/`identity` with defaults until chunk 4
-//! wires up real session state.
+//! The login lifecycle is **trusted** in the sense that the daemon ships the
+//! user's encrypted credentials (salt + AES-GCM ciphertext) to anyone who can
+//! connect to the socket and asks for them. This is safe in the local-socket
+//! model — filesystem permissions on the socket already bound the caller set
+//! to processes that could read the underlying DB files directly. A network
+//! transport would need a different shape (PAKE: OPAQUE/SRP) so the server
+//! doesn't release the blob until the client proves password knowledge in a
+//! way that doesn't leak it. The `TrustedLogin*` naming is a load-bearing
+//! reminder of that assumption — see § Trusted login threat model in the
+//! Service Architecture doc.
+//!
+//! Chunk 2 settled the wire shape; chunk 3 wired up real daemon-side
+//! challenge-response. The per-request permission gate on `Authenticated`
+//! requests lands in a later chunk; for now clients populate
+//! `root_id`/`identity` with defaults until the client-side login flow ships.
 
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -184,14 +195,18 @@ pub struct AuthenticatedRequest {
 /// branches symmetric.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ServiceRequest {
-    // === Pre-auth: login handshake ===
-    /// Step 1 of login. Client names a user; server responds with a
-    /// `LoginChallenge` carrying random bytes the client must sign.
-    LoginUser { username: String },
-    /// Step 2 of login. Client returns a signature over the challenge from
-    /// `LoginUser`, computed with the user's root key. Server verifies against
-    /// the stored pubkey and, on success, marks the connection authenticated.
-    LoginProve { signature: Vec<u8> },
+    // === Pre-auth: trusted login handshake ===
+    /// Step 1 of the trusted login flow. Client names a user; server responds
+    /// with a `TrustedLoginChallenge` carrying random bytes the client must
+    /// sign. The "Trusted" qualifier is a load-bearing reminder that this flow
+    /// assumes the caller is already trusted by the socket's filesystem
+    /// permissions — over a network transport this would need PAKE instead.
+    TrustedLoginUser { username: String },
+    /// Step 2 of the trusted login flow. Client returns a signature over the
+    /// challenge from `TrustedLoginUser`, computed with the user's root key.
+    /// Server verifies against the stored pubkey and, on success, marks the
+    /// connection authenticated.
+    TrustedLoginProve { signature: Vec<u8> },
 
     // === Pre-auth: queries safe before login ===
     /// Fetch the server's instance metadata (including device id). Used by
@@ -239,11 +254,11 @@ pub enum ServiceResponse {
     UserCreated(String),
     /// List of user IDs
     Users(Vec<String>),
-    /// Challenge bytes returned in response to `LoginUser`. The client signs
-    /// these with the user's root key and replies with `LoginProve`.
-    LoginChallenge { challenge: Vec<u8> },
-    /// Login succeeded; the connection is now authenticated.
-    LoginOk,
+    /// Challenge bytes returned in response to `TrustedLoginUser`. The client
+    /// signs these with the user's root key and replies with `TrustedLoginProve`.
+    TrustedLoginChallenge { challenge: Vec<u8> },
+    /// Trusted login succeeded; the connection is now authenticated.
+    TrustedLoginOk,
 }
 
 /// Write a length-prefixed JSON frame to an async writer.
@@ -406,27 +421,27 @@ mod tests {
     }
 
     #[test]
-    fn test_request_login_user_serde() {
-        let req = ServiceRequest::LoginUser {
+    fn test_request_trusted_login_user_serde() {
+        let req = ServiceRequest::TrustedLoginUser {
             username: "alice".to_string(),
         };
         let json = serde_json::to_string(&req).unwrap();
         let req2: ServiceRequest = serde_json::from_str(&json).unwrap();
         match req2 {
-            ServiceRequest::LoginUser { username } => assert_eq!(username, "alice"),
+            ServiceRequest::TrustedLoginUser { username } => assert_eq!(username, "alice"),
             _ => panic!("wrong variant"),
         }
     }
 
     #[test]
-    fn test_request_login_prove_serde() {
-        let req = ServiceRequest::LoginProve {
+    fn test_request_trusted_login_prove_serde() {
+        let req = ServiceRequest::TrustedLoginProve {
             signature: b"sig-bytes".to_vec(),
         };
         let json = serde_json::to_string(&req).unwrap();
         let req2: ServiceRequest = serde_json::from_str(&json).unwrap();
         match req2 {
-            ServiceRequest::LoginProve { signature } => assert_eq!(signature, b"sig-bytes"),
+            ServiceRequest::TrustedLoginProve { signature } => assert_eq!(signature, b"sig-bytes"),
             _ => panic!("wrong variant"),
         }
     }
@@ -508,14 +523,14 @@ mod tests {
     }
 
     #[test]
-    fn test_response_login_challenge_serde() {
-        let resp = ServiceResponse::LoginChallenge {
+    fn test_response_trusted_login_challenge_serde() {
+        let resp = ServiceResponse::TrustedLoginChallenge {
             challenge: b"random-bytes".to_vec(),
         };
         let json = serde_json::to_string(&resp).unwrap();
         let resp2: ServiceResponse = serde_json::from_str(&json).unwrap();
         match resp2 {
-            ServiceResponse::LoginChallenge { challenge } => {
+            ServiceResponse::TrustedLoginChallenge { challenge } => {
                 assert_eq!(challenge, b"random-bytes");
             }
             _ => panic!("wrong variant"),
@@ -523,11 +538,11 @@ mod tests {
     }
 
     #[test]
-    fn test_response_login_ok_serde() {
-        let resp = ServiceResponse::LoginOk;
+    fn test_response_trusted_login_ok_serde() {
+        let resp = ServiceResponse::TrustedLoginOk;
         let json = serde_json::to_string(&resp).unwrap();
         let resp2: ServiceResponse = serde_json::from_str(&json).unwrap();
-        assert!(matches!(resp2, ServiceResponse::LoginOk));
+        assert!(matches!(resp2, ServiceResponse::TrustedLoginOk));
     }
 
     #[tokio::test]

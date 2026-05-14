@@ -53,7 +53,7 @@ async fn test_connect_and_create_instance() {
 }
 
 #[tokio::test]
-#[ignore = "login_user over RPC requires the challenge-response auth flow (Branch C)"]
+#[ignore = "login_user over RPC requires the TrustedLogin client flow (Branch C chunk 4)"]
 async fn test_user_lifecycle() {
     let (socket_path, _tx, _server, _dir) = start_test_server().await;
     let instance = Instance::connect(&socket_path).await.unwrap();
@@ -92,7 +92,7 @@ async fn test_error_propagation() {
 }
 
 #[tokio::test]
-#[ignore = "login_user over RPC requires the challenge-response auth flow (Branch C)"]
+#[ignore = "login_user over RPC requires the TrustedLogin client flow (Branch C chunk 4)"]
 async fn test_concurrent_clients() {
     let (socket_path, _tx, _server, _dir) = start_test_server().await;
 
@@ -134,7 +134,7 @@ async fn test_instance_identity_round_trip() {
 /// Open a raw connection to the daemon and complete the protocol handshake.
 ///
 /// Returns the read + write halves of the stream so tests can drive the
-/// Login* flow before the Instance::login_user_remote API lands (chunk 4).
+/// TrustedLogin* flow before the Instance::login_user_remote API lands (chunk 4).
 async fn raw_handshake(socket_path: &PathBuf) -> (ReadHalf<UnixStream>, WriteHalf<UnixStream>) {
     let stream = UnixStream::connect(socket_path).await.unwrap();
     let (mut reader, mut writer) = tokio::io::split(stream);
@@ -151,7 +151,7 @@ async fn raw_handshake(socket_path: &PathBuf) -> (ReadHalf<UnixStream>, WriteHal
 }
 
 #[tokio::test]
-async fn test_login_challenge_response_round_trip() {
+async fn test_trusted_login_challenge_response_round_trip() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
 
     // Set up alice on the server's Instance directly so we have the signing key
@@ -163,10 +163,10 @@ async fn test_login_challenge_response_round_trip() {
 
     let (mut reader, mut writer) = raw_handshake(&socket_path).await;
 
-    // Step 1: LoginUser → expect a non-empty challenge.
+    // Step 1: TrustedLoginUser → expect a non-empty challenge.
     write_frame(
         &mut writer,
-        &ServiceRequest::LoginUser {
+        &ServiceRequest::TrustedLoginUser {
             username: "alice".to_string(),
         },
     )
@@ -174,28 +174,31 @@ async fn test_login_challenge_response_round_trip() {
     .unwrap();
     let resp: ServiceResponse = read_frame(&mut reader).await.unwrap().unwrap();
     let challenge = match resp {
-        ServiceResponse::LoginChallenge { challenge } => challenge,
-        other => panic!("expected LoginChallenge, got {other:?}"),
+        ServiceResponse::TrustedLoginChallenge { challenge } => challenge,
+        other => panic!("expected TrustedLoginChallenge, got {other:?}"),
     };
     assert_eq!(challenge.len(), 32, "challenge must be 32 random bytes");
 
-    // Step 2: sign the challenge with alice's private key and send LoginProve.
+    // Step 2: sign the challenge with alice's private key and send TrustedLoginProve.
     let signature = create_challenge_response(&challenge, &alice_signing_key);
-    write_frame(&mut writer, &ServiceRequest::LoginProve { signature })
-        .await
-        .unwrap();
+    write_frame(
+        &mut writer,
+        &ServiceRequest::TrustedLoginProve { signature },
+    )
+    .await
+    .unwrap();
     let resp: ServiceResponse = read_frame(&mut reader).await.unwrap().unwrap();
-    assert!(matches!(resp, ServiceResponse::LoginOk));
+    assert!(matches!(resp, ServiceResponse::TrustedLoginOk));
 }
 
 #[tokio::test]
-async fn test_login_unknown_user_errors() {
+async fn test_trusted_login_unknown_user_errors() {
     let (socket_path, _tx, _server, _dir) = start_test_server().await;
     let (mut reader, mut writer) = raw_handshake(&socket_path).await;
 
     write_frame(
         &mut writer,
-        &ServiceRequest::LoginUser {
+        &ServiceRequest::TrustedLoginUser {
             username: "ghost".to_string(),
         },
     )
@@ -216,14 +219,14 @@ async fn test_login_unknown_user_errors() {
 }
 
 #[tokio::test]
-async fn test_login_prove_without_user_errors() {
+async fn test_trusted_login_prove_without_user_errors() {
     let (socket_path, _tx, _server, _dir) = start_test_server().await;
     let (mut reader, mut writer) = raw_handshake(&socket_path).await;
 
-    // No prior LoginUser — server should reject.
+    // No prior TrustedLoginUser — server should reject.
     write_frame(
         &mut writer,
-        &ServiceRequest::LoginProve {
+        &ServiceRequest::TrustedLoginProve {
             signature: vec![0u8; 64],
         },
     )
@@ -234,7 +237,7 @@ async fn test_login_prove_without_user_errors() {
 }
 
 #[tokio::test]
-async fn test_login_bad_signature_errors_and_resets() {
+async fn test_trusted_login_bad_signature_errors_and_resets() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
     server.create_user("bob", None).await.unwrap();
 
@@ -243,19 +246,22 @@ async fn test_login_bad_signature_errors_and_resets() {
     // Get a challenge.
     write_frame(
         &mut writer,
-        &ServiceRequest::LoginUser {
+        &ServiceRequest::TrustedLoginUser {
             username: "bob".to_string(),
         },
     )
     .await
     .unwrap();
     let resp: ServiceResponse = read_frame(&mut reader).await.unwrap().unwrap();
-    assert!(matches!(resp, ServiceResponse::LoginChallenge { .. }));
+    assert!(matches!(
+        resp,
+        ServiceResponse::TrustedLoginChallenge { .. }
+    ));
 
     // Send a junk signature — server must reject and reset to PreAuth.
     write_frame(
         &mut writer,
-        &ServiceRequest::LoginProve {
+        &ServiceRequest::TrustedLoginProve {
             signature: vec![0xAB; 64],
         },
     )
@@ -264,11 +270,11 @@ async fn test_login_bad_signature_errors_and_resets() {
     let resp: ServiceResponse = read_frame(&mut reader).await.unwrap().unwrap();
     assert!(matches!(resp, ServiceResponse::Error(_)));
 
-    // Confirm reset: a second LoginProve without a fresh LoginUser must error
+    // Confirm reset: a second TrustedLoginProve without a fresh TrustedLoginUser must error
     // (not silently succeed against the previous challenge).
     write_frame(
         &mut writer,
-        &ServiceRequest::LoginProve {
+        &ServiceRequest::TrustedLoginProve {
             signature: vec![0xCD; 64],
         },
     )
