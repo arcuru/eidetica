@@ -38,6 +38,7 @@ use crate::backend::{InstanceMetadata, VerificationStatus};
 use crate::entry::{Entry, ID};
 use crate::instance::WriteSource;
 use crate::service::error::ServiceError;
+use crate::user::UserCredentials;
 
 /// Protocol version. Version 0 indicates an unstable protocol that may change
 /// without notice between releases.
@@ -254,9 +255,21 @@ pub enum ServiceResponse {
     UserCreated(String),
     /// List of user IDs
     Users(Vec<String>),
-    /// Challenge bytes returned in response to `TrustedLoginUser`. The client
-    /// signs these with the user's root key and replies with `TrustedLoginProve`.
-    TrustedLoginChallenge { challenge: Vec<u8> },
+    /// Challenge bytes returned in response to `TrustedLoginUser`, plus the
+    /// user's encrypted credentials so the client can derive the password→key,
+    /// decrypt the root signing key locally, and sign the challenge in a
+    /// single round-trip.
+    ///
+    /// `credentials` carries the (encrypted) root private key, its
+    /// `KeyStorage` envelope (algorithm/ciphertext/nonce for password-protected
+    /// users, raw `PrivateKey` for passwordless users), and the Argon2id salt
+    /// when password-protected. See § Trusted login threat model in the
+    /// Service Architecture doc for why this is safe to ship to anyone who
+    /// can reach the socket.
+    TrustedLoginChallenge {
+        challenge: Vec<u8>,
+        credentials: UserCredentials,
+    },
     /// Trusted login succeeded; the connection is now authenticated.
     TrustedLoginOk,
 }
@@ -524,14 +537,34 @@ mod tests {
 
     #[test]
     fn test_response_trusted_login_challenge_serde() {
+        use crate::auth::crypto::generate_keypair;
+        use crate::user::{KeyStorage, UserCredentials};
+
+        let (_signing, pubkey) = generate_keypair();
+        let credentials = UserCredentials {
+            root_key_id: pubkey,
+            root_key: KeyStorage::Encrypted {
+                algorithm: "aes-256-gcm".to_string(),
+                ciphertext: b"ct".to_vec(),
+                nonce: b"123456789012".to_vec(),
+            },
+            password_salt: Some("salt-string".to_string()),
+        };
+
         let resp = ServiceResponse::TrustedLoginChallenge {
             challenge: b"random-bytes".to_vec(),
+            credentials: credentials.clone(),
         };
         let json = serde_json::to_string(&resp).unwrap();
         let resp2: ServiceResponse = serde_json::from_str(&json).unwrap();
         match resp2 {
-            ServiceResponse::TrustedLoginChallenge { challenge } => {
+            ServiceResponse::TrustedLoginChallenge {
+                challenge,
+                credentials: c2,
+            } => {
                 assert_eq!(challenge, b"random-bytes");
+                assert_eq!(c2.root_key_id, credentials.root_key_id);
+                assert_eq!(c2.password_salt.as_deref(), Some("salt-string"));
             }
             _ => panic!("wrong variant"),
         }

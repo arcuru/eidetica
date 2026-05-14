@@ -208,12 +208,13 @@ pub async fn create_user(
     // 3. Grant device key Read permission on user database (for sync access).
     // User is already Admin(0) via Database::create above.
     let device_pubkey = instance.id();
+    let device_pubkey_for_grant = device_pubkey.clone();
     user_database
         .with_transaction(|txn| async move {
             let settings = txn.get_settings()?;
             settings
                 .set_auth_key(
-                    &device_pubkey,
+                    &device_pubkey_for_grant,
                     AuthKey::active(Some("device"), Permission::Read),
                 )
                 .await
@@ -251,7 +252,7 @@ pub async fn create_user(
 
     // 5. Store root key metadata in user database's keys table
     let root_user_key = UserKey {
-        key_id: user_public_key,
+        key_id: user_public_key.clone(),
         storage: credentials.root_key.clone(),
         display_name: Some("Root Key".to_string()),
         created_at: instance.clock().now_secs(),
@@ -287,7 +288,6 @@ pub async fn create_user(
     // key (the only Admin on the system DBs at bootstrap time); opening
     // `databases_db()` here mirrors the `users_db` argument passed in and
     // keeps the device-key signing detail inside `Instance`.
-    let device_pubkey = instance.id();
     if !has_instance_admin(users_db, &device_pubkey).await? {
         let databases_db = instance.databases_db().await?;
         grant_admin_on_system_dbs(users_db, &databases_db, &user_public_key).await?;
@@ -426,16 +426,25 @@ pub async fn login_user(
         UserKeyManager::new_passwordless(all_keys)?
     };
 
-    // 6. Update last_login in separate table
-    // TODO: this is a log, so it will grow unbounded over time and should probably be moved to a log table
+    // 6. Update last_login in separate table.
+    // Best-effort: skip the write on remote instances (no local device key
+    // to sign with — the daemon owns this side) and downgrade any other
+    // failure to a debug log rather than blocking login. The last_login
+    // table is treated as a low-priority access log (per the older TODO
+    // noting it grows unbounded and should move to a log table); a missed
+    // entry is acceptable, a failed login over a transient table error
+    // would not be.
     let now = instance.clock().now_secs();
     let user_uuid_ref = user_uuid.clone();
-    users_db
+    if let Err(e) = users_db
         .with_transaction(|tx| async move {
             let last_login_table = tx.get_store::<Table<i64>>("last_login").await?;
             last_login_table.set(&user_uuid_ref, now).await
         })
-        .await?;
+        .await
+    {
+        tracing::debug!("skipping last_login update for {username}: {e}");
+    }
 
     // 7. Create User session
     Ok(User::new(
@@ -447,19 +456,22 @@ pub async fn login_user(
     ))
 }
 
-/// Look up a user's root public key by username, without requiring the password.
+/// Look up a user's credentials by username, without requiring the password.
 ///
 /// Used by the service daemon's challenge-response login flow: the daemon
-/// fetches the pubkey it expects the client to sign with, before sending the
-/// challenge. The pubkey is stored in plaintext alongside the (encrypted)
-/// private key in `UserCredentials`, so this lookup never touches secrets.
+/// fetches the user's credentials (root pubkey + encrypted root private key +
+/// salt) and ships them to the client so the client can derive the KEK
+/// locally, decrypt the root key, and sign the challenge. The encrypted blob
+/// is designed to survive at rest — shipping it over the local socket is the
+/// same trust boundary as filesystem read. See the Service Architecture
+/// doc § Trusted login threat model for the full rationale.
 ///
 /// # Returns
-/// Tuple of `(user_uuid, root_pubkey)` if the user exists and is active.
-pub async fn lookup_user_pubkey(
+/// Tuple of `(user_uuid, UserCredentials)` if the user exists and is active.
+pub async fn lookup_user_credentials(
     users_db: &Database,
     username: impl AsRef<str>,
-) -> Result<(String, PublicKey)> {
+) -> Result<(String, UserCredentials)> {
     let username = username.as_ref();
     let users_table = users_db
         .get_store_viewer::<Table<UserInfo>>("users")
@@ -490,7 +502,7 @@ pub async fn lookup_user_pubkey(
         .into());
     }
 
-    Ok((user_uuid, user_info.credentials.root_key_id))
+    Ok((user_uuid, user_info.credentials))
 }
 
 /// List all users in the system

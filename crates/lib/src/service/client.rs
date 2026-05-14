@@ -4,11 +4,14 @@
 //! storage operations as RPC calls. It is used as the `Backend::Remote` variant
 //! and is not a `BackendImpl` — dispatch happens through the `Backend` enum.
 //!
-//! After connecting, clients authenticate via a `Login` RPC (username + password).
-//! The server verifies the password, decrypts the user's keys, and holds them in
-//! per-connection state. The connection itself is the session — no tokens needed.
-//! The client receives a `PrivateKey::Remote` that proxies `sign()` calls to the
-//! server, so existing `Transaction`/`EntryBuilder` code works unchanged.
+//! Authentication uses the client-side-signing flow described in the Service
+//! Architecture doc § Security Model: `RemoteConnection::trusted_login` drives
+//! the daemon's `TrustedLoginUser` / `TrustedLoginProve` challenge-response,
+//! decrypts the user's root signing key in-process, and signs the challenge
+//! locally. The daemon never sees the password or the plaintext signing key.
+//! After login, subsequent backend operations travel inside the `Authenticated`
+//! envelope and are dispatched against the user's identity (see chunk 5 of
+//! Branch C for the per-request permission gate).
 
 use std::path::Path;
 use std::sync::Arc;
@@ -17,6 +20,7 @@ use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::UnixStream;
 use tokio::sync::Mutex;
 
+use crate::auth::crypto::create_challenge_response;
 use crate::auth::types::SigKey;
 use crate::backend::{InstanceMetadata, VerificationStatus};
 use crate::entry::{Entry, ID};
@@ -26,6 +30,9 @@ use crate::service::protocol::{
     AuthenticatedRequest, BackendOp, Handshake, HandshakeAck, PROTOCOL_VERSION, ServiceRequest,
     ServiceResponse, read_frame, write_frame,
 };
+use crate::user::UserError;
+use crate::user::crypto::{decrypt_private_key, derive_encryption_key};
+use crate::user::types::KeyStorage;
 
 /// Internal state for a remote connection, wrapped in Arc for Clone.
 struct RemoteConnectionInner {
@@ -114,10 +121,11 @@ impl RemoteConnection {
 
     /// Wrap a `BackendOp` in the `Authenticated` envelope and send it.
     ///
-    /// The `root_id` and `identity` fields are placeholders in chunk 2 — chunk 4
-    /// will populate them from the connection's logged-in session state. The
-    /// server currently ignores both (chunk 3 will tighten this with
-    /// per-request permission checks).
+    /// `root_id` and `identity` are still placeholders pending the chunk-5
+    /// gate work, which will both require the connection to be in
+    /// `Authenticated` state on the server side and validate the claimed
+    /// identity against the session pubkey. Until then the server accepts
+    /// any identity on this envelope and dispatches the inner op.
     async fn backend_request(&self, op: BackendOp) -> crate::Result<ServiceResponse> {
         self.request_ok(ServiceRequest::Authenticated(Box::new(
             AuthenticatedRequest {
@@ -127,6 +135,71 @@ impl RemoteConnection {
             },
         )))
         .await
+    }
+
+    /// Authenticate this connection as `username` by completing the
+    /// `TrustedLogin*` handshake against the daemon.
+    ///
+    /// Flow: send `TrustedLoginUser` → receive challenge + encrypted credentials
+    /// → derive the password-encryption key locally (Argon2id) and decrypt the
+    /// root signing key in-process (or take it raw for passwordless users) →
+    /// sign the challenge → send `TrustedLoginProve` → expect `TrustedLoginOk`.
+    ///
+    /// The daemon never sees the password or the plaintext signing key; the
+    /// trust model for shipping the encrypted blob over the socket is captured
+    /// in the Service Architecture doc § Trusted login threat model.
+    ///
+    /// On success the connection's server-side state is `Authenticated`, and
+    /// subsequent `Authenticated`-wrapped backend ops are dispatched (chunk 5
+    /// will additionally validate the per-request identity claim).
+    pub async fn trusted_login(&self, username: &str, password: Option<&str>) -> crate::Result<()> {
+        // Step 1: name the user, receive challenge + encrypted credentials.
+        let resp = self
+            .request_ok(ServiceRequest::TrustedLoginUser {
+                username: username.to_string(),
+            })
+            .await?;
+        let (challenge, credentials) = match resp {
+            ServiceResponse::TrustedLoginChallenge {
+                challenge,
+                credentials,
+            } => (challenge, credentials),
+            other => return Err(unexpected_response("TrustedLoginChallenge", &other)),
+        };
+
+        // Step 2: decrypt the root signing key locally. Cross-check that the
+        // caller's password/no-password matches the credential's salt/no-salt;
+        // a mismatch is the same UX-level error as a wrong password.
+        let is_passwordless = credentials.password_salt.is_none();
+        let signing_key = match (&credentials.root_key, password, is_passwordless) {
+            (KeyStorage::Unencrypted { key }, None, true) => key.clone(),
+            (
+                KeyStorage::Encrypted {
+                    ciphertext, nonce, ..
+                },
+                Some(pwd),
+                false,
+            ) => {
+                let salt = credentials.password_salt.as_deref().ok_or_else(|| {
+                    UserError::PasswordRequired {
+                        operation: "decrypt root key for remote login".to_string(),
+                    }
+                })?;
+                let kek = derive_encryption_key(pwd, salt)?;
+                decrypt_private_key(ciphertext, nonce, &kek)?
+            }
+            _ => return Err(UserError::InvalidPassword.into()),
+        };
+
+        // Step 3: sign the challenge and send the proof.
+        let signature = create_challenge_response(&challenge, &signing_key);
+        let resp = self
+            .request_ok(ServiceRequest::TrustedLoginProve { signature })
+            .await?;
+        match resp {
+            ServiceResponse::TrustedLoginOk => Ok(()),
+            other => Err(unexpected_response("TrustedLoginOk", &other)),
+        }
     }
 
     // === Response extraction helpers ===

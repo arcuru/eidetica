@@ -646,10 +646,19 @@ impl Instance {
     /// Get the _users database
     ///
     /// This constructs a Database instance on-the-fly to avoid circular references.
+    /// On a local instance the device signing key is attached so users-table
+    /// writes (e.g., the local `create_user` path) can sign. On a remote
+    /// instance the device key lives on the daemon side and isn't available
+    /// locally; the returned Database is read-only from the client and any
+    /// write paths go through dedicated RPCs (`CreateUser`, etc.) instead of
+    /// being signed locally.
     pub(crate) async fn users_db(&self) -> Result<Database> {
-        Ok(Database::open(self, &self.inner.metadata.users_db)
-            .await?
-            .with_key(self.signing_key()?.clone()))
+        let db = Database::open(self, &self.inner.metadata.users_db).await?;
+        #[cfg(all(unix, feature = "service"))]
+        if let Backend::Remote(_) = self.backend() {
+            return Ok(db);
+        }
+        Ok(db.with_key(self.signing_key()?.clone()))
     }
 
     /// Get the _databases tracking database
@@ -703,6 +712,19 @@ impl Instance {
     /// A Result containing the User session
     pub async fn login_user(&self, user_id: &str, password: Option<&str>) -> Result<User> {
         use crate::user::system_databases::login_user;
+
+        // On a remote instance, first authenticate the underlying socket
+        // connection via the TrustedLogin* challenge-response handshake.
+        // Subsequent reads (user info, user database, keys) flow through the
+        // now-authenticated connection. The local decrypt in `login_user`
+        // below re-runs Argon2id with the password; that's redundant work
+        // for now and will be reused by the OS-keyring caching follow-up
+        // (TODO-dbbc6a6e) rather than threading the already-decrypted key
+        // through the User construction path.
+        #[cfg(all(unix, feature = "service"))]
+        if let Backend::Remote(conn) = self.backend() {
+            conn.trusted_login(user_id, password).await?;
+        }
 
         let users_db = self.users_db().await?;
         login_user(&users_db, self, user_id, password).await

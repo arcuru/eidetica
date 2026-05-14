@@ -16,7 +16,7 @@ use crate::service::protocol::{
     AuthenticatedRequest, BackendOp, HandshakeAck, PROTOCOL_VERSION, ServiceRequest,
     ServiceResponse, read_frame, write_frame,
 };
-use crate::user::system_databases::lookup_user_pubkey;
+use crate::user::system_databases::lookup_user_credentials;
 
 /// Per-connection authentication state.
 ///
@@ -252,11 +252,13 @@ async fn handle_trusted_login_user(
     state: &mut ConnectionState,
     username: String,
 ) -> crate::Result<ServiceResponse> {
-    // Look up the user without touching encrypted material. If the lookup
-    // fails (no such user, disabled, duplicates), drop back to `PreAuth` so
-    // the client can retry — and bubble the error to the caller.
+    // Look up the user's credentials. The encrypted root key + salt ship to
+    // the client so it can decrypt locally and sign the challenge in the same
+    // round-trip; the daemon never sees the password or the plaintext key. If
+    // the lookup fails (no such user, disabled, duplicates), drop back to
+    // `PreAuth` and bubble the error.
     let users_db = instance.users_db().await?;
-    let (user_uuid, expected_pubkey) = match lookup_user_pubkey(&users_db, &username).await {
+    let (user_uuid, credentials) = match lookup_user_credentials(&users_db, &username).await {
         Ok(v) => v,
         Err(e) => {
             *state = ConnectionState::PreAuth;
@@ -264,6 +266,7 @@ async fn handle_trusted_login_user(
         }
     };
 
+    let expected_pubkey = credentials.root_key_id.clone();
     let challenge = generate_challenge();
     *state = ConnectionState::AwaitingProof {
         username,
@@ -271,7 +274,10 @@ async fn handle_trusted_login_user(
         challenge: challenge.clone(),
         expected_pubkey,
     };
-    Ok(ServiceResponse::TrustedLoginChallenge { challenge })
+    Ok(ServiceResponse::TrustedLoginChallenge {
+        challenge,
+        credentials,
+    })
 }
 
 /// Handle `ServiceRequest::TrustedLoginProve`: verify the signature against the
