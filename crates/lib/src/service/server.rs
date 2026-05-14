@@ -42,9 +42,10 @@ enum ConnectionState {
         expected_pubkey: PublicKey,
     },
     /// Login completed. `session_pubkey` is the verified root pubkey for the
-    /// user; subsequent `Authenticated` requests will be checked against it
-    /// once the per-request gate lands (chunk 5).
-    #[allow(dead_code)] // fields are read once chunk 5 wires the gate
+    /// user; the dispatch path for `ServiceRequest::Authenticated` reads it
+    /// to gate access and cross-check the identity claim. `user_uuid` is
+    /// reserved for chunk 6's per-user cache scoping.
+    #[allow(dead_code)] // user_uuid + username surface in chunk 6
     Authenticated {
         username: String,
         user_uuid: String,
@@ -230,16 +231,52 @@ async fn dispatch_inner(
         }
 
         // === Authenticated backend operations ===
-        // Chunk 3 dispatches unconditionally; chunk 5 will require the
-        // connection to be in `Authenticated` state and will validate
-        // `(root_id, identity)` against `session_pubkey` and the target
-        // database's auth settings before reaching `dispatch_backend_op`.
+        //
+        // Gate: the connection must have completed `TrustedLogin*`. The
+        // session pubkey checked here is the one the daemon verified during
+        // challenge-response; clients populate the request's identity field
+        // with the same pubkey (see `RemoteConnection::backend_request`).
+        //
+        // Per-tree permission resolution against the target database's
+        // `auth_settings` is chunk 5b — for now we only enforce
+        // "connection is authenticated", which is the load-bearing boundary
+        // in the local-socket trust model (cross-tree perm checks are an
+        // additional defence in depth rather than the primary gate).
         ServiceRequest::Authenticated(inner) => {
+            let session_pubkey = match state {
+                ConnectionState::Authenticated { session_pubkey, .. } => session_pubkey.clone(),
+                _ => {
+                    return Err(crate::Error::Auth(Box::new(
+                        crate::auth::errors::AuthError::InvalidAuthConfiguration {
+                            reason: "backend operation requires an authenticated connection; \
+                                 complete TrustedLogin* first"
+                                .to_string(),
+                        },
+                    )));
+                }
+            };
+
             let AuthenticatedRequest {
                 root_id: _,
-                identity: _,
+                identity,
                 request,
             } = *inner;
+
+            // Cross-check that the identity claim's pubkey hint, if any,
+            // matches the session pubkey. A mismatch is an "I claim to be
+            // someone else" error, not just a permission failure.
+            if let Some(claimed) = &identity.hint().pubkey
+                && *claimed != session_pubkey
+            {
+                return Err(crate::Error::Auth(Box::new(
+                    crate::auth::errors::AuthError::SigningKeyMismatch {
+                        reason: format!(
+                            "request identity claims pubkey '{claimed}' but session is for '{session_pubkey}'"
+                        ),
+                    },
+                )));
+            }
+
             dispatch_backend_op(instance, request).await
         }
     }
@@ -542,14 +579,85 @@ mod tests {
         assert!(result.unwrap().is_none());
     }
 
+    /// Load-bearing invariant: `ConnectionState` must never hold plaintext
+    /// signing material in any variant. The daemon participates in storage
+    /// and challenge-response only; the rejected Branch A design held
+    /// decrypted user keys server-side and that boundary was reinstated by
+    /// design (see Service Architecture doc § Decision record).
+    ///
+    /// Structure of the test: construct each variant, destructure with named
+    /// fields (so adding a field forces this test to be edited), and check
+    /// the static type of each field is not `PrivateKey`. A future refactor
+    /// that adds e.g. `decrypted_root_key: PrivateKey` to `Authenticated`
+    /// would either fail the type check at runtime or fail the destructure
+    /// match exhaustiveness at compile time.
+    #[test]
+    fn connection_state_never_holds_private_key() {
+        use crate::auth::crypto::{PrivateKey, generate_keypair};
+        use std::any::TypeId;
+
+        fn assert_not_private_key<T: 'static>(_value: &T, label: &str) {
+            assert_ne!(
+                TypeId::of::<T>(),
+                TypeId::of::<PrivateKey>(),
+                "ConnectionState field `{label}` is PrivateKey — daemon must not hold plaintext keys"
+            );
+        }
+
+        let (_signing, pubkey) = generate_keypair();
+        let states = [
+            ConnectionState::PreAuth,
+            ConnectionState::AwaitingProof {
+                username: "u".to_string(),
+                user_uuid: "uu".to_string(),
+                challenge: vec![1, 2, 3],
+                expected_pubkey: pubkey.clone(),
+            },
+            ConnectionState::Authenticated {
+                username: "u".to_string(),
+                user_uuid: "uu".to_string(),
+                session_pubkey: pubkey,
+            },
+        ];
+
+        for state in &states {
+            match state {
+                ConnectionState::PreAuth => {}
+                ConnectionState::AwaitingProof {
+                    username,
+                    user_uuid,
+                    challenge,
+                    expected_pubkey,
+                } => {
+                    assert_not_private_key(username, "AwaitingProof::username");
+                    assert_not_private_key(user_uuid, "AwaitingProof::user_uuid");
+                    assert_not_private_key(challenge, "AwaitingProof::challenge");
+                    assert_not_private_key(expected_pubkey, "AwaitingProof::expected_pubkey");
+                }
+                ConnectionState::Authenticated {
+                    username,
+                    user_uuid,
+                    session_pubkey,
+                } => {
+                    assert_not_private_key(username, "Authenticated::username");
+                    assert_not_private_key(user_uuid, "Authenticated::user_uuid");
+                    assert_not_private_key(session_pubkey, "Authenticated::session_pubkey");
+                }
+            }
+        }
+    }
+
     #[tokio::test]
-    async fn test_get_nonexistent_entry() {
+    async fn test_authenticated_request_rejected_without_login() {
+        // Companion to the integration test `test_unauthenticated_backend_op_rejected`
+        // — exercises the same gate path against the raw protocol so a
+        // regression here surfaces immediately, not just at the
+        // `RemoteConnection` layer.
         let (socket_path, _tx, _instance) = start_test_server().await;
 
         let stream = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
         let (mut reader, mut writer) = tokio::io::split(stream);
 
-        // Handshake
         write_frame(
             &mut writer,
             &Handshake {
@@ -560,7 +668,7 @@ mod tests {
         .unwrap();
         let _ack: Option<HandshakeAck> = read_frame(&mut reader).await.unwrap();
 
-        // Request nonexistent entry
+        // Send an Authenticated request without completing TrustedLogin.
         write_frame(
             &mut writer,
             &ServiceRequest::Authenticated(Box::new(AuthenticatedRequest {
@@ -577,9 +685,12 @@ mod tests {
         let resp: Option<ServiceResponse> = read_frame(&mut reader).await.unwrap();
         match resp.unwrap() {
             ServiceResponse::Error(e) => {
-                assert_eq!(e.kind, "EntryNotFound");
+                assert_eq!(
+                    e.module, "auth",
+                    "expected an auth-module error from the gate; got {e:?}"
+                );
             }
-            other => panic!("Expected error, got {other:?}"),
+            other => panic!("Expected gate Error, got {other:?}"),
         }
     }
 
