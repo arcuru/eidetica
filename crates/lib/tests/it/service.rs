@@ -6,9 +6,16 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use eidetica::Instance;
+use eidetica::auth::crypto::create_challenge_response;
 use eidetica::backend::database::InMemory;
 use eidetica::service::ServiceServer;
+use eidetica::service::protocol::{
+    Handshake, HandshakeAck, PROTOCOL_VERSION, ServiceRequest, ServiceResponse, read_frame,
+    write_frame,
+};
 use tempfile::TempDir;
+use tokio::io::{ReadHalf, WriteHalf};
+use tokio::net::UnixStream;
 use tokio::sync::watch;
 
 /// Start a test server with InMemory backend; returns (path, shutdown, server-side
@@ -122,4 +129,151 @@ async fn test_instance_identity_round_trip() {
     // The metadata fetched at Instance::connect() handshake must report the same
     // instance identity (server's device public key) as the local Instance.
     assert_eq!(client.id(), server.id());
+}
+
+/// Open a raw connection to the daemon and complete the protocol handshake.
+///
+/// Returns the read + write halves of the stream so tests can drive the
+/// Login* flow before the Instance::login_user_remote API lands (chunk 4).
+async fn raw_handshake(socket_path: &PathBuf) -> (ReadHalf<UnixStream>, WriteHalf<UnixStream>) {
+    let stream = UnixStream::connect(socket_path).await.unwrap();
+    let (mut reader, mut writer) = tokio::io::split(stream);
+    write_frame(
+        &mut writer,
+        &Handshake {
+            protocol_version: PROTOCOL_VERSION,
+        },
+    )
+    .await
+    .unwrap();
+    let _ack: HandshakeAck = read_frame(&mut reader).await.unwrap().unwrap();
+    (reader, writer)
+}
+
+#[tokio::test]
+async fn test_login_challenge_response_round_trip() {
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+
+    // Set up alice on the server's Instance directly so we have the signing key
+    // for the test (Instance::login_user_remote lands in chunk 4).
+    server.create_user("alice", None).await.unwrap();
+    let alice = server.login_user("alice", None).await.unwrap();
+    let alice_pubkey = alice.get_default_key().unwrap();
+    let alice_signing_key = alice.get_signing_key(&alice_pubkey).unwrap();
+
+    let (mut reader, mut writer) = raw_handshake(&socket_path).await;
+
+    // Step 1: LoginUser → expect a non-empty challenge.
+    write_frame(
+        &mut writer,
+        &ServiceRequest::LoginUser {
+            username: "alice".to_string(),
+        },
+    )
+    .await
+    .unwrap();
+    let resp: ServiceResponse = read_frame(&mut reader).await.unwrap().unwrap();
+    let challenge = match resp {
+        ServiceResponse::LoginChallenge { challenge } => challenge,
+        other => panic!("expected LoginChallenge, got {other:?}"),
+    };
+    assert_eq!(challenge.len(), 32, "challenge must be 32 random bytes");
+
+    // Step 2: sign the challenge with alice's private key and send LoginProve.
+    let signature = create_challenge_response(&challenge, &alice_signing_key);
+    write_frame(&mut writer, &ServiceRequest::LoginProve { signature })
+        .await
+        .unwrap();
+    let resp: ServiceResponse = read_frame(&mut reader).await.unwrap().unwrap();
+    assert!(matches!(resp, ServiceResponse::LoginOk));
+}
+
+#[tokio::test]
+async fn test_login_unknown_user_errors() {
+    let (socket_path, _tx, _server, _dir) = start_test_server().await;
+    let (mut reader, mut writer) = raw_handshake(&socket_path).await;
+
+    write_frame(
+        &mut writer,
+        &ServiceRequest::LoginUser {
+            username: "ghost".to_string(),
+        },
+    )
+    .await
+    .unwrap();
+    let resp: ServiceResponse = read_frame(&mut reader).await.unwrap().unwrap();
+    match resp {
+        ServiceResponse::Error(e) => {
+            // The error originates from UserError::UserNotFound; we don't assert
+            // the exact kind string to avoid coupling to wire-format details.
+            assert!(
+                e.message.contains("ghost") || e.kind.contains("NotFound"),
+                "expected user-not-found-ish error, got {e:?}"
+            );
+        }
+        other => panic!("expected Error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_login_prove_without_user_errors() {
+    let (socket_path, _tx, _server, _dir) = start_test_server().await;
+    let (mut reader, mut writer) = raw_handshake(&socket_path).await;
+
+    // No prior LoginUser — server should reject.
+    write_frame(
+        &mut writer,
+        &ServiceRequest::LoginProve {
+            signature: vec![0u8; 64],
+        },
+    )
+    .await
+    .unwrap();
+    let resp: ServiceResponse = read_frame(&mut reader).await.unwrap().unwrap();
+    assert!(matches!(resp, ServiceResponse::Error(_)));
+}
+
+#[tokio::test]
+async fn test_login_bad_signature_errors_and_resets() {
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    server.create_user("bob", None).await.unwrap();
+
+    let (mut reader, mut writer) = raw_handshake(&socket_path).await;
+
+    // Get a challenge.
+    write_frame(
+        &mut writer,
+        &ServiceRequest::LoginUser {
+            username: "bob".to_string(),
+        },
+    )
+    .await
+    .unwrap();
+    let resp: ServiceResponse = read_frame(&mut reader).await.unwrap().unwrap();
+    assert!(matches!(resp, ServiceResponse::LoginChallenge { .. }));
+
+    // Send a junk signature — server must reject and reset to PreAuth.
+    write_frame(
+        &mut writer,
+        &ServiceRequest::LoginProve {
+            signature: vec![0xAB; 64],
+        },
+    )
+    .await
+    .unwrap();
+    let resp: ServiceResponse = read_frame(&mut reader).await.unwrap().unwrap();
+    assert!(matches!(resp, ServiceResponse::Error(_)));
+
+    // Confirm reset: a second LoginProve without a fresh LoginUser must error
+    // (not silently succeed against the previous challenge).
+    write_frame(
+        &mut writer,
+        &ServiceRequest::LoginProve {
+            signature: vec![0xCD; 64],
+        },
+    )
+    .await
+    .unwrap();
+    let resp: ServiceResponse = read_frame(&mut reader).await.unwrap().unwrap();
+    assert!(matches!(resp, ServiceResponse::Error(_)));
 }

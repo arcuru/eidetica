@@ -447,6 +447,52 @@ pub async fn login_user(
     ))
 }
 
+/// Look up a user's root public key by username, without requiring the password.
+///
+/// Used by the service daemon's challenge-response login flow: the daemon
+/// fetches the pubkey it expects the client to sign with, before sending the
+/// challenge. The pubkey is stored in plaintext alongside the (encrypted)
+/// private key in `UserCredentials`, so this lookup never touches secrets.
+///
+/// # Returns
+/// Tuple of `(user_uuid, root_pubkey)` if the user exists and is active.
+pub async fn lookup_user_pubkey(
+    users_db: &Database,
+    username: impl AsRef<str>,
+) -> Result<(String, PublicKey)> {
+    let username = username.as_ref();
+    let users_table = users_db
+        .get_store_viewer::<Table<UserInfo>>("users")
+        .await?;
+    let results = users_table.search(|u| u.username == username).await?;
+
+    let (user_uuid, user_info) = match results.len() {
+        0 => {
+            return Err(UserError::UserNotFound {
+                username: username.to_string(),
+            }
+            .into());
+        }
+        1 => results.into_iter().next().unwrap(),
+        count => {
+            return Err(UserError::DuplicateUsersDetected {
+                username: username.to_string(),
+                count,
+            }
+            .into());
+        }
+    };
+
+    if user_info.status != UserStatus::Active {
+        return Err(UserError::UserDisabled {
+            username: username.to_string(),
+        }
+        .into());
+    }
+
+    Ok((user_uuid, user_info.credentials.root_key_id))
+}
+
 /// List all users in the system
 ///
 /// # Arguments

@@ -10,11 +10,42 @@ use tokio::net::UnixListener;
 use tokio::sync::watch;
 
 use crate::Instance;
+use crate::auth::crypto::{PublicKey, generate_challenge, verify_challenge_response};
 use crate::service::error::ServiceError;
 use crate::service::protocol::{
     AuthenticatedRequest, BackendOp, HandshakeAck, PROTOCOL_VERSION, ServiceRequest,
     ServiceResponse, read_frame, write_frame,
 };
+use crate::user::system_databases::lookup_user_pubkey;
+
+/// Per-connection authentication state.
+///
+/// A connection moves `PreAuth → AwaitingProof → Authenticated` on a successful
+/// `LoginUser` / `LoginProve` exchange. A failed proof drops the connection
+/// back to `PreAuth` so the client can retry without reconnecting. Any other
+/// request while in `AwaitingProof` also resets the state so a half-finished
+/// login can't be exploited mid-flight.
+#[derive(Debug, Clone)]
+enum ConnectionState {
+    /// No login attempt yet, or last attempt failed/abandoned.
+    PreAuth,
+    /// `LoginUser` succeeded; waiting for the client's `LoginProve`.
+    AwaitingProof {
+        username: String,
+        user_uuid: String,
+        challenge: Vec<u8>,
+        expected_pubkey: PublicKey,
+    },
+    /// Login completed. `session_pubkey` is the verified root pubkey for the
+    /// user; subsequent `Authenticated` requests will be checked against it
+    /// once the per-request gate lands (chunk 5).
+    #[allow(dead_code)] // fields are read once chunk 5 wires the gate
+    Authenticated {
+        username: String,
+        user_uuid: String,
+        session_pubkey: PublicKey,
+    },
+}
 
 /// Eidetica service server that listens on a Unix domain socket.
 ///
@@ -135,14 +166,15 @@ async fn handle_connection(
     };
     write_frame(&mut writer, &ack).await?;
 
-    // 2. Request/response loop
+    // 2. Request/response loop with per-connection auth state
+    let mut state = ConnectionState::PreAuth;
     loop {
         let request: ServiceRequest = match read_frame(&mut reader).await? {
             Some(req) => req,
             None => break, // Clean EOF
         };
 
-        let response = dispatch(&instance, request).await;
+        let response = dispatch(&instance, &mut state, request).await;
         write_frame(&mut writer, &response).await?;
     }
 
@@ -150,8 +182,12 @@ async fn handle_connection(
 }
 
 /// Dispatch a service request to the appropriate Instance/Backend method.
-async fn dispatch(instance: &Instance, request: ServiceRequest) -> ServiceResponse {
-    match dispatch_inner(instance, request).await {
+async fn dispatch(
+    instance: &Instance,
+    state: &mut ConnectionState,
+    request: ServiceRequest,
+) -> ServiceResponse {
+    match dispatch_inner(instance, state, request).await {
         Ok(resp) => resp,
         Err(e) => ServiceResponse::Error(ServiceError::from(&e)),
     }
@@ -160,18 +196,15 @@ async fn dispatch(instance: &Instance, request: ServiceRequest) -> ServiceRespon
 /// Inner dispatch that returns Result for ergonomic error handling.
 async fn dispatch_inner(
     instance: &Instance,
+    state: &mut ConnectionState,
     request: ServiceRequest,
 ) -> crate::Result<ServiceResponse> {
     match request {
         // === Pre-auth: login handshake ===
-        // Chunk 2 stubs: the wire types are settled but the connection state
-        // machine and challenge-response verification land in chunk 3. For now
-        // these return placeholder responses so a client speaking the new
-        // protocol can round-trip the message types.
-        ServiceRequest::LoginUser { username: _ } => Ok(ServiceResponse::LoginChallenge {
-            challenge: Vec::new(),
-        }),
-        ServiceRequest::LoginProve { signature: _ } => Ok(ServiceResponse::LoginOk),
+        ServiceRequest::LoginUser { username } => {
+            handle_login_user(instance, state, username).await
+        }
+        ServiceRequest::LoginProve { signature } => handle_login_prove(state, &signature),
 
         // === Pre-auth: server identity ===
         ServiceRequest::GetInstanceMetadata => {
@@ -190,9 +223,10 @@ async fn dispatch_inner(
         }
 
         // === Authenticated backend operations ===
-        // Chunk 2 unwraps and dispatches; chunk 3 will validate `(root_id, identity)`
-        // against the connection's session pubkey and the target database's auth
-        // settings before reaching `dispatch_backend_op`.
+        // Chunk 3 dispatches unconditionally; chunk 5 will require the
+        // connection to be in `Authenticated` state and will validate
+        // `(root_id, identity)` against `session_pubkey` and the target
+        // database's auth settings before reaching `dispatch_backend_op`.
         ServiceRequest::Authenticated(inner) => {
             let AuthenticatedRequest {
                 root_id: _,
@@ -200,6 +234,77 @@ async fn dispatch_inner(
                 request,
             } = *inner;
             dispatch_backend_op(instance, request).await
+        }
+    }
+}
+
+/// Handle `ServiceRequest::LoginUser`: look up the user's expected pubkey, mint
+/// a challenge, and move the connection into `AwaitingProof`.
+async fn handle_login_user(
+    instance: &Instance,
+    state: &mut ConnectionState,
+    username: String,
+) -> crate::Result<ServiceResponse> {
+    // Look up the user without touching encrypted material. If the lookup
+    // fails (no such user, disabled, duplicates), drop back to `PreAuth` so
+    // the client can retry — and bubble the error to the caller.
+    let users_db = instance.users_db().await?;
+    let (user_uuid, expected_pubkey) = match lookup_user_pubkey(&users_db, &username).await {
+        Ok(v) => v,
+        Err(e) => {
+            *state = ConnectionState::PreAuth;
+            return Err(e);
+        }
+    };
+
+    let challenge = generate_challenge();
+    *state = ConnectionState::AwaitingProof {
+        username,
+        user_uuid,
+        challenge: challenge.clone(),
+        expected_pubkey,
+    };
+    Ok(ServiceResponse::LoginChallenge { challenge })
+}
+
+/// Handle `ServiceRequest::LoginProve`: verify the signature against the
+/// stored challenge and either transition to `Authenticated` or drop back
+/// to `PreAuth`.
+fn handle_login_prove(
+    state: &mut ConnectionState,
+    signature: &[u8],
+) -> crate::Result<ServiceResponse> {
+    let (username, user_uuid, challenge, expected_pubkey) =
+        match std::mem::replace(state, ConnectionState::PreAuth) {
+            ConnectionState::AwaitingProof {
+                username,
+                user_uuid,
+                challenge,
+                expected_pubkey,
+            } => (username, user_uuid, challenge, expected_pubkey),
+            other => {
+                // Restore the (unexpected) state we just took out so subsequent
+                // requests see consistent state.
+                *state = other;
+                return Err(crate::Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "LoginProve received outside of AwaitingProof state",
+                )));
+            }
+        };
+
+    match verify_challenge_response(&challenge, signature, &expected_pubkey) {
+        Ok(()) => {
+            *state = ConnectionState::Authenticated {
+                username,
+                user_uuid,
+                session_pubkey: expected_pubkey,
+            };
+            Ok(ServiceResponse::LoginOk)
+        }
+        Err(e) => {
+            // Already reset to PreAuth via the mem::replace above.
+            Err(crate::Error::Auth(Box::new(e)))
         }
     }
 }
