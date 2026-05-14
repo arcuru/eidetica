@@ -87,12 +87,26 @@ impl Backend {
         self.put(VerificationStatus::Failed, entry).await
     }
 
+    /// Update the verification status of an entry.
+    ///
+    /// Local backends apply the change directly. Remote backends return
+    /// `OperationNotSupported` — `update_verification_status` is not exposed
+    /// over the wire because verification flags should be derived by each
+    /// node from its own validation pass, not flipped by a peer. See the
+    /// review note on `feat/service-foundation` § 4 for the rationale.
     pub async fn update_verification_status(
         &self,
         id: &ID,
         status: VerificationStatus,
     ) -> Result<()> {
-        dispatch!(self, update_verification_status(id, status))
+        match self {
+            Backend::Local(b) => b.update_verification_status(id, status).await,
+            #[cfg(all(unix, feature = "service"))]
+            Backend::Remote(_) => Err(crate::instance::InstanceError::OperationNotSupported {
+                operation: "update_verification_status on remote backend".to_string(),
+            }
+            .into()),
+        }
     }
 
     pub async fn get_entries_by_verification_status(
@@ -123,8 +137,22 @@ impl Backend {
 
     // === Tree/Store traversal ===
 
+    /// Enumerate every database root in the backend.
+    ///
+    /// Local backends list directly. Remote backends return
+    /// `OperationNotSupported`: enumerating all roots over the wire is a
+    /// cross-tree discovery channel that bypasses the per-tree permission
+    /// gate, and clients that need a list of databases should read the
+    /// `_databases` system DB instead. See review § 6.
     pub async fn all_roots(&self) -> Result<Vec<ID>> {
-        dispatch!(self, all_roots())
+        match self {
+            Backend::Local(b) => b.all_roots().await,
+            #[cfg(all(unix, feature = "service"))]
+            Backend::Remote(_) => Err(crate::instance::InstanceError::OperationNotSupported {
+                operation: "all_roots on remote backend".to_string(),
+            }
+            .into()),
+        }
     }
 
     pub async fn find_merge_base(&self, tree: &ID, store: &str, entry_ids: &[ID]) -> Result<ID> {

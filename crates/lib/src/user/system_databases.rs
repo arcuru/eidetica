@@ -402,38 +402,16 @@ pub async fn login_user(
         _ => return Err(UserError::InvalidPassword.into()),
     };
 
-    // 4. Open user database authenticated with decrypted root key
-    let user_database = Database::open(instance, &user_info.user_database_id)
-        .await?
-        .with_key(root_signing_key);
+    let user =
+        build_user_session(instance, &user_uuid, &user_info, root_signing_key, password).await?;
 
-    // 5. Load all keys from user database into key manager
-    // TODO: load keys lazily
-    let keys_table = user_database
-        .get_store_viewer::<Table<UserKey>>("keys")
-        .await?;
-    let all_keys: Vec<UserKey> = keys_table
-        .search(|_| true)
-        .await?
-        .into_iter()
-        .map(|(_, key)| key)
-        .collect();
-
-    let key_manager = if let Some(pwd) = password {
-        let salt = creds.password_salt.as_ref().unwrap();
-        UserKeyManager::new(pwd, salt, all_keys)?
-    } else {
-        UserKeyManager::new_passwordless(all_keys)?
-    };
-
-    // 6. Update last_login in separate table.
-    // Best-effort: skip the write on remote instances (no local device key
-    // to sign with — the daemon owns this side) and downgrade any other
-    // failure to a debug log rather than blocking login. The last_login
-    // table is treated as a low-priority access log (per the older TODO
-    // noting it grows unbounded and should move to a log table); a missed
-    // entry is acceptable, a failed login over a transient table error
-    // would not be.
+    // Last-login bookkeeping. Best-effort: skip the write on remote instances
+    // (no local device key to sign with — the daemon owns this side) and
+    // downgrade any other failure to a debug log rather than blocking login.
+    // The last_login table is treated as a low-priority access log (per the
+    // older TODO noting it grows unbounded and should move to a log table);
+    // a missed entry is acceptable, a failed login over a transient table
+    // error would not be.
     let now = instance.clock().now_secs();
     let user_uuid_ref = user_uuid.clone();
     if let Err(e) = users_db
@@ -446,32 +424,87 @@ pub async fn login_user(
         tracing::debug!("skipping last_login update for {username}: {e}");
     }
 
-    // 7. Create User session
+    Ok(user)
+}
+
+/// Build a `User` session from data already in hand: the decrypted root
+/// signing key, the user's record, and an optional password (the
+/// `UserKeyManager` re-derives the KEK from it for any per-key decryption).
+///
+/// Used by both the local path (`login_user`, after it reads `_users` and
+/// decrypts the root key from credentials) and the remote path
+/// (`Instance::login_user` over a service connection, after `trusted_login`
+/// has already shipped the `UserInfo` and decrypted the root key on the
+/// client). Keeping a single helper means new keys/state added to the User
+/// session are picked up on both paths without divergence.
+///
+/// Does NOT touch `_users` — that's the caller's responsibility on the local
+/// path (last-login bookkeeping). The remote path skips that intentionally:
+/// the daemon would be the natural place to record it, and burning a wire
+/// write per login is not worth it before the audit-log work lands.
+pub(crate) async fn build_user_session(
+    instance: &Instance,
+    user_uuid: &str,
+    user_info: &UserInfo,
+    root_signing_key: crate::auth::crypto::PrivateKey,
+    password: Option<&str>,
+) -> Result<super::User> {
+    // 1. Open user database authenticated with decrypted root key.
+    let user_database = Database::open(instance, &user_info.user_database_id)
+        .await?
+        .with_key(root_signing_key);
+
+    // 2. Load all keys from user database into key manager.
+    // TODO: load keys lazily
+    let keys_table = user_database
+        .get_store_viewer::<Table<UserKey>>("keys")
+        .await?;
+    let all_keys: Vec<UserKey> = keys_table
+        .search(|_| true)
+        .await?
+        .into_iter()
+        .map(|(_, key)| key)
+        .collect();
+
+    let key_manager = if let Some(pwd) = password {
+        let salt = user_info
+            .credentials
+            .password_salt
+            .as_ref()
+            .ok_or(UserError::InvalidPassword)?;
+        UserKeyManager::new(pwd, salt, all_keys)?
+    } else {
+        UserKeyManager::new_passwordless(all_keys)?
+    };
+
     Ok(User::new(
-        user_uuid,
-        user_info,
+        user_uuid.to_string(),
+        user_info.clone(),
         user_database,
         instance.handle(),
         key_manager,
     ))
 }
 
-/// Look up a user's credentials by username, without requiring the password.
+/// Look up a user's record by username, without requiring the password.
 ///
 /// Used by the service daemon's challenge-response login flow: the daemon
-/// fetches the user's credentials (root pubkey + encrypted root private key +
-/// salt) and ships them to the client so the client can derive the KEK
-/// locally, decrypt the root key, and sign the challenge. The encrypted blob
-/// is designed to survive at rest — shipping it over the local socket is the
-/// same trust boundary as filesystem read. See the Service Architecture
-/// doc § Trusted login threat model for the full rationale.
+/// fetches the user's full `UserInfo` (including encrypted credentials and the
+/// user's private-database id) and ships it to the client so the client can
+/// derive the KEK locally, decrypt the root key, sign the challenge, and then
+/// build the `User` session entirely from the data already carried by the
+/// `TrustedLoginChallenge` response — no second wire read of `_users` is
+/// required. The encrypted blob is designed to survive at rest; shipping it
+/// over the local socket is the same trust boundary as filesystem read. See
+/// the Service Architecture doc § Trusted login threat model for the full
+/// rationale.
 ///
 /// # Returns
-/// Tuple of `(user_uuid, UserCredentials)` if the user exists and is active.
-pub async fn lookup_user_credentials(
+/// Tuple of `(user_uuid, UserInfo)` if the user exists and is active.
+pub async fn lookup_user_record(
     users_db: &Database,
     username: impl AsRef<str>,
-) -> Result<(String, UserCredentials)> {
+) -> Result<(String, UserInfo)> {
     let username = username.as_ref();
     let users_table = users_db
         .get_store_viewer::<Table<UserInfo>>("users")
@@ -502,7 +535,7 @@ pub async fn lookup_user_credentials(
         .into());
     }
 
-    Ok((user_uuid, user_info.credentials))
+    Ok((user_uuid, user_info))
 }
 
 /// List all users in the system

@@ -666,12 +666,22 @@ impl Instance {
     /// Parallel to `users_db()` — opens the instance's database-registry
     /// system DB with the device signing key attached. Used by the
     /// instance-admin bootstrap path (`system_databases::create_user`) to add
-    /// the first user's pubkey as `Admin(0)` on the registry alongside
-    /// `_users`.
+    /// the first user's pubkey as `Admin(0)` on the registry, so subsequent
+    /// admin-gated instance ops (e.g., `SetInstanceMetadata`) can authorize
+    /// against the user's key instead of the device key.
     pub(crate) async fn databases_db(&self) -> Result<Database> {
         Ok(Database::open(self, &self.inner.metadata.databases_db)
             .await?
             .with_key(self.signing_key()?.clone()))
+    }
+
+    /// Root id of the `_databases` system DB.
+    ///
+    /// The service daemon uses this to gate admin-only ops
+    /// (e.g., `SetInstanceMetadata`) against `_databases.auth_settings`:
+    /// an instance admin is a user with `Admin` on `_databases`.
+    pub(crate) fn databases_db_id(&self) -> &ID {
+        &self.inner.metadata.databases_db
     }
 
     // === User Management ===
@@ -711,21 +721,25 @@ impl Instance {
     /// # Returns
     /// A Result containing the User session
     pub async fn login_user(&self, user_id: &str, password: Option<&str>) -> Result<User> {
-        use crate::user::system_databases::login_user;
-
-        // On a remote instance, first authenticate the underlying socket
-        // connection via the TrustedLogin* challenge-response handshake.
-        // Subsequent reads (user info, user database, keys) flow through the
-        // now-authenticated connection. The local decrypt in `login_user`
-        // below re-runs Argon2id with the password; that's redundant work
-        // for now and will be reused by the OS-keyring caching follow-up
-        // (TODO-dbbc6a6e) rather than threading the already-decrypted key
-        // through the User construction path.
+        // On a remote instance, the `TrustedLogin*` handshake authenticates the
+        // socket connection AND ships back the user's full `UserInfo` plus the
+        // decrypted root signing key. Build the `User` session from those —
+        // the per-tree gate means a freshly-logged-in user with no permissions
+        // on `_users` couldn't re-read it over the wire anyway, so we don't try.
         #[cfg(all(unix, feature = "service"))]
         if let Backend::Remote(conn) = self.backend() {
-            conn.trusted_login(user_id, password).await?;
+            let (user_uuid, user_info, signing_key) = conn.trusted_login(user_id, password).await?;
+            return crate::user::system_databases::build_user_session(
+                self,
+                &user_uuid,
+                &user_info,
+                signing_key,
+                password,
+            )
+            .await;
         }
 
+        use crate::user::system_databases::login_user;
         let users_db = self.users_db().await?;
         login_user(&users_db, self, user_id, password).await
     }
