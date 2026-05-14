@@ -610,6 +610,19 @@ impl Instance {
             .with_key(self.signing_key()?.clone()))
     }
 
+    /// Get the _databases tracking database
+    ///
+    /// Parallel to `users_db()` — opens the instance's database-registry
+    /// system DB with the device signing key attached. Used by the
+    /// instance-admin bootstrap path (`system_databases::create_user`) to add
+    /// the first user's pubkey as `Admin(0)` on the registry alongside
+    /// `_users`.
+    pub(crate) async fn databases_db(&self) -> Result<Database> {
+        Ok(Database::open(self, &self.inner.metadata.databases_db)
+            .await?
+            .with_key(self.signing_key()?.clone()))
+    }
+
     // === User Management ===
 
     /// Create a new user account with flexible password handling.
