@@ -36,6 +36,8 @@ mod database;
 mod entry;
 mod helpers;
 mod instance;
+#[cfg(all(unix, feature = "service"))]
+mod service;
 mod store;
 mod sync;
 mod transaction;
