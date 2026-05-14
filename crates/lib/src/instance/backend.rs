@@ -289,32 +289,6 @@ impl Backend {
         }
     }
 
-    // === User management ===
-
-    /// Create a user via RPC (remote only). Local backends use Instance methods directly.
-    #[cfg(all(unix, feature = "service"))]
-    pub async fn create_user(&self, username: &str, password: Option<&str>) -> Result<String> {
-        match self {
-            Backend::Local(_) => Err(crate::instance::InstanceError::OperationNotSupported {
-                operation: "create_user RPC on local backend".to_string(),
-            }
-            .into()),
-            Backend::Remote(c) => c.create_user(username, password).await,
-        }
-    }
-
-    /// List users via RPC (remote only). Local backends use Instance methods directly.
-    #[cfg(all(unix, feature = "service"))]
-    pub async fn list_users(&self) -> Result<Vec<String>> {
-        match self {
-            Backend::Local(_) => Err(crate::instance::InstanceError::OperationNotSupported {
-                operation: "list_users RPC on local backend".to_string(),
-            }
-            .into()),
-            Backend::Remote(c) => c.list_users().await,
-        }
-    }
-
     // === Backend access ===
 
     /// Get access to the underlying `BackendImpl` (local only).

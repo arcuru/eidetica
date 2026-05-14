@@ -6,9 +6,9 @@
 //! ## Request shape
 //!
 //! `ServiceRequest` is a flat enum holding pre-authentication lifecycle messages
-//! (`TrustedLoginUser`, `TrustedLoginProve`), pre-auth queries that are safe
-//! before login (`GetInstanceMetadata`, `ListUsers`, `CreateUser`), and an
-//! `Authenticated` wrapper that carries every storage operation. The wrapper
+//! (`TrustedLoginUser`, `TrustedLoginProve`), the pre-auth `GetInstanceMetadata`
+//! query, and an `Authenticated` wrapper that carries every storage operation
+//! (including any user-management writes against `_users`). The wrapper
 //! bundles the `(root_id, identity)` scope so the server can validate each
 //! backend op against the connection's session pubkey and the target database's
 //! auth settings. Pre-auth verification of the session pubkey happens once at
@@ -273,15 +273,6 @@ pub enum ServiceRequest {
     /// Fetch the server's instance metadata (including device id). Used by
     /// `Instance::connect` during the handshake to establish server identity.
     GetInstanceMetadata,
-    /// List user names known to the daemon. Knowing which accounts exist is
-    /// not considered sensitive; the auth gate is on logging in as them.
-    ListUsers,
-    /// Create a new user. Pre-auth in chunk 2 to preserve existing behaviour;
-    /// future chunks may move this behind an admin role.
-    CreateUser {
-        username: String,
-        password: Option<String>,
-    },
 
     // === Authenticated wrapper for every backend operation ===
     /// All backend storage ops travel inside this wrapper. The inner
@@ -311,10 +302,6 @@ pub enum ServiceResponse {
     InstanceMetadata(Option<InstanceMetadata>),
     /// Error response
     Error(ServiceError),
-    /// User created successfully (returns user UUID)
-    UserCreated(String),
-    /// List of user IDs
-    Users(Vec<String>),
     /// Challenge bytes returned in response to `TrustedLoginUser`, plus the
     /// user's full record so the client can derive the password→key, decrypt
     /// the root signing key locally, sign the challenge in a single

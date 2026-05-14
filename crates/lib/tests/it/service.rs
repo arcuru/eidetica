@@ -45,20 +45,23 @@ async fn start_test_server() -> (PathBuf, watch::Sender<()>, Instance, TempDir) 
 
 #[tokio::test]
 async fn test_connect_and_create_instance() {
-    let (socket_path, _tx, _server, _dir) = start_test_server().await;
-    let instance = Instance::connect(&socket_path).await.unwrap();
-    // Should be able to list users (system databases loaded)
-    let users = instance.list_users().await.unwrap();
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    let _instance = Instance::connect(&socket_path).await.unwrap();
+    // The wire surface no longer carries `ListUsers`; user enumeration runs on
+    // the server-local Instance (an admin reading `_users`). Smoke-check that
+    // the handshake landed and the daemon is responsive: no users exist yet.
+    let users = server.list_users().await.unwrap();
     assert!(users.is_empty());
 }
 
 #[tokio::test]
 async fn test_user_lifecycle() {
-    let (socket_path, _tx, _server, _dir) = start_test_server().await;
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    // User creation runs against the server-local Instance (admin-only),
+    // mirroring the production "admin edits `_users`" flow. The wire client
+    // then drives login + per-user operations.
+    server.create_user("alice", None).await.unwrap();
     let instance = Instance::connect(&socket_path).await.unwrap();
-
-    // Create user
-    instance.create_user("alice", None).await.unwrap();
 
     // Login
     let mut user = instance.login_user("alice", None).await.unwrap();
@@ -114,30 +117,27 @@ async fn test_unauthenticated_backend_op_rejected() {
 
 #[tokio::test]
 async fn test_concurrent_clients() {
-    let (socket_path, _tx, _server, _dir) = start_test_server().await;
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    server.create_user("bob", None).await.unwrap();
 
-    // Connect two clients
+    // Two clients connect to the same daemon and complete login concurrently.
     let instance1 = Instance::connect(&socket_path).await.unwrap();
     let instance2 = Instance::connect(&socket_path).await.unwrap();
 
-    // Create user from client 1
-    instance1.create_user("bob", None).await.unwrap();
-
-    // Login from client 2
-    let user = instance2.login_user("bob", None).await.unwrap();
-    assert_eq!(user.username(), "bob");
+    let _user1 = instance1.login_user("bob", None).await.unwrap();
+    let user2 = instance2.login_user("bob", None).await.unwrap();
+    assert_eq!(user2.username(), "bob");
 }
 
 #[tokio::test]
 async fn test_instance_connect_convenience() {
-    let (socket_path, _tx, _server, _dir) = start_test_server().await;
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    server.create_user("charlie", None).await.unwrap();
 
-    // Use the convenience API
-    let instance = Instance::connect(&socket_path).await.unwrap();
-
-    // Verify basic operations work
-    instance.create_user("charlie", None).await.unwrap();
-    let users = instance.list_users().await.unwrap();
+    let _instance = Instance::connect(&socket_path).await.unwrap();
+    // ListUsers is no longer on the wire surface; verify via the server-local
+    // Instance that the user we just created is visible.
+    let users = server.list_users().await.unwrap();
     assert_eq!(users, vec!["charlie"]);
 }
 
@@ -256,6 +256,90 @@ async fn test_trusted_login_prove_without_user_errors() {
     assert!(matches!(resp, ServiceResponse::Error(_)));
 }
 
+/// Chunk-6 per-user cache isolation, end-to-end over the wire.
+///
+/// Two authenticated connections (alice and bob) on the same daemon, hitting
+/// the same `(entry_id, store)` slot. The service-layer cache namespaces by
+/// session `user_uuid`, so:
+///   - bob's read sees nothing of alice's write
+///   - bob's write doesn't poison alice's slot
+///   - each user's `ClearCrdtCache` only affects their own slice
+#[tokio::test]
+async fn test_crdt_cache_is_per_user() {
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    server.create_user("alice", None).await.unwrap();
+    server.create_user("bob", None).await.unwrap();
+
+    let alice_inst = Instance::connect(&socket_path).await.unwrap();
+    let _alice = alice_inst.login_user("alice", None).await.unwrap();
+
+    let bob_inst = Instance::connect(&socket_path).await.unwrap();
+    let _bob = bob_inst.login_user("bob", None).await.unwrap();
+
+    let entry_id = eidetica::entry::ID::from_bytes("cache-isolation-entry");
+    let store = "test_store";
+
+    // Alice writes; bob's slot for the same key must still be empty.
+    alice_inst
+        .backend()
+        .cache_crdt_state(&entry_id, store, b"alice-bytes".to_vec())
+        .await
+        .unwrap();
+    assert_eq!(
+        bob_inst
+            .backend()
+            .get_cached_crdt_state(&entry_id, store)
+            .await
+            .unwrap(),
+        None,
+        "bob must not see alice's cache slot",
+    );
+
+    // Bob writes different bytes; alice's slot must be unchanged.
+    bob_inst
+        .backend()
+        .cache_crdt_state(&entry_id, store, b"bob-bytes".to_vec())
+        .await
+        .unwrap();
+    assert_eq!(
+        alice_inst
+            .backend()
+            .get_cached_crdt_state(&entry_id, store)
+            .await
+            .unwrap(),
+        Some(b"alice-bytes".to_vec()),
+        "bob's write must not poison alice's cache slot",
+    );
+    assert_eq!(
+        bob_inst
+            .backend()
+            .get_cached_crdt_state(&entry_id, store)
+            .await
+            .unwrap(),
+        Some(b"bob-bytes".to_vec()),
+    );
+
+    // ClearCrdtCache is per-user: alice clearing leaves bob intact.
+    alice_inst.backend().clear_crdt_cache().await.unwrap();
+    assert_eq!(
+        alice_inst
+            .backend()
+            .get_cached_crdt_state(&entry_id, store)
+            .await
+            .unwrap(),
+        None,
+    );
+    assert_eq!(
+        bob_inst
+            .backend()
+            .get_cached_crdt_state(&entry_id, store)
+            .await
+            .unwrap(),
+        Some(b"bob-bytes".to_vec()),
+        "alice clearing her cache must not affect bob's slice",
+    );
+}
+
 /// Positive control for the chunk-5b per-tree gate: a logged-in user can
 /// read tree-scoped data on a database where they hold Admin/Write/Read.
 ///
@@ -264,9 +348,9 @@ async fn test_trusted_login_prove_without_user_errors() {
 /// for legitimate access would surface here as a `PermissionDenied`.
 #[tokio::test]
 async fn test_backend_get_tips_allowed_for_owner() {
-    let (socket_path, _tx, _server, _dir) = start_test_server().await;
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    server.create_user("alice", None).await.unwrap();
     let instance = Instance::connect(&socket_path).await.unwrap();
-    instance.create_user("alice", None).await.unwrap();
     let mut alice = instance.login_user("alice", None).await.unwrap();
 
     let mut settings = eidetica::crdt::Doc::new();
@@ -289,11 +373,12 @@ async fn test_backend_get_tips_allowed_for_owner() {
 /// multiple users authenticate against the same socket.
 #[tokio::test]
 async fn test_backend_get_tips_denied_for_unauthorised_user() {
-    let (socket_path, _tx, _server, _dir) = start_test_server().await;
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    server.create_user("alice", None).await.unwrap();
+    server.create_user("bob", None).await.unwrap();
 
     // Alice creates a database via her own authenticated connection.
     let alice_inst = Instance::connect(&socket_path).await.unwrap();
-    alice_inst.create_user("alice", None).await.unwrap();
     let mut alice = alice_inst.login_user("alice", None).await.unwrap();
     let mut settings = eidetica::crdt::Doc::new();
     settings.set("name", "alice_db");
@@ -303,7 +388,6 @@ async fn test_backend_get_tips_denied_for_unauthorised_user() {
 
     // Bob authenticates on a separate connection.
     let bob_inst = Instance::connect(&socket_path).await.unwrap();
-    bob_inst.create_user("bob", None).await.unwrap();
     let _bob = bob_inst.login_user("bob", None).await.unwrap();
 
     // Bob asks for tips on alice's database. The chunk-5b gate must reject —

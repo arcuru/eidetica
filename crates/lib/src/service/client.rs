@@ -544,33 +544,6 @@ impl RemoteConnection {
             .await?;
         Self::expect_ok(resp)
     }
-
-    // === User management RPCs ===
-
-    pub async fn create_user(
-        &self,
-        username: &str,
-        password: Option<&str>,
-    ) -> crate::Result<String> {
-        let resp = self
-            .request_ok(ServiceRequest::CreateUser {
-                username: username.to_string(),
-                password: password.map(|s| s.to_string()),
-            })
-            .await?;
-        match resp {
-            ServiceResponse::UserCreated(uuid) => Ok(uuid),
-            other => Err(unexpected_response("UserCreated", &other)),
-        }
-    }
-
-    pub async fn list_users(&self) -> crate::Result<Vec<String>> {
-        let resp = self.request_ok(ServiceRequest::ListUsers).await?;
-        match resp {
-            ServiceResponse::Users(users) => Ok(users),
-            other => Err(unexpected_response("Users", &other)),
-        }
-    }
 }
 
 fn unexpected_response(expected: &str, actual: &ServiceResponse) -> crate::Error {

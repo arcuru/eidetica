@@ -59,6 +59,7 @@
 //!   (not useful). Future: add an `EnableSync` RPC that delegates to the server's
 //!   Instance, and similarly for `sync()`, `flush_sync()`, etc.
 
+pub(crate) mod cache;
 pub mod client;
 pub mod error;
 pub mod protocol;
