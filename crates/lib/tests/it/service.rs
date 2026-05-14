@@ -53,7 +53,6 @@ async fn test_connect_and_create_instance() {
 }
 
 #[tokio::test]
-#[ignore = "login_user over RPC requires the TrustedLogin client flow (Branch C chunk 4)"]
 async fn test_user_lifecycle() {
     let (socket_path, _tx, _server, _dir) = start_test_server().await;
     let instance = Instance::connect(&socket_path).await.unwrap();
@@ -92,7 +91,6 @@ async fn test_error_propagation() {
 }
 
 #[tokio::test]
-#[ignore = "login_user over RPC requires the TrustedLogin client flow (Branch C chunk 4)"]
 async fn test_concurrent_clients() {
     let (socket_path, _tx, _server, _dir) = start_test_server().await;
 
@@ -174,7 +172,7 @@ async fn test_trusted_login_challenge_response_round_trip() {
     .unwrap();
     let resp: ServiceResponse = read_frame(&mut reader).await.unwrap().unwrap();
     let challenge = match resp {
-        ServiceResponse::TrustedLoginChallenge { challenge } => challenge,
+        ServiceResponse::TrustedLoginChallenge { challenge, .. } => challenge,
         other => panic!("expected TrustedLoginChallenge, got {other:?}"),
     };
     assert_eq!(challenge.len(), 32, "challenge must be 32 random bytes");
