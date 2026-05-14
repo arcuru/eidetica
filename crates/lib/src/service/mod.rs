@@ -14,20 +14,31 @@
 //!
 //! ## Security Model
 //!
-//! The daemon acts as a key server, similar to PostgreSQL over a Unix socket:
+//! Client-side signing. The daemon stores and serves encrypted key material and
+//! signed entries but never holds plaintext user signing keys or passwords.
 //!
-//! - **Signing keys stay server-side**: the daemon holds decrypted private keys in
-//!   memory for authenticated connections. Clients never receive key material.
-//! - **Password login**: clients authenticate by sending a password at connection
-//!   start. The server verifies it (Argon2id), decrypts the user's keys, and holds
-//!   them in per-connection state for the connection's lifetime.
-//! - **Connection = session**: no tokens or handles. Unix socket lifecycle manages
-//!   auth state. Connection close drops the decrypted keys.
-//! - **Server-side signing**: entry signing happens on the server. The client holds a
-//!   `PrivateKey::Remote` variant that proxies async `sign()` calls to the server
-//!   via RPC.
-//! - **Filesystem permissions**: the socket directory is owner-only (mode 0700) as
-//!   an additional access control layer.
+//! - **User keys stay client-side**: clients fetch encrypted `UserCredentials` from
+//!   the daemon, derive the key-encryption-key locally (Argon2id), decrypt the user's
+//!   signing key in-process, and sign entries before sending them to the daemon for
+//!   storage. The signing key never crosses the socket.
+//! - **Authentication via challenge-response**: when the daemon needs to prove a
+//!   connecting client controls a user account, the daemon issues a fresh random
+//!   challenge per session and the client signs it with the user's root key. The
+//!   daemon verifies against the user's public key from its auth tables. No password
+//!   is sent over the wire; successful decryption of the user's signing key on the
+//!   client *is* password verification.
+//! - **Encrypted stores remain opaque to the daemon**: per-database encrypted CRDTs
+//!   (e.g. `PasswordStore`) merge as `Vec<EncryptedBlob>` — the daemon participates
+//!   in storage and sync without ever holding a content encryption key. Clients
+//!   decrypt and merge in-process and may write the result back as an encrypted
+//!   cache entry.
+//! - **Filesystem permissions**: the socket directory is owner-only (mode 0700) and
+//!   the socket itself is mode 0600 as an additional access-control layer.
+//!
+//! See the brain note "Service Architecture" § Security Model for the design rationale,
+//! including why daemon-side signing (the earlier draft) was rejected and the
+//! deferred work that grew out of that decision (hardware-backed `PrivateKey::Remote`,
+//! async `sign()`, OS-keyring caching of derived encryption keys).
 //!
 //! ## Write Coordination
 //!
