@@ -2,10 +2,27 @@
 //!
 //! The protocol uses length-prefixed JSON frames over a Unix domain socket.
 //! Each frame is a 4-byte big-endian length followed by the JSON payload.
+//!
+//! ## Request shape
+//!
+//! `ServiceRequest` is a flat enum holding pre-authentication lifecycle messages
+//! (`LoginUser`, `LoginProve`), pre-auth queries that are safe before login
+//! (`GetInstanceMetadata`, `ListUsers`, `CreateUser`), and an `Authenticated`
+//! wrapper that carries every storage operation. The wrapper bundles the
+//! `(root_id, identity)` scope so the server can validate each backend op
+//! against the connection's session pubkey and the target database's auth
+//! settings. Pre-auth verification of the session pubkey happens once at login
+//! via a challenge-response handshake.
+//!
+//! For chunk 2 the wrapper is recognised by the server but the auth fields are
+//! not yet enforced — chunk 3 lands the connection state machine that uses
+//! them. Clients populate `root_id`/`identity` with defaults until chunk 4
+//! wires up real session state.
 
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
+use crate::auth::types::SigKey;
 use crate::backend::{InstanceMetadata, VerificationStatus};
 use crate::entry::{Entry, ID};
 use crate::instance::WriteSource;
@@ -30,9 +47,15 @@ pub struct HandshakeAck {
     pub protocol_version: u32,
 }
 
-/// Request from client to server, one variant per `BackendImpl` method.
+/// Backend storage operations that the server dispatches on behalf of an
+/// authenticated client.
+///
+/// Each variant maps one-to-one to a `BackendImpl` method (plus
+/// `NotifyEntryWritten` for write-coordination via `Instance::dispatch_write_callbacks`).
+/// `BackendOp` is always carried inside `ServiceRequest::Authenticated` so the
+/// server has the `(root_id, identity)` scope it needs to authorise the op.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ServiceRequest {
+pub enum BackendOp {
     // === Entry operations ===
     Get {
         id: ID,
@@ -122,8 +145,7 @@ pub enum ServiceRequest {
         to_ids: Vec<ID>,
     },
 
-    // === Instance metadata ===
-    GetInstanceMetadata,
+    // === Instance metadata (write side) ===
     SetInstanceMetadata {
         metadata: InstanceMetadata,
     },
@@ -134,13 +156,62 @@ pub enum ServiceRequest {
         entry_id: ID,
         source: WriteSource,
     },
+}
 
-    // === User management ===
+/// Payload of an `Authenticated` service request.
+///
+/// Bundles the database scope (`root_id`) and identity claim (`identity`) with
+/// the backend op the client wants to run. Carried boxed inside
+/// `ServiceRequest::Authenticated` to keep the top-level enum's stack footprint
+/// flat — both `SigKey` and `BackendOp::Put` are large.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthenticatedRequest {
+    /// Root entry of the database this op targets. Used by the server to look
+    /// up auth settings for permission resolution.
+    pub root_id: ID,
+    /// Identity claim for the op. The server verifies this against the
+    /// connection's session pubkey before dispatching the inner request.
+    pub identity: SigKey,
+    /// Backend operation to execute.
+    pub request: BackendOp,
+}
+
+/// Top-level request from client to server.
+///
+/// The shape is intentionally flat: pre-auth lifecycle and queries sit beside
+/// the `Authenticated` wrapper rather than under a nested enum. This makes the
+/// pre-auth surface visible at a glance and keeps the server's dispatch
+/// branches symmetric.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ServiceRequest {
+    // === Pre-auth: login handshake ===
+    /// Step 1 of login. Client names a user; server responds with a
+    /// `LoginChallenge` carrying random bytes the client must sign.
+    LoginUser { username: String },
+    /// Step 2 of login. Client returns a signature over the challenge from
+    /// `LoginUser`, computed with the user's root key. Server verifies against
+    /// the stored pubkey and, on success, marks the connection authenticated.
+    LoginProve { signature: Vec<u8> },
+
+    // === Pre-auth: queries safe before login ===
+    /// Fetch the server's instance metadata (including device id). Used by
+    /// `Instance::connect` during the handshake to establish server identity.
+    GetInstanceMetadata,
+    /// List user names known to the daemon. Knowing which accounts exist is
+    /// not considered sensitive; the auth gate is on logging in as them.
+    ListUsers,
+    /// Create a new user. Pre-auth in chunk 2 to preserve existing behaviour;
+    /// future chunks may move this behind an admin role.
     CreateUser {
         username: String,
         password: Option<String>,
     },
-    ListUsers,
+
+    // === Authenticated wrapper for every backend operation ===
+    /// All backend storage ops travel inside this wrapper. The inner
+    /// `AuthenticatedRequest` carries `(root_id, identity, request)` and is
+    /// boxed to keep the enum's discriminated size compact.
+    Authenticated(Box<AuthenticatedRequest>),
 }
 
 /// Response from server to client.
@@ -168,6 +239,11 @@ pub enum ServiceResponse {
     UserCreated(String),
     /// List of user IDs
     Users(Vec<String>),
+    /// Challenge bytes returned in response to `LoginUser`. The client signs
+    /// these with the user's root key and replies with `LoginProve`.
+    LoginChallenge { challenge: Vec<u8> },
+    /// Login succeeded; the connection is now authenticated.
+    LoginOk,
 }
 
 /// Write a length-prefixed JSON frame to an async writer.
@@ -223,6 +299,23 @@ mod tests {
         ID::from_bytes("test-entry-id")
     }
 
+    fn wrap(op: BackendOp) -> ServiceRequest {
+        ServiceRequest::Authenticated(Box::new(AuthenticatedRequest {
+            root_id: ID::default(),
+            identity: SigKey::default(),
+            request: op,
+        }))
+    }
+
+    /// Extract the inner `BackendOp` from a deserialised request, panicking if
+    /// the variant isn't `Authenticated`.
+    fn unwrap_op(req: ServiceRequest) -> BackendOp {
+        match req {
+            ServiceRequest::Authenticated(inner) => inner.request,
+            other => panic!("expected Authenticated, got {other:?}"),
+        }
+    }
+
     #[test]
     fn test_handshake_serde() {
         let h = Handshake {
@@ -245,32 +338,32 @@ mod tests {
 
     #[test]
     fn test_request_get_serde() {
-        let req = ServiceRequest::Get { id: test_id() };
+        let req = wrap(BackendOp::Get { id: test_id() });
         let json = serde_json::to_string(&req).unwrap();
         let req2: ServiceRequest = serde_json::from_str(&json).unwrap();
-        match req2 {
-            ServiceRequest::Get { id } => assert_eq!(id, test_id()),
+        match unwrap_op(req2) {
+            BackendOp::Get { id } => assert_eq!(id, test_id()),
             _ => panic!("wrong variant"),
         }
     }
 
     #[test]
     fn test_request_get_tips_serde() {
-        let req = ServiceRequest::GetTips { tree: test_id() };
+        let req = wrap(BackendOp::GetTips { tree: test_id() });
         let json = serde_json::to_string(&req).unwrap();
         let req2: ServiceRequest = serde_json::from_str(&json).unwrap();
-        match req2 {
-            ServiceRequest::GetTips { tree } => assert_eq!(tree, test_id()),
+        match unwrap_op(req2) {
+            BackendOp::GetTips { tree } => assert_eq!(tree, test_id()),
             _ => panic!("wrong variant"),
         }
     }
 
     #[test]
     fn test_request_all_roots_serde() {
-        let req = ServiceRequest::AllRoots;
+        let req = wrap(BackendOp::AllRoots);
         let json = serde_json::to_string(&req).unwrap();
         let req2: ServiceRequest = serde_json::from_str(&json).unwrap();
-        assert!(matches!(req2, ServiceRequest::AllRoots));
+        assert!(matches!(unwrap_op(req2), BackendOp::AllRoots));
     }
 
     #[test]
@@ -283,23 +376,23 @@ mod tests {
 
     #[test]
     fn test_request_clear_crdt_cache_serde() {
-        let req = ServiceRequest::ClearCrdtCache;
+        let req = wrap(BackendOp::ClearCrdtCache);
         let json = serde_json::to_string(&req).unwrap();
         let req2: ServiceRequest = serde_json::from_str(&json).unwrap();
-        assert!(matches!(req2, ServiceRequest::ClearCrdtCache));
+        assert!(matches!(unwrap_op(req2), BackendOp::ClearCrdtCache));
     }
 
     #[test]
     fn test_request_notify_entry_written_serde() {
-        let req = ServiceRequest::NotifyEntryWritten {
+        let req = wrap(BackendOp::NotifyEntryWritten {
             tree_id: test_id(),
             entry_id: ID::from_bytes("entry-1"),
             source: WriteSource::Local,
-        };
+        });
         let json = serde_json::to_string(&req).unwrap();
         let req2: ServiceRequest = serde_json::from_str(&json).unwrap();
-        match req2 {
-            ServiceRequest::NotifyEntryWritten {
+        match unwrap_op(req2) {
+            BackendOp::NotifyEntryWritten {
                 tree_id,
                 entry_id,
                 source,
@@ -308,6 +401,32 @@ mod tests {
                 assert_eq!(entry_id, ID::from_bytes("entry-1"));
                 assert_eq!(source, WriteSource::Local);
             }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_request_login_user_serde() {
+        let req = ServiceRequest::LoginUser {
+            username: "alice".to_string(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let req2: ServiceRequest = serde_json::from_str(&json).unwrap();
+        match req2 {
+            ServiceRequest::LoginUser { username } => assert_eq!(username, "alice"),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_request_login_prove_serde() {
+        let req = ServiceRequest::LoginProve {
+            signature: b"sig-bytes".to_vec(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let req2: ServiceRequest = serde_json::from_str(&json).unwrap();
+        match req2 {
+            ServiceRequest::LoginProve { signature } => assert_eq!(signature, b"sig-bytes"),
             _ => panic!("wrong variant"),
         }
     }
@@ -388,6 +507,29 @@ mod tests {
         assert!(matches!(resp2, ServiceResponse::InstanceMetadata(None)));
     }
 
+    #[test]
+    fn test_response_login_challenge_serde() {
+        let resp = ServiceResponse::LoginChallenge {
+            challenge: b"random-bytes".to_vec(),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        let resp2: ServiceResponse = serde_json::from_str(&json).unwrap();
+        match resp2 {
+            ServiceResponse::LoginChallenge { challenge } => {
+                assert_eq!(challenge, b"random-bytes");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_response_login_ok_serde() {
+        let resp = ServiceResponse::LoginOk;
+        let json = serde_json::to_string(&resp).unwrap();
+        let resp2: ServiceResponse = serde_json::from_str(&json).unwrap();
+        assert!(matches!(resp2, ServiceResponse::LoginOk));
+    }
+
     #[tokio::test]
     async fn test_frame_roundtrip() {
         // duplex gives two ends: writing to `client` is readable from `server` and vice versa
@@ -395,7 +537,7 @@ mod tests {
         let (mut server_read, _server_write) = tokio::io::split(server);
         let (_client_read, mut client_write) = tokio::io::split(client);
 
-        let req = ServiceRequest::Get { id: test_id() };
+        let req = wrap(BackendOp::Get { id: test_id() });
 
         let write_handle = tokio::spawn(async move {
             write_frame(&mut client_write, &req).await.unwrap();
@@ -405,8 +547,8 @@ mod tests {
         write_handle.await.unwrap();
 
         let result = read_result.unwrap();
-        match result {
-            ServiceRequest::Get { id } => assert_eq!(id, test_id()),
+        match unwrap_op(result) {
+            BackendOp::Get { id } => assert_eq!(id, test_id()),
             _ => panic!("wrong variant"),
         }
     }

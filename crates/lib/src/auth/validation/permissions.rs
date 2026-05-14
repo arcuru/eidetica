@@ -54,9 +54,7 @@ pub async fn resolve_identity_permission(
             (Some(claimed_pubkey), _) => {
                 if *claimed_pubkey != *pubkey {
                     return Err(Error::Auth(Box::new(AuthError::SigningKeyMismatch {
-                        reason: format!(
-                            "pubkey '{pubkey}' but identity claims '{claimed_pubkey}'"
-                        ),
+                        reason: format!("pubkey '{pubkey}' but identity claims '{claimed_pubkey}'"),
                     })));
                 }
                 let auth_key = auth_settings.get_key_by_pubkey(pubkey)?;

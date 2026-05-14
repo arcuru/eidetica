@@ -12,7 +12,8 @@ use tokio::sync::watch;
 use crate::Instance;
 use crate::service::error::ServiceError;
 use crate::service::protocol::{
-    HandshakeAck, PROTOCOL_VERSION, ServiceRequest, ServiceResponse, read_frame, write_frame,
+    AuthenticatedRequest, BackendOp, HandshakeAck, PROTOCOL_VERSION, ServiceRequest,
+    ServiceResponse, read_frame, write_frame,
 };
 
 /// Eidetica service server that listens on a Unix domain socket.
@@ -161,15 +162,63 @@ async fn dispatch_inner(
     instance: &Instance,
     request: ServiceRequest,
 ) -> crate::Result<ServiceResponse> {
+    match request {
+        // === Pre-auth: login handshake ===
+        // Chunk 2 stubs: the wire types are settled but the connection state
+        // machine and challenge-response verification land in chunk 3. For now
+        // these return placeholder responses so a client speaking the new
+        // protocol can round-trip the message types.
+        ServiceRequest::LoginUser { username: _ } => Ok(ServiceResponse::LoginChallenge {
+            challenge: Vec::new(),
+        }),
+        ServiceRequest::LoginProve { signature: _ } => Ok(ServiceResponse::LoginOk),
+
+        // === Pre-auth: server identity ===
+        ServiceRequest::GetInstanceMetadata => {
+            let metadata = instance.backend().get_instance_metadata().await?;
+            Ok(ServiceResponse::InstanceMetadata(metadata))
+        }
+
+        // === Pre-auth: user management ===
+        ServiceRequest::CreateUser { username, password } => {
+            let uuid = instance.create_user(&username, password.as_deref()).await?;
+            Ok(ServiceResponse::UserCreated(uuid))
+        }
+        ServiceRequest::ListUsers => {
+            let users = instance.list_users().await?;
+            Ok(ServiceResponse::Users(users))
+        }
+
+        // === Authenticated backend operations ===
+        // Chunk 2 unwraps and dispatches; chunk 3 will validate `(root_id, identity)`
+        // against the connection's session pubkey and the target database's auth
+        // settings before reaching `dispatch_backend_op`.
+        ServiceRequest::Authenticated(inner) => {
+            let AuthenticatedRequest {
+                root_id: _,
+                identity: _,
+                request,
+            } = *inner;
+            dispatch_backend_op(instance, request).await
+        }
+    }
+}
+
+/// Dispatch a `BackendOp` against the daemon's `Instance` backend.
+///
+/// In chunk 2 this is called directly from `dispatch_inner` after unwrapping
+/// the `Authenticated` envelope. Chunk 3 will gate this with per-request
+/// permission checks resolved via `resolve_identity_permission`.
+async fn dispatch_backend_op(instance: &Instance, op: BackendOp) -> crate::Result<ServiceResponse> {
     let backend = instance.backend();
 
-    match request {
+    match op {
         // === Entry operations ===
-        ServiceRequest::Get { id } => {
+        BackendOp::Get { id } => {
             let entry = backend.get(&id).await?;
             Ok(ServiceResponse::Entry(entry))
         }
-        ServiceRequest::Put {
+        BackendOp::Put {
             verification_status,
             entry,
         } => {
@@ -178,11 +227,11 @@ async fn dispatch_inner(
         }
 
         // === Verification ===
-        ServiceRequest::GetVerificationStatus { id } => {
+        BackendOp::GetVerificationStatus { id } => {
             let status = backend.get_verification_status(&id).await?;
             Ok(ServiceResponse::VerificationStatus(status))
         }
-        ServiceRequest::UpdateVerificationStatus {
+        BackendOp::UpdateVerificationStatus {
             id,
             verification_status,
         } => {
@@ -191,21 +240,21 @@ async fn dispatch_inner(
                 .await?;
             Ok(ServiceResponse::Ok)
         }
-        ServiceRequest::GetEntriesByVerificationStatus { status } => {
+        BackendOp::GetEntriesByVerificationStatus { status } => {
             let ids = backend.get_entries_by_verification_status(status).await?;
             Ok(ServiceResponse::Ids(ids))
         }
 
         // === Tips ===
-        ServiceRequest::GetTips { tree } => {
+        BackendOp::GetTips { tree } => {
             let tips = backend.get_tips(&tree).await?;
             Ok(ServiceResponse::Ids(tips))
         }
-        ServiceRequest::GetStoreTips { tree, store } => {
+        BackendOp::GetStoreTips { tree, store } => {
             let tips = backend.get_store_tips(&tree, &store).await?;
             Ok(ServiceResponse::Ids(tips))
         }
-        ServiceRequest::GetStoreTipsUpToEntries {
+        BackendOp::GetStoreTipsUpToEntries {
             tree,
             store,
             main_entries,
@@ -217,11 +266,11 @@ async fn dispatch_inner(
         }
 
         // === Tree/Store traversal ===
-        ServiceRequest::AllRoots => {
+        BackendOp::AllRoots => {
             let roots = backend.all_roots().await?;
             Ok(ServiceResponse::Ids(roots))
         }
-        ServiceRequest::FindMergeBase {
+        BackendOp::FindMergeBase {
             tree,
             store,
             entry_ids,
@@ -229,7 +278,7 @@ async fn dispatch_inner(
             let base = backend.find_merge_base(&tree, &store, &entry_ids).await?;
             Ok(ServiceResponse::Id(base))
         }
-        ServiceRequest::CollectRootToTarget {
+        BackendOp::CollectRootToTarget {
             tree,
             store,
             target_entry,
@@ -239,29 +288,29 @@ async fn dispatch_inner(
                 .await?;
             Ok(ServiceResponse::Ids(path))
         }
-        ServiceRequest::GetTree { tree } => {
+        BackendOp::GetTree { tree } => {
             let entries = backend.get_tree(&tree).await?;
             Ok(ServiceResponse::Entries(entries))
         }
-        ServiceRequest::GetStore { tree, store } => {
+        BackendOp::GetStore { tree, store } => {
             let entries = backend.get_store(&tree, &store).await?;
             Ok(ServiceResponse::Entries(entries))
         }
-        ServiceRequest::GetTreeFromTips { tree, tips } => {
+        BackendOp::GetTreeFromTips { tree, tips } => {
             let entries = backend.get_tree_from_tips(&tree, &tips).await?;
             Ok(ServiceResponse::Entries(entries))
         }
-        ServiceRequest::GetStoreFromTips { tree, store, tips } => {
+        BackendOp::GetStoreFromTips { tree, store, tips } => {
             let entries = backend.get_store_from_tips(&tree, &store, &tips).await?;
             Ok(ServiceResponse::Entries(entries))
         }
 
         // === CRDT cache ===
-        ServiceRequest::GetCachedCrdtState { entry_id, store } => {
+        BackendOp::GetCachedCrdtState { entry_id, store } => {
             let state = backend.get_cached_crdt_state(&entry_id, &store).await?;
             Ok(ServiceResponse::CachedCrdtState(state))
         }
-        ServiceRequest::CacheCrdtState {
+        BackendOp::CacheCrdtState {
             entry_id,
             store,
             state,
@@ -269,13 +318,13 @@ async fn dispatch_inner(
             backend.cache_crdt_state(&entry_id, &store, state).await?;
             Ok(ServiceResponse::Ok)
         }
-        ServiceRequest::ClearCrdtCache => {
+        BackendOp::ClearCrdtCache => {
             backend.clear_crdt_cache().await?;
             Ok(ServiceResponse::Ok)
         }
 
         // === Path operations ===
-        ServiceRequest::GetSortedStoreParents {
+        BackendOp::GetSortedStoreParents {
             tree_id,
             entry_id,
             store,
@@ -285,7 +334,7 @@ async fn dispatch_inner(
                 .await?;
             Ok(ServiceResponse::Ids(parents))
         }
-        ServiceRequest::GetPathFromTo {
+        BackendOp::GetPathFromTo {
             tree_id,
             store,
             from_id,
@@ -297,18 +346,14 @@ async fn dispatch_inner(
             Ok(ServiceResponse::Ids(path))
         }
 
-        // === Instance metadata ===
-        ServiceRequest::GetInstanceMetadata => {
-            let metadata = backend.get_instance_metadata().await?;
-            Ok(ServiceResponse::InstanceMetadata(metadata))
-        }
-        ServiceRequest::SetInstanceMetadata { metadata } => {
+        // === Instance metadata (write side) ===
+        BackendOp::SetInstanceMetadata { metadata } => {
             backend.set_instance_metadata(&metadata).await?;
             Ok(ServiceResponse::Ok)
         }
 
         // === Write coordination ===
-        ServiceRequest::NotifyEntryWritten {
+        BackendOp::NotifyEntryWritten {
             tree_id,
             entry_id,
             source,
@@ -320,16 +365,6 @@ async fn dispatch_inner(
                 .dispatch_write_callbacks(&tree_id, &entry, source)
                 .await?;
             Ok(ServiceResponse::Ok)
-        }
-
-        // === User management ===
-        ServiceRequest::CreateUser { username, password } => {
-            let uuid = instance.create_user(&username, password.as_deref()).await?;
-            Ok(ServiceResponse::UserCreated(uuid))
-        }
-        ServiceRequest::ListUsers => {
-            let users = instance.list_users().await?;
-            Ok(ServiceResponse::Users(users))
         }
     }
 }
@@ -410,9 +445,13 @@ mod tests {
         // Request nonexistent entry
         write_frame(
             &mut writer,
-            &ServiceRequest::Get {
-                id: crate::entry::ID::from_bytes("nonexistent"),
-            },
+            &ServiceRequest::Authenticated(Box::new(AuthenticatedRequest {
+                root_id: crate::entry::ID::default(),
+                identity: crate::auth::types::SigKey::default(),
+                request: BackendOp::Get {
+                    id: crate::entry::ID::from_bytes("nonexistent"),
+                },
+            })),
         )
         .await
         .unwrap();
