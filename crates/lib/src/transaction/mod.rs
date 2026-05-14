@@ -21,6 +21,7 @@ pub mod errors;
 mod tests;
 
 use std::{
+    borrow::Cow,
     collections::HashMap,
     sync::{Arc, Mutex},
 };
@@ -296,21 +297,22 @@ impl Transaction {
     /// Decrypt bytes if an encryptor is registered, otherwise return them unchanged.
     ///
     /// This is used throughout Transaction to transparently decrypt encrypted payloads
-    /// before deserializing into CRDT types.
-    fn decrypt_if_needed(&self, subtree: &str, data: &[u8]) -> Result<Vec<u8>> {
+    /// before deserializing into CRDT types. Returns `Cow::Borrowed` in the no-encryptor
+    /// case to avoid allocating a payload-sized buffer when callers only need `&[u8]`.
+    fn decrypt_if_needed<'a>(&self, subtree: &str, data: &'a [u8]) -> Result<Cow<'a, [u8]>> {
         if let Some(encryptor) = self.encryptors.lock().unwrap().get(subtree) {
-            encryptor.decrypt(data)
+            Ok(Cow::Owned(encryptor.decrypt(data)?))
         } else {
-            Ok(data.to_vec())
+            Ok(Cow::Borrowed(data))
         }
     }
 
     /// Encrypt bytes if an encryptor is registered for the subtree, otherwise return them unchanged.
-    fn encrypt_if_needed(&self, subtree: &str, plaintext: &[u8]) -> Result<Vec<u8>> {
+    fn encrypt_if_needed<'a>(&self, subtree: &str, plaintext: &'a [u8]) -> Result<Cow<'a, [u8]>> {
         if let Some(encryptor) = self.encryptors.lock().unwrap().get(subtree) {
-            encryptor.encrypt(plaintext)
+            Ok(Cow::Owned(encryptor.encrypt(plaintext)?))
         } else {
-            Ok(plaintext.to_vec())
+            Ok(Cow::Borrowed(plaintext))
         }
     }
 
@@ -791,7 +793,9 @@ impl Transaction {
 
         // Cache the computed merge result
         let serialized = serde_json::to_vec(&result)?;
-        let to_cache = self.encrypt_if_needed(subtree_name, &serialized)?;
+        let to_cache = self
+            .encrypt_if_needed(subtree_name, &serialized)?
+            .into_owned();
         // FIXME: Multiple tips in the cache is a hack
         // cache_crdt_state is supposed to take in (ID, subtree, data)
         // This caching only technically works by constructing a custom ID
@@ -869,7 +873,9 @@ impl Transaction {
 
             // Step 4: Cache only the final result (encrypted if encryptor is registered)
             let serialized_state = serde_json::to_vec(&result)?;
-            let to_cache = self.encrypt_if_needed(subtree_name, &serialized_state)?;
+            let to_cache = self
+                .encrypt_if_needed(subtree_name, &serialized_state)?
+                .into_owned();
             self.db
                 .backend()?
                 .cache_crdt_state(entry_id, subtree_name, to_cache)

@@ -235,11 +235,7 @@ async fn insert_subtree(
         .bind(entry_id.to_string())
         .bind(store_name)
         .bind(height)
-        // TODO(perf): copying to Vec just to satisfy sqlx's bind lifetime — adds an
-        // allocation per subtree write on this hot path. Investigate binding the
-        // borrowed `&[u8]` directly (via a wrapper that implements `Encode<'q>` for
-        // both sqlite and postgres BLOB).
-        .bind(data.map(|b| b.to_vec()))
+        .bind(data)
         .execute(&mut **tx)
         .await
         .sql_context("Failed to insert subtree")?;
