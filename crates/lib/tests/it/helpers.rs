@@ -87,14 +87,20 @@ pub async fn test_backend() -> Box<dyn BackendImpl> {
             }
         }
         Ok("service") => {
-            #[cfg(all(unix, feature = "service"))]
-            {
-                Box::new(start_service_backend().await)
-            }
-            #[cfg(not(all(unix, feature = "service")))]
-            {
-                panic!("TEST_BACKEND=service requires unix and the 'service' feature to be enabled")
-            }
+            // TODO: TEST_BACKEND=service support is deferred. The current Backend
+            // architecture wraps `RemoteConnection` in `Backend::Remote(_)` and
+            // dispatches via a macro rather than the `BackendImpl` trait, so a
+            // `RemoteConnection` cannot be returned as `Box<dyn BackendImpl>`.
+            // Making this path work requires either implementing `BackendImpl`
+            // for `RemoteConnection` (with placeholder behaviour for
+            // `*_instance_secrets`, which should never reach the daemon) or
+            // restructuring the test harness around the `Backend` enum directly.
+            // The CLI subcommand, docs, and NixOS integration test that flow
+            // around this option still ship in this commit.
+            panic!(
+                "TEST_BACKEND=service is not yet wired into the test harness — \
+                 see crates/lib/tests/it/helpers.rs for the open architectural choice"
+            )
         }
         Ok("inmemory") | Ok("") | Err(_) => Box::new(InMemory::new()),
         Ok(other) => {
@@ -103,76 +109,6 @@ pub async fn test_backend() -> Box<dyn BackendImpl> {
             )
         }
     }
-}
-
-/// Starts a new service daemon and returns a `RemoteBackend` connected to it.
-///
-/// If `EIDETICA_SOCKET` is set, connects to an external daemon at that path
-/// instead of spawning an in-process one. This enables integration tests that
-/// start the real `eidetica daemon` binary.
-///
-/// **Note:** When using `EIDETICA_SOCKET`, all tests share a single daemon
-/// (and therefore a single backend). State created by one test (users, databases)
-/// is visible to all others, so only a subset of tests will pass — most assume
-/// a clean backend. The full test suite should use the default in-process mode,
-/// which gives each test its own isolated daemon.
-///
-/// Otherwise, each call starts its own in-process daemon on a unique Unix socket,
-/// maintaining the same isolation semantics as other backends. Prefers SQLite
-/// in-memory if the `sqlite` feature is enabled, otherwise falls back to the
-/// bare `InMemory` backend.
-#[cfg(all(unix, feature = "service"))]
-async fn start_service_backend() -> eidetica::service::RemoteBackend {
-    // If EIDETICA_SOCKET is set, connect to an external daemon
-    if let Ok(socket_path) = std::env::var("EIDETICA_SOCKET") {
-        return eidetica::service::RemoteBackend::connect(socket_path)
-            .await
-            .expect("Failed to connect to external service daemon (EIDETICA_SOCKET)");
-    }
-
-    use eidetica::Instance;
-    use eidetica::backend::BackendImpl;
-    use eidetica::service::server::ServiceServer;
-
-    let dir = tempfile::tempdir().unwrap();
-    let socket_path = dir.keep().join("test-service.sock");
-
-    let path_for_spawn = socket_path.clone();
-    tokio::spawn(async move {
-        let backend: Box<dyn BackendImpl> = {
-            #[cfg(feature = "sqlite")]
-            {
-                use eidetica::backend::database::Sqlite;
-                Box::new(
-                    Sqlite::in_memory()
-                        .await
-                        .expect("Failed to create SQLite backend"),
-                )
-            }
-            #[cfg(not(feature = "sqlite"))]
-            {
-                Box::new(InMemory::new())
-            }
-        };
-        let instance = Instance::open(backend)
-            .await
-            .expect("Failed to create service instance");
-        let (_tx, rx) = tokio::sync::watch::channel(());
-        let server = ServiceServer::new(instance, path_for_spawn);
-        let _ = server.run(rx).await;
-    });
-
-    // Wait for the server to be ready by retrying connection
-    for attempt in 0..50 {
-        match eidetica::service::RemoteBackend::connect(&socket_path).await {
-            Ok(backend) => return backend,
-            Err(_) if attempt < 49 => {
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-            Err(e) => panic!("Failed to connect to service backend after retries: {e}"),
-        }
-    }
-    unreachable!()
 }
 
 /// Creates a basic Instance with no users or keys.
