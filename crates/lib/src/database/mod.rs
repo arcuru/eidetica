@@ -311,97 +311,20 @@ impl Database {
     async fn validate_key(&self, key: &DatabaseKey) -> Result<Permission> {
         let settings_store = self.get_settings().await?;
         let auth_settings = settings_store.auth_snapshot().await?;
-
-        // Derive actual pubkey from the signing key
         let actual_pubkey = key.public_key();
-
-        match key.identity() {
-            SigKey::Direct { hint } if hint.is_global() => {
-                // Verify the embedded pubkey matches the actual signing key
-                if let Some(embedded_pubkey) = &hint.pubkey
-                    && *embedded_pubkey != actual_pubkey
-                {
-                    return Err(Error::Auth(Box::new(AuthError::SigningKeyMismatch {
-                        reason: format!(
-                            "signing key derives pubkey '{actual_pubkey}' \
-                                 but global identity claims '{embedded_pubkey}'"
-                        ),
-                    })));
-                }
-                auth_settings.get_global_permission().ok_or_else(|| {
-                    Error::Auth(Box::new(AuthError::InvalidAuthConfiguration {
-                        reason: "Global '*' permission not configured".to_string(),
-                    }))
-                })
-            }
-            SigKey::Direct { hint } => match (&hint.pubkey, &hint.name) {
-                (Some(pubkey), _) => {
-                    // Verify the claimed pubkey matches the actual signing key
-                    if *pubkey != actual_pubkey {
-                        return Err(Error::Auth(Box::new(AuthError::SigningKeyMismatch {
-                            reason: format!(
-                                "signing key derives pubkey '{actual_pubkey}' \
-                                 but identity claims '{pubkey}'"
-                            ),
-                        })));
-                    }
-                    let auth_key = auth_settings.get_key_by_pubkey(pubkey)?;
-                    Ok(*auth_key.permissions())
-                }
-                (_, Some(name)) => {
-                    let matches = auth_settings.find_keys_by_name(name);
-                    if matches.is_empty() {
-                        return Err(Error::Auth(Box::new(AuthError::KeyNotFound {
-                            key_name: name.clone(),
-                        })));
-                    }
-                    // Find the named key whose pubkey matches our actual signing key
-                    let actual_pubkey_str = actual_pubkey.to_string();
-                    let (_, auth_key) = matches
-                        .iter()
-                        .find(|(pk, _)| *pk == actual_pubkey_str)
-                        .ok_or_else(|| {
-                            Error::Auth(Box::new(AuthError::SigningKeyMismatch {
-                                reason: format!(
-                                    "signing key derives pubkey '{actual_pubkey}' \
-                                     but no key named '{name}' has that pubkey"
-                                ),
-                            }))
-                        })?;
-                    Ok(*auth_key.permissions())
-                }
-                _ => Err(Error::Auth(Box::new(AuthError::InvalidAuthConfiguration {
-                    reason: "DatabaseKey has empty identity hint".to_string(),
-                }))),
-            },
-            SigKey::Delegation { .. } => {
-                // Resolve delegation path through AuthValidator
-                let instance = self.instance()?;
-                let mut validator = AuthValidator::new();
-                let resolved_auths = validator
-                    .resolve_sig_key(key.identity(), &auth_settings, Some(&instance))
-                    .await
-                    .map_err(|e| {
-                        Error::Auth(Box::new(AuthError::InvalidAuthConfiguration {
-                            reason: format!("Delegation resolution failed: {e}"),
-                        }))
-                    })?;
-
-                // Find a resolved auth whose pubkey matches our signing key
-                resolved_auths
-                    .into_iter()
-                    .find(|ra| ra.public_key == actual_pubkey)
-                    .map(|ra| ra.effective_permission)
-                    .ok_or_else(|| {
-                        Error::Auth(Box::new(AuthError::SigningKeyMismatch {
-                            reason: format!(
-                                "signing key derives pubkey '{actual_pubkey}' \
-                                 but no resolved delegation key matches"
-                            ),
-                        }))
-                    })
-            }
-        }
+        let instance = match key.identity() {
+            // Delegation resolution needs an Instance for cross-tree lookups;
+            // direct identities resolve from `auth_settings` alone.
+            SigKey::Delegation { .. } => Some(self.instance()?),
+            _ => None,
+        };
+        crate::auth::validation::permissions::resolve_identity_permission(
+            &actual_pubkey,
+            key.identity(),
+            &auth_settings,
+            instance.as_ref(),
+        )
+        .await
     }
 
     /// Find all SigKeys that a public key can use to access a database.
