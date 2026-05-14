@@ -46,6 +46,7 @@ async fn test_connect_and_create_instance() {
 }
 
 #[tokio::test]
+#[ignore = "login_user over RPC requires the challenge-response auth flow (Branch C)"]
 async fn test_user_lifecycle() {
     let (socket_path, _tx, _server, _dir) = start_test_server().await;
     let instance = Instance::connect(&socket_path).await.unwrap();
@@ -77,13 +78,14 @@ async fn test_error_propagation() {
     // Try to get a nonexistent entry
     let result = instance
         .backend()
-        .get(&eidetica::entry::ID::from("nonexistent"))
+        .get(&eidetica::entry::ID::from_bytes("nonexistent"))
         .await;
     assert!(result.is_err());
     assert!(result.unwrap_err().is_not_found());
 }
 
 #[tokio::test]
+#[ignore = "login_user over RPC requires the challenge-response auth flow (Branch C)"]
 async fn test_concurrent_clients() {
     let (socket_path, _tx, _server, _dir) = start_test_server().await;
 

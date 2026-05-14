@@ -24,10 +24,7 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize Instance
     let instance = Instance::open(backend).await?;
-    tracing::info!(
-        "Instance initialized (device ID: {})",
-        instance.device_id_string()
-    );
+    tracing::info!("Instance initialized (device ID: {})", instance.id());
 
     // Determine socket path
     let socket_path = args.socket.clone().unwrap_or_else(default_socket_path);
