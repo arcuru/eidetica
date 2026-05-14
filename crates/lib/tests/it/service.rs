@@ -78,16 +78,38 @@ async fn test_user_lifecycle() {
 
 #[tokio::test]
 async fn test_error_propagation() {
-    let (socket_path, _tx, _server, _dir) = start_test_server().await;
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    // Backend ops over the wire are gated on a TrustedLogin'd connection, so
+    // create + login a user before exercising the error path.
+    server.create_user("err-test", None).await.unwrap();
     let instance = Instance::connect(&socket_path).await.unwrap();
+    let _user = instance.login_user("err-test", None).await.unwrap();
 
-    // Try to get a nonexistent entry
+    // Try to get a nonexistent entry — surfaces the server's NotFound through
+    // the wire's `ServiceResponse::Error` round-trip.
     let result = instance
         .backend()
         .get(&eidetica::entry::ID::from_bytes("nonexistent"))
         .await;
     assert!(result.is_err());
     assert!(result.unwrap_err().is_not_found());
+}
+
+#[tokio::test]
+async fn test_unauthenticated_backend_op_rejected() {
+    let (socket_path, _tx, _server, _dir) = start_test_server().await;
+    let instance = Instance::connect(&socket_path).await.unwrap();
+
+    // No login; any Authenticated-wrapped backend op must be rejected.
+    let result = instance
+        .backend()
+        .get(&eidetica::entry::ID::from_bytes("nonexistent"))
+        .await;
+    let err = result.expect_err("server must reject backend op on unauthenticated connection");
+    assert!(
+        !err.is_not_found(),
+        "expected auth error, got NotFound — gate not enforced; {err}"
+    );
 }
 
 #[tokio::test]

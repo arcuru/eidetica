@@ -14,13 +14,13 @@
 //! Branch C for the per-request permission gate).
 
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::UnixStream;
 use tokio::sync::Mutex;
 
-use crate::auth::crypto::create_challenge_response;
+use crate::auth::crypto::{PublicKey, create_challenge_response};
 use crate::auth::types::SigKey;
 use crate::backend::{InstanceMetadata, VerificationStatus};
 use crate::entry::{Entry, ID};
@@ -34,9 +34,25 @@ use crate::user::UserError;
 use crate::user::crypto::{decrypt_private_key, derive_encryption_key};
 use crate::user::types::KeyStorage;
 
+/// Per-connection session state, populated by `trusted_login` on success.
+///
+/// Holds only the public key the daemon verified during challenge-response.
+/// The plaintext signing key is intentionally **not** stored here — it lives
+/// in the `User::key_manager` session that owns this connection. The
+/// daemon-side `ConnectionState::Authenticated` is what carries the
+/// `user_uuid` (for chunk 6's cache scoping); the client doesn't need it.
+#[derive(Clone, Debug)]
+struct SessionState {
+    session_pubkey: PublicKey,
+}
+
 /// Internal state for a remote connection, wrapped in Arc for Clone.
 struct RemoteConnectionInner {
     stream: Mutex<(ReadHalf<UnixStream>, WriteHalf<UnixStream>)>,
+    /// Set on successful `trusted_login`; read by `backend_request` to populate
+    /// the `Authenticated` envelope's identity field. `RwLock` because reads
+    /// are far more frequent than the one-shot login write.
+    session: RwLock<Option<SessionState>>,
 }
 
 /// A connection to a remote Eidetica service server over a Unix domain socket.
@@ -92,6 +108,7 @@ impl RemoteConnection {
         Ok(Self {
             inner: Arc::new(RemoteConnectionInner {
                 stream: Mutex::new((reader, writer)),
+                session: RwLock::new(None),
             }),
         })
     }
@@ -121,16 +138,25 @@ impl RemoteConnection {
 
     /// Wrap a `BackendOp` in the `Authenticated` envelope and send it.
     ///
-    /// `root_id` and `identity` are still placeholders pending the chunk-5
-    /// gate work, which will both require the connection to be in
-    /// `Authenticated` state on the server side and validate the claimed
-    /// identity against the session pubkey. Until then the server accepts
-    /// any identity on this envelope and dispatches the inner op.
+    /// Populates `identity` from the connection's session state when logged
+    /// in (`SigKey::from_pubkey(&session_pubkey)`); falls back to
+    /// `SigKey::default()` pre-login so the resulting request reliably hits
+    /// the server's "not authenticated" gate rather than a more confusing
+    /// downstream error.
+    ///
+    /// `root_id` is still `ID::default()` — per-tree permission resolution
+    /// against the target database's auth settings is chunk 5b. Until then
+    /// the server only enforces "connection is authenticated", which is the
+    /// load-bearing boundary in the local-socket trust model.
     async fn backend_request(&self, op: BackendOp) -> crate::Result<ServiceResponse> {
+        let identity = match self.inner.session.read().unwrap().as_ref() {
+            Some(s) => SigKey::from_pubkey(&s.session_pubkey),
+            None => SigKey::default(),
+        };
         self.request_ok(ServiceRequest::Authenticated(Box::new(
             AuthenticatedRequest {
                 root_id: ID::default(),
-                identity: SigKey::default(),
+                identity,
                 request: op,
             },
         )))
@@ -197,7 +223,15 @@ impl RemoteConnection {
             .request_ok(ServiceRequest::TrustedLoginProve { signature })
             .await?;
         match resp {
-            ServiceResponse::TrustedLoginOk => Ok(()),
+            ServiceResponse::TrustedLoginOk => {
+                // Stash the verified session pubkey so subsequent
+                // `backend_request` calls can populate the `Authenticated`
+                // envelope's identity field.
+                *self.inner.session.write().unwrap() = Some(SessionState {
+                    session_pubkey: credentials.root_key_id,
+                });
+                Ok(())
+            }
             other => Err(unexpected_response("TrustedLoginOk", &other)),
         }
     }
