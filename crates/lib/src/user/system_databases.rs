@@ -14,13 +14,70 @@ use super::{
 use crate::{
     Database, Instance, Result,
     auth::{
-        crypto::{PrivateKey, generate_keypair},
+        crypto::{PrivateKey, PublicKey, generate_keypair},
         types::{AuthKey, Permission},
     },
     constants::{DATABASES, INSTANCE, USERS},
     crdt::Doc,
     store::Table,
 };
+
+/// Whether `_users.auth_settings` already lists an instance admin.
+///
+/// "Instance admin" here means any non-device-key entry with `Admin` permission
+/// in `_users`'s auth settings. The device key is `Admin(0)` on every system
+/// DB by construction (it bootstrapped them), so we exclude it explicitly —
+/// otherwise every fresh instance would look like it already had an admin.
+pub(crate) async fn has_instance_admin(
+    users_db: &Database,
+    device_pubkey: &PublicKey,
+) -> Result<bool> {
+    let tx = users_db.new_transaction().await?;
+    let settings = tx.get_settings()?;
+    let auth = settings.auth_snapshot().await?;
+    let device_pubkey_str = device_pubkey.to_string();
+    for (pubkey_str, key) in auth.get_all_keys()? {
+        if pubkey_str == device_pubkey_str {
+            continue;
+        }
+        if matches!(key.permissions(), Permission::Admin(_)) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Add `pubkey` as `Admin(0)` to every system database that gates instance-level
+/// admin operations.
+///
+/// Today that's `_users` (user directory + auth bootstrap) and `_databases`
+/// (instance-wide database registry — the natural anchor for instance-admin
+/// gating of ops like `SetInstanceMetadata`). `_sync` is lazily created on
+/// `enable_sync()` and out of scope; admin coverage for sync configuration
+/// will be added when a wire path needs it.
+///
+/// The Database handles passed in must already be opened with a signing key
+/// that holds `Admin` on each respective DB. For the first-admin bootstrap
+/// path (called from `create_user` below) that's the device key —
+/// `Database::create` registered it as `Admin(0)` on each system DB. A future
+/// admin-promotion path will open these DBs with the calling admin's key.
+async fn grant_admin_on_system_dbs(
+    users_db: &Database,
+    databases_db: &Database,
+    pubkey: &PublicKey,
+) -> Result<()> {
+    for database in [users_db, databases_db] {
+        database
+            .with_transaction(|tx| async move {
+                let settings = tx.get_settings()?;
+                settings
+                    .set_auth_key(pubkey, AuthKey::active(Some("admin"), Permission::Admin(0)))
+                    .await
+            })
+            .await?;
+    }
+    Ok(())
+}
 
 /// Create the _instance system database
 ///
@@ -99,6 +156,13 @@ pub async fn create_databases_tracking(
 /// 2. Generates a device keypair for the user
 /// 3. Creates a user database for storing keys (encrypted or unencrypted)
 /// 4. Creates UserInfo and stores it in _users database with auto-generated UUID
+/// 5. **First-admin bootstrap**: if no instance admin exists yet in `_users.auth_settings`,
+///    promotes this user by adding their pubkey as `Admin(0)` to the
+///    instance-admin system DBs (`_users` and `_databases`). This is what
+///    lets a fresh single-user install authorize admin-gated wire ops without
+///    the daemon falling back on the device key for everything. Subsequent
+///    users land as non-admins; promoting them requires an existing admin
+///    (separate follow-up work).
 ///
 /// # Arguments
 /// * `users_db` - The _users system database
@@ -233,6 +297,18 @@ pub async fn create_user(
     let users_table = tx.get_store::<Table<UserInfo>>("users").await?;
     let user_uuid = users_table.insert(user_info.clone()).await?; // Generate UUID primary key
     tx.commit().await?;
+
+    // 7. First-admin bootstrap: if no instance admin exists yet, promote this
+    // user. Done last so that a failure here doesn't leave behind a partially
+    // created user. The auth-settings write itself is signed by the device
+    // key (the only Admin on the system DBs at bootstrap time); opening
+    // `databases_db()` here mirrors the `users_db` argument passed in and
+    // keeps the device-key signing detail inside `Instance`.
+    let device_pubkey = instance.id();
+    if !has_instance_admin(users_db, &device_pubkey).await? {
+        let databases_db = instance.databases_db().await?;
+        grant_admin_on_system_dbs(users_db, &databases_db, &user_public_key).await?;
+    }
 
     Ok((user_uuid, user_info))
 }
@@ -728,5 +804,127 @@ mod tests {
         assert!(users.contains(&"alice".into()));
         assert!(users.contains(&"bob".into()));
         assert!(users.contains(&"charlie".into()));
+    }
+
+    /// Read the auth permission for `pubkey` from a system database. Returns
+    /// `None` if the key isn't registered. Test-only helper.
+    async fn read_admin_permission(database: &Database, pubkey: &PublicKey) -> Option<Permission> {
+        let tx = database.new_transaction().await.unwrap();
+        let settings = SettingsStore::new(&tx).unwrap();
+        let auth = settings.auth_snapshot().await.unwrap();
+        auth.get_key_by_pubkey(pubkey)
+            .ok()
+            .map(|k| *k.permissions())
+    }
+
+    /// First user created on a fresh instance becomes the instance admin: their
+    /// pubkey lands as `Admin(0)` in both `_users` and `_databases`. This is
+    /// the load-bearing bootstrap path so that admin-gated wire ops (future
+    /// `SetInstanceMetadata`-style gates) can authorize against the user's
+    /// key instead of the device key.
+    #[tokio::test]
+    async fn test_first_user_becomes_instance_admin() {
+        let (instance, _device_key) = setup_instance().await;
+
+        let user_uuid = instance.create_user("alice", None).await.unwrap();
+        assert!(!user_uuid.is_empty());
+
+        let users_db = instance.users_db().await.unwrap();
+        let databases_db = instance.databases_db().await.unwrap();
+
+        // Recover alice's pubkey from her UserInfo → user_database default key.
+        let users_table = users_db
+            .get_store_viewer::<Table<UserInfo>>("users")
+            .await
+            .unwrap();
+        let user_info = users_table.get(&user_uuid).await.unwrap();
+        let user_database = Database::open(&instance, &user_info.user_database_id)
+            .await
+            .unwrap();
+        let keys_table = user_database
+            .get_store_viewer::<Table<UserKey>>("keys")
+            .await
+            .unwrap();
+        let alice_keys = keys_table.search(|k| k.is_default).await.unwrap();
+        assert_eq!(alice_keys.len(), 1);
+        let alice_pubkey = alice_keys[0].1.key_id.clone();
+
+        assert_eq!(
+            read_admin_permission(&users_db, &alice_pubkey).await,
+            Some(Permission::Admin(0)),
+            "first user should be Admin(0) in _users"
+        );
+        assert_eq!(
+            read_admin_permission(&databases_db, &alice_pubkey).await,
+            Some(Permission::Admin(0)),
+            "first user should be Admin(0) in _databases"
+        );
+    }
+
+    /// After the first user has bootstrapped, subsequent users land as
+    /// non-admins. Promoting them requires an existing admin (separate
+    /// follow-up work); this test just locks in that the auto-bootstrap
+    /// doesn't fire a second time.
+    #[tokio::test]
+    async fn test_subsequent_users_are_not_admin() {
+        let (instance, _device_key) = setup_instance().await;
+
+        instance.create_user("alice", None).await.unwrap();
+        let bob_uuid = instance.create_user("bob", None).await.unwrap();
+
+        let users_db = instance.users_db().await.unwrap();
+        let databases_db = instance.databases_db().await.unwrap();
+
+        // Recover bob's pubkey the same way as in the previous test.
+        let users_table = users_db
+            .get_store_viewer::<Table<UserInfo>>("users")
+            .await
+            .unwrap();
+        let bob_info = users_table.get(&bob_uuid).await.unwrap();
+        let bob_database = Database::open(&instance, &bob_info.user_database_id)
+            .await
+            .unwrap();
+        let keys_table = bob_database
+            .get_store_viewer::<Table<UserKey>>("keys")
+            .await
+            .unwrap();
+        let bob_keys = keys_table.search(|k| k.is_default).await.unwrap();
+        let bob_pubkey = bob_keys[0].1.key_id.clone();
+
+        assert!(
+            read_admin_permission(&users_db, &bob_pubkey)
+                .await
+                .is_none(),
+            "second user must not have any entry in _users.auth_settings"
+        );
+        assert!(
+            read_admin_permission(&databases_db, &bob_pubkey)
+                .await
+                .is_none(),
+            "second user must not have any entry in _databases.auth_settings"
+        );
+    }
+
+    /// `User::is_admin()` query agrees with the bootstrap outcome above.
+    /// Locks in the public-facing predicate that the future
+    /// `SetInstanceMetadata` gate will resolve against.
+    #[tokio::test]
+    async fn test_user_is_admin_query() {
+        let (instance, _device_key) = setup_instance().await;
+
+        instance.create_user("alice", None).await.unwrap();
+        instance.create_user("bob", None).await.unwrap();
+
+        let alice = instance.login_user("alice", None).await.unwrap();
+        let bob = instance.login_user("bob", None).await.unwrap();
+
+        assert!(
+            alice.is_admin().await.unwrap(),
+            "first user must report is_admin = true"
+        );
+        assert!(
+            !bob.is_admin().await.unwrap(),
+            "second user must report is_admin = false"
+        );
     }
 }

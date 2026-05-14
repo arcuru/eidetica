@@ -149,6 +149,36 @@ impl User {
         &self.user_info
     }
 
+    /// Whether this user is an instance admin.
+    ///
+    /// "Instance admin" means the user's default pubkey holds `Admin` in the
+    /// `_users` system database's `auth_settings`. That's the anchor for
+    /// admin-gated instance ops (e.g., a future `SetInstanceMetadata` gate
+    /// resolves the session pubkey against this same auth_settings and
+    /// requires `Admin`). The first user created on a fresh instance is
+    /// auto-promoted during `Instance::create_user`; subsequent users land as
+    /// non-admins until promoted by an existing admin (separate follow-up).
+    ///
+    /// Returns `false` if the key resolution fails (key not in auth_settings,
+    /// non-Admin permission, etc.) — callers that need to distinguish "not
+    /// admin" from "lookup failed" can use the auth_settings APIs directly.
+    pub async fn is_admin(&self) -> Result<bool> {
+        let default_pubkey =
+            self.key_manager
+                .get_default_key_id()
+                .ok_or_else(|| UserError::KeyNotFound {
+                    key_id: "<default>".to_string(),
+                })?;
+        let users_db = self.instance.users_db().await?;
+        let tx = users_db.new_transaction().await?;
+        let settings = tx.get_settings()?;
+        let auth = settings.auth_snapshot().await?;
+        match auth.get_key_by_pubkey(&default_pubkey) {
+            Ok(key) => Ok(matches!(key.permissions(), Permission::Admin(_))),
+            Err(_) => Ok(false),
+        }
+    }
+
     /// Logout (consumes self and clears decrypted keys from memory)
     ///
     /// After logout, all decrypted keys are zeroized and the session is ended.
