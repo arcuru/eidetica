@@ -20,6 +20,7 @@ use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::UnixStream;
 use tokio::sync::Mutex;
 
+use crate::auth::crypto::PrivateKey;
 use crate::auth::crypto::{PublicKey, create_challenge_response};
 use crate::auth::types::SigKey;
 use crate::backend::{InstanceMetadata, VerificationStatus};
@@ -32,7 +33,7 @@ use crate::service::protocol::{
 };
 use crate::user::UserError;
 use crate::user::crypto::{decrypt_private_key, derive_encryption_key};
-use crate::user::types::KeyStorage;
+use crate::user::types::{KeyStorage, UserInfo};
 
 /// Per-connection session state, populated by `trusted_login` on success.
 ///
@@ -144,18 +145,20 @@ impl RemoteConnection {
     /// the server's "not authenticated" gate rather than a more confusing
     /// downstream error.
     ///
-    /// `root_id` is still `ID::default()` — per-tree permission resolution
-    /// against the target database's auth settings is chunk 5b. Until then
-    /// the server only enforces "connection is authenticated", which is the
-    /// load-bearing boundary in the local-socket trust model.
+    /// `root_id` is stamped from `op.tree_id()` when the op carries one. The
+    /// server doesn't currently rely on this field — it uses `op.tree_id()`
+    /// directly for the chunk-5b gate — but populating it keeps the envelope
+    /// honest and gives future per-request audit logs a single source of
+    /// truth for "what tree was this op scoped to?".
     async fn backend_request(&self, op: BackendOp) -> crate::Result<ServiceResponse> {
         let identity = match self.inner.session.read().unwrap().as_ref() {
             Some(s) => SigKey::from_pubkey(&s.session_pubkey),
             None => SigKey::default(),
         };
+        let root_id = op.tree_id().cloned().unwrap_or_default();
         self.request_ok(ServiceRequest::Authenticated(Box::new(
             AuthenticatedRequest {
-                root_id: ID::default(),
+                root_id,
                 identity,
                 request: op,
             },
@@ -166,36 +169,46 @@ impl RemoteConnection {
     /// Authenticate this connection as `username` by completing the
     /// `TrustedLogin*` handshake against the daemon.
     ///
-    /// Flow: send `TrustedLoginUser` → receive challenge + encrypted credentials
-    /// → derive the password-encryption key locally (Argon2id) and decrypt the
-    /// root signing key in-process (or take it raw for passwordless users) →
-    /// sign the challenge → send `TrustedLoginProve` → expect `TrustedLoginOk`.
+    /// Flow: send `TrustedLoginUser` → receive challenge + the user's full
+    /// `UserInfo` (encrypted credentials, user-database id, status) → derive
+    /// the password-encryption key locally (Argon2id) and decrypt the root
+    /// signing key in-process (or take it raw for passwordless users) → sign
+    /// the challenge → send `TrustedLoginProve` → expect `TrustedLoginOk`.
     ///
     /// The daemon never sees the password or the plaintext signing key; the
     /// trust model for shipping the encrypted blob over the socket is captured
     /// in the Service Architecture doc § Trusted login threat model.
     ///
-    /// On success the connection's server-side state is `Authenticated`, and
-    /// subsequent `Authenticated`-wrapped backend ops are dispatched (chunk 5
-    /// will additionally validate the per-request identity claim).
-    pub async fn trusted_login(&self, username: &str, password: Option<&str>) -> crate::Result<()> {
-        // Step 1: name the user, receive challenge + encrypted credentials.
+    /// On success the connection's server-side state is `Authenticated`. The
+    /// caller receives the user's record and the decrypted root key so it can
+    /// build the `User` session without a second wire read of `_users` —
+    /// reads through the wire always travel as the authenticated user, which
+    /// with the per-tree gate means a fresh user without permissions on
+    /// `_users` would not be able to re-fetch it.
+    pub(crate) async fn trusted_login(
+        &self,
+        username: &str,
+        password: Option<&str>,
+    ) -> crate::Result<(String, UserInfo, PrivateKey)> {
+        // Step 1: name the user, receive challenge + user record.
         let resp = self
             .request_ok(ServiceRequest::TrustedLoginUser {
                 username: username.to_string(),
             })
             .await?;
-        let (challenge, credentials) = match resp {
+        let (challenge, user_uuid, user_info) = match resp {
             ServiceResponse::TrustedLoginChallenge {
                 challenge,
-                credentials,
-            } => (challenge, credentials),
+                user_uuid,
+                user_info,
+            } => (challenge, user_uuid, user_info),
             other => return Err(unexpected_response("TrustedLoginChallenge", &other)),
         };
 
         // Step 2: decrypt the root signing key locally. Cross-check that the
         // caller's password/no-password matches the credential's salt/no-salt;
         // a mismatch is the same UX-level error as a wrong password.
+        let credentials = &user_info.credentials;
         let is_passwordless = credentials.password_salt.is_none();
         let signing_key = match (&credentials.root_key, password, is_passwordless) {
             (KeyStorage::Unencrypted { key }, None, true) => key.clone(),
@@ -228,9 +241,9 @@ impl RemoteConnection {
                 // `backend_request` calls can populate the `Authenticated`
                 // envelope's identity field.
                 *self.inner.session.write().unwrap() = Some(SessionState {
-                    session_pubkey: credentials.root_key_id,
+                    session_pubkey: credentials.root_key_id.clone(),
                 });
-                Ok(())
+                Ok((user_uuid, user_info, signing_key))
             }
             other => Err(unexpected_response("TrustedLoginOk", &other)),
         }
@@ -306,20 +319,6 @@ impl RemoteConnection {
         Self::expect_ok(resp)
     }
 
-    pub async fn update_verification_status(
-        &self,
-        id: &ID,
-        verification_status: VerificationStatus,
-    ) -> crate::Result<()> {
-        let resp = self
-            .backend_request(BackendOp::UpdateVerificationStatus {
-                id: id.clone(),
-                verification_status,
-            })
-            .await?;
-        Self::expect_ok(resp)
-    }
-
     pub async fn get_entries_by_verification_status(
         &self,
         status: VerificationStatus,
@@ -360,11 +359,6 @@ impl RemoteConnection {
                 main_entries: main_entries.to_vec(),
             })
             .await?;
-        Self::expect_ids(resp)
-    }
-
-    pub async fn all_roots(&self) -> crate::Result<Vec<ID>> {
-        let resp = self.backend_request(BackendOp::AllRoots).await?;
         Self::expect_ids(resp)
     }
 

@@ -256,6 +256,128 @@ async fn test_trusted_login_prove_without_user_errors() {
     assert!(matches!(resp, ServiceResponse::Error(_)));
 }
 
+/// Positive control for the chunk-5b per-tree gate: a logged-in user can
+/// read tree-scoped data on a database where they hold Admin/Write/Read.
+///
+/// `Database::create` registers the user's pubkey as Admin(0), so the gate
+/// resolves to Admin and the read passes. A regression that broke the gate
+/// for legitimate access would surface here as a `PermissionDenied`.
+#[tokio::test]
+async fn test_backend_get_tips_allowed_for_owner() {
+    let (socket_path, _tx, _server, _dir) = start_test_server().await;
+    let instance = Instance::connect(&socket_path).await.unwrap();
+    instance.create_user("alice", None).await.unwrap();
+    let mut alice = instance.login_user("alice", None).await.unwrap();
+
+    let mut settings = eidetica::crdt::Doc::new();
+    settings.set("name", "alice_db");
+    let key = alice.get_default_key().unwrap();
+    let db = alice.create_database(settings, &key).await.unwrap();
+
+    let tips = instance.backend().get_tips(db.root_id()).await.unwrap();
+    assert!(
+        !tips.is_empty(),
+        "newly created database must have at least one tip"
+    );
+}
+
+/// Negative control for the chunk-5b per-tree gate: a logged-in user without
+/// any key registered in a tree's auth_settings is rejected with a
+/// permission-denied-shaped error rather than getting the data.
+///
+/// This is the load-bearing behaviour for a shared-daemon deployment where
+/// multiple users authenticate against the same socket.
+#[tokio::test]
+async fn test_backend_get_tips_denied_for_unauthorised_user() {
+    let (socket_path, _tx, _server, _dir) = start_test_server().await;
+
+    // Alice creates a database via her own authenticated connection.
+    let alice_inst = Instance::connect(&socket_path).await.unwrap();
+    alice_inst.create_user("alice", None).await.unwrap();
+    let mut alice = alice_inst.login_user("alice", None).await.unwrap();
+    let mut settings = eidetica::crdt::Doc::new();
+    settings.set("name", "alice_db");
+    let alice_key = alice.get_default_key().unwrap();
+    let alice_db = alice.create_database(settings, &alice_key).await.unwrap();
+    let alice_db_id = alice_db.root_id().clone();
+
+    // Bob authenticates on a separate connection.
+    let bob_inst = Instance::connect(&socket_path).await.unwrap();
+    bob_inst.create_user("bob", None).await.unwrap();
+    let _bob = bob_inst.login_user("bob", None).await.unwrap();
+
+    // Bob asks for tips on alice's database. The chunk-5b gate must reject —
+    // bob's pubkey is not in alice_db's auth_settings, so
+    // `resolve_identity_permission` fails and the gate normalises the failure
+    // to PermissionDenied.
+    let err = bob_inst
+        .backend()
+        .get_tips(&alice_db_id)
+        .await
+        .expect_err("server must reject GetTips for a user not in the tree's auth_settings");
+    let msg = err.to_string().to_lowercase();
+    assert!(
+        msg.contains("permission") || msg.contains("auth"),
+        "expected permission/auth error, got: {err}",
+    );
+}
+
+/// `SetInstanceMetadata` rewrites the daemon's pointers to its own system DBs,
+/// so the daemon now requires `Admin` on `_databases`. The first user on a
+/// device is auto-promoted to that role by the instance-admin bootstrap, so
+/// they can drive metadata writes through the wire.
+#[tokio::test]
+async fn test_set_instance_metadata_allowed_for_admin() {
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    server.create_user("admin", None).await.unwrap();
+
+    let instance = Instance::connect(&socket_path).await.unwrap();
+    let _admin = instance.login_user("admin", None).await.unwrap();
+
+    let current = instance
+        .backend()
+        .get_instance_metadata()
+        .await
+        .unwrap()
+        .expect("daemon must already have an InstanceMetadata record");
+    instance
+        .backend()
+        .set_instance_metadata(&current)
+        .await
+        .expect("admin must be able to write back the existing metadata");
+}
+
+/// Negative control for the `SetInstanceMetadata` admin gate: a second user
+/// (no `Admin` on `_databases`) is rejected with a permission error rather
+/// than silently rewriting the daemon's system-DB pointers.
+#[tokio::test]
+async fn test_set_instance_metadata_denied_for_non_admin() {
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    // First user is auto-promoted to instance admin; second user is not.
+    server.create_user("admin", None).await.unwrap();
+    server.create_user("bob", None).await.unwrap();
+
+    let bob_inst = Instance::connect(&socket_path).await.unwrap();
+    let _bob = bob_inst.login_user("bob", None).await.unwrap();
+
+    let current = bob_inst
+        .backend()
+        .get_instance_metadata()
+        .await
+        .unwrap()
+        .expect("daemon must already have an InstanceMetadata record");
+    let err = bob_inst
+        .backend()
+        .set_instance_metadata(&current)
+        .await
+        .expect_err("non-admin must be rejected");
+    let msg = err.to_string().to_lowercase();
+    assert!(
+        msg.contains("permission") || msg.contains("auth"),
+        "expected permission/auth error, got: {err}",
+    );
+}
+
 #[tokio::test]
 async fn test_trusted_login_bad_signature_errors_and_resets() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;

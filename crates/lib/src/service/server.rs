@@ -11,12 +11,17 @@ use tokio::sync::watch;
 
 use crate::Instance;
 use crate::auth::crypto::{PublicKey, generate_challenge, verify_challenge_response};
+use crate::auth::errors::AuthError;
+use crate::auth::types::{Permission, SigKey};
+use crate::auth::validation::permissions::resolve_identity_permission;
+use crate::database::Database;
+use crate::entry::ID;
 use crate::service::error::ServiceError;
 use crate::service::protocol::{
     AuthenticatedRequest, BackendOp, HandshakeAck, PROTOCOL_VERSION, ServiceRequest,
     ServiceResponse, read_frame, write_frame,
 };
-use crate::user::system_databases::lookup_user_credentials;
+use crate::user::system_databases::lookup_user_record;
 
 /// Per-connection authentication state.
 ///
@@ -232,22 +237,21 @@ async fn dispatch_inner(
 
         // === Authenticated backend operations ===
         //
-        // Gate: the connection must have completed `TrustedLogin*`. The
-        // session pubkey checked here is the one the daemon verified during
+        // Gate 1 (chunk 5a): the connection must have completed `TrustedLogin*`.
+        // The session pubkey checked here is the one the daemon verified during
         // challenge-response; clients populate the request's identity field
         // with the same pubkey (see `RemoteConnection::backend_request`).
         //
-        // Per-tree permission resolution against the target database's
-        // `auth_settings` is chunk 5b — for now we only enforce
-        // "connection is authenticated", which is the load-bearing boundary
-        // in the local-socket trust model (cross-tree perm checks are an
-        // additional defence in depth rather than the primary gate).
+        // Gate 2 (chunk 5b): if the op carries a tree id, the session pubkey
+        // must resolve to at least the op's required permission against that
+        // tree's `auth_settings`. Cross-tree and entry-id-only ops bypass
+        // gate 2 — see `BackendOp::tree_id` for the rationale.
         ServiceRequest::Authenticated(inner) => {
             let session_pubkey = match state {
                 ConnectionState::Authenticated { session_pubkey, .. } => session_pubkey.clone(),
                 _ => {
                     return Err(crate::Error::Auth(Box::new(
-                        crate::auth::errors::AuthError::InvalidAuthConfiguration {
+                        AuthError::InvalidAuthConfiguration {
                             reason: "backend operation requires an authenticated connection; \
                                  complete TrustedLogin* first"
                                 .to_string(),
@@ -269,7 +273,7 @@ async fn dispatch_inner(
                 && *claimed != session_pubkey
             {
                 return Err(crate::Error::Auth(Box::new(
-                    crate::auth::errors::AuthError::SigningKeyMismatch {
+                    AuthError::SigningKeyMismatch {
                         reason: format!(
                             "request identity claims pubkey '{claimed}' but session is for '{session_pubkey}'"
                         ),
@@ -277,25 +281,55 @@ async fn dispatch_inner(
                 )));
             }
 
+            if let Some(tree_id) = request.tree_id() {
+                gate_tree_permission(
+                    instance,
+                    &session_pubkey,
+                    &identity,
+                    tree_id,
+                    request.required_permission(),
+                )
+                .await?;
+            }
+
+            // Gate 3: cross-tree admin-only ops. `SetInstanceMetadata`
+            // rewrites the daemon's pointers to its own system DBs; an
+            // instance admin is, by construction, a user with Admin on
+            // `_databases` (the first-user bootstrap is what grants this).
+            // The op carries no inline tree id, so we resolve the caller's
+            // permission against `_databases.auth_settings` explicitly.
+            if matches!(request, BackendOp::SetInstanceMetadata { .. }) {
+                gate_tree_permission(
+                    instance,
+                    &session_pubkey,
+                    &identity,
+                    instance.databases_db_id(),
+                    Permission::Admin(0),
+                )
+                .await?;
+            }
+
             dispatch_backend_op(instance, request).await
         }
     }
 }
 
-/// Handle `ServiceRequest::TrustedLoginUser`: look up the user's expected pubkey, mint
-/// a challenge, and move the connection into `AwaitingProof`.
+/// Handle `ServiceRequest::TrustedLoginUser`: look up the user's full record,
+/// mint a challenge, and move the connection into `AwaitingProof`.
 async fn handle_trusted_login_user(
     instance: &Instance,
     state: &mut ConnectionState,
     username: String,
 ) -> crate::Result<ServiceResponse> {
-    // Look up the user's credentials. The encrypted root key + salt ship to
-    // the client so it can decrypt locally and sign the challenge in the same
-    // round-trip; the daemon never sees the password or the plaintext key. If
-    // the lookup fails (no such user, disabled, duplicates), drop back to
-    // `PreAuth` and bubble the error.
+    // Look up the full `UserInfo`. The encrypted root key + salt ship to the
+    // client so it can decrypt locally and sign the challenge in the same
+    // round-trip; the daemon never sees the password or the plaintext key.
+    // The non-credential fields (user_database_id, status) ride along so the
+    // client can build the `User` session after proof without a second wire
+    // read of `_users`. If the lookup fails (no such user, disabled,
+    // duplicates), drop back to `PreAuth` and bubble the error.
     let users_db = instance.users_db().await?;
-    let (user_uuid, credentials) = match lookup_user_credentials(&users_db, &username).await {
+    let (user_uuid, user_info) = match lookup_user_record(&users_db, &username).await {
         Ok(v) => v,
         Err(e) => {
             *state = ConnectionState::PreAuth;
@@ -303,17 +337,18 @@ async fn handle_trusted_login_user(
         }
     };
 
-    let expected_pubkey = credentials.root_key_id.clone();
+    let expected_pubkey = user_info.credentials.root_key_id.clone();
     let challenge = generate_challenge();
     *state = ConnectionState::AwaitingProof {
         username,
-        user_uuid,
+        user_uuid: user_uuid.clone(),
         challenge: challenge.clone(),
         expected_pubkey,
     };
     Ok(ServiceResponse::TrustedLoginChallenge {
         challenge,
-        credentials,
+        user_uuid,
+        user_info,
     })
 }
 
@@ -359,11 +394,78 @@ fn handle_trusted_login_prove(
     }
 }
 
+/// Resolve `pubkey`'s permission against `tree_id`'s `auth_settings` and reject
+/// the request if the resolved level doesn't cover `required`.
+///
+/// If the database doesn't exist on this daemon yet, the gate passes through
+/// so the dispatched op surfaces its own response (NotFound, empty result,
+/// or — for write coordination — a no-op). This is what keeps the legitimate
+/// "create a new database" flow working: `Database::create` reads tips on
+/// the tree before its root entry has propagated, so an outright denial
+/// here would break creation. The cost is that callers can still
+/// distinguish "no such database" from "exists but no access"; closing
+/// that existence-leak channel is filed as a follow-up.
+///
+/// When the gate does fire, the denial error is the same shape regardless
+/// of which sub-check failed (key not in auth_settings, mismatched hint,
+/// insufficient permission level): no internal detail about *why* leaks
+/// back over the wire.
+///
+/// System databases (`_users`, `_databases`, `_sync`, `_instance`) are gated
+/// like any other tree: callers must hold the required permission in the
+/// system DB's `auth_settings`. The instance-admin bootstrap (first user on
+/// the device) writes the first user as `Admin(0)` on `_users` and
+/// `_databases`, which is how legitimate administrative access is granted —
+/// the previous hardcoded read exemption is gone. The daemon's device-keyed
+/// local path still handles internal system-database maintenance writes that
+/// originate inside the server.
+async fn gate_tree_permission(
+    instance: &Instance,
+    pubkey: &PublicKey,
+    identity: &SigKey,
+    tree_id: &ID,
+    required: Permission,
+) -> crate::Result<()> {
+    if !instance.has_database(tree_id).await {
+        return Ok(());
+    }
+
+    let denied = || {
+        crate::Error::Auth(Box::new(AuthError::PermissionDenied {
+            reason: format!("tree {tree_id}: pubkey {pubkey} not permitted for {required:?}"),
+        }))
+    };
+
+    let database = Database::open(instance, tree_id).await?;
+    let settings_store = database.get_settings().await?;
+    let auth_settings = settings_store.auth_snapshot().await?;
+
+    let resolved =
+        match resolve_identity_permission(pubkey, identity, &auth_settings, Some(instance)).await {
+            Ok(p) => p,
+            // Resolution failures (key not found, mismatch, etc.) collapse to the
+            // same shape as an insufficient-permission denial, so the client
+            // can't tell whether its identity was unknown or merely too low.
+            Err(_) => return Err(denied()),
+        };
+
+    let allowed = match required {
+        Permission::Read => true,
+        Permission::Write(_) => resolved.can_write(),
+        Permission::Admin(_) => resolved.can_admin(),
+    };
+
+    if !allowed {
+        return Err(denied());
+    }
+
+    Ok(())
+}
+
 /// Dispatch a `BackendOp` against the daemon's `Instance` backend.
 ///
-/// In chunk 2 this is called directly from `dispatch_inner` after unwrapping
-/// the `Authenticated` envelope. Chunk 3 will gate this with per-request
-/// permission checks resolved via `resolve_identity_permission`.
+/// Called from `dispatch_inner` after the chunk-5a connection-state gate and
+/// the chunk-5b per-tree permission gate have both passed.
 async fn dispatch_backend_op(instance: &Instance, op: BackendOp) -> crate::Result<ServiceResponse> {
     let backend = instance.backend();
 
@@ -385,15 +487,6 @@ async fn dispatch_backend_op(instance: &Instance, op: BackendOp) -> crate::Resul
         BackendOp::GetVerificationStatus { id } => {
             let status = backend.get_verification_status(&id).await?;
             Ok(ServiceResponse::VerificationStatus(status))
-        }
-        BackendOp::UpdateVerificationStatus {
-            id,
-            verification_status,
-        } => {
-            backend
-                .update_verification_status(&id, verification_status)
-                .await?;
-            Ok(ServiceResponse::Ok)
         }
         BackendOp::GetEntriesByVerificationStatus { status } => {
             let ids = backend.get_entries_by_verification_status(status).await?;
@@ -421,10 +514,6 @@ async fn dispatch_backend_op(instance: &Instance, op: BackendOp) -> crate::Resul
         }
 
         // === Tree/Store traversal ===
-        BackendOp::AllRoots => {
-            let roots = backend.all_roots().await?;
-            Ok(ServiceResponse::Ids(roots))
-        }
         BackendOp::FindMergeBase {
             tree,
             store,

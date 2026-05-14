@@ -33,12 +33,12 @@
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use crate::auth::types::SigKey;
+use crate::auth::types::{Permission, SigKey};
 use crate::backend::{InstanceMetadata, VerificationStatus};
 use crate::entry::{Entry, ID};
 use crate::instance::WriteSource;
 use crate::service::error::ServiceError;
-use crate::user::UserCredentials;
+use crate::user::UserInfo;
 
 /// Protocol version. Version 0 indicates an unstable protocol that may change
 /// without notice between releases.
@@ -81,10 +81,6 @@ pub enum BackendOp {
     GetVerificationStatus {
         id: ID,
     },
-    UpdateVerificationStatus {
-        id: ID,
-        verification_status: VerificationStatus,
-    },
     GetEntriesByVerificationStatus {
         status: VerificationStatus,
     },
@@ -104,7 +100,6 @@ pub enum BackendOp {
     },
 
     // === Tree/Store traversal ===
-    AllRoots,
     FindMergeBase {
         tree: ID,
         store: String,
@@ -168,6 +163,71 @@ pub enum BackendOp {
         entry_id: ID,
         source: WriteSource,
     },
+}
+
+impl BackendOp {
+    /// Returns the tree this op targets, when it carries one inline.
+    ///
+    /// Used by the server to load `auth_settings` for permission resolution and
+    /// by the client to stamp `AuthenticatedRequest::root_id` so the daemon's
+    /// gate has the same scope the op operates on.
+    ///
+    /// Returns `None` for:
+    /// - Ops keyed by entry id alone (`Get`, `GetVerificationStatus`, `Put`,
+    ///   `GetCachedCrdtState`, `CacheCrdtState`) — resolving the entry's tree
+    ///   would require an extra backend read before the gate, and the
+    ///   connection-auth gate (chunk 5a) already prevents drive-by use by
+    ///   unauth'd clients. Per-op tightening is future work.
+    /// - Cross-tree ops with no inherent scope
+    ///   (`GetEntriesByVerificationStatus`, `ClearCrdtCache`,
+    ///   `SetInstanceMetadata`).
+    pub fn tree_id(&self) -> Option<&ID> {
+        match self {
+            BackendOp::GetTips { tree }
+            | BackendOp::GetStoreTips { tree, .. }
+            | BackendOp::GetStoreTipsUpToEntries { tree, .. }
+            | BackendOp::FindMergeBase { tree, .. }
+            | BackendOp::CollectRootToTarget { tree, .. }
+            | BackendOp::GetTree { tree }
+            | BackendOp::GetStore { tree, .. }
+            | BackendOp::GetTreeFromTips { tree, .. }
+            | BackendOp::GetStoreFromTips { tree, .. } => Some(tree),
+
+            BackendOp::GetSortedStoreParents { tree_id, .. }
+            | BackendOp::GetPathFromTo { tree_id, .. }
+            | BackendOp::NotifyEntryWritten { tree_id, .. } => Some(tree_id),
+
+            BackendOp::Get { .. }
+            | BackendOp::GetVerificationStatus { .. }
+            | BackendOp::Put { .. }
+            | BackendOp::GetCachedCrdtState { .. }
+            | BackendOp::CacheCrdtState { .. }
+            | BackendOp::GetEntriesByVerificationStatus { .. }
+            | BackendOp::ClearCrdtCache
+            | BackendOp::SetInstanceMetadata { .. } => None,
+        }
+    }
+
+    /// Minimum permission level required to dispatch this op against a tree.
+    ///
+    /// Read traversal ops require `Read`; anything that mutates tree state
+    /// (entries, verification status, CRDT cache, write callbacks) requires
+    /// `Write`. The priority value carried in `Write(_)` is *not significant*
+    /// here — callers should match on the variant (or compare via
+    /// `Permission::can_write` / `can_admin`) rather than ordering, since the
+    /// op doesn't know what priority the user actually has.
+    ///
+    /// Only consulted when `tree_id().is_some()`; cross-tree ops fall through
+    /// the per-tree gate.
+    pub fn required_permission(&self) -> Permission {
+        match self {
+            BackendOp::Put { .. }
+            | BackendOp::CacheCrdtState { .. }
+            | BackendOp::ClearCrdtCache
+            | BackendOp::NotifyEntryWritten { .. } => Permission::Write(0),
+            _ => Permission::Read,
+        }
+    }
 }
 
 /// Payload of an `Authenticated` service request.
@@ -256,19 +316,23 @@ pub enum ServiceResponse {
     /// List of user IDs
     Users(Vec<String>),
     /// Challenge bytes returned in response to `TrustedLoginUser`, plus the
-    /// user's encrypted credentials so the client can derive the password→key,
-    /// decrypt the root signing key locally, and sign the challenge in a
-    /// single round-trip.
+    /// user's full record so the client can derive the password→key, decrypt
+    /// the root signing key locally, sign the challenge in a single
+    /// round-trip, and then build the `User` session from data the daemon
+    /// already returned — no second wire read of `_users` is required.
     ///
-    /// `credentials` carries the (encrypted) root private key, its
+    /// `user_info.credentials` carries the (encrypted) root private key, its
     /// `KeyStorage` envelope (algorithm/ciphertext/nonce for password-protected
     /// users, raw `PrivateKey` for passwordless users), and the Argon2id salt
-    /// when password-protected. See § Trusted login threat model in the
-    /// Service Architecture doc for why this is safe to ship to anyone who
-    /// can reach the socket.
+    /// when password-protected. The non-credential fields (user_database_id,
+    /// status, timestamps) are what `User::new` consumes after the proof
+    /// step succeeds. See § Trusted login threat model in the Service
+    /// Architecture doc for why this is safe to ship to anyone who can
+    /// reach the socket.
     TrustedLoginChallenge {
         challenge: Vec<u8>,
-        credentials: UserCredentials,
+        user_uuid: String,
+        user_info: UserInfo,
     },
     /// Trusted login succeeded; the connection is now authenticated.
     TrustedLoginOk,
@@ -384,14 +448,6 @@ mod tests {
             BackendOp::GetTips { tree } => assert_eq!(tree, test_id()),
             _ => panic!("wrong variant"),
         }
-    }
-
-    #[test]
-    fn test_request_all_roots_serde() {
-        let req = wrap(BackendOp::AllRoots);
-        let json = serde_json::to_string(&req).unwrap();
-        let req2: ServiceRequest = serde_json::from_str(&json).unwrap();
-        assert!(matches!(unwrap_op(req2), BackendOp::AllRoots));
     }
 
     #[test]
@@ -538,33 +594,47 @@ mod tests {
     #[test]
     fn test_response_trusted_login_challenge_serde() {
         use crate::auth::crypto::generate_keypair;
-        use crate::user::{KeyStorage, UserCredentials};
+        use crate::user::{KeyStorage, UserCredentials, UserInfo, UserStatus};
 
         let (_signing, pubkey) = generate_keypair();
-        let credentials = UserCredentials {
-            root_key_id: pubkey,
-            root_key: KeyStorage::Encrypted {
-                algorithm: "aes-256-gcm".to_string(),
-                ciphertext: b"ct".to_vec(),
-                nonce: b"123456789012".to_vec(),
+        let user_info = UserInfo {
+            username: "alice".to_string(),
+            user_database_id: ID::from_bytes("alice-db"),
+            credentials: UserCredentials {
+                root_key_id: pubkey.clone(),
+                root_key: KeyStorage::Encrypted {
+                    algorithm: "aes-256-gcm".to_string(),
+                    ciphertext: b"ct".to_vec(),
+                    nonce: b"123456789012".to_vec(),
+                },
+                password_salt: Some("salt-string".to_string()),
             },
-            password_salt: Some("salt-string".to_string()),
+            created_at: 1_700_000_000,
+            status: UserStatus::Active,
         };
 
         let resp = ServiceResponse::TrustedLoginChallenge {
             challenge: b"random-bytes".to_vec(),
-            credentials: credentials.clone(),
+            user_uuid: "uuid-alice".to_string(),
+            user_info: user_info.clone(),
         };
         let json = serde_json::to_string(&resp).unwrap();
         let resp2: ServiceResponse = serde_json::from_str(&json).unwrap();
         match resp2 {
             ServiceResponse::TrustedLoginChallenge {
                 challenge,
-                credentials: c2,
+                user_uuid,
+                user_info: ui2,
             } => {
                 assert_eq!(challenge, b"random-bytes");
-                assert_eq!(c2.root_key_id, credentials.root_key_id);
-                assert_eq!(c2.password_salt.as_deref(), Some("salt-string"));
+                assert_eq!(user_uuid, "uuid-alice");
+                assert_eq!(ui2.username, user_info.username);
+                assert_eq!(ui2.user_database_id, user_info.user_database_id);
+                assert_eq!(ui2.credentials.root_key_id, pubkey);
+                assert_eq!(
+                    ui2.credentials.password_salt.as_deref(),
+                    Some("salt-string")
+                );
             }
             _ => panic!("wrong variant"),
         }
