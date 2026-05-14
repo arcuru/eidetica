@@ -698,11 +698,6 @@ impl Instance {
     /// # Returns
     /// A Result containing the user's UUID (stable internal identifier)
     pub async fn create_user(&self, user_id: &str, password: Option<&str>) -> Result<String> {
-        #[cfg(all(unix, feature = "service"))]
-        if let Backend::Remote(_) = self.backend() {
-            return self.backend().create_user(user_id, password).await;
-        }
-
         use crate::user::system_databases::create_user;
         let users_db = self.users_db().await?;
         let (user_uuid, _user_info) = create_user(&users_db, self, user_id, password).await?;
@@ -749,11 +744,6 @@ impl Instance {
     /// # Returns
     /// A Result containing a vector of user IDs
     pub async fn list_users(&self) -> Result<Vec<String>> {
-        #[cfg(all(unix, feature = "service"))]
-        if let Backend::Remote(_) = self.backend() {
-            return self.backend().list_users().await;
-        }
-
         use crate::user::system_databases::list_users;
         let users_db = self.users_db().await?;
         list_users(&users_db).await

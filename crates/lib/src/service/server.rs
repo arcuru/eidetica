@@ -5,6 +5,7 @@
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use tokio::net::UnixListener;
 use tokio::sync::watch;
@@ -16,6 +17,7 @@ use crate::auth::types::{Permission, SigKey};
 use crate::auth::validation::permissions::resolve_identity_permission;
 use crate::database::Database;
 use crate::entry::ID;
+use crate::service::cache::ServiceCache;
 use crate::service::error::ServiceError;
 use crate::service::protocol::{
     AuthenticatedRequest, BackendOp, HandshakeAck, PROTOCOL_VERSION, ServiceRequest,
@@ -48,9 +50,10 @@ enum ConnectionState {
     },
     /// Login completed. `session_pubkey` is the verified root pubkey for the
     /// user; the dispatch path for `ServiceRequest::Authenticated` reads it
-    /// to gate access and cross-check the identity claim. `user_uuid` is
-    /// reserved for chunk 6's per-user cache scoping.
-    #[allow(dead_code)] // user_uuid + username surface in chunk 6
+    /// to gate access and cross-check the identity claim. `user_uuid` is the
+    /// session key for the per-user service-layer cache (see
+    /// `service::cache::ServiceCache`).
+    #[allow(dead_code)] // username surfaces in audit/logging follow-ups
     Authenticated {
         username: String,
         user_uuid: String,
@@ -65,6 +68,11 @@ enum ConnectionState {
 pub struct ServiceServer {
     instance: Instance,
     socket_path: PathBuf,
+    /// Daemon-wide per-user CRDT-state cache. Shared across all connection
+    /// handlers via `Arc`; isolation between users is enforced by the cache's
+    /// `user_uuid` namespace rather than by separate per-connection caches,
+    /// so two connections from the same user share its slice.
+    cache: Arc<ServiceCache>,
 }
 
 impl ServiceServer {
@@ -77,6 +85,7 @@ impl ServiceServer {
         Self {
             instance,
             socket_path: socket_path.into(),
+            cache: Arc::new(ServiceCache::new()),
         }
     }
 
@@ -119,8 +128,9 @@ impl ServiceServer {
                     match accept_result {
                         Ok((stream, _addr)) => {
                             let instance = self.instance.clone();
+                            let cache = self.cache.clone();
                             tokio::spawn(async move {
-                                if let Err(e) = handle_connection(stream, instance).await {
+                                if let Err(e) = handle_connection(stream, instance, cache).await {
                                     tracing::debug!("Connection handler error: {e}");
                                 }
                             });
@@ -147,6 +157,7 @@ impl ServiceServer {
 async fn handle_connection(
     stream: tokio::net::UnixStream,
     instance: Instance,
+    cache: Arc<ServiceCache>,
 ) -> crate::Result<()> {
     let (mut reader, mut writer) = tokio::io::split(stream);
 
@@ -185,7 +196,7 @@ async fn handle_connection(
             None => break, // Clean EOF
         };
 
-        let response = dispatch(&instance, &mut state, request).await;
+        let response = dispatch(&instance, &cache, &mut state, request).await;
         write_frame(&mut writer, &response).await?;
     }
 
@@ -195,10 +206,11 @@ async fn handle_connection(
 /// Dispatch a service request to the appropriate Instance/Backend method.
 async fn dispatch(
     instance: &Instance,
+    cache: &ServiceCache,
     state: &mut ConnectionState,
     request: ServiceRequest,
 ) -> ServiceResponse {
-    match dispatch_inner(instance, state, request).await {
+    match dispatch_inner(instance, cache, state, request).await {
         Ok(resp) => resp,
         Err(e) => ServiceResponse::Error(ServiceError::from(&e)),
     }
@@ -207,6 +219,7 @@ async fn dispatch(
 /// Inner dispatch that returns Result for ergonomic error handling.
 async fn dispatch_inner(
     instance: &Instance,
+    cache: &ServiceCache,
     state: &mut ConnectionState,
     request: ServiceRequest,
 ) -> crate::Result<ServiceResponse> {
@@ -225,16 +238,6 @@ async fn dispatch_inner(
             Ok(ServiceResponse::InstanceMetadata(metadata))
         }
 
-        // === Pre-auth: user management ===
-        ServiceRequest::CreateUser { username, password } => {
-            let uuid = instance.create_user(&username, password.as_deref()).await?;
-            Ok(ServiceResponse::UserCreated(uuid))
-        }
-        ServiceRequest::ListUsers => {
-            let users = instance.list_users().await?;
-            Ok(ServiceResponse::Users(users))
-        }
-
         // === Authenticated backend operations ===
         //
         // Gate 1 (chunk 5a): the connection must have completed `TrustedLogin*`.
@@ -247,8 +250,12 @@ async fn dispatch_inner(
         // tree's `auth_settings`. Cross-tree and entry-id-only ops bypass
         // gate 2 — see `BackendOp::tree_id` for the rationale.
         ServiceRequest::Authenticated(inner) => {
-            let session_pubkey = match state {
-                ConnectionState::Authenticated { session_pubkey, .. } => session_pubkey.clone(),
+            let (session_pubkey, session_user_uuid) = match state {
+                ConnectionState::Authenticated {
+                    session_pubkey,
+                    user_uuid,
+                    ..
+                } => (session_pubkey.clone(), user_uuid.clone()),
                 _ => {
                     return Err(crate::Error::Auth(Box::new(
                         AuthError::InvalidAuthConfiguration {
@@ -309,7 +316,7 @@ async fn dispatch_inner(
                 .await?;
             }
 
-            dispatch_backend_op(instance, request).await
+            dispatch_backend_op(instance, cache, &session_user_uuid, request).await
         }
     }
 }
@@ -466,7 +473,17 @@ async fn gate_tree_permission(
 ///
 /// Called from `dispatch_inner` after the chunk-5a connection-state gate and
 /// the chunk-5b per-tree permission gate have both passed.
-async fn dispatch_backend_op(instance: &Instance, op: BackendOp) -> crate::Result<ServiceResponse> {
+///
+/// Cache ops (`GetCachedCrdtState`, `CacheCrdtState`, `ClearCrdtCache`) are
+/// served from the per-user service-layer cache (`ServiceCache`), keyed by
+/// the session's `user_uuid`, rather than from the backend's global cache.
+/// This isolates each user's cache slice — see `service::cache` for why.
+async fn dispatch_backend_op(
+    instance: &Instance,
+    cache: &ServiceCache,
+    user_uuid: &str,
+    op: BackendOp,
+) -> crate::Result<ServiceResponse> {
     let backend = instance.backend();
 
     match op {
@@ -549,9 +566,9 @@ async fn dispatch_backend_op(instance: &Instance, op: BackendOp) -> crate::Resul
             Ok(ServiceResponse::Entries(entries))
         }
 
-        // === CRDT cache ===
+        // === CRDT cache (per-user, service-layer) ===
         BackendOp::GetCachedCrdtState { entry_id, store } => {
-            let state = backend.get_cached_crdt_state(&entry_id, &store).await?;
+            let state = cache.get(user_uuid, &entry_id, &store);
             Ok(ServiceResponse::CachedCrdtState(state))
         }
         BackendOp::CacheCrdtState {
@@ -559,11 +576,11 @@ async fn dispatch_backend_op(instance: &Instance, op: BackendOp) -> crate::Resul
             store,
             state,
         } => {
-            backend.cache_crdt_state(&entry_id, &store, state).await?;
+            cache.put(user_uuid, &entry_id, &store, state);
             Ok(ServiceResponse::Ok)
         }
         BackendOp::ClearCrdtCache => {
-            backend.clear_crdt_cache().await?;
+            cache.clear_user(user_uuid);
             Ok(ServiceResponse::Ok)
         }
 
