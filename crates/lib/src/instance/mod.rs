@@ -686,6 +686,16 @@ impl Instance {
         &self.inner.metadata.databases_db
     }
 
+    /// Root id of the `_users` system DB.
+    ///
+    /// Parallel to `databases_db_id()`. Lets an instance admin open `_users`
+    /// keyed by their own signing key (rather than the device key that
+    /// `users_db()` attaches), so admin-gated edits to `_users.auth_settings`
+    /// resolve against the admin's identity.
+    pub(crate) fn users_db_id(&self) -> &ID {
+        &self.inner.metadata.users_db
+    }
+
     // === User Management ===
 
     /// Create a new user account with flexible password handling.
