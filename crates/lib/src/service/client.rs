@@ -53,6 +53,12 @@ struct RemoteConnectionInner {
     /// Set on successful `trusted_login`; read by `backend_request` to populate
     /// the `Authenticated` envelope's identity field. `RwLock` because reads
     /// are far more frequent than the one-shot login write.
+    ///
+    /// TODO (before multi-user / untrusted clients): the `read()/write()
+    /// .unwrap()` at the use sites panics on poisoning. Blast radius is
+    /// limited to this one connection (unlike the daemon-shared cache lock),
+    /// but it should still recover the guard or use a non-poisoning lock
+    /// rather than abort the connection.
     session: RwLock<Option<SessionState>>,
 }
 
