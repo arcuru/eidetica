@@ -312,11 +312,13 @@ impl Instance {
     /// This creates a `RemoteConnection` that forwards all storage operations
     /// to the daemon via RPC, wrapped in a `Backend::Remote` variant.
     ///
-    /// The daemon holds signing keys server-side. After connecting, clients
-    /// authenticate via `login_user()` which sends a password to the server.
-    /// The server verifies the password, decrypts the user's keys, and holds
-    /// them in per-connection state. The client receives a `PrivateKey::Remote`
-    /// that proxies signing operations back to the server.
+    /// Authentication uses client-side signing. `login_user()` runs the
+    /// challenge-response handshake, decrypting the user's signing key
+    /// in-process and signing the challenge locally; the daemon never
+    /// receives the password or the plaintext signing key and never signs
+    /// on the client's behalf. A connected Instance holds no local instance
+    /// secrets. A key-holding daemon was considered and rejected — see the
+    /// Service Architecture doc § Decision record for the rationale.
     ///
     /// # Arguments
     /// * `socket_path` - Path to the Unix domain socket
@@ -821,6 +823,21 @@ impl Instance {
         // Check if there is an existing Sync already loaded
         if self.inner.sync.get().is_some() {
             return Ok(());
+        }
+
+        // A remote Instance must not run sync client-side: building a Sync
+        // here would spin up a background sync engine that drives RPCs against
+        // the daemon's backend — duplicating (and racing) the daemon's own
+        // sync. Sync is owned by the process that owns the Instance. Fail
+        // loudly instead of silently constructing a useless module. A future
+        // `EnableSync` RPC will delegate this to the server (see
+        // `service` module § V1 Limitations).
+        #[cfg(all(unix, feature = "service"))]
+        if let Backend::Remote(_) = self.backend() {
+            return Err(InstanceError::OperationNotSupported {
+                operation: "enable_sync on a remote Instance (sync runs daemon-side)".to_string(),
+            }
+            .into());
         }
 
         // Check InstanceMetadata for existing sync_db
