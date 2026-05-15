@@ -55,10 +55,13 @@ pub(crate) async fn has_instance_admin(
 /// `enable_sync()` and out of scope here.
 ///
 /// The Database handles passed in must already be opened with a signing key
-/// that holds `Admin` on each respective DB. For the first-admin bootstrap
-/// path (called from `create_user` below) that's the device key —
-/// `Database::create` registered it as `Admin(0)` on each system DB.
-async fn grant_admin_on_system_dbs(
+/// that holds `Admin` on each respective DB. The first-admin bootstrap path
+/// (`create_user` below) passes device-keyed handles — `Database::create`
+/// registered the device key as `Admin(0)` on each system DB. The admin
+/// promotion path (`User::grant_instance_admin`) passes handles keyed by an
+/// existing admin's own key; the same write then resolves against that
+/// admin's identity.
+pub(crate) async fn grant_admin_on_system_dbs(
     users_db: &Database,
     databases_db: &Database,
     pubkey: &PublicKey,
@@ -997,6 +1000,121 @@ mod tests {
         assert!(
             !bob.is_admin().await.unwrap(),
             "second user must report is_admin = false"
+        );
+    }
+
+    /// An existing admin can promote another user: the new admin's pubkey
+    /// lands as `Admin(0)` on both `_users` and `_databases`, and the
+    /// promoted user then reports `is_admin()`.
+    #[tokio::test]
+    async fn test_admin_can_promote_user() {
+        let (instance, _device_key) = setup_instance().await;
+
+        instance.create_user("alice", None).await.unwrap();
+        instance.create_user("bob", None).await.unwrap();
+
+        let alice = instance.login_user("alice", None).await.unwrap();
+        let bob = instance.login_user("bob", None).await.unwrap();
+        let bob_pubkey = bob.key_manager().get_default_key_id().unwrap();
+
+        assert!(
+            !bob.is_admin().await.unwrap(),
+            "precondition: bob starts as a non-admin"
+        );
+
+        alice.grant_instance_admin(&bob_pubkey).await.unwrap();
+
+        let users_db = instance.users_db().await.unwrap();
+        let databases_db = instance.databases_db().await.unwrap();
+        assert_eq!(
+            read_admin_permission(&users_db, &bob_pubkey).await,
+            Some(Permission::Admin(0)),
+            "promoted user should be Admin(0) in _users"
+        );
+        assert_eq!(
+            read_admin_permission(&databases_db, &bob_pubkey).await,
+            Some(Permission::Admin(0)),
+            "promoted user should be Admin(0) in _databases"
+        );
+        assert!(
+            bob.is_admin().await.unwrap(),
+            "promoted user must now report is_admin = true"
+        );
+    }
+
+    /// A non-admin cannot promote anyone: the attempt fails with
+    /// `InsufficientPermissions` and writes nothing.
+    #[tokio::test]
+    async fn test_non_admin_cannot_promote() {
+        let (instance, _device_key) = setup_instance().await;
+
+        instance.create_user("alice", None).await.unwrap(); // first user = admin
+        instance.create_user("bob", None).await.unwrap();
+        instance.create_user("charlie", None).await.unwrap();
+
+        let bob = instance.login_user("bob", None).await.unwrap();
+        let charlie = instance.login_user("charlie", None).await.unwrap();
+        let charlie_pubkey = charlie.key_manager().get_default_key_id().unwrap();
+
+        let err = bob
+            .grant_instance_admin(&charlie_pubkey)
+            .await
+            .expect_err("non-admin must not be able to promote");
+        assert!(
+            matches!(
+                &err,
+                crate::Error::User(e)
+                    if matches!(e.as_ref(), crate::user::UserError::InsufficientPermissions)
+            ),
+            "expected InsufficientPermissions, got: {err:?}"
+        );
+
+        let users_db = instance.users_db().await.unwrap();
+        assert!(
+            read_admin_permission(&users_db, &charlie_pubkey)
+                .await
+                .is_none(),
+            "a failed promotion must not write to _users.auth_settings"
+        );
+    }
+
+    /// Promotion is idempotent, and a freshly-promoted admin can itself
+    /// promote further admins — exercising the admin-keyed write path
+    /// (not the device key) end to end.
+    #[tokio::test]
+    async fn test_grant_instance_admin_idempotent_and_chains() {
+        let (instance, _device_key) = setup_instance().await;
+
+        instance.create_user("alice", None).await.unwrap();
+        instance.create_user("bob", None).await.unwrap();
+
+        let alice = instance.login_user("alice", None).await.unwrap();
+        let bob = instance.login_user("bob", None).await.unwrap();
+        let bob_pubkey = bob.key_manager().get_default_key_id().unwrap();
+
+        alice.grant_instance_admin(&bob_pubkey).await.unwrap();
+        alice.grant_instance_admin(&bob_pubkey).await.unwrap(); // idempotent: no error
+
+        let users_db = instance.users_db().await.unwrap();
+        assert_eq!(
+            read_admin_permission(&users_db, &bob_pubkey).await,
+            Some(Permission::Admin(0)),
+            "re-granting an existing admin re-asserts the same entry"
+        );
+
+        // bob, now an admin, promotes charlie signing with bob's *own* key —
+        // the device key is never involved here.
+        instance.create_user("charlie", None).await.unwrap();
+        let charlie = instance.login_user("charlie", None).await.unwrap();
+        let charlie_pubkey = charlie.key_manager().get_default_key_id().unwrap();
+
+        bob.grant_instance_admin(&charlie_pubkey).await.unwrap();
+
+        let databases_db = instance.databases_db().await.unwrap();
+        assert_eq!(
+            read_admin_permission(&databases_db, &charlie_pubkey).await,
+            Some(Permission::Admin(0)),
+            "a promoted admin can promote further admins via their own key"
         );
     }
 }

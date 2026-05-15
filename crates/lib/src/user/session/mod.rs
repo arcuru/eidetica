@@ -176,6 +176,65 @@ impl User {
         }
     }
 
+    /// Open a system database keyed by this user's default signing key.
+    ///
+    /// Unlike `open_database` / `open_database_with_key`, this does not
+    /// require a tracked-database SigKey mapping: the instance-admin
+    /// bootstrap writes the user's pubkey straight into the system DB's
+    /// `auth_settings`, so the default-pubkey identity (`DatabaseKey::new`)
+    /// resolves directly. Callers must gate on `is_admin()` first — this
+    /// helper performs no permission check of its own.
+    async fn admin_keyed_system_db(&self, root_id: &ID) -> Result<Database> {
+        let key_id =
+            self.key_manager
+                .get_default_key_id()
+                .ok_or_else(|| UserError::KeyNotFound {
+                    key_id: "<default>".to_string(),
+                })?;
+        let signing_key = self
+            .key_manager
+            .get_signing_key(&key_id)
+            .ok_or_else(|| UserError::KeyNotFound {
+                key_id: key_id.to_string(),
+            })?
+            .clone();
+        Ok(Database::open(&self.instance, root_id)
+            .await?
+            .with_key(DatabaseKey::new(signing_key)))
+    }
+
+    /// Grant instance-admin to another key.
+    ///
+    /// Adds `new_admin` as `Admin(0)` on the system databases that gate
+    /// instance-level admin operations (`_users` and `_databases`), with the
+    /// write signed by this user's own admin key. The first instance admin is
+    /// created automatically during `Instance::create_user`; this is how
+    /// every subsequent admin is promoted.
+    ///
+    /// Idempotent: re-granting an existing admin re-asserts the same
+    /// `Admin(0)` entry.
+    ///
+    /// # Errors
+    /// - [`UserError::InsufficientPermissions`] if the caller is not itself
+    ///   an instance admin.
+    pub async fn grant_instance_admin(&self, new_admin: &PublicKey) -> Result<()> {
+        if !self.is_admin().await? {
+            return Err(UserError::InsufficientPermissions.into());
+        }
+        let users_db = self
+            .admin_keyed_system_db(self.instance.users_db_id())
+            .await?;
+        let databases_db = self
+            .admin_keyed_system_db(self.instance.databases_db_id())
+            .await?;
+        crate::user::system_databases::grant_admin_on_system_dbs(
+            &users_db,
+            &databases_db,
+            new_admin,
+        )
+        .await
+    }
+
     /// Logout (consumes self and clears decrypted keys from memory)
     ///
     /// After logout, all decrypted keys are zeroized and the session is ended.
