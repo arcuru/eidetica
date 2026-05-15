@@ -92,8 +92,7 @@ impl Backend {
     /// Local backends apply the change directly. Remote backends return
     /// `OperationNotSupported` — `update_verification_status` is not exposed
     /// over the wire because verification flags should be derived by each
-    /// node from its own validation pass, not flipped by a peer. See the
-    /// review note on `feat/service-foundation` § 4 for the rationale.
+    /// node from its own validation pass, not flipped by a peer.
     pub async fn update_verification_status(
         &self,
         id: &ID,
@@ -143,7 +142,7 @@ impl Backend {
     /// `OperationNotSupported`: enumerating all roots over the wire is a
     /// cross-tree discovery channel that bypasses the per-tree permission
     /// gate, and clients that need a list of databases should read the
-    /// `_databases` system DB instead. See review § 6.
+    /// `_databases` system DB instead.
     pub async fn all_roots(&self) -> Result<Vec<ID>> {
         match self {
             Backend::Local(b) => b.all_roots().await,
@@ -241,12 +240,24 @@ impl Backend {
 
     // === Instance secrets ===
 
-    /// Get instance secrets. Remote backends always return `Ok(None)`.
+    /// Get instance secrets.
+    ///
+    /// Local backends read the stored secrets. Remote backends return
+    /// `OperationNotSupported`: instance secrets (the device signing key) live
+    /// server-side and are never shipped over the wire, so a remote `Ok(None)`
+    /// would be a *wrong answer* — indistinguishable from "no secrets
+    /// configured" — rather than an honest "not available here". Remote
+    /// instances are constructed with `secrets: None` by `Instance::connect`
+    /// and never reach this path in normal operation; the explicit error keeps
+    /// the dispatch honest for any future caller.
     pub async fn get_instance_secrets(&self) -> Result<Option<InstanceSecrets>> {
         match self {
             Backend::Local(b) => b.get_instance_secrets().await,
             #[cfg(all(unix, feature = "service"))]
-            Backend::Remote(_) => Ok(None),
+            Backend::Remote(_) => Err(crate::instance::InstanceError::OperationNotSupported {
+                operation: "get_instance_secrets on remote backend".to_string(),
+            }
+            .into()),
         }
     }
 

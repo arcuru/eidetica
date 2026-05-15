@@ -55,9 +55,10 @@
 //!   (`Request | Response | Notification`). The client needs a background reader task
 //!   that routes responses to pending requests and notifications to callbacks.
 //!
-//! - **`enable_sync()` on remote Instance**: Creates a client-side sync module
-//!   (not useful). Future: add an `EnableSync` RPC that delegates to the server's
-//!   Instance, and similarly for `sync()`, `flush_sync()`, etc.
+//! - **`enable_sync()` on remote Instance**: Returns `OperationNotSupported`
+//!   rather than silently building a client-side sync module that would race
+//!   the daemon's own sync. Future: add an `EnableSync` RPC that delegates to
+//!   the server's Instance, and similarly for `sync()`, `flush_sync()`, etc.
 
 pub(crate) mod cache;
 pub mod client;

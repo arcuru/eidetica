@@ -10,8 +10,8 @@
 //! decrypts the user's root signing key in-process, and signs the challenge
 //! locally. The daemon never sees the password or the plaintext signing key.
 //! After login, subsequent backend operations travel inside the `Authenticated`
-//! envelope and are dispatched against the user's identity (see chunk 5 of
-//! Branch C for the per-request permission gate).
+//! envelope and are dispatched against the user's identity; the daemon gates
+//! each one per-tree against the target database's auth settings.
 
 use std::path::Path;
 use std::sync::{Arc, RwLock};

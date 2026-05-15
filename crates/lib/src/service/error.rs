@@ -182,6 +182,85 @@ mod tests {
         assert!(err.is_io_error());
     }
 
+    /// Every `(module, kind)` pair that `service_error_to_eidetica_error`
+    /// claims to map specifically must survive a full round-trip with its
+    /// `(module, kind)` intact.
+    ///
+    /// This is the regression net for the stringly-typed wire mapping: the
+    /// reverse table keys off the `{:?}` discriminant string produced by
+    /// `error_kind_name`. If a `BackendError`/`InstanceError` variant is
+    /// renamed (or its mapping arm dropped), reconstruction silently falls
+    /// through the `_ =>` wildcard to a generic IO error, whose `(module,
+    /// kind)` no longer matches the original — failing this test instead of
+    /// silently degrading error fidelity for every wire client.
+    #[test]
+    fn test_all_mapped_pairs_roundtrip_module_and_kind() {
+        let cases: Vec<crate::Error> = vec![
+            crate::Error::Backend(Box::new(BackendError::EntryNotFound {
+                id: ID::from_bytes("rt-entry"),
+            })),
+            crate::Error::Backend(Box::new(BackendError::VerificationStatusNotFound {
+                id: ID::from_bytes("rt-vs"),
+            })),
+            crate::Error::Backend(Box::new(BackendError::EntryNotInTree {
+                entry_id: ID::from_bytes("rt-e"),
+                tree_id: ID::from_bytes("rt-t"),
+            })),
+            crate::Error::Backend(Box::new(BackendError::NoCommonAncestor {
+                entry_ids: vec![ID::from_bytes("rt-a")],
+            })),
+            crate::Error::Backend(Box::new(BackendError::EmptyEntryList {
+                operation: "rt".to_string(),
+            })),
+            crate::Error::Instance(Box::new(InstanceError::DatabaseNotFound {
+                name: "rt-db".to_string(),
+            })),
+            crate::Error::Instance(Box::new(InstanceError::EntryNotFound {
+                entry_id: ID::from_bytes("rt-ie"),
+            })),
+            crate::Error::Instance(Box::new(InstanceError::InstanceAlreadyExists)),
+            crate::Error::Instance(Box::new(InstanceError::DeviceKeyNotFound)),
+            crate::Error::Instance(Box::new(InstanceError::AuthenticationRequired)),
+        ];
+
+        for original in &cases {
+            let se = ServiceError::from(original);
+            let reconstructed = service_error_to_eidetica_error(se.clone());
+            let round = ServiceError::from(&reconstructed);
+            assert_eq!(
+                (round.module.as_str(), round.kind.as_str()),
+                (se.module.as_str(), se.kind.as_str()),
+                "mapped pair ({}::{}) fell through the wildcard on reconstruction \
+                 — its mapping arm or discriminant name has drifted",
+                se.module,
+                se.kind,
+            );
+        }
+    }
+
+    /// Compile-time guard: if a new top-level `crate::Error` variant is added,
+    /// this match stops being exhaustive and the test build fails, forcing the
+    /// author to decide how the variant crosses the service wire (update
+    /// `error_kind_name` and, if it needs a specific client-side reconstruction,
+    /// `service_error_to_eidetica_error`). Mirrors `error_kind_name`'s arms.
+    #[allow(dead_code)]
+    fn wire_mapping_exhaustiveness_guard(err: &crate::Error) {
+        match err {
+            crate::Error::Io(_) => {}
+            crate::Error::Serialize(_) => {}
+            crate::Error::Auth(_) => {}
+            crate::Error::Backend(_) => {}
+            crate::Error::Instance(_) => {}
+            crate::Error::CRDT(_) => {}
+            crate::Error::Store(_) => {}
+            crate::Error::Transaction(_) => {}
+            crate::Error::Sync(_) => {}
+            crate::Error::Entry(_) => {}
+            crate::Error::Id(_) => {}
+            crate::Error::User(_) => {}
+        }
+    }
+
     #[test]
     fn test_service_error_serde_roundtrip() {
         let se = ServiceError {
