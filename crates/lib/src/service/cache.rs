@@ -70,6 +70,16 @@ struct RefcountedBlob {
 /// `ServiceServer`. The single internal `Mutex` is fine for the access
 /// pattern (cache hits don't fan out further work); contention can be
 /// revisited if profiling shows it.
+///
+/// TODO (before multi-user / untrusted clients): the `lock().unwrap()` in
+/// `put`/`get`/`clear_user` panics on poisoning. Because this mutex is
+/// shared across every connection handler, a panic in one handler while
+/// holding it poisons the lock and cascades a panic into every other
+/// connection's cache access — a single bad request becomes a daemon-wide
+/// cache outage. Acceptable for the v1 single trusted client. Fix by
+/// switching to a non-poisoning lock or recovering the guard on poison
+/// (the cache is rebuildable, so a poisoned cache can be cleared rather
+/// than crash the daemon).
 #[derive(Default)]
 pub(crate) struct ServiceCache {
     inner: Mutex<Inner>,
