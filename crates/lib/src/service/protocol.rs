@@ -62,10 +62,15 @@ pub struct HandshakeAck {
 /// Backend storage operations that the server dispatches on behalf of an
 /// authenticated client.
 ///
-/// Each variant maps one-to-one to a `BackendImpl` method (plus
-/// `NotifyEntryWritten` for write-coordination via `Instance::dispatch_write_callbacks`).
-/// `BackendOp` is always carried inside `ServiceRequest::Authenticated` so the
-/// server has the `(root_id, identity)` scope it needs to authorise the op.
+/// This is a deliberately curated **subset** of the `BackendImpl` trait: only
+/// the operations a remote client actually needs and that can be authorised
+/// against a database's `auth_settings`. Backend-internal primitives
+/// (verification-status scans, root-to-target path collection, sorted-parent
+/// walks, cache clears) are intentionally *not* on the wire — they remain
+/// local-only trait methods. Plus `NotifyEntryWritten` for write-coordination
+/// via `Instance::dispatch_write_callbacks`. `BackendOp` is always carried
+/// inside `ServiceRequest::Authenticated` so the server has the
+/// `(root_id, identity)` scope it needs to authorise the op.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum BackendOp {
     // === Entry operations ===
@@ -75,14 +80,6 @@ pub enum BackendOp {
     Put {
         verification_status: VerificationStatus,
         entry: Entry,
-    },
-
-    // === Verification ===
-    GetVerificationStatus {
-        id: ID,
-    },
-    GetEntriesByVerificationStatus {
-        status: VerificationStatus,
     },
 
     // === Tips ===
@@ -104,11 +101,6 @@ pub enum BackendOp {
         tree: ID,
         store: String,
         entry_ids: Vec<ID>,
-    },
-    CollectRootToTarget {
-        tree: ID,
-        store: String,
-        target_entry: ID,
     },
     GetTree {
         tree: ID,
@@ -137,14 +129,8 @@ pub enum BackendOp {
         store: String,
         state: Vec<u8>,
     },
-    ClearCrdtCache,
 
     // === Path operations ===
-    GetSortedStoreParents {
-        tree_id: ID,
-        entry_id: ID,
-        store: String,
-    },
     GetPathFromTo {
         tree_id: ID,
         store: String,
@@ -173,37 +159,33 @@ impl BackendOp {
     /// gate has the same scope the op operates on.
     ///
     /// Returns `None` for:
-    /// - Ops keyed by entry id alone (`Get`, `GetVerificationStatus`, `Put`,
-    ///   `GetCachedCrdtState`, `CacheCrdtState`) — resolving the entry's tree
-    ///   would require an extra backend read before the gate, and the
-    ///   connection-auth gate (chunk 5a) already prevents drive-by use by
-    ///   unauth'd clients. Per-op tightening is future work.
-    /// - Cross-tree ops with no inherent scope
-    ///   (`GetEntriesByVerificationStatus`, `ClearCrdtCache`,
-    ///   `SetInstanceMetadata`).
+    /// - Ops keyed by entry id alone (`Get`, `Put`, `GetCachedCrdtState`,
+    ///   `CacheCrdtState`) — resolving the entry's tree requires an extra
+    ///   backend read, so the gate can't run here in `dispatch_inner`.
+    ///   `Get` is instead gated *post-fetch* on the entry's resolved owning
+    ///   tree (D2, `gate_entry_read` in `server.rs`). `Put` per-tree gating
+    ///   plus server-side verification is the deferred D1 work (A3/P0). The
+    ///   cache ops are per-user namespaced server-side.
+    /// - Cross-tree ops with no inherent scope (`SetInstanceMetadata`, which
+    ///   carries its own explicit `Admin`-on-`_databases` gate).
     pub fn tree_id(&self) -> Option<&ID> {
         match self {
             BackendOp::GetTips { tree }
             | BackendOp::GetStoreTips { tree, .. }
             | BackendOp::GetStoreTipsUpToEntries { tree, .. }
             | BackendOp::FindMergeBase { tree, .. }
-            | BackendOp::CollectRootToTarget { tree, .. }
             | BackendOp::GetTree { tree }
             | BackendOp::GetStore { tree, .. }
             | BackendOp::GetTreeFromTips { tree, .. }
             | BackendOp::GetStoreFromTips { tree, .. } => Some(tree),
 
-            BackendOp::GetSortedStoreParents { tree_id, .. }
-            | BackendOp::GetPathFromTo { tree_id, .. }
+            BackendOp::GetPathFromTo { tree_id, .. }
             | BackendOp::NotifyEntryWritten { tree_id, .. } => Some(tree_id),
 
             BackendOp::Get { .. }
-            | BackendOp::GetVerificationStatus { .. }
             | BackendOp::Put { .. }
             | BackendOp::GetCachedCrdtState { .. }
             | BackendOp::CacheCrdtState { .. }
-            | BackendOp::GetEntriesByVerificationStatus { .. }
-            | BackendOp::ClearCrdtCache
             | BackendOp::SetInstanceMetadata { .. } => None,
         }
     }
@@ -223,7 +205,6 @@ impl BackendOp {
         match self {
             BackendOp::Put { .. }
             | BackendOp::CacheCrdtState { .. }
-            | BackendOp::ClearCrdtCache
             | BackendOp::NotifyEntryWritten { .. } => Permission::Write(0),
             _ => Permission::Read,
         }
@@ -294,8 +275,6 @@ pub enum ServiceResponse {
     Ids(Vec<ID>),
     /// Success with no data
     Ok,
-    /// Verification status
-    VerificationStatus(VerificationStatus),
     /// Optional cached CRDT state
     CachedCrdtState(Option<Vec<u8>>),
     /// Optional instance metadata
@@ -446,14 +425,6 @@ mod tests {
     }
 
     #[test]
-    fn test_request_clear_crdt_cache_serde() {
-        let req = wrap(BackendOp::ClearCrdtCache);
-        let json = serde_json::to_string(&req).unwrap();
-        let req2: ServiceRequest = serde_json::from_str(&json).unwrap();
-        assert!(matches!(unwrap_op(req2), BackendOp::ClearCrdtCache));
-    }
-
-    #[test]
     fn test_request_notify_entry_written_serde() {
         let req = wrap(BackendOp::NotifyEntryWritten {
             tree_id: test_id(),
@@ -539,17 +510,6 @@ mod tests {
                 assert_eq!(e.module, "backend");
                 assert_eq!(e.kind, "EntryNotFound");
             }
-            _ => panic!("wrong variant"),
-        }
-    }
-
-    #[test]
-    fn test_response_verification_status_serde() {
-        let resp = ServiceResponse::VerificationStatus(VerificationStatus::Verified);
-        let json = serde_json::to_string(&resp).unwrap();
-        let resp2: ServiceResponse = serde_json::from_str(&json).unwrap();
-        match resp2 {
-            ServiceResponse::VerificationStatus(vs) => assert_eq!(vs, VerificationStatus::Verified),
             _ => panic!("wrong variant"),
         }
     }

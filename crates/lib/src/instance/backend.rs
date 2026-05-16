@@ -59,6 +59,23 @@ macro_rules! dispatch {
     };
 }
 
+/// For `BackendImpl` methods that are deliberately **not** exposed over the
+/// service wire (backend-internal primitives, no production remote caller).
+/// Local delegates as usual; Remote fails fast with `OperationNotSupported`
+/// rather than silently mirroring an unauthorisable op onto the socket.
+macro_rules! local_only {
+    ($self:expr, $op:literal, $method:ident ( $($arg:expr),* $(,)? )) => {
+        match $self {
+            Backend::Local(b) => b.$method($($arg),*).await,
+            #[cfg(all(unix, feature = "service"))]
+            Backend::Remote(_) => Err(crate::instance::InstanceError::OperationNotSupported {
+                operation: concat!($op, " on remote backend").to_string(),
+            }
+            .into()),
+        }
+    };
+}
+
 impl Backend {
     /// Create a new local Backend wrapping a BackendImpl.
     pub fn new(backend_impl: Arc<dyn BackendImpl>) -> Self {
@@ -72,7 +89,7 @@ impl Backend {
     }
 
     pub async fn get_verification_status(&self, id: &ID) -> Result<VerificationStatus> {
-        dispatch!(self, get_verification_status(id))
+        local_only!(self, "get_verification_status", get_verification_status(id))
     }
 
     pub async fn put(&self, verification: VerificationStatus, entry: Entry) -> Result<()> {
@@ -112,7 +129,11 @@ impl Backend {
         &self,
         status: VerificationStatus,
     ) -> Result<Vec<ID>> {
-        dispatch!(self, get_entries_by_verification_status(status))
+        local_only!(
+            self,
+            "get_entries_by_verification_status",
+            get_entries_by_verification_status(status)
+        )
     }
 
     // === Tips ===
@@ -164,7 +185,11 @@ impl Backend {
         store: &str,
         target: &ID,
     ) -> Result<Vec<ID>> {
-        dispatch!(self, collect_root_to_target(tree, store, target))
+        local_only!(
+            self,
+            "collect_root_to_target",
+            collect_root_to_target(tree, store, target)
+        )
     }
 
     pub async fn get_tree(&self, tree: &ID) -> Result<Vec<Entry>> {
@@ -204,7 +229,7 @@ impl Backend {
     }
 
     pub async fn clear_crdt_cache(&self) -> Result<()> {
-        dispatch!(self, clear_crdt_cache())
+        local_only!(self, "clear_crdt_cache", clear_crdt_cache())
     }
 
     // === Path operations ===
@@ -215,7 +240,11 @@ impl Backend {
         entry_id: &ID,
         store: &str,
     ) -> Result<Vec<ID>> {
-        dispatch!(self, get_sorted_store_parents(tree_id, entry_id, store))
+        local_only!(
+            self,
+            "get_sorted_store_parents",
+            get_sorted_store_parents(tree_id, entry_id, store)
+        )
     }
 
     pub async fn get_path_from_to(

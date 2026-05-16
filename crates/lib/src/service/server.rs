@@ -295,6 +295,9 @@ async fn dispatch_inner(
                     &identity,
                     tree_id,
                     request.required_permission(),
+                    // create-flow passthrough: a not-yet-propagated tree
+                    // must be waved through so `Database::create` works.
+                    false,
                 )
                 .await?;
             }
@@ -305,6 +308,11 @@ async fn dispatch_inner(
             // `_databases` (the first-user bootstrap is what grants this).
             // The op carries no inline tree id, so we resolve the caller's
             // permission against `_databases.auth_settings` explicitly.
+            // D8: fail closed — `_databases` always exists on an
+            // initialized daemon and this is never a creation flow, so the
+            // create-flow passthrough must not apply here (it would let any
+            // authenticated user rewrite system-DB pointers if `_databases`
+            // were ever unreadable).
             if matches!(request, BackendOp::SetInstanceMetadata { .. }) {
                 gate_tree_permission(
                     instance,
@@ -312,11 +320,20 @@ async fn dispatch_inner(
                     &identity,
                     instance.databases_db_id(),
                     Permission::Admin(0),
+                    true,
                 )
                 .await?;
             }
 
-            dispatch_backend_op(instance, cache, &session_user_uuid, request).await
+            dispatch_backend_op(
+                instance,
+                cache,
+                &session_pubkey,
+                &identity,
+                &session_user_uuid,
+                request,
+            )
+            .await
         }
     }
 }
@@ -404,14 +421,23 @@ fn handle_trusted_login_prove(
 /// Resolve `pubkey`'s permission against `tree_id`'s `auth_settings` and reject
 /// the request if the resolved level doesn't cover `required`.
 ///
-/// If the database doesn't exist on this daemon yet, the gate passes through
-/// so the dispatched op surfaces its own response (NotFound, empty result,
-/// or — for write coordination — a no-op). This is what keeps the legitimate
-/// "create a new database" flow working: `Database::create` reads tips on
-/// the tree before its root entry has propagated, so an outright denial
-/// here would break creation. The cost is that callers can still
-/// distinguish "no such database" from "exists but no access"; closing
-/// that existence-leak channel is filed as a follow-up.
+/// If the database doesn't exist on this daemon yet and `require_existing`
+/// is false, the gate passes through so the dispatched op surfaces its own
+/// response (NotFound, empty result, or — for write coordination — a
+/// no-op). This is what keeps the legitimate "create a new database" flow
+/// working: `Database::create` reads tips on the tree before its root entry
+/// has propagated, so an outright denial here would break creation. The
+/// cost is that callers can still distinguish "no such database" from
+/// "exists but no access"; closing that existence-leak channel is filed as
+/// a follow-up.
+///
+/// `require_existing = true` flips that to **fail closed**: an absent
+/// target is denied rather than waved through. Used for the
+/// `SetInstanceMetadata` admin gate (D8) — `_databases` always exists on an
+/// initialized daemon and that op is never a creation flow, so the
+/// create-flow passthrough there would only ever be a fail-open hole that
+/// lets any authenticated user rewrite the daemon's system-DB pointers if
+/// `_databases` were ever unreadable.
 ///
 /// When the gate does fire, the denial error is the same shape regardless
 /// of which sub-check failed (key not in auth_settings, mismatched hint,
@@ -432,16 +458,21 @@ async fn gate_tree_permission(
     identity: &SigKey,
     tree_id: &ID,
     required: Permission,
+    require_existing: bool,
 ) -> crate::Result<()> {
-    if !instance.has_database(tree_id).await {
-        return Ok(());
-    }
-
     let denied = || {
         crate::Error::Auth(Box::new(AuthError::PermissionDenied {
             reason: format!("tree {tree_id}: pubkey {pubkey} not permitted for {required:?}"),
         }))
     };
+
+    if !instance.has_database(tree_id).await {
+        return if require_existing {
+            Err(denied())
+        } else {
+            Ok(())
+        };
+    }
 
     let database = Database::open(instance, tree_id).await?;
     let settings_store = database.get_settings().await?;
@@ -469,18 +500,96 @@ async fn gate_tree_permission(
     Ok(())
 }
 
+/// Per-tree read gate for ops keyed by a raw entry id, which therefore
+/// carry no inline tree id and never hit the pre-dispatch `tree_id()` gate
+/// (`Get`). The tree to authorise against is only knowable *after* the
+/// fetch: it is the entry's claimed `tree.root`, or — for a tree-root
+/// entry, whose `root()` is `None` — the entry's own id.
+///
+/// Model B (hard multi-tenant boundary): system DBs are unencrypted and
+/// protected solely by this gate, so a raw cross-tree `Get` MUST resolve
+/// and check the real owning tree before returning content. Delegates to
+/// `gate_tree_permission`, so the `has_database`-absent passthrough and the
+/// opaque denial shape are identical to the inline-tree-id path.
+async fn gate_entry_read(
+    instance: &Instance,
+    pubkey: &PublicKey,
+    identity: &SigKey,
+    entry: &crate::entry::Entry,
+) -> crate::Result<()> {
+    let owning_tree = entry.root().unwrap_or_else(|| entry.id());
+    // create-flow passthrough (false): a Get against a tree not yet
+    // registered on this daemon must be waved through, same as the
+    // inline-tree-id path.
+    gate_tree_permission(
+        instance,
+        pubkey,
+        identity,
+        &owning_tree,
+        Permission::Read,
+        false,
+    )
+    .await
+}
+
+/// Opaque "a referenced entry is not in this tree" denial. Same
+/// `(auth, PermissionDenied)` shape as `gate_tree_permission`'s denial so a
+/// caller can't use a parameter-membership rejection as a cross-tree
+/// existence oracle (absent and present-but-foreign collapse together).
+fn cross_tree_param_denied(tree_id: &ID) -> crate::Error {
+    crate::Error::Auth(Box::new(AuthError::PermissionDenied {
+        reason: format!("tree {tree_id}: a referenced entry is not in this tree"),
+    }))
+}
+
+/// Reject ops whose caller-named entry parameters don't actually belong to
+/// the tree the per-tree gate authorised. `tree_id` has already passed
+/// `gate_tree_permission`; without this check a caller with access to tree
+/// A could name an entry in tree B as a parameter and have the handler
+/// traverse it (`GetPathFromTo`). A parameter that is absent, or present
+/// but not `in_tree(tree_id)`, collapses to the same opaque denial.
+///
+/// Like `gate_tree_permission`, this passes through when `tree_id` is not a
+/// registered database on this daemon: `Database::create` commits its
+/// genesis entry against a transient placeholder root before the real tree
+/// id (the genesis entry's own id) exists, and traversal against a
+/// non-existent tree returns nothing anyway. Enforcing membership there
+/// would break the create-a-new-database flow for no security gain.
+async fn ensure_entries_in_tree(
+    instance: &Instance,
+    tree_id: &ID,
+    entry_ids: &[ID],
+) -> crate::Result<()> {
+    if !instance.has_database(tree_id).await {
+        return Ok(());
+    }
+    let backend = instance.backend();
+    for id in entry_ids {
+        match backend.get(id).await {
+            Ok(entry) if entry.in_tree(tree_id) => {}
+            _ => return Err(cross_tree_param_denied(tree_id)),
+        }
+    }
+    Ok(())
+}
+
 /// Dispatch a `BackendOp` against the daemon's `Instance` backend.
 ///
 /// Called from `dispatch_inner` after the chunk-5a connection-state gate and
-/// the chunk-5b per-tree permission gate have both passed.
+/// the chunk-5b per-tree permission gate have both passed. `session_pubkey`
+/// / `identity` are threaded through for the post-fetch per-tree gate that
+/// entry-id-keyed ops (`Get`) need — their owning tree isn't known until the
+/// entry is read, so `gate_tree_permission` cannot run in `dispatch_inner`.
 ///
-/// Cache ops (`GetCachedCrdtState`, `CacheCrdtState`, `ClearCrdtCache`) are
-/// served from the per-user service-layer cache (`ServiceCache`), keyed by
-/// the session's `user_uuid`, rather than from the backend's global cache.
+/// Cache ops (`GetCachedCrdtState`, `CacheCrdtState`) are served from the
+/// per-user service-layer cache (`ServiceCache`), keyed by the session's
+/// `user_uuid`, rather than from the backend's global cache.
 /// This isolates each user's cache slice — see `service::cache` for why.
 async fn dispatch_backend_op(
     instance: &Instance,
     cache: &ServiceCache,
+    session_pubkey: &PublicKey,
+    identity: &SigKey,
     user_uuid: &str,
     op: BackendOp,
 ) -> crate::Result<ServiceResponse> {
@@ -490,6 +599,11 @@ async fn dispatch_backend_op(
         // === Entry operations ===
         BackendOp::Get { id } => {
             let entry = backend.get(&id).await?;
+            // D2: `Get` carries no inline tree id, so the pre-dispatch
+            // per-tree gate never ran. Resolve the entry's real owning
+            // tree and enforce Read before returning its content (model B:
+            // system DBs are gate-protected, not encrypted).
+            gate_entry_read(instance, session_pubkey, identity, &entry).await?;
             Ok(ServiceResponse::Entry(entry))
         }
         BackendOp::Put {
@@ -498,16 +612,6 @@ async fn dispatch_backend_op(
         } => {
             backend.put(verification_status, entry).await?;
             Ok(ServiceResponse::Ok)
-        }
-
-        // === Verification ===
-        BackendOp::GetVerificationStatus { id } => {
-            let status = backend.get_verification_status(&id).await?;
-            Ok(ServiceResponse::VerificationStatus(status))
-        }
-        BackendOp::GetEntriesByVerificationStatus { status } => {
-            let ids = backend.get_entries_by_verification_status(status).await?;
-            Ok(ServiceResponse::Ids(ids))
         }
 
         // === Tips ===
@@ -539,16 +643,6 @@ async fn dispatch_backend_op(
             let base = backend.find_merge_base(&tree, &store, &entry_ids).await?;
             Ok(ServiceResponse::Id(base))
         }
-        BackendOp::CollectRootToTarget {
-            tree,
-            store,
-            target_entry,
-        } => {
-            let path = backend
-                .collect_root_to_target(&tree, &store, &target_entry)
-                .await?;
-            Ok(ServiceResponse::Ids(path))
-        }
         BackendOp::GetTree { tree } => {
             let entries = backend.get_tree(&tree).await?;
             Ok(ServiceResponse::Entries(entries))
@@ -579,28 +673,27 @@ async fn dispatch_backend_op(
             cache.put(user_uuid, &entry_id, &store, state);
             Ok(ServiceResponse::Ok)
         }
-        BackendOp::ClearCrdtCache => {
-            cache.clear_user(user_uuid);
-            Ok(ServiceResponse::Ok)
-        }
 
         // === Path operations ===
-        BackendOp::GetSortedStoreParents {
-            tree_id,
-            entry_id,
-            store,
-        } => {
-            let parents = backend
-                .get_sorted_store_parents(&tree_id, &entry_id, &store)
-                .await?;
-            Ok(ServiceResponse::Ids(parents))
-        }
         BackendOp::GetPathFromTo {
             tree_id,
             store,
             from_id,
             to_ids,
         } => {
+            // D5: `tree_id` passed the per-tree gate, but `to_ids` are
+            // caller-supplied and were never checked against it — and a
+            // foreign `to_id` is echoed back verbatim in the path result
+            // (in_memory/traversal.rs pushes the target before resolving its
+            // in-tree parents). Reject any `to_id` not in the gated tree.
+            //
+            // `from_id` is deliberately NOT checked: it is a lower-bound
+            // *stop marker* compared only by equality, never fetched, and
+            // never echoed (the genesis case passes `ID::default()`, which
+            // is not a stored entry). Gating it would break the first
+            // commit of every database.
+            ensure_entries_in_tree(instance, &tree_id, &to_ids).await?;
+
             let path = backend
                 .get_path_from_to(&tree_id, &store, &from_id, &to_ids)
                 .await?;
@@ -620,8 +713,20 @@ async fn dispatch_backend_op(
             source,
         } => {
             // The entry is already stored by a preceding Put RPC.
-            // Dispatch the Instance's write callbacks for the given tree/source.
             let entry = backend.get(&entry_id).await?;
+            // D7: `entry_id` is fetched globally by id. Ensure it actually
+            // belongs to the gated tree before firing that tree's write
+            // callbacks — otherwise a caller with Write on tree B can drive
+            // tree B's callback machinery with a foreign entry from tree C.
+            // Mirror the gate's create-flow passthrough: callbacks only
+            // exist for registered trees, and `Database::create` notifies
+            // its genesis entry against a transient placeholder root that
+            // isn't a database yet — enforcing membership there would break
+            // database creation with no security gain (no callbacks fire).
+            if instance.has_database(&tree_id).await && !entry.in_tree(&tree_id) {
+                return Err(cross_tree_param_denied(&tree_id));
+            }
+            // Dispatch the Instance's write callbacks for the given tree/source.
             instance
                 .dispatch_write_callbacks(&tree_id, &entry, source)
                 .await?;
@@ -854,5 +959,103 @@ mod tests {
         let _stream = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
 
         handle.abort();
+    }
+
+    /// D7 regression: `NotifyEntryWritten` fetches `entry_id` globally and
+    /// fires the callbacks registered for `tree_id`. A foreign entry on an
+    /// existing tree must be rejected (else a caller with Write on tree A
+    /// drives A's callbacks with an entry from tree B it can't read), while
+    /// the in-tree / create-flow path stays accepted.
+    #[tokio::test]
+    async fn test_notify_entry_written_rejects_cross_tree_entry() {
+        use crate::auth::crypto::generate_keypair;
+        use crate::crdt::Doc;
+
+        let instance = Instance::open(Box::new(InMemory::new())).await.unwrap();
+        let cache = ServiceCache::new();
+        let (sk_a, pubkey) = generate_keypair();
+        let (sk_b, _) = generate_keypair();
+
+        // Two independent databases on the same daemon.
+        let db_a = Database::create(&instance, sk_a, Doc::new()).await.unwrap();
+        let db_b = Database::create(&instance, sk_b, Doc::new()).await.unwrap();
+        let tree_a = db_a.root_id().clone();
+        let foreign_entry = db_b.root_id().clone();
+
+        // In-tree notify (the path every create_database exercises) is OK.
+        dispatch_backend_op(
+            &instance,
+            &cache,
+            &pubkey,
+            &SigKey::default(),
+            "u",
+            BackendOp::NotifyEntryWritten {
+                tree_id: tree_a.clone(),
+                entry_id: tree_a.clone(),
+                source: crate::WriteSource::Local,
+            },
+        )
+        .await
+        .expect("in-tree notify on an owned tree must be accepted");
+
+        // Cross-tree notify must be denied.
+        let err = dispatch_backend_op(
+            &instance,
+            &cache,
+            &pubkey,
+            &SigKey::default(),
+            "u",
+            BackendOp::NotifyEntryWritten {
+                tree_id: tree_a.clone(),
+                entry_id: foreign_entry,
+                source: crate::WriteSource::Local,
+            },
+        )
+        .await
+        .expect_err("cross-tree NotifyEntryWritten must be denied");
+        assert!(
+            matches!(&err, crate::Error::Auth(b) if matches!(**b, AuthError::PermissionDenied { .. })),
+            "expected PermissionDenied, got: {err:?}",
+        );
+    }
+
+    /// D8 regression: `require_existing` flips the create-flow passthrough
+    /// to fail-closed. An absent target is waved through with `false` (the
+    /// `Database::create` path) but denied with `true` (the
+    /// `SetInstanceMetadata` admin gate), so an unreadable `_databases`
+    /// can't become a fail-open hole.
+    #[tokio::test]
+    async fn test_gate_require_existing_fails_closed_on_absent_db() {
+        use crate::auth::crypto::generate_keypair;
+
+        let instance = Instance::open(Box::new(InMemory::new())).await.unwrap();
+        let (_sk, pubkey) = generate_keypair();
+        let absent = ID::from_bytes("no-such-tree");
+
+        gate_tree_permission(
+            &instance,
+            &pubkey,
+            &SigKey::default(),
+            &absent,
+            Permission::Admin(0),
+            false,
+        )
+        .await
+        .expect("create-flow passthrough must wave an absent tree through");
+
+        let err = gate_tree_permission(
+            &instance,
+            &pubkey,
+            &SigKey::default(),
+            &absent,
+            Permission::Admin(0),
+            true,
+        )
+        .await
+        .expect_err("require_existing must deny an absent tree");
+        assert!(
+            matches!(&err, crate::Error::Auth(b) if matches!(**b, AuthError::PermissionDenied { .. })),
+            "expected PermissionDenied, got: {err:?}",
+        );
     }
 }

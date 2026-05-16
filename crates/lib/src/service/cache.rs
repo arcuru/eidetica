@@ -126,6 +126,13 @@ impl ServiceCache {
 
     /// Drop every cache entry owned by `user_uuid`. Blobs whose refcount
     /// falls to zero are removed.
+    ///
+    /// No longer reachable from the wire: the client-triggered
+    /// `ClearCrdtCache` op was removed (self-DoS, no production caller).
+    /// Retained as the session-end cleanup primitive — the daemon should
+    /// call this when a connection's user session ends to bound per-user
+    /// cache growth (not yet wired; tracked as a follow-up).
+    #[allow(dead_code)]
     pub fn clear_user(&self, user_uuid: &str) {
         let mut inner = self.inner.lock().unwrap();
         let to_remove: Vec<CacheKey> = inner
