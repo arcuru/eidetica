@@ -1,4 +1,18 @@
-name: Release-plz
+# Runs `release-plz release` on every push to main. It only publishes when a
+# release-plz PR has been merged (a crate version is ahead of crates.io);
+# otherwise it no-ops.
+#
+# `environment: publish` is REQUIRED and intentional: publishing to crates.io
+# is irreversible and high-value, so every crate publish must be manually
+# approved. crates.io trusted publishing also pins this environment in its
+# OIDC config — removing it would break `cargo publish` auth. Do not drop it.
+#
+# Known trade-off: because `release-plz release` must run to detect whether a
+# release is pending, this job (and therefore the approval prompt) is reached
+# on every push to main, even when nothing will be published. Approving with
+# nothing pending is a safe no-op. Reducing that to release-only prompts
+# requires a separate detector job — tracked separately, not done here.
+name: Release-plz release
 
 on:
   push:
@@ -6,8 +20,11 @@ on:
       - main
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  release-plz-release:
+  release:
     name: Release-plz release
     runs-on: ubicloud-standard-2
     if: github.repository_owner == 'arcuru' && (github.event_name == 'push' || github.ref == 'refs/heads/main')
@@ -50,43 +67,3 @@ jobs:
         run: |
           TAG=$(echo "$RELEASES" | jq -r '.[0].tag_name')
           gh workflow run publish.yml -f tag_name="$TAG"
-
-  release-plz-pr:
-    name: Release-plz PR
-    runs-on: ubicloud-standard-2
-    if: ${{ github.repository_owner == 'arcuru' }}
-    permissions:
-      contents: write
-      pull-requests: write
-    concurrency:
-      group: release-plz-${{ github.ref }}
-      cancel-in-progress: false
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          fetch-depth: 0
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
-        with:
-          toolchain: stable
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
-
-      - name: Check if release PR exists
-        id: check-pr
-        if: github.event_name == 'push'
-        run: |
-          PR_EXISTS=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --json number,headRefName --jq '[.[] | select(.headRefName | startswith("release-plz"))] | length')
-          echo "exists=$PR_EXISTS" >> "$GITHUB_OUTPUT"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Run release-plz
-        if: github.event_name == 'workflow_dispatch' || steps.check-pr.outputs.exists != '0'
-        uses: release-plz/action@f708778669256143d984cce4b23592637532e040 # v0.5.127
-        with:
-          command: release-pr
-          config: .config/release-plz.toml
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

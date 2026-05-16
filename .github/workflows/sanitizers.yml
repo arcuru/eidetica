@@ -5,6 +5,9 @@ on:
     - cron: "0 6 * * 1" # Weekly on Monday at 06:00 UTC
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   sanitize:
     name: Sanitize (${{ matrix.sanitizer }})
@@ -22,6 +25,8 @@ jobs:
         uses: ./.github/actions/setup-nix
 
       - name: Run ${{ matrix.sanitizer }}
+        env:
+          SANITIZER: ${{ matrix.sanitizer }}
         run: |
           nix-fast-build --skip-cached --no-nom --no-link \
-            -f '.#legacyPackages.x86_64-linux.sanitize.${{ matrix.sanitizer }}'
+            -f ".#legacyPackages.x86_64-linux.sanitize.${SANITIZER}"

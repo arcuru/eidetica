@@ -1,7 +1,3 @@
-# Monthly cargo dependency update. Runs `cargo update` to bump Cargo.lock,
-# then creates a PR on the deps/cargo-update branch with a configurable hold
-# period before merge. CI handles verification via normal PR checks.
-#
 name: "Deps: Cargo Update"
 
 on:
@@ -15,85 +11,19 @@ on:
         default: "7"
         type: string
 
-concurrency:
-  group: deps-cargo-update
-  cancel-in-progress: true
+permissions:
+  contents: write
+  pull-requests: write
 
 jobs:
   cargo-update:
-    name: Cargo Update
-    environment: automation
-    runs-on: ubicloud-standard-2
-    if: github.repository_owner == 'arcuru'
-    permissions:
-      contents: write
-      pull-requests: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          token: ${{ secrets.PAT_TOKEN }}
-
-      - name: Setup Nix
-        uses: ./.github/actions/setup-nix
-
-      - name: Setup deps branch
-        uses: ./.github/actions/setup-deps-branch
-        with:
-          branch: deps/cargo-update
-
-      - name: Run cargo update
-        id: update
-        run: |
-          OUTPUT=$(nix develop --command cargo update 2>&1)
-          echo "$OUTPUT"
-          {
-            echo "output<<UPDATE_EOF"
-            echo "$OUTPUT"
-            echo "UPDATE_EOF"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Capture diff stats
-        id: diff
-        run: |
-          if ! git diff --quiet Cargo.lock; then
-            DIFF=$(git diff --stat Cargo.lock)
-            {
-              echo "stat<<DIFF_EOF"
-              echo "$DIFF"
-              echo "DIFF_EOF"
-            } >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Commit and create PR
-        uses: ./.github/actions/commit-and-pr
-        with:
-          branch: deps/cargo-update
-          files: Cargo.lock
-          commit-message: "chore(deps): update cargo dependencies"
-          pr-title: "chore(deps): update cargo dependencies"
-          pr-body: |
-            ## Cargo Dependency Update
-
-            Monthly `cargo update` of `Cargo.lock` dependencies.
-
-            <details>
-            <summary>cargo update output</summary>
-
-            ```
-            ${{ steps.update.outputs.output }}
-            ```
-
-            </details>
-
-            <details>
-            <summary>Diff stats</summary>
-
-            ```
-            ${{ steps.diff.outputs.stat }}
-            ```
-
-            </details>
-          hold-days: ${{ inputs.hold_days || '7' }}
-          update-comment: "Updated with latest `cargo update` results."
-          github-token: ${{ secrets.PAT_TOKEN }}
+    uses: arcuru/actions/.github/workflows/cargo-update.yml@31c804a9c15602300e5e292e80cac1ad5512a21a # v0.2.0
+    with:
+      hold-days: ${{ inputs.hold_days || '7' }}
+      runs-on: ubicloud-standard-2
+      environment: automation
+      enable-magic-cache: "false"
+      extra-substituters: https://cache.eidetica.dev
+      extra-trusted-public-keys: cache.eidetica.dev-1:eND5gRJlbnool3ZLCWT2H8kkygWS8JcsU76HYXbWPBI=
+    secrets:
+      PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
