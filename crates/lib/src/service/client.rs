@@ -301,16 +301,6 @@ impl RemoteConnection {
         Self::expect_entry(resp)
     }
 
-    pub async fn get_verification_status(&self, id: &ID) -> crate::Result<VerificationStatus> {
-        let resp = self
-            .backend_request(BackendOp::GetVerificationStatus { id: id.clone() })
-            .await?;
-        match resp {
-            ServiceResponse::VerificationStatus(vs) => Ok(vs),
-            other => Err(unexpected_response("VerificationStatus", &other)),
-        }
-    }
-
     pub async fn put(
         &self,
         verification_status: VerificationStatus,
@@ -323,16 +313,6 @@ impl RemoteConnection {
             })
             .await?;
         Self::expect_ok(resp)
-    }
-
-    pub async fn get_entries_by_verification_status(
-        &self,
-        status: VerificationStatus,
-    ) -> crate::Result<Vec<ID>> {
-        let resp = self
-            .backend_request(BackendOp::GetEntriesByVerificationStatus { status })
-            .await?;
-        Self::expect_ids(resp)
     }
 
     pub async fn get_tips(&self, tree: &ID) -> crate::Result<Vec<ID>> {
@@ -382,22 +362,6 @@ impl RemoteConnection {
             })
             .await?;
         Self::expect_id(resp)
-    }
-
-    pub async fn collect_root_to_target(
-        &self,
-        tree: &ID,
-        store: &str,
-        target_entry: &ID,
-    ) -> crate::Result<Vec<ID>> {
-        let resp = self
-            .backend_request(BackendOp::CollectRootToTarget {
-                tree: tree.clone(),
-                store: store.to_string(),
-                target_entry: target_entry.clone(),
-            })
-            .await?;
-        Self::expect_ids(resp)
     }
 
     pub async fn get_tree(&self, tree: &ID) -> crate::Result<Vec<Entry>> {
@@ -474,27 +438,6 @@ impl RemoteConnection {
             })
             .await?;
         Self::expect_ok(resp)
-    }
-
-    pub async fn clear_crdt_cache(&self) -> crate::Result<()> {
-        let resp = self.backend_request(BackendOp::ClearCrdtCache).await?;
-        Self::expect_ok(resp)
-    }
-
-    pub async fn get_sorted_store_parents(
-        &self,
-        tree_id: &ID,
-        entry_id: &ID,
-        store: &str,
-    ) -> crate::Result<Vec<ID>> {
-        let resp = self
-            .backend_request(BackendOp::GetSortedStoreParents {
-                tree_id: tree_id.clone(),
-                entry_id: entry_id.clone(),
-                store: store.to_string(),
-            })
-            .await?;
-        Self::expect_ids(resp)
     }
 
     pub async fn get_path_from_to(

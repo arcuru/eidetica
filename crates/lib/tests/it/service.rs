@@ -318,26 +318,9 @@ async fn test_crdt_cache_is_per_user() {
             .unwrap(),
         Some(b"bob-bytes".to_vec()),
     );
-
-    // ClearCrdtCache is per-user: alice clearing leaves bob intact.
-    alice_inst.backend().clear_crdt_cache().await.unwrap();
-    assert_eq!(
-        alice_inst
-            .backend()
-            .get_cached_crdt_state(&entry_id, store)
-            .await
-            .unwrap(),
-        None,
-    );
-    assert_eq!(
-        bob_inst
-            .backend()
-            .get_cached_crdt_state(&entry_id, store)
-            .await
-            .unwrap(),
-        Some(b"bob-bytes".to_vec()),
-        "alice clearing her cache must not affect bob's slice",
-    );
+    // Note: per-user cache *clearing* (`clear_user`) is covered by the
+    // `cache::tests` unit tests; `ClearCrdtCache` is intentionally no longer
+    // a wire op, so it isn't exercised here.
 }
 
 /// Positive control for the chunk-5b per-tree gate: a logged-in user can
@@ -403,6 +386,105 @@ async fn test_backend_get_tips_denied_for_unauthorised_user() {
     assert!(
         msg.contains("permission") || msg.contains("auth"),
         "expected permission/auth error, got: {err}",
+    );
+}
+
+/// D2: `BackendOp::Get` carries no inline tree id, so the pre-dispatch
+/// per-tree gate never runs. The post-fetch `gate_entry_read` must resolve
+/// the entry's real owning tree and reject a logged-in caller with no
+/// permission on it — otherwise any user can pull any entry on the daemon
+/// by id (model B: system DBs are gate-protected, not encrypted).
+#[tokio::test]
+async fn test_backend_get_denied_cross_tree() {
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    server.create_user("alice", None).await.unwrap();
+    server.create_user("bob", None).await.unwrap();
+
+    let alice_inst = Instance::connect(&socket_path).await.unwrap();
+    let mut alice = alice_inst.login_user("alice", None).await.unwrap();
+    let mut settings = eidetica::crdt::Doc::new();
+    settings.set("name", "alice_db");
+    let alice_key = alice.get_default_key().unwrap();
+    let alice_db = alice.create_database(settings, &alice_key).await.unwrap();
+    let alice_root = alice_db.root_id().clone();
+
+    // Owner can Get an entry in her own tree (positive control).
+    alice_inst
+        .backend()
+        .get(&alice_root)
+        .await
+        .expect("owner must be able to Get an entry in her own tree");
+
+    // Bob is logged in but holds no key in alice_db's auth_settings.
+    let bob_inst = Instance::connect(&socket_path).await.unwrap();
+    let _bob = bob_inst.login_user("bob", None).await.unwrap();
+
+    let err = bob_inst
+        .backend()
+        .get(&alice_root)
+        .await
+        .expect_err("Get must be gated on the fetched entry's owning tree");
+    let msg = err.to_string().to_lowercase();
+    assert!(
+        msg.contains("permission") || msg.contains("auth"),
+        "expected permission/auth denial, got: {err}",
+    );
+}
+
+/// D5: `GetPathFromTo`'s `tree_id` is gated, but `to_ids` are caller-chosen
+/// and a foreign target is echoed back verbatim in the path result. The
+/// `ensure_entries_in_tree` check must reject a `to_id` not in the gated
+/// tree while still accepting an in-tree target.
+#[tokio::test]
+async fn test_get_path_from_to_rejects_foreign_target() {
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    server.create_user("alice", None).await.unwrap();
+    server.create_user("bob", None).await.unwrap();
+
+    let alice_inst = Instance::connect(&socket_path).await.unwrap();
+    let mut alice = alice_inst.login_user("alice", None).await.unwrap();
+    let mut a_settings = eidetica::crdt::Doc::new();
+    a_settings.set("name", "alice_db");
+    let a_key = alice.get_default_key().unwrap();
+    let alice_db = alice.create_database(a_settings, &a_key).await.unwrap();
+    let alice_root = alice_db.root_id().clone();
+
+    // Bob is Admin on his own db, so the per-tree gate on it passes.
+    let bob_inst = Instance::connect(&socket_path).await.unwrap();
+    let mut bob = bob_inst.login_user("bob", None).await.unwrap();
+    let mut b_settings = eidetica::crdt::Doc::new();
+    b_settings.set("name", "bob_db");
+    let b_key = bob.get_default_key().unwrap();
+    let bob_db = bob.create_database(b_settings, &b_key).await.unwrap();
+    let bob_root = bob_db.root_id().clone();
+
+    // An in-tree target on his own tree is accepted (positive control).
+    bob_inst
+        .backend()
+        .get_path_from_to(
+            &bob_root,
+            "_settings",
+            &eidetica::entry::ID::default(),
+            std::slice::from_ref(&bob_root),
+        )
+        .await
+        .expect("an in-tree to_id must be accepted");
+
+    // Alice's root as a target on Bob's tree must be rejected (not echoed).
+    let err = bob_inst
+        .backend()
+        .get_path_from_to(
+            &bob_root,
+            "_settings",
+            &eidetica::entry::ID::default(),
+            std::slice::from_ref(&alice_root),
+        )
+        .await
+        .expect_err("a foreign to_id must not be echoed back");
+    let msg = err.to_string().to_lowercase();
+    assert!(
+        msg.contains("permission") || msg.contains("auth"),
+        "expected permission/auth denial, got: {err}",
     );
 }
 
