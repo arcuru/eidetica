@@ -3,7 +3,10 @@
 //! This module contains tests for Tree API methods including entry retrieval,
 //! authentication, validation, and error handling.
 
-use eidetica::{Database, auth::types::SigKey, crdt::Doc, entry::ID, store::DocStore};
+use eidetica::{
+    Database, auth::types::SigKey, backend::VerificationStatus, crdt::Doc, entry::ID,
+    store::DocStore,
+};
 
 use super::helpers::*;
 use crate::helpers::*;
@@ -464,4 +467,57 @@ async fn test_batch_vs_individual_retrieval() {
         assert_eq!(individual.id(), batch.id());
         assert_eq!(individual.sig, batch.sig);
     }
+}
+
+/// `Database::verify()` re-validates `Unverified` entries against the
+/// `_settings` they pin (Pieces 1+2), and a plain read opportunistically
+/// triggers it when a tip is still `Unverified`.
+#[tokio::test]
+async fn test_database_verify_promotes_unverified_and_access_hook() {
+    let (instance, tree, _key_id) = setup_tree_with_user_key().await;
+    let backend = instance.backend();
+
+    // A normally-committed entry is stored Verified by the local validation
+    // pass.
+    let id = add_data_to_subtree(&tree, "data", &[("k", "v")]).await;
+    assert_eq!(
+        backend.get_verification_status(&id).await.unwrap(),
+        VerificationStatus::Verified
+    );
+
+    // Simulate the entry having arrived over sync: force it Unverified.
+    backend
+        .update_verification_status(&id, VerificationStatus::Unverified)
+        .await
+        .unwrap();
+    assert_eq!(
+        backend.get_verification_status(&id).await.unwrap(),
+        VerificationStatus::Unverified
+    );
+
+    // Explicit verify(): reconstructs the pinned `_settings` and promotes
+    // the (validly signed, authorised) entry back to Verified.
+    let report = tree.verify().await.unwrap();
+    assert!(
+        report.verified >= 1 && report.failed == 0,
+        "expected promotion to Verified, got {report:?}"
+    );
+    assert_eq!(
+        backend.get_verification_status(&id).await.unwrap(),
+        VerificationStatus::Verified
+    );
+
+    // Access-time hook: force Unverified again, then a plain `get_tips()`
+    // must opportunistically verify it.
+    backend
+        .update_verification_status(&id, VerificationStatus::Unverified)
+        .await
+        .unwrap();
+    let tips = tree.get_tips().await.unwrap();
+    assert!(!tips.is_empty(), "the verified tip must remain visible");
+    assert_eq!(
+        backend.get_verification_status(&id).await.unwrap(),
+        VerificationStatus::Verified,
+        "reading tips should have opportunistically verified the entry"
+    );
 }

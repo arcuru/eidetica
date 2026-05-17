@@ -125,12 +125,14 @@ pub(crate) trait Encryptor: Send + Sync {
 
 /// Metadata structure for entries
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct EntryMetadata {
-    /// Tips of the _settings subtree at the time this entry was created
-    /// This is used for improving sync performance and for validation in sparse checkouts.
-    settings_tips: Vec<ID>,
+pub(crate) struct EntryMetadata {
+    /// Tips of the _settings subtree at the time this entry was created.
+    /// This is the entry's **pin**: the exact `_settings` state its
+    /// signature must be validated against. Used for sync performance,
+    /// sparse-checkout validation, and deferred re-verification.
+    pub(crate) settings_tips: Vec<ID>,
     /// Random entropy for ensuring unique IDs for root entries
-    entropy: Option<u64>,
+    pub(crate) entropy: Option<u64>,
 }
 
 /// Represents a single, atomic transaction for modifying a `Database`.
