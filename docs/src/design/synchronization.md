@@ -534,6 +534,35 @@ Both transports expose `get_server_address()` for addresses used in
 - Receiving peer verifies signatures
 - Invalid signatures rejected
 
+#### Verification on Receipt
+
+Entries do **not** become trusted simply by arriving from an authenticated
+peer. The storage layer stores every received entry as `Unverified` — the
+sync protocol carries no way for a peer to assert a verification status, so a
+malicious-but-authenticated peer cannot inject "pre-verified" data.
+
+Promotion to `Verified` is a purely local decision:
+
+- `Database::verify()` walks the received entries and validates each against
+  the `_settings` it pins in its signed metadata.
+- A normal read also triggers an opportunistic verification pass when a tip
+  is still `Unverified` (the access-time hook).
+
+Verification is **prefix-closed**: an entry is promoted only once its entire
+ancestor history is `Verified`. A `Failed` ancestor (definitively bad
+signature/permission) taints its descendants to `Failed`; an ancestor that
+is still `Unverified` *or not yet received* (the normal partial-sync case)
+leaves the entry `Unverified` to be retried on a later pass once the missing
+entries arrive. This is why `Unverified` and `Failed` are distinct states:
+`Unverified` is a transient "not yet / can't tell" pending state, `Failed`
+is a terminal rejection.
+
+Consequently a `Database` read exposes only the **Verified frontier** (the
+maximal ancestor-closed all-`Verified` prefix) by default; freshly synced,
+not-yet-verified data is invisible until verified, unless the caller opts in
+with `.allow_unverified()`. `Failed` entries are dropped from reads in all
+cases.
+
 #### Trust Model
 
 **Assumptions:**

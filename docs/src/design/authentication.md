@@ -797,6 +797,34 @@ The current validation process:
 
 **Current features include**: Direct key validation, delegated database resolution, tip validation, and permission clamping.
 
+### Verification Status vs. Signature Validity
+
+Signature/permission validity (the process above) is **orthogonal** to an
+entry's stored **verification status**. The validation process answers "is
+this entry correctly signed by an authorized key, given some auth settings?".
+The verification status records whether *this node* has actually run that
+check and what the outcome was: `Unverified` (not yet checked), `Verified`
+(checked and accepted), or `Failed` (checked and definitively rejected).
+
+Two rules connect them:
+
+1. **Local validation is the only path to `Verified`.** The storage layer
+   stores every entry as `Unverified` on `put` and exposes no way for a
+   caller — local or a sync peer — to assert a status. Only a local
+   validation pass (`Transaction` commit, or `Database::verify()`) may
+   promote an entry to `Verified`. Validation is always performed against the
+   `_settings` the entry *pins* in its signed metadata, not the current
+   settings, so a later key revocation cannot retroactively invalidate
+   historical entries (revocation is handled on a separate path).
+
+2. **Verification is prefix-closed.** An entry is promoted to `Verified` only
+   if every ancestor is already `Verified`; a `Failed` ancestor taints its
+   descendants to `Failed`; an ancestor that is still `Unverified` or not yet
+   held locally leaves the entry `Unverified` for a later pass. Consequently
+   the set of `Verified` entries is always ancestor-closed, and a `Database`
+   read exposes only the "Verified frontier" unless `.allow_unverified()` is
+   set. See the synchronization design doc for how this interacts with peers.
+
 ### Sync Permissions
 
 Eidetica servers require proof of read permissions before allowing database synchronization. The server challenges the client to sign a random nonce, then validates the signature against the database's authentication configuration.

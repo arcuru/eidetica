@@ -152,6 +152,40 @@ This design allows for future capabilities like:
 
 <!-- TODO: Document history access APIs when they are more fully developed -->
 
+## Entry Verification and the Verified Frontier
+
+Every entry carries a **verification status** that records whether *this
+node* has cryptographically validated it against the authentication settings
+it was signed under:
+
+- **Verified** — the entry's signature and permissions were checked and
+  accepted by a local validation pass.
+- **Unverified** — the entry is stored but not yet validated by this node.
+  This is the state every entry arrives in over sync, and it is the *only*
+  state the storage layer will store on `put`: a peer can never assert "this
+  entry is verified" — verification is always a local decision.
+- **Failed** — the entry was checked and definitively rejected (bad
+  signature, unauthorized key). Failed entries are dropped from reads
+  everywhere.
+
+Entries you create locally are validated as part of the commit and become
+Verified immediately. Entries received from a peer start Unverified;
+`Database::verify()` re-validates them against the `_settings` they pin, and
+a normal read also triggers an opportunistic verification pass when a tip is
+still Unverified.
+
+Verification is **prefix-closed**: an entry can only be Verified if its
+entire ancestor history is Verified. It is therefore impossible for a tip to
+be Verified while one of its ancestors is not, and a Failed ancestor taints
+its descendants (they become Failed too).
+
+Because of this, a `Database` handle exposes only the **Verified frontier**
+by default: the largest ancestor-closed prefix of the DAG in which every
+entry is Verified. Anything reachable only through a still-Unverified entry
+is hidden, so a default read never reflects state this node could not
+authenticate. Call `.allow_unverified()` on the handle to opt into the looser
+view that also includes Unverified entries (Failed is always dropped).
+
 ## Current Status and Roadmap
 
 Eidetica is under active development, and some features mentioned in this documentation are still in planning or development stages. Here's a summary of the current status:
@@ -167,6 +201,7 @@ Eidetica is under active development, and some features mentioned in this docume
 - Atomic operations across stores
 - Tombstone support for proper deletion handling in distributed environments
 - Signature-based authentication with crypto-agile key types and granular permissions
+- Per-entry verification status with prefix-closed verification and Verified-frontier reads
 - User identity and session management with encrypted key storage
 - Peer-to-peer synchronization via Iroh and HTTP transports
 - Local service (daemon) mode for multi-process shared access over Unix sockets
