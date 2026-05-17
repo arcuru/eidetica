@@ -4,12 +4,12 @@
 //! authentication, validation, and error handling.
 
 use eidetica::{
-    Database,
+    Database, Instance,
     auth::{
         crypto::generate_keypair,
-        types::{AuthKey, Permission, SigKey},
+        types::{AuthKey, KeyStatus, Permission, SigKey},
     },
-    backend::VerificationStatus,
+    backend::{VerificationStatus, database::InMemory},
     crdt::Doc,
     entry::ID,
     store::DocStore,
@@ -892,4 +892,218 @@ async fn test_access_hook_promotes_multiple_unverified_tips() {
             "the access hook must verify every Unverified tip, not just one"
         );
     }
+}
+
+/// `VerifyReport` counts must be exact (no double-counting) and `verify()`
+/// must be idempotent: a pass over an already-fully-`Verified` database
+/// reports all-zero and changes nothing.
+#[tokio::test]
+async fn test_verify_report_counts_and_idempotent() {
+    let (instance, tree, _key) = setup_tree_with_user_key().await;
+    let backend = instance.backend();
+
+    // root -> a -> b -> c -> d, all Verified by local commit.
+    let a = add_data_to_subtree(&tree, "data", &[("s", "a")]).await;
+    let b = add_data_to_subtree(&tree, "data", &[("s", "b")]).await;
+    let c = add_data_to_subtree(&tree, "data", &[("s", "c")]).await;
+    let d = add_data_to_subtree(&tree, "data", &[("s", "d")]).await;
+
+    // Idempotent: nothing is Unverified, so a pass is a no-op.
+    assert_eq!(
+        tree.verify().await.unwrap(),
+        eidetica::database::VerifyReport::default(),
+        "verify() over an all-Verified DB must report all-zero"
+    );
+
+    // Force the whole tail Unverified; one pass must cascade-promote exactly
+    // those four (root was already Verified, not re-counted).
+    for id in [&a, &b, &c, &d] {
+        backend
+            .update_verification_status(id, VerificationStatus::Unverified)
+            .await
+            .unwrap();
+    }
+    let report = tree.verify().await.unwrap();
+    assert_eq!(report.verified, 4, "exactly a,b,c,d promoted: {report:?}");
+    assert_eq!(report.failed, 0, "{report:?}");
+    assert_eq!(report.still_unverified, 0, "{report:?}");
+    // Immediately idempotent again.
+    assert_eq!(
+        tree.verify().await.unwrap(),
+        eidetica::database::VerifyReport::default()
+    );
+
+    // Failed-taint counting: a Failed interior entry taints its descendants,
+    // each counted once under `failed`, none double-counted as verified.
+    backend
+        .update_verification_status(&b, VerificationStatus::Failed)
+        .await
+        .unwrap();
+    for id in [&c, &d] {
+        backend
+            .update_verification_status(id, VerificationStatus::Unverified)
+            .await
+            .unwrap();
+    }
+    let report = tree.verify().await.unwrap();
+    assert_eq!(
+        report,
+        eidetica::database::VerifyReport {
+            verified: 0,
+            failed: 2,
+            still_unverified: 0
+        },
+        "c and d each Failed exactly once via taint: {report:?}"
+    );
+}
+
+/// `verify()` must validate an entry against the `_settings` it *pinned*, not
+/// the current settings. An entry signed by a key that is later revoked must
+/// still verify, because at the pinned settings that key was authorized.
+#[tokio::test]
+async fn test_verify_uses_pinned_not_current_settings() {
+    let (instance, tree, key_id) = setup_tree_with_user_key().await;
+    let backend = instance.backend();
+
+    // `d` is signed by the bootstrap admin key and pins the genesis
+    // `_settings` (where that key is Active Admin).
+    let d = add_data_to_subtree(&tree, "data", &[("k", "v")]).await;
+
+    // Now revoke that very key in a later settings transaction. (The
+    // revocation entry is itself signed while the key is still active, so it
+    // commits; from here on the *current* settings no longer authorize it.)
+    add_auth_key(
+        &tree,
+        &key_id,
+        AuthKey::new(None, Permission::Admin(0), KeyStatus::Revoked),
+    )
+    .await;
+
+    // Sanity: current settings really did revoke the key.
+    let current = tree
+        .get_settings()
+        .await
+        .unwrap()
+        .auth_snapshot()
+        .await
+        .unwrap();
+    assert_eq!(
+        current.get_key_by_pubkey(&key_id).unwrap().status(),
+        &KeyStatus::Revoked,
+        "precondition: key must be revoked in current settings"
+    );
+
+    // Force `d` Unverified and re-verify. Validation must run against the
+    // settings `d` pinned (key Active) — so it verifies, NOT Failed.
+    backend
+        .update_verification_status(&d, VerificationStatus::Unverified)
+        .await
+        .unwrap();
+    let report = tree.verify().await.unwrap();
+    assert!(
+        report.failed == 0,
+        "must not fail on pinned-valid entry: {report:?}"
+    );
+    assert_eq!(
+        backend.get_verification_status(&d).await.unwrap(),
+        VerificationStatus::Verified,
+        "entry must verify against pinned (historical) settings, not current"
+    );
+}
+
+/// A genesis (TOFU) root must still verify after the backend is persisted and
+/// reloaded into a fresh `Instance` — the prefix-closed rule bottoms out at a
+/// self-authorising root.
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // file I/O not available with Miri isolation enabled
+async fn test_genesis_verifies_after_persist_reload() {
+    let backend = InMemory::new();
+    let instance = Instance::open(Box::new(backend)).await.unwrap();
+    instance.create_user("u", None).await.unwrap();
+    let mut user = instance.login_user("u", None).await.unwrap();
+    let key_id = user.add_private_key(Some("k")).await.unwrap();
+    let mut settings = Doc::new();
+    settings.set("name", "persisted");
+    let tree = user.create_database(settings, &key_id).await.unwrap();
+    let root = tree.root_id().clone();
+    let d = add_data_to_subtree(&tree, "data", &[("k", "v")]).await;
+
+    // Persist and reload into a brand-new Instance.
+    let path = std::env::temp_dir().join(format!(
+        "eidetica_verify_reload_{}_{}.json",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let backend1 = instance.backend();
+    backend1
+        .as_any()
+        .downcast_ref::<InMemory>()
+        .expect("test backend is InMemory")
+        .save_to_file(&path)
+        .await
+        .unwrap();
+    let reloaded = InMemory::load_from_file(&path).await.unwrap();
+    std::fs::remove_file(&path).ok();
+    let instance2 = Instance::open(Box::new(reloaded)).await.unwrap();
+    let backend2 = instance2.backend();
+
+    // Force the whole history Unverified on the reloaded backend.
+    for id in [&root, &d] {
+        backend2
+            .update_verification_status(id, VerificationStatus::Unverified)
+            .await
+            .unwrap();
+    }
+    let db2 = Database::open(&instance2, &root).await.unwrap();
+    let report = db2.verify().await.unwrap();
+    assert!(report.failed == 0, "{report:?}");
+    assert_eq!(
+        backend2.get_verification_status(&root).await.unwrap(),
+        VerificationStatus::Verified,
+        "genesis root must self-verify (TOFU) after reload"
+    );
+    assert_eq!(
+        backend2.get_verification_status(&d).await.unwrap(),
+        VerificationStatus::Verified,
+        "descendant must cascade once root is verified"
+    );
+}
+
+/// The Verified-frontier cut is correct on a deep linear chain (the algorithm
+/// is a single height-ordered pass — O(V+E), not O(depth^2)). An interior
+/// `Failed` entry hides the whole tail; the frontier is the entry just before
+/// it.
+#[tokio::test]
+async fn test_deep_chain_frontier_cut() {
+    let (instance, tree, _key) = setup_tree_with_user_key().await;
+    let backend = instance.backend();
+
+    let mut chain = Vec::new();
+    for i in 0..30 {
+        chain.push(add_data_to_subtree(&tree, "data", &[("i", &i.to_string())]).await);
+    }
+
+    // Knock out entry #15; everything from #15 onward is reachable only
+    // through it and must drop out of the default view.
+    let failed_idx = 15;
+    backend
+        .update_verification_status(&chain[failed_idx], VerificationStatus::Failed)
+        .await
+        .unwrap();
+
+    let tips = tree.get_tips().await.unwrap();
+    assert_eq!(
+        tips,
+        vec![chain[failed_idx - 1].clone()],
+        "frontier must cut to the last all-Verified prefix entry"
+    );
+    // The loose view keeps the raw tip (#29) — only Failed is dropped, and
+    // #29 itself is Verified.
+    assert_eq!(
+        tree.clone().allow_unverified().get_tips().await.unwrap(),
+        vec![chain[29].clone()]
+    );
 }

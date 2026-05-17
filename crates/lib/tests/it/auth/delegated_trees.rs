@@ -14,6 +14,7 @@ use eidetica::{
         },
         validation::AuthValidator,
     },
+    backend::VerificationStatus,
     crdt::Doc,
     database::DatabaseKey,
     entry::ID,
@@ -1019,6 +1020,70 @@ async fn test_delegated_entry_validation_across_instances() -> Result<()> {
             .await?;
         assert!(is_valid, "Entry {tip_id} should validate on instance B");
     }
+
+    Ok(())
+}
+
+/// Cross-instance: a delegation-signed entry that arrives over sync as
+/// `Unverified` (along with its identity database, also `Unverified`) must be
+/// promoted to `Verified` by `Database::verify()`. This exercises the
+/// `IN_VERIFY` guard cross-tree: resolving the delegation re-reads the
+/// identity database's settings, and that read must see the *raw* identity
+/// DAG (not its empty Verified frontier) or the delegation could never
+/// resolve during the very pass that would verify it.
+#[tokio::test]
+async fn test_delegated_entry_synced_unverified_then_verified() -> Result<()> {
+    let (instance_a, mut user) = crate::helpers::test_instance_with_user("test_user").await;
+    let pair = setup_delegation_pair(&instance_a, &mut user, Permission::Write(10)).await?;
+
+    // Write a delegation-signed entry on instance A.
+    let user_signing_key = user.get_signing_key(&pair.user_key_id)?;
+    let target_via_delegation =
+        open_via_delegation(&instance_a, &pair, user_signing_key, &pair.user_key_id).await?;
+    let txn = target_via_delegation.new_transaction().await?;
+    txn.get_store::<DocStore>("data")
+        .await?
+        .set("synced_key", "synced_value")
+        .await?;
+    let delegated_entry = txn.commit().await?;
+
+    // Replicate BOTH trees to instance B via plain `put` — i.e. exactly as
+    // they arrive over sync: stored Unverified, no asserted status.
+    let instance_b = crate::helpers::test_instance().await;
+    for root in [pair.identity_db.root_id(), pair.target_db.root_id()] {
+        for entry in instance_a.backend().get_tree(root).await? {
+            instance_b.backend().put(entry).await?;
+        }
+    }
+    assert_eq!(
+        instance_b
+            .backend()
+            .get_verification_status(&delegated_entry)
+            .await?,
+        VerificationStatus::Unverified,
+        "synced entry must start Unverified on B"
+    );
+
+    // A single verify() on the target DB must cascade the whole target
+    // history to Verified — including the delegation-signed entry, whose
+    // validation resolves the delegation into the (still-Unverified on B)
+    // identity DB.
+    let target_db_b = Database::open(&instance_b, pair.target_db.root_id()).await?;
+    let report = target_db_b.verify().await?;
+    assert_eq!(report.failed, 0, "nothing should fail: {report:?}");
+    assert_eq!(
+        instance_b
+            .backend()
+            .get_verification_status(&delegated_entry)
+            .await?,
+        VerificationStatus::Verified,
+        "delegation-signed entry must verify cross-instance via verify()"
+    );
+    // It is now visible in the default Verified-frontier view on B.
+    assert!(
+        target_db_b.get_tips().await?.contains(&delegated_entry),
+        "verified delegated entry must be on the frontier"
+    );
 
     Ok(())
 }
