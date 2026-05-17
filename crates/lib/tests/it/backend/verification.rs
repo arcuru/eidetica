@@ -322,3 +322,51 @@ async fn test_backend_verification_helpers() {
     assert_eq!(unverified_entries.len(), initial_unverified + 1); // id2
     assert!(unverified_entries.contains(&id2));
 }
+
+/// Regression: a re-`put` of an already-held entry must NOT touch its
+/// verification status. Entries are content-addressed and immutable, and an
+/// already-`Verified` entry is routinely re-received on overlapping/bootstrap
+/// sync; demoting it back to `Unverified` there would silently cut the
+/// Verified frontier and hide the entry (and its descendants) from default
+/// reads until an unrelated write re-triggered verification.
+#[tokio::test]
+async fn test_reput_does_not_demote_existing_verified_entry() {
+    let backend = Arc::new(InMemory::new());
+
+    let entry = Entry::root_builder()
+        .build()
+        .expect("Root entry should build successfully");
+    let id = entry.id();
+
+    // Local validation pass stores then promotes.
+    backend
+        .put_verified(entry.clone())
+        .await
+        .expect("Failed to put+promote entry");
+    assert_eq!(
+        backend.get_verification_status(&id).await.unwrap(),
+        VerificationStatus::Verified
+    );
+
+    // Re-receiving the identical entry over the wire (sync overlap) must be a
+    // no-op on status — it stays Verified, not demoted to Unverified.
+    backend.put(entry.clone()).await.expect("Re-put failed");
+    assert_eq!(
+        backend.get_verification_status(&id).await.unwrap(),
+        VerificationStatus::Verified,
+        "re-put of an already-Verified entry must not demote it"
+    );
+
+    // A re-`put` of an Unverified entry is likewise a no-op (stays
+    // Unverified — not an error, not spuriously promoted).
+    let u = Entry::root_builder()
+        .build()
+        .expect("Root entry should build successfully");
+    let uid: ID = u.id();
+    backend.put(u.clone()).await.expect("Failed to put");
+    backend.put(u).await.expect("Re-put failed");
+    assert_eq!(
+        backend.get_verification_status(&uid).await.unwrap(),
+        VerificationStatus::Unverified
+    );
+}

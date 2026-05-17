@@ -49,10 +49,13 @@ pub async fn get_verification_status(backend: &SqlxBackend, id: &ID) -> Result<V
     }
 }
 
-/// Store an entry with the given verification status.
-/// Always stores the entry as [`VerificationStatus::Unverified`]; the storage
+/// Store an entry.
+///
+/// A *new* entry is stored as [`VerificationStatus::Unverified`]; the storage
 /// path never accepts a caller-chosen status. Promotion to `Verified` is done
 /// separately by the local validation pass via `update_verification_status`.
+/// An entry already held is left untouched (content and status): a re-`put`
+/// never demotes a prior local promotion.
 pub async fn put(backend: &SqlxBackend, entry: Entry) -> Result<()> {
     // Validate entry before storing
     entry.validate()?;
@@ -70,7 +73,8 @@ pub async fn put(backend: &SqlxBackend, entry: Entry) -> Result<()> {
         source: None,
     })?;
 
-    // Storage is always Unverified; a re-`put` resets any prior promotion.
+    // A newly stored entry is always Unverified; an already-held entry is
+    // returned early below without its status being touched.
     let status_int: i64 = VerificationStatus::Unverified.as_db_int();
 
     // Use a transaction for atomicity.
@@ -110,20 +114,14 @@ pub async fn put(backend: &SqlxBackend, entry: Entry) -> Result<()> {
             .await
             .sql_context("Failed to check entry existence")?;
 
-    if let Some((existing_status_int,)) = existing_status {
-        // Entry exists - content is immutable, but verification_status may need update
-        if existing_status_int != status_int {
-            sqlx::query("UPDATE entries SET verification_status = $1 WHERE id = $2")
-                .bind(status_int)
-                .bind(id.to_string())
-                .execute(&mut *tx)
-                .await
-                .sql_context("Failed to update verification status")?;
-            tx.commit()
-                .await
-                .sql_context("Failed to commit transaction")?;
-        }
-        // Relationships are immutable - no need to update or delete
+    if existing_status.is_some() {
+        // Entry exists. Content is content-addressed and immutable, and its
+        // relationship set with it, so a re-`put` is a no-op. Critically we
+        // do NOT touch `verification_status`: re-receiving an entry this node
+        // already holds is routine on overlapping/bootstrap sync, and must
+        // not demote a prior local `Verified` promotion back to `Unverified`.
+        // Status is owned solely by the local validation pass via
+        // `update_verification_status`.
         return Ok(());
     }
 

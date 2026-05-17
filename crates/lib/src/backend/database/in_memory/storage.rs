@@ -35,9 +35,11 @@ pub(crate) fn get(inner: &InMemoryInner, id: &ID) -> Result<Entry> {
 /// - A child entry might arrive before its parent
 /// - The tip tracking is recalculated from scratch to handle this correctly
 ///
-/// Always stores the entry as [`VerificationStatus::Unverified`]; the storage
+/// A *new* entry is stored as [`VerificationStatus::Unverified`]; the storage
 /// path never accepts a caller-chosen status. Promotion to `Verified` is done
 /// separately by the local validation pass via `update_verification_status`.
+/// An entry already held is left untouched (content and status): a re-`put`
+/// never demotes a prior local promotion.
 ///
 /// # Arguments
 /// * `inner` - Mutable reference to the core data
@@ -47,6 +49,17 @@ pub(crate) fn get(inner: &InMemoryInner, id: &ID) -> Result<Entry> {
 /// * `Ok(())` on successful storage
 pub(crate) fn put(inner: &mut InMemoryInner, entry: Entry) -> Result<()> {
     let entry_id = entry.id();
+
+    // Content-addressed and immutable: if we already hold this entry, a
+    // re-`put` is a no-op. We do NOT reset `verification_status` —
+    // re-receiving an entry on overlapping/bootstrap sync must not demote a
+    // prior local `Verified` promotion. Status is owned by the local
+    // validation pass. Tips already account for this entry, so skipping the
+    // recalculation below is correct (mirrors the SQL backend).
+    if inner.entries.contains_key(&entry_id) {
+        return Ok(());
+    }
+
     // For root entries, root() returns None, so tree_id is the entry's own ID.
     // For non-root entries, tree_id is the root entry's ID.
     let tree_id = entry.root().unwrap_or_else(|| entry_id.clone());
@@ -60,8 +73,8 @@ pub(crate) fn put(inner: &mut InMemoryInner, entry: Entry) -> Result<()> {
         None
     };
 
-    // Store the entry. Always Unverified: a re-`put` of an existing entry is
-    // an off-validation-path write and resets any prior Verified promotion.
+    // New entry: store it Unverified. (An already-held entry returned early
+    // above; its status is never touched by a re-`put`.)
     inner.entries.insert(entry_id.clone(), entry.clone());
     inner
         .verification_status
