@@ -11,7 +11,6 @@ use eidetica::{
         crypto::PublicKey,
         types::{AuthKey, KeyStatus, SigKey},
     },
-    backend::VerificationStatus,
     crdt::{Doc, doc::Value},
     database::DatabaseKey,
     store::Table,
@@ -1006,11 +1005,7 @@ async fn test_global_permission_enables_transactions() {
     // Copy all tree entries from server to client so client can see the full auth settings
     let tree_entries = server_instance.backend().get_tree(&tree_id).await.unwrap();
     for entry in tree_entries {
-        client_instance
-            .backend()
-            .put(VerificationStatus::Verified, entry)
-            .await
-            .unwrap();
+        client_instance.backend().put_verified(entry).await.unwrap();
     }
 
     // Load the database on client side with the client's signing key
@@ -1366,3 +1361,6 @@ async fn test_bootstrap_api_equivalence() {
 
     println!("✅ TEST PASSED: Bootstrap with user-provided key");
 }
+
+// Test-only: store-and-promote helper (production `put` is Unverified-only).
+use crate::helpers::TestVerify;

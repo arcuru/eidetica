@@ -629,13 +629,10 @@ impl Instance {
         self.inner.backend.get(id).await
     }
 
-    /// Put an entry into the backend
-    pub(crate) async fn put(
-        &self,
-        verification_status: crate::backend::VerificationStatus,
-        entry: crate::entry::Entry,
-    ) -> Result<()> {
-        self.inner.backend.put(verification_status, entry).await
+    /// Put an entry into the backend. Always stored Unverified — see
+    /// [`crate::backend::BackendImpl::put`].
+    pub(crate) async fn put(&self, entry: crate::entry::Entry) -> Result<()> {
+        self.inner.backend.put(entry).await
     }
 
     /// Get tips for a tree
@@ -1079,17 +1076,17 @@ impl Instance {
     /// `put_remote_entries` calls so `previous_tips` is consistent across
     /// writers.
     ///
+    /// Entries are stored as [`VerificationStatus::Unverified`] without
+    /// exception: they arrive from outside this node's local validation pass,
+    /// so this node has not verified them and a peer cannot assert that it
+    /// did. A later local re-verification pass may promote them.
+    ///
     /// # Arguments
     /// * `tree_id` - The root ID of the database receiving the batch
-    /// * `verification` - Authentication verification status to apply to
-    ///   each entry. Pass `VerificationStatus::Failed` for entries received
-    ///   over the wire that have not been signature-checked (the project's
-    ///   current stand-in for an `Unverified` state).
     /// * `entries` - The entries to ingest
     pub(crate) async fn put_remote_entries(
         &self,
         tree_id: &ID,
-        verification: crate::backend::VerificationStatus,
         entries: Vec<Entry>,
     ) -> Result<usize> {
         if entries.is_empty() {
@@ -1105,7 +1102,7 @@ impl Instance {
         // 2. Store all entries
         let mut stored_entries = Vec::with_capacity(entries.len());
         for entry in entries {
-            match self.backend().put(verification, entry.clone()).await {
+            match self.backend().put(entry.clone()).await {
                 Ok(_) => stored_entries.push(entry),
                 Err(e) => {
                     tracing::error!(

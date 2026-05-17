@@ -1095,3 +1095,6 @@ async fn test_delegated_write_secondary_identity_key() -> Result<()> {
 
     Ok(())
 }
+
+// Test-only: store-and-promote helper (production `put` is Unverified-only).
+use crate::helpers::TestVerify;

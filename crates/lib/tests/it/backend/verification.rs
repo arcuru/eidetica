@@ -5,6 +5,7 @@ use eidetica::{
 use std::sync::Arc;
 
 use super::helpers::test_backend;
+use crate::helpers::TestVerify;
 
 #[tokio::test]
 async fn test_verification_status_basic_operations() {
@@ -117,8 +118,8 @@ async fn test_verification_status_multiple_entries() {
         .await
         .unwrap()
         .len();
-    let initial_failed = backend
-        .get_entries_by_verification_status(VerificationStatus::Failed)
+    let initial_unverified = backend
+        .get_entries_by_verification_status(VerificationStatus::Unverified)
         .await
         .unwrap()
         .len();
@@ -147,10 +148,7 @@ async fn test_verification_status_multiple_entries() {
         .put_verified(entry2)
         .await
         .expect("Failed to put entry2");
-    backend
-        .put_unverified(entry3)
-        .await
-        .expect("Failed to put entry3");
+    backend.put(entry3).await.expect("Failed to put entry3");
 
     // Test filtering by status
     let verified_entries = backend
@@ -161,12 +159,14 @@ async fn test_verification_status_multiple_entries() {
     assert!(verified_entries.contains(&entry1_id));
     assert!(verified_entries.contains(&entry2_id));
 
-    let failed_entries = backend
-        .get_entries_by_verification_status(VerificationStatus::Failed)
+    // entry3 went in via plain `put` → Unverified (not Failed: it was
+    // never checked-and-rejected, just not verified by this node).
+    let unverified_entries = backend
+        .get_entries_by_verification_status(VerificationStatus::Unverified)
         .await
-        .expect("Failed to get failed entries");
-    assert_eq!(failed_entries.len(), initial_failed + 1);
-    assert!(failed_entries.contains(&entry3_id));
+        .expect("Failed to get unverified entries");
+    assert_eq!(unverified_entries.len(), initial_unverified + 1);
+    assert!(unverified_entries.contains(&entry3_id));
 }
 
 #[tokio::test]
@@ -209,10 +209,7 @@ async fn test_verification_status_serialization() {
         .put_verified(entry1)
         .await
         .expect("Failed to put entry1");
-    backend
-        .put_unverified(entry2)
-        .await
-        .expect("Failed to put entry2");
+    backend.put(entry2).await.expect("Failed to put entry2");
 
     // Save and load
     let temp_file = "/tmp/test_verification_status.json";
@@ -236,7 +233,7 @@ async fn test_verification_status_serialization() {
         .expect("Failed to get status2");
 
     assert_eq!(status1, VerificationStatus::Verified);
-    assert_eq!(status2, VerificationStatus::Failed);
+    assert_eq!(status2, VerificationStatus::Unverified);
 
     // Clean up
     std::fs::remove_file(temp_file).ok();
@@ -252,8 +249,8 @@ async fn test_backend_verification_helpers() {
         .await
         .unwrap()
         .len();
-    let initial_failed = backend
-        .get_entries_by_verification_status(VerificationStatus::Failed)
+    let initial_unverified = backend
+        .get_entries_by_verification_status(VerificationStatus::Unverified)
         .await
         .unwrap()
         .len();
@@ -273,7 +270,7 @@ async fn test_backend_verification_helpers() {
     let id2 = entry2.id();
     let id3 = entry3.id();
 
-    // Test put_verified convenience method
+    // Test the verified path (test helper: store + promote)
     backend
         .put_verified(entry1)
         .await
@@ -283,14 +280,14 @@ async fn test_backend_verification_helpers() {
         VerificationStatus::Verified
     );
 
-    // Test put_unverified convenience method
+    // Test the default store path: `put` always stores Unverified
     backend
-        .put_unverified(entry2)
+        .put(entry2)
         .await
         .expect("Failed to put unverified entry");
     assert_eq!(
         backend.get_verification_status(&id2).await.unwrap(),
-        VerificationStatus::Failed // Currently maps to Failed
+        VerificationStatus::Unverified
     );
 
     // Test explicit put method for comparison
@@ -317,10 +314,11 @@ async fn test_backend_verification_helpers() {
     assert!(verified_entries.contains(&id1));
     assert!(verified_entries.contains(&id3));
 
-    let failed_entries = backend
-        .get_entries_by_verification_status(VerificationStatus::Failed)
+    // id2 was stored via plain `put` → Unverified.
+    let unverified_entries = backend
+        .get_entries_by_verification_status(VerificationStatus::Unverified)
         .await
         .unwrap();
-    assert_eq!(failed_entries.len(), initial_failed + 1); // id2
-    assert!(failed_entries.contains(&id2));
+    assert_eq!(unverified_entries.len(), initial_unverified + 1); // id2
+    assert!(unverified_entries.contains(&id2));
 }

@@ -392,3 +392,6 @@ async fn test_iroh_e2e_with_relays() {
 
     println!("🎯 Live relay test completed successfully!");
 }
+
+// Test-only: store-and-promote helper (production `put` is Unverified-only).
+use crate::helpers::TestVerify;

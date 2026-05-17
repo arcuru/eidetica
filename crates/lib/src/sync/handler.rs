@@ -25,7 +25,6 @@ use crate::{
         KeyStatus, Permission,
         crypto::{PublicKey, create_challenge_response, generate_challenge},
     },
-    backend::VerificationStatus,
     entry::ID,
     store::SettingsStore,
     sync::error::SyncError,
@@ -180,16 +179,10 @@ impl SyncHandler for SyncHandlerImpl {
                 for (tree_id, tree_entries) in by_tree {
                     let batch_size = tree_entries.len();
                     // Entries arrive over the wire without per-entry signature
-                    // verification. Store as Failed (the project's current
-                    // stand-in for "Unverified"; see the TODO on
-                    // `VerificationStatus`) so a future re-verification pass
-                    // can promote them. Matches the prior `put_unverified`
-                    // behavior of this handler before it was unified through
-                    // `put_remote_entries`.
-                    match instance
-                        .put_remote_entries(&tree_id, VerificationStatus::Failed, tree_entries)
-                        .await
-                    {
+                    // verification; `put_remote_entries` stores them
+                    // Unverified so a future re-verification pass can promote
+                    // them.
+                    match instance.put_remote_entries(&tree_id, tree_entries).await {
                         Ok(n) => {
                             stored_count += n;
                             debug!(tree_id = %tree_id, requested = batch_size, stored = n, "Stored entries");

@@ -202,11 +202,11 @@ impl BackendImpl for InMemory {
             .ok_or_else(|| BackendError::VerificationStatusNotFound { id: id.clone() }.into())
     }
 
-    async fn put(&self, verification_status: VerificationStatus, entry: Entry) -> Result<()> {
+    async fn put(&self, entry: Entry) -> Result<()> {
         // Validate before acquiring write lock to fail fast
         entry.validate()?;
         let mut inner = self.inner.write().unwrap();
-        storage::put(&mut inner, verification_status, entry)
+        storage::put(&mut inner, entry)
     }
 
     /// Updates the verification status of an existing entry.

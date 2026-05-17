@@ -23,7 +23,7 @@ use tokio::sync::Mutex;
 use crate::auth::crypto::PrivateKey;
 use crate::auth::crypto::{PublicKey, create_challenge_response};
 use crate::auth::types::SigKey;
-use crate::backend::{InstanceMetadata, VerificationStatus};
+use crate::backend::InstanceMetadata;
 use crate::entry::{Entry, ID};
 use crate::instance::WriteSource;
 use crate::service::error::service_error_to_eidetica_error;
@@ -301,17 +301,14 @@ impl RemoteConnection {
         Self::expect_entry(resp)
     }
 
-    pub async fn put(
-        &self,
-        verification_status: VerificationStatus,
-        entry: Entry,
-    ) -> crate::Result<()> {
-        let resp = self
-            .backend_request(BackendOp::Put {
-                verification_status,
-                entry,
-            })
-            .await?;
+    /// Send an entry to the server for storage.
+    ///
+    /// The wire carries no verification status: a peer cannot assert that an
+    /// entry is verified. The server stores all wire-submitted entries as
+    /// [`VerificationStatus::Unverified`] and may promote them only via its
+    /// own local verification pass.
+    pub async fn put(&self, entry: Entry) -> crate::Result<()> {
+        let resp = self.backend_request(BackendOp::Put { entry }).await?;
         Self::expect_ok(resp)
     }
 

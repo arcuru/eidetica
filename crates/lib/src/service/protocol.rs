@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::auth::types::{Permission, SigKey};
-use crate::backend::{InstanceMetadata, VerificationStatus};
+use crate::backend::InstanceMetadata;
 use crate::entry::{Entry, ID};
 use crate::instance::WriteSource;
 use crate::service::error::ServiceError;
@@ -77,8 +77,10 @@ pub enum BackendOp {
     Get {
         id: ID,
     },
+    /// Submit an entry for storage. The wire deliberately carries no
+    /// verification status — the server stores it as `Unverified` and never
+    /// trusts a peer's assertion of verification.
     Put {
-        verification_status: VerificationStatus,
         entry: Entry,
     },
 

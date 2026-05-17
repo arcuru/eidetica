@@ -330,3 +330,42 @@ pub async fn set_global_auth_key(db: &Database, key: AuthKey) {
     settings.set_global_auth_key(key).await.unwrap();
     txn.commit().await.unwrap();
 }
+
+// ==========================
+// TEST-ONLY VERIFICATION HELPER
+// ==========================
+
+/// Store an entry and immediately promote it to `Verified`, emulating what
+/// the local validation pass does (store, then `update_verification_status`).
+///
+/// The production storage API no longer accepts a caller-asserted
+/// verification status — `put` always stores `Unverified`. Tests that need a
+/// pre-verified entry in the DAG (DAG/tip/sync fixtures that assume
+/// already-validated data) use this extension instead. It exists only in the
+/// test crate, so it is not part of the library's API surface.
+pub trait TestVerify {
+    async fn put_verified(&self, entry: eidetica::entry::Entry) -> eidetica::Result<()>;
+}
+
+// Explicit impls per concrete receiver (no blanket — a blanket over
+// `BackendImpl` would coherence-conflict with the `Backend` impl). Method
+// resolution auto-derefs, so these also cover `Box<_>` / `Arc<_>` wrappers.
+macro_rules! impl_test_verify {
+    ($ty:ty) => {
+        impl TestVerify for $ty {
+            async fn put_verified(&self, entry: eidetica::entry::Entry) -> eidetica::Result<()> {
+                let id = entry.id();
+                self.put(entry).await?;
+                self.update_verification_status(
+                    &id,
+                    eidetica::backend::VerificationStatus::Verified,
+                )
+                .await
+            }
+        }
+    };
+}
+
+impl_test_verify!(dyn BackendImpl);
+impl_test_verify!(eidetica::backend::database::InMemory);
+impl_test_verify!(eidetica::instance::backend::Backend);

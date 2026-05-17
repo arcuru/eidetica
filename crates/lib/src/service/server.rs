@@ -606,11 +606,11 @@ async fn dispatch_backend_op(
             gate_entry_read(instance, session_pubkey, identity, &entry).await?;
             Ok(ServiceResponse::Entry(entry))
         }
-        BackendOp::Put {
-            verification_status,
-            entry,
-        } => {
-            backend.put(verification_status, entry).await?;
+        BackendOp::Put { entry } => {
+            // A peer cannot assert verification for us. `put` always stores
+            // Unverified; only this node's local validation pass may later
+            // promote wire-submitted entries to Verified.
+            backend.put(entry).await?;
             Ok(ServiceResponse::Ok)
         }
 

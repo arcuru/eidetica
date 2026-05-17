@@ -18,7 +18,6 @@ use crate::sync::{
 use crate::{
     Error, Result,
     auth::crypto::{PublicKey, generate_challenge, verify_challenge_response},
-    backend::VerificationStatus,
     entry::Entry,
 };
 
@@ -227,11 +226,12 @@ impl BackgroundSync {
         }
 
         // Bootstrap/incremental sync paths historically marked these entries
-        // Verified after the parent-existence check above. That hasn't changed
-        // here, but the verification gap (no signature check) is tracked via
-        // the TODO in `Sync::store_received_entries`.
+        // Verified after the parent-existence check above. They are now stored
+        // Unverified like all off-node arrivals: a parent-existence check is
+        // not signature verification, and only this node's local validation
+        // pass may assign Verified.
         instance
-            .put_remote_entries(tree_id, VerificationStatus::Verified, entries)
+            .put_remote_entries(tree_id, entries)
             .await
             .map_err(|e| SyncError::BackendError(format!("Failed to store entries: {e}")))?;
 

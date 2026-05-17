@@ -15,8 +15,7 @@ use super::{
     user_sync_manager::UserSyncManager,
 };
 use crate::{
-    Database, Entry, Result, auth::Permission, auth::crypto::PublicKey,
-    backend::VerificationStatus, entry::ID, store::DocStore,
+    Database, Entry, Result, auth::Permission, auth::crypto::PublicKey, entry::ID, store::DocStore,
 };
 
 use super::utils::collect_ancestors_to_send;
@@ -276,11 +275,11 @@ impl Sync {
         // checks before marking entries as verified.
 
         // Store entries and fire callbacks via Instance::put_remote_entries.
-        // Marked Verified to match prior behavior; the TODO above tracks the
-        // signature-verification gap.
+        // Stored Unverified: these arrived from a peer and have not been
+        // verified by this node.
         let instance = self.instance()?;
         instance
-            .put_remote_entries(tree_id, VerificationStatus::Verified, entries)
+            .put_remote_entries(tree_id, entries)
             .await
             .map_err(|e| SyncError::BackendError(format!("Failed to store entries: {e}")))?;
 
@@ -705,10 +704,9 @@ impl Sync {
                 all_entries.push(bootstrap_response.root_entry);
                 all_entries.extend(bootstrap_response.all_entries);
 
+                // Bootstrap entries come from a peer; stored Unverified.
                 let instance = self.instance()?;
-                instance
-                    .put_remote_entries(tree_id, VerificationStatus::Verified, all_entries)
-                    .await?;
+                instance.put_remote_entries(tree_id, all_entries).await?;
 
                 info!(peer = %peer_pubkey, tree = %tree_id, "Bootstrap sync completed successfully");
             }

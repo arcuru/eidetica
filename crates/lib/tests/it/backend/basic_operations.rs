@@ -107,3 +107,6 @@ async fn test_all_roots() {
     assert!(roots.contains(&root1_id));
     assert!(roots.contains(&root2_id));
 }
+
+// Test-only: store-and-promote helper (production `put` is Unverified-only).
+use crate::helpers::TestVerify;
