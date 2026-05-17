@@ -1255,8 +1255,9 @@ impl Database {
     ///
     /// - an ancestor is `Failed` → this entry is `Failed` too (quarantine
     ///   propagates down the branch);
-    /// - an ancestor is still `Unverified` → left `Unverified` (retried once
-    ///   the ancestor itself verifies);
+    /// - an ancestor is still `Unverified`, or not held locally yet (partial
+    ///   sync) → left `Unverified` (retried once the ancestor verifies / the
+    ///   missing entry arrives);
     /// - pinned `_settings` not fully held locally → left `Unverified`
     ///   (a later pass retries once the set syncs in);
     /// - signature + permissions valid → promoted to `Verified`;
@@ -1305,10 +1306,15 @@ impl Database {
                     let mut compromised = false;
                     let mut blocked = false;
                     for p in &parents {
-                        match backend.get_verification_status(p).await? {
-                            VerificationStatus::Verified => {}
-                            VerificationStatus::Failed => compromised = true,
-                            VerificationStatus::Unverified => blocked = true,
+                        match backend.get_verification_status(p).await {
+                            Ok(VerificationStatus::Verified) => {}
+                            Ok(VerificationStatus::Failed) => compromised = true,
+                            Ok(VerificationStatus::Unverified) => blocked = true,
+                            // Parent not held locally yet (partial sync): we
+                            // cannot establish the history, so this entry is
+                            // blocked until the parent arrives — not an error.
+                            Err(e) if e.is_not_found() => blocked = true,
+                            Err(e) => return Err(e),
                         }
                     }
                     if compromised {
