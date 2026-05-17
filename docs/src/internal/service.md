@@ -125,6 +125,8 @@ The original design mirrored the entire storage trait onto the socket, one varia
 
 Operations deliberately **not** exposed over the wire — `update_verification_status`, `get_instance_secrets`, `all_roots`, and the verification/enumeration queries — return `InstanceError::OperationNotSupported` on a `Backend::Remote`, rather than a silent wrong answer. `enable_sync()` on a remote Instance likewise returns `OperationNotSupported` instead of building a client-side sync engine that would race the daemon's.
 
+`update_verification_status` is off-wire **by design, not just for tidiness**: verification is a local trust decision. If a client could set it over the socket, a client (or anything that reached the socket) could assert "this entry is `Verified`" without the server having validated it — exactly the caller-asserted-status hole the storage API was hardened to close. So the daemon's Instance owns verification: it stores everything `Unverified` and runs `Database::verify()` itself. A client's `get_tips` on a `Backend::Remote` returns the daemon's **raw** tips unchanged (it cannot evaluate the Verified frontier locally — the status queries are off-wire); the frontier/`allow_unverified` distinction is applied by the daemon-side `Database`, and every client connected to the same daemon therefore observes the same verified view.
+
 Two helpers drive the per-tree gate:
 
 - `BackendOp::tree_id() -> Option<&ID>` — the op's scope when it carries one inline. Returns `None` for entry-id-keyed ops (`Get`, `Put`, `GetCachedCrdtState`, `CacheCrdtState`) and for `SetInstanceMetadata` (which has its own admin gate).

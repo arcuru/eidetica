@@ -80,6 +80,17 @@ struct EntryMetadata {
 - Used for efficient settings validation in sparse checkouts
 - Stored in `TreeNode.metadata` field as serialized JSON
 
+**`settings_tips` is the verification pin.** An entry's signature is always
+validated against the `_settings` state these tips identify — *not* the
+current settings — so granting or revoking authority later cannot
+retroactively (in)validate historical entries. When a node does not yet hold
+the full `_settings` ancestor closure named by `settings_tips` (the normal
+partial-sync case), the entry's pinned settings are *incomplete*: it cannot
+be checked yet and stays `Unverified` until the missing `_settings` entries
+arrive, at which point a later `Database::verify()` pass promotes it. This is
+why an entry can be legitimately `Unverified` (transient: "can't tell yet")
+as opposed to `Failed` (terminal: "checked and rejected").
+
 ## SettingsStore API
 
 ### Overview

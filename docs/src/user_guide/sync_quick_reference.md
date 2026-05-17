@@ -310,6 +310,41 @@ txn.commit().await?; // Automatically syncs to all connected peers
 sync.sync_with_peer(&Address::http("peer.example.com:8080"), Some(&tree_id)).await?;
 ```
 
+### Verifying Synced Entries
+
+Entries received from a peer are stored **`Unverified`** — a peer cannot
+assert that data is trusted. By default a `Database` read exposes only the
+**Verified frontier** (the maximal all-`Verified` prefix of the history), so
+freshly synced, not-yet-verified data is invisible until this node validates
+it. A read triggers an opportunistic verification pass automatically, or you
+can drive it explicitly.
+
+<!-- Code block ignored: Requires synced data from a peer -->
+
+```rust,ignore
+// Explicitly verify everything received so far. Validates each Unverified
+// entry against the _settings it pins; prefix-closed (an entry verifies
+// only once its whole history does). Already-Verified entries are skipped.
+let report = database.verify().await?;
+println!(
+    "verified={}, failed={}, still_unverified={}",
+    report.verified, report.failed, report.still_unverified
+);
+
+// Default read: only the Verified frontier is visible.
+let tips = database.get_tips().await?;
+
+// Opt into the looser view to also see Unverified tips (e.g. to inspect
+// data whose pinned _settings this node has not received yet). Failed
+// entries are always dropped, in both views.
+let pending = database.clone().allow_unverified().get_tips().await?;
+```
+
+`still_unverified` counts entries left pending because their pinned
+`_settings` (or an ancestor) has not arrived yet — re-run `verify()` after
+more sync completes and they promote. `failed` counts entries that were
+checked and definitively rejected; those are dropped from reads permanently.
+
 ### Advanced: Manual Sync Relationships
 
 <!-- Code block ignored: Uses low-level APIs requiring peer setup -->

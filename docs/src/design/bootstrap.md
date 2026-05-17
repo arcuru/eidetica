@@ -206,6 +206,28 @@ Once approved, the client retries with normal sync after waiting or polling peri
 - That key must be in the database's auth settings
 - System explicitly validates Admin permission before allowing rejection
 
+### Verification of Transferred Entries
+
+A successful bootstrap transfers the full database state to the client. Those
+entries are **not** trusted because the server sent them: like any synced
+data they are stored `Unverified` (the wire protocol carries no way for a
+peer to assert a verification status — see the
+[service architecture](../internal/service.md)).
+
+Promotion is a local decision on the client:
+
+- `Database::verify()` validates each received entry against the `_settings`
+  it pins and promotes it, **prefix-closed** (an entry becomes `Verified`
+  only once its whole ancestor history is);
+- a normal read also triggers an opportunistic verification pass when a tip
+  is still `Unverified` (the access-time hook).
+
+Until then, default reads expose only the **Verified frontier**, so a
+freshly bootstrapped database may read as empty for the instant before
+verification completes; `.allow_unverified()` opts into the pre-verification
+view. Because the bootstrap root is genesis/TOFU, verification bottoms out at
+a self-authorising root and the rest cascades from there.
+
 ## Design Decisions
 
 ### Auto-Approval via Global Permissions
