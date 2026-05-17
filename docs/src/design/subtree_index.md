@@ -56,6 +56,14 @@ When you sync a subtree (like `users`) from another peer, you automatically rece
 
 This constraint leverages Eidetica's Merkle-DAG structure: the Entry containing the `_index` update becomes part of the subtree's parent DAG, is verified by the same cryptographic properties, and is automatically included when syncing that subtree.
 
+> **"Cryptographically verified" here means content-addressed integrity** —
+> the `_index` metadata cannot be tampered with or separated from its data
+> because it is hash-chained into the same Merkle-DAG. This is independent of
+> an entry's **`VerificationStatus`** (whether this node has validated the
+> entry's *signature and permissions* against the `_settings` it pins). A
+> synced `_index`-bearing entry still arrives `Unverified` and is promoted by
+> `Database::verify()` like any other entry.
+
 ## How It Works
 
 ### The `_index` Subtree

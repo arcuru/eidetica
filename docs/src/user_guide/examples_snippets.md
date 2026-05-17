@@ -497,6 +497,54 @@ async fn main() -> eidetica::Result<()> {
 
 ---
 
+## 10. Verifying Synced Data
+
+Entries authored locally are validated at commit time and are immediately
+`Verified`. Entries received from a peer arrive `Unverified` and are hidden
+from the default (Verified-frontier) view until this node validates them.
+
+<!-- Code block ignored: Requires entries synced from a peer -->
+
+```rust,ignore
+# extern crate eidetica;
+# extern crate tokio;
+# use eidetica::{Database, Instance, backend::database::Sqlite, crdt::Doc};
+#
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
+# let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
+# instance.create_user("alice", None).await?;
+# let mut user = instance.login_user("alice", None).await?;
+# let default_key = user.get_default_key()?;
+# let database = user.create_database(Doc::new(), &default_key).await?;
+// `database` here has received entries from a sync peer.
+
+// Validate everything received so far (prefix-closed: an entry is
+// promoted only once its whole ancestor history is Verified).
+let report = database.verify().await?;
+println!(
+    "verified={} failed={} still_unverified={}",
+    report.verified, report.failed, report.still_unverified
+);
+
+// Default read shows only the Verified frontier.
+let visible = database.get_tips().await?;
+
+// Inspect not-yet-verified data explicitly (Failed is still dropped).
+let with_pending = database.clone().allow_unverified().get_tips().await?;
+let _ = (visible, with_pending);
+# Ok(())
+# }
+```
+
+- `report.still_unverified` > 0 means some entries are waiting on
+  `_settings` (or an ancestor) that has not synced yet — re-run `verify()`
+  after more sync and they promote.
+- `report.failed` > 0 means entries were checked and rejected; they are
+  permanently excluded from reads.
+
+---
+
 ## Complete Example: Chat Application
 
 For a full working example that demonstrates Eidetica in a real application, see the **[Chat Example](https://github.com/arcuru/eidetica/blob/main/examples/chat/README.md)** in the repository.

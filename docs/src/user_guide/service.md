@@ -109,6 +109,14 @@ let user = instance2.login_user("alice", None).await?;
 
 All clients share the same underlying storage through the daemon's backend.
 
+**Entry verification is owned by the daemon.** Clients do not run their own
+verification pass — `update_verification_status` and the verification-status
+queries are not exposed over the socket. The daemon's Instance stores synced
+entries as `Unverified`, runs `Database::verify()`, and serves reads from the
+resulting **Verified frontier**. Every connected client therefore sees the
+same verified view; there is no per-client `allow_unverified()` toggle over
+the wire. (See [Core Concepts](core_concepts.md) for the verification model.)
+
 ## Configuration Reference
 
 | Option / Env Var               | Description                                        | Default                                         |
