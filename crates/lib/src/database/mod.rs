@@ -1253,10 +1253,19 @@ impl Database {
     /// (see [`Self::get_historical_settings_for_entry`]) and validate its
     /// signature + permissions against that:
     ///
+    /// - an ancestor is `Failed` → this entry is `Failed` too (quarantine
+    ///   propagates down the branch);
+    /// - an ancestor is still `Unverified` → left `Unverified` (retried once
+    ///   the ancestor itself verifies);
     /// - pinned `_settings` not fully held locally → left `Unverified`
     ///   (a later pass retries once the set syncs in);
     /// - signature + permissions valid → promoted to `Verified`;
     /// - definitively invalid → marked `Failed` (dropped from reads).
+    ///
+    /// Verification is **prefix-closed**: an entry is `Verified` only if its
+    /// entire ancestor history is `Verified`. It is therefore impossible for a
+    /// tip to be `Verified` while one of its ancestors is not, which is what
+    /// makes the Verified set ancestor-closed (see [`Self::allow_unverified`]).
     ///
     /// Already-`Verified` entries are never demoted here; that is a separate,
     /// not-yet-built path. Local-only — verification is a per-node decision
@@ -1281,6 +1290,39 @@ impl Database {
                     {
                         continue;
                     }
+
+                    // Verification is prefix-closed: an entry's trust rests on
+                    // its entire history, so it can only be `Verified` if every
+                    // ancestor is. `get_tree` is topo-sorted (parents before
+                    // children), so each parent's status is already final for
+                    // this pass.
+                    //
+                    // - any ancestor `Failed` → the branch is tainted; this
+                    //   entry is `Failed` too (quarantine propagates forward);
+                    // - any ancestor still `Unverified` → cannot trust this
+                    //   entry yet; leave it for a later pass.
+                    let parents = entry.parents().unwrap_or_default();
+                    let mut compromised = false;
+                    let mut blocked = false;
+                    for p in &parents {
+                        match backend.get_verification_status(p).await? {
+                            VerificationStatus::Verified => {}
+                            VerificationStatus::Failed => compromised = true,
+                            VerificationStatus::Unverified => blocked = true,
+                        }
+                    }
+                    if compromised {
+                        backend
+                            .update_verification_status(&id, VerificationStatus::Failed)
+                            .await?;
+                        report.failed += 1;
+                        continue;
+                    }
+                    if blocked {
+                        report.still_unverified += 1;
+                        continue;
+                    }
+
                     match self.get_historical_settings_for_entry(entry).await? {
                         PinnedSettings::Incomplete => report.still_unverified += 1,
                         PinnedSettings::Complete(auth_settings) => {

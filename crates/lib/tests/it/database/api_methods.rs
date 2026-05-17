@@ -565,3 +565,56 @@ async fn test_verified_frontier_prefix_cut_and_allow_unverified() {
     // unchanged.
     assert_eq!(tree.get_tips().await.unwrap(), vec![a]);
 }
+
+/// Verification is prefix-closed: it must be impossible for an entry to be
+/// `Verified` while an ancestor is not. A `Failed` ancestor taints the whole
+/// branch — `verify()` must mark the descendant `Failed`, never promote it,
+/// even though the descendant's own signature is perfectly valid.
+#[tokio::test]
+async fn test_verify_is_prefix_closed() {
+    let (instance, tree, _key_id) = setup_tree_with_user_key().await;
+    let backend = instance.backend();
+
+    // root -> a -> b, all locally authored ⇒ all Verified.
+    let a = add_data_to_subtree(&tree, "data", &[("step", "a")]).await;
+    let b = add_data_to_subtree(&tree, "data", &[("step", "b")]).await;
+
+    // Taint the ancestor `a`, then make the descendant `b` look pending (as
+    // if it had just arrived over sync). `b`'s own signature is still valid.
+    backend
+        .update_verification_status(&a, VerificationStatus::Failed)
+        .await
+        .unwrap();
+    backend
+        .update_verification_status(&b, VerificationStatus::Unverified)
+        .await
+        .unwrap();
+
+    let report = tree.verify().await.unwrap();
+
+    // `b` must NOT be promoted — its history is compromised. It is quarantined
+    // (Failed) rather than left Unverified, so the taint propagates forward.
+    assert_eq!(
+        backend.get_verification_status(&b).await.unwrap(),
+        VerificationStatus::Failed,
+        "a descendant of a Failed ancestor must never be Verified"
+    );
+    assert!(report.failed >= 1 && report.verified == 0, "{report:?}");
+
+    // Invariant sweep: no Verified entry may have a non-Verified ancestor.
+    for entry in tree.get_all_entries().await.unwrap() {
+        if backend.get_verification_status(&entry.id()).await.unwrap()
+            != VerificationStatus::Verified
+        {
+            continue;
+        }
+        for p in entry.parents().unwrap_or_default() {
+            assert_eq!(
+                backend.get_verification_status(&p).await.unwrap(),
+                VerificationStatus::Verified,
+                "Verified entry {} has non-Verified parent {p}",
+                entry.id()
+            );
+        }
+    }
+}
