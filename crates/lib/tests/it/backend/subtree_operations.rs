@@ -1,6 +1,5 @@
 use std::collections::HashSet;
 
-use eidetica::backend::VerificationStatus;
 use eidetica::entry::{Entry, ID};
 
 use super::helpers::test_backend;
@@ -204,10 +203,7 @@ async fn test_get_store_tips() {
         .build()
         .expect("Root entry should build successfully");
     let root_id = root.id();
-    backend
-        .put(VerificationStatus::Verified, root.clone())
-        .await
-        .unwrap();
+    backend.put_verified(root.clone()).await.unwrap();
 
     // Add entry A with subtree "sub1"
     let entry_a = Entry::builder(root_id.clone())
@@ -933,3 +929,6 @@ async fn test_get_store_tips_up_to_entries_complex_dag() {
     assert!(tips_hi_set.contains(&id_h));
     assert!(tips_hi_set.contains(&id_i));
 }
+
+// Test-only: store-and-promote helper (production `put` is Unverified-only).
+use crate::helpers::TestVerify;

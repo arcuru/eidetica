@@ -79,3 +79,6 @@ async fn concurrent_writers_do_not_collide_on_sqlite_busy() {
         roots.len()
     );
 }
+
+// Test-only: store-and-promote helper (production `put` is Unverified-only).
+use crate::helpers::TestVerify;

@@ -377,8 +377,8 @@ impl BackendImpl for SqlxBackend {
         storage::get_verification_status(self, id).await
     }
 
-    async fn put(&self, verification_status: VerificationStatus, entry: Entry) -> Result<()> {
-        storage::put(self, verification_status, entry).await
+    async fn put(&self, entry: Entry) -> Result<()> {
+        storage::put(self, entry).await
     }
 
     async fn update_verification_status(

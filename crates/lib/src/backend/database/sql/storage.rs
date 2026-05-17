@@ -44,20 +44,16 @@ pub async fn get_verification_status(backend: &SqlxBackend, id: &ID) -> Result<V
             .sql_context("Failed to get verification status")?;
 
     match row {
-        Some((status,)) => Ok(match status {
-            0 => VerificationStatus::Verified,
-            _ => VerificationStatus::Failed,
-        }),
+        Some((status,)) => VerificationStatus::from_db_int(status),
         None => Err(BackendError::VerificationStatusNotFound { id: id.clone() }.into()),
     }
 }
 
 /// Store an entry with the given verification status.
-pub async fn put(
-    backend: &SqlxBackend,
-    verification_status: VerificationStatus,
-    entry: Entry,
-) -> Result<()> {
+/// Always stores the entry as [`VerificationStatus::Unverified`]; the storage
+/// path never accepts a caller-chosen status. Promotion to `Verified` is done
+/// separately by the local validation pass via `update_verification_status`.
+pub async fn put(backend: &SqlxBackend, entry: Entry) -> Result<()> {
     // Validate entry before storing
     entry.validate()?;
 
@@ -74,10 +70,8 @@ pub async fn put(
         source: None,
     })?;
 
-    let status_int: i64 = match verification_status {
-        VerificationStatus::Verified => 0,
-        VerificationStatus::Failed => 1,
-    };
+    // Storage is always Unverified; a re-`put` resets any prior promotion.
+    let status_int: i64 = VerificationStatus::Unverified.as_db_int();
 
     // Use a transaction for atomicity.
     //
@@ -372,10 +366,7 @@ pub async fn update_verification_status(
 ) -> Result<()> {
     let pool = backend.pool();
 
-    let status_int: i64 = match verification_status {
-        VerificationStatus::Verified => 0,
-        VerificationStatus::Failed => 1,
-    };
+    let status_int: i64 = verification_status.as_db_int();
 
     let result = sqlx::query("UPDATE entries SET verification_status = $1 WHERE id = $2")
         .bind(status_int)
@@ -398,10 +389,7 @@ pub async fn get_entries_by_verification_status(
 ) -> Result<Vec<ID>> {
     let pool = backend.pool();
 
-    let status_int: i64 = match status {
-        VerificationStatus::Verified => 0,
-        VerificationStatus::Failed => 1,
-    };
+    let status_int: i64 = status.as_db_int();
 
     let rows: Vec<(String,)> =
         sqlx::query_as("SELECT id FROM entries WHERE verification_status = $1")

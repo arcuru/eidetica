@@ -275,3 +275,6 @@ async fn test_partial_sync_with_gaps() {
         "D should NOT be a tip (E is its child)"
     );
 }
+
+// Test-only: store-and-promote helper (production `put` is Unverified-only).
+use crate::helpers::TestVerify;

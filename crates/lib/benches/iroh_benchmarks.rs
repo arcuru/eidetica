@@ -104,11 +104,7 @@ fn bench_iroh_sync_throughput(c: &mut Criterion) {
                             let entries: Vec<Entry> =
                                 (0..entry_count).map(|_| create_root_entry()).collect();
                             for entry in &entries {
-                                base_db1
-                                    .backend()
-                                    .put_verified(entry.clone())
-                                    .await
-                                    .unwrap();
+                                base_db1.backend().put(entry.clone()).await.unwrap();
                             }
                             entries
                         })

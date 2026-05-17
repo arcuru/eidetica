@@ -92,16 +92,15 @@ impl Backend {
         local_only!(self, "get_verification_status", get_verification_status(id))
     }
 
-    pub async fn put(&self, verification: VerificationStatus, entry: Entry) -> Result<()> {
-        dispatch!(self, put(verification, entry))
-    }
-
-    pub async fn put_verified(&self, entry: Entry) -> Result<()> {
-        self.put(VerificationStatus::Verified, entry).await
-    }
-
-    pub async fn put_unverified(&self, entry: Entry) -> Result<()> {
-        self.put(VerificationStatus::Failed, entry).await
+    /// Store an entry. Always Unverified — no caller may assert verification.
+    /// `Verified` is reached only via [`Self::update_verification_status`],
+    /// driven by the local validation pass.
+    pub async fn put(&self, entry: Entry) -> Result<()> {
+        match self {
+            Backend::Local(b) => b.put(entry).await,
+            #[cfg(all(unix, feature = "service"))]
+            Backend::Remote(c) => c.put(entry).await,
+        }
     }
 
     /// Update the verification status of an entry.
@@ -319,11 +318,28 @@ impl Backend {
         source: WriteSource,
     ) -> Result<()> {
         match self {
-            Backend::Local(b) => b.put(verification, entry).await,
+            Backend::Local(b) => {
+                // Store Unverified, then promote. This is the local
+                // validation pass's funnel (`Instance::put_entry`), the only
+                // path that may produce Verified, and it does so explicitly
+                // via the promotion primitive rather than asserting status at
+                // store time.
+                let entry_id = entry.id();
+                b.put(entry).await?;
+                if verification != VerificationStatus::Unverified {
+                    b.update_verification_status(&entry_id, verification)
+                        .await?;
+                }
+                Ok(())
+            }
             #[cfg(all(unix, feature = "service"))]
             Backend::Remote(c) => {
+                // The wire carries no verification status: the server stores
+                // this Unverified regardless of `verification`. A remote
+                // backend cannot assert Verified for a peer (mirrors
+                // `update_verification_status` being unsupported remotely).
                 let entry_id = entry.id();
-                c.put(verification, entry).await?;
+                c.put(entry).await?;
                 c.notify_entry_written(tree_id, &entry_id, source).await
             }
         }

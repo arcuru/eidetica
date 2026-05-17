@@ -587,3 +587,6 @@ async fn test_incremental_sync_after_bootstrap_with_key() {
     // Cleanup
     server_sync.stop_server().await.unwrap();
 }
+
+// Test-only: store-and-promote helper (production `put` is Unverified-only).
+use crate::helpers::TestVerify;

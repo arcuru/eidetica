@@ -1,6 +1,4 @@
 use eidetica::Error;
-use eidetica::backend::BackendImpl;
-use eidetica::backend::VerificationStatus;
 use eidetica::backend::database::InMemory;
 use eidetica::backend::errors::BackendError;
 use eidetica::entry::{Entry, ID};
@@ -213,10 +211,7 @@ async fn test_get_tips() {
         .build()
         .expect("Root entry should build successfully");
     let root_id = root.id();
-    backend
-        .put(VerificationStatus::Verified, root.clone())
-        .await
-        .unwrap();
+    backend.put_verified(root.clone()).await.unwrap();
 
     // Initially, root is the only tip
     let tips = backend.get_tips(&root_id).await.unwrap();
@@ -230,10 +225,7 @@ async fn test_get_tips() {
         .build()
         .expect("Entry A should build successfully");
     let id_a = entry_a.id();
-    backend
-        .put(VerificationStatus::Verified, entry_a.clone())
-        .await
-        .unwrap();
+    backend.put_verified(entry_a.clone()).await.unwrap();
 
     // Now A should be the only tip
     let tips = backend.get_tips(&root_id).await.unwrap();
@@ -247,10 +239,7 @@ async fn test_get_tips() {
         .build()
         .expect("Entry B should build successfully");
     let id_b = entry_b.id();
-    backend
-        .put(VerificationStatus::Verified, entry_b.clone())
-        .await
-        .unwrap();
+    backend.put_verified(entry_b.clone()).await.unwrap();
 
     // Now B should be the only tip from that branch
     let tips = backend.get_tips(&root_id).await.unwrap();
@@ -264,10 +253,7 @@ async fn test_get_tips() {
         .build()
         .expect("Entry C should build successfully");
     let id_c = entry_c.id();
-    backend
-        .put(VerificationStatus::Verified, entry_c.clone())
-        .await
-        .unwrap();
+    backend.put_verified(entry_c.clone()).await.unwrap();
 
     // Now should have 2 tips: B and C
     let tips = backend.get_tips(&root_id).await.unwrap();
@@ -334,3 +320,6 @@ async fn test_sort_entries_by_height() {
     backend.sort_entries_by_height(&root_id, &mut empty_entries);
     assert!(empty_entries.is_empty());
 }
+
+// Test-only: store-and-promote helper (production `put` is Unverified-only).
+use crate::helpers::TestVerify;

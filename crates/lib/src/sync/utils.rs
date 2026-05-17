@@ -208,7 +208,7 @@ mod tests {
         let entry_id = entry.id();
 
         // Store the entry
-        backend.put_verified(entry).await.unwrap();
+        backend.put(entry).await.unwrap();
 
         let result = collect_missing_ancestors(backend.as_ref(), &[entry_id])
             .await
@@ -234,7 +234,7 @@ mod tests {
         let entry_id = entry.id();
 
         // Store the entry
-        backend.put_verified(entry.clone()).await.unwrap();
+        backend.put(entry.clone()).await.unwrap();
 
         let result = collect_ancestors_to_send(backend.as_ref(), &[entry_id], &[])
             .await
@@ -252,7 +252,7 @@ mod tests {
         let entry_id = entry.id();
 
         // Store the entry
-        backend.put_verified(entry).await.unwrap();
+        backend.put(entry).await.unwrap();
 
         // Peer already has this entry
         let result = collect_ancestors_to_send(

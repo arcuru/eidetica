@@ -114,3 +114,6 @@ pub async fn assert_tree_contains_ids(
         );
     }
 }
+
+// Test-only: store-and-promote helper (production `put` is Unverified-only).
+use crate::helpers::TestVerify;

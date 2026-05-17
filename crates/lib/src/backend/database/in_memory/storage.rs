@@ -35,18 +35,17 @@ pub(crate) fn get(inner: &InMemoryInner, id: &ID) -> Result<Entry> {
 /// - A child entry might arrive before its parent
 /// - The tip tracking is recalculated from scratch to handle this correctly
 ///
+/// Always stores the entry as [`VerificationStatus::Unverified`]; the storage
+/// path never accepts a caller-chosen status. Promotion to `Verified` is done
+/// separately by the local validation pass via `update_verification_status`.
+///
 /// # Arguments
 /// * `inner` - Mutable reference to the core data
-/// * `verification_status` - Whether the entry has been cryptographically verified
 /// * `entry` - The entry to store (must already be validated)
 ///
 /// # Returns
 /// * `Ok(())` on successful storage
-pub(crate) fn put(
-    inner: &mut InMemoryInner,
-    verification_status: VerificationStatus,
-    entry: Entry,
-) -> Result<()> {
+pub(crate) fn put(inner: &mut InMemoryInner, entry: Entry) -> Result<()> {
     let entry_id = entry.id();
     // For root entries, root() returns None, so tree_id is the entry's own ID.
     // For non-root entries, tree_id is the root entry's ID.
@@ -61,11 +60,12 @@ pub(crate) fn put(
         None
     };
 
-    // Store the entry and verification status
+    // Store the entry. Always Unverified: a re-`put` of an existing entry is
+    // an off-validation-path write and resets any prior Verified promotion.
     inner.entries.insert(entry_id.clone(), entry.clone());
     inner
         .verification_status
-        .insert(entry_id.clone(), verification_status);
+        .insert(entry_id.clone(), VerificationStatus::Unverified);
 
     // Tip tracking uses full recalculation to handle out-of-order entry arrival during sync.
     // This ensures correctness when entries arrive in any order, which is common during

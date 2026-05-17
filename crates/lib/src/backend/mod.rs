@@ -85,30 +85,58 @@ pub use errors::BackendError;
 /// by the higher-level authentication system. The backend stores this status
 /// but does not perform verification itself - that's handled by the Database/Transaction layers.
 ///
-/// Currently all local entries must be authenticated (Verified), but this enum
-/// is designed to support future sync scenarios where entries may be received
-/// before verification is complete.
+/// Only the local validation pass (`Transaction`) may assign `Verified`: it
+/// is the sole code path that has actually checked the entry's signature and
+/// permissions. Anything arriving from outside this node — over the sync
+/// protocol or the service wire — enters as `Unverified` and can only be
+/// promoted later by a local re-verification pass. A peer cannot assert
+/// `Verified` for us; the wire carries no verification status.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, Default,
 )]
 pub enum VerificationStatus {
-    /// Entry has been cryptographically verified as authentic.
-    /// This is the default for all locally created entries.
+    /// Entry has been cryptographically verified as authentic by *this*
+    /// node's local validation pass. The default for locally created and
+    /// signed entries; never assignable from off-node input.
     #[default]
     Verified,
-    /// Entry failed verification (invalid signature, revoked key, etc.).
-    /// Also used temporarily for entries awaiting verification during sync.
+    /// Entry has not yet been verified by this node — received before
+    /// verification could complete (e.g. a delegated/`_settings` tree it
+    /// depends on has not arrived yet). Transient and promotable: a future
+    /// re-verification pass moves it to `Verified` once its pinned
+    /// settings-ancestor set is present. Admitted into state, flagged.
+    Unverified,
+    /// Entry was checked and *definitively* failed verification — invalid
+    /// signature, revoked key, etc. Terminal; never promoted.
     Failed,
-    // TODO: Add `Unverified` status and a re-verification pass for sync.
-    // Entries signed via delegation (SigKey::Delegation) require the delegated
-    // tree to be present locally for validation. During sync, the delegated tree
-    // may arrive after the entries that reference it. Currently those entries are
-    // stored as `Failed` with no retry. A re-verification pass should run when
-    // new trees become available, promoting `Unverified` entries whose delegation
-    // paths are now resolvable.
-    // The same applies to the non-delegation path if we try to verify without the
-    // full _settings tree.
-    // Unverified,
+}
+
+impl VerificationStatus {
+    /// Canonical persistence encoding. The single source of truth for the
+    /// integer stored in the `verification_status` column; all backends use
+    /// this rather than open-coding the mapping.
+    pub fn as_db_int(self) -> i64 {
+        match self {
+            VerificationStatus::Verified => 0,
+            VerificationStatus::Failed => 1,
+            VerificationStatus::Unverified => 2,
+        }
+    }
+
+    /// Inverse of [`as_db_int`](Self::as_db_int). Errors on an unknown code
+    /// instead of silently collapsing it to `Failed` — a stray value means
+    /// storage corruption, not a failed verification.
+    pub fn from_db_int(code: i64) -> Result<Self> {
+        match code {
+            0 => Ok(VerificationStatus::Verified),
+            1 => Ok(VerificationStatus::Failed),
+            2 => Ok(VerificationStatus::Unverified),
+            other => Err(BackendError::TreeIntegrityViolation {
+                reason: format!("unknown verification_status code {other} in storage"),
+            }
+            .into()),
+        }
+    }
 }
 
 /// BackendImpl trait abstracting the underlying storage mechanism for Eidetica entries.
@@ -155,53 +183,33 @@ pub trait BackendImpl: Send + Sync + Any {
     /// A `Result` containing the `VerificationStatus` if the entry exists, or an `Error::NotFound` otherwise.
     async fn get_verification_status(&self, id: &ID) -> Result<VerificationStatus>;
 
-    /// Stores an entry in the database with the specified verification status.
+    /// Stores an entry.
     ///
-    /// If an entry with the same ID already exists, it may be overwritten,
-    /// although the content-addressable nature means the content will be identical.
-    /// The verification status will be updated to the provided value.
+    /// The entry is always stored as [`VerificationStatus::Unverified`]. The
+    /// storage API deliberately does **not** accept a verification status: no
+    /// caller may assert that an entry is verified. `Verified` is reached
+    /// only by this node's local validation pass, which stores via `put` and
+    /// then promotes the entry with
+    /// [`update_verification_status`](Self::update_verification_status).
+    ///
+    /// If an entry with the same ID already exists it may be overwritten;
+    /// the content-addressable nature means the content is identical. An
+    /// existing entry's verification status is reset to `Unverified` — a
+    /// re-`put` is an off-validation-path write by definition.
     ///
     /// # Arguments
-    /// * `verification_status` - The verification status to assign to this entry
     /// * `entry` - The `Entry` to store.
     ///
     /// # Returns
     /// A `Result` indicating success or an error during storage.
-    async fn put(&self, verification_status: VerificationStatus, entry: Entry) -> Result<()>;
-
-    /// Stores an entry with verified status (convenience method for local entries).
-    ///
-    /// This is a convenience method that calls `put(VerificationStatus::Verified, entry)`.
-    /// Use this for locally created and signed entries.
-    ///
-    /// # Arguments
-    /// * `entry` - The `Entry` to store as verified.
-    ///
-    /// # Returns
-    /// A `Result` indicating success or an error during storage.
-    async fn put_verified(&self, entry: Entry) -> Result<()> {
-        self.put(VerificationStatus::Verified, entry).await
-    }
-
-    /// Stores an entry with failed verification status (convenience method for sync scenarios).
-    ///
-    /// This is a convenience method that calls `put(VerificationStatus::Failed, entry)`.
-    /// Use this for entries that failed verification or are pending verification from sync.
-    /// In the future, this may use a dedicated `Unverified` status.
-    ///
-    /// # Arguments
-    /// * `entry` - The `Entry` to store as failed/unverified.
-    ///
-    /// # Returns
-    /// A `Result` indicating success or an error during storage.
-    async fn put_unverified(&self, entry: Entry) -> Result<()> {
-        self.put(VerificationStatus::Failed, entry).await
-    }
+    async fn put(&self, entry: Entry) -> Result<()>;
 
     /// Updates the verification status of an existing entry.
     ///
-    /// This allows the authentication system to mark entries as verified or failed
-    /// after they have been stored. Useful for batch verification operations.
+    /// This is the **only** way an entry becomes `Verified`, and it is
+    /// reserved for this node's local validation pass (and a future
+    /// re-verification pass). It is local-only — never reachable over the
+    /// service wire — so a peer can never assert verification for us.
     ///
     /// # Arguments
     /// * `id` - The ID of the entry to update

@@ -222,3 +222,6 @@ async fn test_load_missing_version_defaults_to_v0() {
         result.err()
     );
 }
+
+// Test-only: store-and-promote helper (production `put` is Unverified-only).
+use crate::helpers::TestVerify;

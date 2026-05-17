@@ -926,3 +926,6 @@ async fn test_iroh_transport_custom_relay_config() {
 
     println!("Custom relay configuration test completed (expected to fail without running relay)");
 }
+
+// Test-only: store-and-promote helper (production `put` is Unverified-only).
+use crate::helpers::TestVerify;

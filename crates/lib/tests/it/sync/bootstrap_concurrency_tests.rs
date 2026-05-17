@@ -181,3 +181,6 @@ async fn test_concurrent_key_approval_requests() -> Result<()> {
     info!("Test finished: test_concurrent_key_approval_requests");
     Ok(())
 }
+
+// Test-only: store-and-promote helper (production `put` is Unverified-only).
+use crate::helpers::TestVerify;

@@ -19,7 +19,6 @@ use crate::{
         types::{AuthKey, Permission, SigKey},
         validation::AuthValidator,
     },
-    backend::VerificationStatus,
     constants::{ROOT, SETTINGS},
     crdt::Doc,
     entry::{Entry, ID},
@@ -692,14 +691,18 @@ impl Database {
         Ok(result)
     }
 
-    /// Insert an entry into the database without modifying it.
-    /// This is primarily for testing purposes or when you need full control over the entry.
-    /// Note: This method assumes the entry is already properly signed and verified.
+    /// Insert an entry into the database without modifying or validating it.
+    /// Primarily for testing / full control over raw entry storage.
+    ///
+    /// The entry is stored `Unverified`: this path runs no validation, so it
+    /// cannot honestly claim the entry is verified, and the storage API no
+    /// longer accepts a caller-asserted status. Only the local validation
+    /// pass promotes entries to `Verified`.
     pub async fn insert_raw(&self, entry: Entry) -> Result<ID> {
         let instance = self.instance()?;
         let id = entry.id();
 
-        instance.put(VerificationStatus::Verified, entry).await?;
+        instance.put(entry).await?;
 
         Ok(id)
     }

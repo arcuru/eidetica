@@ -4,9 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use super::*;
 use crate::{
-    auth::crypto::generate_keypair,
-    backend::{VerificationStatus, database::InMemory},
-    instance::WriteSource,
+    auth::crypto::generate_keypair, backend::database::InMemory, instance::WriteSource,
     store::DocStore,
 };
 
@@ -226,11 +224,7 @@ async fn test_remote_write_callback_fires_via_put_remote_entries() {
     let entry = instance.get(db.root_id()).await.unwrap();
     let local_entry = instance.get(&local_id).await.unwrap();
     instance
-        .put_remote_entries(
-            db.root_id(),
-            VerificationStatus::Verified,
-            vec![entry, local_entry],
-        )
+        .put_remote_entries(db.root_id(), vec![entry, local_entry])
         .await
         .unwrap();
 
@@ -270,7 +264,7 @@ async fn test_remote_write_previous_tips() {
     // Simulate remote write
     let entry = instance.get(&local_id).await.unwrap();
     instance
-        .put_remote_entries(db.root_id(), VerificationStatus::Verified, vec![entry])
+        .put_remote_entries(db.root_id(), vec![entry])
         .await
         .unwrap();
 
@@ -297,7 +291,7 @@ async fn test_empty_remote_batch_does_not_fire_callback() {
         .unwrap();
 
     instance
-        .put_remote_entries(db.root_id(), VerificationStatus::Verified, vec![])
+        .put_remote_entries(db.root_id(), vec![])
         .await
         .unwrap();
 
@@ -447,11 +441,7 @@ async fn test_remote_callback_receives_only_stored_entries() {
     let entry2 = instance.get(&id2).await.unwrap();
 
     instance
-        .put_remote_entries(
-            db.root_id(),
-            VerificationStatus::Verified,
-            vec![entry1, entry2],
-        )
+        .put_remote_entries(db.root_id(), vec![entry1, entry2])
         .await
         .unwrap();
 
