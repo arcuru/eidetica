@@ -126,6 +126,15 @@ impl VerificationStatus {
     /// Inverse of [`as_db_int`](Self::as_db_int). Errors on an unknown code
     /// instead of silently collapsing it to `Failed` — a stray value means
     /// storage corruption, not a failed verification.
+    ///
+    /// This codec is intentionally *additively extensible*: a future state
+    /// (e.g. a peer-attested `Trusted`) takes a fresh, never-reused integer.
+    /// Old data keeps decoding; an old reader rejects the new code rather
+    /// than misinterpreting it; and the wire carries no status at all, so
+    /// adding a state is not a protocol change. Source-level it is
+    /// deliberately *not* non-breaking — the `match` arms here and on
+    /// `VerificationStatus` elsewhere are exhaustive so the compiler
+    /// enumerates every site that must consciously handle the new state.
     pub fn from_db_int(code: i64) -> Result<Self> {
         match code {
             0 => Ok(VerificationStatus::Verified),
@@ -532,4 +541,44 @@ pub trait BackendImpl: Send + Sync + Any {
     /// # Returns
     /// A `Result` indicating success or an error during storage.
     async fn set_instance_secrets(&self, secrets: &InstanceSecrets) -> Result<()>;
+}
+
+#[cfg(test)]
+mod verification_status_codec_tests {
+    use super::VerificationStatus;
+
+    /// Every variant round-trips through the persistence codec, the codes
+    /// are the expected stable values, and they are mutually distinct. This
+    /// pins the on-disk contract so a future state must take a *new* code
+    /// rather than renumber an existing one (which would silently
+    /// reinterpret already-stored data).
+    #[test]
+    fn db_int_roundtrip_and_stable_codes() {
+        for v in [
+            VerificationStatus::Verified,
+            VerificationStatus::Unverified,
+            VerificationStatus::Failed,
+        ] {
+            assert_eq!(VerificationStatus::from_db_int(v.as_db_int()).unwrap(), v);
+        }
+        // Stable wire/disk values — changing any of these is a data-format
+        // break, not a refactor.
+        assert_eq!(VerificationStatus::Verified.as_db_int(), 0);
+        assert_eq!(VerificationStatus::Failed.as_db_int(), 1);
+        assert_eq!(VerificationStatus::Unverified.as_db_int(), 2);
+    }
+
+    /// An unknown code (e.g. one a *future* `Trusted` would use, or storage
+    /// corruption) must be rejected, never silently mapped onto an existing
+    /// state. This is what makes adding a state additively safe: an old
+    /// binary fails closed on data it does not understand.
+    #[test]
+    fn unknown_db_int_is_rejected_not_coerced() {
+        for code in [3_i64, 4, 99, -1] {
+            assert!(
+                VerificationStatus::from_db_int(code).is_err(),
+                "code {code} must error, not coerce to an existing state"
+            );
+        }
+    }
 }

@@ -190,17 +190,32 @@ async fn handle_connection(
 
     // 2. Request/response loop with per-connection auth state
     let mut state = ConnectionState::PreAuth;
-    loop {
-        let request: ServiceRequest = match read_frame(&mut reader).await? {
-            Some(req) => req,
-            None => break, // Clean EOF
-        };
+    let loop_result: crate::Result<()> = async {
+        loop {
+            let request: ServiceRequest = match read_frame(&mut reader).await? {
+                Some(req) => req,
+                None => break, // Clean EOF
+            };
 
-        let response = dispatch(&instance, &cache, &mut state, request).await;
-        write_frame(&mut writer, &response).await?;
+            let response = dispatch(&instance, &cache, &mut state, request).await;
+            write_frame(&mut writer, &response).await?;
+        }
+        Ok(())
+    }
+    .await;
+
+    // Session teardown: drop this user's slice of the daemon-wide cache
+    // regardless of how the connection ended (clean EOF or I/O error), so
+    // per-user cache growth is bounded to the lifetime of a connection.
+    // (If a connection re-authenticated as several users over its life,
+    // only the final session's slice is reclaimed here; bounding the
+    // mid-connection re-auth case is part of the broader multi-user
+    // hardening, not this connection-scoped cleanup.)
+    if let ConnectionState::Authenticated { user_uuid, .. } = &state {
+        cache.clear_user(user_uuid);
     }
 
-    Ok(())
+    loop_result
 }
 
 /// Dispatch a service request to the appropriate Instance/Backend method.

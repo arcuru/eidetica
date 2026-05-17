@@ -32,7 +32,7 @@
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 use crate::entry::ID;
 
@@ -71,15 +71,11 @@ struct RefcountedBlob {
 /// pattern (cache hits don't fan out further work); contention can be
 /// revisited if profiling shows it.
 ///
-/// TODO (before multi-user / untrusted clients): the `lock().unwrap()` in
-/// `put`/`get`/`clear_user` panics on poisoning. Because this mutex is
-/// shared across every connection handler, a panic in one handler while
-/// holding it poisons the lock and cascades a panic into every other
-/// connection's cache access — a single bad request becomes a daemon-wide
-/// cache outage. Acceptable for the v1 single trusted client. Fix by
-/// switching to a non-poisoning lock or recovering the guard on poison
-/// (the cache is rebuildable, so a poisoned cache can be cleared rather
-/// than crash the daemon).
+/// The mutex is accessed **poison-tolerantly** (see [`Self::lock`]): a panic
+/// in one connection handler while holding the lock must not cascade a
+/// daemon-wide cache outage into every other connection. The cache is
+/// rebuildable best-effort performance state, so on poison we recover the
+/// guard and continue rather than propagate the panic.
 #[derive(Default)]
 pub(crate) struct ServiceCache {
     inner: Mutex<Inner>,
@@ -90,13 +86,26 @@ impl ServiceCache {
         Self::default()
     }
 
+    /// Lock the cache, tolerating poisoning.
+    ///
+    /// A poisoned mutex means some other handler panicked mid-section; the
+    /// worst case here is a single half-updated cache slot, which is benign
+    /// because every consumer treats a miss/garbage as "recompute from the
+    /// backend". Recovering the guard keeps one bad request from taking the
+    /// whole daemon's cache offline.
+    fn lock(&self) -> MutexGuard<'_, Inner> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// Insert or replace the cache slot for `(user_uuid, entry_id, store)`.
     /// Bytes are content-hashed; identical bytes share a single stored blob
     /// across users (refcount bump rather than duplicate copy).
     pub fn put(&self, user_uuid: &str, entry_id: &ID, store: &str, bytes: Vec<u8>) {
         let hash = ID::from_bytes(&bytes);
         let key: CacheKey = (user_uuid.to_string(), entry_id.clone(), store.to_string());
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.lock();
 
         // If the user already cached something at this slot, decrement the
         // outgoing blob's refcount before installing the new pointer.
@@ -118,7 +127,7 @@ impl ServiceCache {
     /// `None` if this user hasn't cached anything at this slot, even if
     /// another user has.
     pub fn get(&self, user_uuid: &str, entry_id: &ID, store: &str) -> Option<Vec<u8>> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.lock();
         let key: CacheKey = (user_uuid.to_string(), entry_id.clone(), store.to_string());
         let hash = inner.membership.get(&key)?;
         inner.blobs.get(hash).map(|b| b.bytes.clone())
@@ -129,12 +138,11 @@ impl ServiceCache {
     ///
     /// No longer reachable from the wire: the client-triggered
     /// `ClearCrdtCache` op was removed (self-DoS, no production caller).
-    /// Retained as the session-end cleanup primitive — the daemon should
-    /// call this when a connection's user session ends to bound per-user
-    /// cache growth (not yet wired; tracked as a follow-up).
-    #[allow(dead_code)]
+    /// This is the session-end cleanup primitive — `handle_connection`
+    /// calls it when a connection's user session ends so per-user cache
+    /// growth is bounded to the lifetime of a connection.
     pub fn clear_user(&self, user_uuid: &str) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.lock();
         let to_remove: Vec<CacheKey> = inner
             .membership
             .keys()
@@ -150,12 +158,12 @@ impl ServiceCache {
 
     #[cfg(test)]
     pub fn blob_count(&self) -> usize {
-        self.inner.lock().unwrap().blobs.len()
+        self.lock().blobs.len()
     }
 
     #[cfg(test)]
     pub fn membership_count(&self) -> usize {
-        self.inner.lock().unwrap().membership.len()
+        self.lock().membership.len()
     }
 }
 
