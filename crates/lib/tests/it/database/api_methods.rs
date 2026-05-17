@@ -521,3 +521,47 @@ async fn test_database_verify_promotes_unverified_and_access_hook() {
         "reading tips should have opportunistically verified the entry"
     );
 }
+
+/// The default handle exposes only the Verified frontier: a non-`Verified`
+/// interior entry hides its (otherwise `Verified`) descendants, and the read
+/// falls back to the nearest `Verified` ancestor. `.allow_unverified()` reads
+/// past it. No entry is left `Unverified`, so the access-time verify hook
+/// never fires — the cut is purely the frontier logic.
+#[tokio::test]
+async fn test_verified_frontier_prefix_cut_and_allow_unverified() {
+    let (instance, tree, _key_id) = setup_tree_with_user_key().await;
+    let backend = instance.backend();
+
+    // Linear main-branch DAG: root -> a -> b -> c, all locally authored and
+    // therefore Verified.
+    let a = add_data_to_subtree(&tree, "data", &[("step", "a")]).await;
+    let b = add_data_to_subtree(&tree, "data", &[("step", "b")]).await;
+    let c = add_data_to_subtree(&tree, "data", &[("step", "c")]).await;
+    for id in [&a, &b, &c] {
+        assert_eq!(
+            backend.get_verification_status(id).await.unwrap(),
+            VerificationStatus::Verified
+        );
+    }
+
+    // Knock out the interior entry `b`.
+    backend
+        .update_verification_status(&b, VerificationStatus::Failed)
+        .await
+        .unwrap();
+
+    // Default view: `b` is not in the Verified prefix, so neither is its
+    // descendant `c` (ancestor-closed). The frontier falls back to `a`.
+    let tips = tree.get_tips().await.unwrap();
+    assert_eq!(tips, vec![a.clone()], "frontier must cut back to `a`");
+    assert!(!tips.contains(&b) && !tips.contains(&c));
+
+    // allow_unverified view: raw tip `c` is visible (only `Failed` `b` is
+    // dropped from the set; `c` itself is still a Verified tip).
+    let loose_tips = tree.clone().allow_unverified().get_tips().await.unwrap();
+    assert_eq!(loose_tips, vec![c.clone()], "loose view keeps raw tip `c`");
+
+    // The setting is per-handle and composes with the original handle being
+    // unchanged.
+    assert_eq!(tree.get_tips().await.unwrap(), vec![a]);
+}
