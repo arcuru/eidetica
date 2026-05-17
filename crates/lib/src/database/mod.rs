@@ -19,8 +19,9 @@ use crate::{
         types::{AuthKey, Permission, SigKey},
         validation::AuthValidator,
     },
+    backend::VerificationStatus,
     constants::{ROOT, SETTINGS},
-    crdt::Doc,
+    crdt::{CRDT, Doc},
     entry::{Entry, ID},
     instance::{WriteCallback, WriteEvent, backend::Backend, errors::InstanceError},
     store::{SettingsStore, Store},
@@ -28,6 +29,45 @@ use crate::{
 
 #[cfg(test)]
 mod tests;
+
+tokio::task_local! {
+    /// Set while a `verify()`/validation pass is on the call stack.
+    ///
+    /// Verification reads the database (delegation resolution opens trees,
+    /// reads settings → tips), and the access-time auto-verify hook in
+    /// [`Database::get_tips`] would otherwise re-enter verification
+    /// unboundedly. While this is set, the hook is suppressed and reads
+    /// return raw (still `Failed`-filtered) tips.
+    static IN_VERIFY: bool;
+}
+
+fn auto_verify_suppressed() -> bool {
+    IN_VERIFY.try_with(|v| *v).unwrap_or(false)
+}
+
+/// Outcome of reconstructing the `_settings` state an entry pins.
+///
+/// An entry records, in its signed metadata, the `_settings` tips its
+/// signature must be validated against. We can only verify it if this node
+/// holds that full pinned `_settings` ancestor set.
+enum PinnedSettings {
+    /// The pinned `_settings` set is fully present; here is its auth config.
+    Complete(AuthSettings),
+    /// This node does not yet hold the full pinned `_settings` set, so the
+    /// entry cannot be verified yet (it stays `Unverified`).
+    Incomplete,
+}
+
+/// Summary of a [`Database::verify`] pass.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VerifyReport {
+    /// Entries promoted `Unverified` → `Verified` this pass.
+    pub verified: usize,
+    /// Entries marked `Unverified` → `Failed` (definitively bad) this pass.
+    pub failed: usize,
+    /// Entries left `Unverified` (pinned `_settings` not yet held locally).
+    pub still_unverified: usize,
+}
 
 /// A signing key bound to its identity in a database's auth settings.
 ///
@@ -725,11 +765,66 @@ impl Database {
     ///
     /// Tips represent the latest entries in the database's main history, forming the heads of the DAG.
     ///
+    /// If any raw tip is `Unverified`, an opportunistic [`Self::verify`] pass
+    /// runs first (entries arrive `Unverified` from sync; this promotes the
+    /// ones whose pinned `_settings` are now held). `Failed` tips are then
+    /// excluded — `Failed` entries are dropped from reads everywhere.
+    ///
     /// # Returns
     /// A `Result` containing a vector of `ID`s for the tip entries or an error.
     pub async fn get_tips(&self) -> Result<Vec<ID>> {
         let instance = self.instance()?;
-        instance.get_tips(&self.root).await
+        let backend = instance.backend();
+        let tips = instance.get_tips(&self.root).await?;
+
+        // Verification status ops are local-only. On a remote backend the
+        // server owns verification (and stores everything Unverified until
+        // it verifies); the client returns raw tips unchanged. Probe the
+        // first tip to detect that case without matching backend internals.
+        if let Some(first) = tips.first()
+            && backend.get_verification_status(first).await.is_err()
+        {
+            return Ok(tips);
+        }
+
+        // Access-time opportunistic verification: if any tip is still
+        // Unverified, attempt to resolve it now. Best-effort — a failure or a
+        // still-incomplete pin must not block the read. Suppressed while a
+        // verify pass is already on the stack (its own reads land here).
+        let tips = if auto_verify_suppressed() {
+            tips
+        } else {
+            let mut any_unverified = false;
+            for t in &tips {
+                if backend
+                    .get_verification_status(t)
+                    .await
+                    .unwrap_or(VerificationStatus::Unverified)
+                    == VerificationStatus::Unverified
+                {
+                    any_unverified = true;
+                    break;
+                }
+            }
+            if any_unverified {
+                // Boxed: this call closes a get_tips → verify →
+                // validate_entry → delegation → get_settings → get_tips
+                // async cycle; the box gives it a finite future size.
+                let _ = Box::pin(self.verify()).await;
+                instance.get_tips(&self.root).await?
+            } else {
+                tips
+            }
+        };
+
+        // Drop Failed tips — Failed entries are ignored everywhere.
+        let mut visible = Vec::with_capacity(tips.len());
+        for t in tips {
+            if backend.get_verification_status(&t).await? != VerificationStatus::Failed {
+                visible.push(t);
+            }
+        }
+        Ok(visible)
     }
 
     /// Get the full `Entry` objects for the current tips of the main database branch.
@@ -886,15 +981,21 @@ impl Database {
     pub async fn verify_entry_signature<I: Into<ID>>(&self, entry_id: I) -> Result<bool> {
         let entry = self.get_entry(entry_id).await?;
 
-        // Get the authentication settings that were valid at the time this entry was created
-        let historical_settings = self.get_historical_settings_for_entry(&entry).await?;
-
-        // Use the authentication validator with historical settings
-        let instance = self.instance()?;
-        let mut validator = AuthValidator::new();
-        validator
-            .validate_entry(&entry, &historical_settings, Some(&instance))
-            .await
+        // Validate against the `_settings` the entry pins, not current
+        // settings — so a later key revocation cannot retroactively
+        // invalidate (or validate) historical entries.
+        match self.get_historical_settings_for_entry(&entry).await? {
+            // We do not hold the pinned `_settings` set, so we cannot make a
+            // verification decision: report not-verified rather than guess.
+            PinnedSettings::Incomplete => Ok(false),
+            PinnedSettings::Complete(auth_settings) => {
+                let instance = self.instance()?;
+                let mut validator = AuthValidator::new();
+                validator
+                    .validate_entry(&entry, &auth_settings, Some(&instance))
+                    .await
+            }
+        }
     }
 
     /// Get the permission level for this database's configured signing key.
@@ -941,30 +1042,150 @@ impl Database {
         self.validate_key(key).await
     }
 
-    /// Get the authentication settings that were valid when a specific entry was created.
+    /// Reconstruct the `_settings` auth config an entry's signature is pinned
+    /// to, from the `settings_tips` recorded in its signed metadata.
     ///
-    /// This method examines the entry's metadata to find the settings tips that were active
-    /// at the time of entry creation, then reconstructs the historical settings state.
+    /// Validation must run against the settings the entry pinned — not the
+    /// current settings — so granting authority later cannot retroactively
+    /// invalidate an entry that pinned less, and (once revocation lands)
+    /// removals are handled on a separate, current-settings path.
     ///
-    /// # Arguments
-    /// * `entry` - The entry to get historical settings for
-    ///
-    /// # Returns
-    /// A `Result` containing the historical authentication settings
-    async fn get_historical_settings_for_entry(&self, _entry: &Entry) -> Result<AuthSettings> {
-        // TODO: Implement full historical settings reconstruction from entry metadata
-        // For now, use current settings for simplicity and backward compatibility
-        //
-        // The complete implementation would:
-        // 1. Parse entry metadata to get settings tips active at entry creation time
-        // 2. Reconstruct the CRDT state from those historical tips
-        // 3. Validate against that historical state
-        //
-        // This ensures entries remain valid even if keys are later revoked,
-        // but requires more complex CRDT state reconstruction logic.
+    /// Returns [`PinnedSettings::Incomplete`] when this node does not hold the
+    /// full pinned `_settings` ancestor set; the caller must then leave the
+    /// entry `Unverified` rather than guess against whatever it does hold.
+    async fn get_historical_settings_for_entry(&self, entry: &Entry) -> Result<PinnedSettings> {
+        let instance = self.instance()?;
+        let backend = instance.backend();
 
-        let settings = self.get_settings().await?;
-        settings.auth_snapshot().await
+        // The pin: `_settings` tips recorded in the entry's signed metadata.
+        let settings_tips: Vec<ID> = match entry.metadata() {
+            Some(raw) => match serde_json::from_slice::<crate::transaction::EntryMetadata>(raw) {
+                Ok(md) => md.settings_tips,
+                // Unparseable metadata ⇒ we cannot establish the pin.
+                Err(_) => return Ok(PinnedSettings::Incomplete),
+            },
+            None => Vec::new(),
+        };
+
+        // Resolve the effective `_settings` tips to validate against.
+        let effective_tips: Vec<ID> = if settings_tips.is_empty() {
+            if entry.in_subtree(SETTINGS) {
+                // Genesis / bootstrap: no prior `_settings` exists, so the
+                // entry is self-authorising — validate against the auth it
+                // itself establishes (TOFU), mirroring how the transaction
+                // validates initial database creation. Seeding the
+                // reconstruction with the entry itself folds in its own
+                // `_settings` contribution.
+                vec![entry.id()]
+            } else {
+                // No auth context at all (no settings ever configured) —
+                // mirrors the transaction path's "auth never configured" case.
+                return Ok(PinnedSettings::Complete(AuthSettings::new()));
+            }
+        } else {
+            settings_tips
+        };
+
+        // Completeness: every pinned tip and its full `_settings` ancestor
+        // closure must be present locally. `get_store_from_tips` silently
+        // skips absent ancestors, so an explicit walk is required — a missing
+        // ancestor would otherwise yield a wrong (partial) auth config.
+        let mut stack: Vec<ID> = effective_tips.clone();
+        let mut seen: std::collections::HashSet<ID> = std::collections::HashSet::new();
+        while let Some(id) = stack.pop() {
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            let Ok(e) = backend.get(&id).await else {
+                return Ok(PinnedSettings::Incomplete);
+            };
+            // Walk both the `_settings` subtree DAG and the main parents that
+            // carry it, so the closure can't be short-circuited.
+            for p in e.subtree_parents(SETTINGS).unwrap_or_default() {
+                stack.push(p);
+            }
+            for p in e.parents().unwrap_or_default() {
+                stack.push(p);
+            }
+        }
+
+        // Reconstruct the merged `_settings` Doc as of the pinned tips.
+        // Entries come back root-first; `_settings` is a system subtree and
+        // is never encrypted, so deserialize directly.
+        let entries = backend
+            .get_store_from_tips(self.root_id(), SETTINGS, &effective_tips)
+            .await?;
+        let mut settings_doc = Doc::default();
+        for e in &entries {
+            if let Ok(data) = e.data(SETTINGS) {
+                let part: Doc = serde_json::from_slice(data)?;
+                settings_doc = settings_doc.merge(&part)?;
+            }
+        }
+
+        let auth_settings = match settings_doc.get("auth") {
+            Some(crate::crdt::doc::Value::Doc(auth_doc)) => auth_doc.clone().into(),
+            _ => AuthSettings::new(),
+        };
+        Ok(PinnedSettings::Complete(auth_settings))
+    }
+
+    /// Attempt to verify every `Unverified` entry in this database.
+    ///
+    /// For each `Unverified` entry, reconstruct the `_settings` it pins
+    /// (see [`Self::get_historical_settings_for_entry`]) and validate its
+    /// signature + permissions against that:
+    ///
+    /// - pinned `_settings` not fully held locally → left `Unverified`
+    ///   (a later pass retries once the set syncs in);
+    /// - signature + permissions valid → promoted to `Verified`;
+    /// - definitively invalid → marked `Failed` (dropped from reads).
+    ///
+    /// Already-`Verified` entries are never demoted here; that is a separate,
+    /// not-yet-built path. Local-only — verification is a per-node decision
+    /// and is never delegated to a peer.
+    pub async fn verify(&self) -> Result<VerifyReport> {
+        // Suppress the access-time auto-verify hook for the whole pass:
+        // validation reads the database (delegation → settings → tips) and
+        // must not recurse back into verification.
+        IN_VERIFY
+            .scope(true, async move {
+                let instance = self.instance()?;
+                let backend = instance.backend();
+
+                // Raw tree walk (not `get_tips`) so traversal itself never
+                // re-enters the hook even before the guard is observed.
+                let entries = backend.get_tree(self.root_id()).await?;
+                let mut report = VerifyReport::default();
+
+                for entry in &entries {
+                    let id = entry.id();
+                    if backend.get_verification_status(&id).await? != VerificationStatus::Unverified
+                    {
+                        continue;
+                    }
+                    match self.get_historical_settings_for_entry(entry).await? {
+                        PinnedSettings::Incomplete => report.still_unverified += 1,
+                        PinnedSettings::Complete(auth_settings) => {
+                            let mut validator = AuthValidator::new();
+                            let valid = validator
+                                .validate_entry(entry, &auth_settings, Some(&instance))
+                                .await
+                                .unwrap_or(false);
+                            let new_status = if valid {
+                                report.verified += 1;
+                                VerificationStatus::Verified
+                            } else {
+                                report.failed += 1;
+                                VerificationStatus::Failed
+                            };
+                            backend.update_verification_status(&id, new_status).await?;
+                        }
+                    }
+                }
+                Ok(report)
+            })
+            .await
     }
 
     // === DATABASE QUERIES ===
