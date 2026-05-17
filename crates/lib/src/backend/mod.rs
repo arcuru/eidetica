@@ -194,17 +194,20 @@ pub trait BackendImpl: Send + Sync + Any {
 
     /// Stores an entry.
     ///
-    /// The entry is always stored as [`VerificationStatus::Unverified`]. The
+    /// A **new** entry is stored as [`VerificationStatus::Unverified`]. The
     /// storage API deliberately does **not** accept a verification status: no
     /// caller may assert that an entry is verified. `Verified` is reached
     /// only by this node's local validation pass, which stores via `put` and
     /// then promotes the entry with
     /// [`update_verification_status`](Self::update_verification_status).
     ///
-    /// If an entry with the same ID already exists it may be overwritten;
-    /// the content-addressable nature means the content is identical. An
-    /// existing entry's verification status is reset to `Unverified` — a
-    /// re-`put` is an off-validation-path write by definition.
+    /// If an entry with the same ID already exists, `put` is a **no-op**:
+    /// entries are content-addressed and immutable, so the content is
+    /// identical, and the existing verification status is left **untouched**.
+    /// A re-`put` therefore never demotes a prior local promotion — routine
+    /// on overlapping/bootstrap sync, where an already-`Verified` entry is
+    /// commonly re-received. Status transitions go only through
+    /// [`update_verification_status`](Self::update_verification_status).
     ///
     /// # Arguments
     /// * `entry` - The `Entry` to store.
