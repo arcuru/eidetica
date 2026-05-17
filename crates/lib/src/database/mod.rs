@@ -156,6 +156,11 @@ pub struct Database {
     instance: WeakInstance,
     /// Signing key bound to its auth identity for this database
     key: Option<DatabaseKey>,
+    /// When `false` (default), reads expose only the maximal all-`Verified`
+    /// prefix of the DAG (the "Verified frontier"). When `true`, reads also
+    /// include `Unverified` entries. `Failed` entries are dropped regardless.
+    /// Set via [`Database::allow_unverified`].
+    allow_unverified: bool,
 }
 
 impl Database {
@@ -248,6 +253,7 @@ impl Database {
             root: ID::from_bytes(bootstrap_placeholder_id.as_bytes()),
             instance: instance.downgrade(),
             key: Some(DatabaseKey::new(signing_key.clone())),
+            allow_unverified: false,
         };
 
         // Create the transaction - it will use the provided key automatically
@@ -273,6 +279,7 @@ impl Database {
             root: new_root_id,
             instance: instance.downgrade(),
             key: Some(DatabaseKey::new(signing_key)),
+            allow_unverified: false,
         })
     }
 
@@ -317,6 +324,7 @@ impl Database {
             root: root_id.clone(),
             instance: instance.downgrade(),
             key: None,
+            allow_unverified: false,
         })
     }
 
@@ -334,6 +342,50 @@ impl Database {
     pub fn with_key(self, key: impl Into<DatabaseKey>) -> Self {
         Self {
             key: Some(key.into()),
+            ..self
+        }
+    }
+
+    /// Include `Unverified` entries in this handle's reads.
+    ///
+    /// By default a `Database` exposes only the **Verified frontier**: the
+    /// maximal prefix of the DAG (an ancestor-closed set, starting at the
+    /// root) in which every entry is `Verified`. Tips that are still
+    /// `Unverified` — and everything reachable only through them — are hidden,
+    /// so a default read never reflects state this node could not authenticate.
+    ///
+    /// Calling `allow_unverified` opts this handle into the looser view that
+    /// also includes `Unverified` entries (everything except `Failed`, which
+    /// is always dropped). Use it when you explicitly want to observe
+    /// not-yet-verified data — e.g. freshly synced entries whose pinned
+    /// `_settings` this node does not hold yet.
+    ///
+    /// This is a per-handle setting and composes with [`with_key`](Self::with_key):
+    ///
+    /// ```rust,no_run
+    /// # use eidetica::*;
+    /// # use eidetica::auth::crypto::generate_keypair;
+    /// # async fn example(instance: Instance, root_id: ID) -> Result<()> {
+    /// # let (signing_key, _) = generate_keypair();
+    /// let db = Database::open(&instance, &root_id)
+    ///     .await?
+    ///     .with_key(signing_key)
+    ///     .allow_unverified();
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Note on CRDT coherence
+    ///
+    /// The Verified frontier is a *prefix* cut, not a per-value filter. An
+    /// interior `Unverified` entry hides all of its descendants from the
+    /// default view even if those descendants are themselves `Verified`,
+    /// because exposing them without their unverifiable ancestor would yield
+    /// an incoherent CRDT state. Run [`verify`](Self::verify) to promote the
+    /// blocking entry, or `allow_unverified` to read past it.
+    pub fn allow_unverified(self) -> Self {
+        Self {
+            allow_unverified: true,
             ..self
         }
     }
@@ -767,8 +819,21 @@ impl Database {
     ///
     /// If any raw tip is `Unverified`, an opportunistic [`Self::verify`] pass
     /// runs first (entries arrive `Unverified` from sync; this promotes the
-    /// ones whose pinned `_settings` are now held). `Failed` tips are then
-    /// excluded — `Failed` entries are dropped from reads everywhere.
+    /// ones whose pinned `_settings` are now held).
+    ///
+    /// The returned tips then depend on the handle's view:
+    ///
+    /// - **default** — the **Verified frontier**: the tips of the maximal
+    ///   ancestor-closed, all-`Verified` prefix of the DAG. A still-`Unverified`
+    ///   tip is replaced by its nearest `Verified` ancestors; anything reachable
+    ///   only through an `Unverified` entry is excluded.
+    /// - **[`allow_unverified`](Self::allow_unverified)** — the raw tips with
+    ///   only `Failed` entries dropped (`Unverified` tips are kept).
+    ///
+    /// `Failed` entries are dropped in both cases. While a [`verify`](Self::verify)
+    /// pass is on the stack the frontier is bypassed (its own reads must see the
+    /// raw DAG to reconstruct pinned `_settings`); a remote backend returns its
+    /// raw tips unchanged (the server owns verification).
     ///
     /// # Returns
     /// A `Result` containing a vector of `ID`s for the tip entries or an error.
@@ -817,7 +882,15 @@ impl Database {
             }
         };
 
-        // Drop Failed tips — Failed entries are ignored everywhere.
+        // Default view: cut to the Verified frontier. Suppressed while a
+        // verify pass is on the stack — its reads must see the raw DAG to
+        // reconstruct pinned `_settings` (the frontier filter itself depends
+        // on verification status, which is exactly what verify is computing).
+        if !self.allow_unverified && !auto_verify_suppressed() {
+            return self.verified_frontier().await;
+        }
+
+        // `allow_unverified` view: keep Unverified tips, drop only Failed.
         let mut visible = Vec::with_capacity(tips.len());
         for t in tips {
             if backend.get_verification_status(&t).await? != VerificationStatus::Failed {
@@ -827,13 +900,57 @@ impl Database {
         Ok(visible)
     }
 
+    /// Compute the tips of the maximal all-`Verified` prefix of the DAG.
+    ///
+    /// An entry is in the prefix iff it is `Verified` **and** every one of its
+    /// parents is in the prefix (the prefix is ancestor-closed). The frontier
+    /// is the set of prefix entries that are not the parent of any other
+    /// prefix entry — i.e. the tips of the verified subgraph.
+    ///
+    /// Returns an empty vector if the root itself is not `Verified` (nothing
+    /// is observable in the default view until verification reaches the root).
+    async fn verified_frontier(&self) -> Result<Vec<ID>> {
+        let instance = self.instance()?;
+        let backend = instance.backend();
+
+        // Topologically sorted (height then ID): every parent precedes its
+        // children, so a single forward pass can decide prefix membership.
+        let entries = backend.get_tree(self.root_id()).await?;
+
+        let mut in_prefix: std::collections::HashSet<ID> = std::collections::HashSet::new();
+        let mut covered: std::collections::HashSet<ID> = std::collections::HashSet::new();
+
+        for e in &entries {
+            let id = e.id();
+            if backend.get_verification_status(&id).await? != VerificationStatus::Verified {
+                continue;
+            }
+            let parents = e.parents().unwrap_or_default();
+            if parents.iter().all(|p| in_prefix.contains(p)) {
+                in_prefix.insert(id);
+                // Every parent now has a verified child, so it is interior to
+                // the prefix and cannot itself be a frontier tip.
+                for p in parents {
+                    covered.insert(p);
+                }
+            }
+        }
+
+        let frontier: Vec<ID> = entries
+            .into_iter()
+            .map(|e| e.id())
+            .filter(|id| in_prefix.contains(id) && !covered.contains(id))
+            .collect();
+        Ok(frontier)
+    }
+
     /// Get the full `Entry` objects for the current tips of the main database branch.
     ///
     /// # Returns
     /// A `Result` containing a vector of the tip `Entry` objects or an error.
     pub async fn get_tip_entries(&self) -> Result<Vec<Entry>> {
         let instance = self.instance()?;
-        let tips = instance.get_tips(&self.root).await?;
+        let tips = self.get_tips().await?;
         let mut entries = Vec::new();
         for id in &tips {
             entries.push(instance.get(id).await?);
