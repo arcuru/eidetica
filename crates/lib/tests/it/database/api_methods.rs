@@ -4,7 +4,14 @@
 //! authentication, validation, and error handling.
 
 use eidetica::{
-    Database, auth::types::SigKey, backend::VerificationStatus, crdt::Doc, entry::ID,
+    Database,
+    auth::{
+        crypto::generate_keypair,
+        types::{AuthKey, Permission, SigKey},
+    },
+    backend::VerificationStatus,
+    crdt::Doc,
+    entry::ID,
     store::DocStore,
 };
 
@@ -616,5 +623,273 @@ async fn test_verify_is_prefix_closed() {
                 entry.id()
             );
         }
+    }
+}
+
+/// Copy every entry of `src` into `dst_backend` via plain `put` — i.e. exactly
+/// as they would arrive over sync: stored `Unverified`, no status asserted.
+async fn sync_all_unverified(
+    src: &Database,
+    dst_backend: &eidetica::instance::backend::Backend,
+) -> Vec<ID> {
+    let entries = src.get_all_entries().await.unwrap();
+    let ids: Vec<ID> = entries.iter().map(|e| e.id()).collect();
+    for e in entries {
+        dst_backend.put(e).await.unwrap();
+    }
+    ids
+}
+
+/// The motivating scenario: a second instance receives a tree's entries over
+/// sync (all `Unverified`), and a single `verify()` must promote the whole
+/// history root→…→tip, prefix-closed (a child is only reached after its
+/// parent is `Verified`).
+#[tokio::test]
+async fn test_cross_instance_sync_then_verify_cascade() {
+    let (_instance_a, tree_a, _key) = setup_tree_with_user_key().await;
+    // Linear history root -> a -> b -> c, all Verified on instance A.
+    add_data_to_subtree(&tree_a, "data", &[("s", "a")]).await;
+    add_data_to_subtree(&tree_a, "data", &[("s", "b")]).await;
+    let c = add_data_to_subtree(&tree_a, "data", &[("s", "c")]).await;
+    let root = tree_a.root_id().clone();
+
+    // Arrive on instance B as Unverified.
+    let instance_b = test_instance().await;
+    let backend_b = instance_b.backend();
+    let ids = sync_all_unverified(&tree_a, backend_b).await;
+    assert!(ids.len() >= 4, "expected root+a+b+c, got {}", ids.len());
+    for id in &ids {
+        assert_eq!(
+            backend_b.get_verification_status(id).await.unwrap(),
+            VerificationStatus::Unverified
+        );
+    }
+
+    let db_b = Database::open(&instance_b, &root).await.unwrap();
+    let report = db_b.verify().await.unwrap();
+
+    // The entire copied history must verify in one pass; nothing left behind.
+    assert_eq!(report.failed, 0, "{report:?}");
+    assert_eq!(report.still_unverified, 0, "{report:?}");
+    assert_eq!(report.verified, ids.len(), "whole history must promote");
+    for id in &ids {
+        assert_eq!(
+            backend_b.get_verification_status(id).await.unwrap(),
+            VerificationStatus::Verified,
+            "{id} should have cascaded to Verified"
+        );
+    }
+    // The tip is now visible in the default (Verified-frontier) view on B.
+    assert_eq!(db_b.get_tips().await.unwrap(), vec![c]);
+}
+
+/// An entry whose pinned `_settings` ancestor set is not fully held locally
+/// must stay `Unverified` (counted in `still_unverified`) — *not* `Failed` —
+/// and a later pass must promote it once the missing settings entry arrives.
+/// This is the entire reason `Unverified` and `Failed` are distinct states.
+#[tokio::test]
+async fn test_incomplete_pinned_settings_stays_unverified_then_recovers() {
+    let (_instance_a, tree_a, _key) = setup_tree_with_user_key().await;
+    let root = tree_a.root_id().clone();
+
+    // A settings change `s` (a distinct `_settings`-bearing entry), then a
+    // data entry `d` that pins `s`.
+    let (_sk2, pub2) = generate_keypair();
+    add_auth_key(
+        &tree_a,
+        &pub2,
+        AuthKey::active(Some("k2"), Permission::Write(10)),
+    )
+    .await;
+    let s = tree_a.get_tips().await.unwrap()[0].clone();
+    let d = add_data_to_subtree(&tree_a, "data", &[("k", "v")]).await;
+
+    // Sync everything to B *except* the settings entry `s`. `get_tree` is a
+    // flat in-tree filter, so `d` is still visible to verify() — its pinned
+    // `_settings` closure is just incomplete.
+    let instance_b = test_instance().await;
+    let backend_b = instance_b.backend();
+    for e in tree_a.get_all_entries().await.unwrap() {
+        if e.id() == s {
+            continue;
+        }
+        backend_b.put(e).await.unwrap();
+    }
+    let db_b = Database::open(&instance_b, &root).await.unwrap();
+
+    let report = db_b.verify().await.unwrap();
+    assert!(
+        report.still_unverified >= 1,
+        "d's pinned _settings is incomplete → still_unverified, got {report:?}"
+    );
+    assert_eq!(
+        backend_b.get_verification_status(&d).await.unwrap(),
+        VerificationStatus::Unverified,
+        "incomplete pin must NOT be quarantined as Failed"
+    );
+
+    // The missing settings entry arrives; a re-verify now completes the pin
+    // and the entry (and `s`) cascade to Verified.
+    let s_entry = tree_a.get_entry(&s).await.unwrap();
+    backend_b.put(s_entry).await.unwrap();
+    let report2 = db_b.verify().await.unwrap();
+    assert!(report2.verified >= 1 && report2.failed == 0, "{report2:?}");
+    assert_eq!(
+        backend_b.get_verification_status(&d).await.unwrap(),
+        VerificationStatus::Verified,
+        "d must verify once its pinned _settings is held"
+    );
+}
+
+/// Prefix-closure across a *merge*: `root → (a, b) → c`. A `Failed` parent
+/// taints the merge child even though the other parent verifies fine, and the
+/// Verified frontier cuts at the surviving verified branch.
+#[tokio::test]
+async fn test_diamond_dag_taint_propagation() {
+    let (instance, tree, _key) = setup_tree_with_user_key().await;
+    let backend = instance.backend();
+    let root = tree.root_id().clone();
+
+    let a = add_data_to_subtree(&tree, "data", &[("p", "a")]).await;
+    let b = create_branch_from_entry(&tree, &root, "data", &[("p", "b")]).await;
+    // Merge a and b into c.
+    let c = {
+        let txn = tree
+            .new_transaction_with_tips(&[a.clone(), b.clone()])
+            .await
+            .unwrap();
+        txn.get_store::<DocStore>("data")
+            .await
+            .unwrap()
+            .set("p", "c")
+            .await
+            .unwrap();
+        txn.commit().await.unwrap()
+    };
+    assert_eq!(
+        tree.get_entry(&c).await.unwrap().parents().unwrap().len(),
+        2,
+        "c must be a real merge of a and b"
+    );
+
+    // Taint one parent; make the merge child look freshly synced.
+    backend
+        .update_verification_status(&a, VerificationStatus::Failed)
+        .await
+        .unwrap();
+    backend
+        .update_verification_status(&c, VerificationStatus::Unverified)
+        .await
+        .unwrap();
+
+    let report = tree.verify().await.unwrap();
+    assert_eq!(
+        backend.get_verification_status(&c).await.unwrap(),
+        VerificationStatus::Failed,
+        "merge child of a Failed parent must be Failed, not promoted"
+    );
+    assert_eq!(
+        backend.get_verification_status(&b).await.unwrap(),
+        VerificationStatus::Verified,
+        "the untainted parent is unaffected"
+    );
+    assert!(report.failed >= 1, "{report:?}");
+
+    // Frontier cuts to the surviving verified branch `b`; the loose view
+    // still drops Failed `c`, leaving nothing (c is the only raw tip).
+    assert_eq!(tree.get_tips().await.unwrap(), vec![b]);
+    assert!(
+        tree.clone()
+            .allow_unverified()
+            .get_tips()
+            .await
+            .unwrap()
+            .is_empty(),
+        "Failed is dropped even in the allow_unverified view"
+    );
+}
+
+/// `allow_unverified()` composes with the handle's configured signing key:
+/// it can read *and write* past an unverifiable region, while the default
+/// handle's Verified-frontier view stays unaffected by that write.
+#[tokio::test]
+async fn test_allow_unverified_composes_with_key_for_writes() {
+    let (instance, tree, _key) = setup_tree_with_user_key().await;
+    let backend = instance.backend();
+
+    let a = add_data_to_subtree(&tree, "data", &[("s", "a")]).await;
+    let b = add_data_to_subtree(&tree, "data", &[("s", "b")]).await;
+
+    // Taint the interior entry `a`. Default frontier now cuts back before
+    // `a`; `b` (still Verified, but reachable only through Failed `a`) is
+    // hidden from the default view.
+    backend
+        .update_verification_status(&a, VerificationStatus::Failed)
+        .await
+        .unwrap();
+    let default_tips = tree.get_tips().await.unwrap();
+    assert!(
+        !default_tips.contains(&b),
+        "default view must not expose state behind a Failed ancestor"
+    );
+
+    // The loose handle keeps the signing key (set via `..self`) and sees the
+    // raw tip `b`, so it can commit on top of it.
+    let loose = tree.clone().allow_unverified();
+    assert_eq!(loose.get_tips().await.unwrap(), vec![b.clone()]);
+    let e = add_data_to_subtree(&loose, "data", &[("s", "e")]).await;
+
+    // The new entry was locally validated → Verified, and built on `b`.
+    assert_eq!(
+        backend.get_verification_status(&e).await.unwrap(),
+        VerificationStatus::Verified
+    );
+    assert_eq!(
+        tree.get_entry(&e).await.unwrap().parents().unwrap(),
+        vec![b]
+    );
+    // Loose view advances to `e`; the default frontier is still cut (the new
+    // entry sits behind the Failed `a`, so it remains hidden by default).
+    assert_eq!(loose.get_tips().await.unwrap(), vec![e.clone()]);
+    assert!(!tree.get_tips().await.unwrap().contains(&e));
+}
+
+/// The access-time auto-verify hook in `get_tips` must handle *multiple*
+/// diverged `Unverified` tips, not just a single one, promoting all of them
+/// in the opportunistic pass.
+#[tokio::test]
+async fn test_access_hook_promotes_multiple_unverified_tips() {
+    let (instance, tree, _key) = setup_tree_with_user_key().await;
+    let backend = instance.backend();
+    let root = tree.root_id().clone();
+
+    // Two diverged tips off the root.
+    let a = add_data_to_subtree(&tree, "data", &[("b", "a")]).await;
+    let b = create_branch_from_entry(&tree, &root, "data", &[("b", "b")]).await;
+
+    backend
+        .update_verification_status(&a, VerificationStatus::Unverified)
+        .await
+        .unwrap();
+    backend
+        .update_verification_status(&b, VerificationStatus::Unverified)
+        .await
+        .unwrap();
+
+    // A plain default read: the hook fires because tips are Unverified and
+    // must promote *both* diverged tips.
+    let tips = tree.get_tips().await.unwrap();
+    assert_eq!(
+        tips.len(),
+        2,
+        "both diverged tips should be visible: {tips:?}"
+    );
+    assert!(tips.contains(&a) && tips.contains(&b));
+    for id in [&a, &b] {
+        assert_eq!(
+            backend.get_verification_status(id).await.unwrap(),
+            VerificationStatus::Verified,
+            "the access hook must verify every Unverified tip, not just one"
+        );
     }
 }
