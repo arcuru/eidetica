@@ -5,7 +5,7 @@
 //! the history and relationships between entries. Database holds a weak reference to its
 //! parent Instance, accessing storage and coordination services through that handle.
 
-use std::future::Future;
+use std::{future::Future, sync::Arc};
 
 use rand::{Rng, RngCore, distributions::Alphanumeric};
 use serde_json;
@@ -29,6 +29,9 @@ use crate::{
 
 #[cfg(test)]
 mod tests;
+
+mod ops;
+pub use ops::{DatabaseOps, LocalDatabaseOps};
 
 tokio::task_local! {
     /// Set while a `verify()`/validation pass is on the call stack.
@@ -154,6 +157,12 @@ impl From<PrivateKey> for DatabaseKey {
 pub struct Database {
     root: ID,
     instance: WeakInstance,
+    /// Storage seam `Transaction`/`Store` reads flow through. Always
+    /// [`LocalDatabaseOps`] today (forwards to the owning `Instance`'s
+    /// backend, zero behavior change); a remote implementor is swapped in
+    /// here in a later phase. Derived from `instance` only — carrying it
+    /// across `with_key`/`allow_unverified` (`..self`) rebuilds is correct.
+    ops: Arc<dyn DatabaseOps>,
     /// Signing key bound to its auth identity for this database
     key: Option<DatabaseKey>,
     /// When `false` (default), reads expose only the maximal all-`Verified`
@@ -252,6 +261,7 @@ impl Database {
         let temp_database_for_bootstrap = Database {
             root: ID::from_bytes(bootstrap_placeholder_id.as_bytes()),
             instance: instance.downgrade(),
+            ops: Arc::new(LocalDatabaseOps::new(instance.downgrade())),
             key: Some(DatabaseKey::new(signing_key.clone())),
             allow_unverified: false,
         };
@@ -278,6 +288,7 @@ impl Database {
         Ok(Self {
             root: new_root_id,
             instance: instance.downgrade(),
+            ops: Arc::new(LocalDatabaseOps::new(instance.downgrade())),
             key: Some(DatabaseKey::new(signing_key)),
             allow_unverified: false,
         })
@@ -323,6 +334,7 @@ impl Database {
         Ok(Self {
             root: root_id.clone(),
             instance: instance.downgrade(),
+            ops: Arc::new(LocalDatabaseOps::new(instance.downgrade())),
             key: None,
             allow_unverified: false,
         })
@@ -643,6 +655,16 @@ impl Database {
     /// Get a reference to the backend
     pub fn backend(&self) -> Result<Backend> {
         Ok(self.instance()?.backend().clone())
+    }
+
+    /// The storage seam this handle's `Transaction`/`Store` reads/writes flow
+    /// through. Always [`LocalDatabaseOps`] today; a remote implementor is
+    /// swapped in here in a later phase.
+    // Consumed by the Transaction/Store call-site repoint (next step); the
+    // accessor lands with the seam so the boundary is reviewable on its own.
+    #[allow(dead_code)]
+    pub(crate) fn ops(&self) -> &dyn DatabaseOps {
+        self.ops.as_ref()
     }
 
     /// Retrieve the root entry from the backend

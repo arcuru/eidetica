@@ -186,7 +186,7 @@ impl Transaction {
         // Validate that tips are not empty, unless we're creating the root entry
         if tips.is_empty() {
             // Check if this is a root entry creation by seeing if the database root exists in backend
-            let root_exists = database.backend()?.get(database.root_id()).await.is_ok();
+            let root_exists = database.ops().get(database.root_id()).await.is_ok();
 
             if root_exists {
                 return Err(TransactionError::EmptyTipsNotAllowed.into());
@@ -195,7 +195,7 @@ impl Transaction {
         }
 
         // Validate that all tips belong to the same tree
-        let backend = database.backend()?;
+        let backend = database.ops();
         for tip_id in tips {
             let entry = backend.get(tip_id).await?;
             if !entry.in_tree(database.root_id()) {
@@ -460,7 +460,7 @@ impl Transaction {
 
         // Fetch tips if needed (no borrow held across this await)
         let tips = if needs_tips {
-            let backend = self.db.backend()?;
+            let backend = self.db.ops();
             // FIXME: we should get the subtree tips while still using the parent pointers
             Some(backend.get_store_tips(self.db.root_id(), subtree).await?)
         } else {
@@ -543,7 +543,7 @@ impl Transaction {
     /// Get the subtree tips reachable from the given main tree entries.
     async fn get_subtree_tips(&self, subtree_name: &str, main_parents: &[ID]) -> Result<Vec<ID>> {
         self.db
-            .backend()?
+            .ops()
             .get_store_tips_up_to_entries(self.db.root_id(), subtree_name, main_parents)
             .await
     }
@@ -671,17 +671,17 @@ impl Transaction {
 
         // Initialize subtree tips if needed (async operations)
         if needs_init {
-            let current_database_tips = self.db.backend()?.get_tips(self.db.root_id()).await?;
+            let current_database_tips = self.db.ops().get_tips(self.db.root_id()).await?;
 
             let tips = if main_parents == current_database_tips {
-                let backend = self.db.backend()?;
+                let backend = self.db.ops();
                 backend
                     .get_store_tips(self.db.root_id(), subtree_name)
                     .await?
             } else {
                 // This transaction uses custom tips - use special handler
                 self.db
-                    .backend()?
+                    .ops()
                     .get_store_tips_up_to_entries(self.db.root_id(), subtree_name, &main_parents)
                     .await?
             };
@@ -756,7 +756,7 @@ impl Transaction {
 
         if let Some(cached_state) = self
             .db
-            .backend()?
+            .ops()
             .get_cached_crdt_state(&cache_id, subtree_name)
             .await?
         {
@@ -768,7 +768,7 @@ impl Transaction {
         // Cache miss: find merge base and compute state from there
         let merge_base_id = self
             .db
-            .backend()?
+            .ops()
             .find_merge_base(self.db.root_id(), subtree_name, entry_ids)
             .await?;
 
@@ -780,7 +780,7 @@ impl Transaction {
         // Get all entries from merge base to all tip entries (deduplicated and sorted)
         let path_entries = {
             self.db
-                .backend()?
+                .ops()
                 .get_path_from_to(self.db.root_id(), subtree_name, &merge_base_id, entry_ids)
                 .await?
         };
@@ -797,7 +797,7 @@ impl Transaction {
         // cache_crdt_state is supposed to take in (ID, subtree, data)
         // This caching only technically works by constructing a custom ID
         self.db
-            .backend()?
+            .ops()
             .cache_crdt_state(&cache_id, subtree_name, to_cache)
             .await?;
 
@@ -833,7 +833,7 @@ impl Transaction {
             // Step 1: Check if already cached
             if let Some(cached_state) = self
                 .db
-                .backend()?
+                .ops()
                 .get_cached_crdt_state(entry_id, subtree_name)
                 .await?
             {
@@ -847,7 +847,7 @@ impl Transaction {
             // This single query replaces N recursive queries
             let entries = self
                 .db
-                .backend()?
+                .ops()
                 .get_store_from_tips(
                     self.db.root_id(),
                     subtree_name,
@@ -872,7 +872,7 @@ impl Transaction {
             let serialized_state = serde_json::to_vec(&result)?;
             let to_cache = self.encrypt_if_needed(subtree_name, &serialized_state)?;
             self.db
-                .backend()?
+                .ops()
                 .cache_crdt_state(entry_id, subtree_name, to_cache)
                 .await?;
 
@@ -899,7 +899,7 @@ impl Transaction {
         T: CRDT,
     {
         for entry_id in entry_ids {
-            let entry = self.db.backend()?.get(entry_id).await?;
+            let entry = self.db.ops().get(entry_id).await?;
 
             // Get local data for this entry in the subtree
             let local_data = if let Ok(data) = entry.data(subtree_name) {
@@ -1043,7 +1043,7 @@ impl Transaction {
         let db_tips = self.db.get_tips().await?;
         let settings_tips = self
             .db
-            .backend()?
+            .ops()
             .get_store_tips_up_to_entries(self.db.root_id(), SETTINGS, &db_tips)
             .await?;
 
@@ -1123,7 +1123,7 @@ impl Transaction {
 
         // Compute heights from parent entries using the configured strategy
         {
-            let backend = self.db.backend()?;
+            let backend = self.db.ops();
             let instance = self.db.instance()?;
             let calculator = height_strategy.into_calculator(instance.clock_arc());
 
