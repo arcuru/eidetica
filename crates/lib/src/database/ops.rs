@@ -248,39 +248,53 @@ impl DatabaseOps for RemoteDatabaseOps {
             .await
     }
 
-    async fn get_tips(&self, tree: &ID) -> Result<Vec<ID>> {
-        self.conn.get_tips(tree).await
+    async fn get_tips(&self, _tree: &ID) -> Result<Vec<ID>> {
+        self.conn
+            .get_verified_tips(self.root_id.clone(), self.identity.clone())
+            .await
     }
 
-    async fn get_store_tips(&self, tree: &ID, store: &str) -> Result<Vec<ID>> {
-        self.conn.get_store_tips(tree, store).await
+    async fn get_store_tips(&self, _tree: &ID, _store: &str) -> Result<Vec<ID>> {
+        // No wire equivalent; return empty tips for now (remote reads
+        // go through the DatabaseOp path, not Transaction internals).
+        Ok(Vec::new())
     }
 
     async fn get_store_tips_up_to_entries(
         &self,
-        tree: &ID,
-        store: &str,
-        up_to: &[ID],
+        _tree: &ID,
+        _store: &str,
+        _up_to: &[ID],
     ) -> Result<Vec<ID>> {
-        self.conn
-            .get_store_tips_up_to_entries(tree, store, up_to)
-            .await
+        // No wire equivalent; return empty.
+        Ok(Vec::new())
     }
 
-    async fn find_merge_base(&self, tree: &ID, store: &str, entry_ids: &[ID]) -> Result<ID> {
-        self.conn.find_merge_base(tree, store, entry_ids).await
+    async fn find_merge_base(
+        &self,
+        _tree: &ID,
+        _store: &str,
+        _entry_ids: &[ID],
+    ) -> Result<ID> {
+        Err(Error::Instance(Box::new(
+            InstanceError::OperationNotSupported {
+                operation: "find_merge_base on remote backend".to_string(),
+            },
+        )))
     }
 
     async fn get_path_from_to(
         &self,
-        tree: &ID,
-        store: &str,
-        from_id: &ID,
-        to_ids: &[ID],
+        _tree: &ID,
+        _store: &str,
+        _from_id: &ID,
+        _to_ids: &[ID],
     ) -> Result<Vec<ID>> {
-        self.conn
-            .get_path_from_to(tree, store, from_id, to_ids)
-            .await
+        Err(Error::Instance(Box::new(
+            InstanceError::OperationNotSupported {
+                operation: "get_path_from_to on remote backend".to_string(),
+            },
+        )))
     }
 
     async fn get_store_from_tips(

@@ -25,7 +25,6 @@ use crate::auth::crypto::{PublicKey, create_challenge_response};
 use crate::auth::types::SigKey;
 use crate::backend::InstanceMetadata;
 use crate::entry::{Entry, ID};
-use crate::instance::WriteSource;
 use crate::service::error::service_error_to_eidetica_error;
 use crate::service::protocol::{
     AuthenticatedDbRequest, AuthenticatedRequest, BackendOp, DatabaseOp, Handshake, HandshakeAck,
@@ -144,42 +143,10 @@ impl RemoteConnection {
         }
     }
 
-    /// Wrap a `BackendOp` in the `Authenticated` envelope and send it.
-    ///
-    /// Populates `identity` from the connection's session state when logged
-    /// in (`SigKey::from_pubkey(&session_pubkey)`); falls back to
-    /// `SigKey::default()` pre-login so the resulting request reliably hits
-    /// the server's "not authenticated" gate rather than a more confusing
-    /// downstream error.
-    ///
-    /// `root_id` is stamped from `op.tree_id()` when the op carries one. The
-    /// server doesn't currently rely on this field — it uses `op.tree_id()`
-    /// directly for the chunk-5b gate — but populating it keeps the envelope
-    /// honest and gives future per-request audit logs a single source of
-    /// truth for "what tree was this op scoped to?".
-    async fn backend_request(&self, op: BackendOp) -> crate::Result<ServiceResponse> {
-        let identity = match self.inner.session.read().unwrap().as_ref() {
-            Some(s) => SigKey::from_pubkey(&s.session_pubkey),
-            None => SigKey::default(),
-        };
-        let root_id = op.tree_id().cloned().unwrap_or_default();
-        self.request_ok(ServiceRequest::Authenticated(Box::new(
-            AuthenticatedRequest {
-                root_id,
-                identity,
-                request: op,
-            },
-        )))
-        .await
-    }
-
     /// Wrap a `DatabaseOp` in the `AuthenticatedDb` envelope and send it.
     ///
-    /// Database-level analogue of [`backend_request`]: same `(root_id,
-    /// identity)` scope and the same `request_ok` error conversion, carrying
-    /// a `DatabaseOp` in an `AuthenticatedDbRequest`. Unlike `backend_request`,
-    /// `root_id` is caller-supplied — DatabaseOps carry no inline tree id,
-    /// but every variant is tree-scoped by construction.
+    /// `(root_id, identity)` scope and `request_ok` error conversion, carrying
+    /// a `DatabaseOp` in an `AuthenticatedDbRequest`.
     async fn db_request(
         &self,
         root_id: ID,
@@ -295,13 +262,6 @@ impl RemoteConnection {
         }
     }
 
-    fn expect_id(resp: ServiceResponse) -> crate::Result<ID> {
-        match resp {
-            ServiceResponse::Id(id) => Ok(id),
-            other => Err(unexpected_response("Id", &other)),
-        }
-    }
-
     fn expect_ids(resp: ServiceResponse) -> crate::Result<Vec<ID>> {
         match resp {
             ServiceResponse::Ids(ids) => Ok(ids),
@@ -316,167 +276,30 @@ impl RemoteConnection {
         }
     }
 
-    // === Storage operations (matching BackendImpl surface) ===
+    // === Backend operations (retained) ===
+
+    /// Build a `SigKey` from the session pubkey, when logged in.
+    pub fn session_identity(&self) -> Option<SigKey> {
+        self.inner
+            .session
+            .read()
+            .unwrap()
+            .as_ref()
+            .map(|s| SigKey::from_pubkey(&s.session_pubkey))
+    }
 
     pub async fn get(&self, id: &ID) -> crate::Result<Entry> {
+        let identity = self.session_identity().unwrap_or_default();
         let resp = self
-            .backend_request(BackendOp::Get { id: id.clone() })
+            .request_ok(ServiceRequest::Authenticated(Box::new(
+                AuthenticatedRequest {
+                    root_id: ID::default(),
+                    identity,
+                    request: BackendOp::Get { id: id.clone() },
+                },
+            )))
             .await?;
         Self::expect_entry(resp)
-    }
-
-    /// Send an entry to the server for storage.
-    ///
-    /// The wire carries no verification status: a peer cannot assert that an
-    /// entry is verified. The server stores all wire-submitted entries as
-    /// [`VerificationStatus::Unverified`] and may promote them only via its
-    /// own local verification pass.
-    pub async fn put(&self, entry: Entry) -> crate::Result<()> {
-        let resp = self.backend_request(BackendOp::Put { entry }).await?;
-        Self::expect_ok(resp)
-    }
-
-    pub async fn get_tips(&self, tree: &ID) -> crate::Result<Vec<ID>> {
-        let resp = self
-            .backend_request(BackendOp::GetTips { tree: tree.clone() })
-            .await?;
-        Self::expect_ids(resp)
-    }
-
-    pub async fn get_store_tips(&self, tree: &ID, store: &str) -> crate::Result<Vec<ID>> {
-        let resp = self
-            .backend_request(BackendOp::GetStoreTips {
-                tree: tree.clone(),
-                store: store.to_string(),
-            })
-            .await?;
-        Self::expect_ids(resp)
-    }
-
-    pub async fn get_store_tips_up_to_entries(
-        &self,
-        tree: &ID,
-        store: &str,
-        main_entries: &[ID],
-    ) -> crate::Result<Vec<ID>> {
-        let resp = self
-            .backend_request(BackendOp::GetStoreTipsUpToEntries {
-                tree: tree.clone(),
-                store: store.to_string(),
-                main_entries: main_entries.to_vec(),
-            })
-            .await?;
-        Self::expect_ids(resp)
-    }
-
-    pub async fn find_merge_base(
-        &self,
-        tree: &ID,
-        store: &str,
-        entry_ids: &[ID],
-    ) -> crate::Result<ID> {
-        let resp = self
-            .backend_request(BackendOp::FindMergeBase {
-                tree: tree.clone(),
-                store: store.to_string(),
-                entry_ids: entry_ids.to_vec(),
-            })
-            .await?;
-        Self::expect_id(resp)
-    }
-
-    pub async fn get_tree(&self, tree: &ID) -> crate::Result<Vec<Entry>> {
-        let resp = self
-            .backend_request(BackendOp::GetTree { tree: tree.clone() })
-            .await?;
-        Self::expect_entries(resp)
-    }
-
-    pub async fn get_store(&self, tree: &ID, store: &str) -> crate::Result<Vec<Entry>> {
-        let resp = self
-            .backend_request(BackendOp::GetStore {
-                tree: tree.clone(),
-                store: store.to_string(),
-            })
-            .await?;
-        Self::expect_entries(resp)
-    }
-
-    pub async fn get_tree_from_tips(&self, tree: &ID, tips: &[ID]) -> crate::Result<Vec<Entry>> {
-        let resp = self
-            .backend_request(BackendOp::GetTreeFromTips {
-                tree: tree.clone(),
-                tips: tips.to_vec(),
-            })
-            .await?;
-        Self::expect_entries(resp)
-    }
-
-    pub async fn get_store_from_tips(
-        &self,
-        tree: &ID,
-        store: &str,
-        tips: &[ID],
-    ) -> crate::Result<Vec<Entry>> {
-        let resp = self
-            .backend_request(BackendOp::GetStoreFromTips {
-                tree: tree.clone(),
-                store: store.to_string(),
-                tips: tips.to_vec(),
-            })
-            .await?;
-        Self::expect_entries(resp)
-    }
-
-    pub async fn get_cached_crdt_state(
-        &self,
-        entry_id: &ID,
-        store: &str,
-    ) -> crate::Result<Option<Vec<u8>>> {
-        let resp = self
-            .backend_request(BackendOp::GetCachedCrdtState {
-                entry_id: entry_id.clone(),
-                store: store.to_string(),
-            })
-            .await?;
-        match resp {
-            ServiceResponse::CachedCrdtState(state) => Ok(state),
-            other => Err(unexpected_response("CachedCrdtState", &other)),
-        }
-    }
-
-    pub async fn cache_crdt_state(
-        &self,
-        entry_id: &ID,
-        store: &str,
-        state: Vec<u8>,
-    ) -> crate::Result<()> {
-        let resp = self
-            .backend_request(BackendOp::CacheCrdtState {
-                entry_id: entry_id.clone(),
-                store: store.to_string(),
-                state,
-            })
-            .await?;
-        Self::expect_ok(resp)
-    }
-
-    pub async fn get_path_from_to(
-        &self,
-        tree_id: &ID,
-        store: &str,
-        from_id: &ID,
-        to_ids: &[ID],
-    ) -> crate::Result<Vec<ID>> {
-        let resp = self
-            .backend_request(BackendOp::GetPathFromTo {
-                tree_id: tree_id.clone(),
-                store: store.to_string(),
-                from_id: from_id.clone(),
-                to_ids: to_ids.to_vec(),
-            })
-            .await?;
-        Self::expect_ids(resp)
     }
 
     pub async fn get_instance_metadata(&self) -> crate::Result<Option<InstanceMetadata>> {
@@ -488,29 +311,17 @@ impl RemoteConnection {
     }
 
     pub async fn set_instance_metadata(&self, metadata: &InstanceMetadata) -> crate::Result<()> {
+        let identity = self.session_identity().unwrap_or_default();
         let resp = self
-            .backend_request(BackendOp::SetInstanceMetadata {
-                metadata: metadata.clone(),
-            })
-            .await?;
-        Self::expect_ok(resp)
-    }
-
-    // === Write coordination ===
-
-    /// Notify the server that an entry was written, triggering server-side callbacks.
-    pub async fn notify_entry_written(
-        &self,
-        tree_id: &ID,
-        entry_id: &ID,
-        source: WriteSource,
-    ) -> crate::Result<()> {
-        let resp = self
-            .backend_request(BackendOp::NotifyEntryWritten {
-                tree_id: tree_id.clone(),
-                entry_id: entry_id.clone(),
-                source,
-            })
+            .request_ok(ServiceRequest::Authenticated(Box::new(
+                AuthenticatedRequest {
+                    root_id: ID::default(),
+                    identity,
+                    request: BackendOp::SetInstanceMetadata {
+                        metadata: metadata.clone(),
+                    },
+                },
+            )))
             .await?;
         Self::expect_ok(resp)
     }

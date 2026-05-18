@@ -38,7 +38,6 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use crate::auth::types::{Permission, SigKey};
 use crate::backend::InstanceMetadata;
 use crate::entry::{Entry, ID};
-use crate::instance::WriteSource;
 use crate::service::error::ServiceError;
 use crate::user::UserInfo;
 
@@ -64,153 +63,37 @@ pub struct HandshakeAck {
 /// Backend storage operations that the server dispatches on behalf of an
 /// authenticated client.
 ///
-/// This is a deliberately curated **subset** of the `BackendImpl` trait: only
-/// the operations a remote client actually needs and that can be authorised
-/// against a database's `auth_settings`. Backend-internal primitives
-/// (verification-status scans, root-to-target path collection, sorted-parent
-/// walks, cache clears) are intentionally *not* on the wire — they remain
-/// local-only trait methods. Plus `NotifyEntryWritten` for write-coordination
-/// via `Instance::dispatch_write_callbacks`. `BackendOp` is always carried
+/// This minimal surface retains only `Get` (entry fetch by id) and
+/// `SetInstanceMetadata` (admin-gated instance config writes). All other
+/// read/write paths have moved to [`DatabaseOp`] via the
+/// [`AuthenticatedDbRequest`] envelope. `BackendOp` is always carried
 /// inside `ServiceRequest::Authenticated` so the server has the
 /// `(root_id, identity)` scope it needs to authorise the op.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum BackendOp {
-    // === Entry operations ===
-    Get {
-        id: ID,
-    },
-    /// Submit an entry for storage. The wire deliberately carries no
-    /// verification status — the server stores it as `Unverified` and never
-    /// trusts a peer's assertion of verification.
-    Put {
-        entry: Entry,
-    },
-
-    // === Tips ===
-    GetTips {
-        tree: ID,
-    },
-    GetStoreTips {
-        tree: ID,
-        store: String,
-    },
-    GetStoreTipsUpToEntries {
-        tree: ID,
-        store: String,
-        main_entries: Vec<ID>,
-    },
-
-    // === Tree/Store traversal ===
-    FindMergeBase {
-        tree: ID,
-        store: String,
-        entry_ids: Vec<ID>,
-    },
-    GetTree {
-        tree: ID,
-    },
-    GetStore {
-        tree: ID,
-        store: String,
-    },
-    GetTreeFromTips {
-        tree: ID,
-        tips: Vec<ID>,
-    },
-    GetStoreFromTips {
-        tree: ID,
-        store: String,
-        tips: Vec<ID>,
-    },
-
-    // === CRDT cache ===
-    GetCachedCrdtState {
-        entry_id: ID,
-        store: String,
-    },
-    CacheCrdtState {
-        entry_id: ID,
-        store: String,
-        state: Vec<u8>,
-    },
-
-    // === Path operations ===
-    GetPathFromTo {
-        tree_id: ID,
-        store: String,
-        from_id: ID,
-        to_ids: Vec<ID>,
-    },
-
-    // === Instance metadata (write side) ===
-    SetInstanceMetadata {
-        metadata: InstanceMetadata,
-    },
-
-    // === Write coordination ===
-    NotifyEntryWritten {
-        tree_id: ID,
-        entry_id: ID,
-        source: WriteSource,
-    },
+    /// Fetch a single entry by id. Gated post-fetch by the entry's owning tree.
+    Get { id: ID },
+    /// Rewrite the daemon's instance metadata (system-DB pointers).
+    /// Gated by `Admin` on `_databases`.
+    SetInstanceMetadata { metadata: InstanceMetadata },
 }
 
 impl BackendOp {
-    /// Returns the tree this op targets, when it carries one inline.
-    ///
-    /// Used by the server to load `auth_settings` for permission resolution and
-    /// by the client to stamp `AuthenticatedRequest::root_id` so the daemon's
-    /// gate has the same scope the op operates on.
-    ///
-    /// Returns `None` for:
-    /// - Ops keyed by entry id alone (`Get`, `Put`, `GetCachedCrdtState`,
-    ///   `CacheCrdtState`) — resolving the entry's tree requires an extra
-    ///   backend read, so the gate can't run here in `dispatch_inner`.
-    ///   `Get` is instead gated *post-fetch* on the entry's resolved owning
-    ///   tree (D2, `gate_entry_read` in `server.rs`). `Put` per-tree gating
-    ///   plus server-side verification is the deferred D1 work (A3/P0). The
-    ///   cache ops are per-user namespaced server-side.
-    /// - Cross-tree ops with no inherent scope (`SetInstanceMetadata`, which
-    ///   carries its own explicit `Admin`-on-`_databases` gate).
+    /// Returns `None` for both remaining variants: `Get` carries no inline
+    /// tree id and `SetInstanceMetadata` targets the daemon-global
+    /// `_databases` tree rather than a caller-named one.
     pub fn tree_id(&self) -> Option<&ID> {
         match self {
-            BackendOp::GetTips { tree }
-            | BackendOp::GetStoreTips { tree, .. }
-            | BackendOp::GetStoreTipsUpToEntries { tree, .. }
-            | BackendOp::FindMergeBase { tree, .. }
-            | BackendOp::GetTree { tree }
-            | BackendOp::GetStore { tree, .. }
-            | BackendOp::GetTreeFromTips { tree, .. }
-            | BackendOp::GetStoreFromTips { tree, .. } => Some(tree),
-
-            BackendOp::GetPathFromTo { tree_id, .. }
-            | BackendOp::NotifyEntryWritten { tree_id, .. } => Some(tree_id),
-
-            BackendOp::Get { .. }
-            | BackendOp::Put { .. }
-            | BackendOp::GetCachedCrdtState { .. }
-            | BackendOp::CacheCrdtState { .. }
-            | BackendOp::SetInstanceMetadata { .. } => None,
+            BackendOp::Get { .. } | BackendOp::SetInstanceMetadata { .. } => None,
         }
     }
 
-    /// Minimum permission level required to dispatch this op against a tree.
-    ///
-    /// Read traversal ops require `Read`; anything that mutates tree state
-    /// (entries, verification status, CRDT cache, write callbacks) requires
-    /// `Write`. The priority value carried in `Write(_)` is *not significant*
-    /// here — callers should match on the variant (or compare via
-    /// `Permission::can_write` / `can_admin`) rather than ordering, since the
-    /// op doesn't know what priority the user actually has.
-    ///
-    /// Only consulted when `tree_id().is_some()`; cross-tree ops fall through
-    /// the per-tree gate.
+    /// `SetInstanceMetadata` requires `Admin` (gated against `_databases`).
+    /// `Get` is `Read` (gated post-fetch on the entry's owning tree).
     pub fn required_permission(&self) -> Permission {
         match self {
-            BackendOp::Put { .. }
-            | BackendOp::CacheCrdtState { .. }
-            | BackendOp::NotifyEntryWritten { .. } => Permission::Write(0),
-            _ => Permission::Read,
+            BackendOp::SetInstanceMetadata { .. } => Permission::Admin(0),
+            BackendOp::Get { .. } => Permission::Read,
         }
     }
 }
@@ -397,14 +280,10 @@ pub enum ServiceResponse {
     Entry(Entry),
     /// Multiple entries
     Entries(Vec<Entry>),
-    /// Single ID
-    Id(ID),
     /// Multiple IDs
     Ids(Vec<ID>),
     /// Success with no data
     Ok,
-    /// Optional cached CRDT state
-    CachedCrdtState(Option<Vec<u8>>),
     /// Transaction-build context (response to `DatabaseOp::BeginTransaction`).
     TransactionContext(TransactionContext),
     /// Materialized CRDT store state (response to `DatabaseOp::GetStoreState`).
@@ -538,45 +417,11 @@ mod tests {
     }
 
     #[test]
-    fn test_request_get_tips_serde() {
-        let req = wrap(BackendOp::GetTips { tree: test_id() });
-        let json = serde_json::to_string(&req).unwrap();
-        let req2: ServiceRequest = serde_json::from_str(&json).unwrap();
-        match unwrap_op(req2) {
-            BackendOp::GetTips { tree } => assert_eq!(tree, test_id()),
-            _ => panic!("wrong variant"),
-        }
-    }
-
-    #[test]
     fn test_request_get_instance_metadata_serde() {
         let req = ServiceRequest::GetInstanceMetadata;
         let json = serde_json::to_string(&req).unwrap();
         let req2: ServiceRequest = serde_json::from_str(&json).unwrap();
         assert!(matches!(req2, ServiceRequest::GetInstanceMetadata));
-    }
-
-    #[test]
-    fn test_request_notify_entry_written_serde() {
-        let req = wrap(BackendOp::NotifyEntryWritten {
-            tree_id: test_id(),
-            entry_id: ID::from_bytes("entry-1"),
-            source: WriteSource::Local,
-        });
-        let json = serde_json::to_string(&req).unwrap();
-        let req2: ServiceRequest = serde_json::from_str(&json).unwrap();
-        match unwrap_op(req2) {
-            BackendOp::NotifyEntryWritten {
-                tree_id,
-                entry_id,
-                source,
-            } => {
-                assert_eq!(tree_id, test_id());
-                assert_eq!(entry_id, ID::from_bytes("entry-1"));
-                assert_eq!(source, WriteSource::Local);
-            }
-            _ => panic!("wrong variant"),
-        }
     }
 
     #[test]
@@ -647,22 +492,6 @@ mod tests {
     }
 
     #[test]
-    fn test_response_cached_crdt_state_serde() {
-        let resp = ServiceResponse::CachedCrdtState(Some(b"state-data".to_vec()));
-        let json = serde_json::to_string(&resp).unwrap();
-        let resp2: ServiceResponse = serde_json::from_str(&json).unwrap();
-        match resp2 {
-            ServiceResponse::CachedCrdtState(Some(s)) => assert_eq!(s, b"state-data"),
-            _ => panic!("wrong variant"),
-        }
-
-        let resp_none = ServiceResponse::CachedCrdtState(None);
-        let json_none = serde_json::to_string(&resp_none).unwrap();
-        let resp_none2: ServiceResponse = serde_json::from_str(&json_none).unwrap();
-        assert!(matches!(resp_none2, ServiceResponse::CachedCrdtState(None)));
-    }
-
-    #[test]
     fn test_response_instance_metadata_none_serde() {
         let resp = ServiceResponse::InstanceMetadata(None);
         let json = serde_json::to_string(&resp).unwrap();
@@ -725,29 +554,6 @@ mod tests {
         let json = serde_json::to_string(&resp).unwrap();
         let resp2: ServiceResponse = serde_json::from_str(&json).unwrap();
         assert!(matches!(resp2, ServiceResponse::TrustedLoginOk));
-    }
-
-    #[tokio::test]
-    async fn test_frame_roundtrip() {
-        // duplex gives two ends: writing to `client` is readable from `server` and vice versa
-        let (client, server) = tokio::io::duplex(4096);
-        let (mut server_read, _server_write) = tokio::io::split(server);
-        let (_client_read, mut client_write) = tokio::io::split(client);
-
-        let req = wrap(BackendOp::Get { id: test_id() });
-
-        let write_handle = tokio::spawn(async move {
-            write_frame(&mut client_write, &req).await.unwrap();
-        });
-
-        let read_result: Option<ServiceRequest> = read_frame(&mut server_read).await.unwrap();
-        write_handle.await.unwrap();
-
-        let result = read_result.unwrap();
-        match unwrap_op(result) {
-            BackendOp::Get { id } => assert_eq!(id, test_id()),
-            _ => panic!("wrong variant"),
-        }
     }
 
     #[tokio::test]
