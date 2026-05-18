@@ -1030,3 +1030,102 @@ async fn test_trusted_login_bad_signature_errors_and_resets() {
     let resp: ServiceResponse = read_frame(&mut reader).await.unwrap().unwrap();
     assert!(matches!(resp, ServiceResponse::Error(_)));
 }
+
+/// End-to-end test for `RemoteDatabaseOps`: create a database, write data
+/// through the legacy `BackendOp` path, open a remote `Database` handle via
+/// `Database::open_remote`, and verify reads route through the new
+/// `RemoteDatabaseOps` wire path.
+///
+/// Verifies:
+/// - The remote Database can be opened.
+/// - A transaction can be created (reads go through RemoteDatabaseOps).
+/// - Data committed through the legacy BackendOp path is visible through the
+///   new RemoteDatabaseOps get_store_entries path.
+/// - Settings can be read through the remote path.
+/// - Store entries fetched via the new DatabaseOp path match what was written
+///   through the legacy BackendOp path.
+#[tokio::test]
+async fn test_remote_database_ops_e2e() {
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    server.create_user("alice", None).await.unwrap();
+
+    let instance = Instance::connect(&socket_path).await.unwrap();
+    let mut user = instance.login_user("alice", None).await.unwrap();
+
+    // Create a database — writes go through BackendOp::Put on the wire.
+    let mut settings = eidetica::crdt::Doc::new();
+    settings.set("name", "test_remote_ops");
+    let key = user.get_default_key().unwrap();
+    let db = user.create_database(settings, &key).await.unwrap();
+    let root_id = db.root_id().clone();
+    let identity = db.auth_identity().cloned().unwrap();
+
+    // Write data through the legacy BackendOp write path.
+    // BackendOp::Put stores entries Unverified on the server; a subsequent
+    // GetVerifiedTips call triggers the server's local verification pass so
+    // that RemoteDatabaseOps reads (which use the Verified frontier) can
+    // see the committed data.
+    db.with_transaction(|tx| async move {
+        let store = tx.get_store::<DocStore>("entries").await?;
+        store.set("greeting", "hello from remote ops").await?;
+        store.set("count", 42).await?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+
+    // Open a remote Database — reads now route through RemoteDatabaseOps.
+    let conn = remote_conn(&instance);
+    let remote_db =
+        eidetica::Database::open_remote(&instance, conn.clone(), &root_id, identity.clone())
+            .await
+            .unwrap();
+
+    // Trigger server-side verification so the written entries (stored
+    // Unverified by BackendOp::Put) are promoted to Verified. The
+    // GetVerifiedTips handler opens a local Database on the server, which
+    // runs opportunistic verify() in get_tips().
+    let verified_tips = conn
+        .get_verified_tips(root_id.clone(), identity.clone())
+        .await
+        .unwrap();
+    assert!(
+        !verified_tips.is_empty(),
+        "verified tips must include at least the root entry"
+    );
+
+    // --- Verify: settings can be read through the remote path ---
+    let remote_settings = remote_db.get_settings().await.unwrap();
+    let name: String = remote_settings.get_name().await.unwrap();
+    assert_eq!(name, "test_remote_ops");
+
+    // --- Verify: store entries are reachable through the new DatabaseOp
+    //     path after server-side verification ---
+    let entries = conn
+        .get_store_entries(
+            root_id.clone(),
+            identity.clone(),
+            "entries".to_string(),
+            verified_tips,
+            eidetica::service::protocol::ReadScope::Verified,
+        )
+        .await
+        .unwrap();
+    assert!(
+        !entries.is_empty(),
+        "store entries must be reachable after write + verify"
+    );
+    // Entries must be ordered by subtree height (ascending)
+    for w in entries.windows(2) {
+        let prev_height = w[0].subtree_height("entries").unwrap_or(0);
+        let next_height = w[1].subtree_height("entries").unwrap_or(0);
+        assert!(prev_height <= next_height, "entries must be ordered by subtree height");
+    }
+
+    // --- Verify: a transaction can be created on the remote Database;
+    //     its reads go through RemoteDatabaseOps ---
+    let txn = remote_db.new_transaction().await.unwrap();
+    let txn_store = txn.get_store::<DocStore>("entries").await.unwrap();
+    let txn_greeting: String = txn_store.get_as("greeting").await.unwrap();
+    assert_eq!(txn_greeting, "hello from remote ops");
+}

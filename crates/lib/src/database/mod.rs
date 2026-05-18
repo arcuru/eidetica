@@ -24,6 +24,7 @@ use crate::{
     crdt::{CRDT, Doc},
     entry::{Entry, ID},
     instance::{WriteCallback, WriteEvent, backend::Backend, errors::InstanceError},
+    service::client::RemoteConnection,
     store::{SettingsStore, Store},
 };
 
@@ -31,7 +32,7 @@ use crate::{
 mod tests;
 
 mod ops;
-pub use ops::{DatabaseOps, LocalDatabaseOps};
+pub use ops::{DatabaseOps, LocalDatabaseOps, RemoteDatabaseOps};
 
 tokio::task_local! {
     /// Set while a `verify()`/validation pass is on the call stack.
@@ -335,6 +336,35 @@ impl Database {
             root: root_id.clone(),
             instance: instance.downgrade(),
             ops: Arc::new(LocalDatabaseOps::new(instance.downgrade())),
+            key: None,
+            allow_unverified: false,
+        })
+    }
+
+    /// Open a database for remote access through a service connection.
+    ///
+    /// Constructs a [`Database`] handle that routes every [`Transaction`]/
+    /// [`Store`] read through the connection's DatabaseOp/BackendOp wire
+    /// protocol instead of the local backend. The `identity` is the session's
+    /// auth identity for gating RPCs; it must match the database's auth
+    /// settings for the caller's key.
+    ///
+    /// The returned handle's write path still goes through the `Instance`'s
+    /// [`Backend`](crate::instance::backend::Backend) (via
+    /// `Instance::put_entry`), so `Instance::connect` must be used to create
+    /// the instance. This is additive — the legacy BackendOp path is
+    /// untouched until the Phase 4 cutover.
+    pub async fn open_remote(
+        instance: &Instance,
+        conn: RemoteConnection,
+        root_id: &ID,
+        identity: SigKey,
+    ) -> Result<Self> {
+        instance.backend().get(root_id).await?;
+        Ok(Self {
+            root: root_id.clone(),
+            instance: instance.downgrade(),
+            ops: Arc::new(RemoteDatabaseOps::new(conn, root_id.clone(), identity)),
             key: None,
             allow_unverified: false,
         })
