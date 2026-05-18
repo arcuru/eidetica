@@ -825,6 +825,11 @@ Two rules connect them:
    read exposes only the "Verified frontier" unless `.allow_unverified()` is
    set. See the synchronization design doc for how this interacts with peers.
 
+The full status model — the three-state enum, why pinned-settings validation
+makes verification staleness-free, the disclosure posture, and the unbuilt
+authority-*reduction* (revocation) gap — is documented in the
+[Verification Model](verification.md) design doc.
+
 ### Sync Permissions
 
 Eidetica servers require proof of read permissions before allowing database synchronization. The server challenges the client to sign a random nonce, then validates the signature against the database's authentication configuration.

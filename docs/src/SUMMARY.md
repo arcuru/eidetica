@@ -45,6 +45,7 @@
 - [Overview](design/index.md)
   - [Authentication](design/authentication.md)
   - [Synchronization](design/synchronization.md)
+  - [Verification Model](design/verification.md)
   - [Settings Storage](design/settings_storage.md)
   - [Subtree Index](design/subtree_index.md)
   - [Height Strategy](design/height_strategy.md)
