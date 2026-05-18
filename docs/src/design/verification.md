@@ -202,6 +202,58 @@ mechanism in [Authentication › Key Revocation](authentication.md#key-revocatio
 rather than as retroactively invalidating an attacker's continued
 pin-against-stale-settings signing. The latter is the unbuilt work above.
 
+## Future: a `Trusted` peer-attested state
+
+**Status: potential future direction, not designed, not implemented.** This
+section records the intent so the status representation can be designed to
+accommodate it as a non-breaking extension; the mechanics are explicitly
+TBD.
+
+Today an entry is either locally `Verified` (this node ran the full check
+against the entry's pinned settings) or `Unverified` (this node has not, or
+cannot yet). There is no way to express *"a peer Eidetica node I trust has
+told me it verified this entry."* A **`Trusted`** state would be that middle
+ground.
+
+**Sketch.** `Trusted` = a peer `Instance` this node trusts has asserted that
+*it* verified the entry, and this node accepts that attestation in lieu of
+re-running full signature/permission validation to the roots itself. It is
+strictly weaker than local `Verified` (we did not check it ourselves) and
+strictly stronger than `Unverified` (a party we trust did). It lets a node
+short-circuit expensive ancestor-closure re-verification when a trusted peer
+has already done the work, while still keeping "I checked it" distinct from
+"someone I trust checked it" — the same instinct as the disclosure model,
+one notch up the trust spectrum.
+
+**Where it sits.** Between `Unverified` and `Verified`. The default read
+posture (Verified frontier) and the `.allow_unverified()` opt-in would need
+a policy decision on whether `Trusted` is surfaced by default, opt-in, or
+configurable per trust relationship.
+
+**Open questions (unsolved — design TBD):**
+
+- *What makes a peer "trusted"?* Sync-peer identity, an explicit trust list,
+  or a trust level keyed into the existing authentication / priority model?
+- *Is the attestation itself signed and verifiable*, so a trusted peer
+  cannot be impersonated and the assertion is non-repudiable — and does it
+  carry *which settings* the peer verified against?
+- *When is local re-verification still forced despite `Trusted`* — e.g. for
+  security-sensitive operations, or once this node later acquires the pinned
+  settings ancestry and could check the entry itself?
+- *Does `Failed` collapse into `Unverified` under this model, or stay a
+  distinct terminal state?* A trusted peer asserting `Failed` is itself
+  meaningful information.
+- *Transitivity and trust depth.* If peer A trusts peer B, does an A→us sync
+  convey B's attestation, or only A's own verification? Trust depth must be
+  bounded.
+- *Interaction with the [authority-reduction gap](#authority-reduction-revocation--the-known-gap).*
+  A trusted peer's attestation is only as good as that peer's own revocation
+  awareness; `Trusted` does **not** bypass the branch-validity question.
+
+Near-term work uses `Verified` / `Unverified` / `Failed` only. The status
+representation should be chosen so that introducing `Trusted` later is a
+non-breaking extension.
+
 ## See also
 
 - [Authentication](authentication.md) — signature/permission validity, the
