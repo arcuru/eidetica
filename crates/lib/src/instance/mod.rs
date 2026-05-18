@@ -21,6 +21,7 @@ use crate::{
     auth::crypto::{PrivateKey, PublicKey},
     backend::{BackendImpl, InstanceMetadata, InstanceSecrets},
     entry::ID,
+    service::client::RemoteConnection,
     sync::Sync,
     user::User,
 };
@@ -589,6 +590,19 @@ impl Instance {
     /// Get a reference to the backend
     pub fn backend(&self) -> &Backend {
         &self.inner.backend
+    }
+
+    /// The remote connection backing this instance, if it was created via
+    /// [`connect`](Self::connect). Returns `None` for local instances.
+    ///
+    /// Useful for constructing a [`Database`](crate::Database) that routes
+    /// reads through the Database-level wire API while sharing the same
+    /// connection and session as the instance's write path.
+    pub fn remote_connection(&self) -> Option<RemoteConnection> {
+        match &self.inner.backend {
+            Backend::Remote(conn) => Some(conn.clone()),
+            _ => None,
+        }
     }
 
     /// Check if an entry exists in storage.
