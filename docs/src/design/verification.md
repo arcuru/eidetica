@@ -134,6 +134,33 @@ The default-safe posture (Verified-frontier-by-default, opt-in to see
 pass that drains `Unverified` over time is a **quality** feature (the signal
 de-noises as the DAG completes), not a correctness prerequisite.
 
+## Writes inherit the caller's read projection
+
+A write's parent tips are the tips of **the same projection the caller is
+reading** — this is not a separate policy. A caller on the default
+(Verified-frontier) posture parents new entries onto the Verified frontier; a
+caller that opted into `.allow_unverified()` parents onto raw tips. *What you
+can see is what you build on.*
+
+This is deliberate and removes any global parent-selection rule:
+
+- It keeps default-posture history **ancestor-closed `Verified` by
+  construction**: a default writer never extends from an `Unverified` tip it
+  cannot see, so it neither forks history away from in-flight unverified data
+  nor silently entangles itself with it.
+- Building on `Unverified` tips stays possible but is now the caller's
+  **explicit, owned** choice (it asked for `.allow_unverified()`), not a
+  silent default — and only such a caller is ever exposed to `Unverified`
+  tip identifiers.
+- Parent tips are additionally bounded by the caller's
+  authorization/settings: a write can only parent onto tips the caller is
+  permitted to read. Read scope and authority scope jointly define the
+  buildable frontier.
+
+This composes with [pinned-settings validation](#pinned-settings-validation):
+the entry still pins the `_settings` ancestry it was authored against,
+independent of which projection supplied its parents.
+
 ## Authority reduction (revocation) — the known gap
 
 **Status: a known, deliberate hole in the model. Documented, not yet
