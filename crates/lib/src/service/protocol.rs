@@ -30,6 +30,8 @@
 //! requests lands in a later chunk; for now clients populate
 //! `root_id`/`identity` with defaults until the client-side login flow ships.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -213,6 +215,106 @@ impl BackendOp {
     }
 }
 
+// ===========================================================================
+// Database-level wire API (additive, parallel to `BackendOp`).
+//
+// `BackendOp` mirrors the storage trait, so the whole verification/CRDT/auth
+// stack runs client-side over raw storage primitives — the wire sits *below*
+// the layer where the security model lives. The ops below instead let the
+// server run the `Database` layer on its local instance: verify-on-read and
+// the Verified frontier become server-side by construction, and every op is
+// intrinsically (tree, store, identity)-scoped. Carried in
+// `ServiceRequest::AuthenticatedDb`; the legacy `BackendOp`/`Authenticated`
+// path is untouched and removed only in the final cutover.
+// ===========================================================================
+
+/// Which projection of the DAG an op observes. Mirrors the `Database`
+/// read posture: a write's parent tips are the tips of the *same* projection
+/// the caller reads (see the Verification Model design doc).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ReadScope {
+    /// Default-safe: only the maximal all-`Verified` ancestor-closed prefix.
+    #[default]
+    Verified,
+    /// Also include `Unverified` entries (`Failed` always dropped). The
+    /// caller explicitly opted in via `Database::allow_unverified()`.
+    AllowUnverified,
+}
+
+/// A CRDT store's materialized state on the wire. Concrete `Store<T>` typing
+/// stays client-side sugar over this; the cache path already ships
+/// `serde_json` bytes today, so this introduces no new representation.
+pub type WireCrdtValue = serde_json::Value;
+
+/// Everything a client needs to build **and sign** an entry locally without
+/// further round-trips. The client owns its keys, so signing stays
+/// client-side; only the inputs `Transaction::commit` reads from storage
+/// before signing travel here. Heights accompany each parent so the client
+/// computes entry height without a follow-up `GetEntry` per parent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransactionContext {
+    /// Main-tree parent tips with their heights, in the caller's `scope`.
+    pub main_parents: Vec<(ID, u64)>,
+    /// Per-store parent tips (with heights) reachable from `main_parents`.
+    pub subtree_parents: BTreeMap<String, Vec<(ID, u64)>>,
+    /// `_settings` tips this transaction pins in signed metadata.
+    pub settings_tips: Vec<ID>,
+    /// Merged `_settings` state the entry is authored against (used to build
+    /// the auth settings the signature is validated under).
+    pub settings_value: WireCrdtValue,
+}
+
+/// Database-level operations the server runs on its local `Database`.
+///
+/// The target database (`root_id`) and identity claim travel in
+/// [`AuthenticatedDbRequest`], exactly as `BackendOp` rides
+/// [`AuthenticatedRequest`]; gates are reused unchanged (Read for begin/get*,
+/// Write for submit).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum DatabaseOp {
+    /// Acquire everything needed to build+sign a transaction locally for the
+    /// given stores, with parents drawn from `scope`'s projection. Gate Read.
+    BeginTransaction {
+        stores: Vec<String>,
+        scope: ReadScope,
+    },
+    /// Submit a finished, client-signed entry. The server stores it
+    /// `Unverified` and runs its **own** verification pass — it never trusts
+    /// a submitted entry's claimed validity. Gate Write.
+    SubmitSignedEntry { entry: Entry },
+    /// The database's Verified-frontier tips (server runs `Database::get_tips`
+    /// on its local instance). Gate Read.
+    GetVerifiedTips,
+    /// Server-materialized merged state of an **unencrypted** store, against
+    /// the server's own Verified frontier. Gate Read.
+    GetStoreState { store: String },
+    /// Ordered (by subtree height), verified, opaque store entries reachable
+    /// from `tips` in `scope` — the universal primitive, incl. encrypted
+    /// stores (client decrypts+merges locally). Gate Read.
+    GetStoreEntries {
+        store: String,
+        tips: Vec<ID>,
+        scope: ReadScope,
+    },
+    /// Fetch a single entry by id (gated post-fetch by its owning tree). Gate
+    /// Read.
+    GetEntry { id: ID },
+}
+
+impl DatabaseOp {
+    /// Minimum permission the caller needs against the target database.
+    ///
+    /// Only `SubmitSignedEntry` mutates; everything else is a read. Unlike
+    /// `BackendOp`, every variant is tree-scoped via the request's `root_id`,
+    /// so the per-tree gate always runs — there is no tree-less fall-through.
+    pub fn required_permission(&self) -> Permission {
+        match self {
+            DatabaseOp::SubmitSignedEntry { .. } => Permission::Write(0),
+            _ => Permission::Read,
+        }
+    }
+}
+
 /// Payload of an `Authenticated` service request.
 ///
 /// Bundles the database scope (`root_id`) and identity claim (`identity`) with
@@ -229,6 +331,24 @@ pub struct AuthenticatedRequest {
     pub identity: SigKey,
     /// Backend operation to execute.
     pub request: BackendOp,
+}
+
+/// Payload of an `AuthenticatedDb` service request.
+///
+/// Database-level analogue of [`AuthenticatedRequest`]: same `(root_id,
+/// identity)` scope and the same server-side gate flow, carrying a
+/// [`DatabaseOp`] instead of a [`BackendOp`]. Boxed for the same reason —
+/// `SigKey` and `DatabaseOp::SubmitSignedEntry` are large.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthenticatedDbRequest {
+    /// Root entry of the database this op targets (auth-settings lookup +
+    /// the implicit tree scope every `DatabaseOp` carries by construction).
+    pub root_id: ID,
+    /// Identity claim; verified against the connection's session pubkey
+    /// before dispatch, exactly as for `BackendOp`.
+    pub identity: SigKey,
+    /// Database operation to execute.
+    pub op: DatabaseOp,
 }
 
 /// Top-level request from client to server.
@@ -262,6 +382,12 @@ pub enum ServiceRequest {
     /// `AuthenticatedRequest` carries `(root_id, identity, request)` and is
     /// boxed to keep the enum's discriminated size compact.
     Authenticated(Box<AuthenticatedRequest>),
+
+    // === Authenticated wrapper for Database-level operations ===
+    /// Database-level ops travel inside this wrapper (additive, parallel to
+    /// `Authenticated`). The inner `AuthenticatedDbRequest` carries
+    /// `(root_id, identity, op)`; same gate flow, boxed for the same reason.
+    AuthenticatedDb(Box<AuthenticatedDbRequest>),
 }
 
 /// Response from server to client.
@@ -279,6 +405,10 @@ pub enum ServiceResponse {
     Ok,
     /// Optional cached CRDT state
     CachedCrdtState(Option<Vec<u8>>),
+    /// Transaction-build context (response to `DatabaseOp::BeginTransaction`).
+    TransactionContext(TransactionContext),
+    /// Materialized CRDT store state (response to `DatabaseOp::GetStoreState`).
+    CrdtValue(WireCrdtValue),
     /// Optional instance metadata
     InstanceMetadata(Option<InstanceMetadata>),
     /// Error response
