@@ -19,9 +19,10 @@ use crate::database::Database;
 use crate::entry::ID;
 use crate::service::cache::ServiceCache;
 use crate::service::error::ServiceError;
+use crate::instance::WriteSource;
 use crate::service::protocol::{
-    AuthenticatedRequest, BackendOp, HandshakeAck, PROTOCOL_VERSION, ServiceRequest,
-    ServiceResponse, read_frame, write_frame,
+    AuthenticatedDbRequest, AuthenticatedRequest, BackendOp, DatabaseOp, HandshakeAck,
+    PROTOCOL_VERSION, ServiceRequest, ServiceResponse, read_frame, write_frame,
 };
 use crate::user::system_databases::lookup_user_record;
 
@@ -350,6 +351,129 @@ async fn dispatch_inner(
             )
             .await
         }
+
+        // === Authenticated Database-level operations ===
+        //
+        // Same gates as `Authenticated`, but every `DatabaseOp` carries its
+        // target `root_id` explicitly, so the per-tree permission gate is
+        // *unconditional* — there is no tree-less op to fall through it. That
+        // structural tree-scoping is what the Database-level shape buys; the
+        // legacy `BackendOp`/`Authenticated` path above is untouched.
+        ServiceRequest::AuthenticatedDb(inner) => {
+            let session_pubkey = match state {
+                ConnectionState::Authenticated { session_pubkey, .. } => session_pubkey.clone(),
+                _ => {
+                    return Err(crate::Error::Auth(Box::new(
+                        AuthError::InvalidAuthConfiguration {
+                            reason: "database operation requires an authenticated connection; \
+                                 complete TrustedLogin* first"
+                                .to_string(),
+                        },
+                    )));
+                }
+            };
+
+            let AuthenticatedDbRequest {
+                root_id,
+                identity,
+                op,
+            } = *inner;
+
+            // Same "I claim to be someone else" cross-check as the
+            // `Authenticated` path.
+            if let Some(claimed) = &identity.hint().pubkey
+                && *claimed != session_pubkey
+            {
+                return Err(crate::Error::Auth(Box::new(
+                    AuthError::SigningKeyMismatch {
+                        reason: format!(
+                            "request identity claims pubkey '{claimed}' but session is for '{session_pubkey}'"
+                        ),
+                    },
+                )));
+            }
+
+            // Unconditional per-tree gate. create-flow passthrough (false):
+            // a not-yet-propagated tree is waved through so database
+            // creation works, identical to the `Authenticated` path.
+            gate_tree_permission(
+                instance,
+                &session_pubkey,
+                &identity,
+                &root_id,
+                op.required_permission(),
+                false,
+            )
+            .await?;
+
+            dispatch_database_op(instance, &session_pubkey, &identity, root_id, op).await
+        }
+    }
+}
+
+/// Dispatch a Database-level op against the server's local `Database`.
+///
+/// Additive sibling of `dispatch_backend_op`. The caller has already verified
+/// the session identity and run the unconditional per-tree permission gate on
+/// `root_id`. Because the server runs the `Database` layer here, verify-on-read
+/// and the Verified frontier are server-side **by construction**.
+async fn dispatch_database_op(
+    instance: &Instance,
+    session_pubkey: &PublicKey,
+    identity: &SigKey,
+    root_id: ID,
+    op: DatabaseOp,
+) -> crate::Result<ServiceResponse> {
+    match op {
+        DatabaseOp::GetEntry { id } => {
+            let entry = instance.backend().get(&id).await?;
+            // Same post-fetch owning-tree Read gate as `BackendOp::Get`:
+            // a raw entry id carries no inline tree, so the pre-dispatch
+            // gate could not cover it.
+            gate_entry_read(instance, session_pubkey, identity, &entry).await?;
+            Ok(ServiceResponse::Entry(entry))
+        }
+
+        DatabaseOp::GetVerifiedTips => {
+            // The server runs the Database layer, so `get_tips()` returns the
+            // Verified frontier by construction — no client-side verify, no
+            // remote-detection heuristic.
+            let db = Database::open(instance, &root_id).await?;
+            let tips = db.get_tips().await?;
+            Ok(ServiceResponse::Ids(tips))
+        }
+
+        DatabaseOp::SubmitSignedEntry { entry } => {
+            // The client signed this entry; the server does NOT trust its
+            // claimed validity. Store it `Unverified`, then run our OWN
+            // verification pass against the entry's pinned settings. A
+            // poisoned entry never reaches `Verified` and is excluded from
+            // every default read by the frontier cut — D1 is closed by
+            // construction here, not by gate-hardening a raw `Put`.
+            instance
+                .put_entry(
+                    &root_id,
+                    crate::backend::VerificationStatus::Unverified,
+                    entry,
+                    WriteSource::Remote,
+                )
+                .await?;
+            Database::open(instance, &root_id).await?.verify().await?;
+            Ok(ServiceResponse::Ok)
+        }
+
+        // Not yet implemented — these depend on single-sourced Database-level
+        // helpers landing next (`transaction_context`, store-state-to-Value,
+        // the ordered-opaque path). Stubbed so this scaffold is buildable and
+        // the legacy `BackendOp` path stays fully unaffected.
+        DatabaseOp::BeginTransaction { .. }
+        | DatabaseOp::GetStoreState { .. }
+        | DatabaseOp::GetStoreEntries { .. } => Err(crate::Error::Instance(Box::new(
+            crate::instance::InstanceError::OperationNotSupported {
+                operation: "Database-level op handler not yet implemented (Phase 2 in progress)"
+                    .to_string(),
+            },
+        ))),
     }
 }
 
