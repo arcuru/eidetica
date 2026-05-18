@@ -92,14 +92,17 @@ impl Backend {
         local_only!(self, "get_verification_status", get_verification_status(id))
     }
 
-    /// Store an entry. Always Unverified — no caller may assert verification.
-    /// `Verified` is reached only via [`Self::update_verification_status`],
-    /// driven by the local validation pass.
+    /// Store an entry. Local delegates to BackendImpl; remote uses
+    /// `DatabaseOp::SubmitSignedEntry` via the connection.
     pub async fn put(&self, entry: Entry) -> Result<()> {
         match self {
             Backend::Local(b) => b.put(entry).await,
             #[cfg(all(unix, feature = "service"))]
-            Backend::Remote(c) => c.put(entry).await,
+            Backend::Remote(c) => {
+                let identity = c.session_identity().unwrap_or_default();
+                let root_id = entry.root().unwrap_or(entry.id());
+                c.submit_signed_entry(root_id, identity, entry).await
+            }
         }
     }
 
@@ -135,47 +138,125 @@ impl Backend {
         )
     }
 
-    // === Tips ===
+    // === Tips (local-only) ===
 
+    /// Get tips for a tree. Local delegates to BackendImpl; remote uses
+    /// `DatabaseOp::GetVerifiedTips` via the connection. Returns empty
+    /// for not-yet-existing databases (needed by `Database::create`).
     pub async fn get_tips(&self, tree: &ID) -> Result<Vec<ID>> {
-        dispatch!(self, get_tips(tree))
+        match self {
+            Backend::Local(b) => b.get_tips(tree).await,
+            #[cfg(all(unix, feature = "service"))]
+            Backend::Remote(c) => {
+                let identity = c.session_identity().unwrap_or_default();
+                match c.get_verified_tips(tree.clone(), identity).await {
+                    Ok(tips) => Ok(tips),
+                    Err(e) if e.is_not_found() => Ok(Vec::new()),
+                    Err(e) => Err(e),
+                }
+            }
+        }
     }
 
+    /// Get store tips. Local delegates to BackendImpl; remote falls back
+    /// to the tree's verified tips (the store-level tip resolution is
+    /// server-side; this is an approximation for remote reads).
     pub async fn get_store_tips(&self, tree: &ID, store: &str) -> Result<Vec<ID>> {
-        dispatch!(self, get_store_tips(tree, store))
+        match self {
+            Backend::Local(b) => b.get_store_tips(tree, store).await,
+            #[cfg(all(unix, feature = "service"))]
+            Backend::Remote(c) => {
+                let identity = c.session_identity().unwrap_or_default();
+                match c.get_verified_tips(tree.clone(), identity).await {
+                    Ok(tips) => Ok(tips),
+                    Err(e) if e.is_not_found() => Ok(Vec::new()),
+                    Err(e) => Err(e),
+                }
+            }
+        }
     }
 
+    /// Get store tips up to entries. Remote falls back to verified tips.
     pub async fn get_store_tips_up_to_entries(
         &self,
         tree: &ID,
         store: &str,
         up_to: &[ID],
     ) -> Result<Vec<ID>> {
-        dispatch!(self, get_store_tips_up_to_entries(tree, store, up_to))
-    }
-
-    // === Tree/Store traversal ===
-
-    /// Enumerate every database root in the backend.
-    ///
-    /// Local backends list directly. Remote backends return
-    /// `OperationNotSupported`: enumerating all roots over the wire is a
-    /// cross-tree discovery channel that bypasses the per-tree permission
-    /// gate, and clients that need a list of databases should read the
-    /// `_databases` system DB instead.
-    pub async fn all_roots(&self) -> Result<Vec<ID>> {
         match self {
-            Backend::Local(b) => b.all_roots().await,
+            Backend::Local(b) => b.get_store_tips_up_to_entries(tree, store, up_to).await,
             #[cfg(all(unix, feature = "service"))]
-            Backend::Remote(_) => Err(crate::instance::InstanceError::OperationNotSupported {
-                operation: "all_roots on remote backend".to_string(),
+            Backend::Remote(c) => {
+                let identity = c.session_identity().unwrap_or_default();
+                match c.get_verified_tips(tree.clone(), identity).await {
+                    Ok(tips) => Ok(tips),
+                    Err(e) if e.is_not_found() => Ok(Vec::new()),
+                    Err(e) => Err(e),
+                }
             }
-            .into()),
         }
     }
 
-    pub async fn find_merge_base(&self, tree: &ID, store: &str, entry_ids: &[ID]) -> Result<ID> {
-        dispatch!(self, find_merge_base(tree, store, entry_ids))
+    // === Tree/Store traversal (local-only) ===
+
+    /// Enumerate every database root in the backend. Local-only.
+    pub async fn all_roots(&self) -> Result<Vec<ID>> {
+        local_only!(self, "all_roots", all_roots())
+    }
+
+    /// All entries in the tree. Local-only.
+    pub async fn get_tree(&self, tree: &ID) -> Result<Vec<Entry>> {
+        local_only!(self, "get_tree", get_tree(tree))
+    }
+
+    /// All entries in `store` reachable from `tips`. Local delegates to
+    /// BackendImpl; remote uses `DatabaseOp::GetStoreEntries`.
+    pub async fn get_store_from_tips(
+        &self,
+        tree: &ID,
+        store: &str,
+        tips: &[ID],
+    ) -> Result<Vec<Entry>> {
+        match self {
+            Backend::Local(b) => b.get_store_from_tips(tree, store, tips).await,
+            #[cfg(all(unix, feature = "service"))]
+            Backend::Remote(c) => {
+                let identity = c.session_identity().unwrap_or_default();
+                c.get_store_entries(
+                    tree.clone(),
+                    identity,
+                    store.to_string(),
+                    tips.to_vec(),
+                    crate::service::protocol::ReadScope::Verified,
+                )
+                .await
+            }
+        }
+    }
+
+    /// Lowest common ancestor. Local-only.
+    pub async fn find_merge_base(
+        &self,
+        tree: &ID,
+        store: &str,
+        entry_ids: &[ID],
+    ) -> Result<ID> {
+        local_only!(self, "find_merge_base", find_merge_base(tree, store, entry_ids))
+    }
+
+    /// Path from `from_id` to each `to_id`. Local-only.
+    pub async fn get_path_from_to(
+        &self,
+        tree_id: &ID,
+        store: &str,
+        from_id: &ID,
+        to_ids: &[ID],
+    ) -> Result<Vec<ID>> {
+        local_only!(
+            self,
+            "get_path_from_to",
+            get_path_from_to(tree_id, store, from_id, to_ids)
+        )
     }
 
     pub async fn collect_root_to_target(
@@ -191,47 +272,42 @@ impl Backend {
         )
     }
 
-    pub async fn get_tree(&self, tree: &ID) -> Result<Vec<Entry>> {
-        dispatch!(self, get_tree(tree))
-    }
-
-    pub async fn get_store(&self, tree: &ID, store: &str) -> Result<Vec<Entry>> {
-        dispatch!(self, get_store(tree, store))
-    }
-
-    pub async fn get_tree_from_tips(&self, tree: &ID, tips: &[ID]) -> Result<Vec<Entry>> {
-        dispatch!(self, get_tree_from_tips(tree, tips))
-    }
-
-    pub async fn get_store_from_tips(
-        &self,
-        tree: &ID,
-        store: &str,
-        tips: &[ID],
-    ) -> Result<Vec<Entry>> {
-        dispatch!(self, get_store_from_tips(tree, store, tips))
-    }
-
-    // === CRDT cache ===
-
-    pub async fn get_cached_crdt_state(
-        &self,
-        entry_id: &ID,
-        store: &str,
-    ) -> Result<Option<Vec<u8>>> {
-        dispatch!(self, get_cached_crdt_state(entry_id, store))
-    }
-
-    /// Cache CRDT state
-    pub async fn cache_crdt_state(&self, entry_id: &ID, store: &str, state: Vec<u8>) -> Result<()> {
-        dispatch!(self, cache_crdt_state(entry_id, store, state))
-    }
+    // === Internal primitives (local-only) ===
 
     pub async fn clear_crdt_cache(&self) -> Result<()> {
         local_only!(self, "clear_crdt_cache", clear_crdt_cache())
     }
 
-    // === Path operations ===
+    /// Get cached CRDT state. Local delegates to BackendImpl; remote
+    /// returns None (cache is local-only).
+    pub async fn get_cached_crdt_state(
+        &self,
+        entry_id: &ID,
+        store: &str,
+    ) -> Result<Option<Vec<u8>>> {
+        match self {
+            Backend::Local(b) => b.get_cached_crdt_state(entry_id, store).await,
+            #[cfg(all(unix, feature = "service"))]
+            Backend::Remote(_) => Ok(None),
+        }
+    }
+
+    /// Cache CRDT state. Local delegates to BackendImpl; remote is a no-op.
+    pub async fn cache_crdt_state(
+        &self,
+        entry_id: &ID,
+        store: &str,
+        state: Vec<u8>,
+    ) -> Result<()> {
+        match self {
+            Backend::Local(b) => b.cache_crdt_state(entry_id, store, state).await,
+            #[cfg(all(unix, feature = "service"))]
+            Backend::Remote(_) => {
+                let _ = (entry_id, store, state);
+                Ok(())
+            }
+        }
+    }
 
     pub async fn get_sorted_store_parents(
         &self,
@@ -246,16 +322,6 @@ impl Backend {
         )
     }
 
-    pub async fn get_path_from_to(
-        &self,
-        tree_id: &ID,
-        store: &str,
-        from_id: &ID,
-        to_ids: &[ID],
-    ) -> Result<Vec<ID>> {
-        dispatch!(self, get_path_from_to(tree_id, store, from_id, to_ids))
-    }
-
     // === Instance metadata ===
 
     pub async fn get_instance_metadata(&self) -> Result<Option<InstanceMetadata>> {
@@ -268,16 +334,7 @@ impl Backend {
 
     // === Instance secrets ===
 
-    /// Get instance secrets.
-    ///
-    /// Local backends read the stored secrets. Remote backends return
-    /// `OperationNotSupported`: instance secrets (the device signing key) live
-    /// server-side and are never shipped over the wire, so a remote `Ok(None)`
-    /// would be a *wrong answer* — indistinguishable from "no secrets
-    /// configured" — rather than an honest "not available here". Remote
-    /// instances are constructed with `secrets: None` by `Instance::connect`
-    /// and never reach this path in normal operation; the explicit error keeps
-    /// the dispatch honest for any future caller.
+    /// Get instance secrets. Local-only.
     pub async fn get_instance_secrets(&self) -> Result<Option<InstanceSecrets>> {
         match self {
             Backend::Local(b) => b.get_instance_secrets().await,
@@ -289,7 +346,7 @@ impl Backend {
         }
     }
 
-    /// Set instance secrets. Returns an error on remote backends.
+    /// Set instance secrets. Local-only.
     pub async fn set_instance_secrets(&self, secrets: &InstanceSecrets) -> Result<()> {
         match self {
             Backend::Local(b) => b.set_instance_secrets(secrets).await,
@@ -305,9 +362,9 @@ impl Backend {
 
     /// Write an entry to storage and handle remote write coordination.
     ///
-    /// For local backends, this persists the entry. For remote backends, this
-    /// persists the entry via Put RPC and then notifies the server to dispatch
-    /// write callbacks via NotifyEntryWritten RPC.
+    /// For local backends, this persists the entry and promotes verification
+    /// status if non-`Unverified`. For remote backends, this submits the
+    /// entry via `DatabaseOp::SubmitSignedEntry`.
     ///
     /// Local callback dispatch is handled by `Instance::put_entry()`.
     pub async fn write_entry(
@@ -319,11 +376,6 @@ impl Backend {
     ) -> Result<()> {
         match self {
             Backend::Local(b) => {
-                // Store Unverified, then promote. This is the local
-                // validation pass's funnel (`Instance::put_entry`), the only
-                // path that may produce Verified, and it does so explicitly
-                // via the promotion primitive rather than asserting status at
-                // store time.
                 let entry_id = entry.id();
                 b.put(entry).await?;
                 if verification != VerificationStatus::Unverified {
@@ -334,13 +386,17 @@ impl Backend {
             }
             #[cfg(all(unix, feature = "service"))]
             Backend::Remote(c) => {
-                // The wire carries no verification status: the server stores
-                // this Unverified regardless of `verification`. A remote
-                // backend cannot assert Verified for a peer (mirrors
-                // `update_verification_status` being unsupported remotely).
-                let entry_id = entry.id();
-                c.put(entry).await?;
-                c.notify_entry_written(tree_id, &entry_id, source).await
+                let identity = c.session_identity().unwrap_or_default();
+                // Use the entry's own id as the tree root for genesis
+                // entries (root=ID::default()), and the entry's claimed
+                // root for non-genesis entries.
+                // For genesis entries (root=None or root=zero-id), the
+                // tree is the entry's own id. For non-root entries, use
+                // the entry's claimed root.
+                let tree_root = entry.root().unwrap_or(entry.id());
+                c.submit_signed_entry(tree_root, identity, entry).await?;
+                let _ = source;
+                Ok(())
             }
         }
     }

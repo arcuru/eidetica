@@ -1012,12 +1012,19 @@ impl Database {
     pub async fn get_tips(&self) -> Result<Vec<ID>> {
         let instance = self.instance()?;
         let backend = instance.backend();
-        let tips = instance.get_tips(&self.root).await?;
+
+        // On a remote instance the server owns verification; get tips
+        // via the DatabaseOp wire path (verified frontier).
+        let tips = if let Some(conn) = instance.remote_connection() {
+            let identity = conn.session_identity().unwrap_or_default();
+            conn.get_verified_tips(self.root.clone(), identity).await?
+        } else {
+            self.ops().get_tips(&self.root).await?
+        };
 
         // Verification status ops are local-only. On a remote backend the
         // server owns verification (and stores everything Unverified until
-        // it verifies); the client returns raw tips unchanged. Probe the
-        // first tip to detect that case without matching backend internals.
+        // it verifies); the client returns verified tips unchanged.
         if let Some(first) = tips.first()
             && backend.get_verification_status(first).await.is_err()
         {
@@ -1048,7 +1055,7 @@ impl Database {
                 // validate_entry → delegation → get_settings → get_tips
                 // async cycle; the box gives it a finite future size.
                 let _ = Box::pin(self.verify()).await;
-                instance.get_tips(&self.root).await?
+                self.ops().get_tips(&self.root).await?
             } else {
                 tips
             }
