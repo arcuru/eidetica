@@ -747,6 +747,126 @@ impl Database {
         Ok(txn)
     }
 
+    /// Gather everything a client needs to build and sign a transaction
+    /// locally for the given stores, with parents drawn from `scope`'s
+    /// projection.
+    ///
+    /// This is **single-sourced**: both the server's `BeginTransaction`
+    /// handler and the Phase-3 remote seam call it, so
+    /// `Transaction::commit`'s build-sign path has one source of truth for
+    /// context gathering.
+    ///
+    /// `scope=AllowUnverified` opens against the raw DAG (only `Failed`
+    /// dropped); the default `Verified` scope uses the Verified frontier.
+    /// The returned [`TransactionContext`] carries everything needed for
+    /// one round-trip transaction build: main parents + heights, per-store
+    /// subtree parents + heights, settings tips, and the merged `_settings`
+    /// CRDT state this entry is authored against.
+    pub async fn transaction_context(
+        &self,
+        stores: &[String],
+        scope: crate::service::protocol::ReadScope,
+    ) -> Result<crate::service::protocol::TransactionContext> {
+        use crate::service::protocol::{ReadScope, TransactionContext};
+
+        // -- scope-sensitive main tips --------------------------------
+        let db_for_tips = Database {
+            allow_unverified: matches!(scope, ReadScope::AllowUnverified),
+            ..self.clone()
+        };
+        let main_tips = db_for_tips.get_tips().await?;
+
+        // -- main parents: (tip, height) ------------------------------
+        let mut main_parents = Vec::with_capacity(main_tips.len());
+        for tip in &main_tips {
+            let entry = self.ops().get(tip).await?;
+            main_parents.push((tip.clone(), entry.height()));
+        }
+
+        // -- per-store subtree parents: (tip, subtree_height) ---------
+        let mut subtree_parents = std::collections::BTreeMap::new();
+        for store in stores {
+            let child_tips = self
+                .ops()
+                .get_store_tips_up_to_entries(self.root_id(), store, &main_tips)
+                .await?;
+            let mut pairs = Vec::with_capacity(child_tips.len());
+            for tip in &child_tips {
+                let entry = self.ops().get(tip).await?;
+                let height = entry.subtree_height(store).unwrap_or(0);
+                pairs.push((tip.clone(), height));
+            }
+            subtree_parents.insert(store.clone(), pairs);
+        }
+
+        // -- settings tips (pinned in entry metadata) -----------------
+        let settings_tips = self
+            .ops()
+            .get_store_tips_up_to_entries(self.root_id(), SETTINGS, &main_tips)
+            .await?;
+
+        // -- merged _settings state as serde_json::Value --------------
+        let txn = Transaction::new_with_tips(self, &main_tips).await?;
+        let settings_doc: Doc = txn.get_full_state(SETTINGS).await?;
+        let settings_value = serde_json::to_value(&settings_doc)?;
+
+        Ok(TransactionContext {
+            main_parents,
+            subtree_parents,
+            settings_tips,
+            settings_value,
+        })
+    }
+
+    /// Server-materialized merged state of an **unencrypted** store, as a
+    /// `serde_json::Value` against the database's Verified frontier.
+    ///
+    /// Creates an ephemeral transaction, deserializes every entry's
+    /// store data as [`Doc`], and merges them via Doc's LWW merge —
+    /// the same merge `Store<T>` would perform client-side. All current
+    /// store types (DocStore, Table, Settings) serialize their data as
+    /// JSON, so `Doc`-typed deserialization works universally.
+    ///
+    /// # Encrypted stores
+    ///
+    /// Encrypted stores cannot be materialized this way (the ephemeral
+    /// transaction has no encryptor, so `serde_json::from_slice::<Doc>`
+    /// would fail on ciphertext). The caller must use
+    /// [`get_store_entries`](Self::get_store_entries) for encrypted
+    /// stores and decrypt+merge client-side.
+    pub async fn get_store_state(&self, store: &str) -> Result<serde_json::Value> {
+        let txn = self.new_transaction().await?;
+        let state: Doc = txn.get_full_state(store).await?;
+        Ok(serde_json::to_value(&state)?)
+    }
+
+    /// Ordered (by subtree height), verifiable, opaque store entries
+    /// reachable from `tips` within `scope`.
+    ///
+    /// This is the **universal** primitive — works for encrypted and
+    /// unencrypted stores alike because it returns raw [`Entry`] records
+    /// with opaque [`RawData`](crate::entry::RawData); no deserialization
+    /// or merge runs server-side. The per-subtree-height ordering
+    /// (ascending, then by ID for tiebreaking) is exactly the canonical
+    /// CRDT replay order produced by
+    /// [`sort_entries_by_subtree_height`](crate::backend::database::in_memory::cache::sort_entries_by_subtree_height).
+    ///
+    /// When `scope` is [`ReadScope::Verified`] and `tips` are the
+    /// Verified-frontier tips from [`get_tips`](Self::get_tips),
+    /// every returned entry is guaranteed `Verified` (the frontier is
+    /// ancestor-closed). For [`ReadScope::AllowUnverified`], entries
+    /// reachable from unverified tips are included.
+    pub async fn get_store_entries(
+        &self,
+        store: &str,
+        tips: &[ID],
+        _scope: crate::service::protocol::ReadScope,
+    ) -> Result<Vec<Entry>> {
+        self.ops()
+            .get_store_from_tips(self.root_id(), store, tips)
+            .await
+    }
+
     /// Execute a closure within a transaction and commit the result.
     ///
     /// This is a convenience wrapper for the common pattern of creating a transaction,

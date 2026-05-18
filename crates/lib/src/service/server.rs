@@ -462,18 +462,33 @@ async fn dispatch_database_op(
             Ok(ServiceResponse::Ok)
         }
 
-        // Not yet implemented — these depend on single-sourced Database-level
-        // helpers landing next (`transaction_context`, store-state-to-Value,
-        // the ordered-opaque path). Stubbed so this scaffold is buildable and
-        // the legacy `BackendOp` path stays fully unaffected.
-        DatabaseOp::BeginTransaction { .. }
-        | DatabaseOp::GetStoreState { .. }
-        | DatabaseOp::GetStoreEntries { .. } => Err(crate::Error::Instance(Box::new(
-            crate::instance::InstanceError::OperationNotSupported {
-                operation: "Database-level op handler not yet implemented (Phase 2 in progress)"
-                    .to_string(),
-            },
-        ))),
+        DatabaseOp::BeginTransaction { stores, scope } => {
+            // Single-sourced: both this handler and the Phase-3 remote seam
+            // call `Database::transaction_context`, so `Transaction::commit`'s
+            // build-sign path has one source of truth.
+            let db = Database::open(instance, &root_id).await?;
+            let ctx = db.transaction_context(&stores, scope).await?;
+            Ok(ServiceResponse::TransactionContext(ctx))
+        }
+
+        DatabaseOp::GetStoreState { store } => {
+            // Server-materialized merged state (unencrypted stores only).
+            // Encrypted stores must use GetStoreEntries instead — the
+            // ephemeral transaction here has no encryptor, and Doc
+            // deserialization would fail on ciphertext.
+            let db = Database::open(instance, &root_id).await?;
+            let value = db.get_store_state(&store).await?;
+            Ok(ServiceResponse::CrdtValue(value))
+        }
+
+        DatabaseOp::GetStoreEntries { store, tips, scope } => {
+            // Universal primitive (encrypted + unencrypted): returns raw
+            // Entry records with opaque data in canonical CRDT replay order.
+            // For encrypted stores the client decrypts+merges locally.
+            let db = Database::open(instance, &root_id).await?;
+            let entries = db.get_store_entries(&store, &tips, scope).await?;
+            Ok(ServiceResponse::Entries(entries))
+        }
     }
 }
 

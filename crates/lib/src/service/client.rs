@@ -28,8 +28,9 @@ use crate::entry::{Entry, ID};
 use crate::instance::WriteSource;
 use crate::service::error::service_error_to_eidetica_error;
 use crate::service::protocol::{
-    AuthenticatedRequest, BackendOp, Handshake, HandshakeAck, PROTOCOL_VERSION, ServiceRequest,
-    ServiceResponse, read_frame, write_frame,
+    AuthenticatedDbRequest, AuthenticatedRequest, BackendOp, DatabaseOp, Handshake, HandshakeAck,
+    ReadScope, ServiceRequest, ServiceResponse, TransactionContext, WireCrdtValue,
+    PROTOCOL_VERSION, read_frame, write_frame,
 };
 use crate::user::UserError;
 use crate::user::crypto::{decrypt_private_key, derive_encryption_key};
@@ -167,6 +168,29 @@ impl RemoteConnection {
                 root_id,
                 identity,
                 request: op,
+            },
+        )))
+        .await
+    }
+
+    /// Wrap a `DatabaseOp` in the `AuthenticatedDb` envelope and send it.
+    ///
+    /// Database-level analogue of [`backend_request`]: same `(root_id,
+    /// identity)` scope and the same `request_ok` error conversion, carrying
+    /// a `DatabaseOp` in an `AuthenticatedDbRequest`. Unlike `backend_request`,
+    /// `root_id` is caller-supplied — DatabaseOps carry no inline tree id,
+    /// but every variant is tree-scoped by construction.
+    async fn db_request(
+        &self,
+        root_id: ID,
+        identity: SigKey,
+        op: DatabaseOp,
+    ) -> crate::Result<ServiceResponse> {
+        self.request_ok(ServiceRequest::AuthenticatedDb(Box::new(
+            AuthenticatedDbRequest {
+                root_id,
+                identity,
+                op,
             },
         )))
         .await
@@ -489,6 +513,129 @@ impl RemoteConnection {
             })
             .await?;
         Self::expect_ok(resp)
+    }
+
+    // === Database operations (DatabaseOp via AuthenticatedDb envelope) ===
+
+    /// Acquire a [`TransactionContext`] for the given stores and scope.
+    ///
+    /// The returned context includes main-tree parents with heights,
+    /// per-store subtree parents, `_settings` tips, and the merged
+    /// `_settings` value — everything needed to build and sign an entry
+    /// locally without further round-trips.
+    pub async fn begin_transaction(
+        &self,
+        root_id: ID,
+        identity: SigKey,
+        stores: Vec<String>,
+        scope: ReadScope,
+    ) -> crate::Result<TransactionContext> {
+        let resp = self
+            .db_request(root_id, identity, DatabaseOp::BeginTransaction { stores, scope })
+            .await?;
+        match resp {
+            ServiceResponse::TransactionContext(ctx) => Ok(ctx),
+            other => Err(unexpected_response("TransactionContext", &other)),
+        }
+    }
+
+    /// Fetch the server-materialized merged state of an unencrypted store.
+    pub async fn get_store_state(
+        &self,
+        root_id: ID,
+        identity: SigKey,
+        store: String,
+    ) -> crate::Result<WireCrdtValue> {
+        let resp = self
+            .db_request(root_id, identity, DatabaseOp::GetStoreState { store })
+            .await?;
+        match resp {
+            ServiceResponse::CrdtValue(v) => Ok(v),
+            other => Err(unexpected_response("CrdtValue", &other)),
+        }
+    }
+
+    /// Fetch ordered, verified, opaque store entries reachable from `tips`.
+    ///
+    /// Universal primitive — works for encrypted stores (client decrypts
+    /// locally) as well as unencrypted ones.
+    pub async fn get_store_entries(
+        &self,
+        root_id: ID,
+        identity: SigKey,
+        store: String,
+        tips: Vec<ID>,
+        scope: ReadScope,
+    ) -> crate::Result<Vec<Entry>> {
+        let resp = self
+            .db_request(
+                root_id,
+                identity,
+                DatabaseOp::GetStoreEntries {
+                    store,
+                    tips,
+                    scope,
+                },
+            )
+            .await?;
+        match resp {
+            ServiceResponse::Entries(entries) => Ok(entries),
+            other => Err(unexpected_response("Entries", &other)),
+        }
+    }
+
+    /// Fetch the database's Verified-frontier tips.
+    pub async fn get_verified_tips(
+        &self,
+        root_id: ID,
+        identity: SigKey,
+    ) -> crate::Result<Vec<ID>> {
+        let resp = self
+            .db_request(root_id, identity, DatabaseOp::GetVerifiedTips)
+            .await?;
+        match resp {
+            ServiceResponse::Ids(ids) => Ok(ids),
+            other => Err(unexpected_response("Ids", &other)),
+        }
+    }
+
+    /// Submit a client-signed entry to the server.
+    ///
+    /// The server stores the entry as `Unverified` and runs its own
+    /// verification pass — it never trusts a submitted entry's claimed
+    /// validity.
+    pub async fn submit_signed_entry(
+        &self,
+        root_id: ID,
+        identity: SigKey,
+        entry: Entry,
+    ) -> crate::Result<()> {
+        let resp = self
+            .db_request(root_id, identity, DatabaseOp::SubmitSignedEntry { entry })
+            .await?;
+        match resp {
+            ServiceResponse::Ok => Ok(()),
+            other => Err(unexpected_response("Ok", &other)),
+        }
+    }
+
+    /// Fetch a single database entry by id.
+    ///
+    /// Gated post-fetch by the entry's owning tree, so the caller must hold
+    /// at least `Read` on the database the entry belongs to.
+    pub async fn db_get_entry(
+        &self,
+        root_id: ID,
+        identity: SigKey,
+        id: ID,
+    ) -> crate::Result<Entry> {
+        let resp = self
+            .db_request(root_id, identity, DatabaseOp::GetEntry { id })
+            .await?;
+        match resp {
+            ServiceResponse::Entry(entry) => Ok(entry),
+            other => Err(unexpected_response("Entry", &other)),
+        }
     }
 }
 
