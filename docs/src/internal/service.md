@@ -191,6 +191,87 @@ Unrecognized combinations fall back to an `Io` error carrying the original messa
 
 Service-mode CRDT-cache ops are served from a daemon-local `ServiceCache` keyed by `(user_uuid, entry_id, store)` rather than the backend's global cache, closing the cross-user poisoning vector. The cache is content-addressable underneath: identical bytes uploaded by N users are stored once and refcounted. The backend's own cache machinery is unchanged and still serves local (non-service) flows; the two caches are independent by design.
 
+## Database-Level Wire API
+
+The `BackendOp`/`ServiceRequest::Authenticated` path mirrors the low-level storage trait: auth, verification, and CRDT merge run client-side over raw storage primitives. This places the security model *above* the wire boundary — the daemon is a passive key-value store.
+
+The `DatabaseOp`/`ServiceRequest::AuthenticatedDb` path (added in Phase 4/5) inverts this: the server runs its own `Database` on a local `Instance`, so verification-on-read, the Verified frontier, and CRDT state materialization become server-side by construction. Every op is intrinsically tree-scoped through the containing `AuthenticatedDbRequest`.
+
+### DatabaseOps trait seam
+
+`Database` no longer calls `Instance::backend()` directly. Instead it holds an `Arc<dyn DatabaseOps>`, a narrow trait mirroring the backend-read paths that `Transaction` and `Store` types depend on:
+
+| Method | Purpose |
+| ------ | ------- |
+| `get(id)` | Fetch a single entry |
+| `get_tips(tree)` / `get_store_tips(tree, store)` | Raw DAG tips, no Verified-frontier filtering |
+| `get_store_tips_up_to_entries(tree, store, up_to)` | Tips reachable from given entries |
+| `find_merge_base(tree, store, ids)` | Lowest common ancestor within a store |
+| `get_path_from_to(...)` / `get_store_from_tips(...)` | Entry traversal and store reconstruction |
+| `get_cached_crdt_state` / `cache_crdt_state` | CRDT merge cache (local merge-materialization fast-path) |
+| `put(entry)` | Persist a (client-signed) entry |
+
+`Transaction` and all `Store` types are unchanged — they already funnel I/O through their `Database` handle, so the seam is invisible below the `Database` level. Two implementations exist:
+
+- **`LocalDatabaseOps`** — forwards every call to the owning `Instance`'s `Backend` (the pre-seam path). Created from a `WeakInstance` so a `Database` rebuilt via `with_key`/`allow_unverified` (using `..self`) keeps a correct ops handle.
+- **`RemoteDatabaseOps`** — translates each method to a wire RPC through the shared `RemoteConnection`. Methods with a `DatabaseOp` variant (`get` → `GetEntry`, `get_store_from_tips` → `GetStoreEntries`, `put` → `SubmitSignedEntry`, etc.) use the authenticated-DB RPC path. Methods without a wire equivalent (`find_merge_base`, `get_path_from_to`) return `OperationNotSupported`. The CRDT merge cache (`get_cached_crdt_state`/`cache_crdt_state`) is local in-memory (a `Mutex<HashMap<(ID, String), Vec<u8>>>`) — no round-trip for repeated subtree-state materialization during a transaction.
+
+`Database` chooses the implementor at construction time:
+
+```rust,ignore
+// Local
+ops: Arc::new(LocalDatabaseOps::new(instance.downgrade())),
+
+// Remote (service)
+ops: Arc::new(RemoteDatabaseOps::new(conn, root_id, identity)),
+```
+
+### Encrypted-store split
+
+Encrypted stores (wrapped in `PasswordStore`) are opaque to the daemon — the daemon stores and syncs `EncryptedBlob` entries without ever holding a content encryption key. The `DatabaseOp` surface handles the encryption boundary with two complementary primitives:
+
+- **`GetStoreState { store }`** — the **unencrypted fast path** (Doc/Table stores). The server loads the store's entries, CRDT-merges them locally, materializes the merged state, and returns a `WireCrdtValue` (`serde_json::Value`). No decryption; the server works with plaintext because the underlying data is unencrypted.
+
+- **`GetStoreEntries { store, tips, scope }`** — the **universal primitive** for encrypted stores. Returns opaque `Entry` objects reachable from `tips`, ordered by subtree height, already verified against the server's Verified frontier. The client receives encrypted entries it can decrypt and CRDT-merge locally. This works identically for encrypted and unencrypted stores — the server never touches content.
+
+- **`GetCachedCrdtState`/`CacheCrdtState`** (retained from the `BackendOp` surface, also forwarded through `RemoteDatabaseOps`'s in-memory cache) provide a per-session CRDT-merge fast-path that avoids re-fetching entries whose merged state is already cached. The daemon's per-user `ServiceCache` (keyed `(user_uuid, entry_id, store)`) serves the cross-session path; the `RemoteDatabaseOps` local cache serves intra-session repeated materialization.
+
+The encrypted-store-over-service test (`test_database_encrypted_store_roundtrip`) exercises the full path: writes encrypted data server-side via a local `Database`, then reads entries via `RemoteConnection::get_store_entries` and confirms the opaque entries carry the correct subtree markers. Decryption and local merge are client-only.
+
+### Read scope
+
+`ReadScope` controls the DAG projection exposed over the wire:
+
+- **`Verified`** (default) — only the maximal all-`Verified` ancestor-closed prefix of the DAG (the "Verified frontier"). Tips that are still `Unverified` are replaced by their nearest `Verified` ancestors; `Failed` entries are always dropped.
+- **`AllowUnverified`** — open against the raw DAG (only `Failed` dropped). The caller must explicitly opt in via `Database::allow_unverified()`.
+
+`BeginTransaction` carries the caller's `ReadScope`: write parents are drawn from the *same* projection the caller reads, so a write built under `AllowUnverified` uses unverified tips as parents and a write built under the `Verified` default uses only verified ancestors. This ensures the write's parent projection is self-consistent with the caller's read posture.
+
+### Wire API: `AuthenticatedDbRequest`
+
+Database-level operations travel in `ServiceRequest::AuthenticatedDb`:
+
+```rust,ignore
+pub struct AuthenticatedDbRequest {
+    pub root_id: ID,      // database whose auth_settings gate this op
+    pub identity: SigKey, // verified against the connection's session pubkey
+    pub op: DatabaseOp,   // tree-scoped by construction
+}
+```
+
+Unlike `BackendOp`, every `DatabaseOp` variant is intrinsically tree-scoped via `root_id` — there are no tree-less operations to gate. Permission follows the same `required_permission()` pattern: `Read` for queries (`GetVerifiedTips`, `GetStoreState`, `GetStoreEntries`, `GetEntry`, `BeginTransaction`), `Write` for mutation (`SubmitSignedEntry`). The per-tree permission gate (Gate 2) always fires for `AuthenticatedDb` requests because the tree identity is known before dispatch.
+
+### BackendOp surface reduction
+
+With the `DatabaseOp` path covering every Database-level read and write, the legacy `BackendOp` set was reduced to two variants:
+
+| Variant | Purpose |
+| ------- | ------- |
+| `Get { id }` | Fetch a single entry by id (gated post-fetch by the entry's owning tree). Needed for entry-id-keyed lookups that don't carry an owning-tree hint inline. |
+| `SetInstanceMetadata { metadata }` | Rewrite daemon-level metadata pointers requires `Admin`. Targets the global `_databases` system tree, not a caller-named database. |
+
+All other operations (`Put`, `GetTips`, `GetStoreTips`, `GetStoreTipsUpToEntries`, `FindMergeBase`, `GetTree`, `GetStore`, `GetTreeFromTips`, `GetStoreFromTips`, `GetCachedCrdtState`, `CacheCrdtState`, `GetPathFromTo`, `NotifyEntryWritten`) were removed from `BackendOp` — they are either served entirely through `DatabaseOp` or (for write-coordination callbacks like `NotifyEntryWritten`) handled transparently by the `RemoteDatabaseOps` / `LocalDatabaseOps` implementations without a dedicated wire op.
+
 ## Feature Gate
 
 ```rust,ignore
