@@ -818,8 +818,16 @@ mod tests {
         tokio::spawn(async move {
             let _ = server.run(rx).await;
         });
-        // Give the server a moment to bind
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // Wait for the socket to appear (server binds asynchronously). Poll
+        // with a short sleep instead of a fixed delay so a slow sandbox
+        // (where this test was occasionally flaky under `nix build`) doesn't
+        // race the bind step.
+        for _ in 0..50 {
+            if socket_path.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
         (socket_path, tx, instance)
     }
 
@@ -828,7 +836,13 @@ mod tests {
         let (socket_path, tx, _instance) = start_test_server().await;
         assert!(socket_path.exists());
         drop(tx);
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // Poll for cleanup with the same robustness as the bind wait.
+        for _ in 0..50 {
+            if !socket_path.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
         // Socket should be cleaned up
         assert!(!socket_path.exists());
     }

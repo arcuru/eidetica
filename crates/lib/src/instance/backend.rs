@@ -158,16 +158,33 @@ impl Backend {
         }
     }
 
-    /// Get store tips. Local delegates to BackendImpl; remote falls back
-    /// to the tree's verified tips (the store-level tip resolution is
-    /// server-side; this is an approximation for remote reads).
+    /// Get store tips. Local delegates to BackendImpl; remote uses the
+    /// store-specific `GetStoreTipsUpToEntries` wire RPC against the tree's
+    /// current verified tips (the "store tips" semantic = store-specific
+    /// tips reachable from the current tree tips).
     pub async fn get_store_tips(&self, tree: &ID, store: &str) -> Result<Vec<ID>> {
         match self {
             Backend::Local(b) => b.get_store_tips(tree, store).await,
             #[cfg(all(unix, feature = "service"))]
             Backend::Remote(c) => {
                 let identity = c.session_identity().unwrap_or_default();
-                match c.get_verified_tips(tree.clone(), identity).await {
+                let tree_tips = match c.get_verified_tips(tree.clone(), identity.clone()).await {
+                    Ok(tips) => tips,
+                    Err(e) if e.is_not_found() => return Ok(Vec::new()),
+                    Err(e) => return Err(e),
+                };
+                if tree_tips.is_empty() {
+                    return Ok(Vec::new());
+                }
+                match c
+                    .get_store_tips_up_to_entries(
+                        tree.clone(),
+                        identity,
+                        store.to_string(),
+                        tree_tips,
+                    )
+                    .await
+                {
                     Ok(tips) => Ok(tips),
                     Err(e) if e.is_not_found() => Ok(Vec::new()),
                     Err(e) => Err(e),
@@ -176,7 +193,9 @@ impl Backend {
         }
     }
 
-    /// Get store tips up to entries. Remote falls back to verified tips.
+    /// Get store tips up to entries. Local delegates to BackendImpl; remote
+    /// uses the store-specific `GetStoreTipsUpToEntries` wire RPC directly
+    /// against `up_to` (the parameter passed in).
     pub async fn get_store_tips_up_to_entries(
         &self,
         tree: &ID,
@@ -188,7 +207,15 @@ impl Backend {
             #[cfg(all(unix, feature = "service"))]
             Backend::Remote(c) => {
                 let identity = c.session_identity().unwrap_or_default();
-                match c.get_verified_tips(tree.clone(), identity).await {
+                match c
+                    .get_store_tips_up_to_entries(
+                        tree.clone(),
+                        identity,
+                        store.to_string(),
+                        up_to.to_vec(),
+                    )
+                    .await
+                {
                     Ok(tips) => Ok(tips),
                     Err(e) if e.is_not_found() => Ok(Vec::new()),
                     Err(e) => Err(e),
@@ -234,17 +261,36 @@ impl Backend {
         }
     }
 
-    /// Lowest common ancestor. Local-only.
+    /// Lowest common ancestor. Local delegates to BackendImpl; remote
+    /// uses the `ComputeMergeState` wire RPC (which fuses LCA + path).
     pub async fn find_merge_base(
         &self,
         tree: &ID,
         store: &str,
         entry_ids: &[ID],
     ) -> Result<ID> {
-        local_only!(self, "find_merge_base", find_merge_base(tree, store, entry_ids))
+        match self {
+            Backend::Local(b) => b.find_merge_base(tree, store, entry_ids).await,
+            #[cfg(all(unix, feature = "service"))]
+            Backend::Remote(c) => {
+                let identity = c.session_identity().unwrap_or_default();
+                let state = c
+                    .compute_merge_state(
+                        tree.clone(),
+                        identity,
+                        store.to_string(),
+                        entry_ids.to_vec(),
+                    )
+                    .await?;
+                Ok(state.merge_base)
+            }
+        }
     }
 
-    /// Path from `from_id` to each `to_id`. Local-only.
+    /// Path from `from_id` to each `to_id`. Local delegates to BackendImpl;
+    /// remote uses the `ComputeMergeState` wire RPC. The `from_id` argument
+    /// is informational here — the server fuses LCA + path against `to_ids`
+    /// in one round-trip, so a separately-supplied LCA isn't replayed.
     pub async fn get_path_from_to(
         &self,
         tree_id: &ID,
@@ -252,11 +298,23 @@ impl Backend {
         from_id: &ID,
         to_ids: &[ID],
     ) -> Result<Vec<ID>> {
-        local_only!(
-            self,
-            "get_path_from_to",
-            get_path_from_to(tree_id, store, from_id, to_ids)
-        )
+        match self {
+            Backend::Local(b) => b.get_path_from_to(tree_id, store, from_id, to_ids).await,
+            #[cfg(all(unix, feature = "service"))]
+            Backend::Remote(c) => {
+                let _ = from_id;
+                let identity = c.session_identity().unwrap_or_default();
+                let state = c
+                    .compute_merge_state(
+                        tree_id.clone(),
+                        identity,
+                        store.to_string(),
+                        to_ids.to_vec(),
+                    )
+                    .await?;
+                Ok(state.path)
+            }
+        }
     }
 
     pub async fn collect_root_to_target(

@@ -58,10 +58,13 @@ impl<'a> InstanceAdmin<'a> {
         let instance = self.user.instance();
 
         // On a connected instance the genesis + user-database follow-up
-        // writes can't be authored over the connection's session (the new
-        // user's key is not a member of its wire-write gate). The daemon
-        // owns this flow: send the admin-gated `CreateUser` RPC and let the
-        // server run `system_databases::create_user` locally.
+        // writes can't yet be authored over the connection's session
+        // end-to-end (transitional: the wire-submit path is unblocked by
+        // verification-gated submit, but `system_databases::create_user`'s
+        // multi-tree authorship has remaining identity-routing edges that
+        // a follow-up will close). The daemon owns this flow for now: send
+        // the admin-gated `CreateUser` RPC and let the server run
+        // `system_databases::create_user` locally.
         if let Some(conn) = instance.remote_connection() {
             return conn.create_user(username, password).await;
         }
