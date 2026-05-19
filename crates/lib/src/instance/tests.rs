@@ -34,10 +34,11 @@ async fn test_create_user() -> Result<(), Error> {
 
     assert!(!user_uuid.is_empty());
 
-    // Verify user appears in list
+    // Verify users appear in list (admin + alice)
     let users = instance.list_users().await.unwrap();
-    assert_eq!(users.len(), 1);
-    assert_eq!(users[0], "alice");
+    assert_eq!(users.len(), 2, "Should have 2 users (admin + alice)");
+    assert!(users.contains(&"admin".to_string()), "Admin should exist");
+    assert!(users.contains(&"alice".to_string()), "Alice should exist");
     Ok(())
 }
 
@@ -178,10 +179,11 @@ async fn test_instance_load_existing_backend() -> Result<(), Error> {
     let instance2 =
         Instance::open_with_clock(Box::new(backend2), Arc::new(FixedClock::default())).await?;
 
-    // Verify the user still exists
+    // Verify the users still exist (admin + bob)
     let users = instance2.list_users().await?;
-    assert_eq!(users.len(), 1);
-    assert_eq!(users[0], "bob");
+    assert_eq!(users.len(), 2, "Should have 2 users (admin + bob)");
+    assert!(users.contains(&"admin".to_string()), "Admin should exist");
+    assert!(users.contains(&"bob".to_string()), "Bob should exist");
 
     // Verify we can login the existing user
     let user2 = instance2.login_user("bob", None).await?;
@@ -314,7 +316,8 @@ async fn test_instance_load_multiple_users() -> Result<(), Error> {
     let instance2 = Instance::open(Box::new(backend2)).await?;
 
     let users = instance2.list_users().await?;
-    assert_eq!(users.len(), 4, "All 4 users should be present after reload");
+    assert_eq!(users.len(), 5, "All 5 users (admin + 4 created) should be present after reload");
+    assert!(users.contains(&"admin".to_string()), "Admin should exist");
     assert!(users.contains(&"alice".to_string()));
     assert!(users.contains(&"bob".to_string()));
     assert!(users.contains(&"charlie".to_string()));
@@ -431,10 +434,11 @@ async fn test_instance_load_idempotency() -> Result<(), Error> {
             "Device ID should be consistent on reload {i}"
         );
 
-        // User list should be the same
+        // User list should be the same (admin + frank)
         let users = instance.list_users().await?;
-        assert_eq!(users.len(), 1);
-        assert_eq!(users[0], "frank");
+        assert_eq!(users.len(), 2, "Should have 2 users (admin + frank)");
+        assert!(users.contains(&"admin".to_string()), "Admin should exist");
+        assert!(users.contains(&"frank".to_string()), "Frank should exist");
 
         // Should be able to login
         let user = instance.login_user("frank", None).await?;
@@ -480,10 +484,11 @@ async fn test_instance_load_new_vs_existing() -> Result<(), Error> {
     // Device ID should match (existing backend)
     assert_eq!(device_id1, device_id2);
 
-    // User should exist (existing backend)
+    // User should exist (existing backend — admin + grace)
     let users = instance2.list_users().await?;
-    assert_eq!(users.len(), 1);
-    assert_eq!(users[0], "grace");
+    assert_eq!(users.len(), 2, "Should have 2 users (admin + grace)");
+    assert!(users.contains(&"admin".to_string()), "Admin should exist");
+    assert!(users.contains(&"grace".to_string()), "Grace should exist");
     drop(instance2);
 
     // Create completely new instance (different backend)
@@ -495,9 +500,10 @@ async fn test_instance_load_new_vs_existing() -> Result<(), Error> {
     // Device ID should be different (new backend)
     assert_ne!(device_id1, device_id3);
 
-    // No users should exist (new backend)
+    // Only the bootstrapped admin should exist (new backend)
     let users = instance3.list_users().await?;
-    assert_eq!(users.len(), 0);
+    assert_eq!(users.len(), 1, "Should have 1 user (bootstrapped admin)");
+    assert!(users.contains(&"admin".to_string()), "Admin should exist");
 
     // Clean up
     if path.exists() {
@@ -548,8 +554,9 @@ async fn test_instance_create_strict_fails_on_existing() -> Result<(), Error> {
     let instance3 =
         Instance::open_with_clock(Box::new(backend3), Arc::new(FixedClock::default())).await?;
     let users = instance3.list_users().await?;
-    assert_eq!(users.len(), 1);
-    assert_eq!(users[0], "alice");
+    assert_eq!(users.len(), 2, "Should have 2 users (admin + alice)");
+    assert!(users.contains(&"admin".to_string()), "Admin should exist");
+    assert!(users.contains(&"alice".to_string()), "Alice should exist");
 
     // Clean up
     if path.exists() {

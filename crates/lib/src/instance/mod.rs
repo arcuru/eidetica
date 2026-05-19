@@ -350,17 +350,6 @@ impl Instance {
             tree_locks: Mutex::new(HashMap::new()),
         });
         let instance = Self { inner };
-
-        // 5. Bootstrap the initial admin user — admin/admin
-        let users_db = instance.users_db().await?;
-        crate::user::system_databases::create_user(
-            &users_db,
-            &instance,
-            "admin",
-            Some("admin"),
-        )
-        .await?;
-
         Ok(instance)
     }
 
@@ -596,7 +585,19 @@ impl Instance {
             tree_locks: Mutex::new(HashMap::new()),
         });
 
-        Ok(Self { inner })
+        let instance = Self { inner };
+
+        // 5. Bootstrap the initial admin user — admin/admin
+        let users_db = instance.users_db().await?;
+        crate::user::system_databases::create_user(
+            &users_db,
+            &instance,
+            "admin",
+            Some("admin"),
+        )
+        .await?;
+
+        Ok(instance)
     }
 
     /// Get a reference to the backend

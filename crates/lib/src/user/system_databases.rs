@@ -898,44 +898,29 @@ mod tests {
             .map(|k| *k.permissions())
     }
 
-    /// First user created on a fresh instance becomes the instance admin: their
-    /// pubkey lands as `Admin(0)` in both `_users` and `_databases`.
+    /// The bootstrapped admin/admin user is the instance admin: its pubkey
+    /// lands as `Admin(0)` in both `_users` and `_databases`.
     #[tokio::test]
     async fn test_first_user_becomes_instance_admin() {
         let (instance, _device_key) = setup_instance().await;
 
-        let user_uuid = instance.create_user("alice", None).await.unwrap();
-        assert!(!user_uuid.is_empty());
+        // Admin is already bootstrapped — login and verify
+        let admin_user = instance.login_user("admin", Some("admin")).await.unwrap();
 
         let users_db = instance.users_db().await.unwrap();
         let databases_db = instance.databases_db().await.unwrap();
 
-        // Recover alice's pubkey from her UserInfo → user_database default key.
-        let users_table = users_db
-            .get_store_viewer::<Table<UserInfo>>("users")
-            .await
-            .unwrap();
-        let user_info = users_table.get(&user_uuid).await.unwrap();
-        let user_database = Database::open(&instance, &user_info.user_database_id)
-            .await
-            .unwrap();
-        let keys_table = user_database
-            .get_store_viewer::<Table<UserKey>>("keys")
-            .await
-            .unwrap();
-        let alice_keys = keys_table.search(|k| k.is_default).await.unwrap();
-        assert_eq!(alice_keys.len(), 1);
-        let alice_pubkey = alice_keys[0].1.key_id.clone();
+        let admin_pubkey = admin_user.key_manager().get_default_key_id().unwrap();
 
         assert_eq!(
-            read_admin_permission(&users_db, &alice_pubkey).await,
+            read_admin_permission(&users_db, &admin_pubkey).await,
             Some(Permission::Admin(0)),
-            "first user should be Admin(0) in _users"
+            "bootstrapped admin should be Admin(0) in _users"
         );
         assert_eq!(
-            read_admin_permission(&databases_db, &alice_pubkey).await,
+            read_admin_permission(&databases_db, &admin_pubkey).await,
             Some(Permission::Admin(0)),
-            "first user should be Admin(0) in _databases"
+            "bootstrapped admin should be Admin(0) in _databases"
         );
     }
 
@@ -982,38 +967,39 @@ mod tests {
         );
     }
 
-    /// `User::is_admin()` query agrees with the bootstrap outcome above.
+    /// `User::is_admin()` query: the bootstrapped admin is admin, newly created
+    /// users are not.
     #[tokio::test]
     async fn test_user_is_admin_query() {
         let (instance, _device_key) = setup_instance().await;
 
-        instance.create_user("alice", None).await.unwrap();
-        instance.create_user("bob", None).await.unwrap();
-
-        let alice = instance.login_user("alice", None).await.unwrap();
-        let bob = instance.login_user("bob", None).await.unwrap();
-
+        // Bootstrapped admin reports is_admin = true
+        let admin_user = instance.login_user("admin", Some("admin")).await.unwrap();
         assert!(
-            alice.is_admin().await.unwrap(),
-            "first user must report is_admin = true"
+            admin_user.is_admin().await.unwrap(),
+            "bootstrapped admin must report is_admin = true"
         );
+
+        // A newly created user reports is_admin = false
+        instance.create_user("alice", None).await.unwrap();
+        let alice = instance.login_user("alice", None).await.unwrap();
         assert!(
-            !bob.is_admin().await.unwrap(),
-            "second user must report is_admin = false"
+            !alice.is_admin().await.unwrap(),
+            "newly created user must report is_admin = false"
         );
     }
 
-    /// An existing admin can promote another user: the new admin's pubkey
+    /// The bootstrapped admin can promote another user: the new admin's pubkey
     /// lands as `Admin(0)` on both `_users` and `_databases`, and the
     /// promoted user then reports `is_admin()`.
     #[tokio::test]
     async fn test_admin_can_promote_user() {
         let (instance, _device_key) = setup_instance().await;
 
-        instance.create_user("alice", None).await.unwrap();
-        instance.create_user("bob", None).await.unwrap();
+        // Login as the bootstrapped admin
+        let admin = instance.login_user("admin", Some("admin")).await.unwrap();
 
-        let alice = instance.login_user("alice", None).await.unwrap();
+        instance.create_user("bob", None).await.unwrap();
         let bob = instance.login_user("bob", None).await.unwrap();
         let bob_pubkey = bob.key_manager().get_default_key_id().unwrap();
 
@@ -1022,7 +1008,8 @@ mod tests {
             "precondition: bob starts as a non-admin"
         );
 
-        alice.grant_instance_admin(&bob_pubkey).await.unwrap();
+        // Admin promotes bob
+        admin.grant_instance_admin(&bob_pubkey).await.unwrap();
 
         let users_db = instance.users_db().await.unwrap();
         let databases_db = instance.databases_db().await.unwrap();
@@ -1085,15 +1072,15 @@ mod tests {
     async fn test_grant_instance_admin_idempotent_and_chains() {
         let (instance, _device_key) = setup_instance().await;
 
-        instance.create_user("alice", None).await.unwrap();
-        instance.create_user("bob", None).await.unwrap();
+        // Login as the bootstrapped admin
+        let admin = instance.login_user("admin", Some("admin")).await.unwrap();
 
-        let alice = instance.login_user("alice", None).await.unwrap();
+        instance.create_user("bob", None).await.unwrap();
         let bob = instance.login_user("bob", None).await.unwrap();
         let bob_pubkey = bob.key_manager().get_default_key_id().unwrap();
 
-        alice.grant_instance_admin(&bob_pubkey).await.unwrap();
-        alice.grant_instance_admin(&bob_pubkey).await.unwrap(); // idempotent: no error
+        admin.grant_instance_admin(&bob_pubkey).await.unwrap();
+        admin.grant_instance_admin(&bob_pubkey).await.unwrap(); // idempotent: no error
 
         let users_db = instance.users_db().await.unwrap();
         assert_eq!(
