@@ -61,8 +61,14 @@ async fn main() -> Result<()> {
         .or_else(|| std::env::var("USER").ok())
         .unwrap_or_else(|| "Anonymous".to_string());
 
-    // Create a passwordless user (ignore error if user already exists)
-    let _ = instance.create_user(&username, None).await;
+    // Create a passwordless user (ignore error if user already exists).
+    // User creation is an instance-admin operation, reached through the
+    // bootstrapped admin session (admin/admin, minted by Instance::open).
+    if let Ok(admin) = instance.login_user("admin", Some("admin")).await
+        && let Ok(admin) = admin.admin().await
+    {
+        let _ = admin.create_user(&username, None).await;
+    }
 
     // Login the user to get a User session
     let user = instance.login_user(&username, None).await?;

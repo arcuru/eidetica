@@ -12,7 +12,8 @@ pub async fn run(args: &InfoArgs, format: OutputFormat) -> Result<(), Box<dyn st
     let instance = Instance::open(backend).await?;
 
     let device_id = instance.id();
-    let users = instance.list_users().await?;
+    let admin = instance.login_user("admin", Some("admin")).await?;
+    let users = admin.admin().await?.list_users().await?;
     let all_roots = instance.backend().all_roots().await?;
 
     // Filter out system database roots to get user database count

@@ -170,9 +170,12 @@ async fn get_or_create_user(instance: &Instance) -> Result<User> {
             Ok(user)
         }
         Err(e) if e.is_not_found() => {
-            // User doesn't exist, create it
+            // User doesn't exist, create it. User creation is an
+            // instance-admin operation, reached through the bootstrapped
+            // admin session (admin/admin, minted by Instance::open).
             println!("Creating new passwordless user: {username}");
-            instance.create_user(username, None).await?;
+            let admin = instance.login_user("admin", Some("admin")).await?;
+            admin.admin().await?.create_user(username, None).await?;
             let user = instance.login_user(username, None).await?;
             println!("✓ Created and logged in as passwordless user: {username}");
             Ok(user)
