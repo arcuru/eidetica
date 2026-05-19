@@ -349,7 +349,19 @@ impl Instance {
             next_callback_id: AtomicU64::new(0),
             tree_locks: Mutex::new(HashMap::new()),
         });
-        Ok(Self { inner })
+        let instance = Self { inner };
+
+        // 5. Bootstrap the initial admin user — admin/admin
+        let users_db = instance.users_db().await?;
+        crate::user::system_databases::create_user(
+            &users_db,
+            &instance,
+            "admin",
+            Some("admin"),
+        )
+        .await?;
+
+        Ok(instance)
     }
 
     /// Load an existing Instance or create a new one (recommended).
@@ -571,7 +583,7 @@ impl Instance {
         };
         backend.set_instance_metadata(&metadata).await?;
 
-        // 4. Build real instance and return
+        // 4. Build real instance
         let inner = Arc::new(InstanceInternal {
             backend: Backend::new(backend),
             clock,
@@ -674,6 +686,17 @@ impl Instance {
         Ok(db.with_key(self.signing_key()?.clone()))
     }
 
+    /// Open the _users system database with a specific signing key (not the device
+    /// key).  Used by [`User::create_user`](crate::user::User::create_user) on
+    /// remote instances where the device key is unavailable.
+    pub(crate) async fn users_db_for_session(
+        &self,
+        signing_key: &PrivateKey,
+    ) -> Result<Database> {
+        let db = Database::open(self, &self.inner.metadata.users_db).await?;
+        Ok(db.with_key(signing_key.clone()))
+    }
+
     /// Get the _databases tracking database
     ///
     /// Parallel to `users_db()` — opens the instance's database-registry
@@ -709,10 +732,14 @@ impl Instance {
 
     // === User Management ===
 
-    /// Create a new user account with flexible password handling.
+    /// Create a new user account using the device key.
     ///
     /// Creates a user with or without password protection. Passwordless users are appropriate
     /// for embedded applications where filesystem access = database access.
+    ///
+    /// Prefer [`User::create_user`](crate::user::User::create_user) for authenticated
+    /// admin sessions — it signs through the user's own key and works on both
+    /// local and remote instances.
     ///
     /// # Arguments
     /// * `user_id` - Unique user identifier (username)
