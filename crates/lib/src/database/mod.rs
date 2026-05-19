@@ -285,7 +285,37 @@ impl Database {
         // Commit the initial entry
         let new_root_id = txn.commit().await?;
 
-        // Now create the real database with the new_root_id and DatabaseKey
+        // Construct the returned Database, wiring its `ops` to match the
+        // instance's flavour:
+        //
+        // - **Connected (remote) instance** — use `RemoteDatabaseOps` with
+        //   the *new database's* identity (the signing-key's pubkey,
+        //   self-signed as `Admin(0)` by the genesis). The session
+        //   pubkey on the connection is the *caller's* (e.g. the
+        //   registering admin), which is **not** a member of the new
+        //   tree's auth. If we kept `LocalDatabaseOps` here, every read
+        //   `Transaction::commit` performs on this database would route
+        //   through `Backend::Remote` with the connection's session
+        //   identity, and the server's per-tree gate would deny it.
+        //   `RemoteDatabaseOps` holds a per-database identity, so all
+        //   reads use the tree's own member key.
+        // - **Local instance** — keep `LocalDatabaseOps`, unchanged.
+        #[cfg(all(unix, feature = "service"))]
+        if let Some(conn) = instance.remote_connection() {
+            let pubkey_for_identity = signing_key.public_key();
+            return Ok(Self {
+                root: new_root_id.clone(),
+                instance: instance.downgrade(),
+                ops: Arc::new(RemoteDatabaseOps::new(
+                    conn,
+                    new_root_id,
+                    SigKey::from_pubkey(&pubkey_for_identity),
+                )),
+                key: Some(DatabaseKey::new(signing_key)),
+                allow_unverified: false,
+            });
+        }
+
         Ok(Self {
             root: new_root_id,
             instance: instance.downgrade(),
