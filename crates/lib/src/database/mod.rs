@@ -1013,23 +1013,24 @@ impl Database {
         let instance = self.instance()?;
         let backend = instance.backend();
 
-        // On a remote instance the server owns verification; get tips
-        // via the DatabaseOp wire path (verified frontier).
-        let tips = if let Some(conn) = instance.remote_connection() {
+        // On a remote instance the server owns verification: `get_verified_tips`
+        // already returns the server-side Verified frontier (or empty for a
+        // not-yet-propagated tree, e.g. `Database::create`'s bootstrap
+        // placeholder root — `EntryNotFound` is mapped to empty to match
+        // `Backend::get_tips`'s contract). Return it directly: the local
+        // verification machinery below (status probe, auto-verify,
+        // `verified_frontier`) is local-only and would fail on a remote
+        // backend anyway (e.g. `verified_frontier`'s `backend.get_tree(...)`).
+        if let Some(conn) = instance.remote_connection() {
             let identity = conn.session_identity().unwrap_or_default();
-            // A not-yet-propagated tree (e.g. `Database::create`'s bootstrap
-            // placeholder root) has no entries server-side. Treat that as
-            // "no tips", matching `Backend::get_tips`'s contract — otherwise
-            // the verified-tips RPC's `EntryNotFound` would abort genesis
-            // transaction construction.
-            match conn.get_verified_tips(self.root.clone(), identity).await {
-                Ok(tips) => tips,
-                Err(e) if e.is_not_found() => Vec::new(),
-                Err(e) => return Err(e),
-            }
-        } else {
-            self.ops().get_tips(&self.root).await?
-        };
+            return match conn.get_verified_tips(self.root.clone(), identity).await {
+                Ok(tips) => Ok(tips),
+                Err(e) if e.is_not_found() => Ok(Vec::new()),
+                Err(e) => Err(e),
+            };
+        }
+
+        let tips = self.ops().get_tips(&self.root).await?;
 
         // Verification status ops are local-only. On a remote backend the
         // server owns verification (and stores everything Unverified until
