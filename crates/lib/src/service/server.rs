@@ -341,6 +341,23 @@ async fn dispatch_inner(
                 .await?;
             }
 
+            // `CreateUser` is the same shape of cross-tree admin-only op:
+            // user creation is gated by `Admin` on `_users` (the first-user
+            // bootstrap grants this alongside `_databases`). Same D8
+            // fail-closed posture — `_users` always exists on an initialized
+            // daemon and this is never a creation flow.
+            if matches!(request, BackendOp::CreateUser { .. }) {
+                gate_tree_permission(
+                    instance,
+                    &session_pubkey,
+                    &identity,
+                    instance.users_db_id(),
+                    Permission::Admin(0),
+                    true,
+                )
+                .await?;
+            }
+
             dispatch_backend_op(
                 instance,
                 cache,
@@ -737,6 +754,22 @@ async fn dispatch_backend_op(
         BackendOp::SetInstanceMetadata { metadata } => {
             backend.set_instance_metadata(&metadata).await?;
             Ok(ServiceResponse::Ok)
+        }
+        BackendOp::CreateUser { username, password } => {
+            // Run the full creation flow on the daemon's own local instance.
+            // The genesis + user-database follow-up writes are authored with
+            // the daemon's authority, so the new user's key never has to
+            // satisfy the connection-session wire-write gate (it isn't a
+            // member of it). The admin gate above already authorised this.
+            let users_db = instance.users_db().await?;
+            let (user_uuid, _) = crate::user::system_databases::create_user(
+                &users_db,
+                instance,
+                &username,
+                password.as_deref(),
+            )
+            .await?;
+            Ok(ServiceResponse::UserCreated { user_uuid })
         }
     }
 }

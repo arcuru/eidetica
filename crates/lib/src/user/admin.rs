@@ -55,15 +55,21 @@ impl<'a> InstanceAdmin<'a> {
     /// # Returns
     /// The new user's UUID (stable internal identifier).
     pub async fn create_user(&self, username: &str, password: Option<&str>) -> Result<String> {
+        let instance = self.user.instance();
+
+        // On a connected instance the genesis + user-database follow-up
+        // writes can't be authored over the connection's session (the new
+        // user's key is not a member of its wire-write gate). The daemon
+        // owns this flow: send the admin-gated `CreateUser` RPC and let the
+        // server run `system_databases::create_user` locally.
+        if let Some(conn) = instance.remote_connection() {
+            return conn.create_user(username, password).await;
+        }
+
         let signing_key = self.user.default_signing_key()?;
-        let users_db = self
-            .user
-            .instance()
-            .users_db_for_session(&signing_key)
-            .await?;
+        let users_db = instance.users_db_for_session(&signing_key).await?;
         let (user_uuid, _) =
-            system_databases::create_user(&users_db, self.user.instance(), username, password)
-                .await?;
+            system_databases::create_user(&users_db, instance, username, password).await?;
         Ok(user_uuid)
     }
 

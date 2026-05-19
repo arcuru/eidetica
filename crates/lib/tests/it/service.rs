@@ -196,7 +196,10 @@ async fn test_instance_connect_convenience() {
     create_user_via_admin(&server, "charlie").await;
 
     let _instance = Instance::connect(&socket_path).await.unwrap();
-    let users = crate::helpers::list_users(&server).await.unwrap();
+    let mut users = crate::helpers::list_users(&server).await.unwrap();
+    // `list_users` returns users in UUID order (random per run), so sort
+    // before comparing — the set is what matters, not iteration order.
+    users.sort();
     assert_eq!(users, vec!["admin", "charlie"]);
 }
 

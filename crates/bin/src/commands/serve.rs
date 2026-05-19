@@ -86,8 +86,13 @@ pub async fn run(args: &ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
     instance.enable_sync().await?;
     tracing::info!("Sync enabled on instance");
 
-    // Ensure default user exists (for single-user server mode)
-    let user_exists = instance
+    // Ensure default user exists (for single-user server mode).
+    // User creation is an instance-admin operation, reached through the
+    // bootstrapped admin session (admin/admin, minted by Instance::open).
+    let admin = instance.login_user("admin", Some("admin")).await?;
+    let user_exists = admin
+        .admin()
+        .await?
         .list_users()
         .await?
         .iter()
@@ -95,7 +100,11 @@ pub async fn run(args: &ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
 
     if !user_exists {
         tracing::info!("Creating default user '{DEFAULT_USER}'");
-        instance.create_user(DEFAULT_USER, None).await?;
+        admin
+            .admin()
+            .await?
+            .create_user(DEFAULT_USER, None)
+            .await?;
     }
 
     // Login as default user to get device key
@@ -365,13 +374,34 @@ async fn handle_register_submit(
     let sessions = state.sessions.clone();
     let username = form.username.clone();
 
-    let result = if let Ok(users) = instance.list_users().await
+    // User creation is an instance-admin operation; drive it through the
+    // bootstrapped admin session (admin/admin, minted by Instance::open).
+    let admin_user = match instance.login_user("admin", Some("admin")).await {
+        Ok(admin_user) => admin_user,
+        Err(e) => {
+            return Html(crate::templates::register_page(Some(&format!(
+                "Registration failed: {e}"
+            ))))
+            .into_response();
+        }
+    };
+    let admin = match admin_user.admin().await {
+        Ok(admin) => admin,
+        Err(e) => {
+            return Html(crate::templates::register_page(Some(&format!(
+                "Registration failed: {e}"
+            ))))
+            .into_response();
+        }
+    };
+
+    let result = if let Ok(users) = admin.list_users().await
         && users.iter().any(|u| u == &username)
     {
         Err("Username already exists".to_string())
     } else {
         let pwd_ref = password.as_deref();
-        if let Err(e) = instance.create_user(&username, pwd_ref).await {
+        if let Err(e) = admin.create_user(&username, pwd_ref).await {
             Err(format!("Registration failed: {e}"))
         } else {
             tracing::info!("Created new user: {}", username);

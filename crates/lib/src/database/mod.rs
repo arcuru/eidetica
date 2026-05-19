@@ -1017,7 +1017,16 @@ impl Database {
         // via the DatabaseOp wire path (verified frontier).
         let tips = if let Some(conn) = instance.remote_connection() {
             let identity = conn.session_identity().unwrap_or_default();
-            conn.get_verified_tips(self.root.clone(), identity).await?
+            // A not-yet-propagated tree (e.g. `Database::create`'s bootstrap
+            // placeholder root) has no entries server-side. Treat that as
+            // "no tips", matching `Backend::get_tips`'s contract — otherwise
+            // the verified-tips RPC's `EntryNotFound` would abort genesis
+            // transaction construction.
+            match conn.get_verified_tips(self.root.clone(), identity).await {
+                Ok(tips) => tips,
+                Err(e) if e.is_not_found() => Vec::new(),
+                Err(e) => return Err(e),
+            }
         } else {
             self.ops().get_tips(&self.root).await?
         };

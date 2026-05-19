@@ -326,6 +326,36 @@ impl RemoteConnection {
         Self::expect_ok(resp)
     }
 
+    /// Create a new user account server-side.
+    ///
+    /// User creation is an instance-admin operation that the daemon performs
+    /// on its own local instance (genesis + user-database follow-up writes
+    /// authored with the daemon's authority). Gated server-side by `Admin`
+    /// on `_users`. Returns the new user's UUID.
+    pub async fn create_user(
+        &self,
+        username: &str,
+        password: Option<&str>,
+    ) -> crate::Result<String> {
+        let identity = self.session_identity().unwrap_or_default();
+        let resp = self
+            .request_ok(ServiceRequest::Authenticated(Box::new(
+                AuthenticatedRequest {
+                    root_id: ID::default(),
+                    identity,
+                    request: BackendOp::CreateUser {
+                        username: username.to_string(),
+                        password: password.map(|p| p.to_string()),
+                    },
+                },
+            )))
+            .await?;
+        match resp {
+            ServiceResponse::UserCreated { user_uuid } => Ok(user_uuid),
+            other => Err(unexpected_response("UserCreated", &other)),
+        }
+    }
+
     // === Database operations (DatabaseOp via AuthenticatedDb envelope) ===
 
     /// Acquire a [`TransactionContext`] for the given stores and scope.
