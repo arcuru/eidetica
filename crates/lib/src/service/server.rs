@@ -21,7 +21,7 @@ use crate::service::cache::ServiceCache;
 use crate::service::error::ServiceError;
 use crate::instance::WriteSource;
 use crate::service::protocol::{
-    AuthenticatedDbRequest, AuthenticatedRequest, BackendOp, DatabaseOp, HandshakeAck,
+    AuthenticatedDbRequest, AuthenticatedRequest, BackendOp, DatabaseOp, HandshakeAck, MergeState,
     PROTOCOL_VERSION, ServiceRequest, ServiceResponse, read_frame, write_frame,
 };
 use crate::user::system_databases::lookup_user_record;
@@ -488,6 +488,31 @@ async fn dispatch_database_op(
             let db = Database::open(instance, &root_id).await?;
             let entries = db.get_store_entries(&store, &tips, scope).await?;
             Ok(ServiceResponse::Entries(entries))
+        }
+
+        DatabaseOp::GetStoreTipsUpToEntries { store, up_to } => {
+            let db = Database::open(instance, &root_id).await?;
+            let ids = db
+                .ops()
+                .get_store_tips_up_to_entries(&root_id, &store, &up_to)
+                .await?;
+            Ok(ServiceResponse::Ids(ids))
+        }
+
+        DatabaseOp::ComputeMergeState {
+            store,
+            entry_ids,
+        } => {
+            let db = Database::open(instance, &root_id).await?;
+            let merge_base = db
+                .ops()
+                .find_merge_base(&root_id, &store, &entry_ids)
+                .await?;
+            let path = db
+                .ops()
+                .get_path_from_to(&root_id, &store, &merge_base, &entry_ids)
+                .await?;
+            Ok(ServiceResponse::MergeState(MergeState { merge_base, path }))
         }
     }
 }

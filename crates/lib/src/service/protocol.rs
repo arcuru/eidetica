@@ -147,6 +147,13 @@ pub struct TransactionContext {
     pub settings_value: WireCrdtValue,
 }
 
+/// Response for ComputeMergeState: lowest common ancestor + path to tips.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MergeState {
+    pub merge_base: ID,
+    pub path: Vec<ID>,
+}
+
 /// Database-level operations the server runs on its local `Database`.
 ///
 /// The target database (`root_id`) and identity claim travel in
@@ -179,6 +186,15 @@ pub enum DatabaseOp {
         tips: Vec<ID>,
         scope: ReadScope,
     },
+    /// Subtree tips reachable from given main-tree entry IDs.
+    /// Used by Transaction internals to discover store entries.
+    GetStoreTipsUpToEntries { store: String, up_to: Vec<ID> },
+
+    /// Lowest common ancestor + path to tip entries in a store DAG.
+    /// Fused to one RPC: the only caller always calls find_merge_base
+    /// then get_path_from_to in sequence.
+    ComputeMergeState { store: String, entry_ids: Vec<ID> },
+
     /// Fetch a single entry by id (gated post-fetch by its owning tree). Gate
     /// Read.
     GetEntry { id: ID },
@@ -193,6 +209,8 @@ impl DatabaseOp {
     pub fn required_permission(&self) -> Permission {
         match self {
             DatabaseOp::SubmitSignedEntry { .. } => Permission::Write(0),
+            DatabaseOp::GetStoreTipsUpToEntries { .. } => Permission::Read,
+            DatabaseOp::ComputeMergeState { .. } => Permission::Read,
             _ => Permission::Read,
         }
     }
@@ -288,6 +306,9 @@ pub enum ServiceResponse {
     TransactionContext(TransactionContext),
     /// Materialized CRDT store state (response to `DatabaseOp::GetStoreState`).
     CrdtValue(WireCrdtValue),
+    /// Merge state: lowest common ancestor + path to tips (response to
+    /// `DatabaseOp::ComputeMergeState`).
+    MergeState(MergeState),
     /// Optional instance metadata
     InstanceMetadata(Option<InstanceMetadata>),
     /// Error response

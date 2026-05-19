@@ -28,7 +28,7 @@ use crate::entry::{Entry, ID};
 use crate::service::error::service_error_to_eidetica_error;
 use crate::service::protocol::{
     AuthenticatedDbRequest, AuthenticatedRequest, BackendOp, DatabaseOp, Handshake, HandshakeAck,
-    ReadScope, ServiceRequest, ServiceResponse, TransactionContext, WireCrdtValue,
+    MergeState, ReadScope, ServiceRequest, ServiceResponse, TransactionContext, WireCrdtValue,
     PROTOCOL_VERSION, read_frame, write_frame,
 };
 use crate::user::UserError;
@@ -446,6 +446,48 @@ impl RemoteConnection {
         match resp {
             ServiceResponse::Entry(entry) => Ok(entry),
             other => Err(unexpected_response("Entry", &other)),
+        }
+    }
+
+    /// Subtree tips reachable from given main-tree entries.
+    pub async fn get_store_tips_up_to_entries(
+        &self,
+        root_id: ID,
+        identity: SigKey,
+        store: String,
+        up_to: Vec<ID>,
+    ) -> crate::Result<Vec<ID>> {
+        let resp = self
+            .db_request(
+                root_id,
+                identity,
+                DatabaseOp::GetStoreTipsUpToEntries { store, up_to },
+            )
+            .await?;
+        match resp {
+            ServiceResponse::Ids(ids) => Ok(ids),
+            other => Err(unexpected_response("Ids", &other)),
+        }
+    }
+
+    /// Compute merge state: lowest common ancestor + path to tip entries.
+    pub async fn compute_merge_state(
+        &self,
+        root_id: ID,
+        identity: SigKey,
+        store: String,
+        entry_ids: Vec<ID>,
+    ) -> crate::Result<MergeState> {
+        let resp = self
+            .db_request(
+                root_id,
+                identity,
+                DatabaseOp::ComputeMergeState { store, entry_ids },
+            )
+            .await?;
+        match resp {
+            ServiceResponse::MergeState(state) => Ok(state),
+            other => Err(unexpected_response("MergeState", &other)),
         }
     }
 }
