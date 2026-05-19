@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use eidetica::{
     Database, Error, FixedClock, Instance,
@@ -8,6 +9,13 @@ use eidetica::{
     crdt::{Doc, doc::Value},
     store::DocStore,
     user::User,
+};
+
+#[cfg(all(unix, feature = "service"))]
+use {
+    eidetica::service::ServiceServer,
+    tempfile::TempDir,
+    tokio::sync::watch,
 };
 
 // Re-export tokio test macro for convenience
@@ -114,11 +122,77 @@ pub async fn test_backend() -> Box<dyn BackendImpl> {
 /// Creates a basic Instance with no users or keys.
 ///
 /// Uses a [`FixedClock`] for controllable timestamps in tests.
+/// In service mode (TEST_BACKEND=service), spawns an in-process daemon
+/// over an InMemory backend and returns a connected remote Instance,
+/// authenticated as a bootstrap test user.
 pub async fn test_instance() -> Instance {
+    #[cfg(all(unix, feature = "service"))]
+    {
+        if std::env::var("TEST_BACKEND").as_deref() == Ok("service") {
+            return test_remote_instance().await;
+        }
+    }
     let clock = Arc::new(FixedClock::default());
     Instance::open_with_clock(test_backend().await, clock)
         .await
         .expect("Failed to create test instance")
+}
+
+/// Spawn an in-process daemon over an InMemory backend, create a bootstrap
+/// user server-side, then connect and authenticate as that user.
+///
+/// Each test gets its own daemon + socket directory for isolation.
+/// Cleanup is handled by Box::leak — the server, socket dir, and
+/// shutdown channel live for the process lifetime. This is acceptable
+/// for test code; memory is reclaimed at process exit.
+#[cfg(all(unix, feature = "service"))]
+async fn test_remote_instance() -> Instance {
+    let dir = Box::leak(Box::new(
+        tempfile::tempdir().expect("Failed to create temp dir for test daemon"),
+    ));
+    let socket_path = dir.path().join("test.sock");
+
+    let server =
+        Instance::open(Box::new(InMemory::new()))
+            .await
+            .expect("Failed to create server-side Instance");
+    let service = ServiceServer::new(server.clone(), socket_path.clone());
+    let (tx, rx) = watch::channel(());
+    // Keep the shutdown channel alive so the server doesn't exit.
+    let _tx = Box::leak(Box::new(tx));
+    tokio::spawn(async move {
+        let _ = service.run(rx).await;
+    });
+
+    // Wait for the socket to appear (server binds asynchronously).
+    for _ in 0..50 {
+        if socket_path.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        socket_path.exists(),
+        "daemon socket did not appear within 500ms"
+    );
+
+    // create_user is not available over the wire (no CreateUser RPC yet).
+    // Create a bootstrap user on the server-side Instance, then connect
+    // and authenticate as that user.
+    server
+        .create_user("test_bootstrap", None)
+        .await
+        .expect("Failed to create bootstrap user on server");
+
+    let instance = Instance::connect(&socket_path)
+        .await
+        .expect("Failed to connect to test daemon");
+    instance
+        .login_user("test_bootstrap", None)
+        .await
+        .expect("Failed to login as bootstrap user");
+
+    instance
 }
 
 /// Creates an Instance wrapped in Arc (common for sync tests)
@@ -131,6 +205,12 @@ pub async fn test_instance_arc() -> Arc<Instance> {
 ///
 /// Returns (Instance, User) for immediate use with User API
 pub async fn test_instance_with_user(username: &str) -> (Instance, User) {
+    #[cfg(all(unix, feature = "service"))]
+    {
+        if std::env::var("TEST_BACKEND").as_deref() == Ok("service") {
+            return test_remote_instance_with_user(username).await;
+        }
+    }
     let instance = test_instance().await;
     instance
         .create_user(username, None)
@@ -140,6 +220,51 @@ pub async fn test_instance_with_user(username: &str) -> (Instance, User) {
         .login_user(username, None)
         .await
         .expect("Failed to login user");
+    (instance, user)
+}
+
+/// Service-mode variant: spawns a daemon, creates the named user server-side,
+/// connects and authenticates as that user.
+#[cfg(all(unix, feature = "service"))]
+async fn test_remote_instance_with_user(username: &str) -> (Instance, User) {
+    let dir = Box::leak(Box::new(
+        tempfile::tempdir().expect("Failed to create temp dir for test daemon"),
+    ));
+    let socket_path = dir.path().join("test.sock");
+
+    let server =
+        Instance::open(Box::new(InMemory::new()))
+            .await
+            .expect("Failed to create server-side Instance");
+    let service = ServiceServer::new(server.clone(), socket_path.clone());
+    let (tx, rx) = watch::channel(());
+    let _tx = Box::leak(Box::new(tx));
+    tokio::spawn(async move {
+        let _ = service.run(rx).await;
+    });
+
+    for _ in 0..50 {
+        if socket_path.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(socket_path.exists(), "daemon socket did not appear within 500ms");
+
+    // create_user is not available over the wire — create user server-side.
+    server
+        .create_user(username, None)
+        .await
+        .expect("Failed to create user server-side");
+
+    let instance = Instance::connect(&socket_path)
+        .await
+        .expect("Failed to connect to test daemon");
+    let user = instance
+        .login_user(username, None)
+        .await
+        .expect("Failed to login user");
+
     (instance, user)
 }
 
@@ -156,6 +281,12 @@ pub async fn test_instance_with_user_and_key(
     username: &str,
     key_display_name: Option<&str>,
 ) -> (Instance, User, PublicKey) {
+    #[cfg(all(unix, feature = "service"))]
+    {
+        if std::env::var("TEST_BACKEND").as_deref() == Ok("service") {
+            return test_remote_instance_with_user_and_key(username, key_display_name).await;
+        }
+    }
     let instance = test_instance().await;
     instance
         .create_user(username, None)
@@ -170,6 +301,65 @@ pub async fn test_instance_with_user_and_key(
         .add_private_key(key_display_name)
         .await
         .expect("Failed to add key");
+
+    (instance, user, key_id)
+}
+
+/// Service-mode variant: spawns daemon, creates user + key server-side,
+/// connects and authenticates as that user.
+#[cfg(all(unix, feature = "service"))]
+async fn test_remote_instance_with_user_and_key(
+    username: &str,
+    key_display_name: Option<&str>,
+) -> (Instance, User, PublicKey) {
+    let dir = Box::leak(Box::new(
+        tempfile::tempdir().expect("Failed to create temp dir for test daemon"),
+    ));
+    let socket_path = dir.path().join("test.sock");
+
+    let server =
+        Instance::open(Box::new(InMemory::new()))
+            .await
+            .expect("Failed to create server-side Instance");
+    let service = ServiceServer::new(server.clone(), socket_path.clone());
+    let (tx, rx) = watch::channel(());
+    let _tx = Box::leak(Box::new(tx));
+    tokio::spawn(async move {
+        let _ = service.run(rx).await;
+    });
+
+    for _ in 0..50 {
+        if socket_path.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(socket_path.exists(), "daemon socket did not appear within 500ms");
+
+    // Create user and add key server-side.
+    server
+        .create_user(username, None)
+        .await
+        .expect("Failed to create user server-side");
+    let mut server_user = server
+        .login_user(username, None)
+        .await
+        .expect("Failed to login user server-side");
+    server_user
+        .add_private_key(key_display_name)
+        .await
+        .expect("Failed to add key server-side");
+
+    // Connect and authenticate as the user.
+    let instance = Instance::connect(&socket_path)
+        .await
+        .expect("Failed to connect to test daemon");
+    let mut user = instance
+        .login_user(username, None)
+        .await
+        .expect("Failed to login user");
+
+    let key_id = user.get_default_key().expect("User should have a default key");
 
     (instance, user, key_id)
 }
