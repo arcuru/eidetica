@@ -343,6 +343,44 @@ impl User {
         Ok(database)
     }
 
+    /// Create a new user on this Instance.
+    ///
+    /// Requires Admin permission on `_users`.  Signs `_users` writes with this
+    /// user's session key and submits through the existing
+    /// [`SubmitSignedEntry`](crate::service::wire::DatabaseOp) wire surface —
+    /// works on both local and remote instances.
+    ///
+    /// This is the preferred way to create users from an authenticated admin
+    /// session.  [`Instance::create_user`](crate::Instance::create_user) uses
+    /// the device key and is intended for daemon-side bootstrap only.
+    pub async fn create_user(
+        &self,
+        username: &str,
+        password: Option<&str>,
+    ) -> Result<String> {
+        use crate::user::system_databases::create_user;
+        let key_id = self
+            .key_manager()
+            .get_default_key_id()
+            .ok_or_else(|| UserError::KeyNotFound {
+                key_id: "<default>".to_string(),
+            })?;
+        let signing_key = self
+            .key_manager()
+            .get_signing_key(&key_id)
+            .ok_or_else(|| UserError::KeyNotFound {
+                key_id: key_id.to_string(),
+            })?
+            .clone();
+        let users_db = self
+            .instance
+            .users_db_for_session(&signing_key)
+            .await?;
+        let (user_uuid, _) =
+            create_user(&users_db, &self.instance, username, password).await?;
+        Ok(user_uuid)
+    }
+
     /// Open an existing database by its root ID using this user's keys.
     ///
     /// This method automatically:
