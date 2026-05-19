@@ -396,9 +396,33 @@ async fn dispatch_inner(
                 op,
             } = *inner;
 
-            // Same "I claim to be someone else" cross-check as the
-            // `Authenticated` path.
-            if let Some(claimed) = &identity.hint().pubkey
+            // Submit is verification-gated, not session-gated.
+            //
+            // Reads are session-gated (confidentiality boundary); submits
+            // are verification-gated (integrity boundary). `SubmitSignedEntry`
+            // requires only an *authenticated* connection (gate 1, the
+            // `ConnectionState::Authenticated` match above, still applies).
+            // Which tree the entry belongs to, and whether its signer may
+            // write that tree, is decided by the server's own verification
+            // pass in the handler (store `Unverified`, then
+            // `Database::open(...).verify()`) against the tree's *real*
+            // pinned auth lineage — not by who holds the socket. An attacker
+            // without a key the tree's auth grants cannot produce a
+            // `Verified` entry, and unverified junk is excluded from every
+            // default read by the frontier cut, so the per-tree session gate
+            // adds no correctness or isolation property here; it only blocks
+            // a legitimate transporter (e.g. an admin session carrying a
+            // user-signed genesis). See the verification-gated-submit design
+            // doc for the full threat analysis.
+            let is_submit = matches!(op, DatabaseOp::SubmitSignedEntry { .. });
+
+            // The "I claim to be someone else" cross-check rejects an
+            // identity hint that doesn't match the session pubkey. For
+            // submit, an entry signed by a key *other* than the session
+            // pubkey is the legitimate case (admin transports a user-signed
+            // entry), so submit is exempt; every other op keeps it.
+            if !is_submit
+                && let Some(claimed) = &identity.hint().pubkey
                 && *claimed != session_pubkey
             {
                 return Err(crate::Error::Auth(Box::new(
@@ -410,18 +434,22 @@ async fn dispatch_inner(
                 )));
             }
 
-            // Unconditional per-tree gate. create-flow passthrough (false):
-            // a not-yet-propagated tree is waved through so database
-            // creation works, identical to the `Authenticated` path.
-            gate_tree_permission(
-                instance,
-                &session_pubkey,
-                &identity,
-                &root_id,
-                op.required_permission(),
-                false,
-            )
-            .await?;
+            // Per-tree permission gate. Unconditional for every op *except*
+            // submit; create-flow passthrough (false) for the rest, so a
+            // not-yet-propagated tree is waved through and database creation
+            // works, identical to the `Authenticated` path. Submit skips the
+            // gate entirely (verification in the handler is its boundary).
+            if !is_submit {
+                gate_tree_permission(
+                    instance,
+                    &session_pubkey,
+                    &identity,
+                    &root_id,
+                    op.required_permission(),
+                    false,
+                )
+                .await?;
+            }
 
             dispatch_database_op(instance, &session_pubkey, &identity, root_id, op).await
         }

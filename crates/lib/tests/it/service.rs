@@ -871,4 +871,171 @@ async fn test_remote_database_ops_e2e() {
         );
     }
 }
-// probe appended into service.rs test module
+// === Change A: verification-gated SubmitSignedEntry ===
+//
+// `SubmitSignedEntry` requires only an *authenticated* connection (gate 1).
+// The per-tree session gate and the identity cross-check are skipped for
+// submit; the server's own verification pass against the tree's pinned auth
+// is the boundary. Pre-Change-A, both tests below would have failed at the
+// gate. Post-Change-A, the socket accepts both and the verification pass
+// distinguishes the legitimate case from the unauthorized case.
+
+/// An authenticated session may submit an entry signed by a key that's
+/// `Admin` on a *different* tree (i.e., not the session's own tree). The
+/// server stores it `Unverified`, verifies it against the target tree's
+/// pinned auth, and promotes it to `Verified` — it lands in the target
+/// tree's Verified frontier even though the submitting session has no
+/// permission on that tree.
+#[tokio::test]
+async fn test_submit_cross_session_signed_by_tree_admin_becomes_verified() {
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+
+    // Bob owns a database (created server-side, bob is Admin(0) on it).
+    create_user_via_admin(&server, "bob").await;
+    let mut server_bob = server.login_user("bob", None).await.unwrap();
+    let bob_pub = server_bob.get_default_key().unwrap();
+    let bob_sk = server_bob.get_signing_key(&bob_pub).unwrap();
+    let mut settings = eidetica::crdt::Doc::new();
+    settings.set("name", "bob_db");
+    let bob_db = server_bob.create_database(settings, &bob_pub).await.unwrap();
+    let bob_root = bob_db.root_id().clone();
+    let initial_tips = bob_db.get_tips().await.unwrap();
+
+    // The bootstrap admin (NOT bob) connects over the wire. Admin holds
+    // Admin on `_users`/`_databases` but is *not* a member of bob's tree.
+    let admin_inst = Instance::connect(&socket_path).await.unwrap();
+    let _admin_user = admin_inst
+        .login_user("admin", Some("admin"))
+        .await
+        .unwrap();
+    let conn = remote_conn(&admin_inst);
+
+    // Resolve bob's SigKey in his own tree (the same shape `setup_db`
+    // produces). The verifier reads `entry.sig.key` to look up bob's key
+    // in the tree's auth_settings; if we left this defaulted, the resolver
+    // would find no candidates and verification would fail regardless of
+    // signature validity.
+    let sigkeys =
+        eidetica::Database::find_sigkeys(&server, &bob_root, &bob_pub)
+            .await
+            .unwrap();
+    let (bob_identity, _perm) = sigkeys
+        .into_iter()
+        .next()
+        .expect("bob must have a resolved SigKey in his own tree");
+
+    // Pull settings_tips server-side so the entry's signed metadata pins
+    // the auth state verification must validate against. Without this the
+    // verifier returns `Complete(AuthSettings::new())` for a non-`_settings`
+    // entry — i.e. "no auth configured" — and rejects any signed entry.
+    // `transaction_context` is the same primitive the wire seam uses; here
+    // we call it on the local Database since we're constructing an entry
+    // that bypasses the begin_transaction wire round-trip.
+    let local_bob_db = eidetica::Database::open(&server, &bob_root)
+        .await
+        .unwrap();
+    let ctx = local_bob_db
+        .transaction_context(&["note".to_string()], ReadScope::Verified)
+        .await
+        .unwrap();
+    let parents: Vec<eidetica::entry::ID> =
+        ctx.main_parents.iter().map(|(id, _)| id.clone()).collect();
+    // `EntryMetadata` is `pub(crate)`; construct its JSON wire form
+    // (`{settings_tips, entropy}`) directly so the verifier's deserializer
+    // accepts it.
+    let metadata_bytes = serde_json::to_vec(&serde_json::json!({
+        "settings_tips": ctx.settings_tips,
+        "entropy": serde_json::Value::Null,
+    }))
+    .unwrap();
+
+    // Build the entry, set the identity hint to bob's, then sign with bob's
+    // key. Signing must happen *after* `sig.key` and `metadata` are set
+    // because the canonical signing bytes include both.
+    let mut entry = Entry::builder(bob_root.clone())
+        .set_parents(parents)
+        .set_subtree_data("note", b"{\"cross_session\":true}")
+        .set_metadata(metadata_bytes)
+        .build()
+        .unwrap();
+    entry.sig.key = bob_identity.clone();
+    let signature = sign_entry(&entry, &bob_sk).unwrap();
+    entry.sig.sig = Some(signature);
+    let entry_id = entry.id();
+
+    conn.submit_signed_entry(bob_root.clone(), bob_identity, entry)
+        .await
+        .expect(
+            "verification-gated submit must accept a cross-session entry validly \
+             signed by the target tree's admin",
+        );
+
+    // The submitted entry is in bob's Verified frontier.
+    let tips_after = bob_db.get_tips().await.unwrap();
+    assert!(
+        tips_after.contains(&entry_id),
+        "submitted entry must be a Verified tip; tips={tips_after:?}, entry={entry_id}"
+    );
+    assert!(
+        !tips_after.iter().any(|t| initial_tips.contains(t)),
+        "old tip must have been superseded by the submitted entry"
+    );
+}
+
+/// An authenticated session submitting an entry whose signer holds no key
+/// on the target tree's auth: accepted at the socket (Change A skips the
+/// gate), but the server's verification pass marks it `Failed`/leaves
+/// `Unverified`, so it never appears in the Verified frontier or any
+/// default read. Correctness is preserved by verification, not the gate.
+#[tokio::test]
+async fn test_submit_unauthorized_signer_stays_invisible_in_default_reads() {
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+
+    create_user_via_admin(&server, "bob").await;
+    let mut server_bob = server.login_user("bob", None).await.unwrap();
+    let bob_pub = server_bob.get_default_key().unwrap();
+    let mut settings = eidetica::crdt::Doc::new();
+    settings.set("name", "bob_db");
+    let bob_db = server_bob.create_database(settings, &bob_pub).await.unwrap();
+    let bob_root = bob_db.root_id().clone();
+    let initial_tips = bob_db.get_tips().await.unwrap();
+
+    // Admin connects and signs an entry with the *admin* key, which has no
+    // auth on bob's tree.
+    let admin_inst = Instance::connect(&socket_path).await.unwrap();
+    let admin_user = admin_inst
+        .login_user("admin", Some("admin"))
+        .await
+        .unwrap();
+    let admin_pub = admin_user.get_default_key().unwrap();
+    let admin_sk = admin_user.get_signing_key(&admin_pub).unwrap();
+    let conn = remote_conn(&admin_inst);
+
+    let mut entry = Entry::builder(bob_root.clone())
+        .set_parents(initial_tips.clone())
+        .set_subtree_data("note", b"{\"unauthorized_signer\":true}")
+        .build()
+        .unwrap();
+    let signature = sign_entry(&entry, &admin_sk).unwrap();
+    entry.sig.sig = Some(signature);
+    let entry_id = entry.id();
+    let admin_identity = eidetica::auth::types::SigKey::from_pubkey(&admin_pub);
+
+    // Accepted at the socket — Change A's relaxation. Verification is the
+    // boundary the server still enforces.
+    conn.submit_signed_entry(bob_root.clone(), admin_identity, entry)
+        .await
+        .expect("submit accepted at socket; verification rejects in-handler");
+
+    // Bob's Verified frontier is unchanged: the unauthorized entry never
+    // graduated past Unverified/Failed and is excluded from default reads.
+    let tips_after = bob_db.get_tips().await.unwrap();
+    assert!(
+        !tips_after.contains(&entry_id),
+        "unauthorized-signer entry must NOT appear in Verified frontier; tips={tips_after:?}"
+    );
+    assert_eq!(
+        tips_after, initial_tips,
+        "Verified frontier must be unchanged after a rejected submit"
+    );
+}
