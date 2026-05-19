@@ -453,7 +453,7 @@ pub async fn setup_server_with_bootstrap_database(
     db_name: &str,
 ) -> (Instance, User, PublicKey, Database, ID) {
     let server_instance = setup_instance_with_initialized().await;
-    server_instance.create_user(username, None).await.unwrap();
+    crate::helpers::create_user(&server_instance, username, None).await.unwrap();
     let mut server_user = server_instance.login_user(username, None).await.unwrap();
     let server_key_id = server_user.add_private_key(Some(key_name)).await.unwrap();
 
@@ -520,8 +520,7 @@ pub async fn setup_server_with_bootstrap_database(
 pub async fn setup_indexed_client(index: usize) -> (Instance, User, PublicKey) {
     let client_instance = setup_instance_with_initialized().await;
     let client_username = format!("client_user_{index}");
-    client_instance
-        .create_user(&client_username, None)
+    crate::helpers::create_user(&client_instance, &client_username, None)
         .await
         .unwrap();
     let mut client_user = client_instance
@@ -654,7 +653,7 @@ pub async fn setup_sync_enabled_server(
     db_name: &str,
 ) -> (Instance, User, PublicKey, Database, ID, Arc<Sync>) {
     let server_instance = setup_instance_with_initialized().await;
-    server_instance.create_user(username, None).await.unwrap();
+    crate::helpers::create_user(&server_instance, username, None).await.unwrap();
     let mut server_user = server_instance.login_user(username, None).await.unwrap();
     let server_key_id = server_user.add_private_key(Some(key_name)).await.unwrap();
 
@@ -734,7 +733,7 @@ pub async fn setup_sync_enabled_client(
     key_name: &str,
 ) -> (Instance, User, PublicKey, Arc<Sync>) {
     let client_instance = setup_instance_with_initialized().await;
-    client_instance.create_user(username, None).await.unwrap();
+    crate::helpers::create_user(&client_instance, username, None).await.unwrap();
     let mut client_user = client_instance.login_user(username, None).await.unwrap();
     let client_key_id = client_user.add_private_key(Some(key_name)).await.unwrap();
 
@@ -798,7 +797,7 @@ pub async fn setup_public_sync_enabled_server(
     db_name: &str,
 ) -> (Instance, User, PublicKey, Database, ID, Arc<Sync>) {
     let server_instance = setup_instance_with_initialized().await;
-    server_instance.create_user(username, None).await.unwrap();
+    crate::helpers::create_user(&server_instance, username, None).await.unwrap();
     let mut server_user = server_instance.login_user(username, None).await.unwrap();
     let server_key_id = server_user.add_private_key(Some(key_name)).await.unwrap();
 

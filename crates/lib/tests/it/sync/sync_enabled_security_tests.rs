@@ -27,8 +27,7 @@ use crate::helpers::set_global_auth_key;
 async fn test_bootstrap_rejected_when_sync_disabled() {
     // Create server with database but NO sync enabled
     let server_instance = helpers::setup_instance_with_initialized().await;
-    server_instance
-        .create_user("server_user", None)
+    crate::helpers::create_user(&server_instance, "server_user", None)
         .await
         .unwrap();
     let mut server_user = server_instance
@@ -113,8 +112,7 @@ async fn test_bootstrap_rejected_when_sync_disabled() {
 async fn test_incremental_sync_rejected_when_sync_disabled() {
     // Create server with database and sync initially ENABLED
     let server_instance = helpers::setup_instance_with_initialized().await;
-    server_instance
-        .create_user("server_user", None)
+    crate::helpers::create_user(&server_instance, "server_user", None)
         .await
         .unwrap();
     let mut server_user = server_instance
@@ -255,8 +253,7 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
 async fn test_sync_succeeds_when_enabled() {
     // Create server with database and sync ENABLED
     let server_instance = helpers::setup_instance_with_initialized().await;
-    server_instance
-        .create_user("server_user", None)
+    crate::helpers::create_user(&server_instance, "server_user", None)
         .await
         .unwrap();
     let mut server_user = server_instance

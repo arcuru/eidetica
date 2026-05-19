@@ -424,8 +424,7 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
         .expect("Failed to enable sync for Alice");
 
     // Create Alice's user account
-    alice_instance
-        .create_user("alice", None)
+    crate::helpers::create_user(&alice_instance, "alice", None)
         .await
         .expect("Failed to create Alice");
     let mut alice = alice_instance
@@ -509,8 +508,7 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
         .expect("Failed to enable sync for Bob");
 
     // Create Bob's user account
-    bob_instance
-        .create_user("bob", None)
+    crate::helpers::create_user(&bob_instance, "bob", None)
         .await
         .expect("Failed to create Bob");
     let mut bob = bob_instance
@@ -676,8 +674,7 @@ async fn test_share_with_attached_sync_includes_server_addresses() {
         .await
         .expect("Failed to start sync server");
 
-    instance
-        .create_user("alice", None)
+    crate::helpers::create_user(&instance, "alice", None)
         .await
         .expect("Failed to create alice");
     let mut alice = instance

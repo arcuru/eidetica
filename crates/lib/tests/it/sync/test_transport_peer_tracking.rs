@@ -26,8 +26,7 @@ async fn test_server_automatically_tracks_peers_that_sync_trees() {
     // ===== Setup Server =====
     let server_instance = setup_empty_db().await;
     server_instance.enable_sync().await.unwrap();
-    server_instance
-        .create_user("server_user", None)
+    crate::helpers::create_user(&server_instance, "server_user", None)
         .await
         .unwrap();
     let mut server_user = server_instance

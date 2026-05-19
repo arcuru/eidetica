@@ -32,6 +32,7 @@
 //!
 //! When multiple users track the same database, settings are merged to use the most aggressive settings.
 
+pub mod admin;
 pub mod crypto;
 pub mod errors;
 pub mod key_manager;
@@ -39,6 +40,7 @@ pub mod session;
 pub mod system_databases;
 pub mod types;
 
+pub use admin::InstanceAdmin;
 pub use errors::UserError;
 pub use key_manager::UserKeyManager;
 pub use session::User;

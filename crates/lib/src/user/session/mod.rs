@@ -38,7 +38,7 @@
 
 use std::collections::HashMap;
 
-use super::{UserKeyManager, types::UserInfo};
+use super::{UserKeyManager, admin::InstanceAdmin, types::UserInfo};
 use crate::{
     Database, Error, Instance, Result, Transaction,
     auth::{Permission, SigKey, crypto::PublicKey},
@@ -152,21 +152,53 @@ impl User {
     /// Whether this user is an instance admin.
     ///
     /// "Instance admin" means the user's default pubkey holds `Admin` in the
-    /// `_users` system database's `auth_settings`. The first user created on a
-    /// fresh instance is auto-promoted during `Instance::create_user`;
-    /// subsequent users land as non-admins.
+    /// `_users` system database's `auth_settings`. The `admin`/`admin` user
+    /// created during instance bootstrap is auto-promoted; subsequent users
+    /// land as non-admins until promoted via
+    /// [`InstanceAdmin::grant_instance_admin`](crate::user::InstanceAdmin::grant_instance_admin).
     ///
     /// Returns `false` if the key resolution fails (key not in auth_settings,
-    /// non-Admin permission, etc.) — callers that need to distinguish "not
-    /// admin" from "lookup failed" can use the auth_settings APIs directly.
+    /// non-Admin permission, etc.). For the capability handle rather than a
+    /// bool, use [`Self::admin`].
     pub async fn is_admin(&self) -> Result<bool> {
+        self.admin_check().await
+    }
+
+    /// Obtain the instance-admin capability view.
+    ///
+    /// Returns an [`InstanceAdmin`] only if this user's default key holds
+    /// `Admin` on the `_users` system database. All admin-gated operations
+    /// (creating users, listing users, promoting admins) live on the
+    /// returned view, so the privilege boundary is explicit at the call site
+    /// and those operations need no further permission check of their own.
+    ///
+    /// # Errors
+    /// - [`UserError::InsufficientPermissions`] if this user is not an
+    ///   instance admin.
+    pub async fn admin(&self) -> Result<InstanceAdmin<'_>> {
+        if self.admin_check().await? {
+            Ok(InstanceAdmin::new(self))
+        } else {
+            Err(UserError::InsufficientPermissions.into())
+        }
+    }
+
+    /// Single source of truth for "is this user an instance admin".
+    ///
+    /// Reads the `_users` `auth_settings` snapshot via the user's **session
+    /// key** (not the device key), so it behaves identically on local and
+    /// remote instances. Returns `Ok(false)` for a non-admin or unresolved
+    /// key; propagates real infrastructure errors. Shared by
+    /// [`Self::is_admin`] and [`Self::admin`].
+    async fn admin_check(&self) -> Result<bool> {
         let default_pubkey =
             self.key_manager
                 .get_default_key_id()
                 .ok_or_else(|| UserError::KeyNotFound {
                     key_id: "<default>".to_string(),
                 })?;
-        let users_db = self.instance.users_db().await?;
+        let signing_key = self.default_signing_key()?;
+        let users_db = self.instance.users_db_for_session(&signing_key).await?;
         let tx = users_db.new_transaction().await?;
         let settings = tx.get_settings()?;
         let auth = settings.auth_snapshot().await?;
@@ -176,63 +208,31 @@ impl User {
         }
     }
 
-    /// Open a system database keyed by this user's default signing key.
+    /// The user's default signing key (decrypted, in-session).
     ///
-    /// Unlike `open_database` / `open_database_with_key`, this does not
-    /// require a tracked-database SigKey mapping: the instance-admin
-    /// bootstrap writes the user's pubkey straight into the system DB's
-    /// `auth_settings`, so the default-pubkey identity (`DatabaseKey::new`)
-    /// resolves directly. Callers must gate on `is_admin()` first — this
-    /// helper performs no permission check of its own.
-    async fn admin_keyed_system_db(&self, root_id: &ID) -> Result<Database> {
+    /// Shared by admin / system-DB paths that must sign as the user
+    /// directly, rather than via a tracked-database SigKey mapping.
+    pub(crate) fn default_signing_key(&self) -> Result<crate::auth::crypto::PrivateKey> {
         let key_id =
             self.key_manager
                 .get_default_key_id()
                 .ok_or_else(|| UserError::KeyNotFound {
                     key_id: "<default>".to_string(),
                 })?;
-        let signing_key = self
-            .key_manager
+        self.key_manager
             .get_signing_key(&key_id)
-            .ok_or_else(|| UserError::KeyNotFound {
-                key_id: key_id.to_string(),
-            })?
-            .clone();
-        Ok(Database::open(&self.instance, root_id)
-            .await?
-            .with_key(DatabaseKey::new(signing_key)))
+            .cloned()
+            .ok_or_else(|| {
+                UserError::KeyNotFound {
+                    key_id: key_id.to_string(),
+                }
+                .into()
+            })
     }
 
-    /// Grant instance-admin to another key.
-    ///
-    /// Adds `new_admin` as `Admin(0)` on the system databases that gate
-    /// instance-level admin operations (`_users` and `_databases`), with the
-    /// write signed by this user's own admin key. The first instance admin is
-    /// created automatically during `Instance::create_user`; this is how
-    /// every subsequent admin is promoted.
-    ///
-    /// Idempotent: re-granting an existing admin re-asserts the same
-    /// `Admin(0)` entry.
-    ///
-    /// # Errors
-    /// - [`UserError::InsufficientPermissions`] if the caller is not itself
-    ///   an instance admin.
-    pub async fn grant_instance_admin(&self, new_admin: &PublicKey) -> Result<()> {
-        if !self.is_admin().await? {
-            return Err(UserError::InsufficientPermissions.into());
-        }
-        let users_db = self
-            .admin_keyed_system_db(self.instance.users_db_id())
-            .await?;
-        let databases_db = self
-            .admin_keyed_system_db(self.instance.databases_db_id())
-            .await?;
-        crate::user::system_databases::grant_admin_on_system_dbs(
-            &users_db,
-            &databases_db,
-            new_admin,
-        )
-        .await
+    /// Instance reference (internal — for admin / system-DB helpers).
+    pub(crate) fn instance(&self) -> &Instance {
+        &self.instance
     }
 
     /// Logout (consumes self and clears decrypted keys from memory)
@@ -343,43 +343,6 @@ impl User {
         Ok(database)
     }
 
-    /// Create a new user on this Instance.
-    ///
-    /// Requires Admin permission on `_users`.  Signs `_users` writes with this
-    /// user's session key and submits through the existing
-    /// [`SubmitSignedEntry`](crate::service::wire::DatabaseOp) wire surface —
-    /// works on both local and remote instances.
-    ///
-    /// This is the preferred way to create users from an authenticated admin
-    /// session.  [`Instance::create_user`](crate::Instance::create_user) uses
-    /// the device key and is intended for daemon-side bootstrap only.
-    pub async fn create_user(
-        &self,
-        username: &str,
-        password: Option<&str>,
-    ) -> Result<String> {
-        use crate::user::system_databases::create_user;
-        let key_id = self
-            .key_manager()
-            .get_default_key_id()
-            .ok_or_else(|| UserError::KeyNotFound {
-                key_id: "<default>".to_string(),
-            })?;
-        let signing_key = self
-            .key_manager()
-            .get_signing_key(&key_id)
-            .ok_or_else(|| UserError::KeyNotFound {
-                key_id: key_id.to_string(),
-            })?
-            .clone();
-        let users_db = self
-            .instance
-            .users_db_for_session(&signing_key)
-            .await?;
-        let (user_uuid, _) =
-            create_user(&users_db, &self.instance, username, password).await?;
-        Ok(user_uuid)
-    }
 
     /// Open an existing database by its root ID using this user's keys.
     ///

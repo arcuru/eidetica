@@ -17,8 +17,7 @@ async fn test_commits_work_with_sync_enabled() {
     instance.enable_sync().await.expect("Enable sync");
 
     // Create user and database
-    instance
-        .create_user("testuser", None)
+    crate::helpers::create_user(&instance, "testuser", None)
         .await
         .expect("Create user");
     let mut user = instance
@@ -68,8 +67,7 @@ async fn test_multiple_commits_with_sync_enabled() {
     let instance = test_instance().await;
     instance.enable_sync().await.expect("Enable sync");
 
-    instance
-        .create_user("testuser", None)
+    crate::helpers::create_user(&instance, "testuser", None)
         .await
         .expect("Create user");
     let mut user = instance
@@ -104,8 +102,7 @@ async fn test_commits_with_sync_disabled() {
     let instance = test_instance().await;
     instance.enable_sync().await.expect("Enable sync");
 
-    instance
-        .create_user("testuser", None)
+    crate::helpers::create_user(&instance, "testuser", None)
         .await
         .expect("Create user");
     let mut user = instance
@@ -149,8 +146,7 @@ async fn test_commits_with_sync_on_commit_disabled() {
     let instance = test_instance().await;
     instance.enable_sync().await.expect("Enable sync");
 
-    instance
-        .create_user("testuser", None)
+    crate::helpers::create_user(&instance, "testuser", None)
         .await
         .expect("Create user");
     let mut user = instance
@@ -187,8 +183,7 @@ async fn test_commits_before_transport_enabled() {
     let instance = test_instance().await;
     instance.enable_sync().await.expect("Enable sync");
 
-    instance
-        .create_user("testuser", None)
+    crate::helpers::create_user(&instance, "testuser", None)
         .await
         .expect("Create user");
     let mut user = instance
@@ -221,8 +216,7 @@ async fn test_commits_with_multiple_databases() {
     let instance = test_instance().await;
     instance.enable_sync().await.expect("Enable sync");
 
-    instance
-        .create_user("testuser", None)
+    crate::helpers::create_user(&instance, "testuser", None)
         .await
         .expect("Create user");
     let mut user = instance

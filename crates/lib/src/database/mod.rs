@@ -1161,7 +1161,8 @@ impl Database {
     /// # async fn main() -> Result<()> {
     /// # let backend = Box::new(InMemory::new());
     /// # let instance = Instance::open(backend).await?;
-    /// # instance.create_user("test", None).await?;
+    /// # let admin = instance.login_user("admin", Some("admin")).await?;
+    /// # admin.admin().await?.create_user("test", None).await?;
     /// # let mut user = instance.login_user("test", None).await?;
     /// # let key_id = user.add_private_key(None).await?;
     /// # let tree = user.create_database(Doc::new(), &key_id).await?;
@@ -1214,7 +1215,8 @@ impl Database {
     /// # async fn main() -> Result<()> {
     /// # let backend = Box::new(InMemory::new());
     /// # let instance = Instance::open(backend).await?;
-    /// # instance.create_user("test", None).await?;
+    /// # let admin = instance.login_user("admin", Some("admin")).await?;
+    /// # admin.admin().await?.create_user("test", None).await?;
     /// # let mut user = instance.login_user("test", None).await?;
     /// # let key_id = user.add_private_key(None).await?;
     /// # let tree = user.create_database(Doc::new(), &key_id).await?;
