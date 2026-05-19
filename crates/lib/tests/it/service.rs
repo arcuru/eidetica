@@ -938,6 +938,12 @@ async fn test_submit_cross_session_signed_by_tree_admin_becomes_verified() {
         .transaction_context(&["note".to_string()], ReadScope::Verified)
         .await
         .unwrap();
+    let max_parent_height = ctx
+        .main_parents
+        .iter()
+        .map(|(_, h)| *h)
+        .max()
+        .unwrap_or(0);
     let parents: Vec<eidetica::entry::ID> =
         ctx.main_parents.iter().map(|(id, _)| id.clone()).collect();
     // `EntryMetadata` is `pub(crate)`; construct its JSON wire form
@@ -949,13 +955,19 @@ async fn test_submit_cross_session_signed_by_tree_admin_becomes_verified() {
     }))
     .unwrap();
 
-    // Build the entry, set the identity hint to bob's, then sign with bob's
-    // key. Signing must happen *after* `sig.key` and `metadata` are set
-    // because the canonical signing bytes include both.
+    // Build the entry with an explicit height = max(parent_heights) + 1 so
+    // it sorts after the genesis in the topo-sorted `get_tree` walk that
+    // `verified_frontier` relies on (height-ascending, ID-tiebreaking).
+    // Without this the new entry could tie at height 0 and the frontier
+    // would short-circuit on the child before its parent is in the prefix.
+    // Set the identity hint to bob's, then sign — signing must happen
+    // after `sig.key`, `metadata`, and `height` are set because the
+    // canonical signing bytes include them all.
     let mut entry = Entry::builder(bob_root.clone())
         .set_parents(parents)
         .set_subtree_data("note", b"{\"cross_session\":true}")
         .set_metadata(metadata_bytes)
+        .set_height(max_parent_height + 1)
         .build()
         .unwrap();
     entry.sig.key = bob_identity.clone();

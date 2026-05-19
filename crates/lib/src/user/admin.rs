@@ -57,14 +57,20 @@ impl<'a> InstanceAdmin<'a> {
     pub async fn create_user(&self, username: &str, password: Option<&str>) -> Result<String> {
         let instance = self.user.instance();
 
-        // On a connected instance the genesis + user-database follow-up
-        // writes can't yet be authored over the connection's session
-        // end-to-end (transitional: the wire-submit path is unblocked by
-        // verification-gated submit, but `system_databases::create_user`'s
-        // multi-tree authorship has remaining identity-routing edges that
-        // a follow-up will close). The daemon owns this flow for now: send
-        // the admin-gated `CreateUser` RPC and let the server run
-        // `system_databases::create_user` locally.
+        // Transitional: on a connected instance the genesis + user-database
+        // follow-up writes can't yet be authored end-to-end over the
+        // admin's session. Change A (verification-gated submit) unblocks
+        // submits, but `system_databases::create_user`'s follow-up
+        // transactions (device-key Read grant, root-key metadata) need to
+        // *read* the brand-new user_database — and the server-side gate
+        // resolves Read against the connection's `session_pubkey`, not the
+        // request's identity hint, so the admin's session is denied on a
+        // tree whose only auth member is the new user. The accepted design
+        // (private_docs/submit-gate-and-remote-user-creation-design.md §5)
+        // fixes this by having the admin *build and submit all entries
+        // client-side* (genesis + follow-ups) without reading the new tree
+        // — a deeper refactor of `system_databases::create_user`. Until
+        // that lands, route through the daemon-side `CreateUser` RPC.
         if let Some(conn) = instance.remote_connection() {
             return conn.create_user(username, password).await;
         }
