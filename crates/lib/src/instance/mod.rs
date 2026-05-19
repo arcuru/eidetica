@@ -18,7 +18,10 @@ use handle_trait::Handle;
 
 use crate::{
     Clock, Database, Entry, Result, SystemClock,
-    auth::crypto::{PrivateKey, PublicKey},
+    auth::{
+        SigKey,
+        crypto::{PrivateKey, PublicKey},
+    },
     backend::{BackendImpl, InstanceMetadata, InstanceSecrets},
     entry::ID,
     service::client::RemoteConnection,
@@ -278,8 +281,9 @@ impl std::fmt::Debug for InstanceInternal {
 /// # async fn main() -> eidetica::Result<()> {
 /// let instance = Instance::open(Box::new(InMemory::new())).await?;
 ///
-/// // Create passwordless user
-/// instance.create_user("alice", None).await?;
+/// // Create a passwordless user via the bootstrapped admin (admin/admin)
+/// let admin = instance.login_user("admin", Some("admin")).await?;
+/// admin.admin().await?.create_user("alice", None).await?;
 /// let mut user = instance.login_user("alice", None).await?;
 ///
 /// // Use User API for operations
@@ -380,8 +384,9 @@ impl Instance {
     /// let backend = InMemory::new();
     /// let instance = Instance::open(Box::new(backend)).await?;
     ///
-    /// // Create and login user explicitly
-    /// instance.create_user("alice", None).await?;
+    /// // Create a user via the bootstrapped admin (admin/admin)
+    /// let admin = instance.login_user("admin", Some("admin")).await?;
+    /// admin.admin().await?.create_user("alice", None).await?;
     /// let mut user = instance.login_user("alice", None).await?;
     ///
     /// // Use User API for operations
@@ -488,8 +493,9 @@ impl Instance {
     /// let backend = InMemory::new();
     /// let instance = Instance::create(Box::new(backend)).await?;
     ///
-    /// // Create and login user explicitly
-    /// instance.create_user("alice", None).await?;
+    /// // Create a user via the bootstrapped admin (admin/admin)
+    /// let admin = instance.login_user("admin", Some("admin")).await?;
+    /// admin.admin().await?.create_user("alice", None).await?;
     /// let mut user = instance.login_user("alice", None).await?;
     ///
     /// // Use User API for operations
@@ -688,14 +694,40 @@ impl Instance {
     }
 
     /// Open the _users system database with a specific signing key (not the device
-    /// key).  Used by [`User::create_user`](crate::user::User::create_user) on
+    /// key).  Used by the admin-session paths
+    /// ([`InstanceAdmin`](crate::user::InstanceAdmin), `User::admin_check`) on
     /// remote instances where the device key is unavailable.
     pub(crate) async fn users_db_for_session(
         &self,
         signing_key: &PrivateKey,
     ) -> Result<Database> {
-        let db = Database::open(self, &self.inner.metadata.users_db).await?;
-        Ok(db.with_key(signing_key.clone()))
+        self.open_system_db_for_session(&self.inner.metadata.users_db, signing_key)
+            .await
+    }
+
+    /// Open a system database for an authenticated session.
+    ///
+    /// On a remote instance this routes every read through the connection's
+    /// Database wire protocol ([`Database::open_remote`] /
+    /// `RemoteDatabaseOps`), gated by the session key's identity — the plain
+    /// [`Database::open`] path only ever uses `LocalDatabaseOps` against the
+    /// client's (empty) backend, so settings/auth reads of a server-owned
+    /// system DB would come back empty. On a local instance it opens against
+    /// the local backend as before. The signing key is attached for writes.
+    pub(crate) async fn open_system_db_for_session(
+        &self,
+        root_id: &ID,
+        signing_key: &PrivateKey,
+    ) -> Result<Database> {
+        if let Some(conn) = self.remote_connection() {
+            let identity = SigKey::from_pubkey(&signing_key.public_key());
+            return Ok(Database::open_remote(self, conn, root_id, identity)
+                .await?
+                .with_key(signing_key.clone()));
+        }
+        Ok(Database::open(self, root_id)
+            .await?
+            .with_key(signing_key.clone()))
     }
 
     /// Get the _databases tracking database
@@ -733,14 +765,18 @@ impl Instance {
 
     // === User Management ===
 
-    /// Create a new user account using the device key.
+    /// Create a new user account using the device key (test-only).
     ///
-    /// Creates a user with or without password protection. Passwordless users are appropriate
-    /// for embedded applications where filesystem access = database access.
+    /// Signs `_users` writes with the device key, which is unavailable on a
+    /// remote instance. Bootstrap mints the `admin` user via
+    /// `system_databases::create_user` directly, so this wrapper now exists
+    /// only for in-crate unit tests of the local device-key path.
     ///
-    /// Prefer [`User::create_user`](crate::user::User::create_user) for authenticated
-    /// admin sessions — it signs through the user's own key and works on both
-    /// local and remote instances.
+    /// The public way to create users is
+    /// [`InstanceAdmin::create_user`](crate::user::InstanceAdmin::create_user),
+    /// reached via [`User::admin`](crate::user::User::admin): it signs through
+    /// the admin's own session key and works on both local and remote
+    /// instances.
     ///
     /// # Arguments
     /// * `user_id` - Unique user identifier (username)
@@ -748,7 +784,8 @@ impl Instance {
     ///
     /// # Returns
     /// A Result containing the user's UUID (stable internal identifier)
-    pub async fn create_user(&self, user_id: &str, password: Option<&str>) -> Result<String> {
+    #[cfg(test)]
+    pub(crate) async fn create_user(&self, user_id: &str, password: Option<&str>) -> Result<String> {
         use crate::user::system_databases::create_user;
         let users_db = self.users_db().await?;
         let (user_uuid, _user_info) = create_user(&users_db, self, user_id, password).await?;
@@ -788,16 +825,6 @@ impl Instance {
         use crate::user::system_databases::login_user;
         let users_db = self.users_db().await?;
         login_user(&users_db, self, user_id, password).await
-    }
-
-    /// List all user IDs.
-    ///
-    /// # Returns
-    /// A Result containing a vector of user IDs
-    pub async fn list_users(&self) -> Result<Vec<String>> {
-        use crate::user::system_databases::list_users;
-        let users_db = self.users_db().await?;
-        list_users(&users_db).await
     }
 
     // === User-Sync Integration ===

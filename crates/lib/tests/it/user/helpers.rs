@@ -14,6 +14,16 @@ use eidetica::{
 
 use crate::helpers::test_instance;
 
+// ===== ADMIN HELPERS =====
+
+/// Create a user via the bootstrapped admin session (works on both local
+/// and remote Instances). Thin alias over [`crate::helpers::create_user`].
+async fn admin_create_user(instance: &Instance, username: &str, password: Option<&str>) {
+    crate::helpers::create_user(instance, username, password)
+        .await
+        .expect("Failed to create user");
+}
+
 // ===== INSTANCE SETUP HELPERS =====
 
 /// Create a new Instance for user testing
@@ -25,22 +35,22 @@ pub async fn setup_instance() -> Instance {
 
 /// Create an Instance with a single user already created
 ///
-/// Returns (Instance, username) for easy access
+/// Returns (Instance, username) for easy access.
+/// Uses the bootstrapped admin user to create new users — works on both
+/// local and remote (service) Instances.
 pub async fn setup_instance_with_user(
     username: &str,
     password: Option<&str>,
 ) -> (Instance, String) {
     let instance = setup_instance().await;
-    instance
-        .create_user(username, password)
-        .await
-        .expect("Failed to create user");
+    admin_create_user(&instance, username, password).await;
     (instance, username.to_string())
 }
 
 /// Create an Instance with multiple users
 ///
-/// Returns (Instance, Vec<username>)
+/// Returns (Instance, Vec<username>).
+/// Uses the bootstrapped admin user — works on both local and remote.
 pub async fn setup_instance_with_users(
     user_configs: &[(&str, Option<&str>)],
 ) -> (Instance, Vec<String>) {
@@ -48,10 +58,7 @@ pub async fn setup_instance_with_users(
     let mut usernames = Vec::new();
 
     for (username, password) in user_configs {
-        instance
-            .create_user(username, *password)
-            .await
-            .expect("Failed to create user");
+        admin_create_user(&instance, username, *password).await;
         usernames.push(username.to_string());
     }
 
@@ -140,14 +147,8 @@ pub async fn setup_two_passwordless_users(
     username2: &str,
 ) -> (Instance, User, User, String, String) {
     let instance = setup_instance().await;
-    instance
-        .create_user(username1, None)
-        .await
-        .expect("Failed to create user1");
-    instance
-        .create_user(username2, None)
-        .await
-        .expect("Failed to create user2");
+    admin_create_user(&instance, username1, None).await;
+    admin_create_user(&instance, username2, None).await;
 
     let user1 = login_user(&instance, username1, None).await;
     let user2 = login_user(&instance, username2, None).await;
@@ -170,14 +171,8 @@ pub async fn setup_users_with_shared_database(
     db_name: &str,
 ) -> (Instance, User, User, Database, ID) {
     let instance = setup_instance().await;
-    instance
-        .create_user(owner_name, None)
-        .await
-        .expect("Failed to create owner");
-    instance
-        .create_user(requester_name, None)
-        .await
-        .expect("Failed to create requester");
+    admin_create_user(&instance, owner_name, None).await;
+    admin_create_user(&instance, requester_name, None).await;
 
     let mut owner = login_user(&instance, owner_name, None).await;
     let requester = login_user(&instance, requester_name, None).await;
@@ -266,10 +261,7 @@ pub async fn test_complete_user_lifecycle(
 ) -> (Instance, User, Database) {
     // Setup and create user
     let instance = setup_instance().await;
-    instance
-        .create_user(username, password)
-        .await
-        .expect("Failed to create user");
+    admin_create_user(&instance, username, password).await;
 
     // First login
     let mut user = instance
@@ -309,14 +301,8 @@ pub async fn test_multi_user_bootstrap_workflow(
     let instance = setup_instance().await;
 
     // Create both users
-    instance
-        .create_user(owner_name, None)
-        .await
-        .expect("Failed to create owner");
-    instance
-        .create_user(requester_name, None)
-        .await
-        .expect("Failed to create requester");
+    admin_create_user(&instance, owner_name, None).await;
+    admin_create_user(&instance, requester_name, None).await;
 
     // Owner creates database
     let mut owner = login_user(&instance, owner_name, None).await;
@@ -346,10 +332,7 @@ pub async fn test_concurrent_database_creation(
 
     for i in 0..user_count {
         let username = format!("user_{i}");
-        instance
-            .create_user(&username, None)
-            .await
-            .expect("Failed to create user");
+        admin_create_user(&instance, &username, None).await;
         let mut user = login_user(&instance, &username, None).await;
 
         let mut user_databases = Vec::new();

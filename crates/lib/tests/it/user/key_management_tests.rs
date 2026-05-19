@@ -221,8 +221,7 @@ async fn test_keys_persist_across_sessions() {
     let instance = setup_instance().await;
 
     // First session: create user and add keys
-    instance
-        .create_user(username, None)
+    crate::helpers::create_user(&instance, username, None)
         .await
         .expect("Failed to create user");
     let mut user1 = login_user(&instance, username, None).await;
@@ -242,8 +241,7 @@ async fn test_multiple_keys_persist() {
     let instance = setup_instance().await;
 
     // First session: add multiple keys
-    instance
-        .create_user(username, Some(password))
+    crate::helpers::create_user(&instance, username, Some(password))
         .await
         .expect("Create user");
     let mut user1 = login_user(&instance, username, Some(password)).await;
@@ -649,8 +647,7 @@ async fn test_manual_mappings_persist_across_sessions() {
     let instance = setup_instance().await;
 
     // First session: create user, add key, create database, add mapping
-    instance
-        .create_user(username, None)
+    crate::helpers::create_user(&instance, username, None)
         .await
         .expect("Failed to create user");
     let mut user1 = login_user(&instance, username, None).await;
@@ -696,8 +693,7 @@ async fn test_multiple_manual_mappings_persist() {
     let instance = setup_instance().await;
 
     // First session: create complex mapping scenario
-    instance
-        .create_user(username, Some(password))
+    crate::helpers::create_user(&instance, username, Some(password))
         .await
         .expect("Create user");
     let mut user1 = login_user(&instance, username, Some(password)).await;

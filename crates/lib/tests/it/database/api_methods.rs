@@ -1019,7 +1019,7 @@ async fn test_verify_uses_pinned_not_current_settings() {
 async fn test_genesis_verifies_after_persist_reload() {
     let backend = InMemory::new();
     let instance = Instance::open(Box::new(backend)).await.unwrap();
-    instance.create_user("u", None).await.unwrap();
+    crate::helpers::create_user(&instance, "u", None).await.unwrap();
     let mut user = instance.login_user("u", None).await.unwrap();
     let key_id = user.add_private_key(Some("k")).await.unwrap();
     let mut settings = Doc::new();

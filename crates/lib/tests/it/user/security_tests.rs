@@ -17,8 +17,7 @@ async fn test_empty_password_different_from_no_password() {
     let username = "alice";
 
     // Create user with empty password (different from passwordless)
-    instance
-        .create_user(username, Some(""))
+    crate::helpers::create_user(&instance, username, Some(""))
         .await
         .expect("Create with empty password");
 

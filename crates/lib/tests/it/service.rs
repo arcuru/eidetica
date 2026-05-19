@@ -48,8 +48,9 @@ async fn start_test_server() -> (PathBuf, watch::Sender<()>, Instance, TempDir) 
 
 /// Helper: log in as the bootstrap admin and create a user server-side.
 async fn create_user_via_admin(server: &Instance, username: &str) {
-    let mut admin = server.login_user("admin", Some("admin")).await.unwrap();
-    admin.create_user(username, None).await.unwrap();
+    crate::helpers::create_user(server, username, None)
+        .await
+        .unwrap();
 }
 
 /// Helper: with the admin bootstrapped at instance creation, log in as admin,
@@ -64,8 +65,9 @@ async fn setup_db(
     username: &str,
 ) -> (Instance, eidetica::entry::ID, eidetica::auth::types::SigKey) {
     // Admin was created by Instance::open bootstrap — use it to create the test user.
-    let mut admin = server.login_user("admin", Some("admin")).await.unwrap();
-    admin.create_user(username, None).await.unwrap();
+    crate::helpers::create_user(server, username, None)
+        .await
+        .unwrap();
 
     let instance = Instance::connect(socket_path).await.unwrap();
     let user = instance.login_user(username, None).await.unwrap();
@@ -98,7 +100,7 @@ async fn setup_db(
 async fn test_connect_and_create_instance() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
     let _instance = Instance::connect(&socket_path).await.unwrap();
-    let users = server.list_users().await.unwrap();
+    let users = crate::helpers::list_users(&server).await.unwrap();
     // Admin user bootstrapped at Instance creation
     assert_eq!(users.len(), 1);
     assert_eq!(users[0], "admin");
@@ -108,8 +110,9 @@ async fn test_connect_and_create_instance() {
 async fn test_user_lifecycle() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
     // Admin is bootstrapped — use it to create test user
-    let mut admin = server.login_user("admin", Some("admin")).await.unwrap();
-    admin.create_user("alice", None).await.unwrap();
+    crate::helpers::create_user(&server, "alice", None)
+        .await
+        .unwrap();
 
     let instance = Instance::connect(&socket_path).await.unwrap();
 
@@ -193,7 +196,7 @@ async fn test_instance_connect_convenience() {
     create_user_via_admin(&server, "charlie").await;
 
     let _instance = Instance::connect(&socket_path).await.unwrap();
-    let users = server.list_users().await.unwrap();
+    let users = crate::helpers::list_users(&server).await.unwrap();
     assert_eq!(users, vec!["admin", "charlie"]);
 }
 
@@ -373,7 +376,7 @@ async fn test_database_get_verified_tips() {
         setup_db(&server, &socket_path, "alice").await;
 
     // Add a commit server-side so tips diverge.
-    let mut server_user = server.login_user("alice", None).await.unwrap();
+    let server_user = server.login_user("alice", None).await.unwrap();
     let server_key_pub = server_user.get_default_key().unwrap();
     let server_sk = server_user.get_signing_key(&server_key_pub).unwrap();
     let db = eidetica::Database::open(&server, &root_id)
@@ -459,7 +462,7 @@ async fn test_database_get_store_entries() {
         setup_db(&server, &socket_path, "alice").await;
 
     // Write data server-side.
-    let mut server_user = server.login_user("alice", None).await.unwrap();
+    let server_user = server.login_user("alice", None).await.unwrap();
     let server_key_pub = server_user.get_default_key().unwrap();
     let server_sk = server_user.get_signing_key(&server_key_pub).unwrap();
     let db = eidetica::Database::open(&server, &root_id)
@@ -573,7 +576,7 @@ async fn test_database_encrypted_store_roundtrip() {
     let secret_data = "top-secret-value";
 
     // Write encrypted data server-side.
-    let mut server_user = server.login_user("alice", None).await.unwrap();
+    let server_user = server.login_user("alice", None).await.unwrap();
     let server_key_pub = server_user.get_default_key().unwrap();
     let server_sk = server_user.get_signing_key(&server_key_pub).unwrap();
     let db = eidetica::Database::open(&server, &root_id)
@@ -811,7 +814,7 @@ async fn test_remote_database_ops_e2e() {
         setup_db(&server, &socket_path, "alice").await;
 
     // Write data server-side.
-    let mut server_user = server.login_user("alice", None).await.unwrap();
+    let server_user = server.login_user("alice", None).await.unwrap();
     let server_key_pub = server_user.get_default_key().unwrap();
     let server_sk = server_user.get_signing_key(&server_key_pub).unwrap();
     let db = eidetica::Database::open(&server, &root_id)
@@ -865,3 +868,4 @@ async fn test_remote_database_ops_e2e() {
         );
     }
 }
+// probe appended into service.rs test module

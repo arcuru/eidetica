@@ -136,7 +136,7 @@ async fn test_list_users() {
         setup_instance_with_users(&[("alice", None), ("bob", None), ("charlie", None)]).await;
 
     // List all users
-    let users = instance.list_users().await.expect("Should list users");
+    let users = crate::helpers::list_users(&instance).await.expect("Should list users");
 
     // Should have 4 users (admin + 3 created)
     assert_eq!(users.len(), 4, "Should have 4 users (admin + 3 created)");
@@ -150,7 +150,7 @@ async fn test_list_users() {
 async fn test_list_users_empty_instance() {
     let instance = setup_instance().await;
 
-    let users = instance.list_users().await.expect("Should list users");
+    let users = crate::helpers::list_users(&instance).await.expect("Should list users");
 
     // Should have 1 user (bootstrapped admin/admin)
     assert_eq!(users.len(), 1, "New unified instance should have 1 user (admin)");

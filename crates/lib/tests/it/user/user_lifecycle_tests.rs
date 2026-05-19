@@ -16,8 +16,7 @@ async fn test_create_passwordless_user() {
 
     // Create a passwordless user
     let username = "alice";
-    instance
-        .create_user(username, None)
+    crate::helpers::create_user(&instance, username, None)
         .await
         .expect("Failed to create user");
 
@@ -35,8 +34,7 @@ async fn test_create_password_protected_user() {
     // Create a password-protected user
     let username = "bob";
     let password = "secure_password_123";
-    instance
-        .create_user(username, Some(password))
+    crate::helpers::create_user(&instance, username, Some(password))
         .await
         .expect("Failed to create user");
 
@@ -73,13 +71,12 @@ async fn test_create_duplicate_username_fails() {
     let username = "alice";
 
     // Create first user
-    instance
-        .create_user(username, None)
+    crate::helpers::create_user(&instance, username, None)
         .await
         .expect("First user should succeed");
 
     // Try to create duplicate user
-    let result = instance.create_user(username, None).await;
+    let result = crate::helpers::create_user(&instance, username, None).await;
     assert!(result.is_err(), "Creating duplicate username should fail");
 }
 
@@ -268,8 +265,7 @@ async fn test_user_persistence_across_sessions() {
     let instance = setup_instance().await;
 
     // Create user and add keys in first session
-    instance
-        .create_user(username, None)
+    crate::helpers::create_user(&instance, username, None)
         .await
         .expect("Failed to create user");
     let mut user1 = login_user(&instance, username, None).await;
@@ -290,8 +286,7 @@ async fn test_database_persistence_across_sessions() {
     let instance = setup_instance().await;
 
     // Create user and database in first session
-    instance
-        .create_user(username, None)
+    crate::helpers::create_user(&instance, username, None)
         .await
         .expect("Failed to create user");
     let mut user1 = login_user(&instance, username, None).await;

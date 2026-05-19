@@ -64,7 +64,7 @@ async fn test_auto_sync_between_instances() -> Result<()> {
         .await?;
 
     // Create user on instance1
-    instance1.create_user("alice", None).await?;
+    crate::helpers::create_user(&instance1, "alice", None).await?;
     let mut user1 = instance1.login_user("alice", None).await?;
 
     // Create a database
@@ -179,10 +179,10 @@ async fn test_bidirectional_auto_sync() -> Result<()> {
     sync2.add_peer_address(&peer1_pubkey, address1).await?;
 
     // Create users on both instances
-    instance1.create_user("alice", None).await?;
+    crate::helpers::create_user(&instance1, "alice", None).await?;
     let mut user1 = instance1.login_user("alice", None).await?;
 
-    instance2.create_user("bob", None).await?;
+    crate::helpers::create_user(&instance2, "bob", None).await?;
     let mut user2 = instance2.login_user("bob", None).await?;
 
     // Create database on instance1
@@ -271,7 +271,7 @@ async fn test_enable_sync_after_user_setup() -> Result<()> {
     let instance2 = test_instance().await;
 
     // Create user and add database preferences BEFORE enabling sync
-    instance1.create_user("alice", None).await?;
+    crate::helpers::create_user(&instance1, "alice", None).await?;
     let mut user1 = instance1.login_user("alice", None).await?;
 
     let mut db_settings = Doc::new();
@@ -394,7 +394,7 @@ async fn test_auto_sync_after_restart() -> Result<()> {
         .await?;
 
     // Create user and configure database preferences
-    instance1.create_user("alice", None).await?;
+    crate::helpers::create_user(&instance1, "alice", None).await?;
     let mut user1 = instance1.login_user("alice", None).await?;
 
     let mut db_settings = Doc::new();

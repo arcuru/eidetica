@@ -22,8 +22,7 @@ async fn create_test_database() -> (Instance, Database) {
         .expect("Failed to create test instance");
 
     // Use User API to create a database
-    instance
-        .create_user("test", None)
+    crate::helpers::create_user(&instance, "test", None)
         .await
         .expect("Failed to create user");
     let mut user = instance
@@ -47,8 +46,7 @@ async fn create_test_database_with_clock(clock: Arc<dyn Clock>) -> (Instance, Da
         .expect("Failed to create test instance");
 
     // Use User API to create a database
-    instance
-        .create_user("test", None)
+    crate::helpers::create_user(&instance, "test", None)
         .await
         .expect("Failed to create user");
     let mut user = instance

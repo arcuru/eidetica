@@ -33,8 +33,7 @@ async fn setup_user_with_database() -> Result<(Instance, User, Database, Sync, I
     let instance = test_instance().await;
 
     // Create and login user
-    instance
-        .create_user("alice", None)
+    crate::helpers::create_user(&instance, "alice", None)
         .await
         .expect("Failed to create user");
     let mut user = instance
@@ -459,8 +458,7 @@ async fn test_user_cannot_reject_after_approval() {
 async fn test_multiple_users() {
     // Create instances with 2 users
     let instance = test_instance().await;
-    instance
-        .create_user("alice", None)
+    crate::helpers::create_user(&instance, "alice", None)
         .await
         .expect("Failed to create alice");
     let mut alice = instance
@@ -471,8 +469,7 @@ async fn test_multiple_users() {
         .get_default_key()
         .expect("Failed to get alice's default key");
 
-    instance
-        .create_user("bob", None)
+    crate::helpers::create_user(&instance, "bob", None)
         .await
         .expect("Failed to create bob");
     let mut bob = instance
@@ -678,8 +675,7 @@ async fn test_user_list_pending_bootstrap_requests() {
 async fn test_user_without_admin_cannot_modify() {
     // Create Alice with a database
     let instance = test_instance().await;
-    instance
-        .create_user("alice", None)
+    crate::helpers::create_user(&instance, "alice", None)
         .await
         .expect("Failed to create alice");
     let mut alice = instance
@@ -725,8 +721,7 @@ async fn test_user_without_admin_cannot_modify() {
         .expect("Failed to add Alice's database preferences");
 
     // Create Bob and add a key for him
-    instance
-        .create_user("bob", None)
+    crate::helpers::create_user(&instance, "bob", None)
         .await
         .expect("Failed to create bob");
     let mut bob = instance

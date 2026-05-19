@@ -58,7 +58,7 @@ pub(crate) async fn has_instance_admin(
 /// that holds `Admin` on each respective DB. The first-admin bootstrap path
 /// (`create_user` below) passes device-keyed handles — `Database::create`
 /// registered the device key as `Admin(0)` on each system DB. The admin
-/// promotion path (`User::grant_instance_admin`) passes handles keyed by an
+/// promotion path (`InstanceAdmin::grant_instance_admin`) passes handles keyed by an
 /// existing admin's own key; the same write then resolves against that
 /// admin's identity.
 pub(crate) async fn grant_admin_on_system_dbs(
@@ -1009,7 +1009,13 @@ mod tests {
         );
 
         // Admin promotes bob
-        admin.grant_instance_admin(&bob_pubkey).await.unwrap();
+        admin
+            .admin()
+            .await
+            .unwrap()
+            .grant_instance_admin(&bob_pubkey)
+            .await
+            .unwrap();
 
         let users_db = instance.users_db().await.unwrap();
         let databases_db = instance.databases_db().await.unwrap();
@@ -1043,8 +1049,10 @@ mod tests {
         let charlie = instance.login_user("charlie", None).await.unwrap();
         let charlie_pubkey = charlie.key_manager().get_default_key_id().unwrap();
 
+        // A non-admin can't even obtain the admin view — the privilege
+        // boundary is enforced at `User::admin`, before any write.
         let err = bob
-            .grant_instance_admin(&charlie_pubkey)
+            .admin()
             .await
             .expect_err("non-admin must not be able to promote");
         assert!(
@@ -1079,8 +1087,20 @@ mod tests {
         let bob = instance.login_user("bob", None).await.unwrap();
         let bob_pubkey = bob.key_manager().get_default_key_id().unwrap();
 
-        admin.grant_instance_admin(&bob_pubkey).await.unwrap();
-        admin.grant_instance_admin(&bob_pubkey).await.unwrap(); // idempotent: no error
+        admin
+            .admin()
+            .await
+            .unwrap()
+            .grant_instance_admin(&bob_pubkey)
+            .await
+            .unwrap();
+        admin
+            .admin()
+            .await
+            .unwrap()
+            .grant_instance_admin(&bob_pubkey)
+            .await
+            .unwrap(); // idempotent: no error
 
         let users_db = instance.users_db().await.unwrap();
         assert_eq!(
@@ -1095,7 +1115,12 @@ mod tests {
         let charlie = instance.login_user("charlie", None).await.unwrap();
         let charlie_pubkey = charlie.key_manager().get_default_key_id().unwrap();
 
-        bob.grant_instance_admin(&charlie_pubkey).await.unwrap();
+        bob.admin()
+            .await
+            .unwrap()
+            .grant_instance_admin(&charlie_pubkey)
+            .await
+            .unwrap();
 
         let databases_db = instance.databases_db().await.unwrap();
         assert_eq!(

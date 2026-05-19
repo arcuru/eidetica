@@ -14,7 +14,6 @@ use eidetica::{
 #[cfg(all(unix, feature = "service"))]
 use {
     eidetica::service::ServiceServer,
-    tempfile::TempDir,
     tokio::sync::watch,
 };
 
@@ -138,6 +137,32 @@ pub async fn test_instance() -> Instance {
         .expect("Failed to create test instance")
 }
 
+/// Create a user via the bootstrapped `admin`/`admin` session.
+///
+/// Replaces the old public `Instance::create_user` (now bootstrap-only /
+/// `pub(crate)`). Creating users is an admin operation reached through
+/// [`User::admin`]; this drives that path and works identically on local and
+/// connected-remote instances. Returns the new user's UUID, mirroring the old
+/// `Instance::create_user` signature so call sites stay one-liners.
+pub async fn create_user(
+    instance: &Instance,
+    username: &str,
+    password: Option<&str>,
+) -> eidetica::Result<String> {
+    let admin = instance.login_user("admin", Some("admin")).await?;
+    admin.admin().await?.create_user(username, password).await
+}
+
+/// List all user IDs via the bootstrapped `admin`/`admin` session.
+///
+/// Replaces the removed `Instance::list_users` — listing users reads `_users`
+/// and is an admin operation reached through [`User::admin`].
+#[allow(dead_code)]
+pub async fn list_users(instance: &Instance) -> eidetica::Result<Vec<String>> {
+    let admin = instance.login_user("admin", Some("admin")).await?;
+    admin.admin().await?.list_users().await
+}
+
 /// Spawn an in-process daemon over an InMemory backend, create a bootstrap
 /// user server-side, then connect and authenticate as that user.
 ///
@@ -179,8 +204,7 @@ async fn test_remote_instance() -> Instance {
     // create_user is not available over the wire (no CreateUser RPC yet).
     // Create a bootstrap user on the server-side Instance, then connect
     // and authenticate as that user.
-    server
-        .create_user("test_bootstrap", None)
+    create_user(&server, "test_bootstrap", None)
         .await
         .expect("Failed to create bootstrap user on server");
 
@@ -212,8 +236,7 @@ pub async fn test_instance_with_user(username: &str) -> (Instance, User) {
         }
     }
     let instance = test_instance().await;
-    instance
-        .create_user(username, None)
+    create_user(&instance, username, None)
         .await
         .expect("Failed to create user");
     let user = instance
@@ -252,8 +275,7 @@ async fn test_remote_instance_with_user(username: &str) -> (Instance, User) {
     assert!(socket_path.exists(), "daemon socket did not appear within 500ms");
 
     // create_user is not available over the wire — create user server-side.
-    server
-        .create_user(username, None)
+    create_user(&server, username, None)
         .await
         .expect("Failed to create user server-side");
 
@@ -288,8 +310,7 @@ pub async fn test_instance_with_user_and_key(
         }
     }
     let instance = test_instance().await;
-    instance
-        .create_user(username, None)
+    create_user(&instance, username, None)
         .await
         .expect("Failed to create user");
     let mut user = instance
@@ -337,8 +358,7 @@ async fn test_remote_instance_with_user_and_key(
     assert!(socket_path.exists(), "daemon socket did not appear within 500ms");
 
     // Create user and add key server-side.
-    server
-        .create_user(username, None)
+    create_user(&server, username, None)
         .await
         .expect("Failed to create user server-side");
     let mut server_user = server
@@ -354,7 +374,7 @@ async fn test_remote_instance_with_user_and_key(
     let instance = Instance::connect(&socket_path)
         .await
         .expect("Failed to connect to test daemon");
-    let mut user = instance
+    let user = instance
         .login_user(username, None)
         .await
         .expect("Failed to login user");

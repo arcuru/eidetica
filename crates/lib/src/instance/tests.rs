@@ -20,6 +20,15 @@ async fn load_in_memory_backend(path: &Path) -> Result<InMemory, Error> {
     InMemory::load_from_file(path).await
 }
 
+/// List users via the bootstrapped `admin`/`admin` session.
+///
+/// `Instance::list_users` was removed — listing users reads `_users` and is
+/// an admin operation reached through [`User::admin`].
+async fn list_users(instance: &Instance) -> Result<Vec<String>, Error> {
+    let admin = instance.login_user("admin", Some("admin")).await?;
+    admin.admin().await?.list_users().await
+}
+
 #[tokio::test]
 #[cfg_attr(miri, ignore)] // Argon2 password hashing is extremely slow under Miri
 async fn test_create_user() -> Result<(), Error> {
@@ -35,7 +44,7 @@ async fn test_create_user() -> Result<(), Error> {
     assert!(!user_uuid.is_empty());
 
     // Verify users appear in list (admin + alice)
-    let users = instance.list_users().await.unwrap();
+    let users = list_users(&instance).await.unwrap();
     assert_eq!(users.len(), 2, "Should have 2 users (admin + alice)");
     assert!(users.contains(&"admin".to_string()), "Admin should exist");
     assert!(users.contains(&"alice".to_string()), "Alice should exist");
@@ -180,7 +189,7 @@ async fn test_instance_load_existing_backend() -> Result<(), Error> {
         Instance::open_with_clock(Box::new(backend2), Arc::new(FixedClock::default())).await?;
 
     // Verify the users still exist (admin + bob)
-    let users = instance2.list_users().await?;
+    let users = list_users(&instance2).await?;
     assert_eq!(users.len(), 2, "Should have 2 users (admin + bob)");
     assert!(users.contains(&"admin".to_string()), "Admin should exist");
     assert!(users.contains(&"bob".to_string()), "Bob should exist");
@@ -315,7 +324,7 @@ async fn test_instance_load_multiple_users() -> Result<(), Error> {
     let backend2 = load_in_memory_backend(&path).await?;
     let instance2 = Instance::open(Box::new(backend2)).await?;
 
-    let users = instance2.list_users().await?;
+    let users = list_users(&instance2).await?;
     assert_eq!(users.len(), 5, "All 5 users (admin + 4 created) should be present after reload");
     assert!(users.contains(&"admin".to_string()), "Admin should exist");
     assert!(users.contains(&"alice".to_string()));
@@ -435,7 +444,7 @@ async fn test_instance_load_idempotency() -> Result<(), Error> {
         );
 
         // User list should be the same (admin + frank)
-        let users = instance.list_users().await?;
+        let users = list_users(&instance).await?;
         assert_eq!(users.len(), 2, "Should have 2 users (admin + frank)");
         assert!(users.contains(&"admin".to_string()), "Admin should exist");
         assert!(users.contains(&"frank".to_string()), "Frank should exist");
@@ -485,7 +494,7 @@ async fn test_instance_load_new_vs_existing() -> Result<(), Error> {
     assert_eq!(device_id1, device_id2);
 
     // User should exist (existing backend — admin + grace)
-    let users = instance2.list_users().await?;
+    let users = list_users(&instance2).await?;
     assert_eq!(users.len(), 2, "Should have 2 users (admin + grace)");
     assert!(users.contains(&"admin".to_string()), "Admin should exist");
     assert!(users.contains(&"grace".to_string()), "Grace should exist");
@@ -501,7 +510,7 @@ async fn test_instance_load_new_vs_existing() -> Result<(), Error> {
     assert_ne!(device_id1, device_id3);
 
     // Only the bootstrapped admin should exist (new backend)
-    let users = instance3.list_users().await?;
+    let users = list_users(&instance3).await?;
     assert_eq!(users.len(), 1, "Should have 1 user (bootstrapped admin)");
     assert!(users.contains(&"admin".to_string()), "Admin should exist");
 
@@ -553,7 +562,7 @@ async fn test_instance_create_strict_fails_on_existing() -> Result<(), Error> {
     let backend3 = load_in_memory_backend(&path).await?;
     let instance3 =
         Instance::open_with_clock(Box::new(backend3), Arc::new(FixedClock::default())).await?;
-    let users = instance3.list_users().await?;
+    let users = list_users(&instance3).await?;
     assert_eq!(users.len(), 2, "Should have 2 users (admin + alice)");
     assert!(users.contains(&"admin".to_string()), "Admin should exist");
     assert!(users.contains(&"alice".to_string()), "Alice should exist");

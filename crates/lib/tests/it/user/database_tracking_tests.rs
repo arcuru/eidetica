@@ -20,7 +20,7 @@ async fn test_track_database() -> Result<()> {
     let instance = setup_instance().await;
 
     // Create a user
-    instance.create_user("test_user", None).await?;
+    crate::helpers::create_user(&instance, "test_user", None).await?;
     let mut user = login_user(&instance, "test_user", None).await;
     let user_key = user.get_default_key()?;
 
@@ -56,7 +56,7 @@ async fn test_track_database() -> Result<()> {
 async fn test_track_database_no_sigkey_error() -> Result<()> {
     let instance = setup_instance().await;
 
-    instance.create_user("test_user", None).await?;
+    crate::helpers::create_user(&instance, "test_user", None).await?;
     let mut user = login_user(&instance, "test_user", None).await;
     let user_key = user.get_default_key()?;
 
@@ -83,7 +83,7 @@ async fn test_track_database_no_sigkey_error() -> Result<()> {
 async fn test_list_databases() -> Result<()> {
     let instance = setup_instance().await;
 
-    instance.create_user("test_user", None).await?;
+    crate::helpers::create_user(&instance, "test_user", None).await?;
     let mut user = login_user(&instance, "test_user", None).await;
     let user_key = user.get_default_key()?;
 
@@ -118,7 +118,7 @@ async fn test_list_databases() -> Result<()> {
 async fn test_get_tracked_database() -> Result<()> {
     let instance = setup_instance().await;
 
-    instance.create_user("test_user", None).await?;
+    crate::helpers::create_user(&instance, "test_user", None).await?;
     let mut user = login_user(&instance, "test_user", None).await;
     let user_key = user.get_default_key()?;
 
@@ -158,7 +158,7 @@ async fn test_get_tracked_database() -> Result<()> {
 async fn test_update_tracked_database() -> Result<()> {
     let instance = setup_instance().await;
 
-    instance.create_user("test_user", None).await?;
+    crate::helpers::create_user(&instance, "test_user", None).await?;
     let mut user = login_user(&instance, "test_user", None).await;
     let user_key = user.get_default_key()?;
 
@@ -200,7 +200,7 @@ async fn test_update_tracked_database() -> Result<()> {
 async fn test_untrack_database() -> Result<()> {
     let instance = setup_instance().await;
 
-    instance.create_user("test_user", None).await?;
+    crate::helpers::create_user(&instance, "test_user", None).await?;
     let mut user = login_user(&instance, "test_user", None).await;
     let user_key = user.get_default_key()?;
 
@@ -237,7 +237,7 @@ async fn test_untrack_database() -> Result<()> {
 async fn test_load_tracked_database() -> Result<()> {
     let instance = setup_instance().await;
 
-    instance.create_user("test_user", None).await?;
+    crate::helpers::create_user(&instance, "test_user", None).await?;
     let mut user = login_user(&instance, "test_user", None).await;
     let user_key = user.get_default_key()?;
 
@@ -270,7 +270,7 @@ async fn test_load_tracked_database() -> Result<()> {
 async fn test_update_tracked_valid_key_change() -> Result<()> {
     let instance = setup_instance().await;
 
-    instance.create_user("test_user", None).await?;
+    crate::helpers::create_user(&instance, "test_user", None).await?;
     let mut user = login_user(&instance, "test_user", None).await;
     let key1 = user.get_default_key()?;
 
@@ -316,7 +316,7 @@ async fn test_update_tracked_valid_key_change() -> Result<()> {
 async fn test_update_tracked_nonexistent_key_fails() -> Result<()> {
     let instance = setup_instance().await;
 
-    instance.create_user("test_user", None).await?;
+    crate::helpers::create_user(&instance, "test_user", None).await?;
     let mut user = login_user(&instance, "test_user", None).await;
     let user_key = user.get_default_key()?;
 
@@ -352,7 +352,7 @@ async fn test_update_tracked_nonexistent_key_fails() -> Result<()> {
 async fn test_update_tracked_no_access_fails() -> Result<()> {
     let instance = setup_instance().await;
 
-    instance.create_user("test_user", None).await?;
+    crate::helpers::create_user(&instance, "test_user", None).await?;
     let mut user = login_user(&instance, "test_user", None).await;
     let key1 = user.get_default_key()?;
 
@@ -398,7 +398,7 @@ async fn test_update_tracked_no_access_fails() -> Result<()> {
 async fn test_update_tracked_auto_creates_mapping() -> Result<()> {
     let instance = setup_instance().await;
 
-    instance.create_user("test_user", None).await?;
+    crate::helpers::create_user(&instance, "test_user", None).await?;
     let mut user = login_user(&instance, "test_user", None).await;
     let key1 = user.get_default_key()?;
 
@@ -453,7 +453,7 @@ async fn test_update_tracked_auto_creates_mapping() -> Result<()> {
 async fn test_enable_sync_flips_preference() -> Result<()> {
     let instance = setup_instance().await;
 
-    instance.create_user("test_user", None).await?;
+    crate::helpers::create_user(&instance, "test_user", None).await?;
     let mut user = login_user(&instance, "test_user", None).await;
     let user_key = user.get_default_key()?;
 
@@ -483,7 +483,7 @@ async fn test_enable_sync_flips_preference() -> Result<()> {
 async fn test_disable_sync_flips_preference() -> Result<()> {
     let instance = setup_instance().await;
 
-    instance.create_user("test_user", None).await?;
+    crate::helpers::create_user(&instance, "test_user", None).await?;
     let mut user = login_user(&instance, "test_user", None).await;
     let user_key = user.get_default_key()?;
 
@@ -509,7 +509,7 @@ async fn test_disable_sync_flips_preference() -> Result<()> {
 async fn test_toggle_sync_preserves_other_settings() -> Result<()> {
     let instance = setup_instance().await;
 
-    instance.create_user("test_user", None).await?;
+    crate::helpers::create_user(&instance, "test_user", None).await?;
     let mut user = login_user(&instance, "test_user", None).await;
     let user_key = user.get_default_key()?;
 
@@ -545,7 +545,7 @@ async fn test_toggle_sync_preserves_other_settings() -> Result<()> {
 async fn test_sync_toggle_on_untracked_database() -> Result<()> {
     let instance = setup_instance().await;
 
-    instance.create_user("test_user", None).await?;
+    crate::helpers::create_user(&instance, "test_user", None).await?;
     let mut user = login_user(&instance, "test_user", None).await;
 
     let (alice_key, _) = generate_keypair();
@@ -569,7 +569,7 @@ async fn test_sync_toggle_on_untracked_database() -> Result<()> {
 async fn test_enable_sync_is_idempotent() -> Result<()> {
     let instance = setup_instance().await;
 
-    instance.create_user("test_user", None).await?;
+    crate::helpers::create_user(&instance, "test_user", None).await?;
     let mut user = login_user(&instance, "test_user", None).await;
     let user_key = user.get_default_key()?;
 
@@ -598,7 +598,7 @@ async fn test_enable_sync_is_idempotent() -> Result<()> {
 async fn test_share_without_sync_attached_errors() -> Result<()> {
     let instance = setup_instance().await;
 
-    instance.create_user("test_user", None).await?;
+    crate::helpers::create_user(&instance, "test_user", None).await?;
     let mut user = login_user(&instance, "test_user", None).await;
     let user_key = user.get_default_key()?;
 
@@ -632,7 +632,7 @@ async fn test_share_on_untracked_database_errors() -> Result<()> {
     let instance = setup_instance().await;
     instance.enable_sync().await?;
 
-    instance.create_user("test_user", None).await?;
+    crate::helpers::create_user(&instance, "test_user", None).await?;
     let mut user = login_user(&instance, "test_user", None).await;
 
     let (alice_key, _) = generate_keypair();

@@ -85,8 +85,7 @@ async fn test_bootstrap_pending_error_propagation() {
 
     // Setup server with manual approval
     let server_instance = setup_instance_with_initialized().await;
-    server_instance
-        .create_user("server_user", None)
+    crate::helpers::create_user(&server_instance, "server_user", None)
         .await
         .unwrap();
     let mut server_user = server_instance
@@ -115,8 +114,7 @@ async fn test_bootstrap_pending_error_propagation() {
 
     // Setup client (sync already initialized by setup_instance_with_initialized)
     let client_instance = setup_instance_with_initialized().await;
-    client_instance
-        .create_user("client_user", None)
+    crate::helpers::create_user(&client_instance, "client_user", None)
         .await
         .unwrap();
     let mut client_user = client_instance
@@ -343,8 +341,7 @@ async fn test_unauthenticated_sync_should_fail() {
 
     // Setup server with authenticated database
     let server_instance = setup_instance_with_initialized().await;
-    server_instance
-        .create_user("server_user", None)
+    crate::helpers::create_user(&server_instance, "server_user", None)
         .await
         .unwrap();
     let mut server_user = server_instance
@@ -398,8 +395,7 @@ async fn test_unauthenticated_sync_should_fail() {
 
     // Setup client with NO authorized key (sync already initialized by setup_instance_with_initialized)
     let client_instance = setup_instance_with_initialized().await;
-    client_instance
-        .create_user("client_user", None)
+    crate::helpers::create_user(&client_instance, "client_user", None)
         .await
         .unwrap();
     let mut client_user = client_instance
