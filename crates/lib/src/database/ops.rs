@@ -254,47 +254,72 @@ impl DatabaseOps for RemoteDatabaseOps {
             .await
     }
 
-    async fn get_store_tips(&self, _tree: &ID, _store: &str) -> Result<Vec<ID>> {
-        // No wire equivalent; return empty tips for now (remote reads
-        // go through the DatabaseOp path, not Transaction internals).
-        Ok(Vec::new())
+    async fn get_store_tips(&self, _tree: &ID, store: &str) -> Result<Vec<ID>> {
+        let tips = self
+            .conn
+            .get_verified_tips(self.root_id.clone(), self.identity.clone())
+            .await?;
+        self.conn
+            .get_store_tips_up_to_entries(
+                self.root_id.clone(),
+                self.identity.clone(),
+                store.to_string(),
+                tips,
+            )
+            .await
     }
 
     async fn get_store_tips_up_to_entries(
         &self,
         _tree: &ID,
-        _store: &str,
-        _up_to: &[ID],
+        store: &str,
+        up_to: &[ID],
     ) -> Result<Vec<ID>> {
-        // No wire equivalent; return empty.
-        Ok(Vec::new())
+        self.conn
+            .get_store_tips_up_to_entries(
+                self.root_id.clone(),
+                self.identity.clone(),
+                store.to_string(),
+                up_to.to_vec(),
+            )
+            .await
     }
 
     async fn find_merge_base(
         &self,
         _tree: &ID,
-        _store: &str,
-        _entry_ids: &[ID],
+        store: &str,
+        entry_ids: &[ID],
     ) -> Result<ID> {
-        Err(Error::Instance(Box::new(
-            InstanceError::OperationNotSupported {
-                operation: "find_merge_base on remote backend".to_string(),
-            },
-        )))
+        let state = self
+            .conn
+            .compute_merge_state(
+                self.root_id.clone(),
+                self.identity.clone(),
+                store.to_string(),
+                entry_ids.to_vec(),
+            )
+            .await?;
+        Ok(state.merge_base)
     }
 
     async fn get_path_from_to(
         &self,
         _tree: &ID,
-        _store: &str,
+        store: &str,
         _from_id: &ID,
-        _to_ids: &[ID],
+        to_ids: &[ID],
     ) -> Result<Vec<ID>> {
-        Err(Error::Instance(Box::new(
-            InstanceError::OperationNotSupported {
-                operation: "get_path_from_to on remote backend".to_string(),
-            },
-        )))
+        let state = self
+            .conn
+            .compute_merge_state(
+                self.root_id.clone(),
+                self.identity.clone(),
+                store.to_string(),
+                to_ids.to_vec(),
+            )
+            .await?;
+        Ok(state.path)
     }
 
     async fn get_store_from_tips(
