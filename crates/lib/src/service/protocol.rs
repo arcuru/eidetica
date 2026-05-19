@@ -186,7 +186,11 @@ pub enum DatabaseOp {
     },
     /// Submit a finished, client-signed entry. The server stores it
     /// `Unverified` and runs its **own** verification pass — it never trusts
-    /// a submitted entry's claimed validity. Gate Write.
+    /// a submitted entry's claimed validity. Submit is *verification-gated,
+    /// not session-gated*: it requires only an authenticated connection, and
+    /// the per-tree permission gate is **not** applied (the server's
+    /// verification pass against the tree's pinned auth is the boundary). The
+    /// `required_permission()` value below is advisory only for this variant.
     SubmitSignedEntry { entry: Entry },
     /// The database's Verified-frontier tips (server runs `Database::get_tips`
     /// on its local instance). Gate Read.
@@ -219,9 +223,13 @@ pub enum DatabaseOp {
 impl DatabaseOp {
     /// Minimum permission the caller needs against the target database.
     ///
-    /// Only `SubmitSignedEntry` mutates; everything else is a read. Unlike
-    /// `BackendOp`, every variant is tree-scoped via the request's `root_id`,
-    /// so the per-tree gate always runs — there is no tree-less fall-through.
+    /// Only `SubmitSignedEntry` mutates; everything else is a read. Every
+    /// read variant is tree-scoped via the request's `root_id`, so the
+    /// per-tree gate always runs for reads — there is no tree-less
+    /// fall-through. `SubmitSignedEntry` is the exception: the server skips
+    /// the per-tree gate for submit and relies on its own verification pass,
+    /// so the `Write(0)` returned here is advisory only for that variant
+    /// (kept for completeness / non-submit callers that inspect it).
     pub fn required_permission(&self) -> Permission {
         match self {
             DatabaseOp::SubmitSignedEntry { .. } => Permission::Write(0),
