@@ -46,8 +46,15 @@ async fn start_test_server() -> (PathBuf, watch::Sender<()>, Instance, TempDir) 
     (socket_path, tx, instance, dir)
 }
 
-/// Helper: create a user + database on the server, connect a client,
-/// authenticate, and return (server, client-instance, root_id, identity).
+/// Helper: log in as the bootstrap admin and create a user server-side.
+async fn create_user_via_admin(server: &Instance, username: &str) {
+    let mut admin = server.login_user("admin", Some("admin")).await.unwrap();
+    admin.create_user(username, None).await.unwrap();
+}
+
+/// Helper: with the admin bootstrapped at instance creation, log in as admin,
+/// create a test user, connect and authenticate as that user, create a
+/// database, and return (client-instance, root_id, identity).
 ///
 /// The database is created server-side so auth_settings bind the user's
 /// key as Admin(0). The client authenticates via the remote connection.
@@ -56,7 +63,10 @@ async fn setup_db(
     socket_path: &PathBuf,
     username: &str,
 ) -> (Instance, eidetica::entry::ID, eidetica::auth::types::SigKey) {
-    server.create_user(username, None).await.unwrap();
+    // Admin was created by Instance::open bootstrap — use it to create the test user.
+    let mut admin = server.login_user("admin", Some("admin")).await.unwrap();
+    admin.create_user(username, None).await.unwrap();
+
     let instance = Instance::connect(socket_path).await.unwrap();
     let user = instance.login_user(username, None).await.unwrap();
     let pubkey = user.get_default_key().unwrap();
@@ -89,13 +99,18 @@ async fn test_connect_and_create_instance() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
     let _instance = Instance::connect(&socket_path).await.unwrap();
     let users = server.list_users().await.unwrap();
-    assert!(users.is_empty());
+    // Admin user bootstrapped at Instance creation
+    assert_eq!(users.len(), 1);
+    assert_eq!(users[0], "admin");
 }
 
 #[tokio::test]
 async fn test_user_lifecycle() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
-    server.create_user("alice", None).await.unwrap();
+    // Admin is bootstrapped — use it to create test user
+    let mut admin = server.login_user("admin", Some("admin")).await.unwrap();
+    admin.create_user("alice", None).await.unwrap();
+
     let instance = Instance::connect(&socket_path).await.unwrap();
 
     let user = instance.login_user("alice", None).await.unwrap();
@@ -119,7 +134,7 @@ async fn test_user_lifecycle() {
 #[tokio::test]
 async fn test_error_propagation() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
-    server.create_user("err-test", None).await.unwrap();
+    create_user_via_admin(&server, "err-test").await;
     let instance = Instance::connect(&socket_path).await.unwrap();
     let user = instance.login_user("err-test", None).await.unwrap();
 
@@ -162,7 +177,7 @@ async fn test_unauthenticated_backend_op_rejected() {
 #[tokio::test]
 async fn test_concurrent_clients() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
-    server.create_user("bob", None).await.unwrap();
+    create_user_via_admin(&server, "bob").await;
 
     let instance1 = Instance::connect(&socket_path).await.unwrap();
     let instance2 = Instance::connect(&socket_path).await.unwrap();
@@ -175,11 +190,11 @@ async fn test_concurrent_clients() {
 #[tokio::test]
 async fn test_instance_connect_convenience() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
-    server.create_user("charlie", None).await.unwrap();
+    create_user_via_admin(&server, "charlie").await;
 
     let _instance = Instance::connect(&socket_path).await.unwrap();
     let users = server.list_users().await.unwrap();
-    assert_eq!(users, vec!["charlie"]);
+    assert_eq!(users, vec!["admin", "charlie"]);
 }
 
 #[tokio::test]
@@ -212,7 +227,7 @@ async fn raw_handshake(
 async fn test_trusted_login_challenge_response_round_trip() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
 
-    server.create_user("alice", None).await.unwrap();
+    create_user_via_admin(&server, "alice").await;
     let alice = server.login_user("alice", None).await.unwrap();
     let alice_pubkey = alice.get_default_key().unwrap();
     let alice_signing_key = alice.get_signing_key(&alice_pubkey).unwrap();
@@ -301,7 +316,7 @@ fn remote_conn(instance: &Instance) -> eidetica::service::client::RemoteConnecti
 #[tokio::test]
 async fn test_database_begin_transaction() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
-    server.create_user("alice", None).await.unwrap();
+    create_user_via_admin(&server, "alice").await;
 
     let mut server_user = server.login_user("alice", None).await.unwrap();
     let mut settings = eidetica::crdt::Doc::new();
@@ -389,7 +404,7 @@ async fn test_database_get_verified_tips() {
 #[tokio::test]
 async fn test_database_get_store_state() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
-    server.create_user("alice", None).await.unwrap();
+    create_user_via_admin(&server, "alice").await;
 
     let mut server_user = server.login_user("alice", None).await.unwrap();
     let mut settings = eidetica::crdt::Doc::new();
@@ -644,7 +659,7 @@ async fn test_backend_get_tips_denied_for_unauthorised_user() {
         setup_db(&server, &socket_path, "alice").await;
 
     // Create bob and try to read alice's database.
-    server.create_user("bob", None).await.unwrap();
+    create_user_via_admin(&server, "bob").await;
     let bob_inst = Instance::connect(&socket_path).await.unwrap();
     let bob_user = bob_inst.login_user("bob", None).await.unwrap();
     let bob_key = bob_user.get_default_key().unwrap();
@@ -678,7 +693,7 @@ async fn test_backend_get_denied_cross_tree() {
         .expect("owner must be able to GetEntry in her own database");
 
     // Bob is logged in but has no access.
-    server.create_user("bob", None).await.unwrap();
+    create_user_via_admin(&server, "bob").await;
     let bob_inst = Instance::connect(&socket_path).await.unwrap();
     let bob_user = bob_inst.login_user("bob", None).await.unwrap();
     let bob_key = bob_user.get_default_key().unwrap();
@@ -699,11 +714,10 @@ async fn test_backend_get_denied_cross_tree() {
 /// `SetInstanceMetadata` allowed for admin.
 #[tokio::test]
 async fn test_set_instance_metadata_allowed_for_admin() {
-    let (socket_path, _tx, server, _dir) = start_test_server().await;
-    server.create_user("admin", None).await.unwrap();
+    let (socket_path, _tx, _server, _dir) = start_test_server().await;
 
     let instance = Instance::connect(&socket_path).await.unwrap();
-    let _admin = instance.login_user("admin", None).await.unwrap();
+    let _admin = instance.login_user("admin", Some("admin")).await.unwrap();
 
     let current = instance
         .backend()
@@ -722,8 +736,7 @@ async fn test_set_instance_metadata_allowed_for_admin() {
 #[tokio::test]
 async fn test_set_instance_metadata_denied_for_non_admin() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
-    server.create_user("admin", None).await.unwrap();
-    server.create_user("bob", None).await.unwrap();
+    create_user_via_admin(&server, "bob").await;
 
     let bob_inst = Instance::connect(&socket_path).await.unwrap();
     let _bob = bob_inst.login_user("bob", None).await.unwrap();
@@ -749,7 +762,7 @@ async fn test_set_instance_metadata_denied_for_non_admin() {
 #[tokio::test]
 async fn test_trusted_login_bad_signature_errors_and_resets() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
-    server.create_user("bob", None).await.unwrap();
+    create_user_via_admin(&server, "bob").await;
 
     let (mut reader, mut writer) = raw_handshake(&socket_path).await;
 

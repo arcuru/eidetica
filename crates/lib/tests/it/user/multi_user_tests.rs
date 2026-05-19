@@ -138,8 +138,9 @@ async fn test_list_users() {
     // List all users
     let users = instance.list_users().await.expect("Should list users");
 
-    // Should have all 3 users
-    assert_eq!(users.len(), 3, "Should have 3 users");
+    // Should have 4 users (admin + 3 created)
+    assert_eq!(users.len(), 4, "Should have 4 users (admin + 3 created)");
+    assert!(users.contains(&"admin".to_string()), "Admin should exist");
     assert!(users.contains(&"alice".to_string()));
     assert!(users.contains(&"bob".to_string()));
     assert!(users.contains(&"charlie".to_string()));
@@ -151,8 +152,9 @@ async fn test_list_users_empty_instance() {
 
     let users = instance.list_users().await.expect("Should list users");
 
-    // Should be empty in unified mode (no implicit user)
-    assert!(users.is_empty(), "New unified instance should have 0 users");
+    // Should have 1 user (bootstrapped admin/admin)
+    assert_eq!(users.len(), 1, "New unified instance should have 1 user (admin)");
+    assert!(users.contains(&"admin".to_string()), "Admin should exist");
 }
 
 // ===== CONCURRENT DATABASE OPERATIONS =====
