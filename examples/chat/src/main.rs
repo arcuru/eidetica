@@ -50,28 +50,28 @@ async fn main() -> Result<()> {
         tracing_subscriber::fmt().with_env_filter("error").init();
     }
 
-    // Initialize Eidetica with sync enabled
-    let backend = InMemory::new();
-    let instance = Instance::open(Box::new(backend)).await?;
-    instance.enable_sync().await?;
-
     // Get username from args, environment, or use default
     let username = args
         .username
         .or_else(|| std::env::var("USER").ok())
         .unwrap_or_else(|| "Anonymous".to_string());
 
-    // Create a passwordless user (ignore error if user already exists).
-    // User creation is an instance-admin operation, reached through the
-    // bootstrapped admin session (admin/admin, minted by Instance::open).
-    if let Ok(admin) = instance.login_user("admin", Some("admin")).await
-        && let Ok(admin) = admin.admin().await
-    {
-        let _ = admin.create_user(&username, None).await;
-    }
+    // Initialise Eidetica with sync enabled. `open_or_create` matches the
+    // "first run is your first run" UX of an embedded chat client:
+    // whoever launches the example becomes their own admin on first
+    // launch, and the same data dir loads them on subsequent runs.
+    use eidetica::NewUser;
+    let backend = InMemory::new();
+    let (instance, maybe_user) =
+        Instance::open_or_create(Box::new(backend), NewUser::passwordless(&username)).await?;
+    instance.enable_sync().await?;
 
-    // Login the user to get a User session
-    let user = instance.login_user(&username, None).await?;
+    // Use the just-created session on first run, or log back in on
+    // subsequent runs.
+    let user = match maybe_user {
+        Some(u) => u,
+        None => instance.login_user(&username, None).await?,
+    };
 
     // Validate and parse transport
     let transport = match args.transport.to_lowercase().as_str() {

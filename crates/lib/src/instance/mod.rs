@@ -31,6 +31,7 @@ use crate::{
 
 pub mod backend;
 pub mod errors;
+pub mod new_user;
 pub mod settings_merge;
 
 #[cfg(test)]
@@ -39,6 +40,7 @@ mod tests;
 // Re-export main types for easier access
 use backend::Backend;
 pub use errors::InstanceError;
+pub use new_user::NewUser;
 
 /// Indicates whether an entry write originated locally or from a remote source (e.g., sync).
 ///
@@ -276,15 +278,16 @@ impl std::fmt::Debug for InstanceInternal {
 /// ## Example
 ///
 /// ```
-/// # use eidetica::{backend::database::InMemory, Instance, crdt::Doc};
+/// # use eidetica::{backend::database::InMemory, Instance, NewUser, crdt::Doc};
 /// # #[tokio::main]
 /// # async fn main() -> eidetica::Result<()> {
-/// let instance = Instance::open(Box::new(InMemory::new())).await?;
-///
-/// // Create a passwordless user via the bootstrapped admin (admin/admin)
-/// let admin = instance.login_user("admin", Some("admin")).await?;
-/// admin.admin().await?.create_user("alice", None).await?;
-/// let mut user = instance.login_user("alice", None).await?;
+/// // Create a fresh instance with an initial admin user. The first user
+/// // created on an instance is automatically granted Admin on the system
+/// // databases.
+/// let (instance, mut user) = Instance::create(
+///     Box::new(InMemory::new()),
+///     NewUser::passwordless("alice"),
+/// ).await?;
 ///
 /// // Use User API for operations
 /// let mut settings = Doc::new();
@@ -357,43 +360,33 @@ impl Instance {
         Ok(instance)
     }
 
-    /// Load an existing Instance or create a new one (recommended).
+    /// Load an existing Instance from an initialised backend.
     ///
-    /// This is the recommended method for initializing an Instance. It automatically detects
-    /// whether the backend contains existing system state (device key and system databases)
-    /// and loads them, or creates new ones if starting fresh.
-    ///
-    /// Instance manages infrastructure only:
-    /// - Backend storage and device identity
-    /// - System databases (_users, _databases, _sync)
-    /// - User account management (create, login, list)
-    ///
-    /// All database creation and key operations require explicit User login.
+    /// Strict load: returns [`InstanceError::NotInitialized`] if the backend
+    /// has no instance metadata yet. Use [`Instance::create`] to initialise a
+    /// fresh backend, or [`Instance::open_or_create`] for a load-or-init
+    /// convenience.
     ///
     /// # Arguments
-    /// * `backend` - The storage backend to use
-    ///
-    /// # Returns
-    /// A Result containing the configured Instance
+    /// * `backend` - The storage backend to load from (must already be initialised)
     ///
     /// # Example
     /// ```
-    /// # use eidetica::{backend::database::InMemory, Instance, crdt::Doc};
+    /// # use eidetica::{backend::database::InMemory, Instance, NewUser};
     /// # #[tokio::main]
     /// # async fn main() -> eidetica::Result<()> {
-    /// let backend = InMemory::new();
-    /// let instance = Instance::open(Box::new(backend)).await?;
-    ///
-    /// // Create a user via the bootstrapped admin (admin/admin)
-    /// let admin = instance.login_user("admin", Some("admin")).await?;
-    /// admin.admin().await?.create_user("alice", None).await?;
-    /// let mut user = instance.login_user("alice", None).await?;
-    ///
-    /// // Use User API for operations
-    /// let mut settings = Doc::new();
-    /// settings.set("name", "my_database");
-    /// let default_key = user.get_default_key()?;
-    /// let db = user.create_database(settings, &default_key).await?;
+    /// // Once a backend has been initialised by `Instance::create`,
+    /// // subsequent runs against the same persistent backend load via
+    /// // `Instance::open`. The InMemory backend in this doctest can't
+    /// // round-trip across handles; in real code the second invocation
+    /// // would point at the same on-disk SQLite (or Postgres) file:
+    /// //
+    /// //     let instance = Instance::open(Box::new(persistent_backend)).await?;
+    /// //     let user = instance.login_user("alice", None).await?;
+    /// let (_instance, _user) = Instance::create(
+    ///     Box::new(InMemory::new()),
+    ///     NewUser::passwordless("alice"),
+    /// ).await?;
     /// # Ok(())
     /// # }
     /// ```
@@ -401,20 +394,19 @@ impl Instance {
         Self::open_impl(backend, Arc::new(SystemClock)).await
     }
 
-    /// Load an existing Instance or create a new one with a custom clock.
+    /// Load an existing Instance with a custom clock.
     ///
-    /// This is the same as [`Instance::open`] but allows injecting a custom clock
-    /// for controllable timestamps in tests. The clock is used for timestamps in
-    /// height calculations and peer tracking.
+    /// Same strict-load semantics as [`Instance::open`] (errors with
+    /// [`InstanceError::NotInitialized`] on an empty backend), but allows
+    /// injecting a custom clock for controllable timestamps in tests. The
+    /// clock is used for timestamps in height calculations and peer
+    /// tracking.
     ///
     /// Only available with the `testing` feature or in test builds.
     ///
     /// # Arguments
-    /// * `backend` - The storage backend to use
+    /// * `backend` - The storage backend to load from (must already be initialised)
     /// * `clock` - The time provider to use (typically [`FixedClock`](crate::FixedClock))
-    ///
-    /// # Returns
-    /// A Result containing the configured Instance
     #[cfg(any(test, feature = "testing"))]
     pub async fn open_with_clock(
         backend: Box<dyn BackendImpl>,
@@ -423,82 +415,66 @@ impl Instance {
         Self::open_impl(backend, clock).await
     }
 
-    /// Internal implementation of open that works with any clock.
+    /// Internal load-only implementation that works with any clock.
     async fn open_impl(backend: Box<dyn BackendImpl>, clock: Arc<dyn Clock>) -> Result<Self> {
         let backend: Arc<dyn BackendImpl> = Arc::from(backend);
 
-        // Check for existing InstanceMetadata
-        match backend.get_instance_metadata().await? {
-            Some(metadata) => {
-                // Load secrets (contains the private key)
-                let secrets = backend.get_instance_secrets().await?;
+        // Strict: require existing InstanceMetadata. Initialisation is the
+        // caller's responsibility (`create` / `open_or_create`).
+        let metadata = backend
+            .get_instance_metadata()
+            .await?
+            .ok_or(InstanceError::NotInitialized)?;
 
-                // If secrets are present, verify they match the metadata
-                if let Some(ref secrets) = secrets {
-                    let derived_id = secrets.signing_key.public_key();
-                    if derived_id != metadata.id {
-                        return Err(InstanceError::DeviceKeyMismatch.into());
-                    }
-                }
+        // Load secrets (contains the private key)
+        let secrets = backend.get_instance_secrets().await?;
 
-                // Existing backend: load from metadata + secrets
-                let inner = Arc::new(InstanceInternal {
-                    backend: Backend::new(backend),
-                    clock,
-                    sync: std::sync::OnceLock::new(),
-                    metadata,
-                    secrets,
-                    write_callbacks: Mutex::new(HashMap::new()),
-                    global_write_callbacks: Mutex::new(Vec::new()),
-                    next_callback_id: AtomicU64::new(0),
-                    tree_locks: Mutex::new(HashMap::new()),
-                });
-                Ok(Self { inner })
-            }
-            None => {
-                // New backend: initialize
-                Self::create_internal(backend, clock).await
+        // If secrets are present, verify they match the metadata
+        if let Some(ref secrets) = secrets {
+            let derived_id = secrets.signing_key.public_key();
+            if derived_id != metadata.id {
+                return Err(InstanceError::DeviceKeyMismatch.into());
             }
         }
+
+        // Existing backend: load from metadata + secrets
+        let inner = Arc::new(InstanceInternal {
+            backend: Backend::new(backend),
+            clock,
+            sync: std::sync::OnceLock::new(),
+            metadata,
+            secrets,
+            write_callbacks: Mutex::new(HashMap::new()),
+            global_write_callbacks: Mutex::new(Vec::new()),
+            next_callback_id: AtomicU64::new(0),
+            tree_locks: Mutex::new(HashMap::new()),
+        });
+        Ok(Self { inner })
     }
 
-    /// Create a new Instance on a fresh backend (strict creation).
+    /// Create a new Instance on a fresh backend with an initial admin user.
     ///
-    /// This method creates a new Instance and fails if the backend is already initialized
-    /// (contains a device key and system databases). Use this when you want to ensure
-    /// you're creating a fresh instance.
-    ///
-    /// Instance manages infrastructure only:
-    /// - Backend storage and device identity
-    /// - System databases (_users, _databases, _sync)
-    /// - User account management (create, login, list)
-    ///
-    /// All database creation and key operations require explicit User login.
-    ///
-    /// For most use cases, prefer `Instance::open()` which automatically handles both
-    /// new and existing backends.
+    /// Fails with [`InstanceError::InstanceAlreadyExists`] if the backend is
+    /// already initialised. The supplied [`NewUser`] is the first user
+    /// created on the instance and is automatically granted Admin on the
+    /// system databases (via the first-user-becomes-admin logic in
+    /// [`system_databases::create_user`](crate::user::system_databases)).
+    /// The returned [`User`] is already logged in.
     ///
     /// # Arguments
-    /// * `backend` - The storage backend to use (must be uninitialized)
-    ///
-    /// # Returns
-    /// A Result containing the configured Instance, or InstanceAlreadyExists error
-    /// if the backend is already initialized.
+    /// * `backend` - The storage backend to use (must be uninitialised)
+    /// * `initial` - The first user to create on this instance
     ///
     /// # Example
     /// ```
-    /// # use eidetica::{backend::database::InMemory, Instance, crdt::Doc};
+    /// # use eidetica::{backend::database::InMemory, Instance, NewUser, crdt::Doc};
     /// # #[tokio::main]
     /// # async fn main() -> eidetica::Result<()> {
-    /// let backend = InMemory::new();
-    /// let instance = Instance::create(Box::new(backend)).await?;
+    /// let (instance, mut user) = Instance::create(
+    ///     Box::new(InMemory::new()),
+    ///     NewUser::passwordless("alice"),
+    /// ).await?;
     ///
-    /// // Create a user via the bootstrapped admin (admin/admin)
-    /// let admin = instance.login_user("admin", Some("admin")).await?;
-    /// admin.admin().await?.create_user("alice", None).await?;
-    /// let mut user = instance.login_user("alice", None).await?;
-    ///
-    /// // Use User API for operations
     /// let mut settings = Doc::new();
     /// settings.set("name", "my_database");
     /// let default_key = user.get_default_key()?;
@@ -506,7 +482,27 @@ impl Instance {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn create(backend: Box<dyn BackendImpl>) -> Result<Self> {
+    pub async fn create(backend: Box<dyn BackendImpl>, initial: NewUser) -> Result<(Self, User)> {
+        Self::create_with_clock_impl(backend, Arc::new(SystemClock), initial).await
+    }
+
+    /// Strict create with an injectable clock — same semantics as
+    /// [`Instance::create`] but allows tests to pin timestamps via
+    /// [`FixedClock`](crate::FixedClock). Mirrors [`Instance::open_with_clock`].
+    #[cfg(any(test, feature = "testing"))]
+    pub async fn create_with_clock(
+        backend: Box<dyn BackendImpl>,
+        clock: Arc<dyn Clock>,
+        initial: NewUser,
+    ) -> Result<(Self, User)> {
+        Self::create_with_clock_impl(backend, clock, initial).await
+    }
+
+    async fn create_with_clock_impl(
+        backend: Box<dyn BackendImpl>,
+        clock: Arc<dyn Clock>,
+        initial: NewUser,
+    ) -> Result<(Self, User)> {
         let backend: Arc<dyn BackendImpl> = Arc::from(backend);
 
         // Check if already initialized
@@ -515,14 +511,90 @@ impl Instance {
         }
 
         // Create new instance
-        Self::create_internal(backend, Arc::new(SystemClock)).await
+        Self::create_internal(backend, clock, initial).await
     }
 
-    /// Internal implementation of new that works with Arc<dyn BackendImpl>
+    /// Load an existing Instance, or create a new one with the supplied
+    /// initial user if the backend is empty.
+    ///
+    /// Returns `(Instance, Some(User))` on a freshly initialised backend
+    /// (the new instance plus the just-created initial user, already logged
+    /// in) and `(Instance, None)` when loading an existing instance — the
+    /// caller is expected to call [`Instance::login_user`] for an existing
+    /// user. Suitable for embedded applications that don't want to choose
+    /// between `open` and `create` up front.
+    ///
+    /// # Example
+    /// ```
+    /// # use eidetica::{backend::database::InMemory, Instance, NewUser};
+    /// # #[tokio::main]
+    /// # async fn main() -> eidetica::Result<()> {
+    /// let (instance, maybe_user) = Instance::open_or_create(
+    ///     Box::new(InMemory::new()),
+    ///     NewUser::passwordless("alice"),
+    /// ).await?;
+    /// let mut user = match maybe_user {
+    ///     Some(u) => u,
+    ///     None => instance.login_user("alice", None).await?,
+    /// };
+    /// # let _ = user.get_default_key()?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn open_or_create(
+        backend: Box<dyn BackendImpl>,
+        initial: NewUser,
+    ) -> Result<(Self, Option<User>)> {
+        let backend: Arc<dyn BackendImpl> = Arc::from(backend);
+        let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+
+        if backend.get_instance_metadata().await?.is_some() {
+            // Existing instance: load only, no initial user produced.
+            let instance = Self::open_impl_arc(backend, clock).await?;
+            Ok((instance, None))
+        } else {
+            let (instance, user) = Self::create_internal(backend, clock, initial).await?;
+            Ok((instance, Some(user)))
+        }
+    }
+
+    /// Load-only helper that accepts an already-arc'd backend. Mirrors
+    /// `open_impl` but reuses the existing Arc — used by `open_or_create`,
+    /// which already checks metadata once and doesn't want to redo the work.
+    async fn open_impl_arc(backend: Arc<dyn BackendImpl>, clock: Arc<dyn Clock>) -> Result<Self> {
+        let metadata = backend
+            .get_instance_metadata()
+            .await?
+            .ok_or(InstanceError::NotInitialized)?;
+        let secrets = backend.get_instance_secrets().await?;
+        if let Some(ref secrets) = secrets {
+            let derived_id = secrets.signing_key.public_key();
+            if derived_id != metadata.id {
+                return Err(InstanceError::DeviceKeyMismatch.into());
+            }
+        }
+        let inner = Arc::new(InstanceInternal {
+            backend: Backend::new(backend),
+            clock,
+            sync: std::sync::OnceLock::new(),
+            metadata,
+            secrets,
+            write_callbacks: Mutex::new(HashMap::new()),
+            global_write_callbacks: Mutex::new(Vec::new()),
+            next_callback_id: AtomicU64::new(0),
+            tree_locks: Mutex::new(HashMap::new()),
+        });
+        Ok(Self { inner })
+    }
+
+    /// Internal create implementation. Returns the new `Instance` along with
+    /// the just-bootstrapped initial `User`, materialised directly from the
+    /// keys we generated (no redundant login round-trip).
     pub(crate) async fn create_internal(
         backend: Arc<dyn BackendImpl>,
         clock: Arc<dyn Clock>,
-    ) -> Result<Self> {
+        initial: NewUser,
+    ) -> Result<(Self, User)> {
         use crate::user::system_databases::{create_databases_tracking, create_users_database};
 
         // 1. Generate device key
@@ -593,17 +665,32 @@ impl Instance {
 
         let instance = Self { inner };
 
-        // 5. Bootstrap the initial admin user — admin/admin
+        // 5. Bootstrap the initial user. The first user created on an
+        // instance is automatically promoted to Admin on the system
+        // databases by `system_databases::create_user`'s
+        // first-user-becomes-admin logic.
         let users_db = instance.users_db().await?;
-        crate::user::system_databases::create_user(
+        let (user_uuid, user_info, root_key) = crate::user::system_databases::create_user(
             &users_db,
             &instance,
-            "admin",
-            Some("admin"),
+            &initial.username,
+            initial.password.as_deref(),
         )
         .await?;
 
-        Ok(instance)
+        // 6. Materialise the User session directly from the keys we just
+        // generated — skips a redundant `login_user` round-trip that would
+        // otherwise re-derive the encryption key from the password.
+        let user = crate::user::system_databases::build_user_session(
+            &instance,
+            &user_uuid,
+            &user_info,
+            root_key,
+            initial.password.as_deref(),
+        )
+        .await?;
+
+        Ok((instance, user))
     }
 
     /// Get a reference to the backend
@@ -697,10 +784,7 @@ impl Instance {
     /// key).  Used by the admin-session paths
     /// ([`InstanceAdmin`](crate::user::InstanceAdmin), `User::admin_check`) on
     /// remote instances where the device key is unavailable.
-    pub(crate) async fn users_db_for_session(
-        &self,
-        signing_key: &PrivateKey,
-    ) -> Result<Database> {
+    pub(crate) async fn users_db_for_session(&self, signing_key: &PrivateKey) -> Result<Database> {
         self.open_system_db_for_session(&self.inner.metadata.users_db, signing_key)
             .await
     }
@@ -771,33 +855,6 @@ impl Instance {
     }
 
     // === User Management ===
-
-    /// Create a new user account using the device key (test-only).
-    ///
-    /// Signs `_users` writes with the device key, which is unavailable on a
-    /// remote instance. Bootstrap mints the `admin` user via
-    /// `system_databases::create_user` directly, so this wrapper now exists
-    /// only for in-crate unit tests of the local device-key path.
-    ///
-    /// The public way to create users is
-    /// [`InstanceAdmin::create_user`](crate::user::InstanceAdmin::create_user),
-    /// reached via [`User::admin`](crate::user::User::admin): it signs through
-    /// the admin's own session key and works on both local and remote
-    /// instances.
-    ///
-    /// # Arguments
-    /// * `user_id` - Unique user identifier (username)
-    /// * `password` - Optional password. If None, user is passwordless (instant login, no encryption)
-    ///
-    /// # Returns
-    /// A Result containing the user's UUID (stable internal identifier)
-    #[cfg(test)]
-    pub(crate) async fn create_user(&self, user_id: &str, password: Option<&str>) -> Result<String> {
-        use crate::user::system_databases::create_user;
-        let users_db = self.users_db().await?;
-        let (user_uuid, _user_info) = create_user(&users_db, self, user_id, password).await?;
-        Ok(user_uuid)
-    }
 
     /// Login a user with flexible password handling.
     ///
@@ -1341,15 +1398,21 @@ impl WeakInstance {
     ///
     /// # Example
     /// ```
-    /// # use eidetica::{backend::database::InMemory, Instance};
+    /// # use eidetica::{backend::database::InMemory, Instance, NewUser};
     /// # #[tokio::main]
     /// # async fn main() -> eidetica::Result<()> {
-    /// let instance = Instance::open(Box::new(InMemory::new())).await?;
+    /// let (instance, user) = Instance::create(
+    ///     Box::new(InMemory::new()),
+    ///     NewUser::passwordless("alice"),
+    /// ).await?;
     /// let weak = instance.downgrade();
     ///
     /// // Upgrade works while instance exists
     /// assert!(weak.upgrade().is_some());
     ///
+    /// // User holds its own strong handle to the Instance — drop it too so
+    /// // the weak upgrade can fail.
+    /// drop(user);
     /// drop(instance);
     /// // Upgrade fails after instance is dropped
     /// assert!(weak.upgrade().is_none());

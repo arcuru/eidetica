@@ -41,17 +41,13 @@ Here's a simple example:
     // Create a new in-memory backend
     let backend = Sqlite::in_memory().await?;
 
-    // Create the Instance (auto-bootstraps an admin/admin user)
-    let instance = Instance::open(Box::new(backend)).await?;
-
-    // Log in as admin so we can create application users
-    let admin = instance.login_user("admin", Some("admin")).await?;
-
-    // Create a passwordless user via the admin (perfect for embedded/single-user apps)
-    admin.admin().await?.create_user("alice", None).await?;
-
-    // Login to get Alice's User session
-    let mut user = instance.login_user("alice", None).await?;
+    // Initialise the Instance with Alice as the initial admin user.
+    // The first user created on an instance is automatically granted
+    // Admin on the system databases.
+    let (_instance, mut user) = Instance::create(
+        Box::new(backend),
+        eidetica::NewUser::passwordless("alice"),
+    ).await?;
 
     // Create a database in the user's context
     let mut settings = Doc::new();
@@ -81,8 +77,8 @@ async fn main() -> eidetica::Result<()> {
     let instance = Instance::open(Box::new(backend)).await?;
 
     // Create user via the bootstrapped admin
-    let admin = instance.login_user("admin", Some("admin")).await?;
-    admin.admin().await?.create_user("alice", None).await?;
+    let admin = instance.login_user("admin", None).await?;
+    admin.admin().await?.create_user(eidetica::NewUser::passwordless("alice")).await?;
     let mut user = instance.login_user("alice", None).await?;
     // ... all changes are automatically persisted to my_data.db
 
@@ -127,16 +123,16 @@ All database and key operations happen through a User session after login. This 
 **Passwordless Users** (embedded/single-user apps):
 
 ```rust,ignore
-let admin = instance.login_user("admin", Some("admin")).await?;
-admin.admin().await?.create_user("alice", None).await?;
+let admin = instance.login_user("admin", None).await?;
+admin.admin().await?.create_user(eidetica::NewUser::passwordless("alice")).await?;
 let user = instance.login_user("alice", None).await?;
 ```
 
 **Password-Protected Users** (multi-user apps):
 
 ```rust,ignore
-let admin = instance.login_user("admin", Some("admin")).await?;
-admin.admin().await?.create_user("bob", Some("password123")).await?;
+let admin = instance.login_user("admin", None).await?;
+admin.admin().await?.create_user(eidetica::NewUser::with_password("bob", "password123")).await?;
 let user = instance.login_user("bob", Some("password123")).await?;
 ```
 
@@ -171,10 +167,10 @@ All operations in Eidetica happen within an atomic **Transaction**:
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
-# let admin = instance.login_user("admin", Some("admin")).await?;
-# admin.admin().await?.create_user("alice", None).await?;
-# let mut user = instance.login_user("alice", None).await?;
+# let (instance, mut user) = eidetica::Instance::create(
+#     Box::new(Sqlite::in_memory().await?),
+#     eidetica::NewUser::passwordless("alice"),
+# ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;
@@ -213,10 +209,10 @@ txn.commit().await?;
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
-# let admin = instance.login_user("admin", Some("admin")).await?;
-# admin.admin().await?.create_user("alice", None).await?;
-# let mut user = instance.login_user("alice", None).await?;
+# let (instance, mut user) = eidetica::Instance::create(
+#     Box::new(Sqlite::in_memory().await?),
+#     eidetica::NewUser::passwordless("alice"),
+# ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;
@@ -262,10 +258,10 @@ for (id, person) in all_people {
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
-# let admin = instance.login_user("admin", Some("admin")).await?;
-# admin.admin().await?.create_user("alice", None).await?;
-# let mut user = instance.login_user("alice", None).await?;
+# let (instance, mut user) = eidetica::Instance::create(
+#     Box::new(Sqlite::in_memory().await?),
+#     eidetica::NewUser::passwordless("alice"),
+# ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;
@@ -308,10 +304,10 @@ txn.commit().await?;
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
-# let admin = instance.login_user("admin", Some("admin")).await?;
-# admin.admin().await?.create_user("alice", None).await?;
-# let mut user = instance.login_user("alice", None).await?;
+# let (instance, mut user) = eidetica::Instance::create(
+#     Box::new(Sqlite::in_memory().await?),
+#     eidetica::NewUser::passwordless("alice"),
+# ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;

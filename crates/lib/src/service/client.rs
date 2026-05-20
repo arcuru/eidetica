@@ -29,8 +29,8 @@ use crate::entry::{Entry, ID};
 use crate::service::error::service_error_to_eidetica_error;
 use crate::service::protocol::{
     AuthenticatedDbRequest, AuthenticatedRequest, BackendOp, DatabaseOp, Handshake, HandshakeAck,
-    MergeState, ReadScope, ServiceRequest, ServiceResponse, TransactionContext, WireCrdtValue,
-    PROTOCOL_VERSION, read_frame, write_frame,
+    MergeState, PROTOCOL_VERSION, ReadScope, ServiceRequest, ServiceResponse, TransactionContext,
+    WireCrdtValue, read_frame, write_frame,
 };
 use crate::user::UserError;
 use crate::user::crypto::{decrypt_private_key, derive_encryption_key};
@@ -286,10 +286,7 @@ impl RemoteConnection {
     /// 2. Client signs the challenge with `signing_key`; `SessionKeyRegister
     ///    { pubkey, signature }` → server verifies and inserts the pubkey
     ///    into its `session_keyset`.
-    pub(crate) async fn register_session_key(
-        &self,
-        signing_key: &PrivateKey,
-    ) -> crate::Result<()> {
+    pub(crate) async fn register_session_key(&self, signing_key: &PrivateKey) -> crate::Result<()> {
         let pubkey = signing_key.public_key();
         {
             let cache = self.inner.registered_keys.lock().await;
@@ -417,7 +414,11 @@ impl RemoteConnection {
         scope: ReadScope,
     ) -> crate::Result<TransactionContext> {
         let resp = self
-            .db_request(root_id, identity, DatabaseOp::BeginTransaction { stores, scope })
+            .db_request(
+                root_id,
+                identity,
+                DatabaseOp::BeginTransaction { stores, scope },
+            )
             .await?;
         match resp {
             ServiceResponse::TransactionContext(ctx) => Ok(ctx),
@@ -457,11 +458,7 @@ impl RemoteConnection {
             .db_request(
                 root_id,
                 identity,
-                DatabaseOp::GetStoreEntries {
-                    store,
-                    tips,
-                    scope,
-                },
+                DatabaseOp::GetStoreEntries { store, tips, scope },
             )
             .await?;
         match resp {
@@ -471,11 +468,7 @@ impl RemoteConnection {
     }
 
     /// Fetch the database's Verified-frontier tips.
-    pub async fn get_verified_tips(
-        &self,
-        root_id: ID,
-        identity: SigKey,
-    ) -> crate::Result<Vec<ID>> {
+    pub async fn get_verified_tips(&self, root_id: ID, identity: SigKey) -> crate::Result<Vec<ID>> {
         let resp = self
             .db_request(root_id, identity, DatabaseOp::GetVerifiedTips)
             .await?;

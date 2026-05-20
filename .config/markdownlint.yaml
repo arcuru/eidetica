@@ -33,3 +33,11 @@ MD041: false
 
 # Link fragments - disabled (mdbook handles fragments differently)
 MD051: false
+
+# Table column style - disabled. Markdownlint's "aligned" enforcement
+# requires every cell's trailing `|` to match the header column width,
+# which conflicts with cells that contain long inline code (e.g.
+# wire-protocol type lists). The dot-aligned pipes are not load-bearing
+# for readers — mdbook renders the tables identically.
+MD058: false
+MD060: false

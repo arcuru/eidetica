@@ -304,7 +304,10 @@ pub enum ServiceRequest {
     /// the challenge issued by the matching `SessionKeyChallenge`. Server
     /// verifies the signature with the named `pubkey`; on success the pubkey
     /// joins the connection's session keyset and the challenge is consumed.
-    SessionKeyRegister { pubkey: PublicKey, signature: Vec<u8> },
+    SessionKeyRegister {
+        pubkey: PublicKey,
+        signature: Vec<u8>,
+    },
 
     // === Authenticated wrapper for every backend operation ===
     /// All backend storage ops travel inside this wrapper. The inner

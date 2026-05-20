@@ -56,12 +56,11 @@ Here's a quick example showing creating a user, database, and writing new data.
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 let backend = Sqlite::in_memory().await?;
-let instance = Instance::open(Box::new(backend)).await?;
+let (instance, mut user) = Instance::create(
+    Box::new(backend),
+    eidetica::NewUser::passwordless("alice"),
+).await?;
 
-// Create and login a passwordless user via the bootstrapped admin
-let admin = instance.login_user("admin", Some("admin")).await?;
-admin.admin().await?.create_user("alice", None).await?;
-let mut user = instance.login_user("alice", None).await?;
 
 // Create a database
 let mut settings = Doc::new();

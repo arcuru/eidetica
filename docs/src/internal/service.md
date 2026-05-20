@@ -16,13 +16,13 @@ The server wraps a full `Instance` (not just a backend) so it can handle both st
 
 ### Module Structure
 
-| Module              | Role                                                                       |
-| ------------------- | -------------------------------------------------------------------------- |
-| `service::protocol` | Wire types: `Handshake`, `ServiceRequest`, `ServiceResponse`, `BackendOp`, frame I/O |
-| `service::error`    | `ServiceError` wire format and error reconstruction                        |
+| Module              | Role                                                                                              |
+| ------------------- | ------------------------------------------------------------------------------------------------- |
+| `service::protocol` | Wire types: `Handshake`, `ServiceRequest`, `ServiceResponse`, `BackendOp`, frame I/O              |
+| `service::error`    | `ServiceError` wire format and error reconstruction                                               |
 | `service::server`   | `ServiceServer` — accepts connections, runs the auth state machine, gates and dispatches requests |
-| `service::client`   | `RemoteConnection` — the `Backend::Remote` transport + `trusted_login`     |
-| `service::cache`    | `ServiceCache` — daemon-local, per-user CRDT-state cache (crate-private)    |
+| `service::client`   | `RemoteConnection` — the `Backend::Remote` transport + `trusted_login`                            |
+| `service::cache`    | `ServiceCache` — daemon-local, per-user CRDT-state cache (crate-private)                          |
 
 ## Wire Protocol
 
@@ -88,7 +88,7 @@ sequenceDiagram
 Client-side signing. The daemon stores and serves encrypted key material and signed entries but **never holds plaintext user signing keys or passwords**.
 
 - **User keys stay client-side**: `TrustedLoginUser` returns the user's full record (`user_info`, including the encrypted `UserCredentials`) in the same round-trip as the challenge. The client derives the key-encryption-key locally (Argon2id over the password), decrypts the root signing key in-process, signs the challenge, and builds its `User` session from the already-returned record — no second wire read of `_users`. The signing key never crosses the socket.
-- **Authentication via challenge-response**: the daemon issues fresh random challenge bytes per login attempt. Successful decryption of the user's signing key on the client *is* password verification; the daemon verifies the returned signature against the user's stored public key. No password is sent over the wire.
+- **Authentication via challenge-response**: the daemon issues fresh random challenge bytes per login attempt. Successful decryption of the user's signing key on the client _is_ password verification; the daemon verifies the returned signature against the user's stored public key. No password is sent over the wire.
 - **`TrustedLogin` naming is load-bearing**: the flow assumes the caller is already trusted by the socket's filesystem permissions. Over a network transport this would need a PAKE instead — the name flags that gap deliberately.
 - **Encrypted stores remain opaque to the daemon**: per-database encrypted CRDTs merge as `Vec<EncryptedBlob>`; the daemon participates in storage and sync without ever holding a content encryption key.
 - **Filesystem permissions**: the socket's parent directory is created mode `0700` and the socket itself is set to `0600` as an additional access-control layer.
@@ -101,15 +101,15 @@ See the `crate::service` module rustdoc for the full design rationale, including
 
 The top-level request enum is intentionally flat, keeping the pre-auth surface visible at a glance:
 
-| Variant                                              | When                                                       |
-| ---------------------------------------------------- | ---------------------------------------------------------- |
-| `TrustedLoginUser { username }`                      | Pre-auth step 1 — request a login challenge                |
-| `TrustedLoginProve { signature }`                    | Pre-auth step 2 — return the signed login challenge        |
-| `GetInstanceMetadata`                                | Pre-auth — fetch server identity (used by `Instance::connect`) |
-| `SessionKeyChallenge { pubkey }`                     | Post-auth — request a challenge bound to `pubkey` so the client can prove possession |
-| `SessionKeyRegister { pubkey, signature }`           | Post-auth — return the signed challenge; on success `pubkey` joins the connection's session keyset |
-| `Authenticated(Box<AuthenticatedRequest>)`           | A `BackendOp` (today: `Get` or `SetInstanceMetadata`)      |
-| `AuthenticatedDb(Box<AuthenticatedDbRequest>)`       | A `DatabaseOp` — the primary surface for every Database read/write |
+| Variant                                        | When                                                                                               |
+| ---------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `TrustedLoginUser { username }`                | Pre-auth step 1 — request a login challenge                                                        |
+| `TrustedLoginProve { signature }`              | Pre-auth step 2 — return the signed login challenge                                                |
+| `GetInstanceMetadata`                          | Pre-auth — fetch server identity (used by `Instance::connect`)                                     |
+| `SessionKeyChallenge { pubkey }`               | Post-auth — request a challenge bound to `pubkey` so the client can prove possession               |
+| `SessionKeyRegister { pubkey, signature }`     | Post-auth — return the signed challenge; on success `pubkey` joins the connection's session keyset |
+| `Authenticated(Box<AuthenticatedRequest>)`     | A `BackendOp` (today: `Get` or `SetInstanceMetadata`)                                              |
+| `AuthenticatedDb(Box<AuthenticatedDbRequest>)` | A `DatabaseOp` — the primary surface for every Database read/write                                 |
 
 Both authenticated envelopes carry an identity claim that the server validates against the connection's session keyset before dispatch:
 
@@ -131,12 +131,12 @@ pub struct AuthenticatedDbRequest {
 
 The original design mirrored the entire storage trait onto the socket, one variant per method, exposing unauthenticated internal primitives. With the Database-level wire API (`DatabaseOp` / `AuthenticatedDb`) carrying every Database read/write, `BackendOp` is now reduced to two variants that don't have a natural Database-level home:
 
-| Variant                            | Purpose                                                                                  |
-| ---------------------------------- | ---------------------------------------------------------------------------------------- |
-| `Get { id }`                       | Fetch a single entry by id (gated post-fetch against the entry's owning tree).           |
-| `SetInstanceMetadata { metadata }` | Rewrite daemon-level pointers to its own system DBs. Gated against `_databases` Admin.   |
+| Variant                            | Purpose                                                                                |
+| ---------------------------------- | -------------------------------------------------------------------------------------- |
+| `Get { id }`                       | Fetch a single entry by id (gated post-fetch against the entry's owning tree).         |
+| `SetInstanceMetadata { metadata }` | Rewrite daemon-level pointers to its own system DBs. Gated against `_databases` Admin. |
 
-See [BackendOp surface reduction](#backendop-surface-reduction) below for the full list of operations that *used* to ride here and where each one moved.
+See [BackendOp surface reduction](#backendop-surface-reduction) below for the full list of operations that _used_ to ride here and where each one moved.
 
 Operations deliberately **not** exposed over the wire — `update_verification_status`, `get_instance_secrets`, `all_roots`, and the verification/enumeration queries — return `InstanceError::OperationNotSupported` on a `Backend::Remote`, rather than a silent wrong answer.
 
@@ -149,23 +149,23 @@ Two helpers drive the per-tree gate:
 
 ### ServiceResponse
 
-| Variant                                                     | Payload                                                          |
-| ----------------------------------------------------------- | ---------------------------------------------------------------- |
-| `Entry(Entry)` / `Entries(Vec<Entry>)`                      | One or many entries                                              |
-| `Ids(Vec<ID>)`                                              | One or many IDs                                                  |
-| `Ok`                                                        | Success with no data                                             |
+| Variant                                                     | Payload                                                            |
+| ----------------------------------------------------------- | ------------------------------------------------------------------ |
+| `Entry(Entry)` / `Entries(Vec<Entry>)`                      | One or many entries                                                |
+| `Ids(Vec<ID>)`                                              | One or many IDs                                                    |
+| `Ok`                                                        | Success with no data                                               |
 | `TransactionContext(TransactionContext)`                    | Parent tips + settings, response to `DatabaseOp::BeginTransaction` |
 | `CrdtValue(WireCrdtValue)`                                  | Materialized merged state, response to `DatabaseOp::GetStoreState` |
-| `MergeState(MergeState)`                                    | LCA + path, response to `DatabaseOp::ComputeMergeState`          |
-| `InstanceMetadata(Option<InstanceMetadata>)`                | Optional instance metadata                                       |
-| `TrustedLoginChallenge { challenge, user_uuid, user_info }` | Challenge bytes + the user's full record (login)                 |
-| `TrustedLoginOk`                                            | Login succeeded; connection now authenticated                    |
-| `SessionKeyChallenge { challenge }`                         | Challenge bytes the client signs to register an additional key   |
-| `Error(ServiceError)`                                       | Error response                                                   |
+| `MergeState(MergeState)`                                    | LCA + path, response to `DatabaseOp::ComputeMergeState`            |
+| `InstanceMetadata(Option<InstanceMetadata>)`                | Optional instance metadata                                         |
+| `TrustedLoginChallenge { challenge, user_uuid, user_info }` | Challenge bytes + the user's full record (login)                   |
+| `TrustedLoginOk`                                            | Login succeeded; connection now authenticated                      |
+| `SessionKeyChallenge { challenge }`                         | Challenge bytes the client signs to register an additional key     |
+| `Error(ServiceError)`                                       | Error response                                                     |
 
 ## Session Keyset
 
-A connection's cryptographic identity is **a set of pubkeys, not a single pubkey**. The set is seeded at login with the pubkey that proved `TrustedLoginProve` (the user's *root* pubkey, called `login_pubkey`) and grows as the client proves possession of additional keys via the registration handshake.
+A connection's cryptographic identity is **a set of pubkeys, not a single pubkey**. The set is seeded at login with the pubkey that proved `TrustedLoginProve` (the user's _root_ pubkey, called `login_pubkey`) and grows as the client proves possession of additional keys via the registration handshake.
 
 ```rust,ignore
 // In service::server
@@ -208,14 +208,14 @@ The handle constructors that need per-DB identities register on the caller's beh
 Authenticated requests pass three gates before dispatch:
 
 1. **Gate 1 — connection state**: the connection must be `Authenticated`. The identity hint, if any, must have its `pubkey` field present in the connection's `session_keyset` (proof of possession registered earlier). The resolved value becomes the **acting pubkey** for this op; an absent hint defaults to `login_pubkey`. The cross-check rejects identity claims for keys the client never proved — an attacker that hijacks an authenticated session still can't act as a key whose private material isn't on the client. **Submit (`DatabaseOp::SubmitSignedEntry`) is exempt** from this check: an admin transporting a user-signed entry legitimately carries a non-keyset identity, and the verification gate downstream is the real boundary (see [Verification-gated submit](#verification-gated-submit)).
-2. **Gate 2 — per-tree permission**: if `tree_id().is_some()`, the server loads that database's `auth_settings`, resolves the **acting** pubkey's permission, and rejects the op unless it covers `required_permission()`. Resolution tries direct membership first; on miss it falls back to the wildcard (`*`) slot, so a tree's global grant actually applies to any keyset member that isn't otherwise listed. `Get` carries no inline tree id, so it is gated *post-fetch* (`gate_entry_read`): the fetched entry's owning tree is resolved and `Read` is required before content is returned.
+2. **Gate 2 — per-tree permission**: if `tree_id().is_some()`, the server loads that database's `auth_settings`, resolves the **acting** pubkey's permission, and rejects the op unless it covers `required_permission()`. Resolution tries direct membership first; on miss it falls back to the wildcard (`*`) slot, so a tree's global grant actually applies to any keyset member that isn't otherwise listed. `Get` carries no inline tree id, so it is gated _post-fetch_ (`gate_entry_read`): the fetched entry's owning tree is resolved and `Read` is required before content is returned.
 3. **Gate 3 — cross-tree admin**: `SetInstanceMetadata` carries no tree id, so it is gated explicitly against `_databases.auth_settings` requiring `Admin`. It fails closed if `_databases` is unreadable (D8).
 
 Authorization for entry-id-keyed writes is being hardened separately (tracked as D1); see V1 Limitations.
 
 ### Verification-gated submit
 
-`SubmitSignedEntry` is **verification-gated, not session-gated**. The submit handler stores the incoming entry `Unverified` and runs the server's own verification pass against the tree's *pinned* auth lineage. An attacker without a key the tree's auth grants cannot produce a `Verified` entry, and unverified junk is excluded from every default read by the frontier cut — so the per-tree session gate would add no correctness or isolation property here, and would only block legitimate transporters (e.g. an admin session carrying a user-signed genesis).
+`SubmitSignedEntry` is **verification-gated, not session-gated**. The submit handler stores the incoming entry `Unverified` and runs the server's own verification pass against the tree's _pinned_ auth lineage. An attacker without a key the tree's auth grants cannot produce a `Verified` entry, and unverified junk is excluded from every default read by the frontier cut — so the per-tree session gate would add no correctness or isolation property here, and would only block legitimate transporters (e.g. an admin session carrying a user-signed genesis).
 
 The core rule for the wire surface: **reads are session-gated (confidentiality boundary); submits are verification-gated (integrity boundary)**.
 
@@ -227,19 +227,19 @@ Errors serialize as `ServiceError { module, kind, message }`.
 
 **Client side**: `service_error_to_eidetica_error()` reconstructs the appropriate `crate::Error` from the `(module, kind)` pair:
 
-| Module     | Kind                       | Reconstructed Error                       |
-| ---------- | -------------------------- | ----------------------------------------- |
-| `backend`  | `EntryNotFound`            | `BackendError::EntryNotFound`             |
+| Module     | Kind                         | Reconstructed Error                        |
+| ---------- | ---------------------------- | ------------------------------------------ |
+| `backend`  | `EntryNotFound`              | `BackendError::EntryNotFound`              |
 | `backend`  | `VerificationStatusNotFound` | `BackendError::VerificationStatusNotFound` |
-| `backend`  | `EntryNotInTree`           | `BackendError::EntryNotInTree`            |
-| `backend`  | `NoCommonAncestor`         | `BackendError::NoCommonAncestor`          |
-| `backend`  | `EmptyEntryList`           | `BackendError::EmptyEntryList`            |
-| `instance` | `DatabaseNotFound`         | `InstanceError::DatabaseNotFound`         |
-| `instance` | `EntryNotFound`            | `InstanceError::EntryNotFound`            |
-| `instance` | `InstanceAlreadyExists`    | `InstanceError::InstanceAlreadyExists`    |
-| `instance` | `DeviceKeyNotFound`        | `InstanceError::DeviceKeyNotFound`        |
-| `instance` | `AuthenticationRequired`   | `InstanceError::AuthenticationRequired`   |
-| (other)    | (other)                    | `Error::Io` with the original message     |
+| `backend`  | `EntryNotInTree`             | `BackendError::EntryNotInTree`             |
+| `backend`  | `NoCommonAncestor`           | `BackendError::NoCommonAncestor`           |
+| `backend`  | `EmptyEntryList`             | `BackendError::EmptyEntryList`             |
+| `instance` | `DatabaseNotFound`           | `InstanceError::DatabaseNotFound`          |
+| `instance` | `EntryNotFound`              | `InstanceError::EntryNotFound`             |
+| `instance` | `InstanceAlreadyExists`      | `InstanceError::InstanceAlreadyExists`     |
+| `instance` | `DeviceKeyNotFound`          | `InstanceError::DeviceKeyNotFound`         |
+| `instance` | `AuthenticationRequired`     | `InstanceError::AuthenticationRequired`    |
+| (other)    | (other)                      | `Error::Io` with the original message      |
 
 Unrecognized combinations fall back to an `Io` error carrying the original message, so callers use the same error-handling patterns (e.g. `err.is_not_found()`) regardless of local vs. remote. A compile-time exhaustive match over `crate::Error` forces a wire-mapping decision whenever a new variant is added, and a round-trip test asserts every mapped pair survives without hitting the fallback.
 
@@ -255,7 +255,7 @@ Service-mode CRDT-cache ops are served from a daemon-local `ServiceCache` keyed 
 
 ## Database-Level Wire API
 
-The `BackendOp`/`ServiceRequest::Authenticated` path mirrors the low-level storage trait: auth, verification, and CRDT merge run client-side over raw storage primitives. This places the security model *above* the wire boundary — the daemon is a passive key-value store.
+The `BackendOp`/`ServiceRequest::Authenticated` path mirrors the low-level storage trait: auth, verification, and CRDT merge run client-side over raw storage primitives. This places the security model _above_ the wire boundary — the daemon is a passive key-value store.
 
 The `DatabaseOp`/`ServiceRequest::AuthenticatedDb` path (added in Phase 4/5) inverts this: the server runs its own `Database` on a local `Instance`, so verification-on-read, the Verified frontier, and CRDT state materialization become server-side by construction. Every op is intrinsically tree-scoped through the containing `AuthenticatedDbRequest`.
 
@@ -263,15 +263,15 @@ The `DatabaseOp`/`ServiceRequest::AuthenticatedDb` path (added in Phase 4/5) inv
 
 `Database` no longer calls `Instance::backend()` directly. Instead it holds an `Arc<dyn DatabaseOps>`, a narrow trait mirroring the backend-read paths that `Transaction` and `Store` types depend on:
 
-| Method | Purpose |
-| ------ | ------- |
-| `get(id)` | Fetch a single entry |
-| `get_tips(tree)` / `get_store_tips(tree, store)` | Raw DAG tips, no Verified-frontier filtering |
-| `get_store_tips_up_to_entries(tree, store, up_to)` | Tips reachable from given entries |
-| `find_merge_base(tree, store, ids)` | Lowest common ancestor within a store |
-| `get_path_from_to(...)` / `get_store_from_tips(...)` | Entry traversal and store reconstruction |
-| `get_cached_crdt_state` / `cache_crdt_state` | CRDT merge cache (local merge-materialization fast-path) |
-| `put(entry)` | Persist a (client-signed) entry |
+| Method                                               | Purpose                                                  |
+| ---------------------------------------------------- | -------------------------------------------------------- |
+| `get(id)`                                            | Fetch a single entry                                     |
+| `get_tips(tree)` / `get_store_tips(tree, store)`     | Raw DAG tips, no Verified-frontier filtering             |
+| `get_store_tips_up_to_entries(tree, store, up_to)`   | Tips reachable from given entries                        |
+| `find_merge_base(tree, store, ids)`                  | Lowest common ancestor within a store                    |
+| `get_path_from_to(...)` / `get_store_from_tips(...)` | Entry traversal and store reconstruction                 |
+| `get_cached_crdt_state` / `cache_crdt_state`         | CRDT merge cache (local merge-materialization fast-path) |
+| `put(entry)`                                         | Persist a (client-signed) entry                          |
 
 `Transaction` and all `Store` types are unchanged — they already funnel I/O through their `Database` handle, so the seam is invisible below the `Database` level. Two implementations exist:
 
@@ -307,7 +307,7 @@ The encrypted-store-over-service test (`test_database_encrypted_store_roundtrip`
 - **`Verified`** (default) — only the maximal all-`Verified` ancestor-closed prefix of the DAG (the "Verified frontier"). Tips that are still `Unverified` are replaced by their nearest `Verified` ancestors; `Failed` entries are always dropped.
 - **`AllowUnverified`** — open against the raw DAG (only `Failed` dropped). The caller must explicitly opt in via `Database::allow_unverified()`.
 
-`BeginTransaction` carries the caller's `ReadScope`: write parents are drawn from the *same* projection the caller reads, so a write built under `AllowUnverified` uses unverified tips as parents and a write built under the `Verified` default uses only verified ancestors. This ensures the write's parent projection is self-consistent with the caller's read posture.
+`BeginTransaction` carries the caller's `ReadScope`: write parents are drawn from the _same_ projection the caller reads, so a write built under `AllowUnverified` uses unverified tips as parents and a write built under the `Verified` default uses only verified ancestors. This ensures the write's parent projection is self-consistent with the caller's read posture.
 
 ### Gate scope for `AuthenticatedDb`
 
@@ -319,15 +319,15 @@ Every `DatabaseOp` variant is intrinsically tree-scoped via `root_id` — there 
 
 The original design mirrored every storage trait method onto a `BackendOp` variant. With the `DatabaseOp` path covering every Database-level read and write, the legacy surface was reduced to just `Get` and `SetInstanceMetadata`. The mapping for the removed variants:
 
-| Removed variant | New home |
-| --------------- | -------- |
-| `Put` | `DatabaseOp::SubmitSignedEntry` (verification-gated) |
-| `GetTips` | `DatabaseOp::GetVerifiedTips` (server-side Verified frontier) |
-| `GetStoreTips`, `GetStoreTipsUpToEntries` | `DatabaseOp::GetStoreTipsUpToEntries` (store-specific) |
-| `FindMergeBase`, `GetPathFromTo` | `DatabaseOp::ComputeMergeState` (LCA + path in one RPC) |
+| Removed variant                                              | New home                                                                                                                 |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| `Put`                                                        | `DatabaseOp::SubmitSignedEntry` (verification-gated)                                                                     |
+| `GetTips`                                                    | `DatabaseOp::GetVerifiedTips` (server-side Verified frontier)                                                            |
+| `GetStoreTips`, `GetStoreTipsUpToEntries`                    | `DatabaseOp::GetStoreTipsUpToEntries` (store-specific)                                                                   |
+| `FindMergeBase`, `GetPathFromTo`                             | `DatabaseOp::ComputeMergeState` (LCA + path in one RPC)                                                                  |
 | `GetTree`, `GetStore`, `GetTreeFromTips`, `GetStoreFromTips` | `DatabaseOp::GetStoreEntries` (universal opaque-entry primitive) and `DatabaseOp::GetStoreState` (unencrypted fast path) |
-| `GetCachedCrdtState`, `CacheCrdtState` | `RemoteDatabaseOps`' local `Mutex<HashMap>` cache (no wire round-trip) |
-| `NotifyEntryWritten` | Removed; the server's `SubmitSignedEntry` handler fires its own write callbacks in-process |
+| `GetCachedCrdtState`, `CacheCrdtState`                       | `RemoteDatabaseOps`' local `Mutex<HashMap>` cache (no wire round-trip)                                                   |
+| `NotifyEntryWritten`                                         | Removed; the server's `SubmitSignedEntry` handler fires its own write callbacks in-process                               |
 
 ## Feature Gate
 
@@ -351,20 +351,20 @@ just test service
 nix build .#test.service
 ```
 
-The full suite passes 1:1 against the service backend. Tests that exercise *process-local* subsystems — `Sync::new` (needs the local device key), `backend.all_roots` / `backend.get_verification_status` (raw-backend listings that have no wire equivalent), client-side delegation validation that reads delegated trees via `backend.get_tree`, the CRDT merge cache, and multi-`User`-on-one-`Instance` patterns that would all wedge against a single wire-mode session pubkey — go through always-local helpers regardless of `TEST_BACKEND`:
+The full suite passes 1:1 against the service backend. Tests that exercise _process-local_ subsystems — `Sync::new` (needs the local device key), `backend.all_roots` / `backend.get_verification_status` (raw-backend listings that have no wire equivalent), client-side delegation validation that reads delegated trees via `backend.get_tree`, the CRDT merge cache, and multi-`User`-on-one-`Instance` patterns that would all wedge against a single wire-mode session pubkey — go through always-local helpers regardless of `TEST_BACKEND`:
 
 - `test_local_instance()` — like `test_instance()` but always builds an in-memory local `Instance`.
 - `test_local_instance_with_user(username)` and `test_local_instance_with_user_and_key(username, key_name)` — counterparts to the wire-aware versions.
 - `setup_tree_with_user_key_local()` and `TestContext::with_local_database()` — for tests that poke at local-only backend state.
 
-The architectural seam — wire-path tests vs. subsystem tests — is explicit at the helper level. The harness logs in as the bootstrapped `admin`/`admin` user (admin login works over the wire), so user-count assertions match local mode without a synthetic `test_bootstrap` user.
+The architectural seam — wire-path tests vs. subsystem tests — is explicit at the helper level. The test harness bootstraps the server-side Instance with a passwordless `admin` user via `Instance::create(..., NewUser::passwordless("admin"))`, then logs in over the wire as that user. (The old `admin`/`admin` auto-bootstrap is gone; production deployments now run `eidetica daemon init --username <NAME>` with explicit credentials, and the test harness mirrors that shape.)
 
 ## V1 Limitations
 
 This is a **single trusted local client** v1. The following are deferred with tracked follow-ups:
 
 - **Lock-poisoning panics**: the `Arc`-shared `ServiceCache` mutex and the per-connection session `RwLock` use `lock().unwrap()`; a panic in one handler can cascade. Documented at the lock sites; must be fixed before serving multiple or untrusted clients.
-- **Verification status is never asserted over the wire**: the service protocol carries no way for a client to assert a verification status; entries arriving over the wire are stored `Unverified` and earn `Verified` only via the daemon's own validation pass. The status model, the pinned-settings validation that makes it staleness-free, the disclosure posture, and the unbuilt authority-*reduction* (revocation) gap are documented in the [Verification Model](../design/verification.md) design doc.
+- **Verification status is never asserted over the wire**: the service protocol carries no way for a client to assert a verification status; entries arriving over the wire are stored `Unverified` and earn `Verified` only via the daemon's own validation pass. The status model, the pinned-settings validation that makes it staleness-free, the disclosure posture, and the unbuilt authority-_reduction_ (revocation) gap are documented in the [Verification Model](../design/verification.md) design doc.
 - **`get_tips()` on a remote Database delegates to `self.ops()`**: handles built via `Database::create` or `Database::open_remote` carry a `RemoteDatabaseOps` with a per-DB identity; reads use that identity (not the connection's login pubkey). Handles built via plain `Database::open` on a connected instance use `LocalDatabaseOps` over `Backend::Remote`, which still reads with the login pubkey — appropriate for code that wants the connection's default identity. The previous heuristic remote-detection in `Database::get_tips` was replaced with an explicit ops delegation.
 - **No server-push notifications**: clients see the latest state on each request but are not notified of entries arriving from sync peers. A future bidirectional protocol would add a `Notification` frame type and a client-side background reader.
 - **No sync delegation**: `enable_sync()` on a remote Instance is a silent no-op (sync runs daemon-side; the client can't enable it from over the wire). A future admin-gated `EnableSync` RPC would let a client ask the daemon to enable its sync subsystem, parallel to how `InstanceAdmin::create_user` reaches `_users` today.

@@ -154,14 +154,14 @@ This design allows for future capabilities like:
 
 ## Entry Verification and the Verified Frontier
 
-Every entry carries a **verification status** that records whether *this
-node* has cryptographically validated it against the authentication settings
+Every entry carries a **verification status** that records whether _this
+node_ has cryptographically validated it against the authentication settings
 it was signed under:
 
 - **Verified** — the entry's signature and permissions were checked and
   accepted by a local validation pass.
 - **Unverified** — the entry is stored but not yet validated by this node.
-  This is the state every entry arrives in over sync, and it is the *only*
+  This is the state every entry arrives in over sync, and it is the _only_
   state the storage layer will store on `put`: a peer can never assert "this
   entry is verified" — verification is always a local decision.
 - **Failed** — the entry was checked and definitively rejected (bad

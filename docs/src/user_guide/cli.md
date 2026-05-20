@@ -62,20 +62,51 @@ Users:       2
 Databases:   5
 ```
 
+### `daemon init`
+
+Initialises a fresh Eidetica instance on the chosen backend with an initial admin user. The first user created on an instance is automatically granted Admin on the system databases. Fails if the backend already has an instance on it.
+
+```bash
+eidetica daemon [BACKEND OPTIONS] init --username <NAME> [--password <PASS> | --passwordless]
+```
+
+| Option           | Default | Env Var                   | Description                                           |
+| ---------------- | ------- | ------------------------- | ----------------------------------------------------- |
+| `--username`     | —       | —                         | **Required.** Initial admin username. No default.     |
+| `--password`     | —       | `EIDETICA_ADMIN_PASSWORD` | Optional. Prompted twice on stdin if not provided.    |
+| `--passwordless` | off     | —                         | Skip the password (mutually exclusive with the flag). |
+
+`--username` has no default: operators must spell it out so no static credential ships by accident. `--passwordless` is intentionally a separate opt-in (rather than just leaving `--password` unset) — pick it only for embedded or single-user development; production deployments should set a password.
+
+Examples:
+
+```bash
+# Interactive password prompt:
+eidetica daemon --data-dir /var/lib/eidetica init --username ops
+
+# Non-interactive (e.g. CI provisioning):
+EIDETICA_ADMIN_PASSWORD=… eidetica daemon --data-dir /var/lib/eidetica init --username ops
+
+# Embedded / single-user dev workflow:
+eidetica daemon --data-dir ~/.local/share/eidetica init --username me --passwordless
+```
+
+Backend options (`--backend`, `--data-dir`, `--postgres-url`) go before the `init` subcommand and are shared with `daemon` (see below).
+
 ### `daemon`
 
-Starts the Eidetica service daemon, listening for client connections over a Unix domain socket. Multiple processes can connect to a running daemon to share the same backend storage.
+Runs the Eidetica service daemon against an already-initialised backend. Fails with a pointer at `daemon init` if the backend hasn't been initialised yet. Multiple client processes can connect to the running daemon over the Unix socket to share the same backend storage.
 
 ```bash
 eidetica daemon [OPTIONS]
 ```
 
-| Option           | Short | Default        | Env Var                 | Description                                                     |
-| ---------------- | ----- | -------------- | ----------------------- | --------------------------------------------------------------- |
-| `--socket`       | `-s`  | auto-detected  | `EIDETICA_SOCKET`       | Unix socket path (see [Service Mode](service.md) for defaults)  |
-| `--backend`      | `-b`  | `sqlite`       | `EIDETICA_BACKEND`      | Storage backend (`sqlite`, `postgres`, `inmemory`)              |
-| `--data-dir`     | `-d`  | current dir    | `EIDETICA_DATA_DIR`     | Data directory for storage files                                |
-| `--postgres-url` |       | —              | `EIDETICA_POSTGRES_URL` | PostgreSQL connection URL (required when backend is `postgres`) |
+| Option           | Short | Default       | Env Var                 | Description                                                     |
+| ---------------- | ----- | ------------- | ----------------------- | --------------------------------------------------------------- |
+| `--socket`       | `-s`  | auto-detected | `EIDETICA_SOCKET`       | Unix socket path (see [Service Mode](service.md) for defaults)  |
+| `--backend`      | `-b`  | `sqlite`      | `EIDETICA_BACKEND`      | Storage backend (`sqlite`, `postgres`, `inmemory`)              |
+| `--data-dir`     | `-d`  | current dir   | `EIDETICA_DATA_DIR`     | Data directory for storage files                                |
+| `--postgres-url` |       | —             | `EIDETICA_POSTGRES_URL` | PostgreSQL connection URL (required when backend is `postgres`) |
 
 The daemon runs until interrupted with SIGINT or SIGTERM. Clients connect using `Instance::connect(socket_path)`. See [Service (Daemon) Mode](service.md) for full documentation.
 

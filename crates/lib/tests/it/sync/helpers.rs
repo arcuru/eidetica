@@ -227,7 +227,8 @@ impl TransportFactory for IrohTransportFactory {
 /// is accessed via Instance internals and will be migrated to InstanceMetadata shortly
 pub async fn setup_manual_approval_server() -> (Instance, User, PublicKey, Database, Sync, ID) {
     let (instance, mut user, key_id) =
-        crate::helpers::test_local_instance_with_user_and_key("server_user", Some("server_admin")).await;
+        crate::helpers::test_local_instance_with_user_and_key("server_user", Some("server_admin"))
+            .await;
 
     // Initialize sync
     instance
@@ -279,7 +280,8 @@ pub async fn setup_manual_approval_server() -> (Instance, User, PublicKey, Datab
 /// (Instance, User, key_id, Database, Sync, tree_id)
 pub async fn setup_global_wildcard_server() -> (Instance, User, PublicKey, Database, Sync, ID) {
     let (instance, mut user, key_id) =
-        crate::helpers::test_local_instance_with_user_and_key("server_user", Some("server_admin")).await;
+        crate::helpers::test_local_instance_with_user_and_key("server_user", Some("server_admin"))
+            .await;
 
     // Initialize sync
     instance
@@ -466,7 +468,9 @@ pub async fn setup_server_with_bootstrap_database(
     db_name: &str,
 ) -> (Instance, User, PublicKey, Database, ID) {
     let server_instance = setup_instance_with_initialized().await;
-    crate::helpers::create_user(&server_instance, username, None).await.unwrap();
+    crate::helpers::create_user(&server_instance, username, None)
+        .await
+        .unwrap();
     let mut server_user = server_instance.login_user(username, None).await.unwrap();
     let server_key_id = server_user.add_private_key(Some(key_name)).await.unwrap();
 
@@ -666,7 +670,9 @@ pub async fn setup_sync_enabled_server(
     db_name: &str,
 ) -> (Instance, User, PublicKey, Database, ID, Arc<Sync>) {
     let server_instance = setup_instance_with_initialized().await;
-    crate::helpers::create_user(&server_instance, username, None).await.unwrap();
+    crate::helpers::create_user(&server_instance, username, None)
+        .await
+        .unwrap();
     let mut server_user = server_instance.login_user(username, None).await.unwrap();
     let server_key_id = server_user.add_private_key(Some(key_name)).await.unwrap();
 
@@ -746,7 +752,9 @@ pub async fn setup_sync_enabled_client(
     key_name: &str,
 ) -> (Instance, User, PublicKey, Arc<Sync>) {
     let client_instance = setup_instance_with_initialized().await;
-    crate::helpers::create_user(&client_instance, username, None).await.unwrap();
+    crate::helpers::create_user(&client_instance, username, None)
+        .await
+        .unwrap();
     let mut client_user = client_instance.login_user(username, None).await.unwrap();
     let client_key_id = client_user.add_private_key(Some(key_name)).await.unwrap();
 
@@ -810,7 +818,9 @@ pub async fn setup_public_sync_enabled_server(
     db_name: &str,
 ) -> (Instance, User, PublicKey, Database, ID, Arc<Sync>) {
     let server_instance = setup_instance_with_initialized().await;
-    crate::helpers::create_user(&server_instance, username, None).await.unwrap();
+    crate::helpers::create_user(&server_instance, username, None)
+        .await
+        .unwrap();
     let mut server_user = server_instance.login_user(username, None).await.unwrap();
     let server_key_id = server_user.add_private_key(Some(key_name)).await.unwrap();
 

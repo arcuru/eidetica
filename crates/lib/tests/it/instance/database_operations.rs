@@ -9,7 +9,7 @@ use eidetica::crdt::Doc;
 
 #[tokio::test]
 async fn test_load_tree() {
-    let (_instance, mut user) =  test_instance_with_user("test_user").await;
+    let (_instance, mut user) = test_instance_with_user("test_user").await;
     let (root_id, loaded_tree) = test_tree_load_workflow(&mut user).await;
 
     assert_eq!(loaded_tree.root_id(), &root_id);
@@ -18,7 +18,7 @@ async fn test_load_tree() {
 #[tokio::test]
 async fn test_database_authentication_scenarios() {
     // Test authenticated database operations
-    let (_instance, mut user) =  test_instance_with_user("auth_user").await;
+    let (_instance, mut user) = test_instance_with_user("auth_user").await;
     let key_id = user
         .get_default_key()
         .expect("User should have default key");
@@ -47,8 +47,8 @@ async fn test_database_authentication_scenarios() {
 #[tokio::test]
 async fn test_multiple_database_creation() {
     // Create multiple independent instance+user combinations
-    let (_instance1, mut user1) =  test_instance_with_user("user1").await;
-    let (_instance2, mut user2) =  test_instance_with_user("user2").await;
+    let (_instance1, mut user1) = test_instance_with_user("user1").await;
+    let (_instance2, mut user2) = test_instance_with_user("user2").await;
     let db3 = setup_simple_db().await;
 
     // Create trees in each user's context
@@ -78,7 +78,7 @@ async fn test_multiple_database_creation() {
 
 #[tokio::test]
 async fn test_tree_creation_workflow_with_helpers() {
-    let (_instance, mut user) =  test_instance_with_user("helper_user").await;
+    let (_instance, mut user) = test_instance_with_user("helper_user").await;
 
     // Use helper to create tree with settings
     let tree = create_database_with_settings(&mut user, "TestTree", "1.0").await;
@@ -90,7 +90,7 @@ async fn test_tree_creation_workflow_with_helpers() {
 
 #[tokio::test]
 async fn test_tree_creation_with_data() {
-    let (_instance, mut user) =  test_instance_with_user("data_user").await;
+    let (_instance, mut user) = test_instance_with_user("data_user").await;
 
     // Use helper to create tree with initial data
     let user_data = &[("user_id", "alice"), ("email", "alice@example.com")];

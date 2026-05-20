@@ -11,7 +11,11 @@ use crate::{
 #[tokio::test]
 async fn test_find_sigkeys_returns_sorted_by_permission() -> Result<()> {
     // Create instance
-    let instance = Instance::open(Box::new(InMemory::new())).await?;
+    let (instance, _admin) = Instance::create(
+        Box::new(InMemory::new()),
+        crate::NewUser::passwordless("admin"),
+    )
+    .await?;
 
     // Generate a test key
     let (signing_key, public_key) = generate_keypair();
@@ -58,7 +62,11 @@ async fn test_find_sigkeys_returns_sorted_by_permission() -> Result<()> {
 
 #[tokio::test]
 async fn test_create_bootstraps_signing_key_as_admin_zero() -> Result<()> {
-    let instance = Instance::open(Box::new(InMemory::new())).await?;
+    let (instance, _admin) = Instance::create(
+        Box::new(InMemory::new()),
+        crate::NewUser::passwordless("admin"),
+    )
+    .await?;
 
     let (signing_key, signing_pubkey) = generate_keypair();
 
@@ -79,7 +87,11 @@ async fn test_create_bootstraps_signing_key_as_admin_zero() -> Result<()> {
 
 #[tokio::test]
 async fn test_create_rejects_preconfigured_auth() -> Result<()> {
-    let instance = Instance::open(Box::new(InMemory::new())).await?;
+    let (instance, _admin) = Instance::create(
+        Box::new(InMemory::new()),
+        crate::NewUser::passwordless("admin"),
+    )
+    .await?;
 
     let (signing_key, _) = generate_keypair();
 
@@ -113,7 +125,12 @@ async fn test_create_rejects_preconfigured_auth() -> Result<()> {
 
 /// Helper: create an Instance + Database for callback tests
 async fn setup_callback_test() -> (Instance, Database) {
-    let instance = Instance::open(Box::new(InMemory::new())).await.unwrap();
+    let (instance, _admin) = Instance::create(
+        Box::new(InMemory::new()),
+        crate::NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
     let (signing_key, _) = generate_keypair();
     let db = Database::create(&instance, signing_key, Doc::new())
         .await

@@ -36,6 +36,19 @@ pub enum InstanceError {
     #[error("Instance already exists on backend (found device key and system databases)")]
     InstanceAlreadyExists,
 
+    /// Backend has no Instance on it; the operator must create one before
+    /// it can be opened.
+    ///
+    /// Returned by [`Instance::open`](super::Instance::open) when the
+    /// backend has no instance metadata. Use
+    /// [`Instance::create`](super::Instance::create) (or
+    /// [`Instance::open_or_create`](super::Instance::open_or_create)) with
+    /// a [`NewUser`](super::NewUser) to initialise it first.
+    #[error(
+        "Instance not initialised on this backend; use Instance::create or Instance::open_or_create"
+    )]
+    NotInitialized,
+
     /// Entry does not belong to the specified database.
     #[error("Entry '{entry_id}' does not belong to database '{database_id}'")]
     EntryNotInDatabase {

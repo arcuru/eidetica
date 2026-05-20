@@ -12,7 +12,7 @@ use eidetica::backend::database::InMemory;
 use eidetica::instance::backend::Backend;
 use eidetica::service::ServiceServer;
 use eidetica::service::protocol::{
-    Handshake, HandshakeAck, ReadScope, ServiceRequest, ServiceResponse, PROTOCOL_VERSION,
+    Handshake, HandshakeAck, PROTOCOL_VERSION, ReadScope, ServiceRequest, ServiceResponse,
     read_frame, write_frame,
 };
 use eidetica::store::{DocStore, PasswordStore};
@@ -30,7 +30,12 @@ use tokio::sync::watch;
 async fn start_test_server() -> (PathBuf, watch::Sender<()>, Instance, TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let socket_path = dir.path().join("test.sock");
-    let instance = Instance::open(Box::new(InMemory::new())).await.unwrap();
+    let (instance, _admin) = Instance::create(
+        Box::new(InMemory::new()),
+        eidetica::NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
     let (tx, rx) = watch::channel(());
     let server = ServiceServer::new(instance.clone(), socket_path.clone());
     tokio::spawn(async move {
@@ -84,10 +89,9 @@ async fn setup_db(
         .unwrap();
     let root_id = db.root_id().clone();
 
-    let sigkeys =
-        eidetica::Database::find_sigkeys(server, &root_id, &pubkey)
-            .await
-            .unwrap();
+    let sigkeys = eidetica::Database::find_sigkeys(server, &root_id, &pubkey)
+        .await
+        .unwrap();
     let (identity, _perm) = sigkeys
         .into_iter()
         .next()
@@ -169,8 +173,7 @@ async fn test_unauthenticated_backend_op_rejected() {
             eidetica::entry::ID::from_bytes("nonexistent"),
         )
         .await;
-    let err =
-        result.expect_err("server must reject database op on unauthenticated connection");
+    let err = result.expect_err("server must reject database op on unauthenticated connection");
     assert!(
         !err.is_not_found(),
         "expected auth error, got NotFound — gate not enforced; {err}"
@@ -212,9 +215,7 @@ async fn test_instance_identity_round_trip() {
 }
 
 /// Open a raw connection to the daemon and complete the protocol handshake.
-async fn raw_handshake(
-    socket_path: &PathBuf,
-) -> (ReadHalf<UnixStream>, WriteHalf<UnixStream>) {
+async fn raw_handshake(socket_path: &PathBuf) -> (ReadHalf<UnixStream>, WriteHalf<UnixStream>) {
     let stream = UnixStream::connect(socket_path).await.unwrap();
     let (mut reader, mut writer) = tokio::io::split(stream);
     write_frame(
@@ -375,8 +376,7 @@ async fn test_database_begin_transaction() {
 #[tokio::test]
 async fn test_database_get_verified_tips() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
-    let (instance, root_id, identity) =
-        setup_db(&server, &socket_path, "alice").await;
+    let (instance, root_id, identity) = setup_db(&server, &socket_path, "alice").await;
 
     // Add a commit server-side so tips diverge.
     let server_user = server.login_user("alice", None).await.unwrap();
@@ -395,10 +395,7 @@ async fn test_database_get_verified_tips() {
     .unwrap();
 
     let conn = remote_conn(&instance);
-    let wire_tips = conn
-        .get_verified_tips(root_id, identity)
-        .await
-        .unwrap();
+    let wire_tips = conn.get_verified_tips(root_id, identity).await.unwrap();
 
     assert!(
         !wire_tips.is_empty(),
@@ -461,8 +458,7 @@ async fn test_database_get_store_state() {
 #[tokio::test]
 async fn test_database_get_store_entries() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
-    let (instance, root_id, identity) =
-        setup_db(&server, &socket_path, "alice").await;
+    let (instance, root_id, identity) = setup_db(&server, &socket_path, "alice").await;
 
     // Write data server-side.
     let server_user = server.login_user("alice", None).await.unwrap();
@@ -515,8 +511,7 @@ async fn test_database_get_store_entries() {
 #[tokio::test]
 async fn test_database_submit_signed_entry() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
-    let (instance, root_id, identity) =
-        setup_db(&server, &socket_path, "alice").await;
+    let (instance, root_id, identity) = setup_db(&server, &socket_path, "alice").await;
 
     let conn = remote_conn(&instance);
     let ctx = conn
@@ -572,8 +567,7 @@ async fn test_database_submit_signed_entry() {
 #[tokio::test]
 async fn test_database_encrypted_store_roundtrip() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
-    let (instance, root_id, identity) =
-        setup_db(&server, &socket_path, "alice").await;
+    let (instance, root_id, identity) = setup_db(&server, &socket_path, "alice").await;
 
     let password = "hunter2";
     let secret_data = "top-secret-value";
@@ -587,9 +581,7 @@ async fn test_database_encrypted_store_roundtrip() {
         .unwrap()
         .with_key(server_sk);
     db.with_transaction(|tx| async move {
-        let mut encrypted = tx
-            .get_store::<PasswordStore<DocStore>>("secrets")
-            .await?;
+        let mut encrypted = tx.get_store::<PasswordStore<DocStore>>("secrets").await?;
         encrypted
             .initialize(password, eidetica::crdt::Doc::new())
             .await?;
@@ -646,8 +638,7 @@ async fn test_database_encrypted_store_roundtrip() {
 #[tokio::test]
 async fn test_backend_get_tips_allowed_for_owner() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
-    let (instance, root_id, identity) =
-        setup_db(&server, &socket_path, "alice").await;
+    let (instance, root_id, identity) = setup_db(&server, &socket_path, "alice").await;
 
     let conn = remote_conn(&instance);
     let tips = conn.get_verified_tips(root_id, identity).await.unwrap();
@@ -687,8 +678,7 @@ async fn test_backend_get_tips_denied_for_unauthorised_user() {
 #[tokio::test]
 async fn test_backend_get_denied_cross_tree() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
-    let (alice_inst, alice_root, alice_identity) =
-        setup_db(&server, &socket_path, "alice").await;
+    let (alice_inst, alice_root, alice_identity) = setup_db(&server, &socket_path, "alice").await;
 
     let alice_conn = remote_conn(&alice_inst);
 
@@ -723,7 +713,7 @@ async fn test_set_instance_metadata_allowed_for_admin() {
     let (socket_path, _tx, _server, _dir) = start_test_server().await;
 
     let instance = Instance::connect(&socket_path).await.unwrap();
-    let _admin = instance.login_user("admin", Some("admin")).await.unwrap();
+    let _admin = instance.login_user("admin", None).await.unwrap();
 
     let current = instance
         .backend()
@@ -813,8 +803,7 @@ async fn test_trusted_login_bad_signature_errors_and_resets() {
 #[tokio::test]
 async fn test_remote_database_ops_e2e() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
-    let (instance, root_id, identity) =
-        setup_db(&server, &socket_path, "alice").await;
+    let (instance, root_id, identity) = setup_db(&server, &socket_path, "alice").await;
 
     // Write data server-side.
     let server_user = server.login_user("alice", None).await.unwrap();
@@ -897,17 +886,17 @@ async fn test_submit_cross_session_signed_by_tree_admin_becomes_verified() {
     let bob_sk = server_bob.get_signing_key(&bob_pub).unwrap();
     let mut settings = eidetica::crdt::Doc::new();
     settings.set("name", "bob_db");
-    let bob_db = server_bob.create_database(settings, &bob_pub).await.unwrap();
+    let bob_db = server_bob
+        .create_database(settings, &bob_pub)
+        .await
+        .unwrap();
     let bob_root = bob_db.root_id().clone();
     let initial_tips = bob_db.get_tips().await.unwrap();
 
     // The bootstrap admin (NOT bob) connects over the wire. Admin holds
     // Admin on `_users`/`_databases` but is *not* a member of bob's tree.
     let admin_inst = Instance::connect(&socket_path).await.unwrap();
-    let _admin_user = admin_inst
-        .login_user("admin", Some("admin"))
-        .await
-        .unwrap();
+    let _admin_user = admin_inst.login_user("admin", None).await.unwrap();
     let conn = remote_conn(&admin_inst);
 
     // Resolve bob's SigKey in his own tree (the same shape `setup_db`
@@ -915,10 +904,9 @@ async fn test_submit_cross_session_signed_by_tree_admin_becomes_verified() {
     // in the tree's auth_settings; if we left this defaulted, the resolver
     // would find no candidates and verification would fail regardless of
     // signature validity.
-    let sigkeys =
-        eidetica::Database::find_sigkeys(&server, &bob_root, &bob_pub)
-            .await
-            .unwrap();
+    let sigkeys = eidetica::Database::find_sigkeys(&server, &bob_root, &bob_pub)
+        .await
+        .unwrap();
     let (bob_identity, _perm) = sigkeys
         .into_iter()
         .next()
@@ -931,19 +919,12 @@ async fn test_submit_cross_session_signed_by_tree_admin_becomes_verified() {
     // `transaction_context` is the same primitive the wire seam uses; here
     // we call it on the local Database since we're constructing an entry
     // that bypasses the begin_transaction wire round-trip.
-    let local_bob_db = eidetica::Database::open(&server, &bob_root)
-        .await
-        .unwrap();
+    let local_bob_db = eidetica::Database::open(&server, &bob_root).await.unwrap();
     let ctx = local_bob_db
         .transaction_context(&["note".to_string()], ReadScope::Verified)
         .await
         .unwrap();
-    let max_parent_height = ctx
-        .main_parents
-        .iter()
-        .map(|(_, h)| *h)
-        .max()
-        .unwrap_or(0);
+    let max_parent_height = ctx.main_parents.iter().map(|(_, h)| *h).max().unwrap_or(0);
     let parents: Vec<eidetica::entry::ID> =
         ctx.main_parents.iter().map(|(id, _)| id.clone()).collect();
     // `EntryMetadata` is `pub(crate)`; construct its JSON wire form
@@ -1008,17 +989,17 @@ async fn test_submit_unauthorized_signer_stays_invisible_in_default_reads() {
     let bob_pub = server_bob.get_default_key().unwrap();
     let mut settings = eidetica::crdt::Doc::new();
     settings.set("name", "bob_db");
-    let bob_db = server_bob.create_database(settings, &bob_pub).await.unwrap();
+    let bob_db = server_bob
+        .create_database(settings, &bob_pub)
+        .await
+        .unwrap();
     let bob_root = bob_db.root_id().clone();
     let initial_tips = bob_db.get_tips().await.unwrap();
 
     // Admin connects and signs an entry with the *admin* key, which has no
     // auth on bob's tree.
     let admin_inst = Instance::connect(&socket_path).await.unwrap();
-    let admin_user = admin_inst
-        .login_user("admin", Some("admin"))
-        .await
-        .unwrap();
+    let admin_user = admin_inst.login_user("admin", None).await.unwrap();
     let admin_pub = admin_user.get_default_key().unwrap();
     let admin_sk = admin_user.get_signing_key(&admin_pub).unwrap();
     let conn = remote_conn(&admin_inst);

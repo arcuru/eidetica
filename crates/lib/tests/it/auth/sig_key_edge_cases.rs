@@ -18,8 +18,7 @@ use eidetica::{
 // Delegation/SigKey edge-case tests reach into delegation validation
 // which requires a local backend; route through always-local helpers.
 use crate::helpers::{
-    rename_auth_key,
-    test_local_instance as test_instance,
+    rename_auth_key, test_local_instance as test_instance,
     test_local_instance_with_user_and_key as test_instance_with_user_and_key,
 };
 

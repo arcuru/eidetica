@@ -197,7 +197,9 @@ async fn test_handshake_without_listen_addresses() {
 async fn test_bootstrap_sync_tracks_tree_peer_relationship() {
     let instance = setup_empty_db().await;
     instance.enable_sync().await.unwrap();
-    crate::helpers::create_user(&instance, "test_user", None).await.unwrap();
+    crate::helpers::create_user(&instance, "test_user", None)
+        .await
+        .unwrap();
     let mut user = instance.login_user("test_user", None).await.unwrap();
     let key_id = user.add_private_key(Some("test_key")).await.unwrap();
 
@@ -267,7 +269,9 @@ async fn test_bootstrap_sync_tracks_tree_peer_relationship() {
 async fn test_incremental_sync_tracks_tree_peer_relationship() {
     let instance = setup_empty_db().await;
     instance.enable_sync().await.unwrap();
-    crate::helpers::create_user(&instance, "test_user", None).await.unwrap();
+    crate::helpers::create_user(&instance, "test_user", None)
+        .await
+        .unwrap();
     let mut user = instance.login_user("test_user", None).await.unwrap();
     let key_id = user.add_private_key(Some("test_key")).await.unwrap();
 
@@ -338,7 +342,9 @@ async fn test_incremental_sync_tracks_tree_peer_relationship() {
 async fn test_relationship_tracking_skipped_without_peer_pubkey() {
     let instance = setup_empty_db().await;
     instance.enable_sync().await.unwrap();
-    crate::helpers::create_user(&instance, "test_user", None).await.unwrap();
+    crate::helpers::create_user(&instance, "test_user", None)
+        .await
+        .unwrap();
     let mut user = instance.login_user("test_user", None).await.unwrap();
     let key_id = user.add_private_key(Some("test_key")).await.unwrap();
 
@@ -409,7 +415,9 @@ async fn test_relationship_tracking_skipped_without_peer_pubkey() {
 async fn test_multiple_trees_tracked_with_same_peer() {
     let instance = setup_empty_db().await;
     instance.enable_sync().await.unwrap();
-    crate::helpers::create_user(&instance, "test_user", None).await.unwrap();
+    crate::helpers::create_user(&instance, "test_user", None)
+        .await
+        .unwrap();
     let mut user = instance.login_user("test_user", None).await.unwrap();
     let key_id = user.add_private_key(Some("test_key")).await.unwrap();
 
@@ -548,7 +556,9 @@ async fn test_http_transport_request_context() {
 async fn test_sync_without_peer_identifier_works() {
     let instance = setup_empty_db().await;
     instance.enable_sync().await.unwrap();
-    crate::helpers::create_user(&instance, "test_user", None).await.unwrap();
+    crate::helpers::create_user(&instance, "test_user", None)
+        .await
+        .unwrap();
     let mut user = instance.login_user("test_user", None).await.unwrap();
     let key_id = user.add_private_key(Some("test_key")).await.unwrap();
 
@@ -596,7 +606,9 @@ async fn test_sync_without_peer_identifier_works() {
 async fn test_bootstrap_auto_detects_permission_for_authorized_key() {
     let instance = setup_empty_db().await;
     instance.enable_sync().await.unwrap();
-    crate::helpers::create_user(&instance, "test_user", None).await.unwrap();
+    crate::helpers::create_user(&instance, "test_user", None)
+        .await
+        .unwrap();
     let mut user = instance.login_user("test_user", None).await.unwrap();
     let key_id = user.add_private_key(Some("test_key")).await.unwrap();
 
@@ -658,7 +670,9 @@ async fn test_bootstrap_auto_detects_permission_for_authorized_key() {
 async fn test_bootstrap_rejects_unauthorized_key_when_permission_not_specified() {
     let instance = setup_empty_db().await;
     instance.enable_sync().await.unwrap();
-    crate::helpers::create_user(&instance, "test_user", None).await.unwrap();
+    crate::helpers::create_user(&instance, "test_user", None)
+        .await
+        .unwrap();
     let mut user = instance.login_user("test_user", None).await.unwrap();
     let key_id = user.add_private_key(Some("test_key")).await.unwrap();
 
@@ -719,7 +733,9 @@ async fn test_bootstrap_rejects_unauthorized_key_when_permission_not_specified()
 async fn test_bootstrap_auto_detects_global_wildcard_permission() {
     let instance = setup_empty_db().await;
     instance.enable_sync().await.unwrap();
-    crate::helpers::create_user(&instance, "test_user", None).await.unwrap();
+    crate::helpers::create_user(&instance, "test_user", None)
+        .await
+        .unwrap();
     let mut user = instance.login_user("test_user", None).await.unwrap();
     let key_id = user.add_private_key(Some("test_key")).await.unwrap();
 
@@ -793,7 +809,9 @@ async fn test_bootstrap_auto_detects_global_wildcard_permission() {
 async fn test_bootstrap_uses_highest_permission_when_key_has_multiple() {
     let instance = setup_empty_db().await;
     instance.enable_sync().await.unwrap();
-    crate::helpers::create_user(&instance, "test_user", None).await.unwrap();
+    crate::helpers::create_user(&instance, "test_user", None)
+        .await
+        .unwrap();
     let mut user = instance.login_user("test_user", None).await.unwrap();
     let key_id = user.add_private_key(Some("test_key")).await.unwrap();
 

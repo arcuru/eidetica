@@ -67,19 +67,10 @@ pub trait DatabaseOps: Send + Sync + std::fmt::Debug {
     ) -> Result<Vec<ID>>;
 
     /// Every entry of `store` reachable from `tips`.
-    async fn get_store_from_tips(
-        &self,
-        tree: &ID,
-        store: &str,
-        tips: &[ID],
-    ) -> Result<Vec<Entry>>;
+    async fn get_store_from_tips(&self, tree: &ID, store: &str, tips: &[ID]) -> Result<Vec<Entry>>;
 
     /// Cached materialized CRDT state for `(entry_id, store)`, if present.
-    async fn get_cached_crdt_state(
-        &self,
-        entry_id: &ID,
-        store: &str,
-    ) -> Result<Option<Vec<u8>>>;
+    async fn get_cached_crdt_state(&self, entry_id: &ID, store: &str) -> Result<Option<Vec<u8>>>;
 
     /// Cache materialized CRDT state for `(entry_id, store)`.
     async fn cache_crdt_state(&self, entry_id: &ID, store: &str, state: Vec<u8>) -> Result<()>;
@@ -165,12 +156,7 @@ impl DatabaseOps for LocalDatabaseOps {
             .await
     }
 
-    async fn get_store_from_tips(
-        &self,
-        tree: &ID,
-        store: &str,
-        tips: &[ID],
-    ) -> Result<Vec<Entry>> {
+    async fn get_store_from_tips(&self, tree: &ID, store: &str, tips: &[ID]) -> Result<Vec<Entry>> {
         let instance = self.instance()?;
         instance
             .backend()
@@ -178,11 +164,7 @@ impl DatabaseOps for LocalDatabaseOps {
             .await
     }
 
-    async fn get_cached_crdt_state(
-        &self,
-        entry_id: &ID,
-        store: &str,
-    ) -> Result<Option<Vec<u8>>> {
+    async fn get_cached_crdt_state(&self, entry_id: &ID, store: &str) -> Result<Option<Vec<u8>>> {
         let instance = self.instance()?;
         instance
             .backend()
@@ -285,12 +267,7 @@ impl DatabaseOps for RemoteDatabaseOps {
             .await
     }
 
-    async fn find_merge_base(
-        &self,
-        _tree: &ID,
-        store: &str,
-        entry_ids: &[ID],
-    ) -> Result<ID> {
+    async fn find_merge_base(&self, _tree: &ID, store: &str, entry_ids: &[ID]) -> Result<ID> {
         let state = self
             .conn
             .compute_merge_state(
@@ -339,11 +316,7 @@ impl DatabaseOps for RemoteDatabaseOps {
             .await
     }
 
-    async fn get_cached_crdt_state(
-        &self,
-        entry_id: &ID,
-        store: &str,
-    ) -> Result<Option<Vec<u8>>> {
+    async fn get_cached_crdt_state(&self, entry_id: &ID, store: &str) -> Result<Option<Vec<u8>>> {
         Ok(self
             .crdt_cache
             .lock()

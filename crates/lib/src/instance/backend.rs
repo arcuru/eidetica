@@ -263,12 +263,7 @@ impl Backend {
 
     /// Lowest common ancestor. Local delegates to BackendImpl; remote
     /// uses the `ComputeMergeState` wire RPC (which fuses LCA + path).
-    pub async fn find_merge_base(
-        &self,
-        tree: &ID,
-        store: &str,
-        entry_ids: &[ID],
-    ) -> Result<ID> {
+    pub async fn find_merge_base(&self, tree: &ID, store: &str, entry_ids: &[ID]) -> Result<ID> {
         match self {
             Backend::Local(b) => b.find_merge_base(tree, store, entry_ids).await,
             #[cfg(all(unix, feature = "service"))]
@@ -358,12 +353,7 @@ impl Backend {
     }
 
     /// Cache CRDT state. Local delegates to BackendImpl; remote is a no-op.
-    pub async fn cache_crdt_state(
-        &self,
-        entry_id: &ID,
-        store: &str,
-        state: Vec<u8>,
-    ) -> Result<()> {
+    pub async fn cache_crdt_state(&self, entry_id: &ID, store: &str, state: Vec<u8>) -> Result<()> {
         match self {
             Backend::Local(b) => b.cache_crdt_state(entry_id, store, state).await,
             #[cfg(all(unix, feature = "service"))]

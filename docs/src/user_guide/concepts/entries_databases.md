@@ -58,10 +58,10 @@ You interact with Databases through Transactions:
 # #[tokio::main]
 # async fn main() -> Result<()> {
 #     let backend = Sqlite::in_memory().await?;
-#     let instance = Instance::open(Box::new(backend)).await?;
-#     let admin = instance.login_user("admin", Some("admin")).await?;
-#     admin.admin().await?.create_user("alice", None).await?;
-#     let mut user = instance.login_user("alice", None).await?;
+#     let (instance, mut user) = eidetica::Instance::create(
+#         Box::new(backend),
+#         eidetica::NewUser::passwordless("alice"),
+#     ).await?;
 #     let mut settings = Doc::new();
 #     settings.set("name", "test");
 #     let default_key = user.get_default_key()?;
@@ -90,10 +90,10 @@ Each Database maintains its settings as a key-value store in a special "settings
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # // Setup database for testing
-# let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
-# let admin = instance.login_user("admin", Some("admin")).await?;
-# admin.admin().await?.create_user("alice", None).await?;
-# let mut user = instance.login_user("alice", None).await?;
+# let (instance, mut user) = eidetica::Instance::create(
+#     Box::new(Sqlite::in_memory().await?),
+#     eidetica::NewUser::passwordless("alice"),
+# ).await?;
 # let mut settings_doc = Doc::new();
 # settings_doc.set("name", "example_database");
 # settings_doc.set("version", "1.0.0");

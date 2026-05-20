@@ -71,19 +71,14 @@ pub async fn setup_tree_inmemory() -> (Instance, User, Database) {
 
 /// Creates a fresh empty tree with the given backend.
 async fn setup_tree_with_backend(backend: Box<dyn BackendImpl>) -> (Instance, User, Database) {
-    let instance = Instance::open(backend)
+    use eidetica::NewUser;
+
+    // Bootstrap "bench_user" as the initial admin. They double as the
+    // benchmark's only User session and (since they're the first user)
+    // hold Admin on the system DBs by construction.
+    let (instance, mut user) = Instance::create(backend, NewUser::passwordless("bench_user"))
         .await
         .expect("Benchmark setup failed");
-
-    // Create and login user
-    instance
-        .create_user("bench_user", None)
-        .await
-        .expect("Failed to create user");
-    let mut user = instance
-        .login_user("bench_user", None)
-        .await
-        .expect("Failed to login user");
 
     let key_id = user.get_default_key().expect("Failed to get default key");
     let db = user

@@ -12,7 +12,7 @@
 //!
 //! ```ignore
 //! let admin = user.admin().await?;          // Err if not an instance admin
-//! admin.create_user("alice", None).await?;
+//! admin.create_user(NewUser::passwordless("alice")).await?;
 //! ```
 //!
 //! Every operation signs `_users` / `_databases` writes with the user's
@@ -20,7 +20,7 @@
 //! local and remote instances.
 
 use super::{session::User, system_databases};
-use crate::{Database, Result, auth::crypto::PublicKey, entry::ID};
+use crate::{Database, NewUser, Result, auth::crypto::PublicKey, entry::ID};
 
 /// Instance-admin capability view over a [`User`] session.
 ///
@@ -51,19 +51,28 @@ impl<'a> InstanceAdmin<'a> {
     /// is the same one code path on local and remote instances — no
     /// daemon-side RPC and no plaintext password on the wire.
     ///
-    /// # Arguments
-    /// * `username` - Unique user identifier
-    /// * `password` - Optional password. `None` creates a passwordless user
-    ///   (instant login, no key encryption).
+    /// Returns the new user's UUID (stable internal identifier). Use
+    /// [`Instance::login_user`] to obtain a [`User`] session for the new
+    /// account; materialising it directly here would require the admin's
+    /// connection to read the new user's own tree over the wire, where the
+    /// session gate (correctly) rejects the admin as a non-member.
     ///
-    /// # Returns
-    /// The new user's UUID (stable internal identifier).
-    pub async fn create_user(&self, username: &str, password: Option<&str>) -> Result<String> {
+    /// # Arguments
+    /// * `new_user` - Username and optional password for the user to create.
+    ///   See [`NewUser`].
+    ///
+    /// [`Instance::login_user`]: crate::Instance::login_user
+    pub async fn create_user(&self, new_user: NewUser) -> Result<String> {
         let instance = self.user.instance();
         let signing_key = self.user.default_signing_key()?;
         let users_db = instance.users_db_for_session(&signing_key).await?;
-        let (user_uuid, _) =
-            system_databases::create_user(&users_db, instance, username, password).await?;
+        let (user_uuid, _user_info, _root_key) = system_databases::create_user(
+            &users_db,
+            instance,
+            &new_user.username,
+            new_user.password.as_deref(),
+        )
+        .await?;
         Ok(user_uuid)
     }
 

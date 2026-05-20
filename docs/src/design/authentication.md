@@ -803,7 +803,7 @@ The current validation process:
 Signature/permission validity (the process above) is **orthogonal** to an
 entry's stored **verification status**. The validation process answers "is
 this entry correctly signed by an authorized key, given some auth settings?".
-The verification status records whether *this node* has actually run that
+The verification status records whether _this node_ has actually run that
 check and what the outcome was: `Unverified` (not yet checked), `Verified`
 (checked and accepted), or `Failed` (checked and definitively rejected).
 
@@ -814,7 +814,7 @@ Two rules connect them:
    caller — local or a sync peer — to assert a status. Only a local
    validation pass (`Transaction` commit, or `Database::verify()`) may
    promote an entry to `Verified`. Validation is always performed against the
-   `_settings` the entry *pins* in its signed metadata, not the current
+   `_settings` the entry _pins_ in its signed metadata, not the current
    settings, so a later key revocation cannot retroactively invalidate
    historical entries (revocation is handled on a separate path).
 
@@ -828,7 +828,7 @@ Two rules connect them:
 
 The full status model — the three-state enum, why pinned-settings validation
 makes verification staleness-free, the disclosure posture, and the unbuilt
-authority-*reduction* (revocation) gap — is documented in the
+authority-_reduction_ (revocation) gap — is documented in the
 [Verification Model](verification.md) design doc.
 
 ### Sync Permissions

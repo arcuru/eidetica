@@ -309,14 +309,14 @@ mod tests {
     };
 
     async fn create_test_database() -> (Instance, Database) {
-        let backend = Box::new(InMemory::new());
-        let instance = Instance::open(backend)
-            .await
-            .expect("Failed to create test instance");
+        // Bootstrap "test" as the initial user, who is automatically Admin.
+        let (instance, mut user) = Instance::create(
+            Box::new(InMemory::new()),
+            crate::NewUser::passwordless("test"),
+        )
+        .await
+        .expect("Failed to create test instance");
 
-        // Use User API to create database
-        instance.create_user("test", None).await.unwrap();
-        let mut user = instance.login_user("test", None).await.unwrap();
         let key_id = user.add_private_key(None).await.unwrap();
         let database = user.create_database(Doc::new(), &key_id).await.unwrap();
 

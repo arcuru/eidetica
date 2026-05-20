@@ -1017,10 +1017,14 @@ async fn test_verify_uses_pinned_not_current_settings() {
 #[tokio::test]
 #[cfg_attr(miri, ignore)] // file I/O not available with Miri isolation enabled
 async fn test_genesis_verifies_after_persist_reload() {
-    let backend = InMemory::new();
-    let instance = Instance::open(Box::new(backend)).await.unwrap();
-    crate::helpers::create_user(&instance, "u", None).await.unwrap();
-    let mut user = instance.login_user("u", None).await.unwrap();
+    // Bootstrap "u" as the initial user (also Admin), avoiding the
+    // service-mode admin login dance — this is a local persist/reload test.
+    let (instance, mut user) = Instance::create(
+        Box::new(InMemory::new()),
+        eidetica::NewUser::passwordless("u"),
+    )
+    .await
+    .unwrap();
     let key_id = user.add_private_key(Some("k")).await.unwrap();
     let mut settings = Doc::new();
     settings.set("name", "persisted");
@@ -1047,6 +1051,7 @@ async fn test_genesis_verifies_after_persist_reload() {
         .unwrap();
     let reloaded = InMemory::load_from_file(&path).await.unwrap();
     std::fs::remove_file(&path).ok();
+    // Reload an already-initialised backend — Instance::open is load-only.
     let instance2 = Instance::open(Box::new(reloaded)).await.unwrap();
     let backend2 = instance2.backend();
 

@@ -168,13 +168,18 @@ pub async fn create_databases_tracking(
 /// * `password` - Optional password. If None, creates passwordless user (instant login, no encryption)
 ///
 /// # Returns
-/// A tuple of (user_uuid, UserInfo) where user_uuid is the generated primary key
+/// A tuple of `(user_uuid, UserInfo, root_private_key)`. The private key is
+/// the one just generated for this user; callers (e.g.
+/// [`Instance::create`](crate::Instance::create) or
+/// [`InstanceAdmin::create_user`](crate::user::InstanceAdmin::create_user))
+/// can hand it straight to [`build_user_session`] to materialise a logged-in
+/// [`User`](crate::user::User) without re-decrypting the key from storage.
 pub async fn create_user(
     users_db: &Database,
     instance: &Instance,
     username: impl AsRef<str>,
     password: Option<&str>,
-) -> Result<(String, UserInfo)> {
+) -> Result<(String, UserInfo, crate::auth::crypto::PrivateKey)> {
     let username = username.as_ref();
     // FIXME: Race condition - multiple concurrent creates with same username
     // can both succeed, creating duplicate users. This requires either:
@@ -197,6 +202,10 @@ pub async fn create_user(
 
     // 1. Generate default keypair for this user
     let (user_private_key, user_public_key) = generate_keypair();
+    // Keep a clone for the caller — the passwordless branch below moves
+    // `user_private_key` into `KeyStorage::Unencrypted`, so we hand back a
+    // detached copy. Ed25519 keys are 32 bytes; the clone is negligible.
+    let returned_private_key = user_private_key.clone();
 
     // 2. Create user database with the user's key as owner (Admin(0))
     let mut user_db_settings = Doc::new();
@@ -278,7 +287,7 @@ pub async fn create_user(
         grant_admin_on_system_dbs(users_db, &databases_db, &user_public_key).await?;
     }
 
-    Ok((user_uuid, user_info))
+    Ok((user_uuid, user_info, returned_private_key))
 }
 
 /// Login a user
@@ -662,28 +671,34 @@ mod tests {
 
     use std::sync::Arc;
 
-    /// Test helper: Create Instance with device key initialized
+    /// Test helper: Create Instance with `admin` as the initial user and a
+    /// pinned clock, returning the instance, its device signing key, and the
+    /// just-bootstrapped admin User session.
     ///
-    /// Uses FixedClock for controllable timestamps.
-    async fn setup_instance() -> (Instance, PrivateKey) {
+    /// Tests that only need the device key destructure `(instance,
+    /// device_key, _admin)`; tests that need to drive admin operations
+    /// destructure `(instance, _device_key, admin)`. Uses [`FixedClock`] for
+    /// reproducible timestamps.
+    async fn setup_instance() -> (Instance, PrivateKey, crate::user::User) {
         use crate::clock::FixedClock;
 
-        let backend = Arc::new(InMemory::new());
-
-        // Create Instance with FixedClock for controllable timestamps
-        let instance = Instance::create_internal(backend, Arc::new(FixedClock::default()))
-            .await
-            .unwrap();
+        let (instance, admin) = Instance::create_with_clock(
+            Box::new(InMemory::new()),
+            Arc::new(FixedClock::default()),
+            crate::NewUser::passwordless("admin"),
+        )
+        .await
+        .unwrap();
 
         // Get the device key from the instance
         let device_key = instance.signing_key().unwrap().clone();
 
-        (instance, device_key)
+        (instance, device_key, admin)
     }
 
     #[tokio::test]
     async fn test_create_instance_database() {
-        let (instance, device_key) = setup_instance().await;
+        let (instance, device_key, _admin) = setup_instance().await;
 
         let instance_db = create_instance_database(&instance, &device_key)
             .await
@@ -712,7 +727,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_users_database() {
-        let (instance, device_key) = setup_instance().await;
+        let (instance, device_key, _admin) = setup_instance().await;
 
         let users_db = create_users_database(&instance, &device_key).await.unwrap();
 
@@ -731,7 +746,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_databases_tracking() {
-        let (instance, device_key) = setup_instance().await;
+        let (instance, device_key, _admin) = setup_instance().await;
 
         let databases_db = create_databases_tracking(&instance, &device_key)
             .await
@@ -752,7 +767,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_system_databases_haveadmin_auth() {
-        let (instance, device_key) = setup_instance().await;
+        let (instance, device_key, _admin) = setup_instance().await;
 
         let users_db = create_users_database(&instance, &device_key).await.unwrap();
 
@@ -770,11 +785,11 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // Uses Argon2 password hashing and SystemTime
     async fn test_create_user() {
-        let (instance, device_key) = setup_instance().await;
+        let (instance, device_key, _admin) = setup_instance().await;
         let users_db = create_users_database(&instance, &device_key).await.unwrap();
 
         // Create a user with password
-        let (user_uuid, user_info) =
+        let (user_uuid, user_info, _) =
             create_user(&users_db, &instance, "alice", Some("password123"))
                 .await
                 .unwrap();
@@ -800,11 +815,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_user_passwordless() {
-        let (instance, device_key) = setup_instance().await;
+        let (instance, device_key, _admin) = setup_instance().await;
         let users_db = create_users_database(&instance, &device_key).await.unwrap();
 
         // Create a passwordless user
-        let (user_uuid, user_info) = create_user(&users_db, &instance, "bob", None)
+        let (user_uuid, user_info, _) = create_user(&users_db, &instance, "bob", None)
             .await
             .unwrap();
 
@@ -830,7 +845,7 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // Uses Argon2 password hashing and SystemTime
     async fn test_create_duplicate_user() {
-        let (instance, device_key) = setup_instance().await;
+        let (instance, device_key, _admin) = setup_instance().await;
         let users_db = create_users_database(&instance, &device_key).await.unwrap();
 
         // Create first user
@@ -846,7 +861,7 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // Uses Argon2 password hashing and SystemTime
     async fn test_login_user() {
-        let (instance, device_key) = setup_instance().await;
+        let (instance, device_key, _admin) = setup_instance().await;
         let users_db = create_users_database(&instance, &device_key).await.unwrap();
 
         // Create a user with password
@@ -873,7 +888,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_login_user_passwordless() {
-        let (instance, device_key) = setup_instance().await;
+        let (instance, device_key, _admin) = setup_instance().await;
         let users_db = create_users_database(&instance, &device_key).await.unwrap();
 
         // Create a passwordless user
@@ -901,7 +916,7 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // Uses Argon2 password hashing and SystemTime
     async fn test_login_wrong_password() {
-        let (instance, device_key) = setup_instance().await;
+        let (instance, device_key, _admin) = setup_instance().await;
         let users_db = create_users_database(&instance, &device_key).await.unwrap();
 
         // Create a user
@@ -917,7 +932,7 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // Uses Argon2 password hashing and SystemTime
     async fn test_login_password_mismatch() {
-        let (instance, device_key) = setup_instance().await;
+        let (instance, device_key, _admin) = setup_instance().await;
         let users_db = create_users_database(&instance, &device_key).await.unwrap();
 
         // Create a passwordless user
@@ -941,7 +956,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_login_nonexistent_user() {
-        let (instance, device_key) = setup_instance().await;
+        let (instance, device_key, _admin) = setup_instance().await;
         let users_db = create_users_database(&instance, &device_key).await.unwrap();
 
         // Try to login user that doesn't exist
@@ -952,7 +967,7 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // Uses Argon2 password hashing and SystemTime
     async fn test_list_users() {
-        let (instance, device_key) = setup_instance().await;
+        let (instance, device_key, _admin) = setup_instance().await;
         let users_db = create_users_database(&instance, &device_key).await.unwrap();
 
         // Initially no users
@@ -993,10 +1008,10 @@ mod tests {
     /// lands as `Admin(0)` in both `_users` and `_databases`.
     #[tokio::test]
     async fn test_first_user_becomes_instance_admin() {
-        let (instance, _device_key) = setup_instance().await;
+        let (instance, _device_key, _admin) = setup_instance().await;
 
         // Admin is already bootstrapped — login and verify
-        let admin_user = instance.login_user("admin", Some("admin")).await.unwrap();
+        let admin_user = instance.login_user("admin", None).await.unwrap();
 
         let users_db = instance.users_db().await.unwrap();
         let databases_db = instance.databases_db().await.unwrap();
@@ -1020,10 +1035,20 @@ mod tests {
     /// second time.
     #[tokio::test]
     async fn test_subsequent_users_are_not_admin() {
-        let (instance, _device_key) = setup_instance().await;
+        let (instance, _device_key, admin) = setup_instance().await;
 
-        instance.create_user("alice", None).await.unwrap();
-        let bob_uuid = instance.create_user("bob", None).await.unwrap();
+        // Admin creates two more users via the admin path. They land as
+        // non-admins because admin (the first user) already holds Admin(0)
+        // on the system DBs.
+        let admin_view = admin.admin().await.unwrap();
+        admin_view
+            .create_user(crate::NewUser::passwordless("alice"))
+            .await
+            .unwrap();
+        let bob_uuid = admin_view
+            .create_user(crate::NewUser::passwordless("bob"))
+            .await
+            .unwrap();
 
         let users_db = instance.users_db().await.unwrap();
         let databases_db = instance.databases_db().await.unwrap();
@@ -1057,17 +1082,22 @@ mod tests {
     /// users are not.
     #[tokio::test]
     async fn test_user_is_admin_query() {
-        let (instance, _device_key) = setup_instance().await;
+        let (instance, _device_key, admin) = setup_instance().await;
 
         // Bootstrapped admin reports is_admin = true
-        let admin_user = instance.login_user("admin", Some("admin")).await.unwrap();
         assert!(
-            admin_user.is_admin().await.unwrap(),
+            admin.is_admin().await.unwrap(),
             "bootstrapped admin must report is_admin = true"
         );
 
         // A newly created user reports is_admin = false
-        instance.create_user("alice", None).await.unwrap();
+        admin
+            .admin()
+            .await
+            .unwrap()
+            .create_user(crate::NewUser::passwordless("alice"))
+            .await
+            .unwrap();
         let alice = instance.login_user("alice", None).await.unwrap();
         assert!(
             !alice.is_admin().await.unwrap(),
@@ -1080,12 +1110,15 @@ mod tests {
     /// promoted user then reports `is_admin()`.
     #[tokio::test]
     async fn test_admin_can_promote_user() {
-        let (instance, _device_key) = setup_instance().await;
+        let (instance, _device_key, admin) = setup_instance().await;
 
-        // Login as the bootstrapped admin
-        let admin = instance.login_user("admin", Some("admin")).await.unwrap();
-
-        instance.create_user("bob", None).await.unwrap();
+        admin
+            .admin()
+            .await
+            .unwrap()
+            .create_user(crate::NewUser::passwordless("bob"))
+            .await
+            .unwrap();
         let bob = instance.login_user("bob", None).await.unwrap();
         let bob_pubkey = bob.key_manager().get_default_key_id().unwrap();
 
@@ -1125,12 +1158,19 @@ mod tests {
     /// `InsufficientPermissions` and writes nothing.
     #[tokio::test]
     async fn test_non_admin_cannot_promote() {
-        let (instance, _device_key) = setup_instance().await;
+        let (instance, _device_key, admin) = setup_instance().await;
 
-        instance.create_user("alice", None).await.unwrap(); // first user = admin
-        instance.create_user("bob", None).await.unwrap();
-        instance.create_user("charlie", None).await.unwrap();
-
+        // The bootstrapped `admin` is the first/only admin. Admin creates
+        // bob and charlie as non-admin users.
+        let admin_view = admin.admin().await.unwrap();
+        admin_view
+            .create_user(crate::NewUser::passwordless("bob"))
+            .await
+            .unwrap();
+        admin_view
+            .create_user(crate::NewUser::passwordless("charlie"))
+            .await
+            .unwrap();
         let bob = instance.login_user("bob", None).await.unwrap();
         let charlie = instance.login_user("charlie", None).await.unwrap();
         let charlie_pubkey = charlie.key_manager().get_default_key_id().unwrap();
@@ -1164,12 +1204,15 @@ mod tests {
     /// (not the device key) end to end.
     #[tokio::test]
     async fn test_grant_instance_admin_idempotent_and_chains() {
-        let (instance, _device_key) = setup_instance().await;
+        let (instance, _device_key, admin) = setup_instance().await;
 
-        // Login as the bootstrapped admin
-        let admin = instance.login_user("admin", Some("admin")).await.unwrap();
-
-        instance.create_user("bob", None).await.unwrap();
+        admin
+            .admin()
+            .await
+            .unwrap()
+            .create_user(crate::NewUser::passwordless("bob"))
+            .await
+            .unwrap();
         let bob = instance.login_user("bob", None).await.unwrap();
         let bob_pubkey = bob.key_manager().get_default_key_id().unwrap();
 
@@ -1197,7 +1240,12 @@ mod tests {
 
         // bob, now an admin, promotes charlie signing with bob's *own* key —
         // the device key is never involved here.
-        instance.create_user("charlie", None).await.unwrap();
+        bob.admin()
+            .await
+            .unwrap()
+            .create_user(crate::NewUser::passwordless("charlie"))
+            .await
+            .unwrap();
         let charlie = instance.login_user("charlie", None).await.unwrap();
         let charlie_pubkey = charlie.key_manager().get_default_key_id().unwrap();
 

@@ -552,15 +552,15 @@ mod tests {
         use std::sync::Arc;
 
         let clock = Arc::new(FixedClock::default());
-        let backend = InMemory::new();
-        let instance = Instance::open_with_clock(Box::new(backend), clock.clone())
-            .await
-            .expect("Failed to create test instance");
+        let (instance, mut user) = Instance::create_with_clock(
+            Box::new(InMemory::new()),
+            clock.clone(),
+            crate::NewUser::passwordless("test"),
+        )
+        .await
+        .expect("Failed to create test instance");
         instance.enable_sync().await.unwrap();
 
-        // Create a user tree for testing tree ID using User API
-        instance.create_user("test", None).await.unwrap();
-        let mut user = instance.login_user("test", None).await.unwrap();
         let key_id = user.add_private_key(None).await.unwrap();
         let user_tree = user.create_database(Doc::new(), &key_id).await.unwrap();
         let tree_id = user_tree.root_id().clone();

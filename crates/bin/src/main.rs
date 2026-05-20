@@ -7,7 +7,7 @@ mod output;
 mod session;
 mod templates;
 
-use cli::{Cli, Commands, DbCommands};
+use cli::{Cli, Commands, DaemonCommand, DbCommands};
 use output::OutputFormat;
 
 #[tokio::main]
@@ -22,7 +22,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Some(Commands::Health(ref args)) => commands::health::run(args).await,
         Some(Commands::Serve(ref args)) => commands::serve::run(args).await,
-        Some(Commands::Daemon(ref args)) => commands::daemon::run(args).await,
+        Some(Commands::Daemon(ref args)) => match &args.command {
+            Some(DaemonCommand::Init(init_args)) => {
+                commands::daemon::run_init(init_args, &args.backend_config).await
+            }
+            None => commands::daemon::run(args).await,
+        },
         Some(Commands::Info(ref args)) => commands::info::run(args, format).await,
         Some(Commands::Db {
             command: DbCommands::List(ref args),

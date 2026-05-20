@@ -551,7 +551,7 @@ Promotion to `Verified` is a purely local decision:
 Verification is **prefix-closed**: an entry is promoted only once its entire
 ancestor history is `Verified`. A `Failed` ancestor (definitively bad
 signature/permission) taints its descendants to `Failed`; an ancestor that
-is still `Unverified` *or not yet received* (the normal partial-sync case)
+is still `Unverified` _or not yet received_ (the normal partial-sync case)
 leaves the entry `Unverified` to be retried on a later pass once the missing
 entries arrive. This is why `Unverified` and `Failed` are distinct states:
 `Unverified` is a transient "not yet / can't tell" pending state, `Failed`

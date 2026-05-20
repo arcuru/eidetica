@@ -75,9 +75,12 @@ use eidetica::Instance;
 // Connect to a running daemon
 let instance = Instance::connect("/tmp/eidetica.sock").await?;
 
-// Use it exactly like a local Instance — admin/admin is auto-bootstrapped
-let admin = instance.login_user("admin", Some("admin")).await?;
-admin.admin().await?.create_user("alice", None).await?;
+// Use it exactly like a local Instance. The daemon was initialised with
+// an initial admin user via `eidetica daemon init --username ops`
+// (see the CLI reference); log in as that user, then create application
+// users via the admin path.
+let admin = instance.login_user("ops", None).await?;
+admin.admin().await?.create_user(eidetica::NewUser::passwordless("alice")).await?;
 let mut user = instance.login_user("alice", None).await?;
 
 let default_key = user.get_default_key()?;
@@ -101,7 +104,7 @@ Multiple clients can connect to the same daemon simultaneously. Each client main
 ```rust,ignore
 // Client 1
 let instance1 = Instance::connect("/tmp/eidetica.sock").await?;
-instance1.create_user("alice", None).await?;
+instance1.create_user(eidetica::NewUser::passwordless("alice")).await?;
 
 // Client 2 (separate process or task)
 let instance2 = Instance::connect("/tmp/eidetica.sock").await?;

@@ -1,19 +1,15 @@
 //! Tests for the user_session module.
 
 use super::*;
-use crate::backend::database::InMemory;
+use crate::{NewUser, backend::database::InMemory};
 
 async fn create_test_user_session() -> (Instance, User) {
-    let instance = Instance::create(Box::new(InMemory::new())).await.unwrap();
-    instance
-        .create_user("test_user", Some("test_password"))
-        .await
-        .unwrap();
-    let user = instance
-        .login_user("test_user", Some("test_password"))
-        .await
-        .unwrap();
-    (instance, user)
+    Instance::create(
+        Box::new(InMemory::new()),
+        NewUser::with_password("test_user", "test_password"),
+    )
+    .await
+    .unwrap()
 }
 
 #[tokio::test]
