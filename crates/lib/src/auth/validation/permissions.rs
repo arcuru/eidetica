@@ -57,12 +57,33 @@ pub async fn resolve_identity_permission(
                         reason: format!("pubkey '{pubkey}' but identity claims '{claimed_pubkey}'"),
                     })));
                 }
-                let auth_key = auth_settings.get_key_by_pubkey(pubkey)?;
-                Ok(*auth_key.permissions())
+                // Direct membership wins; otherwise fall back to the
+                // wildcard ('*') permission slot, which represents the
+                // tree's grant to "any key not otherwise listed". The
+                // caller already proved possession of `pubkey` (the
+                // connection's session keyset check on the wire path,
+                // signature verification on the local path), so accepting
+                // the wildcard level here is the structural intent of a
+                // global grant — no extra trust required.
+                if let Ok(auth_key) = auth_settings.get_key_by_pubkey(pubkey) {
+                    return Ok(*auth_key.permissions());
+                }
+                if let Some(global) = auth_settings.get_global_permission() {
+                    return Ok(global);
+                }
+                Err(Error::Auth(Box::new(AuthError::KeyNotFound {
+                    key_name: pubkey.to_string(),
+                })))
             }
             (_, Some(name)) => {
                 let matches = auth_settings.find_keys_by_name(name);
                 if matches.is_empty() {
+                    // Named identity with no direct match falls back to
+                    // the wildcard slot, same as the pubkey-only branch
+                    // — the structural intent matches.
+                    if let Some(global) = auth_settings.get_global_permission() {
+                        return Ok(global);
+                    }
                     return Err(Error::Auth(Box::new(AuthError::KeyNotFound {
                         key_name: name.clone(),
                     })));
