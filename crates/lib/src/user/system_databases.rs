@@ -1028,21 +1028,16 @@ mod tests {
         let users_db = instance.users_db().await.unwrap();
         let databases_db = instance.databases_db().await.unwrap();
 
-        // Recover bob's pubkey the same way as in the previous test.
+        // Bob's root pubkey lives in `UserInfo.credentials.root_key_id` —
+        // the durable source of truth. The user-tree `keys` table is
+        // populated only at first login (deferred bootstrap), so reading
+        // it here would race a `bob` that hasn't logged in yet.
         let users_table = users_db
             .get_store_viewer::<Table<UserInfo>>("users")
             .await
             .unwrap();
         let bob_info = users_table.get(&bob_uuid).await.unwrap();
-        let bob_database = Database::open(&instance, &bob_info.user_database_id)
-            .await
-            .unwrap();
-        let keys_table = bob_database
-            .get_store_viewer::<Table<UserKey>>("keys")
-            .await
-            .unwrap();
-        let bob_keys = keys_table.search(|k| k.is_default).await.unwrap();
-        let bob_pubkey = bob_keys[0].1.key_id.clone();
+        let bob_pubkey = bob_info.credentials.root_key_id.clone();
 
         assert!(
             read_admin_permission(&users_db, &bob_pubkey)
