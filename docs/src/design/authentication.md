@@ -245,6 +245,7 @@ Keys are stored by their public key string under the `keys` sub-object. Names ar
 - Can be revoked like any other key
 - Can be included in delegated databases (if you delegate to a database with a wildcard, that's valid)
 - **Cannot be used in delegation paths** - intermediate steps reference tree IDs (content hashes), and the final step must resolve to a named key with an actual Ed25519 public key
+- **Apply via fallback**: permission resolution looks up the acting pubkey directly first; only on a miss does it fall through to the wildcard slot. So a named member of the tree always gets their explicit grant, even if it's narrower than the wildcard's; the wildcard fires only for callers who aren't otherwise listed
 
 ### Entry Signing Format
 

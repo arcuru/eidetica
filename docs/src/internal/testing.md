@@ -32,7 +32,7 @@ The test suite runs against multiple storage backends via the `TEST_BACKEND` env
 | `postgres` | PostgreSQL            | Requires `postgres` feature      |
 | `service`  | RemoteBackend via RPC | Requires `service` feature, unix |
 
-The `service` backend starts a fresh in-process daemon with an InMemory backend for each `test_backend()` call, routing all operations through the Unix socket RPC layer. This maintains the same isolation semantics as other backends.
+The `service` backend starts a fresh in-process daemon with an InMemory backend for each `test_backend()` call, routing all operations through the Unix socket RPC layer. This maintains the same isolation semantics as other backends. The full integration suite passes 1:1 against `TEST_BACKEND=service`; see the [Service Architecture § Testing](./service.md#testing) chapter for the local/wire test-helper split and the rationale for routing subsystem tests (sync internals, raw-backend listings, delegation validation) through always-local helpers regardless of `TEST_BACKEND`.
 
 ## Writing Tests
 
