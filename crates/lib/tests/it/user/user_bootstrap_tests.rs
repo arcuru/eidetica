@@ -22,7 +22,7 @@ use eidetica::{
     user::{User, types::SyncSettings},
 };
 
-use crate::helpers::test_instance;
+use crate::helpers::test_local_instance as test_instance;
 
 // === TEST INFRASTRUCTURE ===
 

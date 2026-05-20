@@ -94,20 +94,16 @@ pub async fn test_backend() -> Box<dyn BackendImpl> {
             }
         }
         Ok("service") => {
-            // TODO: TEST_BACKEND=service support is deferred. The current Backend
-            // architecture wraps `RemoteConnection` in `Backend::Remote(_)` and
-            // dispatches via a macro rather than the `BackendImpl` trait, so a
-            // `RemoteConnection` cannot be returned as `Box<dyn BackendImpl>`.
-            // Making this path work requires either implementing `BackendImpl`
-            // for `RemoteConnection` (with placeholder behaviour for
-            // `*_instance_secrets`, which should never reach the daemon) or
-            // restructuring the test harness around the `Backend` enum directly.
-            // The CLI subcommand, docs, and NixOS integration test that flow
-            // around this option still ship in this commit.
-            panic!(
-                "TEST_BACKEND=service is not yet wired into the test harness — \
-                 see crates/lib/tests/it/helpers.rs for the open architectural choice"
-            )
+            // Service mode routes top-level tests (those using
+            // `test_instance()` and friends) through a real daemon; direct
+            // `test_backend()` callers, however, are raw-backend subsystem
+            // tests that construct an `Instance` themselves and need a
+            // local `BackendImpl`. A `RemoteConnection` can't be returned
+            // as one, and these tests wouldn't be exercising the wire path
+            // anyway. Fall back to `InMemory` so backend internals (tips,
+            // verification status, store layout) can be tested while the
+            // service test backend is otherwise active.
+            Box::new(InMemory::new())
         }
         Ok("inmemory") | Ok("") | Err(_) => Box::new(InMemory::new()),
         Ok(other) => {
@@ -131,10 +127,45 @@ pub async fn test_instance() -> Instance {
             return test_remote_instance().await;
         }
     }
+    test_local_instance().await
+}
+
+/// Always-local Instance, regardless of `TEST_BACKEND`.
+///
+/// Used by tests that exercise process-local subsystems (sync, device
+/// keys, verification status, raw backend ops) which can't run client-side
+/// against a remote daemon. Bypassing the service-backend env var here
+/// keeps those tests running against a real implementation instead of
+/// being skipped or failing on `OperationNotSupported`.
+#[allow(dead_code)]
+pub async fn test_local_instance() -> Instance {
     let clock = Arc::new(FixedClock::default());
-    Instance::open_with_clock(test_backend().await, clock)
+    Instance::open_with_clock(Box::new(InMemory::new()), clock)
         .await
-        .expect("Failed to create test instance")
+        .expect("Failed to create local test instance")
+}
+
+/// Local-only counterpart of `test_instance_with_user_and_key`, for
+/// subsystem tests that need a logged-in user against a process-local
+/// instance regardless of `TEST_BACKEND`. See [`test_local_instance`].
+#[allow(dead_code)]
+pub async fn test_local_instance_with_user_and_key(
+    username: &str,
+    key_display_name: Option<&str>,
+) -> (Instance, User, PublicKey) {
+    let instance = test_local_instance().await;
+    create_user(&instance, username, None)
+        .await
+        .expect("Failed to create user");
+    let mut user = instance
+        .login_user(username, None)
+        .await
+        .expect("Failed to login user");
+    let key_id = user
+        .add_private_key(key_display_name)
+        .await
+        .expect("Failed to add key");
+    (instance, user, key_id)
 }
 
 /// Create a user via the bootstrapped `admin`/`admin` session.
@@ -163,13 +194,18 @@ pub async fn list_users(instance: &Instance) -> eidetica::Result<Vec<String>> {
     admin.admin().await?.list_users().await
 }
 
-/// Spawn an in-process daemon over an InMemory backend, create a bootstrap
-/// user server-side, then connect and authenticate as that user.
+/// Spawn an in-process daemon over an InMemory backend, then connect and
+/// authenticate as the auto-bootstrapped `admin`/`admin` user.
 ///
 /// Each test gets its own daemon + socket directory for isolation.
-/// Cleanup is handled by Box::leak — the server, socket dir, and
-/// shutdown channel live for the process lifetime. This is acceptable
-/// for test code; memory is reclaimed at process exit.
+/// Cleanup is handled by `Box::leak` — the server, socket dir, and
+/// shutdown channel live for the process lifetime. Acceptable for test
+/// code; memory is reclaimed at process exit.
+///
+/// Logging in as the bootstrap admin (rather than spinning up a
+/// separate `test_bootstrap` user) keeps the user count identical to
+/// `TEST_BACKEND=inmemory|sqlite`, so user-count assertions don't skew
+/// in service mode.
 #[cfg(all(unix, feature = "service"))]
 async fn test_remote_instance() -> Instance {
     let dir = Box::leak(Box::new(
@@ -201,20 +237,13 @@ async fn test_remote_instance() -> Instance {
         "daemon socket did not appear within 500ms"
     );
 
-    // create_user is not available over the wire (no CreateUser RPC yet).
-    // Create a bootstrap user on the server-side Instance, then connect
-    // and authenticate as that user.
-    create_user(&server, "test_bootstrap", None)
-        .await
-        .expect("Failed to create bootstrap user on server");
-
     let instance = Instance::connect(&socket_path)
         .await
         .expect("Failed to connect to test daemon");
     instance
-        .login_user("test_bootstrap", None)
+        .login_user("admin", Some("admin"))
         .await
-        .expect("Failed to login as bootstrap user");
+        .expect("Failed to login as bootstrapped admin");
 
     instance
 }

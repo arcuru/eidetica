@@ -27,9 +27,19 @@ use iroh::RelayMode;
 
 // ===== SETUP HELPERS =====
 
-/// Create an Instance with authentication key
+/// Create an Instance with authentication key.
+///
+/// Sync tests exercise the process-local sync subsystem directly (creating
+/// `Sync`, adding transports, managing peers); none of that is reachable
+/// from a connected client because sync runs daemon-side. Bypass the
+/// `TEST_BACKEND` env var here so these tests run against a local instance
+/// regardless — and bootstrap a test user inline to match the previous
+/// `setup_db` contract.
 pub async fn setup_db() -> Instance {
-    let (instance, _user) = crate::helpers::setup_db().await;
+    let instance = crate::helpers::test_local_instance().await;
+    crate::helpers::create_user(&instance, "test_user", None)
+        .await
+        .expect("Failed to create test user");
     instance
 }
 
@@ -42,9 +52,12 @@ pub async fn setup() -> (Instance, Sync) {
     (base_db, sync)
 }
 
-/// Create Instance with initialized sync module
+/// Create Instance with initialized sync module.
+///
+/// Local instance — see [`setup_db`] for why sync tests bypass
+/// `TEST_BACKEND`.
 pub async fn setup_instance_with_initialized() -> Instance {
-    let (instance, _user) = crate::helpers::setup_db().await;
+    let instance = setup_db().await;
     instance
         .enable_sync()
         .await
@@ -214,7 +227,7 @@ impl TransportFactory for IrohTransportFactory {
 /// is accessed via Instance internals and will be migrated to InstanceMetadata shortly
 pub async fn setup_manual_approval_server() -> (Instance, User, PublicKey, Database, Sync, ID) {
     let (instance, mut user, key_id) =
-        crate::helpers::test_instance_with_user_and_key("server_user", Some("server_admin")).await;
+        crate::helpers::test_local_instance_with_user_and_key("server_user", Some("server_admin")).await;
 
     // Initialize sync
     instance
@@ -266,7 +279,7 @@ pub async fn setup_manual_approval_server() -> (Instance, User, PublicKey, Datab
 /// (Instance, User, key_id, Database, Sync, tree_id)
 pub async fn setup_global_wildcard_server() -> (Instance, User, PublicKey, Database, Sync, ID) {
     let (instance, mut user, key_id) =
-        crate::helpers::test_instance_with_user_and_key("server_user", Some("server_admin")).await;
+        crate::helpers::test_local_instance_with_user_and_key("server_user", Some("server_admin")).await;
 
     // Initialize sync
     instance
