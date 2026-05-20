@@ -55,11 +55,12 @@ struct RemoteConnectionInner {
     /// the `Authenticated` envelope's identity field. `RwLock` because reads
     /// are far more frequent than the one-shot login write.
     ///
-    /// TODO (before multi-user / untrusted clients): the `read()/write()
-    /// .unwrap()` at the use sites panics on poisoning. Blast radius is
-    /// limited to this one connection (unlike the daemon-shared cache lock),
-    /// but it should still recover the guard or use a non-poisoning lock
-    /// rather than abort the connection.
+    /// Accessed poison-tolerantly via [`RemoteConnectionInner::session_read`]
+    /// and [`RemoteConnectionInner::session_write`]: a panic in one task
+    /// while holding the guard must not promote itself to a permanent connection
+    /// outage. The worst observable case is a half-written session field, which
+    /// the caller already treats as "unauthenticated" (`session_identity`
+    /// returns `None` and the per-tree gate rejects the op).
     session: RwLock<Option<SessionState>>,
     /// Pubkeys this client has already proven possession of on this
     /// connection (via `SessionKeyChallenge`/`SessionKeyRegister`), plus the
@@ -68,6 +69,24 @@ struct RemoteConnectionInner {
     /// per-request wire chatter for the common case where a single per-DB
     /// key is reused across many ops.
     registered_keys: Mutex<HashSet<PublicKey>>,
+}
+
+impl RemoteConnectionInner {
+    /// Acquire a read guard on `session`, tolerating poisoning.
+    ///
+    /// See the field-level doc on [`Self::session`] for the recovery rationale.
+    fn session_read(&self) -> std::sync::RwLockReadGuard<'_, Option<SessionState>> {
+        self.session
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Acquire a write guard on `session`, tolerating poisoning.
+    fn session_write(&self) -> std::sync::RwLockWriteGuard<'_, Option<SessionState>> {
+        self.session
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 }
 
 /// A connection to a remote Eidetica service server over a Unix domain socket.
@@ -246,7 +265,7 @@ impl RemoteConnection {
                 // Stash the verified session pubkey so subsequent
                 // `backend_request` calls can populate the `Authenticated`
                 // envelope's identity field.
-                *self.inner.session.write().unwrap() = Some(SessionState {
+                *self.inner.session_write() = Some(SessionState {
                     session_pubkey: credentials.root_key_id.clone(),
                 });
                 // The login pubkey is in the server-side session keyset by
@@ -353,9 +372,7 @@ impl RemoteConnection {
     /// Build a `SigKey` from the session pubkey, when logged in.
     pub fn session_identity(&self) -> Option<SigKey> {
         self.inner
-            .session
-            .read()
-            .unwrap()
+            .session_read()
             .as_ref()
             .map(|s| SigKey::from_pubkey(&s.session_pubkey))
     }
