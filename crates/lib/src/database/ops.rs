@@ -208,6 +208,11 @@ pub struct RemoteDatabaseOps {
     /// encrypted-store cross-session path; this cache serves the
     /// single-session fast-path for repeated subtree-state materialization
     /// during a transaction.
+    ///
+    /// Accessed poison-tolerantly via [`Self::crdt_cache_lock`]: a panic in
+    /// one task while holding this guard must not strand the rest of the
+    /// `Database` handle, since the cache is best-effort performance state
+    /// (a miss recomputes from the backend).
     crdt_cache: Mutex<HashMap<(ID, String), Vec<u8>>>,
 }
 
@@ -219,6 +224,14 @@ impl RemoteDatabaseOps {
             identity,
             crdt_cache: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Lock the CRDT merge cache, tolerating poisoning. See the field-level
+    /// doc on [`Self::crdt_cache`] for the recovery rationale.
+    fn crdt_cache_lock(&self) -> std::sync::MutexGuard<'_, HashMap<(ID, String), Vec<u8>>> {
+        self.crdt_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 
@@ -318,17 +331,13 @@ impl DatabaseOps for RemoteDatabaseOps {
 
     async fn get_cached_crdt_state(&self, entry_id: &ID, store: &str) -> Result<Option<Vec<u8>>> {
         Ok(self
-            .crdt_cache
-            .lock()
-            .unwrap()
+            .crdt_cache_lock()
             .get(&(entry_id.clone(), store.to_string()))
             .cloned())
     }
 
     async fn cache_crdt_state(&self, entry_id: &ID, store: &str, state: Vec<u8>) -> Result<()> {
-        self.crdt_cache
-            .lock()
-            .unwrap()
+        self.crdt_cache_lock()
             .insert((entry_id.clone(), store.to_string()), state);
         Ok(())
     }
