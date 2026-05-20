@@ -99,14 +99,53 @@ pub struct InfoArgs {
 }
 
 /// Arguments for the daemon command
+///
+/// With no subcommand: runs the daemon (load-only — fails if the backend is
+/// not initialised). With `init`: initialises a fresh instance with an
+/// initial admin user and exits.
 #[derive(clap::Args, Debug)]
 pub struct DaemonArgs {
-    /// Unix socket path (default: $XDG_RUNTIME_DIR/eidetica/service.sock)
-    #[arg(short, long, env = "EIDETICA_SOCKET")]
+    /// Optional sub-action. With no value, runs the daemon.
+    #[command(subcommand)]
+    pub command: Option<DaemonCommand>,
+
+    /// Unix socket path (default: $XDG_RUNTIME_DIR/eidetica/service.sock).
+    /// Only used when running the daemon — ignored by `daemon init`.
+    #[arg(short, long, env = "EIDETICA_SOCKET", global = true)]
     pub socket: Option<PathBuf>,
 
     #[command(flatten)]
     pub backend_config: BackendConfig,
+}
+
+/// Daemon sub-actions
+#[derive(Subcommand, Debug)]
+pub enum DaemonCommand {
+    /// Initialise a fresh instance with an initial admin user.
+    ///
+    /// The first user created on an instance is automatically granted Admin
+    /// on the system databases. Fails if the backend is already initialised.
+    Init(DaemonInitArgs),
+}
+
+/// Arguments for `daemon init`.
+#[derive(clap::Args, Debug)]
+pub struct DaemonInitArgs {
+    /// Username for the initial admin user. Required — there is no default
+    /// to eliminate static-credential foot-guns.
+    #[arg(long)]
+    pub username: String,
+
+    /// Password for the initial admin user. If neither this nor
+    /// `--passwordless` is given, prompt interactively (hidden input,
+    /// twice).
+    #[arg(long, env = "EIDETICA_ADMIN_PASSWORD", conflicts_with = "passwordless")]
+    pub password: Option<String>,
+
+    /// Create the initial admin user without a password. Suitable for
+    /// embedded / single-user development; not recommended for production.
+    #[arg(long, conflicts_with = "password")]
+    pub passwordless: bool,
 }
 
 /// Database subcommands

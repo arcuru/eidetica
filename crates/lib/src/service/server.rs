@@ -18,9 +18,9 @@ use crate::auth::types::{Permission, SigKey};
 use crate::auth::validation::permissions::resolve_identity_permission;
 use crate::database::Database;
 use crate::entry::ID;
+use crate::instance::WriteSource;
 use crate::service::cache::ServiceCache;
 use crate::service::error::ServiceError;
-use crate::instance::WriteSource;
 use crate::service::protocol::{
     AuthenticatedDbRequest, AuthenticatedRequest, BackendOp, DatabaseOp, HandshakeAck, MergeState,
     PROTOCOL_VERSION, ServiceRequest, ServiceResponse, read_frame, write_frame,
@@ -314,8 +314,7 @@ async fn dispatch_inner(
 
             // The identity hint must be in the session keyset (proven
             // possession this connection). Absent hint → act as login pubkey.
-            let acting_pubkey =
-                resolve_acting_pubkey(&identity, &login_pubkey, &keyset_snapshot)?;
+            let acting_pubkey = resolve_acting_pubkey(&identity, &login_pubkey, &keyset_snapshot)?;
 
             if let Some(tree_id) = request.tree_id() {
                 gate_tree_permission(
@@ -571,10 +570,7 @@ async fn dispatch_database_op(
             Ok(ServiceResponse::Ids(ids))
         }
 
-        DatabaseOp::ComputeMergeState {
-            store,
-            entry_ids,
-        } => {
+        DatabaseOp::ComputeMergeState { store, entry_ids } => {
             let db = Database::open(instance, &root_id).await?;
             let merge_base = db
                 .ops()
@@ -896,7 +892,12 @@ mod tests {
     async fn start_test_server() -> (PathBuf, watch::Sender<()>, Instance) {
         let dir = tempfile::tempdir().unwrap();
         let socket_path = dir.keep().join("test.sock");
-        let instance = Instance::open(Box::new(InMemory::new())).await.unwrap();
+        let (instance, _admin) = Instance::create(
+            Box::new(InMemory::new()),
+            crate::NewUser::passwordless("admin"),
+        )
+        .await
+        .unwrap();
         let (tx, rx) = watch::channel(());
         let server = ServiceServer::new(instance.clone(), socket_path.clone());
         tokio::spawn(async move {
@@ -1129,7 +1130,12 @@ mod tests {
         tokio::fs::write(&socket_path, "stale").await.unwrap();
         assert!(socket_path.exists());
 
-        let instance = Instance::open(Box::new(InMemory::new())).await.unwrap();
+        let (instance, _admin) = Instance::create(
+            Box::new(InMemory::new()),
+            crate::NewUser::passwordless("admin"),
+        )
+        .await
+        .unwrap();
         let (_tx, rx) = watch::channel(());
         let server = ServiceServer::new(instance, socket_path.clone());
 
@@ -1153,7 +1159,12 @@ mod tests {
     async fn test_gate_require_existing_fails_closed_on_absent_db() {
         use crate::auth::crypto::generate_keypair;
 
-        let instance = Instance::open(Box::new(InMemory::new())).await.unwrap();
+        let (instance, _admin) = Instance::create(
+            Box::new(InMemory::new()),
+            crate::NewUser::passwordless("admin"),
+        )
+        .await
+        .unwrap();
         let (_sk, pubkey) = generate_keypair();
         let absent = ID::from_bytes("no-such-tree");
 

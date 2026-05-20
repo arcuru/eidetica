@@ -31,10 +31,10 @@ Using a `Transaction` follows a distinct lifecycle:
     # async fn main() -> eidetica::Result<()> {
     # // Setup database
     # let backend = Sqlite::in_memory().await?;
-    # let instance = Instance::open(Box::new(backend)).await?;
-    # let admin = instance.login_user("admin", Some("admin")).await?;
-    # admin.admin().await?.create_user("alice", None).await?;
-    # let mut user = instance.login_user("alice", None).await?;
+    # let (instance, mut user) = Instance::create(
+    #     Box::new(backend),
+    #     eidetica::NewUser::passwordless("alice"),
+    # ).await?;
     # let mut settings = Doc::new();
     # settings.set("name", "test");
     # let default_key = user.get_default_key()?;
@@ -63,10 +63,10 @@ Using a `Transaction` follows a distinct lifecycle:
     # async fn main() -> eidetica::Result<()> {
     # // Setup database and transaction
     # let backend = Sqlite::in_memory().await?;
-    # let instance = Instance::open(Box::new(backend)).await?;
-    # let admin = instance.login_user("admin", Some("admin")).await?;
-    # admin.admin().await?.create_user("alice", None).await?;
-    # let mut user = instance.login_user("alice", None).await?;
+    # let (instance, mut user) = Instance::create(
+    #     Box::new(backend),
+    #     eidetica::NewUser::passwordless("alice"),
+    # ).await?;
     # let mut settings = Doc::new();
     # settings.set("name", "test");
     # let default_key = user.get_default_key()?;
@@ -101,10 +101,10 @@ Using a `Transaction` follows a distinct lifecycle:
     # async fn main() -> eidetica::Result<()> {
     # // Setup database and transaction
     # let backend = Sqlite::in_memory().await?;
-    # let instance = Instance::open(Box::new(backend)).await?;
-    # let admin = instance.login_user("admin", Some("admin")).await?;
-    # admin.admin().await?.create_user("alice", None).await?;
-    # let mut user = instance.login_user("alice", None).await?;
+    # let (instance, mut user) = Instance::create(
+    #     Box::new(backend),
+    #     eidetica::NewUser::passwordless("alice"),
+    # ).await?;
     # let mut settings = Doc::new();
     # settings.set("name", "test");
     # let default_key = user.get_default_key()?;
@@ -138,10 +138,10 @@ Using a `Transaction` follows a distinct lifecycle:
     # async fn main() -> eidetica::Result<()> {
     # // Setup database
     # let backend = Sqlite::in_memory().await?;
-    # let instance = Instance::open(Box::new(backend)).await?;
-    # let admin = instance.login_user("admin", Some("admin")).await?;
-    # admin.admin().await?.create_user("alice", None).await?;
-    # let mut user = instance.login_user("alice", None).await?;
+    # let (instance, mut user) = Instance::create(
+    #     Box::new(backend),
+    #     eidetica::NewUser::passwordless("alice"),
+    # ).await?;
     # let mut settings = Doc::new();
     # settings.set("name", "test");
     # let default_key = user.get_default_key()?;
@@ -176,10 +176,10 @@ For the common pattern of "create a transaction, do some work, commit," `Databas
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let backend = Sqlite::in_memory().await?;
-# let instance = Instance::open(Box::new(backend)).await?;
-# let admin = instance.login_user("admin", Some("admin")).await?;
-# admin.admin().await?.create_user("alice", None).await?;
-# let mut user = instance.login_user("alice", None).await?;
+# let (instance, mut user) = eidetica::Instance::create(
+#     Box::new(backend),
+#     eidetica::NewUser::passwordless("alice"),
+# ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test");
 # let default_key = user.get_default_key()?;
@@ -220,10 +220,10 @@ Within transactions, you can manage database settings using `SettingsStore`. Thi
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # // Setup database for testing
-# let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
-# let admin = instance.login_user("admin", Some("admin")).await?;
-# admin.admin().await?.create_user("alice", None).await?;
-# let mut user = instance.login_user("alice", None).await?;
+# let (instance, mut user) = eidetica::Instance::create(
+#     Box::new(Sqlite::in_memory().await?),
+#     eidetica::NewUser::passwordless("alice"),
+# ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "settings_example");
 # let default_key = user.get_default_key()?;
@@ -283,10 +283,10 @@ Configure the height strategy for the entire database via `SettingsStore`:
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
-# let admin = instance.login_user("admin", Some("admin")).await?;
-# admin.admin().await?.create_user("alice", None).await?;
-# let mut user = instance.login_user("alice", None).await?;
+# let (instance, mut user) = eidetica::Instance::create(
+#     Box::new(Sqlite::in_memory().await?),
+#     eidetica::NewUser::passwordless("alice"),
+# ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "height_example");
 # let default_key = user.get_default_key()?;
@@ -313,10 +313,10 @@ Individual stores can override the database strategy for independent height trac
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
-# let admin = instance.login_user("admin", Some("admin")).await?;
-# admin.admin().await?.create_user("alice", None).await?;
-# let mut user = instance.login_user("alice", None).await?;
+# let (instance, mut user) = eidetica::Instance::create(
+#     Box::new(Sqlite::in_memory().await?),
+#     eidetica::NewUser::passwordless("alice"),
+# ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "per_subtree_example");
 # let default_key = user.get_default_key()?;
@@ -366,10 +366,10 @@ While `Transaction`s are essential for writes, you can perform reads without an 
 # async fn main() -> eidetica::Result<()> {
 # // Setup database with some data
 # let backend = Sqlite::in_memory().await?;
-# let instance = Instance::open(Box::new(backend)).await?;
-# let admin = instance.login_user("admin", Some("admin")).await?;
-# admin.admin().await?.create_user("alice", None).await?;
-# let mut user = instance.login_user("alice", None).await?;
+# let (instance, mut user) = eidetica::Instance::create(
+#     Box::new(backend),
+#     eidetica::NewUser::passwordless("alice"),
+# ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test");
 # let default_key = user.get_default_key()?;

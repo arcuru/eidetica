@@ -15,44 +15,19 @@ use eidetica::{
 /// Uses FixedClock for more deterministic testing. For tests needing explicit
 /// clock control, use `create_test_database_with_clock()` instead.
 async fn create_test_database() -> (Instance, Database) {
-    let clock = Arc::new(FixedClock::default());
-    let backend = Box::new(InMemory::new());
-    let instance = Instance::open_with_clock(backend, clock)
-        .await
-        .expect("Failed to create test instance");
-
-    // Use User API to create a database
-    crate::helpers::create_user(&instance, "test", None)
-        .await
-        .expect("Failed to create user");
-    let mut user = instance
-        .login_user("test", None)
-        .await
-        .expect("Failed to login user");
-    let key_id = user.get_default_key().expect("Failed to get default key");
-    let database = user
-        .create_database(Doc::new(), &key_id)
-        .await
-        .expect("Failed to create database");
-
-    (instance, database)
+    create_test_database_with_clock(Arc::new(FixedClock::default())).await
 }
 
 /// Helper to create a test instance and database with a custom clock
 async fn create_test_database_with_clock(clock: Arc<dyn Clock>) -> (Instance, Database) {
-    let backend = Box::new(InMemory::new());
-    let instance = Instance::open_with_clock(backend, clock)
-        .await
-        .expect("Failed to create test instance");
+    let (instance, mut user) = Instance::create_with_clock(
+        Box::new(InMemory::new()),
+        clock,
+        eidetica::NewUser::passwordless("test"),
+    )
+    .await
+    .expect("Failed to create test instance");
 
-    // Use User API to create a database
-    crate::helpers::create_user(&instance, "test", None)
-        .await
-        .expect("Failed to create user");
-    let mut user = instance
-        .login_user("test", None)
-        .await
-        .expect("Failed to login user");
     let key_id = user.get_default_key().expect("Failed to get default key");
     let database = user
         .create_database(Doc::new(), &key_id)

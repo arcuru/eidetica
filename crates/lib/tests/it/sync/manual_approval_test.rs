@@ -499,7 +499,8 @@ async fn test_bootstrap_with_global_permission_auto_approval() {
 
     // Setup server instance
     let (server_instance, mut server_user, server_key_id) =
-        crate::helpers::test_local_instance_with_user_and_key("server_user", Some("server_admin")).await;
+        crate::helpers::test_local_instance_with_user_and_key("server_user", Some("server_admin"))
+            .await;
     server_instance.enable_sync().await.unwrap();
 
     // Create database with global permission for Write(10) and admin key
@@ -627,7 +628,8 @@ async fn test_bootstrap_with_existing_specific_key_permission() {
 
     // Setup server instance
     let (server_instance, mut server_user, server_key_id) =
-        crate::helpers::test_local_instance_with_user_and_key("server_user", Some("server_admin")).await;
+        crate::helpers::test_local_instance_with_user_and_key("server_user", Some("server_admin"))
+            .await;
     server_instance.enable_sync().await.unwrap();
 
     let test_key = PublicKey::random();
@@ -718,7 +720,8 @@ async fn test_bootstrap_with_existing_global_permission_no_duplicate() {
 
     // Setup server instance
     let (server_instance, mut server_user, server_key_id) =
-        crate::helpers::test_local_instance_with_user_and_key("server_user", Some("server_admin")).await;
+        crate::helpers::test_local_instance_with_user_and_key("server_user", Some("server_admin"))
+            .await;
     server_instance.enable_sync().await.unwrap();
 
     let test_key = PublicKey::random();
@@ -828,7 +831,8 @@ async fn test_bootstrap_global_permission_client_cannot_create_entries_bug() {
 
     // Setup server instance with global permission
     let (server_instance, mut server_user, server_key_id) =
-        crate::helpers::test_local_instance_with_user_and_key("server_user", Some("server_admin")).await;
+        crate::helpers::test_local_instance_with_user_and_key("server_user", Some("server_admin"))
+            .await;
     server_instance.enable_sync().await.unwrap();
 
     // Create database with global permission allowing Write(5)
@@ -847,7 +851,8 @@ async fn test_bootstrap_global_permission_client_cannot_create_entries_bug() {
 
     // Setup client instance
     let (client_instance, mut _client_user, client_key_id) =
-        crate::helpers::test_local_instance_with_user_and_key("client_user", Some("client_key")).await;
+        crate::helpers::test_local_instance_with_user_and_key("client_user", Some("client_key"))
+            .await;
     client_instance.enable_sync().await.unwrap();
 
     // Set up sync system and handler
@@ -915,7 +920,8 @@ async fn test_global_permission_enables_transactions() {
 
     // Setup server instance
     let (server_instance, mut server_user, server_key_id) =
-        crate::helpers::test_local_instance_with_user_and_key("server_user", Some("server_admin")).await;
+        crate::helpers::test_local_instance_with_user_and_key("server_user", Some("server_admin"))
+            .await;
     server_instance.enable_sync().await.unwrap();
 
     // Create database (signing key bootstrapped as Admin(0))
@@ -952,7 +958,8 @@ async fn test_global_permission_enables_transactions() {
 
     // Setup client instance
     let (client_instance, client_user, client_key_id) =
-        crate::helpers::test_local_instance_with_user_and_key("client_user", Some("client_device")).await;
+        crate::helpers::test_local_instance_with_user_and_key("client_user", Some("client_device"))
+            .await;
     client_instance.enable_sync().await.unwrap();
 
     println!("🔍 Testing bootstrap with global permission");

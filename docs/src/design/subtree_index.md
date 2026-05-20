@@ -60,7 +60,7 @@ This constraint leverages Eidetica's Merkle-DAG structure: the Entry containing 
 > the `_index` metadata cannot be tampered with or separated from its data
 > because it is hash-chained into the same Merkle-DAG. This is independent of
 > an entry's **`VerificationStatus`** (whether this node has validated the
-> entry's *signature and permissions* against the `_settings` it pins). A
+> entry's _signature and permissions_ against the `_settings` it pins). A
 > synced `_index`-bearing entry still arrives `Unverified` and is promoted by
 > `Database::verify()` like any other entry.
 
@@ -162,10 +162,10 @@ Access via `Transaction::get_index()`.
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(Sqlite::in_memory().await?);
-# let instance = Instance::open(backend).await?;
-# let admin = instance.login_user("admin", Some("admin")).await?;
-# admin.admin().await?.create_user("alice", None).await?;
-# let mut user = instance.login_user("alice", None).await?;
+# let (instance, mut user) = eidetica::Instance::create(
+#     backend,
+#     eidetica::NewUser::passwordless("alice"),
+# ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;
@@ -201,10 +201,10 @@ assert!(info.config.is_empty());
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(Sqlite::in_memory().await?);
-# let instance = Instance::open(backend).await?;
-# let admin = instance.login_user("admin", Some("admin")).await?;
-# admin.admin().await?.create_user("alice", None).await?;
-# let mut user = instance.login_user("alice", None).await?;
+# let (instance, mut user) = eidetica::Instance::create(
+#     backend,
+#     eidetica::NewUser::passwordless("alice"),
+# ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;
@@ -247,10 +247,10 @@ assert!(info.config.contains_key("compression"));
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(Sqlite::in_memory().await?);
-# let instance = Instance::open(backend).await?;
-# let admin = instance.login_user("admin", Some("admin")).await?;
-# admin.admin().await?.create_user("alice", None).await?;
-# let mut user = instance.login_user("alice", None).await?;
+# let (instance, mut user) = eidetica::Instance::create(
+#     backend,
+#     eidetica::NewUser::passwordless("alice"),
+# ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;

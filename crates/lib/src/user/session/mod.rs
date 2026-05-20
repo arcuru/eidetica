@@ -343,7 +343,6 @@ impl User {
         Ok(database)
     }
 
-
     /// Open an existing database by its root ID using this user's keys.
     ///
     /// This method automatically:

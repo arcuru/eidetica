@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use eidetica::{
-    Database, Error, FixedClock, Instance,
+    Database, Error, FixedClock, Instance, NewUser,
     auth::{crypto::PublicKey, types::AuthKey},
     backend::BackendImpl,
     backend::database::InMemory,
@@ -12,10 +12,7 @@ use eidetica::{
 };
 
 #[cfg(all(unix, feature = "service"))]
-use {
-    eidetica::service::ServiceServer,
-    tokio::sync::watch,
-};
+use {eidetica::service::ServiceServer, tokio::sync::watch};
 
 // Re-export tokio test macro for convenience
 pub use tokio;
@@ -137,12 +134,23 @@ pub async fn test_instance() -> Instance {
 /// against a remote daemon. Bypassing the service-backend env var here
 /// keeps those tests running against a real implementation instead of
 /// being skipped or failing on `OperationNotSupported`.
+///
+/// Bootstraps a passwordless `admin` user as the initial admin — matches
+/// the historic test convention so existing `users.contains("admin")` style
+/// assertions and `login_user("admin", None)` calls keep working. Tests
+/// that need a specific bootstrap identity should use
+/// [`test_local_instance_with_user`] instead.
 #[allow(dead_code)]
 pub async fn test_local_instance() -> Instance {
     let clock = Arc::new(FixedClock::default());
-    Instance::open_with_clock(Box::new(InMemory::new()), clock)
-        .await
-        .expect("Failed to create local test instance")
+    let (instance, _admin) = Instance::create_with_clock(
+        Box::new(InMemory::new()),
+        clock,
+        NewUser::passwordless("admin"),
+    )
+    .await
+    .expect("Failed to create local test instance");
+    instance
 }
 
 /// Local-only counterpart of `test_instance_with_user`, for subsystem
@@ -184,29 +192,34 @@ pub async fn test_local_instance_with_user_and_key(
     (instance, user, key_id)
 }
 
-/// Create a user via the bootstrapped `admin`/`admin` session.
+/// Create a user via the bootstrapped admin session.
 ///
-/// Replaces the old public `Instance::create_user` (now bootstrap-only /
-/// `pub(crate)`). Creating users is an admin operation reached through
-/// [`User::admin`]; this drives that path and works identically on local and
-/// connected-remote instances. Returns the new user's UUID, mirroring the old
-/// `Instance::create_user` signature so call sites stay one-liners.
+/// The test bootstrap uses a passwordless `admin` user (see
+/// [`test_local_instance`] and [`test_remote_instance`]). This helper logs
+/// in as that admin and drives [`InstanceAdmin::create_user`] —
+/// the same admin path that production code uses. Returns the new user's
+/// UUID, mirroring the old `Instance::create_user` signature so call sites
+/// stay one-liners.
 pub async fn create_user(
     instance: &Instance,
     username: &str,
     password: Option<&str>,
 ) -> eidetica::Result<String> {
-    let admin = instance.login_user("admin", Some("admin")).await?;
-    admin.admin().await?.create_user(username, password).await
+    let admin = instance.login_user("admin", None).await?;
+    let new_user = match password {
+        Some(pw) => NewUser::with_password(username, pw),
+        None => NewUser::passwordless(username),
+    };
+    admin.admin().await?.create_user(new_user).await
 }
 
-/// List all user IDs via the bootstrapped `admin`/`admin` session.
+/// List all user IDs via the bootstrapped admin session.
 ///
 /// Replaces the removed `Instance::list_users` — listing users reads `_users`
 /// and is an admin operation reached through [`User::admin`].
 #[allow(dead_code)]
 pub async fn list_users(instance: &Instance) -> eidetica::Result<Vec<String>> {
-    let admin = instance.login_user("admin", Some("admin")).await?;
+    let admin = instance.login_user("admin", None).await?;
     admin.admin().await?.list_users().await
 }
 
@@ -229,8 +242,8 @@ async fn test_remote_instance() -> Instance {
     ));
     let socket_path = dir.path().join("test.sock");
 
-    let server =
-        Instance::open(Box::new(InMemory::new()))
+    let (server, _admin) =
+        Instance::create(Box::new(InMemory::new()), NewUser::passwordless("admin"))
             .await
             .expect("Failed to create server-side Instance");
     let service = ServiceServer::new(server.clone(), socket_path.clone());
@@ -257,7 +270,7 @@ async fn test_remote_instance() -> Instance {
         .await
         .expect("Failed to connect to test daemon");
     instance
-        .login_user("admin", Some("admin"))
+        .login_user("admin", None)
         .await
         .expect("Failed to login as bootstrapped admin");
 
@@ -300,8 +313,8 @@ async fn test_remote_instance_with_user(username: &str) -> (Instance, User) {
     ));
     let socket_path = dir.path().join("test.sock");
 
-    let server =
-        Instance::open(Box::new(InMemory::new()))
+    let (server, _admin) =
+        Instance::create(Box::new(InMemory::new()), NewUser::passwordless("admin"))
             .await
             .expect("Failed to create server-side Instance");
     let service = ServiceServer::new(server.clone(), socket_path.clone());
@@ -317,7 +330,10 @@ async fn test_remote_instance_with_user(username: &str) -> (Instance, User) {
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    assert!(socket_path.exists(), "daemon socket did not appear within 500ms");
+    assert!(
+        socket_path.exists(),
+        "daemon socket did not appear within 500ms"
+    );
 
     // create_user is not available over the wire — create user server-side.
     create_user(&server, username, None)
@@ -383,8 +399,8 @@ async fn test_remote_instance_with_user_and_key(
     ));
     let socket_path = dir.path().join("test.sock");
 
-    let server =
-        Instance::open(Box::new(InMemory::new()))
+    let (server, _admin) =
+        Instance::create(Box::new(InMemory::new()), NewUser::passwordless("admin"))
             .await
             .expect("Failed to create server-side Instance");
     let service = ServiceServer::new(server.clone(), socket_path.clone());
@@ -400,7 +416,10 @@ async fn test_remote_instance_with_user_and_key(
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    assert!(socket_path.exists(), "daemon socket did not appear within 500ms");
+    assert!(
+        socket_path.exists(),
+        "daemon socket did not appear within 500ms"
+    );
 
     // Create user and add key server-side.
     create_user(&server, username, None)
@@ -424,7 +443,9 @@ async fn test_remote_instance_with_user_and_key(
         .await
         .expect("Failed to login user");
 
-    let key_id = user.get_default_key().expect("User should have a default key");
+    let key_id = user
+        .get_default_key()
+        .expect("User should have a default key");
 
     (instance, user, key_id)
 }

@@ -85,11 +85,11 @@ To verify `table_1`:
 
 This enables efficient partial sync while maintaining full cryptographic verification of the synced data.
 
-> **Two senses of "verify".** Here "verify" means *cryptographically check the
-> integrity and signatures of a synced history*. That is distinct from an
+> **Two senses of "verify".** Here "verify" means _cryptographically check the
+> integrity and signatures of a synced history_. That is distinct from an
 > entry's stored **`VerificationStatus`** (`Unverified` / `Verified` /
-> `Failed`), which records whether *this node has run that check and accepted
-> the result*. Synced entries arrive `Unverified`; `Database::verify()` (or
+> `Failed`), which records whether _this node has run that check and accepted
+> the result_. Synced entries arrive `Unverified`; `Database::verify()` (or
 > the access-time hook) performs the check above against the `_settings` each
 > entry pins and promotes accordingly, prefix-closed. See
 > [Core Concepts](../user_guide/core_concepts.md) and the

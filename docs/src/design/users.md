@@ -345,10 +345,11 @@ Users are created by administrators or self-registration:
 
 **User Lifecycle:**
 
-1. Created via `Instance::create_user()` by an admin
-2. User logs in via `Instance::login_user()`
-3. User session provides access to keys and preferences
-4. User logs out via `User::logout()`
+1. The **initial** user is created at instance bootstrap via `Instance::create(backend, NewUser::…)` (or `Instance::open_or_create` on a fresh backend) and is automatically granted Admin on the system databases — there is no separate hidden admin account.
+2. Subsequent users are created by an existing admin via `admin.admin().await?.create_user(NewUser::…)` and land as non-admins until promoted.
+3. Any user logs in via `Instance::login_user()`.
+4. User session provides access to keys and preferences.
+5. User logs out via `User::logout()`.
 
 ### Library Architecture Layers
 
@@ -407,14 +408,15 @@ For embedded/single-user scenarios, users can be created without passwords:
 **Creation:**
 
 ```rust,ignore
-// Create passwordless user
-instance.create_user("alice", None)?;
-
-// Login without password
-let user = instance.login_user("alice", None)?;
+// Create the instance with Alice as the initial passwordless user.
+// First user becomes Admin automatically.
+let (instance, mut user) = Instance::create(
+    backend,
+    NewUser::passwordless("alice"),
+).await?;
 
 // Use User API normally
-let db = user.new_database(settings)?;
+let db = user.create_database(settings, &user.get_default_key()?).await?;
 ```
 
 **Characteristics:**
@@ -431,14 +433,14 @@ For multi-user scenarios, users have password-based authentication:
 **Creation:**
 
 ```rust,ignore
-// Create password-protected user
-instance.create_user("bob", Some("password123"))?;
+// Bootstrap with Bob as the initial password-protected admin user.
+let (instance, _user) = Instance::create(
+    backend,
+    NewUser::with_password("bob", "password123"),
+).await?;
 
-// Login with password verification
-let user = instance.login_user("bob", Some("password123"))?;
-
-// Use User API normally
-let db = user.new_database(settings)?;
+// Subsequent logins use Bob's credentials.
+let user = instance.login_user("bob", Some("password123")).await?;
 ```
 
 **Characteristics:**
@@ -625,7 +627,7 @@ See [key_management.md](./key_management.md) for detailed implementation.
 
 **Password-Protected User:**
 
-1. Admin calls `instance.create_user(username, Some(password))`
+1. Admin calls `admin.create_user(NewUser::with_password(username, password))` (or, for the initial admin on a fresh instance, `Instance::create(backend, NewUser::with_password(username, password))`)
 2. System searches `_users` Table for existing username (race condition possible)
 3. System hashes password with Argon2id and random salt
 4. Generates default Ed25519 keypair for the user (kept in memory only)
@@ -638,7 +640,7 @@ See [key_management.md](./key_management.md) for detailed implementation.
 
 **Passwordless User:**
 
-1. Admin calls `instance.create_user(username, None)`
+1. Admin calls `admin.create_user(NewUser::passwordless(username))` (or, for the initial admin, `Instance::create(backend, NewUser::passwordless(username))`)
 2. System searches `_users` Table for existing username (race condition possible)
 3. Generates default Ed25519 keypair for the user (kept in memory only)
 4. Uses instance `signing_key` from InstanceSecrets

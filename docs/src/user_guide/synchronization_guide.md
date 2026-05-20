@@ -14,14 +14,13 @@ Eidetica's sync system enables real-time data synchronization between distribute
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(Sqlite::in_memory().await?);
-let instance = Instance::open(backend).await?;
+let (instance, mut user) = Instance::create(
+    backend,
+    eidetica::NewUser::passwordless("alice"),
+).await?;
 instance.enable_sync().await?;
 
 // Create and login a user via the bootstrapped admin
-// (the new user gets an authentication key automatically)
-let admin = instance.login_user("admin", Some("admin")).await?;
-admin.admin().await?.create_user("alice", None).await?;
-let mut user = instance.login_user("alice", None).await?;
 # Ok(())
 # }
 ```
@@ -171,10 +170,13 @@ For persistent sync relationships:
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(Sqlite::in_memory().await?);
-# let instance = Instance::open(backend).await?;
+# let (instance, _) = Instance::open_or_create(
+#     backend,
+#     eidetica::NewUser::passwordless("admin"),
+# ).await?;
 # instance.enable_sync().await?;
-# let admin = instance.login_user("admin", Some("admin")).await?;
-# admin.admin().await?.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", None).await?;
+# admin.admin().await?.create_user(eidetica::NewUser::passwordless("alice")).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let default_key = user.get_default_key()?;
 # let db = user.create_database(Doc::new(), &default_key).await?;
@@ -211,10 +213,13 @@ Configure per-database sync behavior:
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(Sqlite::in_memory().await?);
-# let instance = Instance::open(backend).await?;
+# let (instance, _) = Instance::open_or_create(
+#     backend,
+#     eidetica::NewUser::passwordless("admin"),
+# ).await?;
 # instance.enable_sync().await?;
-# let admin = instance.login_user("admin", Some("admin")).await?;
-# admin.admin().await?.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", None).await?;
+# admin.admin().await?.create_user(eidetica::NewUser::passwordless("alice")).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let key = user.get_default_key()?;
 # let db = user.create_database(Doc::new(), &key).await?;

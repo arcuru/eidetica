@@ -14,13 +14,12 @@ use eidetica::sync::transports::http::HttpTransport;
 
 // Create database with sync enabled
 let backend = Box::new(Sqlite::in_memory().await?);
-let instance = Instance::open(backend).await?;
+let (instance, mut user) = Instance::create(
+    backend,
+    eidetica::NewUser::passwordless("alice"),
+).await?;
 instance.enable_sync().await?;
 
-// Create and login user via the bootstrapped admin
-let admin = instance.login_user("admin", Some("admin")).await?;
-admin.admin().await?.create_user("alice", None).await?;
-let mut user = instance.login_user("alice", None).await?;
 
 // Register transport with bind address
 let sync = instance.sync().unwrap();
@@ -40,7 +39,10 @@ sync.accept_connections().await?;
 # async fn main() -> eidetica::Result<()> {
 # // Setup database instance with sync capability
 # let backend = Box::new(Sqlite::in_memory().await?);
-# let db = Instance::open(backend).await?;
+# let (db, _) = Instance::open_or_create(
+#     backend,
+#     eidetica::NewUser::passwordless("admin"),
+# ).await?;
 # db.enable_sync().await?;
 #
 // The BackgroundSync engine starts automatically with transport registration
@@ -75,10 +77,13 @@ Declare sync intent with automatic background synchronization:
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(Sqlite::in_memory().await?);
-# let instance = Instance::open(backend).await?;
+# let (instance, _) = Instance::open_or_create(
+#     backend,
+#     eidetica::NewUser::passwordless("admin"),
+# ).await?;
 # instance.enable_sync().await?;
-# let admin = instance.login_user("admin", Some("admin")).await?;
-# admin.admin().await?.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", None).await?;
+# admin.admin().await?.create_user(eidetica::NewUser::passwordless("alice")).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let default_key = user.get_default_key()?;
 # let db = user.create_database(Doc::new(), &default_key).await?;
@@ -246,13 +251,16 @@ db.sync()?.update_peer_status(&peer_key, PeerStatus::Inactive)?;
 # async fn main() -> eidetica::Result<()> {
 # use eidetica::sync::transports::http::HttpTransport;
 # let backend = Box::new(Sqlite::in_memory().await?);
-# let instance = Instance::open(backend).await?;
+# let (instance, _) = Instance::open_or_create(
+#     backend,
+#     eidetica::NewUser::passwordless("admin"),
+# ).await?;
 # instance.enable_sync().await?;
 # let sync = instance.sync().expect("Sync enabled");
 # sync.register_transport("http", HttpTransport::builder().bind("127.0.0.1:0")).await?;
 # sync.accept_connections().await?;
-# let admin = instance.login_user("admin", Some("admin")).await?;
-# admin.admin().await?.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", None).await?;
+# admin.admin().await?.create_user(eidetica::NewUser::passwordless("alice")).await?;
 # let mut user = instance.login_user("alice", None).await?;
 // Create a database to share
 let mut settings = Doc::new();
@@ -665,7 +673,7 @@ async fn test_sync_between_peers() -> Result<()> {
     // Setup first peer
     let instance1 = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
     instance1.enable_sync().await?;
-    instance1.create_user("peer1", None).await?;
+    instance1.create_user(eidetica::NewUser::passwordless("peer1")).await?;
     let mut user1 = instance1.login_user("peer1", None).await?;
     instance1.sync()?.register_transport("http", HttpTransport::builder().bind("127.0.0.1:0")).await?;
     instance1.sync()?.accept_connections().await?;
@@ -675,7 +683,7 @@ async fn test_sync_between_peers() -> Result<()> {
     // Setup second peer
     let instance2 = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
     instance2.enable_sync().await?;
-    instance2.create_user("peer2", None).await?;
+    instance2.create_user(eidetica::NewUser::passwordless("peer2")).await?;
     let mut user2 = instance2.login_user("peer2", None).await?;
     instance2.sync()?.register_transport("http", HttpTransport::builder().bind("127.0.0.1:0")).await?;
 

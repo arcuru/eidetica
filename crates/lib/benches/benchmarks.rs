@@ -245,19 +245,12 @@ fn bench_tree_operations(c: &mut Criterion) {
         b.iter(|| {
             rt.block_on(async {
                 let backend = Box::new(InMemory::new());
-                let instance = Instance::open(backend)
-                    .await
-                    .expect("Benchmark setup failed");
-
-                // Create and login user
-                instance
-                    .create_user("bench_user", None)
-                    .await
-                    .expect("Failed to create user");
-                let mut user = instance
-                    .login_user("bench_user", None)
-                    .await
-                    .expect("Failed to login user");
+                // Bootstrap "bench_user" as the initial admin. They double
+                // as the benchmark's only User session.
+                let (_instance, mut user) =
+                    Instance::create(backend, eidetica::NewUser::passwordless("bench_user"))
+                        .await
+                        .expect("Benchmark setup failed");
 
                 let key_id = user.get_default_key().expect("Failed to get default key");
                 black_box(

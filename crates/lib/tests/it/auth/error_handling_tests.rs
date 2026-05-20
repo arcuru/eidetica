@@ -23,8 +23,7 @@ use super::helpers::*;
 // process-local invariants that need a local backend, so route through
 // the always-local helpers regardless of `TEST_BACKEND`.
 use crate::helpers::{
-    test_local_instance as test_instance,
-    test_local_instance_with_user as test_instance_with_user,
+    test_local_instance as test_instance, test_local_instance_with_user as test_instance_with_user,
 };
 
 /// Test delegation resolution with missing backend

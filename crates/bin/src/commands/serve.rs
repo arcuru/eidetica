@@ -34,7 +34,9 @@ use crate::cli::ServeArgs;
 use crate::session::SessionStore;
 use crate::templates::DatabaseInfo;
 
-const DEFAULT_USER: &str = "default";
+// The `DEFAULT_USER = "default"` auto-creation has been removed alongside
+// the `admin/admin` bootstrap. Operators initialise the instance with an
+// explicit user via `eidetica daemon init`.
 const SESSION_COOKIE: &str = "eidetica_session";
 
 /// Shared application state
@@ -79,49 +81,31 @@ pub async fn run(args: &ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
     // Create the storage backend
     let backend_box = create_backend(&args.backend_config).await?;
 
-    // Initialize Instance using open API
-    let instance = Instance::open(backend_box).await?;
+    // Load the existing Instance — initialise via `eidetica daemon init`
+    // first if the backend is empty. The auto-bootstrapped `admin/admin`
+    // pair is gone.
+    let instance = match Instance::open(backend_box).await {
+        Ok(instance) => instance,
+        Err(e) => {
+            if let eidetica::Error::Instance(boxed) = &e
+                && matches!(
+                    boxed.as_ref(),
+                    eidetica::instance::InstanceError::NotInitialized
+                )
+            {
+                return Err(format!(
+                    "Backend at {} is not initialised.\nRun `eidetica daemon init --username <NAME> [--password PASS | --passwordless]` first.",
+                    crate::backend::backend_label(&args.backend_config)
+                )
+                .into());
+            }
+            return Err(Box::new(e));
+        }
+    };
 
     // Enable Sync on the instance (creates/loads sync tree)
     instance.enable_sync().await?;
     tracing::info!("Sync enabled on instance");
-
-    // Ensure default user exists (for single-user server mode).
-    // User creation is an instance-admin operation, reached through the
-    // bootstrapped admin session (admin/admin, minted by Instance::open).
-    let admin = instance.login_user("admin", Some("admin")).await?;
-    let user_exists = admin
-        .admin()
-        .await?
-        .list_users()
-        .await?
-        .iter()
-        .any(|u| u == DEFAULT_USER);
-
-    if !user_exists {
-        tracing::info!("Creating default user '{DEFAULT_USER}'");
-        admin
-            .admin()
-            .await?
-            .create_user(DEFAULT_USER, None)
-            .await?;
-    }
-
-    // Login as default user to get device key
-    let mut default_user = instance.login_user(DEFAULT_USER, None).await?;
-
-    // Ensure default user has at least one key
-    let user_keys = default_user.list_keys()?;
-    let device_key_id = if user_keys.is_empty() {
-        tracing::info!("Creating initial device key for default user");
-        default_user
-            .add_private_key(Some("Server Device Key"))
-            .await?
-    } else {
-        user_keys[0].clone()
-    };
-
-    tracing::info!("Using device key: {device_key_id}");
 
     // Get sync object
     let sync = instance.sync().ok_or("Sync not enabled on instance")?;
@@ -354,7 +338,7 @@ async fn handle_register_submit(
         .into_response();
     }
 
-    let password: Option<String> = if let Some(ref pwd) = form.password {
+    let _password: Option<String> = if let Some(ref pwd) = form.password {
         if pwd.is_empty() {
             None
         } else {
@@ -370,54 +354,20 @@ async fn handle_register_submit(
         None
     };
 
-    let instance = state.instance.clone();
-    let sessions = state.sessions.clone();
-    let username = form.username.clone();
+    let _instance = state.instance.clone();
+    let _sessions = state.sessions.clone();
+    let _username = form.username.clone();
 
-    // User creation is an instance-admin operation; drive it through the
-    // bootstrapped admin session (admin/admin, minted by Instance::open).
-    let admin_user = match instance.login_user("admin", Some("admin")).await {
-        Ok(admin_user) => admin_user,
-        Err(e) => {
-            return Html(crate::templates::register_page(Some(&format!(
-                "Registration failed: {e}"
-            ))))
-            .into_response();
-        }
-    };
-    let admin = match admin_user.admin().await {
-        Ok(admin) => admin,
-        Err(e) => {
-            return Html(crate::templates::register_page(Some(&format!(
-                "Registration failed: {e}"
-            ))))
-            .into_response();
-        }
-    };
-
-    let result = if let Ok(users) = admin.list_users().await
-        && users.iter().any(|u| u == &username)
-    {
-        Err("Username already exists".to_string())
-    } else {
-        let pwd_ref = password.as_deref();
-        if let Err(e) = admin.create_user(&username, pwd_ref).await {
-            Err(format!("Registration failed: {e}"))
-        } else {
-            tracing::info!("Created new user: {}", username);
-
-            match instance.login_user(&username, pwd_ref).await {
-                Ok(user) => {
-                    let session_token = sessions.create_session(user).await;
-                    Ok(Some(session_token))
-                }
-                Err(e) => {
-                    tracing::error!("User created but auto-login failed: {}", e);
-                    Ok(None)
-                }
-            }
-        }
-    };
+    // TODO: Self-service registration needs an admin session on the server
+    // side to drive `InstanceAdmin::create_user`. The previous
+    // `admin/admin` auto-bootstrap is gone; until `serve` accepts admin
+    // credentials via flags/env vars (a follow-up task), web-form
+    // registration is disabled. Operators should create users via
+    // `eidetica daemon init` (initial admin) or programmatically against
+    // an already-initialised instance.
+    let result: Result<Option<String>, String> = Err("Self-service registration is disabled. \
+         Create users via `eidetica daemon init` or contact an administrator."
+        .to_string());
 
     match result {
         Ok(Some(session_token)) => {

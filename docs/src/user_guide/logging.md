@@ -83,12 +83,11 @@ Once you've initialized a tracing subscriber, all Eidetica operations will autom
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 let backend = Box::new(Sqlite::in_memory().await?);
-let instance = Instance::open(backend).await?;
-
-// Create and login user via the bootstrapped admin - this will log at INFO level
-let admin = instance.login_user("admin", Some("admin")).await?;
-admin.admin().await?.create_user("alice", None).await?;
-let mut user = instance.login_user("alice", None).await?;
+// Initialise with alice as the first/admin user — this logs at INFO level.
+let (instance, mut user) = Instance::create(
+    backend,
+    eidetica::NewUser::passwordless("alice"),
+).await?;
 
 // Create a database - this will log at INFO level
 let mut settings = Doc::new();

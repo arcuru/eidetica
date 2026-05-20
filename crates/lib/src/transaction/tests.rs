@@ -12,7 +12,10 @@ use crate::{
 #[tokio::test]
 async fn test_prevent_auth_corruption() {
     let backend = InMemory::new();
-    let instance = Instance::open(Box::new(backend)).await.unwrap();
+    let (instance, _admin) =
+        Instance::create(Box::new(backend), crate::NewUser::passwordless("admin"))
+            .await
+            .unwrap();
     let (private_key, _) = generate_keypair();
 
     // Create database with the test key

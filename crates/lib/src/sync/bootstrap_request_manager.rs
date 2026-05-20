@@ -207,14 +207,14 @@ mod tests {
 
     async fn create_test_sync_tree() -> (Instance, Database, Arc<FixedClock>) {
         let clock = Arc::new(FixedClock::default());
-        let backend = Box::new(InMemory::new());
-        let instance = Instance::open_with_clock(backend, clock.clone())
-            .await
-            .expect("Failed to create test instance");
+        let (instance, mut user) = Instance::create_with_clock(
+            Box::new(InMemory::new()),
+            clock.clone(),
+            crate::NewUser::passwordless("test"),
+        )
+        .await
+        .expect("Failed to create test instance");
 
-        // Create user and database using User API
-        instance.create_user("test", None).await.unwrap();
-        let mut user = instance.login_user("test", None).await.unwrap();
         let key_id = user.add_private_key(None).await.unwrap();
 
         let mut sync_settings = Doc::new();

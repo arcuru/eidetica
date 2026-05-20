@@ -1214,11 +1214,10 @@ impl Database {
     /// # use eidetica::crdt::Doc;
     /// # #[tokio::main]
     /// # async fn main() -> Result<()> {
-    /// # let backend = Box::new(InMemory::new());
-    /// # let instance = Instance::open(backend).await?;
-    /// # let admin = instance.login_user("admin", Some("admin")).await?;
-    /// # admin.admin().await?.create_user("test", None).await?;
-    /// # let mut user = instance.login_user("test", None).await?;
+    /// # let (_instance, mut user) = Instance::create(
+    /// #     Box::new(InMemory::new()),
+    /// #     NewUser::passwordless("test"),
+    /// # ).await?;
     /// # let key_id = user.add_private_key(None).await?;
     /// # let tree = user.create_database(Doc::new(), &key_id).await?;
     /// # let txn = tree.new_transaction().await?;
@@ -1274,11 +1273,10 @@ impl Database {
     /// # use eidetica::crdt::Doc;
     /// # #[tokio::main]
     /// # async fn main() -> Result<()> {
-    /// # let backend = Box::new(InMemory::new());
-    /// # let instance = Instance::open(backend).await?;
-    /// # let admin = instance.login_user("admin", Some("admin")).await?;
-    /// # admin.admin().await?.create_user("test", None).await?;
-    /// # let mut user = instance.login_user("test", None).await?;
+    /// # let (_instance, mut user) = Instance::create(
+    /// #     Box::new(InMemory::new()),
+    /// #     NewUser::passwordless("test"),
+    /// # ).await?;
     /// # let key_id = user.add_private_key(None).await?;
     /// # let tree = user.create_database(Doc::new(), &key_id).await?;
     /// let entry_ids = vec![ID::from_bytes("id1"), ID::from_bytes("id2")];
@@ -1420,7 +1418,7 @@ impl Database {
         let settings_tips: Vec<ID> = match entry.metadata() {
             Some(raw) => match serde_json::from_slice::<crate::transaction::EntryMetadata>(raw) {
                 Ok(md) => md.settings_tips,
-                // Unparseable metadata ⇒ we cannot establish the pin.
+                // Unparsable metadata ⇒ we cannot establish the pin.
                 Err(_) => return Ok(PinnedSettings::Incomplete),
             },
             None => Vec::new(),

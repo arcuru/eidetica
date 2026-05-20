@@ -5,7 +5,10 @@
 //! expect secure behavior and will fail until proper security is implemented.
 
 use super::helpers::*;
-use crate::helpers::{add_auth_key, add_auth_keys, test_local_instance_with_user_and_key as test_instance_with_user_and_key};
+use crate::helpers::{
+    add_auth_key, add_auth_keys,
+    test_local_instance_with_user_and_key as test_instance_with_user_and_key,
+};
 use eidetica::{
     auth::{
         Permission,

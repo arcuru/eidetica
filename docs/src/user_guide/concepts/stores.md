@@ -49,10 +49,10 @@ The `DocStore` store provides a document-oriented interface for storing and retr
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(Sqlite::in_memory().await?);
-# let instance = Instance::open(backend).await?;
-# let admin = instance.login_user("admin", Some("admin")).await?;
-# admin.admin().await?.create_user("alice", None).await?;
-# let mut user = instance.login_user("alice", None).await?;
+# let (instance, mut user) = eidetica::Instance::create(
+#     backend,
+#     eidetica::NewUser::passwordless("alice"),
+# ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;
@@ -91,10 +91,10 @@ When using `set_path("a.b.c", value)`, DocStore creates **nested maps**, not fla
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(Sqlite::in_memory().await?);
-# let instance = Instance::open(backend).await?;
-# let admin = instance.login_user("admin", Some("admin")).await?;
-# admin.admin().await?.create_user("alice", None).await?;
-# let mut user = instance.login_user("alice", None).await?;
+# let (instance, mut user) = eidetica::Instance::create(
+#     backend,
+#     eidetica::NewUser::passwordless("alice"),
+# ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;
@@ -141,10 +141,10 @@ The `Table<T>` store manages collections of serializable items, similar to a tab
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(Sqlite::in_memory().await?);
-# let instance = Instance::open(backend).await?;
-# let admin = instance.login_user("admin", Some("admin")).await?;
-# admin.admin().await?.create_user("alice", None).await?;
-# let mut user = instance.login_user("alice", None).await?;
+# let (instance, mut user) = eidetica::Instance::create(
+#     backend,
+#     eidetica::NewUser::passwordless("alice"),
+# ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;
@@ -217,10 +217,10 @@ The `SettingsStore` provides a specialized, type-safe interface for managing dat
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(Sqlite::in_memory().await?);
-# let instance = Instance::open(backend).await?;
-# let admin = instance.login_user("admin", Some("admin")).await?;
-# admin.admin().await?.create_user("alice", None).await?;
-# let mut user = instance.login_user("alice", None).await?;
+# let (instance, mut user) = eidetica::Instance::create(
+#     backend,
+#     eidetica::NewUser::passwordless("alice"),
+# ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;
@@ -255,10 +255,10 @@ transaction.commit().await?;
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # // Setup database for testing
-# let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
-# let admin = instance.login_user("admin", Some("admin")).await?;
-# admin.admin().await?.create_user("alice", None).await?;
-# let mut user = instance.login_user("alice", None).await?;
+# let (instance, mut user) = eidetica::Instance::create(
+#     Box::new(Sqlite::in_memory().await?),
+#     eidetica::NewUser::passwordless("alice"),
+# ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "stores_auth_example");
 # let default_key = user.get_default_key()?;
@@ -299,10 +299,10 @@ Multiple auth operations within a transaction are accumulated in a single entry:
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # // Setup database for testing
-# let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
-# let admin = instance.login_user("admin", Some("admin")).await?;
-# admin.admin().await?.create_user("alice", None).await?;
-# let mut user = instance.login_user("alice", None).await?;
+# let (instance, mut user) = eidetica::Instance::create(
+#     Box::new(Sqlite::in_memory().await?),
+#     eidetica::NewUser::passwordless("alice"),
+# ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "complex_auth_example");
 # let default_key = user.get_default_key()?;
@@ -375,10 +375,10 @@ The `YDoc` store provides integration with Y-CRDT (Yjs) for real-time collaborat
 # async fn main() -> eidetica::Result<()> {
 # // Setup database for testing
 # let backend = Sqlite::in_memory().await?;
-# let instance = Instance::open(Box::new(backend)).await?;
-# let admin = instance.login_user("admin", Some("admin")).await?;
-# admin.admin().await?.create_user("alice", None).await?;
-# let mut user = instance.login_user("alice", None).await?;
+# let (instance, mut user) = eidetica::Instance::create(
+#     Box::new(backend),
+#     eidetica::NewUser::passwordless("alice"),
+# ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "y_crdt_stores");
 # let default_key = user.get_default_key()?;
@@ -456,10 +456,10 @@ When you first access a Store using `Transaction::get_store()`, it's automatical
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(Sqlite::in_memory().await?);
-# let instance = Instance::open(backend).await?;
-# let admin = instance.login_user("admin", Some("admin")).await?;
-# admin.admin().await?.create_user("alice", None).await?;
-# let mut user = instance.login_user("alice", None).await?;
+# let (instance, mut user) = eidetica::Instance::create(
+#     backend,
+#     eidetica::NewUser::passwordless("alice"),
+# ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;
@@ -493,10 +493,10 @@ Use `get_index()` to query information about registered subtrees:
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(Sqlite::in_memory().await?);
-# let instance = Instance::open(backend).await?;
-# let admin = instance.login_user("admin", Some("admin")).await?;
-# admin.admin().await?.create_user("alice", None).await?;
-# let mut user = instance.login_user("alice", None).await?;
+# let (instance, mut user) = eidetica::Instance::create(
+#     backend,
+#     eidetica::NewUser::passwordless("alice"),
+# ).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
 # let default_key = user.get_default_key()?;

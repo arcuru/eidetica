@@ -93,11 +93,8 @@ impl Todo {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Load or create the instance
-    let instance = load_or_create_instance(&cli.database_path).await?;
-
-    // Get or create passwordless user
-    let mut user = get_or_create_user(&instance).await?;
+    // Load or create the instance + the single application user.
+    let (instance, mut user) = load_or_create_instance_and_user(&cli.database_path).await?;
 
     // Load or create the todo database
     let todo_database = load_or_create_todo_database(&mut user).await?;
@@ -145,43 +142,39 @@ async fn main() -> Result<()> {
     save_instance(&instance, &cli.database_path).await
 }
 
-async fn load_or_create_instance(path: &PathBuf) -> Result<Instance> {
-    let instance = if path.exists() {
-        let backend = InMemory::load_from_file(path).await?;
-        Instance::open(Box::new(backend)).await?
+/// Open (or bootstrap) the embedded instance and return it together with
+/// the single application user.
+///
+/// On a fresh data file, [`Instance::open_or_create`] mints the
+/// `todo-user` as the initial admin (the example is single-user). On
+/// subsequent runs the file already has metadata, so the call loads the
+/// existing instance and we log back in.
+async fn load_or_create_instance_and_user(path: &PathBuf) -> Result<(Instance, User)> {
+    use eidetica::NewUser;
+
+    let username = "todo-user";
+    let backend: Box<dyn eidetica::backend::BackendImpl> = if path.exists() {
+        Box::new(InMemory::load_from_file(path).await?)
     } else {
-        let backend = InMemory::new();
-        Instance::open(Box::new(backend)).await?
+        Box::new(InMemory::new())
     };
 
-    println!("✓ Instance initialized");
+    let (instance, maybe_user) =
+        Instance::open_or_create(backend, NewUser::passwordless(username)).await?;
 
-    Ok(instance)
-}
-
-async fn get_or_create_user(instance: &Instance) -> Result<User> {
-    // Use a fixed username for the single user in this app
-    let username = "todo-user";
-
-    // Try to login first
-    match instance.login_user(username, None).await {
-        Ok(user) => {
+    let user = match maybe_user {
+        Some(u) => {
+            println!("✓ Initialised new instance and bootstrapped {username} as admin");
+            u
+        }
+        None => {
+            let u = instance.login_user(username, None).await?;
             println!("✓ Logged in as passwordless user: {username}");
-            Ok(user)
+            u
         }
-        Err(e) if e.is_not_found() => {
-            // User doesn't exist, create it. User creation is an
-            // instance-admin operation, reached through the bootstrapped
-            // admin session (admin/admin, minted by Instance::open).
-            println!("Creating new passwordless user: {username}");
-            let admin = instance.login_user("admin", Some("admin")).await?;
-            admin.admin().await?.create_user(username, None).await?;
-            let user = instance.login_user(username, None).await?;
-            println!("✓ Created and logged in as passwordless user: {username}");
-            Ok(user)
-        }
-        Err(e) => Err(e),
-    }
+    };
+
+    Ok((instance, user))
 }
 
 async fn save_instance(instance: &Instance, path: &PathBuf) -> Result<()> {

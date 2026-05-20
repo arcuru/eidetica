@@ -1,13 +1,13 @@
 > ✅ **Status: Implemented** (entry verification status, pinned-settings
 > validation, Verified-frontier reads).
-> ⚠️ **Known gap:** authority *reduction* (key revocation, permission
+> ⚠️ **Known gap:** authority _reduction_ (key revocation, permission
 > downgrade, key removal) is **not yet enforced** — see
 > [Authority Reduction](#authority-reduction-revocation--the-known-gap).
 
 # Verification Model
 
-Eidetica entries carry a **verification status** that records whether *this
-node* has checked the entry's signature and authorization, and what the
+Eidetica entries carry a **verification status** that records whether _this
+node_ has checked the entry's signature and authorization, and what the
 outcome was. This document is the canonical description of that model: the
 three-state enum, why a status can never be asserted by a caller, how
 pinned-settings validation makes verification a content-addressed (not
@@ -28,7 +28,7 @@ this doc covers the status that wraps them.
 
 - **`Verified`** — this node ran the validation pass and the entry's
   signature and permissions check out against the settings the entry pins.
-- **`Unverified`** — not yet checked, *or* checked-but-undecidable because
+- **`Unverified`** — not yet checked, _or_ checked-but-undecidable because
   this node does not yet hold the settings ancestry the entry pins. A
   **transient, monotonic** state: it only ever resolves toward `Verified` or
   `Failed` as more of the DAG arrives.
@@ -83,7 +83,7 @@ the metadata mechanics.
 A direct consequence: **granting authority later cannot retroactively
 invalidate history.** An entry that pinned narrower settings stays valid
 even after the signer is given more power. This is correct and intended —
-and it is exactly why the *reduction* case below is hard.
+and it is exactly why the _reduction_ case below is hard.
 
 ## Prefix-closed reads: the Verified frontier
 
@@ -101,7 +101,7 @@ pre-verification view (including `Unverified` tips) opts in with
 
 This is the **disclosure model**: the DAG stays complete and trust is a
 query-time projection over it (the same posture as git signatures or DKIM —
-nothing is hidden from storage; the *trust label* is computed on read).
+nothing is hidden from storage; the _trust label_ is computed on read).
 Only `Failed` is ever hard-dropped; `Unverified` data is retained, just not
 surfaced by the safe-default getter.
 
@@ -139,8 +139,8 @@ de-noises as the DAG completes), not a correctness prerequisite.
 A write's parent tips are the tips of **the same projection the caller is
 reading** — this is not a separate policy. A caller on the default
 (Verified-frontier) posture parents new entries onto the Verified frontier; a
-caller that opted into `.allow_unverified()` parents onto raw tips. *What you
-can see is what you build on.*
+caller that opted into `.allow_unverified()` parents onto raw tips. _What you
+can see is what you build on._
 
 This is deliberate and removes any global parent-selection rule:
 
@@ -169,21 +169,21 @@ designed in detail, not implemented.**
 Pinned-settings validation is correct for authority **grants** (more power
 later cannot retroactively invalidate an entry that pinned less). It is
 **unsafe for authority removal**. A revoked key, a downgraded permission, or
-a removed key can keep signing *new* entries that pin *pre-removal*
+a removed key can keep signing _new_ entries that pin _pre-removal_
 settings, and those entries verify forever against their pinned snapshot.
 Revocation, generalized — **any monotonic reduction of authority** — cannot
 be expressed as a per-entry predicate, because the entry pins the very
 settings that would need to change to reject it.
 
 Grants are pin-safe; **removals are not**. Enforcing removals requires
-evaluating against *current* settings / a revocation set, on a path
+evaluating against _current_ settings / a revocation set, on a path
 distinct from pinned-settings verification.
 
 ### Plan of record (direction, not yet a detailed design)
 
 Revocation is **not** a per-entry check. It is a **branch-validity
 predicate evaluated against the latest settings**: a set of tips is valid
-iff every change since their last common splits conforms to the *current*
+iff every change since their last common splits conforms to the _current_
 settings. A branch carrying writes from a now-blocked key ceases to be a
 valid branch; honest branches not carrying those writes stay valid, so the
 system converges on the revoked contributions being orphaned. Competing
@@ -238,12 +238,12 @@ TBD.
 
 Today an entry is either locally `Verified` (this node ran the full check
 against the entry's pinned settings) or `Unverified` (this node has not, or
-cannot yet). There is no way to express *"a peer Eidetica node I trust has
-told me it verified this entry."* A **`Trusted`** state would be that middle
+cannot yet). There is no way to express _"a peer Eidetica node I trust has
+told me it verified this entry."_ A **`Trusted`** state would be that middle
 ground.
 
 **Sketch.** `Trusted` = a peer `Instance` this node trusts has asserted that
-*it* verified the entry, and this node accepts that attestation in lieu of
+_it_ verified the entry, and this node accepts that attestation in lieu of
 re-running full signature/permission validation to the roots itself. It is
 strictly weaker than local `Verified` (we did not check it ourselves) and
 strictly stronger than `Unverified` (a party we trust did). It lets a node
@@ -259,21 +259,21 @@ configurable per trust relationship.
 
 **Open questions (unsolved — design TBD):**
 
-- *What makes a peer "trusted"?* Sync-peer identity, an explicit trust list,
+- _What makes a peer "trusted"?_ Sync-peer identity, an explicit trust list,
   or a trust level keyed into the existing authentication / priority model?
-- *Is the attestation itself signed and verifiable*, so a trusted peer
+- _Is the attestation itself signed and verifiable_, so a trusted peer
   cannot be impersonated and the assertion is non-repudiable — and does it
-  carry *which settings* the peer verified against?
-- *When is local re-verification still forced despite `Trusted`* — e.g. for
+  carry _which settings_ the peer verified against?
+- _When is local re-verification still forced despite `Trusted`_ — e.g. for
   security-sensitive operations, or once this node later acquires the pinned
   settings ancestry and could check the entry itself?
-- *Does `Failed` collapse into `Unverified` under this model, or stay a
-  distinct terminal state?* A trusted peer asserting `Failed` is itself
+- _Does `Failed` collapse into `Unverified` under this model, or stay a
+  distinct terminal state?_ A trusted peer asserting `Failed` is itself
   meaningful information.
-- *Transitivity and trust depth.* If peer A trusts peer B, does an A→us sync
+- _Transitivity and trust depth._ If peer A trusts peer B, does an A→us sync
   convey B's attestation, or only A's own verification? Trust depth must be
   bounded.
-- *Interaction with the [authority-reduction gap](#authority-reduction-revocation--the-known-gap).*
+- _Interaction with the [authority-reduction gap](#authority-reduction-revocation--the-known-gap)._
   A trusted peer's attestation is only as good as that peer's own revocation
   awareness; `Trusted` does **not** bypass the branch-validity question.
 
