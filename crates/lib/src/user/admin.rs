@@ -43,9 +43,13 @@ impl<'a> InstanceAdmin<'a> {
 
     /// Create a new user account.
     ///
-    /// Signs the `_users` write with this admin's session key and submits
-    /// through the existing signed-entry wire surface, so it works on both
-    /// local and remote instances. This is the canonical way to create users.
+    /// Signs the `_users` write with this admin's session key and authors the
+    /// new user's database via the regular `Database::create` wire path. The
+    /// user-tree first-login bootstrap (root `UserKey` row, device-key `Read`
+    /// grant) is deferred to first login, where the new user is themselves
+    /// the connection session and can author both writes directly. The result
+    /// is the same one code path on local and remote instances — no
+    /// daemon-side RPC and no plaintext password on the wire.
     ///
     /// # Arguments
     /// * `username` - Unique user identifier
@@ -56,25 +60,6 @@ impl<'a> InstanceAdmin<'a> {
     /// The new user's UUID (stable internal identifier).
     pub async fn create_user(&self, username: &str, password: Option<&str>) -> Result<String> {
         let instance = self.user.instance();
-
-        // Transitional: on a connected instance the genesis + user-database
-        // follow-up writes can't yet be authored end-to-end over the
-        // admin's session. Change A (verification-gated submit) unblocks
-        // submits, but `system_databases::create_user`'s follow-up
-        // transactions (device-key Read grant, root-key metadata) need to
-        // *read* the brand-new user_database — and the server-side gate
-        // resolves Read against the connection's `session_pubkey`, not the
-        // request's identity hint, so the admin's session is denied on a
-        // tree whose only auth member is the new user. The accepted design
-        // (private_docs/submit-gate-and-remote-user-creation-design.md §5)
-        // fixes this by having the admin *build and submit all entries
-        // client-side* (genesis + follow-ups) without reading the new tree
-        // — a deeper refactor of `system_databases::create_user`. Until
-        // that lands, route through the daemon-side `CreateUser` RPC.
-        if let Some(conn) = instance.remote_connection() {
-            return conn.create_user(username, password).await;
-        }
-
         let signing_key = self.user.default_signing_key()?;
         let users_db = instance.users_db_for_session(&signing_key).await?;
         let (user_uuid, _) =

@@ -76,39 +76,24 @@ pub enum BackendOp {
     /// Rewrite the daemon's instance metadata (system-DB pointers).
     /// Gated by `Admin` on `_databases`.
     SetInstanceMetadata { metadata: InstanceMetadata },
-    /// Create a new user account. Gated by `Admin` on `_users`. The daemon
-    /// runs the full `system_databases::create_user` flow on its own local
-    /// instance — genesis and the user-database follow-up writes are authored
-    /// server-side with the daemon's own authority, so the
-    /// connection-session-scoped wire-write gate (which the new user's key is
-    /// not a member of) is never in the path.
-    CreateUser {
-        username: String,
-        password: Option<String>,
-    },
 }
 
 impl BackendOp {
     /// Returns `None` for every variant: `Get` carries no inline tree id,
-    /// and `SetInstanceMetadata`/`CreateUser` target daemon-global system
-    /// trees (`_databases`/`_users`) rather than a caller-named one — each
-    /// is gated explicitly in the server dispatch.
+    /// and `SetInstanceMetadata` targets a daemon-global system tree
+    /// (`_databases`) rather than a caller-named one — gated explicitly in
+    /// the server dispatch.
     pub fn tree_id(&self) -> Option<&ID> {
         match self {
-            BackendOp::Get { .. }
-            | BackendOp::SetInstanceMetadata { .. }
-            | BackendOp::CreateUser { .. } => None,
+            BackendOp::Get { .. } | BackendOp::SetInstanceMetadata { .. } => None,
         }
     }
 
-    /// `SetInstanceMetadata` requires `Admin` (gated against `_databases`);
-    /// `CreateUser` requires `Admin` (gated against `_users`). `Get` is
-    /// `Read` (gated post-fetch on the entry's owning tree).
+    /// `SetInstanceMetadata` requires `Admin` (gated against `_databases`).
+    /// `Get` is `Read` (gated post-fetch on the entry's owning tree).
     pub fn required_permission(&self) -> Permission {
         match self {
-            BackendOp::SetInstanceMetadata { .. } | BackendOp::CreateUser { .. } => {
-                Permission::Admin(0)
-            }
+            BackendOp::SetInstanceMetadata { .. } => Permission::Admin(0),
             BackendOp::Get { .. } => Permission::Read,
         }
     }
@@ -358,9 +343,6 @@ pub enum ServiceResponse {
     },
     /// Trusted login succeeded; the connection is now authenticated.
     TrustedLoginOk,
-    /// A new user account was created server-side (response to
-    /// `BackendOp::CreateUser`); carries the new user's UUID.
-    UserCreated { user_uuid: String },
 }
 
 /// Write a length-prefixed JSON frame to an async writer.
