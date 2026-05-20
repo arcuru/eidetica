@@ -208,23 +208,22 @@ pub async fn create_user(
         Database::create(instance, user_private_key.clone(), user_db_settings).await?;
     let user_database_id = user_database.root_id().clone();
 
-    // 3. Grant device key Read permission on user database (for sync access).
-    // User is already Admin(0) via Database::create above.
+    // The two historical follow-up writes on the user's tree — granting the
+    // device key `Read` on `_settings.auth`, and persisting the root `UserKey`
+    // metadata into the `keys` table — are deferred to first login. The
+    // structural reason: this function may run over a remote (admin's)
+    // session whose `session_pubkey` is *not* a member of the new user's
+    // tree, so `Transaction::commit`'s reads on that tree would be denied by
+    // the server-side gate (gating is by connection session_pubkey, not by
+    // request identity hint). Deferring is also functionally correct: the
+    // device-Read grant only matters once the daemon needs to sync the
+    // user's tree on the user's behalf, and the `keys` row is layered on top
+    // of the root key already carried in `UserInfo.credentials` (which is
+    // the durable source of truth and reaches the user via `_users`).
+    // `build_user_session` performs the idempotent bootstrap on first login.
     let device_pubkey = instance.id();
-    let device_pubkey_for_grant = device_pubkey.clone();
-    user_database
-        .with_transaction(|txn| async move {
-            let settings = txn.get_settings()?;
-            settings
-                .set_auth_key(
-                    &device_pubkey_for_grant,
-                    AuthKey::active(Some("device"), Permission::Read),
-                )
-                .await
-        })
-        .await?;
 
-    // 4. Build UserCredentials — encrypt root key if password provided
+    // 3. Build UserCredentials — encrypt root key if password provided
     let (root_key, password_salt) = match password {
         Some(pwd) => {
             let salt_string = super::crypto::generate_salt();
@@ -253,24 +252,7 @@ pub async fn create_user(
         password_salt,
     };
 
-    // 5. Store root key metadata in user database's keys table
-    let root_user_key = UserKey {
-        key_id: user_public_key.clone(),
-        storage: credentials.root_key.clone(),
-        display_name: Some("Root Key".to_string()),
-        created_at: instance.clock().now_secs(),
-        last_used: None,
-        is_default: true,
-        database_sigkeys: std::collections::HashMap::new(),
-    };
-    user_database
-        .with_transaction(|tx| async move {
-            let keys_table = tx.get_store::<Table<UserKey>>("keys").await?;
-            keys_table.insert(root_user_key).await
-        })
-        .await?;
-
-    // 6. Create UserInfo
+    // 4. Create UserInfo
     let user_info = UserInfo {
         username: username.to_string(),
         user_database_id,
@@ -279,13 +261,13 @@ pub async fn create_user(
         status: UserStatus::Active,
     };
 
-    // 6. Store UserInfo in _users database with auto-generated UUID
+    // 5. Store UserInfo in _users database with auto-generated UUID
     let tx = users_db.new_transaction().await?;
     let users_table = tx.get_store::<Table<UserInfo>>("users").await?;
     let user_uuid = users_table.insert(user_info.clone()).await?; // Generate UUID primary key
     tx.commit().await?;
 
-    // 7. First-admin bootstrap: if no instance admin exists yet, promote this
+    // 6. First-admin bootstrap: if no instance admin exists yet, promote this
     // user. Done last so that a failure here doesn't leave behind a partially
     // created user. The auth-settings write itself is signed by the device
     // key (the only Admin on the system DBs at bootstrap time); opening
@@ -462,12 +444,33 @@ pub(crate) async fn build_user_session(
     let keys_table = user_database
         .get_store_viewer::<Table<UserKey>>("keys")
         .await?;
-    let all_keys: Vec<UserKey> = keys_table
+    let mut all_keys: Vec<UserKey> = keys_table
         .search(|_| true)
         .await?
         .into_iter()
         .map(|(_, key)| key)
         .collect();
+
+    // The root key may not yet be persisted in the user-tree `keys` table —
+    // `create_user` no longer writes it there (the write would require reads
+    // on a tree the creator's session isn't a member of). `UserInfo.credentials`
+    // in `_users` is the durable source of truth; synthesize the in-memory
+    // `UserKey` from it when the table is missing the row. The durable write
+    // happens at `bootstrap_user_tree_if_needed` below, signed by the user.
+    let root_in_table = all_keys
+        .iter()
+        .any(|k| k.key_id == user_info.credentials.root_key_id);
+    if !root_in_table {
+        all_keys.push(UserKey {
+            key_id: user_info.credentials.root_key_id.clone(),
+            storage: user_info.credentials.root_key.clone(),
+            display_name: Some("Root Key".to_string()),
+            created_at: user_info.created_at,
+            last_used: None,
+            is_default: true,
+            database_sigkeys: std::collections::HashMap::new(),
+        });
+    }
 
     let key_manager = if let Some(pwd) = password {
         let salt = user_info
@@ -480,6 +483,21 @@ pub(crate) async fn build_user_session(
         UserKeyManager::new_passwordless(all_keys)?
     };
 
+    // 3. First-login (and recovery) bootstrap on the user's own tree.
+    // Idempotent: each check short-circuits on subsequent logins. Best
+    // effort — failure here is logged and the login proceeds, because the
+    // in-memory `key_manager` already has the root key and the next login
+    // will retry on the same conditions.
+    if let Err(e) =
+        bootstrap_user_tree_if_needed(instance, &user_database, user_info, root_in_table).await
+    {
+        tracing::debug!(
+            user = %user_info.username,
+            error = %e,
+            "user-tree first-login bootstrap skipped"
+        );
+    }
+
     Ok(User::new(
         user_uuid.to_string(),
         user_info.clone(),
@@ -487,6 +505,79 @@ pub(crate) async fn build_user_session(
         instance.handle(),
         key_manager,
     ))
+}
+
+/// Idempotently populate first-login state on the user's own tree.
+///
+/// Two writes, both Admin(0)-only and signed by the user (who is Admin(0)
+/// via `Database::create`'s genesis):
+///
+/// - **`keys` table** — persist the root `UserKey` row that mirrors
+///   `UserInfo.credentials`, so `User::track_database` and other writes
+///   that update per-database SigKey mappings have a row to update.
+/// - **`_settings.auth`** — grant this instance's device key `Read`, so the
+///   daemon can sync the user's tree on the user's behalf.
+///
+/// Each is gated on a pre-check via the read-only viewer; on a fresh login
+/// both checks miss and a single transaction commits both writes, on every
+/// subsequent login both checks hit and the function returns without
+/// touching the tree.
+async fn bootstrap_user_tree_if_needed(
+    instance: &Instance,
+    user_database: &Database,
+    user_info: &UserInfo,
+    root_already_persisted: bool,
+) -> Result<()> {
+    let device_pubkey = instance.id();
+
+    // Check whether the device key already has an auth entry on _settings.
+    // `get_settings()` builds a read-only transaction; `get_auth_key` returns
+    // `Err` if the key isn't present.
+    let settings_viewer = user_database.get_settings().await?;
+    let device_already_granted = settings_viewer.get_auth_key(&device_pubkey).await.is_ok();
+
+    if root_already_persisted && device_already_granted {
+        return Ok(());
+    }
+
+    // Capture by-value for the move into the closure.
+    let root_user_key = if root_already_persisted {
+        None
+    } else {
+        Some(UserKey {
+            key_id: user_info.credentials.root_key_id.clone(),
+            storage: user_info.credentials.root_key.clone(),
+            display_name: Some("Root Key".to_string()),
+            created_at: user_info.created_at,
+            last_used: None,
+            is_default: true,
+            database_sigkeys: std::collections::HashMap::new(),
+        })
+    };
+    let device_grant = if device_already_granted {
+        None
+    } else {
+        Some((
+            device_pubkey,
+            AuthKey::active(Some("device"), Permission::Read),
+        ))
+    };
+
+    user_database
+        .with_transaction(|tx| async move {
+            if let Some(row) = root_user_key {
+                let keys_table = tx.get_store::<Table<UserKey>>("keys").await?;
+                keys_table.insert(row).await?;
+            }
+            if let Some((pubkey, auth_key)) = device_grant {
+                let settings = tx.get_settings()?;
+                settings.set_auth_key(&pubkey, auth_key).await?;
+            }
+            Ok(())
+        })
+        .await?;
+
+    Ok(())
 }
 
 /// Look up a user's record by username, without requiring the password.
