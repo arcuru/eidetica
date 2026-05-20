@@ -24,7 +24,7 @@ use eidetica::{
 };
 
 use super::helpers::*;
-use crate::helpers::setup_empty_db;
+use crate::helpers::test_local_instance as setup_empty_db;
 
 /// Test that peers are automatically registered when they send a handshake request
 #[tokio::test]

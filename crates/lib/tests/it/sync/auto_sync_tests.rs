@@ -6,7 +6,7 @@
 //! Note: Since we can't directly test the private callback registration from integration tests,
 //! we test the observable behavior: that enable_sync() works and doesn't crash when commits occur.
 
-use crate::helpers::test_instance;
+use crate::helpers::test_local_instance as test_instance;
 use eidetica::{crdt::Doc, store::DocStore, user::types::SyncSettings};
 
 /// Test that commits work correctly when sync is enabled

@@ -11,7 +11,7 @@ use crate::helpers::*;
 
 #[tokio::test]
 async fn test_key_management() {
-    let (_instance, mut user) = test_instance_with_user("test_user").await;
+    let (_instance, mut user) = test_local_instance_with_user("test_user").await;
 
     // Initially should have default_key only (created during User creation)
     let keys = user.list_keys().expect("Failed to list keys");
@@ -83,7 +83,7 @@ async fn test_key_management() {
 async fn test_generated_key_can_sign() {
     // Validates that keys generated via User API can be used for signing
 
-    let (_instance, mut user) = test_instance_with_user("test_user").await;
+    let (_instance, mut user) = test_local_instance_with_user("test_user").await;
 
     // Add a key (will be generated internally)
     let key_id = user
@@ -131,7 +131,7 @@ async fn test_generated_key_can_sign() {
 
 #[tokio::test]
 async fn test_multi_key_authentication() {
-    let (instance, mut user) = test_instance_with_user("test_user").await;
+    let (instance, mut user) = test_local_instance_with_user("test_user").await;
 
     // Add two keys using User API
     let key_id1 = user
@@ -238,7 +238,7 @@ async fn test_multi_key_authentication() {
 async fn test_keys_have_unique_identity() {
     // Validates that each key added via User API has a unique identity
 
-    let (_instance, mut user) = test_instance_with_user("test_user").await;
+    let (_instance, mut user) = test_local_instance_with_user("test_user").await;
 
     // Add initial key
     let key_id1 = user

@@ -7,7 +7,7 @@
 //! - database_operations_tests: Database CRUD operations
 
 use super::helpers::*;
-use crate::helpers::{set_global_auth_key, test_instance};
+use crate::helpers::{set_global_auth_key, test_local_instance as test_instance};
 use eidetica::{
     Database,
     auth::{Permission, types::AuthKey},

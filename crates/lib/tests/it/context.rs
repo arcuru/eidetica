@@ -8,7 +8,7 @@
 
 use eidetica::{Database, Instance, crdt::Doc};
 
-use crate::helpers::test_instance_with_user;
+use crate::helpers::{test_instance_with_user, test_local_instance_with_user};
 
 /// Test context for managing Instance and Database lifecycle.
 ///
@@ -36,6 +36,27 @@ impl TestContext {
     /// Add a database (creates a test user internally).
     pub async fn with_database(self) -> Self {
         let (instance, mut user) = test_instance_with_user("test_user").await;
+        let default_key = user.get_default_key().expect("Failed to get default key");
+
+        let mut settings = Doc::new();
+        settings.set("name", "test_database");
+
+        let database = user
+            .create_database(settings, &default_key)
+            .await
+            .expect("Failed to create database");
+
+        Self {
+            _instance: Some(instance),
+            database: Some(database),
+        }
+    }
+
+    /// Add a database via an always-local instance, regardless of
+    /// `TEST_BACKEND`. Use for tests that poke at local-only backend
+    /// state (CRDT cache, verification status, raw-backend listings).
+    pub async fn with_local_database(self) -> Self {
+        let (instance, mut user) = test_local_instance_with_user("test_user").await;
         let default_key = user.get_default_key().expect("Failed to get default key");
 
         let mut settings = Doc::new();

@@ -12,13 +12,15 @@ use eidetica::{
     user::{User, UserError},
 };
 
-use crate::helpers::test_instance_with_user;
+// Instance-helper tests reach into raw backend ops (`all_roots`, etc.)
+// that are local-only; route through the always-local helper.
+use crate::helpers::test_local_instance_with_user as test_instance_with_user;
 
 // ===== DATABASE SETUP HELPERS =====
 
 /// Create a simple Instance without authentication
 pub async fn setup_simple_db() -> Instance {
-    crate::helpers::test_instance().await
+    crate::helpers::test_local_instance().await
 }
 
 // ===== TREE CREATION HELPERS =====

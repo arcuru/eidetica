@@ -16,7 +16,7 @@ use eidetica::{
 use tokio::time::sleep;
 
 use super::helpers::{HttpTransportFactory, IrohTransportFactory, TransportFactory};
-use crate::helpers::test_instance_with_user_and_key;
+use crate::helpers::test_local_instance_with_user_and_key as test_instance_with_user_and_key;
 
 /// Set up two Instance instances with users and private keys
 async fn setup_databases() -> Result<(Instance, User, PublicKey, Instance, User, PublicKey)> {

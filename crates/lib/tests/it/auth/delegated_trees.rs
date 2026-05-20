@@ -40,7 +40,7 @@ async fn test_simple_tree_creation_with_auth() -> Result<()> {
 /// Test basic delegated tree validation
 #[tokio::test]
 async fn test_delegated_tree_basic_validation() -> Result<()> {
-    let (db, mut user) = crate::helpers::test_instance_with_user("test_user").await;
+    let (db, mut user) = crate::helpers::test_local_instance_with_user("test_user").await;
 
     // Create delegated tree
     let (delegated_tree, delegated_key_ids) = create_delegated_tree_with_user(
@@ -99,7 +99,7 @@ async fn test_delegated_tree_basic_validation() -> Result<()> {
 /// Test permission clamping in delegated trees
 #[tokio::test]
 async fn test_delegated_tree_permission_clamping() -> Result<()> {
-    let (db, mut user) = crate::helpers::test_instance_with_user("test_user").await;
+    let (db, mut user) = crate::helpers::test_local_instance_with_user("test_user").await;
 
     // Create delegated tree with Admin permissions
     let (delegated_tree, delegated_key_ids) = create_delegated_tree_with_user(
@@ -153,7 +153,7 @@ async fn test_delegated_tree_permission_clamping() -> Result<()> {
 /// Test nested delegation (delegated tree delegating to another delegated tree)
 #[tokio::test]
 async fn test_nested_delegation() -> Result<()> {
-    let (db, mut user) = crate::helpers::test_instance_with_user("test_user").await;
+    let (db, mut user) = crate::helpers::test_local_instance_with_user("test_user").await;
 
     let main_admin_key = user.add_private_key(Some("main_admin")).await?;
     let org_admin_key = user.add_private_key(Some("org_admin")).await?;
@@ -253,7 +253,7 @@ async fn test_nested_delegation() -> Result<()> {
 /// Test delegated tree with revoked keys
 #[tokio::test]
 async fn test_delegated_tree_with_revoked_keys() -> Result<()> {
-    let (db, mut user) = crate::helpers::test_instance_with_user("test_user").await;
+    let (db, mut user) = crate::helpers::test_local_instance_with_user("test_user").await;
 
     let main_admin_key = user.add_private_key(Some("main_admin")).await?;
     let delegated_user_key = user.add_private_key(Some("delegated_user")).await?;
@@ -353,7 +353,7 @@ async fn test_delegated_tree_with_revoked_keys() -> Result<()> {
 /// Test delegation depth limits
 #[tokio::test]
 async fn test_delegation_depth_limits() -> Result<()> {
-    let (db, mut user) = crate::helpers::test_instance_with_user("test_user").await;
+    let (db, mut user) = crate::helpers::test_local_instance_with_user("test_user").await;
 
     // Create a deeply nested delegation chain that exceeds the limit
     let admin_key = user.add_private_key(Some("admin")).await?;
@@ -421,7 +421,7 @@ async fn test_delegation_depth_limits() -> Result<()> {
 /// Test permission upgrade when delegated permission is below `min` bound
 #[tokio::test]
 async fn test_delegated_tree_min_bound_upgrade() -> Result<()> {
-    let (db, mut user) = crate::helpers::test_instance_with_user("test_user").await;
+    let (db, mut user) = crate::helpers::test_local_instance_with_user("test_user").await;
 
     // Keys
     let main_admin_key = user.add_private_key(Some("main_admin")).await?;
@@ -507,7 +507,7 @@ async fn test_delegated_tree_min_bound_upgrade() -> Result<()> {
 /// Test that priority (the numeric part) is preserved when permission is already within bounds
 #[tokio::test]
 async fn test_delegated_tree_priority_preservation() -> Result<()> {
-    let (db, mut user) = crate::helpers::test_instance_with_user("test_user").await;
+    let (db, mut user) = crate::helpers::test_local_instance_with_user("test_user").await;
 
     // Keys
     let main_admin_key = user.add_private_key(Some("main_admin")).await?;
@@ -588,7 +588,7 @@ async fn test_delegated_tree_priority_preservation() -> Result<()> {
 /// Test delegation depth limit at exactly MAX_DELEGATION_DEPTH (10)
 #[tokio::test]
 async fn test_delegation_depth_limit_exact() -> Result<()> {
-    let (db, mut user) = crate::helpers::test_instance_with_user("test_user").await;
+    let (db, mut user) = crate::helpers::test_local_instance_with_user("test_user").await;
 
     // Setup simple tree with direct key using SettingsStore API
     let admin_key = user.add_private_key(Some("admin")).await?;
@@ -634,7 +634,7 @@ async fn test_delegation_depth_limit_exact() -> Result<()> {
 /// Test that invalid (unknown) tips cause delegation validation to fail
 #[tokio::test]
 async fn test_delegated_tree_invalid_tips() -> Result<()> {
-    let (db, mut user) = crate::helpers::test_instance_with_user("test_user").await;
+    let (db, mut user) = crate::helpers::test_local_instance_with_user("test_user").await;
 
     // Keys and delegated tree setup using SettingsStore API
     let main_admin_key = user.add_private_key(Some("main_admin")).await?;
@@ -839,7 +839,7 @@ async fn open_via_delegation(
 /// Test writing entries via delegation identity using the Database API directly
 #[tokio::test]
 async fn test_delegated_write_database_api() -> Result<()> {
-    let (instance, mut user) = crate::helpers::test_instance_with_user("test_user").await;
+    let (instance, mut user) = crate::helpers::test_local_instance_with_user("test_user").await;
     let pair = setup_delegation_pair(&instance, &mut user, Permission::Write(10)).await?;
 
     let user_signing_key = user.get_signing_key(&pair.user_key_id)?;
@@ -870,7 +870,7 @@ async fn test_delegated_write_database_api() -> Result<()> {
 /// Test full User API flow: track_database discovers delegation, open_database uses it
 #[tokio::test]
 async fn test_delegated_write_user_api_flow() -> Result<()> {
-    let (instance, mut user) = crate::helpers::test_instance_with_user("test_user").await;
+    let (instance, mut user) = crate::helpers::test_local_instance_with_user("test_user").await;
     let pair = setup_delegation_pair(&instance, &mut user, Permission::Write(10)).await?;
 
     // Track target_db with user_key -- should discover delegation path
@@ -919,7 +919,7 @@ async fn test_delegated_write_user_api_flow() -> Result<()> {
 /// (which require Admin) should be rejected.
 #[tokio::test]
 async fn test_delegated_write_permission_clamping() -> Result<()> {
-    let (instance, mut user) = crate::helpers::test_instance_with_user("test_user").await;
+    let (instance, mut user) = crate::helpers::test_local_instance_with_user("test_user").await;
     let pair = setup_delegation_pair(&instance, &mut user, Permission::Write(10)).await?;
 
     let user_signing_key = user.get_signing_key(&pair.user_key_id)?;
@@ -957,7 +957,7 @@ async fn test_delegated_write_permission_clamping() -> Result<()> {
 /// use the full `put` path, which is covered by sync-level tests.
 #[tokio::test]
 async fn test_delegated_entry_validation_across_instances() -> Result<()> {
-    let (instance_a, mut user) = crate::helpers::test_instance_with_user("test_user").await;
+    let (instance_a, mut user) = crate::helpers::test_local_instance_with_user("test_user").await;
     let pair = setup_delegation_pair(&instance_a, &mut user, Permission::Write(10)).await?;
 
     // Write an entry using delegation on instance A
@@ -971,7 +971,7 @@ async fn test_delegated_entry_validation_across_instances() -> Result<()> {
     txn.commit().await?;
 
     // Create instance B and replicate all entries from both trees
-    let instance_b = crate::helpers::test_instance().await;
+    let instance_b = crate::helpers::test_local_instance().await;
 
     // Copy identity_db entries (needed for delegation resolution on instance B)
     let identity_entries = instance_a
@@ -1033,7 +1033,7 @@ async fn test_delegated_entry_validation_across_instances() -> Result<()> {
 /// resolve during the very pass that would verify it.
 #[tokio::test]
 async fn test_delegated_entry_synced_unverified_then_verified() -> Result<()> {
-    let (instance_a, mut user) = crate::helpers::test_instance_with_user("test_user").await;
+    let (instance_a, mut user) = crate::helpers::test_local_instance_with_user("test_user").await;
     let pair = setup_delegation_pair(&instance_a, &mut user, Permission::Write(10)).await?;
 
     // Write a delegation-signed entry on instance A.
@@ -1049,7 +1049,7 @@ async fn test_delegated_entry_synced_unverified_then_verified() -> Result<()> {
 
     // Replicate BOTH trees to instance B via plain `put` — i.e. exactly as
     // they arrive over sync: stored Unverified, no asserted status.
-    let instance_b = crate::helpers::test_instance().await;
+    let instance_b = crate::helpers::test_local_instance().await;
     for root in [pair.identity_db.root_id(), pair.target_db.root_id()] {
         for entry in instance_a.backend().get_tree(root).await? {
             instance_b.backend().put(entry).await?;
@@ -1091,7 +1091,7 @@ async fn test_delegated_entry_synced_unverified_then_verified() -> Result<()> {
 /// Test delegation write using a non-primary key added to the identity database
 #[tokio::test]
 async fn test_delegated_write_secondary_identity_key() -> Result<()> {
-    let (instance, mut user) = crate::helpers::test_instance_with_user("test_user").await;
+    let (instance, mut user) = crate::helpers::test_local_instance_with_user("test_user").await;
 
     // Create identity_db with a primary key
     let primary_key_id = user.add_private_key(Some("primary")).await?;

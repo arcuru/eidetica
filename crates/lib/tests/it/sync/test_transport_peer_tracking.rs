@@ -17,7 +17,7 @@ use eidetica::{
 };
 
 use super::helpers::*;
-use crate::helpers::{set_global_auth_key, setup_empty_db};
+use crate::helpers::{set_global_auth_key, test_local_instance as setup_empty_db};
 
 /// Test automatic peer tracking: when client syncs with server, server should
 /// automatically track the tree/peer relationship WITHOUT manual setup.

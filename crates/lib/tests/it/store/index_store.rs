@@ -18,7 +18,11 @@ fn doc_config(pairs: &[(&str, &str)]) -> Doc {
 
 use serde::{Deserialize, Serialize};
 
-use crate::helpers::test_instance;
+// Index-store tests use `Database::create` with fresh, ad-hoc keys and
+// poke at storage-internal behavior (index registration, auto-write
+// triggers on the local backend) that doesn't have a wire equivalent.
+// Route through the always-local helper.
+use crate::helpers::test_local_instance as test_instance;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct TestRecord {
