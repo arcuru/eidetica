@@ -418,8 +418,26 @@ impl User {
             }
         })?;
 
-        // Create Database with user-provided key using resolved SigKey identity
-        let key = DatabaseKey::with_identity(signing_key.clone(), sigkey);
+        // Create Database with user-provided key using resolved SigKey identity.
+        //
+        // On a connected (remote) instance, the read path must travel as the
+        // user's per-DB identity so the daemon's per-tree gate sees a key the
+        // tree actually authorises. `Database::open` would wire
+        // `LocalDatabaseOps`, which on a remote instance forwards through
+        // `Backend::Remote` with the connection's login pubkey — and the
+        // user's login key is not a member of every tree they hold a per-DB
+        // key for. Route through `Database::open_remote` with the per-DB
+        // identity instead, after proving possession of the per-DB key to
+        // the daemon so the identity sits in the connection's session
+        // keyset.
+        let key = DatabaseKey::with_identity(signing_key.clone(), sigkey.clone());
+        #[cfg(all(unix, feature = "service"))]
+        if let Some(conn) = self.instance.remote_connection() {
+            conn.register_session_key(&signing_key).await?;
+            return Ok(Database::open_remote(&self.instance, conn, root_id, sigkey)
+                .await?
+                .with_key(key));
+        }
         Ok(Database::open(&self.instance, root_id).await?.with_key(key))
     }
 

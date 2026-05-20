@@ -290,19 +290,23 @@ impl Database {
         //
         // - **Connected (remote) instance** — use `RemoteDatabaseOps` with
         //   the *new database's* identity (the signing-key's pubkey,
-        //   self-signed as `Admin(0)` by the genesis). The session
-        //   pubkey on the connection is the *caller's* (e.g. the
-        //   registering admin), which is **not** a member of the new
-        //   tree's auth. If we kept `LocalDatabaseOps` here, every read
-        //   `Transaction::commit` performs on this database would route
-        //   through `Backend::Remote` with the connection's session
-        //   identity, and the server's per-tree gate would deny it.
-        //   `RemoteDatabaseOps` holds a per-database identity, so all
-        //   reads use the tree's own member key.
+        //   self-signed as `Admin(0)` by the genesis). The connection's
+        //   login pubkey is the *caller's* (e.g. the registering admin),
+        //   which is **not** a member of the new tree's auth. If we kept
+        //   `LocalDatabaseOps` here, every read `Transaction::commit`
+        //   performs on this database would route through `Backend::Remote`
+        //   with the connection's login identity, and the server's
+        //   per-tree gate would deny it. `RemoteDatabaseOps` holds a
+        //   per-database identity, so all reads use the tree's own member
+        //   key — but the server's gate also requires that key to be in
+        //   the connection's *session keyset*, so we
+        //   `register_session_key(signing_key)` first to do the
+        //   proof-of-possession handshake that adds it.
         // - **Local instance** — keep `LocalDatabaseOps`, unchanged.
         #[cfg(all(unix, feature = "service"))]
         if let Some(conn) = instance.remote_connection() {
             let pubkey_for_identity = signing_key.public_key();
+            conn.register_session_key(&signing_key).await?;
             return Ok(Self {
                 root: new_root_id.clone(),
                 instance: instance.downgrade(),
@@ -1051,9 +1055,20 @@ impl Database {
         // verification machinery below (status probe, auto-verify,
         // `verified_frontier`) is local-only and would fail on a remote
         // backend anyway (e.g. `verified_frontier`'s `backend.get_tree(...)`).
-        if let Some(conn) = instance.remote_connection() {
-            let identity = conn.session_identity().unwrap_or_default();
-            return match conn.get_verified_tips(self.root.clone(), identity).await {
+        //
+        // Delegate to `self.ops()` rather than calling the connection
+        // directly: when this handle was built via `Database::create` or
+        // `Database::open_remote` its `ops` is a `RemoteDatabaseOps` carrying
+        // the *per-database* identity (the new tree's own member key, or the
+        // caller's chosen identity), which the server's per-tree gate
+        // accepts. Routing through `conn.session_identity()` here would
+        // instead use the connection's (caller's) session pubkey, which is
+        // not a member of a freshly-created tree and gets denied.
+        // `LocalDatabaseOps` on a connected instance still forwards through
+        // `Backend::Remote::get_tips`, which keeps the session-identity
+        // semantics for the `Database::open` path.
+        if instance.remote_connection().is_some() {
+            return match self.ops().get_tips(&self.root).await {
                 Ok(tips) => Ok(tips),
                 Err(e) if e.is_not_found() => Ok(Vec::new()),
                 Err(e) => Err(e),
