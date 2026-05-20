@@ -17,8 +17,10 @@ Every Eidetica database requires authentication. Here's the minimal setup:
 # let backend = Sqlite::in_memory().await?;
 # let instance = Instance::open(Box::new(backend)).await?;
 #
-// Create and login a passwordless user (generates Ed25519 keypair automatically)
-instance.create_user("alice", None).await?;
+// Create and login a passwordless user via the bootstrapped admin
+// (the new user gets an Ed25519 keypair automatically)
+let admin = instance.login_user("admin", Some("admin")).await?;
+admin.admin().await?.create_user("alice", None).await?;
 let mut user = instance.login_user("alice", None).await?;
 
 // Create a database using the user's default key
@@ -64,7 +66,8 @@ Give other users access to your database:
 # async fn main() -> eidetica::Result<()> {
 # // Setup database for testing
 # let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "auth_example");
@@ -99,7 +102,8 @@ Allow anyone to read your database:
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -133,7 +137,8 @@ Create a collaborative database where anyone can read and write without individu
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "collaborative_notes");
@@ -210,7 +215,8 @@ Remove a user's access:
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -250,7 +256,8 @@ Note: Historical entries created by revoked keys remain valid.
 # async fn main() -> eidetica::Result<()> {
 # // Setup database for testing
 # let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "multi_user_example");
@@ -317,7 +324,8 @@ When you delegate to another database:
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let default_key = user.get_default_key()?;
 #
@@ -373,7 +381,8 @@ Delegations are stored in the **delegating database's** auth settings by the del
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let default_key = user.get_default_key()?;
 # let alice_db = user.create_database(Doc::new(), &default_key).await?;
@@ -417,7 +426,8 @@ These are names in the **delegated database's** auth settings that point to **pu
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let default_key_id = user.get_default_key()?;
 # let alice_db = user.create_database(Doc::new(), &default_key_id).await?;
@@ -458,7 +468,8 @@ A delegation path is a sequence of steps that traverses from the delegating data
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let default_key = user.get_default_key()?;
 # let project_db = user.create_database(Doc::new(), &default_key).await?;
@@ -691,7 +702,8 @@ The simplest approach for collaborative databases is to use global wildcard perm
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "wildcard_example");

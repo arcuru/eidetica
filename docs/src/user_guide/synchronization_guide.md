@@ -17,8 +17,10 @@ Eidetica's sync system enables real-time data synchronization between distribute
 let instance = Instance::open(backend).await?;
 instance.enable_sync().await?;
 
-// Create and login a user (generates authentication key automatically)
-instance.create_user("alice", None).await?;
+// Create and login a user via the bootstrapped admin
+// (the new user gets an authentication key automatically)
+let admin = instance.login_user("admin", Some("admin")).await?;
+admin.admin().await?.create_user("alice", None).await?;
 let mut user = instance.login_user("alice", None).await?;
 # Ok(())
 # }
@@ -171,7 +173,8 @@ For persistent sync relationships:
 # let backend = Box::new(Sqlite::in_memory().await?);
 # let instance = Instance::open(backend).await?;
 # instance.enable_sync().await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let default_key = user.get_default_key()?;
 # let db = user.create_database(Doc::new(), &default_key).await?;
@@ -210,7 +213,8 @@ Configure per-database sync behavior:
 # let backend = Box::new(Sqlite::in_memory().await?);
 # let instance = Instance::open(backend).await?;
 # instance.enable_sync().await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let key = user.get_default_key()?;
 # let db = user.create_database(Doc::new(), &key).await?;

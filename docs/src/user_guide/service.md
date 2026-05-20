@@ -75,8 +75,9 @@ use eidetica::Instance;
 // Connect to a running daemon
 let instance = Instance::connect("/tmp/eidetica.sock").await?;
 
-// Use it exactly like a local Instance
-instance.create_user("alice", None).await?;
+// Use it exactly like a local Instance — admin/admin is auto-bootstrapped
+let admin = instance.login_user("admin", Some("admin")).await?;
+admin.admin().await?.create_user("alice", None).await?;
 let mut user = instance.login_user("alice", None).await?;
 
 let default_key = user.get_default_key()?;

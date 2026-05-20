@@ -17,8 +17,9 @@ let backend = Box::new(Sqlite::in_memory().await?);
 let instance = Instance::open(backend).await?;
 instance.enable_sync().await?;
 
-// Create and login user (generates authentication key)
-instance.create_user("alice", None).await?;
+// Create and login user via the bootstrapped admin
+let admin = instance.login_user("admin", Some("admin")).await?;
+admin.admin().await?.create_user("alice", None).await?;
 let mut user = instance.login_user("alice", None).await?;
 
 // Register transport with bind address
@@ -76,7 +77,8 @@ Declare sync intent with automatic background synchronization:
 # let backend = Box::new(Sqlite::in_memory().await?);
 # let instance = Instance::open(backend).await?;
 # instance.enable_sync().await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let default_key = user.get_default_key()?;
 # let db = user.create_database(Doc::new(), &default_key).await?;
@@ -249,7 +251,8 @@ db.sync()?.update_peer_status(&peer_key, PeerStatus::Inactive)?;
 # let sync = instance.sync().expect("Sync enabled");
 # sync.register_transport("http", HttpTransport::builder().bind("127.0.0.1:0")).await?;
 # sync.accept_connections().await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 // Create a database to share
 let mut settings = Doc::new();

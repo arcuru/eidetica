@@ -59,7 +59,8 @@ You interact with Databases through Transactions:
 # async fn main() -> Result<()> {
 #     let backend = Sqlite::in_memory().await?;
 #     let instance = Instance::open(Box::new(backend)).await?;
-#     instance.create_user("alice", None).await?;
+#     let admin = instance.login_user("admin", Some("admin")).await?;
+#     admin.admin().await?.create_user("alice", None).await?;
 #     let mut user = instance.login_user("alice", None).await?;
 #     let mut settings = Doc::new();
 #     settings.set("name", "test");
@@ -90,7 +91,8 @@ Each Database maintains its settings as a key-value store in a special "settings
 # async fn main() -> eidetica::Result<()> {
 # // Setup database for testing
 # let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings_doc = Doc::new();
 # settings_doc.set("name", "example_database");

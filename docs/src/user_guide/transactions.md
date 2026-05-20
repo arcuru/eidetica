@@ -32,7 +32,8 @@ Using a `Transaction` follows a distinct lifecycle:
     # // Setup database
     # let backend = Sqlite::in_memory().await?;
     # let instance = Instance::open(Box::new(backend)).await?;
-    # instance.create_user("alice", None).await?;
+    # let admin = instance.login_user("admin", Some("admin")).await?;
+    # admin.admin().await?.create_user("alice", None).await?;
     # let mut user = instance.login_user("alice", None).await?;
     # let mut settings = Doc::new();
     # settings.set("name", "test");
@@ -63,7 +64,8 @@ Using a `Transaction` follows a distinct lifecycle:
     # // Setup database and transaction
     # let backend = Sqlite::in_memory().await?;
     # let instance = Instance::open(Box::new(backend)).await?;
-    # instance.create_user("alice", None).await?;
+    # let admin = instance.login_user("admin", Some("admin")).await?;
+    # admin.admin().await?.create_user("alice", None).await?;
     # let mut user = instance.login_user("alice", None).await?;
     # let mut settings = Doc::new();
     # settings.set("name", "test");
@@ -100,7 +102,8 @@ Using a `Transaction` follows a distinct lifecycle:
     # // Setup database and transaction
     # let backend = Sqlite::in_memory().await?;
     # let instance = Instance::open(Box::new(backend)).await?;
-    # instance.create_user("alice", None).await?;
+    # let admin = instance.login_user("admin", Some("admin")).await?;
+    # admin.admin().await?.create_user("alice", None).await?;
     # let mut user = instance.login_user("alice", None).await?;
     # let mut settings = Doc::new();
     # settings.set("name", "test");
@@ -136,7 +139,8 @@ Using a `Transaction` follows a distinct lifecycle:
     # // Setup database
     # let backend = Sqlite::in_memory().await?;
     # let instance = Instance::open(Box::new(backend)).await?;
-    # instance.create_user("alice", None).await?;
+    # let admin = instance.login_user("admin", Some("admin")).await?;
+    # admin.admin().await?.create_user("alice", None).await?;
     # let mut user = instance.login_user("alice", None).await?;
     # let mut settings = Doc::new();
     # settings.set("name", "test");
@@ -173,7 +177,8 @@ For the common pattern of "create a transaction, do some work, commit," `Databas
 # async fn main() -> eidetica::Result<()> {
 # let backend = Sqlite::in_memory().await?;
 # let instance = Instance::open(Box::new(backend)).await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test");
@@ -216,7 +221,8 @@ Within transactions, you can manage database settings using `SettingsStore`. Thi
 # async fn main() -> eidetica::Result<()> {
 # // Setup database for testing
 # let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "settings_example");
@@ -278,7 +284,8 @@ Configure the height strategy for the entire database via `SettingsStore`:
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "height_example");
@@ -307,7 +314,8 @@ Individual stores can override the database strategy for independent height trac
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "per_subtree_example");
@@ -359,7 +367,8 @@ While `Transaction`s are essential for writes, you can perform reads without an 
 # // Setup database with some data
 # let backend = Sqlite::in_memory().await?;
 # let instance = Instance::open(Box::new(backend)).await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test");
