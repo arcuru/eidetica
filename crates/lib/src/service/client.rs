@@ -13,6 +13,7 @@
 //! envelope and are dispatched against the user's identity; the daemon gates
 //! each one per-tree against the target database's auth settings.
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
@@ -60,6 +61,13 @@ struct RemoteConnectionInner {
     /// but it should still recover the guard or use a non-poisoning lock
     /// rather than abort the connection.
     session: RwLock<Option<SessionState>>,
+    /// Pubkeys this client has already proven possession of on this
+    /// connection (via `SessionKeyChallenge`/`SessionKeyRegister`), plus the
+    /// login pubkey added in `trusted_login`. Lets `register_session_key`
+    /// short-circuit when the key has already been registered, avoiding
+    /// per-request wire chatter for the common case where a single per-DB
+    /// key is reused across many ops.
+    registered_keys: Mutex<HashSet<PublicKey>>,
 }
 
 /// A connection to a remote Eidetica service server over a Unix domain socket.
@@ -116,6 +124,7 @@ impl RemoteConnection {
             inner: Arc::new(RemoteConnectionInner {
                 stream: Mutex::new((reader, writer)),
                 session: RwLock::new(None),
+                registered_keys: Mutex::new(HashSet::new()),
             }),
         })
     }
@@ -240,10 +249,76 @@ impl RemoteConnection {
                 *self.inner.session.write().unwrap() = Some(SessionState {
                     session_pubkey: credentials.root_key_id.clone(),
                 });
+                // The login pubkey is in the server-side session keyset by
+                // construction (the server seeds it there in
+                // `handle_trusted_login_prove`). Mirror that here so
+                // `register_session_key` short-circuits without a wire
+                // round-trip when called for the login key.
+                self.inner
+                    .registered_keys
+                    .lock()
+                    .await
+                    .insert(credentials.root_key_id.clone());
                 Ok((user_uuid, user_info, signing_key))
             }
             other => Err(unexpected_response("TrustedLoginOk", &other)),
         }
+    }
+
+    /// Prove possession of `signing_key` and add its public key to the
+    /// connection's session keyset.
+    ///
+    /// Used by every `Database` handle whose `RemoteDatabaseOps` carries a
+    /// per-database identity (e.g. `Database::create` on a connected
+    /// instance, or `user.open_database_with_key` over the wire): the daemon
+    /// gates reads against the *acting* pubkey from the identity hint, and
+    /// the acting pubkey must be in the keyset, so we register the per-DB
+    /// key before the first read.
+    ///
+    /// Idempotent and cheap on repeated calls: a successful registration
+    /// caches the pubkey in `registered_keys`, and a follow-up call with the
+    /// same key returns `Ok(())` without touching the wire. The login pubkey
+    /// is seeded into the cache by `trusted_login`.
+    ///
+    /// Cryptographically a two-step proof of possession:
+    /// 1. `SessionKeyChallenge { pubkey }` → server returns a single-use,
+    ///    pubkey-bound random challenge.
+    /// 2. Client signs the challenge with `signing_key`; `SessionKeyRegister
+    ///    { pubkey, signature }` → server verifies and inserts the pubkey
+    ///    into its `session_keyset`.
+    pub(crate) async fn register_session_key(
+        &self,
+        signing_key: &PrivateKey,
+    ) -> crate::Result<()> {
+        let pubkey = signing_key.public_key();
+        {
+            let cache = self.inner.registered_keys.lock().await;
+            if cache.contains(&pubkey) {
+                return Ok(());
+            }
+        }
+        // Step 1: ask for a challenge bound to this pubkey.
+        let resp = self
+            .request_ok(ServiceRequest::SessionKeyChallenge {
+                pubkey: pubkey.clone(),
+            })
+            .await?;
+        let challenge = match resp {
+            ServiceResponse::SessionKeyChallenge { challenge } => challenge,
+            other => return Err(unexpected_response("SessionKeyChallenge", &other)),
+        };
+        // Step 2: sign and submit. The daemon verifies and joins the pubkey
+        // into the connection's keyset on Ok.
+        let signature = create_challenge_response(&challenge, signing_key);
+        let resp = self
+            .request_ok(ServiceRequest::SessionKeyRegister {
+                pubkey: pubkey.clone(),
+                signature,
+            })
+            .await?;
+        Self::expect_ok(resp)?;
+        self.inner.registered_keys.lock().await.insert(pubkey);
+        Ok(())
     }
 
     // === Response extraction helpers ===

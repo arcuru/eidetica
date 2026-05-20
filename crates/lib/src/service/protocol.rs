@@ -35,6 +35,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
+use crate::auth::crypto::PublicKey;
 use crate::auth::types::{Permission, SigKey};
 use crate::backend::InstanceMetadata;
 use crate::entry::{Entry, ID};
@@ -287,6 +288,24 @@ pub enum ServiceRequest {
     /// `Instance::connect` during the handshake to establish server identity.
     GetInstanceMetadata,
 
+    // === Post-auth: extend the connection's session keyset ===
+    /// Step 1 of registering an additional pubkey on an already-authenticated
+    /// connection. The client names a `pubkey`; the server issues a random
+    /// challenge bound to that pubkey. The pubkey is added to the keyset only
+    /// after the client returns a valid signature in `SessionKeyRegister`.
+    ///
+    /// Session-key registration extends the connection's identity from the
+    /// single `login_pubkey` (from `TrustedLogin*`) to a *set* of pubkeys the
+    /// client has proven possession of. Per-tree reads gate against this set,
+    /// so a user can drive operations on databases authored by any of their
+    /// per-DB keys without re-authenticating the whole connection.
+    SessionKeyChallenge { pubkey: PublicKey },
+    /// Step 2 of registering an additional pubkey. Carries a signature over
+    /// the challenge issued by the matching `SessionKeyChallenge`. Server
+    /// verifies the signature with the named `pubkey`; on success the pubkey
+    /// joins the connection's session keyset and the challenge is consumed.
+    SessionKeyRegister { pubkey: PublicKey, signature: Vec<u8> },
+
     // === Authenticated wrapper for every backend operation ===
     /// All backend storage ops travel inside this wrapper. The inner
     /// `AuthenticatedRequest` carries `(root_id, identity, request)` and is
@@ -343,6 +362,10 @@ pub enum ServiceResponse {
     },
     /// Trusted login succeeded; the connection is now authenticated.
     TrustedLoginOk,
+    /// Challenge bytes returned in response to `SessionKeyChallenge`. The
+    /// client signs these with the named pubkey's private key and returns the
+    /// signature in `SessionKeyRegister`.
+    SessionKeyChallenge { challenge: Vec<u8> },
 }
 
 /// Write a length-prefixed JSON frame to an async writer.

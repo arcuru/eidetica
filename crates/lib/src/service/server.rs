@@ -3,6 +3,7 @@
 //! The server wraps an `Instance` (not just a backend) so it can handle write
 //! notifications through the Instance's callback system.
 
+use std::collections::{HashMap, HashSet};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -49,16 +50,28 @@ enum ConnectionState {
         challenge: Vec<u8>,
         expected_pubkey: PublicKey,
     },
-    /// Login completed. `session_pubkey` is the verified root pubkey for the
-    /// user; the dispatch path for `ServiceRequest::Authenticated` reads it
-    /// to gate access and cross-check the identity claim. `user_uuid` is the
-    /// session key for the per-user service-layer cache (see
-    /// `service::cache::ServiceCache`).
+    /// Login completed. `login_pubkey` is the verified root pubkey for the
+    /// user, established at `TrustedLoginProve` time. `session_keyset` is the
+    /// set of pubkeys the client has further proven possession of via
+    /// `SessionKeyChallenge`/`SessionKeyRegister`; it always contains
+    /// `login_pubkey` and may include additional per-DB keys the user owns.
+    /// The dispatch path for `Authenticated`/`AuthenticatedDb` requests
+    /// validates the identity hint against this set and gates against the
+    /// resulting *acting* pubkey, so a single connection can drive ops on
+    /// databases authored by any key the user has proven they hold.
+    /// `user_uuid` is the session key for the per-user service-layer cache
+    /// (see `service::cache::ServiceCache`).
+    /// `pending_key_challenges` holds outstanding registration challenges,
+    /// keyed by the pubkey the challenge was issued for. Each challenge is
+    /// single-use: the matching `SessionKeyRegister` consumes it whether
+    /// verification succeeds or fails.
     #[allow(dead_code)] // username surfaces in audit/logging follow-ups
     Authenticated {
         username: String,
         user_uuid: String,
-        session_pubkey: PublicKey,
+        login_pubkey: PublicKey,
+        session_keyset: HashSet<PublicKey>,
+        pending_key_challenges: HashMap<PublicKey, Vec<u8>>,
     },
 }
 
@@ -254,24 +267,34 @@ async fn dispatch_inner(
             Ok(ServiceResponse::InstanceMetadata(metadata))
         }
 
+        // === Post-auth: extend the session keyset ===
+        ServiceRequest::SessionKeyChallenge { pubkey } => {
+            handle_session_key_challenge(state, pubkey)
+        }
+        ServiceRequest::SessionKeyRegister { pubkey, signature } => {
+            handle_session_key_register(state, pubkey, &signature)
+        }
+
         // === Authenticated backend operations ===
         //
         // Gate 1 (chunk 5a): the connection must have completed `TrustedLogin*`.
-        // The session pubkey checked here is the one the daemon verified during
-        // challenge-response; clients populate the request's identity field
-        // with the same pubkey (see `RemoteConnection::backend_request`).
-        //
-        // Gate 2 (chunk 5b): if the op carries a tree id, the session pubkey
+        // Gate 2 (chunk 5b): if the op carries a tree id, the *acting* pubkey
         // must resolve to at least the op's required permission against that
-        // tree's `auth_settings`. Cross-tree and entry-id-only ops bypass
-        // gate 2 — see `BackendOp::tree_id` for the rationale.
+        // tree's `auth_settings`. The acting pubkey is the identity hint
+        // (when present and provably in the keyset) or `login_pubkey`
+        // otherwise — see `resolve_acting_pubkey`.
         ServiceRequest::Authenticated(inner) => {
-            let (session_pubkey, session_user_uuid) = match state {
+            let (login_pubkey, keyset_snapshot, session_user_uuid) = match state {
                 ConnectionState::Authenticated {
-                    session_pubkey,
+                    login_pubkey,
+                    session_keyset,
                     user_uuid,
                     ..
-                } => (session_pubkey.clone(), user_uuid.clone()),
+                } => (
+                    login_pubkey.clone(),
+                    session_keyset.clone(),
+                    user_uuid.clone(),
+                ),
                 _ => {
                     return Err(crate::Error::Auth(Box::new(
                         AuthError::InvalidAuthConfiguration {
@@ -289,25 +312,15 @@ async fn dispatch_inner(
                 request,
             } = *inner;
 
-            // Cross-check that the identity claim's pubkey hint, if any,
-            // matches the session pubkey. A mismatch is an "I claim to be
-            // someone else" error, not just a permission failure.
-            if let Some(claimed) = &identity.hint().pubkey
-                && *claimed != session_pubkey
-            {
-                return Err(crate::Error::Auth(Box::new(
-                    AuthError::SigningKeyMismatch {
-                        reason: format!(
-                            "request identity claims pubkey '{claimed}' but session is for '{session_pubkey}'"
-                        ),
-                    },
-                )));
-            }
+            // The identity hint must be in the session keyset (proven
+            // possession this connection). Absent hint → act as login pubkey.
+            let acting_pubkey =
+                resolve_acting_pubkey(&identity, &login_pubkey, &keyset_snapshot)?;
 
             if let Some(tree_id) = request.tree_id() {
                 gate_tree_permission(
                     instance,
-                    &session_pubkey,
+                    &acting_pubkey,
                     &identity,
                     tree_id,
                     request.required_permission(),
@@ -332,7 +345,7 @@ async fn dispatch_inner(
             if matches!(request, BackendOp::SetInstanceMetadata { .. }) {
                 gate_tree_permission(
                     instance,
-                    &session_pubkey,
+                    &acting_pubkey,
                     &identity,
                     instance.databases_db_id(),
                     Permission::Admin(0),
@@ -344,7 +357,7 @@ async fn dispatch_inner(
             dispatch_backend_op(
                 instance,
                 cache,
-                &session_pubkey,
+                &acting_pubkey,
                 &identity,
                 &session_user_uuid,
                 request,
@@ -360,8 +373,12 @@ async fn dispatch_inner(
         // structural tree-scoping is what the Database-level shape buys; the
         // legacy `BackendOp`/`Authenticated` path above is untouched.
         ServiceRequest::AuthenticatedDb(inner) => {
-            let session_pubkey = match state {
-                ConnectionState::Authenticated { session_pubkey, .. } => session_pubkey.clone(),
+            let (login_pubkey, keyset_snapshot) = match state {
+                ConnectionState::Authenticated {
+                    login_pubkey,
+                    session_keyset,
+                    ..
+                } => (login_pubkey.clone(), session_keyset.clone()),
                 _ => {
                     return Err(crate::Error::Auth(Box::new(
                         AuthError::InvalidAuthConfiguration {
@@ -399,23 +416,21 @@ async fn dispatch_inner(
             // doc for the full threat analysis.
             let is_submit = matches!(op, DatabaseOp::SubmitSignedEntry { .. });
 
-            // The "I claim to be someone else" cross-check rejects an
-            // identity hint that doesn't match the session pubkey. For
-            // submit, an entry signed by a key *other* than the session
-            // pubkey is the legitimate case (admin transports a user-signed
-            // entry), so submit is exempt; every other op keeps it.
-            if !is_submit
-                && let Some(claimed) = &identity.hint().pubkey
-                && *claimed != session_pubkey
-            {
-                return Err(crate::Error::Auth(Box::new(
-                    AuthError::SigningKeyMismatch {
-                        reason: format!(
-                            "request identity claims pubkey '{claimed}' but session is for '{session_pubkey}'"
-                        ),
-                    },
-                )));
-            }
+            // Submit accepts any identity hint (admin transports user-signed
+            // entries); every other op resolves an acting pubkey from the
+            // keyset and gates per-tree against it.
+            let acting_pubkey = if is_submit {
+                // Use the hint if it parses as a pubkey (for submit metadata),
+                // otherwise fall back to login_pubkey — submit doesn't gate
+                // on this value.
+                identity
+                    .hint()
+                    .pubkey
+                    .clone()
+                    .unwrap_or_else(|| login_pubkey.clone())
+            } else {
+                resolve_acting_pubkey(&identity, &login_pubkey, &keyset_snapshot)?
+            };
 
             // Per-tree permission gate. Unconditional for every op *except*
             // submit; create-flow passthrough (false) for the rest, so a
@@ -425,7 +440,7 @@ async fn dispatch_inner(
             if !is_submit {
                 gate_tree_permission(
                     instance,
-                    &session_pubkey,
+                    &acting_pubkey,
                     &identity,
                     &root_id,
                     op.required_permission(),
@@ -434,8 +449,37 @@ async fn dispatch_inner(
                 .await?;
             }
 
-            dispatch_database_op(instance, &session_pubkey, &identity, root_id, op).await
+            dispatch_database_op(instance, &acting_pubkey, &identity, root_id, op).await
         }
+    }
+}
+
+/// Resolve the *acting* pubkey for a session-gated op.
+///
+/// The identity hint, when present, must be in the connection's session
+/// keyset (proof of possession registered via `SessionKeyChallenge` /
+/// `SessionKeyRegister`, or established at login time). Returning the hint
+/// as the acting pubkey lets the per-tree gate check the actual key the
+/// caller wants to act as, not the connection-wide login key.
+///
+/// An absent hint defaults to the login pubkey — matches the pre-keyset
+/// behavior where every op acted as the login identity.
+fn resolve_acting_pubkey(
+    identity: &SigKey,
+    login_pubkey: &PublicKey,
+    session_keyset: &HashSet<PublicKey>,
+) -> crate::Result<PublicKey> {
+    match &identity.hint().pubkey {
+        Some(claimed) if session_keyset.contains(claimed) => Ok(claimed.clone()),
+        Some(claimed) => Err(crate::Error::Auth(Box::new(
+            AuthError::SigningKeyMismatch {
+                reason: format!(
+                    "request identity claims pubkey '{claimed}' but it is not in the session keyset; \
+                     register it first via SessionKeyChallenge/SessionKeyRegister"
+                ),
+            },
+        ))),
+        None => Ok(login_pubkey.clone()),
     }
 }
 
@@ -447,7 +491,7 @@ async fn dispatch_inner(
 /// and the Verified frontier are server-side **by construction**.
 async fn dispatch_database_op(
     instance: &Instance,
-    session_pubkey: &PublicKey,
+    acting_pubkey: &PublicKey,
     identity: &SigKey,
     root_id: ID,
     op: DatabaseOp,
@@ -458,7 +502,7 @@ async fn dispatch_database_op(
             // Same post-fetch owning-tree Read gate as `BackendOp::Get`:
             // a raw entry id carries no inline tree, so the pre-dispatch
             // gate could not cover it.
-            gate_entry_read(instance, session_pubkey, identity, &entry).await?;
+            gate_entry_read(instance, acting_pubkey, identity, &entry).await?;
             Ok(ServiceResponse::Entry(entry))
         }
 
@@ -611,10 +655,14 @@ fn handle_trusted_login_prove(
 
     match verify_challenge_response(&challenge, signature, &expected_pubkey) {
         Ok(()) => {
+            let mut session_keyset = HashSet::new();
+            session_keyset.insert(expected_pubkey.clone());
             *state = ConnectionState::Authenticated {
                 username,
                 user_uuid,
-                session_pubkey: expected_pubkey,
+                login_pubkey: expected_pubkey,
+                session_keyset,
+                pending_key_challenges: HashMap::new(),
             };
             Ok(ServiceResponse::TrustedLoginOk)
         }
@@ -622,6 +670,75 @@ fn handle_trusted_login_prove(
             // Already reset to PreAuth via the mem::replace above.
             Err(crate::Error::Auth(Box::new(e)))
         }
+    }
+}
+
+/// Handle `ServiceRequest::SessionKeyChallenge`: mint a single-use challenge
+/// bound to `pubkey` and stash it in the connection's pending-challenges map.
+///
+/// Requires an authenticated connection. A repeat call for the same pubkey
+/// overwrites the prior challenge — last-issued wins, so a stale challenge
+/// can't be replayed.
+fn handle_session_key_challenge(
+    state: &mut ConnectionState,
+    pubkey: PublicKey,
+) -> crate::Result<ServiceResponse> {
+    match state {
+        ConnectionState::Authenticated {
+            pending_key_challenges,
+            ..
+        } => {
+            let challenge = generate_challenge();
+            pending_key_challenges.insert(pubkey, challenge.clone());
+            Ok(ServiceResponse::SessionKeyChallenge { challenge })
+        }
+        _ => Err(crate::Error::Auth(Box::new(
+            AuthError::InvalidAuthConfiguration {
+                reason: "SessionKeyChallenge requires an authenticated connection; \
+                     complete TrustedLogin* first"
+                    .to_string(),
+            },
+        ))),
+    }
+}
+
+/// Handle `ServiceRequest::SessionKeyRegister`: verify the signature against
+/// the matching pending challenge and, on success, add `pubkey` to the
+/// connection's session keyset.
+///
+/// The challenge is consumed (removed) whether verification succeeds or fails,
+/// so a bad signature can't be retried against the same challenge.
+fn handle_session_key_register(
+    state: &mut ConnectionState,
+    pubkey: PublicKey,
+    signature: &[u8],
+) -> crate::Result<ServiceResponse> {
+    match state {
+        ConnectionState::Authenticated {
+            session_keyset,
+            pending_key_challenges,
+            ..
+        } => {
+            let challenge = pending_key_challenges.remove(&pubkey).ok_or_else(|| {
+                crate::Error::Auth(Box::new(AuthError::InvalidAuthConfiguration {
+                    reason: format!(
+                        "no outstanding SessionKeyChallenge for pubkey '{pubkey}'; \
+                         issue the challenge before registering"
+                    ),
+                }))
+            })?;
+            verify_challenge_response(&challenge, signature, &pubkey)
+                .map_err(|e| crate::Error::Auth(Box::new(e)))?;
+            session_keyset.insert(pubkey);
+            Ok(ServiceResponse::Ok)
+        }
+        _ => Err(crate::Error::Auth(Box::new(
+            AuthError::InvalidAuthConfiguration {
+                reason: "SessionKeyRegister requires an authenticated connection; \
+                     complete TrustedLogin* first"
+                    .to_string(),
+            },
+        ))),
     }
 }
 
@@ -749,7 +866,7 @@ async fn gate_entry_read(
 async fn dispatch_backend_op(
     instance: &Instance,
     _cache: &ServiceCache,
-    session_pubkey: &PublicKey,
+    acting_pubkey: &PublicKey,
     identity: &SigKey,
     _user_uuid: &str,
     op: BackendOp,
@@ -759,7 +876,7 @@ async fn dispatch_backend_op(
     match op {
         BackendOp::Get { id } => {
             let entry = backend.get(&id).await?;
-            gate_entry_read(instance, session_pubkey, identity, &entry).await?;
+            gate_entry_read(instance, acting_pubkey, identity, &entry).await?;
             Ok(ServiceResponse::Entry(entry))
         }
         BackendOp::SetInstanceMetadata { metadata } => {
@@ -875,7 +992,13 @@ mod tests {
             ConnectionState::Authenticated {
                 username: "u".to_string(),
                 user_uuid: "uu".to_string(),
-                session_pubkey: pubkey,
+                login_pubkey: pubkey.clone(),
+                session_keyset: {
+                    let mut s = HashSet::new();
+                    s.insert(pubkey);
+                    s
+                },
+                pending_key_challenges: HashMap::new(),
             },
         ];
 
@@ -896,11 +1019,23 @@ mod tests {
                 ConnectionState::Authenticated {
                     username,
                     user_uuid,
-                    session_pubkey,
+                    login_pubkey,
+                    session_keyset,
+                    pending_key_challenges,
                 } => {
                     assert_not_private_key(username, "Authenticated::username");
                     assert_not_private_key(user_uuid, "Authenticated::user_uuid");
-                    assert_not_private_key(session_pubkey, "Authenticated::session_pubkey");
+                    assert_not_private_key(login_pubkey, "Authenticated::login_pubkey");
+                    for k in session_keyset {
+                        assert_not_private_key(k, "Authenticated::session_keyset entry");
+                    }
+                    for (k, ch) in pending_key_challenges {
+                        assert_not_private_key(k, "Authenticated::pending_key_challenges key");
+                        assert_not_private_key(
+                            ch,
+                            "Authenticated::pending_key_challenges challenge",
+                        );
+                    }
                 }
             }
         }
