@@ -333,7 +333,14 @@ impl Backend {
     // === Internal primitives (local-only) ===
 
     pub async fn clear_crdt_cache(&self) -> Result<()> {
-        local_only!(self, "clear_crdt_cache", clear_crdt_cache())
+        match self {
+            Backend::Local(b) => b.clear_crdt_cache().await,
+            // No local cache exists on a connected instance — the daemon
+            // owns the cache server-side. Cache-invalidation calls from
+            // client-side test fixtures become no-ops.
+            #[cfg(all(unix, feature = "service"))]
+            Backend::Remote(_) => Ok(()),
+        }
     }
 
     /// Get cached CRDT state. Local delegates to BackendImpl; remote
