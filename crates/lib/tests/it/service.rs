@@ -17,7 +17,7 @@ use eidetica::service::protocol::{
 };
 use eidetica::store::{DocStore, PasswordStore};
 use tempfile::TempDir;
-use tokio::io::{ReadHalf, WriteHalf};
+use tokio::io::{AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::net::UnixStream;
 use tokio::sync::watch;
 
@@ -1031,4 +1031,99 @@ async fn test_submit_unauthorized_signer_stays_invisible_in_default_reads() {
         tips_after, initial_tips,
         "Verified frontier must be unchanged after a rejected submit"
     );
+}
+
+// === Connection resilience tests ===
+//
+// One bad connection (abrupt drop, garbage frame, partial write) must not
+// take the daemon down or poison state shared with other connections. These
+// are the minimum gates documented in the service-foundation review punch
+// list — extend them as the wire surface grows.
+
+/// Confirm the daemon survives a client that disconnects without a graceful
+/// shutdown after authenticating, and continues serving fresh clients with
+/// shared instance state still intact.
+#[tokio::test]
+async fn test_daemon_survives_abrupt_client_disconnect() {
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    create_user_via_admin(&server, "alice").await;
+
+    // Client A connects, logs in, then is dropped without any teardown.
+    {
+        let instance = Instance::connect(&socket_path).await.unwrap();
+        let _user = instance.login_user("alice", None).await.unwrap();
+        // Drop instance — the underlying UnixStream tears down without the
+        // server ever seeing an EOF-after-request boundary.
+    }
+
+    // Daemon must still answer fresh connections. Anything else (a `connect`
+    // hang, an authentication failure, a server crash) means abrupt drops are
+    // poisoning shared state.
+    let instance = Instance::connect(&socket_path).await.unwrap();
+    let user = instance.login_user("alice", None).await.unwrap();
+    assert_eq!(user.username(), "alice");
+}
+
+/// Confirm the daemon rejects a malformed (oversized) length-prefixed frame
+/// from a client without dying, and that an unrelated subsequent client can
+/// still complete a real RPC.
+#[tokio::test]
+async fn test_daemon_survives_malformed_frame_from_client() {
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    create_user_via_admin(&server, "alice").await;
+
+    // Raw client #1: complete the handshake, then send a length prefix that
+    // exceeds `MAX_FRAME_SIZE`. `read_frame` on the server side must reject
+    // and close this connection.
+    {
+        let (mut reader, mut writer) = raw_handshake(&socket_path).await;
+        let oversize_len = eidetica::service::protocol::MAX_FRAME_SIZE + 1;
+        writer
+            .write_all(&oversize_len.to_be_bytes())
+            .await
+            .expect("write of bogus header should succeed at the socket layer");
+        // The server is expected to drop the connection. Reading from the
+        // half-closed stream should either return EOF (None) or an I/O error;
+        // either way, the daemon must not panic or wedge.
+        let _ = tokio::time::timeout(
+            Duration::from_secs(2),
+            read_frame::<_, ServiceResponse>(&mut reader),
+        )
+        .await
+        .expect("server must close the bad connection within the timeout");
+    }
+
+    // Daemon should still serve a fresh connection.
+    let instance = Instance::connect(&socket_path).await.unwrap();
+    let user = instance.login_user("alice", None).await.unwrap();
+    assert_eq!(user.username(), "alice");
+}
+
+/// Confirm the daemon survives a client that disconnects partway through a
+/// request — specifically, a half-written length prefix followed by EOF.
+/// This exercises the `read_exact` failure path inside the server's framing
+/// loop.
+#[tokio::test]
+async fn test_daemon_survives_half_written_request_frame() {
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    create_user_via_admin(&server, "alice").await;
+
+    {
+        let (_reader, mut writer) = raw_handshake(&socket_path).await;
+        // Two bytes of a four-byte length prefix, then close. The server's
+        // next `read_exact(&mut [u8; 4])` should hit `UnexpectedEof`.
+        writer
+            .write_all(&[0x00, 0x00])
+            .await
+            .expect("partial write should succeed at the socket layer");
+        // Dropping `writer` (the WriteHalf) doesn't close the stream — the
+        // ReadHalf still holds the other half of the split. Explicit shutdown
+        // forces the server-side reader to see EOF promptly.
+        writer.shutdown().await.ok();
+        drop(writer);
+    }
+
+    let instance = Instance::connect(&socket_path).await.unwrap();
+    let user = instance.login_user("alice", None).await.unwrap();
+    assert_eq!(user.username(), "alice");
 }
