@@ -163,7 +163,8 @@ Access via `Transaction::get_index()`.
 # async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(Sqlite::in_memory().await?);
 # let instance = Instance::open(backend).await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -201,7 +202,8 @@ assert!(info.config.is_empty());
 # async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(Sqlite::in_memory().await?);
 # let instance = Instance::open(backend).await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -246,7 +248,8 @@ assert!(info.config.contains_key("compression"));
 # async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(Sqlite::in_memory().await?);
 # let instance = Instance::open(backend).await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");

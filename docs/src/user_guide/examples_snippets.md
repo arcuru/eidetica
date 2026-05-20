@@ -42,7 +42,8 @@ async fn main() -> eidetica::Result<()> {
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 let tree_name = "my_app_data";
 
@@ -76,7 +77,8 @@ println!("Using Database with root ID: {}", database.root_id());
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -126,7 +128,8 @@ struct Task {
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -180,7 +183,8 @@ println!("Table changes committed in entry: {}", entry_id);
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -229,7 +233,8 @@ match config_viewer.get("retry_count").await {
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -275,7 +280,8 @@ match tasks_viewer.search(|_| true).await {
 # async fn main() -> eidetica::Result<()> {
 # // Setup database for testing
 # let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -345,7 +351,8 @@ The `YDoc` store provides access to Y-CRDT (Yrs) documents for collaborative dat
 # // Setup database for testing
 # let backend = Sqlite::in_memory().await?;
 # let instance = Instance::open(Box::new(backend)).await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "y_crdt_example");
@@ -474,8 +481,9 @@ async fn main() -> eidetica::Result<()> {
     let backend = Sqlite::open(&db_path).await?;
     let instance = Instance::open(Box::new(backend)).await?;
 
-    // Create user and database
-    instance.create_user("alice", None).await?;
+    // Create user via the bootstrapped admin, then log in as the new user
+    let admin = instance.login_user("admin", Some("admin")).await?;
+    admin.admin().await?.create_user("alice", None).await?;
     let mut user = instance.login_user("alice", None).await?;
     let mut settings = Doc::new();
     settings.set("name", "persistent_example");
@@ -513,7 +521,8 @@ from the default (Verified-frontier) view until this node validates them.
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let default_key = user.get_default_key()?;
 # let database = user.create_database(Doc::new(), &default_key).await?;
@@ -573,12 +582,13 @@ let backend = Sqlite::in_memory().await?;
 let instance = Instance::create(Box::new(backend))?;
 instance.enable_sync()?;
 
-// Create passwordless user (or use existing)
+// Create passwordless user (or use existing) via the bootstrapped admin
 let username = "alice";
-let _ = instance.create_user(username, None);
+let admin = instance.login_user("admin", Some("admin")).await?;
+let _ = admin.admin().await?.create_user(username, None).await;
 
 // Login to get User session (handles key management automatically)
-let user = instance.login_user(username, None)?;
+let user = instance.login_user(username, None).await?;
 
 // User API automatically manages cryptographic keys for databases
 let default_key = user.get_default_key()?;

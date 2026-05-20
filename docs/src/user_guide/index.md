@@ -58,8 +58,9 @@ Here's a quick example showing creating a user, database, and writing new data.
 let backend = Sqlite::in_memory().await?;
 let instance = Instance::open(Box::new(backend)).await?;
 
-// Create and login a passwordless user
-instance.create_user("alice", None).await?;
+// Create and login a passwordless user via the bootstrapped admin
+let admin = instance.login_user("admin", Some("admin")).await?;
+admin.admin().await?.create_user("alice", None).await?;
 let mut user = instance.login_user("alice", None).await?;
 
 // Create a database

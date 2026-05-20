@@ -85,8 +85,9 @@ Once you've initialized a tracing subscriber, all Eidetica operations will autom
 let backend = Box::new(Sqlite::in_memory().await?);
 let instance = Instance::open(backend).await?;
 
-// Create and login user - this will log at INFO level
-instance.create_user("alice", None).await?;
+// Create and login user via the bootstrapped admin - this will log at INFO level
+let admin = instance.login_user("admin", Some("admin")).await?;
+admin.admin().await?.create_user("alice", None).await?;
 let mut user = instance.login_user("alice", None).await?;
 
 // Create a database - this will log at INFO level

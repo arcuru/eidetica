@@ -50,7 +50,8 @@ The `DocStore` store provides a document-oriented interface for storing and retr
 # async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(Sqlite::in_memory().await?);
 # let instance = Instance::open(backend).await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -91,7 +92,8 @@ When using `set_path("a.b.c", value)`, DocStore creates **nested maps**, not fla
 # async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(Sqlite::in_memory().await?);
 # let instance = Instance::open(backend).await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -140,7 +142,8 @@ The `Table<T>` store manages collections of serializable items, similar to a tab
 # async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(Sqlite::in_memory().await?);
 # let instance = Instance::open(backend).await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -215,7 +218,8 @@ The `SettingsStore` provides a specialized, type-safe interface for managing dat
 # async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(Sqlite::in_memory().await?);
 # let instance = Instance::open(backend).await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -252,7 +256,8 @@ transaction.commit().await?;
 # async fn main() -> eidetica::Result<()> {
 # // Setup database for testing
 # let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "stores_auth_example");
@@ -295,7 +300,8 @@ Multiple auth operations within a transaction are accumulated in a single entry:
 # async fn main() -> eidetica::Result<()> {
 # // Setup database for testing
 # let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "complex_auth_example");
@@ -370,7 +376,8 @@ The `YDoc` store provides integration with Y-CRDT (Yjs) for real-time collaborat
 # // Setup database for testing
 # let backend = Sqlite::in_memory().await?;
 # let instance = Instance::open(Box::new(backend)).await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "y_crdt_stores");
@@ -450,7 +457,8 @@ When you first access a Store using `Transaction::get_store()`, it's automatical
 # async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(Sqlite::in_memory().await?);
 # let instance = Instance::open(backend).await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -486,7 +494,8 @@ Use `get_index()` to query information about registered subtrees:
 # async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(Sqlite::in_memory().await?);
 # let instance = Instance::open(backend).await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");

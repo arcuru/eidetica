@@ -41,13 +41,16 @@ Here's a simple example:
     // Create a new in-memory backend
     let backend = Sqlite::in_memory().await?;
 
-    // Create the Instance
+    // Create the Instance (auto-bootstraps an admin/admin user)
     let instance = Instance::open(Box::new(backend)).await?;
 
-    // Create a passwordless user (perfect for embedded/single-user apps)
-    instance.create_user("alice", None).await?;
+    // Log in as admin so we can create application users
+    let admin = instance.login_user("admin", Some("admin")).await?;
 
-    // Login to get a User session
+    // Create a passwordless user via the admin (perfect for embedded/single-user apps)
+    admin.admin().await?.create_user("alice", None).await?;
+
+    // Login to get Alice's User session
     let mut user = instance.login_user("alice", None).await?;
 
     // Create a database in the user's context
@@ -77,8 +80,9 @@ async fn main() -> eidetica::Result<()> {
     let backend = Sqlite::open("my_data.db").await?;
     let instance = Instance::open(Box::new(backend)).await?;
 
-    // Create user and database as before
-    instance.create_user("alice", None).await?;
+    // Create user via the bootstrapped admin
+    let admin = instance.login_user("admin", Some("admin")).await?;
+    admin.admin().await?.create_user("alice", None).await?;
     let mut user = instance.login_user("alice", None).await?;
     // ... all changes are automatically persisted to my_data.db
 
@@ -123,15 +127,17 @@ All database and key operations happen through a User session after login. This 
 **Passwordless Users** (embedded/single-user apps):
 
 ```rust,ignore
-instance.create_user("alice", None)?;
-let user = instance.login_user("alice", None)?;
+let admin = instance.login_user("admin", Some("admin")).await?;
+admin.admin().await?.create_user("alice", None).await?;
+let user = instance.login_user("alice", None).await?;
 ```
 
 **Password-Protected Users** (multi-user apps):
 
 ```rust,ignore
-instance.create_user("bob", Some("password123"))?;
-let user = instance.login_user("bob", Some("password123"))?;
+let admin = instance.login_user("admin", Some("admin")).await?;
+admin.admin().await?.create_user("bob", Some("password123")).await?;
+let user = instance.login_user("bob", Some("password123")).await?;
 ```
 
 The downside of password protection is a slow login. `instance.login_user` needs to verify the password and decrypt keys, which by design is a relatively slow operation.
@@ -166,7 +172,8 @@ All operations in Eidetica happen within an atomic **Transaction**:
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -207,7 +214,8 @@ txn.commit().await?;
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -255,7 +263,8 @@ for (id, person) in all_people {
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
@@ -300,7 +309,8 @@ txn.commit().await?;
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
-# instance.create_user("alice", None).await?;
+# let admin = instance.login_user("admin", Some("admin")).await?;
+# admin.admin().await?.create_user("alice", None).await?;
 # let mut user = instance.login_user("alice", None).await?;
 # let mut settings = Doc::new();
 # settings.set("name", "test_db");
