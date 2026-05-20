@@ -9,12 +9,12 @@ use eidetica::{
     store::DocStore,
 };
 
-use crate::helpers::test_instance_with_user_and_key;
+use crate::helpers::test_local_instance_with_user_and_key;
 
 #[tokio::test]
 async fn test_settings_tips_in_metadata() {
     let (_instance, mut user, key_id) =
-        test_instance_with_user_and_key("test_user", Some("test_key")).await;
+        test_local_instance_with_user_and_key("test_user", Some("test_key")).await;
 
     // Create initial settings
     let mut settings = Doc::new();
@@ -96,7 +96,7 @@ async fn test_settings_tips_in_metadata() {
 #[tokio::test]
 async fn test_entry_get_settings_from_subtree() {
     let (_instance, mut user, key_id) =
-        test_instance_with_user_and_key("test_user", Some("test_key")).await;
+        test_local_instance_with_user_and_key("test_user", Some("test_key")).await;
 
     // Create initial settings with some data
     let mut settings = Doc::new();
@@ -137,7 +137,7 @@ async fn test_entry_get_settings_from_subtree() {
 #[tokio::test]
 async fn test_settings_tips_propagation() {
     let (_instance, mut user, key_id) =
-        test_instance_with_user_and_key("test_user", Some("test_key")).await;
+        test_local_instance_with_user_and_key("test_user", Some("test_key")).await;
 
     // Create a tree
     let settings = Doc::new();
@@ -209,7 +209,7 @@ async fn test_settings_tips_propagation() {
 async fn test_settings_metadata_with_complex_operations() {
     // Test settings metadata handling with complex operations
     let (_instance, mut user, key_id) =
-        test_instance_with_user_and_key("test_user", Some("complex_key")).await;
+        test_local_instance_with_user_and_key("test_user", Some("complex_key")).await;
 
     // Create tree with initial settings
     let mut initial_settings = Doc::new();
@@ -313,7 +313,7 @@ async fn test_settings_metadata_with_complex_operations() {
 async fn test_settings_metadata_with_branching() {
     // Test settings metadata with branching scenarios
     let (_instance, mut user, key_id) =
-        test_instance_with_user_and_key("test_user", Some("branch_key")).await;
+        test_local_instance_with_user_and_key("test_user", Some("branch_key")).await;
 
     let tree = user.create_database(Doc::new(), &key_id).await.unwrap();
 
@@ -389,7 +389,7 @@ async fn test_settings_metadata_with_branching() {
 async fn test_metadata_consistency_across_operations() {
     // Test that metadata is consistently tracked across different operation types
     let (_instance, mut user, key_id) =
-        test_instance_with_user_and_key("test_user", Some("consistency_key")).await;
+        test_local_instance_with_user_and_key("test_user", Some("consistency_key")).await;
 
     let mut settings = Doc::new();
     settings.set("initial", "true".to_string());

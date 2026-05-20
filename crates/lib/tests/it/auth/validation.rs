@@ -19,7 +19,12 @@ use super::helpers::{
     test_operation_succeeds,
 };
 use crate::create_auth_keys;
-use crate::helpers::setup_db;
+// Auth validation tests exercise signing/verification paths that need a
+// local backend; bypass the service routing for the default `setup_db`.
+use crate::helpers::test_local_instance_with_user;
+async fn setup_db() -> (eidetica::Instance, eidetica::user::User) {
+    test_local_instance_with_user("test_user").await
+}
 
 #[tokio::test]
 async fn test_authentication_validation_revoked_key() {

@@ -3,7 +3,7 @@
 //! This test verifies that writes to one instance automatically sync to another
 //! without any manual hook registration.
 
-use crate::helpers::test_instance;
+use crate::helpers::test_local_instance as test_instance;
 use eidetica::{
     Result,
     crdt::Doc,

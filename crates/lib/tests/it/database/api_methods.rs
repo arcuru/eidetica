@@ -21,7 +21,7 @@ use crate::helpers::*;
 /// Test basic entry retrieval functionality
 #[tokio::test]
 async fn test_get_entry_basic() {
-    let (_instance, tree, key_id) = setup_tree_with_user_key().await;
+    let (_instance, tree, key_id) = setup_tree_with_user_key_local().await;
 
     // Create an entry using helper
     let entry_id = add_data_to_subtree(&tree, "data", &[("test_key", "test_value")]).await;
@@ -39,7 +39,7 @@ async fn test_get_entry_basic() {
 /// Test get_entries with multiple entries
 #[tokio::test]
 async fn test_get_entries_multiple() {
-    let (_instance, tree, _key_id) = setup_tree_with_user_key().await;
+    let (_instance, tree, _key_id) = setup_tree_with_user_key_local().await;
 
     // Create multiple entries using helper
     let entry_ids = create_linear_chain(&tree, "data", 3).await;
@@ -59,7 +59,7 @@ async fn test_get_entries_multiple() {
 /// Test comprehensive error handling for entry retrieval
 #[tokio::test]
 async fn test_entry_retrieval_error_handling() {
-    let (_instance, tree, _key_id) = setup_tree_with_user_key().await;
+    let (_instance, tree, _key_id) = setup_tree_with_user_key_local().await;
 
     // Create one valid entry using helper
     let entry_id = add_data_to_subtree(&tree, "data", &[("key", "value")]).await;
@@ -89,7 +89,7 @@ async fn test_entry_retrieval_error_handling() {
 #[tokio::test]
 async fn test_tree_validation_rejects_foreign_entries() {
     let (_instance, mut user, key_id) =
-        test_instance_with_user_and_key("test_user", Some("test_key")).await;
+        test_local_instance_with_user_and_key("test_user", Some("test_key")).await;
 
     // Create two separate trees with different initial settings to ensure different root IDs
     let mut settings1 = Doc::new();
@@ -165,7 +165,7 @@ async fn test_tree_validation_rejects_foreign_entries() {
 #[tokio::test]
 async fn test_tree_validation_get_entries() {
     let (_instance, mut user, key_id) =
-        test_instance_with_user_and_key("test_user", Some("test_key")).await;
+        test_local_instance_with_user_and_key("test_user", Some("test_key")).await;
 
     // Create two separate trees with different initial settings to ensure different root IDs
     let mut settings1 = Doc::new();
@@ -272,7 +272,7 @@ async fn test_auth_helpers_signed_entries() {
 /// Test authentication helpers with default authenticated entries
 #[tokio::test]
 async fn test_auth_helpers_default_authenticated_entries() {
-    let (_instance, tree, key_id) = setup_tree_with_user_key().await;
+    let (_instance, tree, key_id) = setup_tree_with_user_key_local().await;
     let key_id_str = key_id.to_string();
 
     // Create entry using default authentication helper
@@ -326,7 +326,7 @@ async fn test_verify_entry_signature_auth_scenarios() {
 async fn test_verify_entry_signature_unauthorized_key() {
     // Create user with first key (will be authorized)
     let (instance, mut user, authorized_key_id) =
-        test_instance_with_user_and_key("test_user", Some("AUTHORIZED_KEY")).await;
+        test_local_instance_with_user_and_key("test_user", Some("AUTHORIZED_KEY")).await;
 
     // Add second key (will NOT be authorized in the database)
     let unauthorized_key_id = user
@@ -388,7 +388,7 @@ async fn test_verify_entry_signature_validates_tree_auth() {
 /// Test tree queries functionality
 #[tokio::test]
 async fn test_tree_queries() {
-    let (_instance, tree, _key_id) = setup_tree_with_user_key().await;
+    let (_instance, tree, _key_id) = setup_tree_with_user_key_local().await;
 
     // Get initial entries
     let initial_entries = tree
@@ -434,7 +434,7 @@ async fn test_tree_queries() {
 /// Test performance: batch get_entries vs individual get_entry calls
 #[tokio::test]
 async fn test_batch_vs_individual_retrieval() {
-    let (_instance, tree, _key_id) = setup_tree_with_user_key().await;
+    let (_instance, tree, _key_id) = setup_tree_with_user_key_local().await;
 
     // Create multiple entries
     let mut entry_ids = Vec::new();
@@ -481,7 +481,7 @@ async fn test_batch_vs_individual_retrieval() {
 /// triggers it when a tip is still `Unverified`.
 #[tokio::test]
 async fn test_database_verify_promotes_unverified_and_access_hook() {
-    let (instance, tree, _key_id) = setup_tree_with_user_key().await;
+    let (instance, tree, _key_id) = setup_tree_with_user_key_local().await;
     let backend = instance.backend();
 
     // A normally-committed entry is stored Verified by the local validation
@@ -536,7 +536,7 @@ async fn test_database_verify_promotes_unverified_and_access_hook() {
 /// never fires — the cut is purely the frontier logic.
 #[tokio::test]
 async fn test_verified_frontier_prefix_cut_and_allow_unverified() {
-    let (instance, tree, _key_id) = setup_tree_with_user_key().await;
+    let (instance, tree, _key_id) = setup_tree_with_user_key_local().await;
     let backend = instance.backend();
 
     // Linear main-branch DAG: root -> a -> b -> c, all locally authored and
@@ -579,7 +579,7 @@ async fn test_verified_frontier_prefix_cut_and_allow_unverified() {
 /// even though the descendant's own signature is perfectly valid.
 #[tokio::test]
 async fn test_verify_is_prefix_closed() {
-    let (instance, tree, _key_id) = setup_tree_with_user_key().await;
+    let (instance, tree, _key_id) = setup_tree_with_user_key_local().await;
     let backend = instance.backend();
 
     // root -> a -> b, all locally authored ⇒ all Verified.
@@ -646,7 +646,7 @@ async fn sync_all_unverified(
 /// parent is `Verified`).
 #[tokio::test]
 async fn test_cross_instance_sync_then_verify_cascade() {
-    let (_instance_a, tree_a, _key) = setup_tree_with_user_key().await;
+    let (_instance_a, tree_a, _key) = setup_tree_with_user_key_local().await;
     // Linear history root -> a -> b -> c, all Verified on instance A.
     add_data_to_subtree(&tree_a, "data", &[("s", "a")]).await;
     add_data_to_subtree(&tree_a, "data", &[("s", "b")]).await;
@@ -654,7 +654,7 @@ async fn test_cross_instance_sync_then_verify_cascade() {
     let root = tree_a.root_id().clone();
 
     // Arrive on instance B as Unverified.
-    let instance_b = test_instance().await;
+    let instance_b = test_local_instance().await;
     let backend_b = instance_b.backend();
     let ids = sync_all_unverified(&tree_a, backend_b).await;
     assert!(ids.len() >= 4, "expected root+a+b+c, got {}", ids.len());
@@ -689,7 +689,7 @@ async fn test_cross_instance_sync_then_verify_cascade() {
 /// This is the entire reason `Unverified` and `Failed` are distinct states.
 #[tokio::test]
 async fn test_incomplete_pinned_settings_stays_unverified_then_recovers() {
-    let (_instance_a, tree_a, _key) = setup_tree_with_user_key().await;
+    let (_instance_a, tree_a, _key) = setup_tree_with_user_key_local().await;
     let root = tree_a.root_id().clone();
 
     // A settings change `s` (a distinct `_settings`-bearing entry), then a
@@ -707,7 +707,7 @@ async fn test_incomplete_pinned_settings_stays_unverified_then_recovers() {
     // Sync everything to B *except* the settings entry `s`. `get_tree` is a
     // flat in-tree filter, so `d` is still visible to verify() — its pinned
     // `_settings` closure is just incomplete.
-    let instance_b = test_instance().await;
+    let instance_b = test_local_instance().await;
     let backend_b = instance_b.backend();
     for e in tree_a.get_all_entries().await.unwrap() {
         if e.id() == s {
@@ -746,7 +746,7 @@ async fn test_incomplete_pinned_settings_stays_unverified_then_recovers() {
 /// Verified frontier cuts at the surviving verified branch.
 #[tokio::test]
 async fn test_diamond_dag_taint_propagation() {
-    let (instance, tree, _key) = setup_tree_with_user_key().await;
+    let (instance, tree, _key) = setup_tree_with_user_key_local().await;
     let backend = instance.backend();
     let root = tree.root_id().clone();
 
@@ -814,7 +814,7 @@ async fn test_diamond_dag_taint_propagation() {
 /// handle's Verified-frontier view stays unaffected by that write.
 #[tokio::test]
 async fn test_allow_unverified_composes_with_key_for_writes() {
-    let (instance, tree, _key) = setup_tree_with_user_key().await;
+    let (instance, tree, _key) = setup_tree_with_user_key_local().await;
     let backend = instance.backend();
 
     let a = add_data_to_subtree(&tree, "data", &[("s", "a")]).await;
@@ -859,7 +859,7 @@ async fn test_allow_unverified_composes_with_key_for_writes() {
 /// in the opportunistic pass.
 #[tokio::test]
 async fn test_access_hook_promotes_multiple_unverified_tips() {
-    let (instance, tree, _key) = setup_tree_with_user_key().await;
+    let (instance, tree, _key) = setup_tree_with_user_key_local().await;
     let backend = instance.backend();
     let root = tree.root_id().clone();
 
@@ -899,7 +899,7 @@ async fn test_access_hook_promotes_multiple_unverified_tips() {
 /// reports all-zero and changes nothing.
 #[tokio::test]
 async fn test_verify_report_counts_and_idempotent() {
-    let (instance, tree, _key) = setup_tree_with_user_key().await;
+    let (instance, tree, _key) = setup_tree_with_user_key_local().await;
     let backend = instance.backend();
 
     // root -> a -> b -> c -> d, all Verified by local commit.
@@ -962,7 +962,7 @@ async fn test_verify_report_counts_and_idempotent() {
 /// still verify, because at the pinned settings that key was authorized.
 #[tokio::test]
 async fn test_verify_uses_pinned_not_current_settings() {
-    let (instance, tree, key_id) = setup_tree_with_user_key().await;
+    let (instance, tree, key_id) = setup_tree_with_user_key_local().await;
     let backend = instance.backend();
 
     // `d` is signed by the bootstrap admin key and pins the genesis
@@ -1078,7 +1078,7 @@ async fn test_genesis_verifies_after_persist_reload() {
 /// it.
 #[tokio::test]
 async fn test_deep_chain_frontier_cut() {
-    let (instance, tree, _key) = setup_tree_with_user_key().await;
+    let (instance, tree, _key) = setup_tree_with_user_key_local().await;
     let backend = instance.backend();
 
     let mut chain = Vec::new();

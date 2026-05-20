@@ -73,7 +73,7 @@ async fn test_mandatory_authentication() {
 
 #[tokio::test]
 async fn test_validation_pipeline_with_concurrent_settings_changes() {
-    let (instance, mut user) = crate::helpers::test_instance_with_user("test_user").await;
+    let (instance, mut user) = crate::helpers::test_local_instance_with_user("test_user").await;
 
     // Generate keys for testing
     let key1_id = user
@@ -153,7 +153,7 @@ async fn test_validation_pipeline_with_concurrent_settings_changes() {
 
 #[tokio::test]
 async fn test_prevent_auth_corruption() {
-    let (_instance, mut user) = crate::helpers::test_instance_with_user("test_user").await;
+    let (_instance, mut user) = crate::helpers::test_local_instance_with_user("test_user").await;
 
     let valid_key_id = user
         .add_private_key(Some("VALID_KEY"))

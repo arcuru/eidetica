@@ -17,7 +17,7 @@ use super::helpers::{
     enable_sync_for_instance_database, set_global_wildcard_permission, setup_sync_enabled_client,
     setup_sync_enabled_server, setup_sync_enabled_server_with_auto_approve, start_sync_server,
 };
-use crate::helpers::test_instance_with_user_and_key;
+use crate::helpers::test_local_instance_with_user_and_key as test_instance_with_user_and_key;
 use eidetica::{
     Database,
     auth::{Permission, generate_keypair},

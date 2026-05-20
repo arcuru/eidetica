@@ -50,7 +50,7 @@ pub async fn setup_user_and_tree_with_key(
     username: &str,
     key_name: &str,
 ) -> (Instance, User, Database, PublicKey) {
-    let (instance, mut user) = crate::helpers::test_instance_with_user(username).await;
+    let (instance, mut user) = crate::helpers::test_local_instance_with_user(username).await;
 
     // Add a key with the specified display name
     let key_id = user
@@ -81,7 +81,7 @@ pub async fn setup_test_user_with_keys(
     username: &str,
     key_names: &[&str],
 ) -> (Instance, User, Vec<PublicKey>) {
-    let (instance, mut user) = crate::helpers::test_instance_with_user(username).await;
+    let (instance, mut user) = crate::helpers::test_local_instance_with_user(username).await;
 
     let mut key_ids = Vec::new();
 
@@ -307,7 +307,7 @@ impl DelegationChain {
     /// The `create_chain_delegation()` method uses hardcoded delegation step names
     /// (`"delegate_level_{i}"`) that won't match any keys in the auth settings.
     pub async fn new_with_user(username: &str, levels: usize) -> Result<Self> {
-        let (db, mut user) = crate::helpers::test_instance_with_user(username).await;
+        let (db, mut user) = crate::helpers::test_local_instance_with_user(username).await;
         let mut trees = Vec::new();
         let mut keys = Vec::new(); // Will store display names
 

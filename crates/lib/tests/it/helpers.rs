@@ -145,6 +145,22 @@ pub async fn test_local_instance() -> Instance {
         .expect("Failed to create local test instance")
 }
 
+/// Local-only counterpart of `test_instance_with_user`, for subsystem
+/// tests that need a logged-in user against a process-local instance
+/// regardless of `TEST_BACKEND`. See [`test_local_instance`].
+#[allow(dead_code)]
+pub async fn test_local_instance_with_user(username: &str) -> (Instance, User) {
+    let instance = test_local_instance().await;
+    create_user(&instance, username, None)
+        .await
+        .expect("Failed to create user");
+    let user = instance
+        .login_user(username, None)
+        .await
+        .expect("Failed to login user");
+    (instance, user)
+}
+
 /// Local-only counterpart of `test_instance_with_user_and_key`, for
 /// subsystem tests that need a logged-in user against a process-local
 /// instance regardless of `TEST_BACKEND`. See [`test_local_instance`].
@@ -420,6 +436,26 @@ async fn test_remote_instance_with_user_and_key(
 pub async fn setup_tree_with_user_key() -> (Instance, Database, PublicKey) {
     let (instance, mut user, key_id) =
         test_instance_with_user_and_key("test_user", Some("test_key")).await;
+
+    let mut settings = Doc::new();
+    settings.set("name", "test_tree");
+
+    let tree = user
+        .create_database(settings, &key_id)
+        .await
+        .expect("Failed to create tree");
+
+    (instance, tree, key_id)
+}
+
+/// Local-only variant of [`setup_tree_with_user_key`], for tests that
+/// poke at backend internals (`get_verification_status`,
+/// `update_verification_status`, `all_roots`, etc.) which have no wire
+/// equivalent. See [`test_local_instance`].
+#[allow(dead_code)]
+pub async fn setup_tree_with_user_key_local() -> (Instance, Database, PublicKey) {
+    let (instance, mut user, key_id) =
+        test_local_instance_with_user_and_key("test_user", Some("test_key")).await;
 
     let mut settings = Doc::new();
     settings.set("name", "test_tree");

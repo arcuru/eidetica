@@ -36,13 +36,18 @@ pub async fn setup_instance() -> Instance {
 /// Create an Instance with a single user already created
 ///
 /// Returns (Instance, username) for easy access.
-/// Uses the bootstrapped admin user to create new users — works on both
-/// local and remote (service) Instances.
+///
+/// Uses an always-local instance: the failing test patterns that go on
+/// to log in multiple sessions for the same user against this instance
+/// (e.g. multi-device key management) rely on each session seeing keys
+/// that other sessions added, which works naturally with a process-local
+/// instance. See [`setup_two_passwordless_users`] for the
+/// one-identity-per-connection rationale.
 pub async fn setup_instance_with_user(
     username: &str,
     password: Option<&str>,
 ) -> (Instance, String) {
-    let instance = setup_instance().await;
+    let instance = crate::helpers::test_local_instance().await;
     admin_create_user(&instance, username, password).await;
     (instance, username.to_string())
 }
@@ -50,11 +55,16 @@ pub async fn setup_instance_with_user(
 /// Create an Instance with multiple users
 ///
 /// Returns (Instance, Vec<username>).
-/// Uses the bootstrapped admin user — works on both local and remote.
+///
+/// Uses an always-local instance: tests that build a list of users with
+/// this helper invariably go on to log in as several of them against the
+/// same `Instance`, and the wire model can hold only one session per
+/// connection. See [`setup_two_passwordless_users`] for the same
+/// reasoning.
 pub async fn setup_instance_with_users(
     user_configs: &[(&str, Option<&str>)],
 ) -> (Instance, Vec<String>) {
-    let instance = setup_instance().await;
+    let instance = crate::helpers::test_local_instance().await;
     let mut usernames = Vec::new();
 
     for (username, password) in user_configs {
@@ -142,11 +152,17 @@ pub async fn create_database_with_id(user: &mut User, name: &str) -> (Database, 
 /// Setup two users on the same instance (passwordless)
 ///
 /// Returns (Instance, User1, User2, username1, username2)
+///
+/// Uses an always-local instance: the wire connection model is
+/// one-identity-per-connection, so two `User` sessions sharing a single
+/// connected `Instance` would both wedge against the same `session_pubkey`
+/// (whichever user logged in last). These tests exercise process-local
+/// multi-user semantics that map naturally onto a local instance.
 pub async fn setup_two_passwordless_users(
     username1: &str,
     username2: &str,
 ) -> (Instance, User, User, String, String) {
-    let instance = setup_instance().await;
+    let instance = crate::helpers::test_local_instance().await;
     admin_create_user(&instance, username1, None).await;
     admin_create_user(&instance, username2, None).await;
 
@@ -165,12 +181,14 @@ pub async fn setup_two_passwordless_users(
 /// Setup two users with one database shared via bootstrap
 ///
 /// Returns (Instance, User1 with database, User2, Database, DatabaseID)
+///
+/// Local-only — see [`setup_two_passwordless_users`].
 pub async fn setup_users_with_shared_database(
     owner_name: &str,
     requester_name: &str,
     db_name: &str,
 ) -> (Instance, User, User, Database, ID) {
-    let instance = setup_instance().await;
+    let instance = crate::helpers::test_local_instance().await;
     admin_create_user(&instance, owner_name, None).await;
     admin_create_user(&instance, requester_name, None).await;
 
@@ -293,12 +311,16 @@ pub async fn test_complete_user_lifecycle(
 /// Multi-user collaboration workflow: User A creates DB → User B requests access → User A approves
 ///
 /// Returns (Instance, UserA, UserB, SharedDatabase, Sync) for verification
+///
+/// Local-only — `Sync::new` needs a process-local device key, and the
+/// multi-user pattern (two `User` sessions on one `Instance`) maps onto a
+/// local instance (see [`setup_two_passwordless_users`]).
 pub async fn test_multi_user_bootstrap_workflow(
     owner_name: &str,
     requester_name: &str,
     db_name: &str,
 ) -> (Instance, User, User, Database, Sync, ID) {
-    let instance = setup_instance().await;
+    let instance = crate::helpers::test_local_instance().await;
 
     // Create both users
     admin_create_user(&instance, owner_name, None).await;
@@ -322,11 +344,14 @@ pub async fn test_multi_user_bootstrap_workflow(
 /// Concurrent database operations: Multiple users creating databases simultaneously
 ///
 /// Returns (Instance, Vec<User>, Vec<Database>) for verification
+///
+/// Local-only — see [`setup_two_passwordless_users`] for the
+/// one-identity-per-connection rationale.
 pub async fn test_concurrent_database_creation(
     user_count: usize,
     databases_per_user: usize,
 ) -> (Instance, Vec<User>, Vec<Vec<Database>>) {
-    let instance = setup_instance().await;
+    let instance = crate::helpers::test_local_instance().await;
     let mut users = Vec::new();
     let mut all_databases = Vec::new();
 

@@ -7,7 +7,7 @@ use eidetica::{
     },
 };
 
-use crate::helpers::test_instance;
+use crate::helpers::test_local_instance as test_instance;
 
 /// Test that both HTTP and Iroh transports use the same message handler
 /// by directly testing the shared handler function.
