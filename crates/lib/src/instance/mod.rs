@@ -720,6 +720,13 @@ impl Instance {
         signing_key: &PrivateKey,
     ) -> Result<Database> {
         if let Some(conn) = self.remote_connection() {
+            // The daemon gates per-tree reads against the acting pubkey
+            // from the request's identity hint, and the hint here is
+            // `signing_key.public_key()` (the caller's chosen identity for
+            // this DB). The hint must be in the connection's session keyset
+            // — register it now so subsequent reads through the returned
+            // `RemoteDatabaseOps` are accepted.
+            conn.register_session_key(signing_key).await?;
             let identity = SigKey::from_pubkey(&signing_key.public_key());
             return Ok(Database::open_remote(self, conn, root_id, identity)
                 .await?
@@ -904,16 +911,22 @@ impl Instance {
         // A remote Instance must not run sync client-side: building a Sync
         // here would spin up a background sync engine that drives RPCs against
         // the daemon's backend — duplicating (and racing) the daemon's own
-        // sync. Sync is owned by the process that owns the Instance. Fail
-        // loudly instead of silently constructing a useless module. A future
-        // `EnableSync` RPC will delegate this to the server (see
-        // `service` module § V1 Limitations).
+        // sync. Sync is owned by the process that owns the Instance.
+        //
+        // Return `Ok(())` so callers on a connected instance get the same
+        // no-op success they would on a local instance where sync is already
+        // running daemon-side. Long-term this should become an admin-gated
+        // RPC (parallel to `InstanceAdmin::create_user`) that lets a client
+        // ask the daemon to enable its sync subsystem; until that ships,
+        // the client-side `enable_sync` is intentionally a silent no-op
+        // because the daemon either already has sync running or it doesn't,
+        // and the client can't change that.
+        //
+        // TODO(service): add an admin-gated `EnableSync` RPC and route
+        // through `InstanceAdmin`, so a client can enable sync remotely.
         #[cfg(all(unix, feature = "service"))]
         if let Backend::Remote(_) = self.backend() {
-            return Err(InstanceError::OperationNotSupported {
-                operation: "enable_sync on a remote Instance (sync runs daemon-side)".to_string(),
-            }
-            .into());
+            return Ok(());
         }
 
         // Check InstanceMetadata for existing sync_db
@@ -1108,7 +1121,24 @@ impl Instance {
         let lock = self.tree_lock(tree_id);
         let _guard = lock.lock().await;
 
-        // 1. Capture tips before the write so callbacks know what changed
+        // 1. Capture tips before the write so callbacks know what changed.
+        //
+        // On a connected (remote) instance, the daemon owns the canonical
+        // DAG and the client's local backend has nothing to read; reading
+        // tips here would also gate against the *connection's* login pubkey
+        // (not the per-DB acting identity from the Database handle), which
+        // breaks the legitimate "create-a-tree-with-a-non-login-key" flow.
+        // The server's own callback path observes writes via
+        // `NotifyEntryWritten`; client-side callbacks on remote instances
+        // get an empty `previous_tips`, matching the existing approximation
+        // in `dispatch_write_callbacks`.
+        #[cfg(all(unix, feature = "service"))]
+        let previous_tips = if self.remote_connection().is_some() {
+            Vec::new()
+        } else {
+            self.get_tips(tree_id).await?
+        };
+        #[cfg(not(all(unix, feature = "service")))]
         let previous_tips = self.get_tips(tree_id).await?;
 
         // 2. Persist to backend storage (and notify server for remote backends)
