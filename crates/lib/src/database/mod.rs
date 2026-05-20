@@ -1230,9 +1230,15 @@ impl Database {
     /// # }
     /// ```
     pub async fn get_entry<I: Into<ID>>(&self, entry_id: I) -> Result<Entry> {
-        let instance = self.instance()?;
         let id = entry_id.into();
-        let entry = instance.get(&id).await?;
+        // Route through `self.ops()` so handles built via `Database::create`
+        // or `Database::open_remote` read with the per-DB identity from
+        // their `RemoteDatabaseOps`. Going through `instance.get(id)` would
+        // use the connection's login pubkey, which on a remote instance is
+        // denied by the per-tree gate when the login key isn't a member of
+        // this tree (e.g. user-tree key created via `User::add_private_key`
+        // and used to author a database that doesn't grant the root key).
+        let entry = self.ops().get(&id).await?;
 
         // Check if the entry belongs to this database
         if !entry.in_tree(&self.root) {
