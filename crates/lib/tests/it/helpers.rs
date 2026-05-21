@@ -503,11 +503,6 @@ pub async fn setup_db() -> (Instance, User) {
     test_instance_with_user(DEFAULT_TEST_USER).await
 }
 
-/// Creates an instance without any users (for tests that manage users manually)
-pub async fn setup_empty_db() -> Instance {
-    test_instance().await
-}
-
 /// Creates a basic tree using User API with default key
 ///
 /// Note: Returns the Instance along with the Database because Database holds a weak reference.

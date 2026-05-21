@@ -516,7 +516,7 @@ async fn dispatch_database_op(
                 .put_entry(
                     &root_id,
                     crate::backend::VerificationStatus::Unverified,
-                    entry,
+                    *entry,
                     WriteSource::Remote,
                 )
                 .await?;

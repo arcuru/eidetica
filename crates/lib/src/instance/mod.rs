@@ -1200,7 +1200,7 @@ impl Instance {
 
         // 2. Persist to backend storage (and notify server for remote backends)
         self.backend()
-            .write_entry(tree_id, verification, entry.clone(), source)
+            .write_entry(verification, entry.clone(), source)
             .await?;
 
         // 3. Build event and fire callbacks
