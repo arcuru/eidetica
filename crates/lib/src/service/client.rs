@@ -39,7 +39,7 @@ use crate::user::types::{KeyStorage, UserInfo};
 
 /// Default cap on the client-side CRDT-state LRU. Matches `MAX_FRAME_SIZE`
 /// (64 MiB) so a single oversized cached blob can still ride the wire.
-pub(crate) const CLIENT_CACHE_CAPACITY_BYTES: usize = 64 * 1024 * 1024;
+const CLIENT_CACHE_CAPACITY_BYTES: usize = 64 * 1024 * 1024;
 
 /// Process-lifetime LRU of materialized CRDT states for this connection.
 ///
@@ -439,20 +439,6 @@ impl RemoteConnection {
         }
     }
 
-    fn expect_entries(resp: ServiceResponse) -> crate::Result<Vec<Entry>> {
-        match resp {
-            ServiceResponse::Entries(e) => Ok(e),
-            other => Err(unexpected_response("Entries", &other)),
-        }
-    }
-
-    fn expect_ids(resp: ServiceResponse) -> crate::Result<Vec<ID>> {
-        match resp {
-            ServiceResponse::Ids(ids) => Ok(ids),
-            other => Err(unexpected_response("Ids", &other)),
-        }
-    }
-
     fn expect_ok(resp: ServiceResponse) -> crate::Result<()> {
         match resp {
             ServiceResponse::Ok => Ok(()),
@@ -500,7 +486,7 @@ impl RemoteConnection {
                     root_id: ID::default(),
                     identity,
                     request: BackendOp::SetInstanceMetadata {
-                        metadata: metadata.clone(),
+                        metadata: Box::new(metadata.clone()),
                     },
                 },
             )))
@@ -600,7 +586,13 @@ impl RemoteConnection {
         entry: Entry,
     ) -> crate::Result<()> {
         let resp = self
-            .db_request(root_id, identity, DatabaseOp::SubmitSignedEntry { entry })
+            .db_request(
+                root_id,
+                identity,
+                DatabaseOp::SubmitSignedEntry {
+                    entry: Box::new(entry),
+                },
+            )
             .await?;
         match resp {
             ServiceResponse::Ok => Ok(()),

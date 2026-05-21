@@ -433,7 +433,6 @@ impl Backend {
     /// Local callback dispatch is handled by `Instance::put_entry()`.
     pub async fn write_entry(
         &self,
-        tree_id: &ID,
         verification: VerificationStatus,
         entry: Entry,
         source: WriteSource,

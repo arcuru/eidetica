@@ -75,8 +75,9 @@ pub enum BackendOp {
     /// Fetch a single entry by id. Gated post-fetch by the entry's owning tree.
     Get { id: ID },
     /// Rewrite the daemon's instance metadata (system-DB pointers).
-    /// Gated by `Admin` on `_databases`.
-    SetInstanceMetadata { metadata: InstanceMetadata },
+    /// Gated by `Admin` on `_databases`. Boxed to keep the enum's stack
+    /// footprint small — `InstanceMetadata` dominates the variant size.
+    SetInstanceMetadata { metadata: Box<InstanceMetadata> },
 }
 
 impl BackendOp {
@@ -177,7 +178,7 @@ pub enum DatabaseOp {
     /// the per-tree permission gate is **not** applied (the server's
     /// verification pass against the tree's pinned auth is the boundary). The
     /// `required_permission()` value below is advisory only for this variant.
-    SubmitSignedEntry { entry: Entry },
+    SubmitSignedEntry { entry: Box<Entry> },
     /// The database's Verified-frontier tips (server runs `Database::get_tips`
     /// on its local instance). Gate Read.
     GetVerifiedTips,
@@ -263,7 +264,7 @@ impl DatabaseOp {
 /// Bundles the database scope (`root_id`) and identity claim (`identity`) with
 /// the backend op the client wants to run. Carried boxed inside
 /// `ServiceRequest::Authenticated` to keep the top-level enum's stack footprint
-/// flat — both `SigKey` and `BackendOp::Put` are large.
+/// flat — `SigKey` and `BackendOp::SetInstanceMetadata`'s payload are large.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthenticatedRequest {
     /// Root entry of the database this op targets. Used by the server to look

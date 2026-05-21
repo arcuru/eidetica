@@ -432,7 +432,7 @@ impl User {
         let key = DatabaseKey::with_identity(signing_key.clone(), sigkey.clone());
         #[cfg(all(unix, feature = "service"))]
         if let Some(conn) = self.instance.remote_connection() {
-            conn.register_session_key(&signing_key).await?;
+            conn.register_session_key(signing_key).await?;
             return Ok(Database::open_remote(&self.instance, conn, root_id, sigkey)
                 .await?
                 .with_key(key));
