@@ -42,18 +42,21 @@
 //!
 //! ## Write Coordination
 //!
-//! Client writes go through the daemon's backend (via `Put` RPC), then a
-//! `NotifyEntryWritten` RPC tells the server to fire its write callbacks (sync triggers,
-//! etc.) without re-storing the entry.
+//! Client writes travel as `DatabaseOp::SubmitSignedEntry` — the daemon stores
+//! the entry `Unverified`, then runs its own verification pass before the
+//! entry is exposed on any default read.
 //!
 //! ## V1 Limitations
 //!
-//! - **No server-push notifications**: Clients see latest state on each request but
-//!   are not notified when the server receives entries from sync peers. Future: evolve
-//!   to a bidirectional protocol where the server sends unsolicited `Notification`
-//!   frames alongside responses. The frame envelope gains a type tag
-//!   (`Request | Response | Notification`). The client needs a background reader task
-//!   that routes responses to pending requests and notifications to callbacks.
+//! - **No server-push notifications**: Clients see latest state on each request
+//!   but are not notified when the daemon receives entries from sync peers, or
+//!   when another client writes through the same daemon. As a consequence,
+//!   [`Database::on_write`](crate::Database::on_write) on a connected
+//!   [`Instance`](crate::Instance) observes only writes this client's own
+//!   commit path produced — see that method's doc for the full caveat list.
+//!   Future: bidirectional framing with a `Notification` variant alongside
+//!   `Response`, plus a client-side reader task that routes notifications to
+//!   the local callback registry.
 //!
 //! - **`enable_sync()` on remote Instance**: Returns `OperationNotSupported`
 //!   rather than silently building a client-side sync module that would race
