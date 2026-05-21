@@ -1,7 +1,9 @@
 mod helpers;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use eidetica::{Database, backend::database::InMemory, entry::ID, store::DocStore};
+use eidetica::{
+    Database, backend::BackendImpl, backend::database::InMemory, entry::ID, store::DocStore,
+};
 use std::hint::black_box;
 
 use helpers::{setup_tree_async, setup_tree_inmemory};
@@ -453,6 +455,10 @@ pub fn bench_tip_validation(c: &mut Criterion) {
 }
 
 /// Benchmark get_tree_from_tips - the function optimized with batch CTE queries
+///
+/// Uses InMemory explicitly: `get_tree_from_tips` is a `BackendImpl` trait
+/// method not exposed on the `Backend` wrapper, so we reach it via the same
+/// `as_any().downcast_ref` pattern as `bench_tip_validation`.
 pub fn bench_get_tree_from_tips(c: &mut Criterion) {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -474,7 +480,7 @@ pub fn bench_get_tree_from_tips(c: &mut Criterion) {
                     b.iter_with_setup(
                         || {
                             rt.block_on(async {
-                                let (_instance, _user, tree) = setup_tree_async().await;
+                                let (_instance, _user, tree) = setup_tree_inmemory().await;
                                 let entry_ids = create_large_tree(&tree, size, structure).await;
                                 // Get the tips (last entries created)
                                 let tips: Vec<ID> =
@@ -485,7 +491,11 @@ pub fn bench_get_tree_from_tips(c: &mut Criterion) {
                         |(_instance, tree, tips)| {
                             rt.block_on(async {
                                 let backend = tree.backend().expect("Failed to get backend");
-                                let entries = backend
+                                let in_memory = backend
+                                    .as_any()
+                                    .downcast_ref::<InMemory>()
+                                    .expect("Failed to downcast to InMemory");
+                                let entries = in_memory
                                     .get_tree_from_tips(tree.root_id(), &tips)
                                     .await
                                     .expect("Failed to get tree from tips");
