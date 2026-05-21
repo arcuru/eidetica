@@ -58,10 +58,12 @@
 //!   `Response`, plus a client-side reader task that routes notifications to
 //!   the local callback registry.
 //!
-//! - **`enable_sync()` on remote Instance**: Returns `OperationNotSupported`
-//!   rather than silently building a client-side sync module that would race
-//!   the daemon's own sync. Future: add an `EnableSync` RPC that delegates to
-//!   the server's Instance, and similarly for `sync()`, `flush_sync()`, etc.
+//! - **`enable_sync()` on remote Instance**: A silent no-op (returns `Ok(())`)
+//!   rather than building a client-side sync module that would race the
+//!   daemon's own sync. The daemon either already runs sync or it does not,
+//!   and the client cannot change that over the current wire surface. Future:
+//!   add an admin-gated `EnableSync` RPC that delegates to the server's
+//!   Instance, and similarly for `sync()`, `flush_sync()`, etc.
 
 pub mod client;
 pub mod error;

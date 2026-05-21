@@ -25,10 +25,9 @@
 //! reminder of that assumption — see § Trusted login threat model in the
 //! Service Architecture doc.
 //!
-//! Chunk 2 settled the wire shape; chunk 3 wired up real daemon-side
-//! challenge-response. The per-request permission gate on `Authenticated`
-//! requests lands in a later chunk; for now clients populate
-//! `root_id`/`identity` with defaults until the client-side login flow ships.
+//! `Authenticated` requests carry the caller's `root_id`/`identity` and are
+//! gated per-tree by the daemon's permission check; clients populate these
+//! from the session established by the `TrustedLogin*` flow.
 
 use std::collections::BTreeMap;
 
