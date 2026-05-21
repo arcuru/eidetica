@@ -636,7 +636,27 @@ impl Database {
     /// writes to the database tree (identified by root ID), regardless of which
     /// `Database` handle performed the write or registered the callback.
     ///
-    /// # Callback contract
+    /// # ⚠️ Limited semantics on a connected (remote) [`Instance`]
+    ///
+    /// On a daemon-backed [`Instance`], `on_write` is **best-effort and partial**.
+    /// It only observes writes whose commit ran through this client's
+    /// [`Instance::put_entry`]. The following writes are **not** observed:
+    ///
+    /// - Commits made by other client processes connected to the same daemon.
+    /// - Entries the daemon receives via sync from peers.
+    /// - Anything the daemon writes outside this client's commit path.
+    ///
+    /// In addition, [`WriteEvent::previous_tips`] is **always empty** for writes
+    /// that go through a remote backend — the canonical DAG lives on the daemon
+    /// and the client has nothing local to read tips from. Callbacks that diff
+    /// `previous_tips` against `event.entries()` will see "the world was empty"
+    /// on every event.
+    ///
+    /// If you need full cross-client / cross-sync notification semantics, use a
+    /// local [`Instance`] for now. A server-push subscription path is planned —
+    /// when it lands, this method will gain the same contract on remote.
+    ///
+    /// # Callback contract (local [`Instance`])
     ///
     /// - **Local writes**: fires once per transaction commit; the [`WriteEvent`]
     ///   contains exactly one entry.

@@ -1185,10 +1185,9 @@ impl Instance {
         // tips here would also gate against the *connection's* login pubkey
         // (not the per-DB acting identity from the Database handle), which
         // breaks the legitimate "create-a-tree-with-a-non-login-key" flow.
-        // The server's own callback path observes writes via
-        // `NotifyEntryWritten`; client-side callbacks on remote instances
-        // get an empty `previous_tips`, matching the existing approximation
-        // in `dispatch_write_callbacks`.
+        // Remote callbacks therefore see an empty `previous_tips` — this is
+        // a documented limitation of `Database::on_write` on a connected
+        // Instance, lifted when the server-push notification path lands.
         #[cfg(all(unix, feature = "service"))]
         let previous_tips = if self.remote_connection().is_some() {
             Vec::new()
@@ -1338,39 +1337,6 @@ impl Instance {
                 );
             }
         }
-    }
-
-    /// Dispatch write callbacks for an entry that has already been stored.
-    ///
-    /// This is used by the service server when handling `NotifyEntryWritten` RPCs.
-    /// The entry is already in the backend; this method only fires callbacks via
-    /// the standard `fire_write_callbacks` path.
-    ///
-    /// TODO(service): `previous_tips` is approximated here — for remotely-notified
-    /// writes, the daemon doesn't currently send the pre-write tips, so we read
-    /// current tips minus the new entry's id. A future revision of the
-    /// NotifyEntryWritten RPC should carry `previous_tips` explicitly.
-    pub(crate) async fn dispatch_write_callbacks(
-        &self,
-        tree_id: &ID,
-        entry: &Entry,
-        source: WriteSource,
-    ) -> Result<()> {
-        let entry_id = entry.id();
-        let previous_tips: Vec<ID> = self
-            .get_tips(tree_id)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|t| t != &entry_id)
-            .collect();
-        let event = WriteEvent {
-            entries: vec![entry.clone()],
-            previous_tips,
-            source,
-        };
-        self.fire_write_callbacks(tree_id, &event).await;
-        Ok(())
     }
 
     /// Downgrade to a weak reference.
