@@ -7,7 +7,7 @@ use std::{collections::HashMap, path::Path, sync::RwLock};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use super::{InMemory, InMemoryInner, TreeTipsCache};
+use super::{InMemory, InMemoryInner, TreeTipsCache, cache::InMemoryCrdtCache};
 use crate::{
     Error, Result,
     backend::{InstanceMetadata, InstanceSecrets, VerificationStatus, errors::BackendError},
@@ -58,11 +58,15 @@ struct SerializableDatabase {
     /// Instance secrets containing the device signing key
     #[serde(default)]
     instance_secrets: Option<InstanceSecrets>,
-    /// CRDT state cache. Serialized with the rest of the database; if the field
-    /// is missing on load it defaults to empty and is rebuilt lazily as reads
-    /// recompute and re-cache state.
-    #[serde(default)]
-    cache: HashMap<String, Vec<u8>>,
+    /// CRDT state cache *was* serialized here pre-unification. The cache is
+    /// now scope-keyed (Shared vs User) and bounded by an LRU; rather than
+    /// serializing an opaque LRU snapshot, we treat the cache as ephemeral
+    /// performance state and rebuild lazily on load. Field retained as
+    /// `#[serde(default, skip_serializing)]` so old snapshots still
+    /// deserialize cleanly; the bytes are discarded.
+    #[serde(default, skip_serializing)]
+    #[allow(dead_code)]
+    cache: Option<serde_json::Value>,
     /// Cached tips grouped by tree
     #[serde(default)]
     tips: HashMap<ID, TreeTipsCache>,
@@ -73,17 +77,18 @@ impl Serialize for InMemory {
     where
         S: Serializer,
     {
-        // Clone data under locks, then release before serializing
+        // Clone data under locks, then release before serializing.
+        // The CRDT cache is deliberately not persisted; see the
+        // SerializableDatabase docs.
         let serializable = {
             let inner = self.inner.read().unwrap();
-            let crdt_cache = self.crdt_cache.read().unwrap();
             SerializableDatabase {
                 version: PERSISTENCE_VERSION,
                 entries: inner.entries.clone(),
                 verification_status: inner.verification_status.clone(),
                 instance_metadata: inner.instance_metadata.clone(),
                 instance_secrets: inner.instance_secrets.clone(),
-                cache: crdt_cache.clone(),
+                cache: None,
                 tips: inner.tips.clone(),
             }
         };
@@ -108,7 +113,9 @@ impl<'de> Deserialize<'de> for InMemory {
                 instance_secrets: serializable.instance_secrets,
                 tips: serializable.tips,
             }),
-            crdt_cache: RwLock::new(serializable.cache),
+            // Cache rebuilds lazily as reads materialize state — see the
+            // `cache` field's doc on SerializableDatabase.
+            crdt_cache: std::sync::Mutex::new(InMemoryCrdtCache::new()),
         })
     }
 }
@@ -122,17 +129,17 @@ impl<'de> Deserialize<'de> for InMemory {
 /// # Returns
 /// A `Result` indicating success or an I/O or serialization error.
 pub(crate) fn save_to_file<P: AsRef<Path>>(backend: &InMemory, path: P) -> Result<()> {
-    // Clone data under locks, then release before file I/O
+    // Clone data under locks, then release before file I/O. Cache
+    // deliberately not persisted; see SerializableDatabase docs.
     let serializable = {
         let inner = backend.inner.read().unwrap();
-        let crdt_cache = backend.crdt_cache.read().unwrap();
         SerializableDatabase {
             version: PERSISTENCE_VERSION,
             entries: inner.entries.clone(),
             verification_status: inner.verification_status.clone(),
             instance_metadata: inner.instance_metadata.clone(),
             instance_secrets: inner.instance_secrets.clone(),
-            cache: crdt_cache.clone(),
+            cache: None,
             tips: inner.tips.clone(),
         }
     };

@@ -1127,3 +1127,240 @@ async fn test_daemon_survives_half_written_request_frame() {
     let user = instance.login_user("alice", None).await.unwrap();
     assert_eq!(user.username(), "alice");
 }
+
+// === CRDT-state cache tests ===
+//
+// The two-tier cache: tier 1 is a connection-scoped LRU on `RemoteConnection`
+// (unit-tested in `service/client.rs`); tier 2 is the daemon's `ServiceCache`,
+// driven by the `GetCachedCrdtState` / `CacheCrdtState` wire ops.
+
+/// Daemon cache returns `None` for keys nothing has cached.
+#[tokio::test]
+async fn test_cache_miss_returns_none() {
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    let (instance, root_id, identity) = setup_db(&server, &socket_path, "alice").await;
+    let conn = remote_conn(&instance);
+
+    let result = conn
+        .get_cached_crdt_state_remote(
+            root_id,
+            identity,
+            "entries".to_string(),
+            eidetica::entry::ID::from_bytes(b"never-cached"),
+        )
+        .await
+        .unwrap();
+    assert!(result.is_none(), "cold cache must return None");
+}
+
+/// Daemon cache stores opaque bytes verbatim and returns them to the same
+/// user across multiple RPCs on the same connection.
+#[tokio::test]
+async fn test_cache_round_trip_same_session() {
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    let (instance, root_id, identity) = setup_db(&server, &socket_path, "alice").await;
+    let conn = remote_conn(&instance);
+
+    let key = eidetica::entry::ID::from_bytes(b"some-tip-set-hash");
+    let blob = b"opaque-bytes-could-be-ciphertext".to_vec();
+
+    conn.cache_crdt_state_remote(
+        root_id.clone(),
+        identity.clone(),
+        "entries".to_string(),
+        key.clone(),
+        blob.clone(),
+    )
+    .await
+    .unwrap();
+
+    let result = conn
+        .get_cached_crdt_state_remote(root_id, identity, "entries".to_string(), key)
+        .await
+        .unwrap();
+    assert_eq!(
+        result,
+        Some(blob),
+        "daemon must return the previously-cached blob verbatim"
+    );
+}
+
+/// The daemon cache survives client disconnect/reconnect: alice caches a
+/// blob, drops her connection entirely, opens a fresh one, and reads it
+/// back. This is the "cross-session cache" promise — the daemon's
+/// `ServiceCache` outlives any one connection.
+#[tokio::test]
+async fn test_cache_survives_reconnect() {
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    let (root_id, identity) = {
+        let (instance, root_id, identity) = setup_db(&server, &socket_path, "alice").await;
+        let conn = remote_conn(&instance);
+        conn.cache_crdt_state_remote(
+            root_id.clone(),
+            identity.clone(),
+            "entries".to_string(),
+            eidetica::entry::ID::from_bytes(b"persistent-key"),
+            b"durable-blob".to_vec(),
+        )
+        .await
+        .unwrap();
+        // `instance` and `conn` drop here — tier 1 LRU is gone.
+        (root_id, identity)
+    };
+
+    // Fresh connection + login = fresh tier 1, but the daemon's ServiceCache
+    // still has the entry. Verify it.
+    let instance2 = Instance::connect(&socket_path).await.unwrap();
+    let _user2 = instance2.login_user("alice", None).await.unwrap();
+    let conn2 = remote_conn(&instance2);
+
+    let result = conn2
+        .get_cached_crdt_state_remote(
+            root_id,
+            identity,
+            "entries".to_string(),
+            eidetica::entry::ID::from_bytes(b"persistent-key"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        result,
+        Some(b"durable-blob".to_vec()),
+        "daemon cache must survive client reconnect"
+    );
+}
+
+/// Repeatedly caching the same key replaces the value (last-write-wins on
+/// the same `(user, root_id, key, store)` slot). Combined with
+/// `test_cache_survives_reconnect`, this covers the basic write/read
+/// contract for the daemon's cache.
+#[tokio::test]
+async fn test_cache_overwrite_replaces_value() {
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    let (instance, root_id, identity) = setup_db(&server, &socket_path, "alice").await;
+    let conn = remote_conn(&instance);
+
+    let key = eidetica::entry::ID::from_bytes(b"overwrite-slot");
+    conn.cache_crdt_state_remote(
+        root_id.clone(),
+        identity.clone(),
+        "entries".to_string(),
+        key.clone(),
+        b"first".to_vec(),
+    )
+    .await
+    .unwrap();
+    conn.cache_crdt_state_remote(
+        root_id.clone(),
+        identity.clone(),
+        "entries".to_string(),
+        key.clone(),
+        b"second".to_vec(),
+    )
+    .await
+    .unwrap();
+
+    let result = conn
+        .get_cached_crdt_state_remote(root_id, identity, "entries".to_string(), key)
+        .await
+        .unwrap();
+    assert_eq!(
+        result,
+        Some(b"second".to_vec()),
+        "second write to the same slot must overwrite the first"
+    );
+}
+
+/// A user's `GetCachedCrdtState` falls back from `User(me)` to `Shared`
+/// when the daemon has already cached a plaintext materialization (e.g.
+/// from its own `Database::get_store_state` path). Proves the cross-user
+/// dedup wired into the unified cache.
+#[tokio::test]
+async fn test_cache_shared_fallback_for_daemon_materialized_state() {
+    use eidetica::backend::CacheScope;
+    use eidetica::instance::backend::Backend;
+
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    let (instance, root_id, identity) = setup_db(&server, &socket_path, "alice").await;
+
+    let key = eidetica::entry::ID::from_bytes(b"shared-fallback-key");
+    let store_name = "shared-fallback-store";
+    let daemon_bytes = b"daemon-computed-plaintext".to_vec();
+
+    // Seed the Shared scope directly on the daemon's backend — emulates
+    // what `LocalDatabaseOps::cache_crdt_state` would do during a local
+    // materialization (e.g. `Database::get_store_state` of an unencrypted
+    // store). We bypass that ceremony because the goal here is the
+    // fallback path, not the materializer.
+    match server.backend() {
+        Backend::Local(b) => b
+            .cache_crdt_state(
+                CacheScope::Shared,
+                &key,
+                store_name,
+                daemon_bytes.clone(),
+            )
+            .await
+            .unwrap(),
+        _ => unreachable!("test server is always Local"),
+    }
+
+    // Alice has never `CacheCrdtState`'d this key, so `User(alice)` misses
+    // — but the wire handler falls back to Shared and serves the
+    // daemon-trusted bytes.
+    let conn = remote_conn(&instance);
+    let result = conn
+        .get_cached_crdt_state_remote(
+            root_id,
+            identity,
+            store_name.to_string(),
+            key,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        result,
+        Some(daemon_bytes),
+        "User-scope miss must fall back to Shared so unencrypted-store \
+         daemon materializations are visible across users"
+    );
+}
+
+/// Encrypted-store blobs round-trip through the daemon cache opaquely.
+/// The daemon never sees the encryptor; it stores ciphertext bytes verbatim
+/// and serves them back unchanged.
+#[tokio::test]
+async fn test_cache_encrypted_store_roundtrip() {
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    let (instance, root_id, identity) = setup_db(&server, &socket_path, "alice").await;
+    let conn = remote_conn(&instance);
+
+    // Simulate what a `PasswordStore`-wrapped Transaction would push:
+    // already-encrypted opaque bytes (we don't need a real encryptor here —
+    // the daemon's contract is byte-blind).
+    let ciphertext = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x42, 0x42, 0x42, 0x42];
+    conn.cache_crdt_state_remote(
+        root_id.clone(),
+        identity.clone(),
+        "encrypted-store".to_string(),
+        eidetica::entry::ID::from_bytes(b"ct-key"),
+        ciphertext.clone(),
+    )
+    .await
+    .unwrap();
+
+    let result = conn
+        .get_cached_crdt_state_remote(
+            root_id,
+            identity,
+            "encrypted-store".to_string(),
+            eidetica::entry::ID::from_bytes(b"ct-key"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        result,
+        Some(ciphertext),
+        "daemon must store and return ciphertext bytes verbatim — the cache is byte-blind"
+    );
+}

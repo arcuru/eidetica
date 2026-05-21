@@ -42,6 +42,7 @@ reqwest = { workspace = true }
 async-trait = { workspace = true }
 iroh = { workspace = true }
 iroh-tickets = { workspace = true }
+lru = { workspace = true }
 argon2 = { workspace = true }
 aes-gcm = { workspace = true }
 zeroize = { workspace = true }

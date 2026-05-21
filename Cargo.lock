@@ -1427,6 +1427,7 @@ dependencies = [
  "ipld-core",
  "iroh",
  "iroh-tickets",
+ "lru",
  "multihash-codetable",
  "postcard",
  "postcard-derive",

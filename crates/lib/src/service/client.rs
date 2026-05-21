@@ -17,6 +17,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
+use lru::LruCache;
 use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::UnixStream;
 use tokio::sync::Mutex;
@@ -35,6 +36,65 @@ use crate::service::protocol::{
 use crate::user::UserError;
 use crate::user::crypto::{decrypt_private_key, derive_encryption_key};
 use crate::user::types::{KeyStorage, UserInfo};
+
+/// Default cap on the client-side CRDT-state LRU. Matches `MAX_FRAME_SIZE`
+/// (64 MiB) so a single oversized cached blob can still ride the wire.
+pub(crate) const CLIENT_CACHE_CAPACITY_BYTES: usize = 64 * 1024 * 1024;
+
+/// Process-lifetime LRU of materialized CRDT states for this connection.
+///
+/// Tier 1 of a two-level cache: local hits short-circuit any wire activity;
+/// misses fall through to `GetCachedCrdtState` against the daemon. Cleared
+/// on connection drop — durability across the daemon's lifetime is the
+/// unified [`crate::backend::CacheScope`]-keyed cache in the daemon's
+/// `BackendImpl`, not this one.
+///
+/// Keys are `(root_id, key, store_name)`; values are opaque bytes (cipher-
+/// or plaintext depending on the store, decided by the Transaction's
+/// `encryptors` map). The cache itself is byte-blind.
+struct ClientCrdtCache {
+    lru: LruCache<(ID, ID, String), Vec<u8>>,
+    current_bytes: usize,
+    capacity_bytes: usize,
+}
+
+impl ClientCrdtCache {
+    fn new(capacity_bytes: usize) -> Self {
+        Self {
+            lru: LruCache::unbounded(),
+            current_bytes: 0,
+            capacity_bytes,
+        }
+    }
+
+    fn get(&mut self, root_id: &ID, key: &ID, store: &str) -> Option<Vec<u8>> {
+        // `LruCache::get` promotes the entry to most-recently-used.
+        self.lru
+            .get(&(root_id.clone(), key.clone(), store.to_string()))
+            .cloned()
+    }
+
+    fn put(&mut self, root_id: ID, key: ID, store: String, blob: Vec<u8>) {
+        let blob_size = blob.len();
+        let cache_key = (root_id, key, store);
+        if let Some(prev) = self.lru.put(cache_key.clone(), blob) {
+            self.current_bytes = self.current_bytes.saturating_sub(prev.len());
+        }
+        self.current_bytes = self.current_bytes.saturating_add(blob_size);
+        // Evict LRU until under cap. Soft cap: a single oversized blob is
+        // allowed to exceed the limit alone rather than thrashing.
+        while self.current_bytes > self.capacity_bytes {
+            let Some((k, v)) = self.lru.pop_lru() else {
+                break;
+            };
+            if k == cache_key {
+                self.lru.put(k, v);
+                break;
+            }
+            self.current_bytes = self.current_bytes.saturating_sub(v.len());
+        }
+    }
+}
 
 /// Per-connection session state, populated by `trusted_login` on success.
 ///
@@ -69,6 +129,16 @@ struct RemoteConnectionInner {
     /// per-request wire chatter for the common case where a single per-DB
     /// key is reused across many ops.
     registered_keys: Mutex<HashSet<PublicKey>>,
+    /// Process-lifetime CRDT-state LRU shared across every `Database` handle
+    /// (every `RemoteDatabaseOps`) on this connection. Tier 1 of the
+    /// two-level cache; tier 2 is the daemon's unified scope-keyed cache
+    /// (lives in `BackendImpl`), reached via `GetCachedCrdtState` /
+    /// `CacheCrdtState` RPCs.
+    ///
+    /// Accessed poison-tolerantly via [`Self::crdt_cache_lock`]: same
+    /// rationale as `session` — a panic in one task must not strand the
+    /// rest of the connection, since cache state is rebuildable.
+    crdt_cache: std::sync::Mutex<ClientCrdtCache>,
 }
 
 impl RemoteConnectionInner {
@@ -85,6 +155,14 @@ impl RemoteConnectionInner {
     fn session_write(&self) -> std::sync::RwLockWriteGuard<'_, Option<SessionState>> {
         self.session
             .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Acquire the CRDT cache lock, tolerating poisoning. See the field-level
+    /// doc on [`Self::crdt_cache`] for the recovery rationale.
+    fn crdt_cache_lock(&self) -> std::sync::MutexGuard<'_, ClientCrdtCache> {
+        self.crdt_cache
+            .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
@@ -144,8 +222,23 @@ impl RemoteConnection {
                 stream: Mutex::new((reader, writer)),
                 session: RwLock::new(None),
                 registered_keys: Mutex::new(HashSet::new()),
+                crdt_cache: std::sync::Mutex::new(ClientCrdtCache::new(
+                    CLIENT_CACHE_CAPACITY_BYTES,
+                )),
             }),
         })
+    }
+
+    /// Look up a cached materialized CRDT state in the connection-shared
+    /// process-lifetime LRU. Promotes the entry to most-recently-used.
+    pub(crate) fn cache_get(&self, root_id: &ID, key: &ID, store: &str) -> Option<Vec<u8>> {
+        self.inner.crdt_cache_lock().get(root_id, key, store)
+    }
+
+    /// Insert a materialized CRDT state into the connection-shared LRU.
+    /// Triggers byte-bounded eviction if over capacity.
+    pub(crate) fn cache_put(&self, root_id: ID, key: ID, store: String, blob: Vec<u8>) {
+        self.inner.crdt_cache_lock().put(root_id, key, store, blob);
     }
 
     /// Send a request and read the response.
@@ -575,6 +668,54 @@ impl RemoteConnection {
             other => Err(unexpected_response("MergeState", &other)),
         }
     }
+
+    /// Tier 2 cache read: ask the daemon for a previously-stashed CRDT
+    /// state blob. `None` on miss; the caller falls back to a full
+    /// recompute from store entries.
+    pub async fn get_cached_crdt_state_remote(
+        &self,
+        root_id: ID,
+        identity: SigKey,
+        store: String,
+        key: ID,
+    ) -> crate::Result<Option<Vec<u8>>> {
+        let resp = self
+            .db_request(
+                root_id,
+                identity,
+                DatabaseOp::GetCachedCrdtState { store, key },
+            )
+            .await?;
+        match resp {
+            ServiceResponse::CachedCrdtState(blob) => Ok(blob),
+            other => Err(unexpected_response("CachedCrdtState", &other)),
+        }
+    }
+
+    /// Tier 2 cache write: stash a client-computed CRDT state blob in the
+    /// daemon's unified cache, scoped to the session user
+    /// ([`crate::backend::CacheScope::User`]). Per-user trust; the daemon
+    /// stores opaque bytes verbatim.
+    pub async fn cache_crdt_state_remote(
+        &self,
+        root_id: ID,
+        identity: SigKey,
+        store: String,
+        key: ID,
+        blob: Vec<u8>,
+    ) -> crate::Result<()> {
+        let resp = self
+            .db_request(
+                root_id,
+                identity,
+                DatabaseOp::CacheCrdtState { store, key, blob },
+            )
+            .await?;
+        match resp {
+            ServiceResponse::Ok => Ok(()),
+            other => Err(unexpected_response("Ok", &other)),
+        }
+    }
 }
 
 fn unexpected_response(expected: &str, actual: &ServiceResponse) -> crate::Error {
@@ -582,4 +723,72 @@ fn unexpected_response(expected: &str, actual: &ServiceResponse) -> crate::Error
         std::io::ErrorKind::InvalidData,
         format!("Expected {expected} response, got {actual:?}"),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn eid(s: &str) -> ID {
+        ID::from_bytes(s)
+    }
+
+    fn root() -> ID {
+        eid("root")
+    }
+
+    #[test]
+    fn client_cache_round_trip() {
+        let mut c = ClientCrdtCache::new(1024);
+        c.put(root(), eid("e1"), "store1".into(), b"hello".to_vec());
+        assert_eq!(
+            c.get(&root(), &eid("e1"), "store1"),
+            Some(b"hello".to_vec())
+        );
+    }
+
+    #[test]
+    fn client_cache_evicts_under_byte_pressure() {
+        let mut c = ClientCrdtCache::new(100);
+        c.put(root(), eid("e1"), "s".into(), vec![1u8; 50]);
+        c.put(root(), eid("e2"), "s".into(), vec![2u8; 50]);
+        assert_eq!(c.current_bytes, 100);
+        c.put(root(), eid("e3"), "s".into(), vec![3u8; 50]);
+        assert!(
+            c.get(&root(), &eid("e1"), "s").is_none(),
+            "least-recently-used entry must be evicted"
+        );
+        assert_eq!(c.get(&root(), &eid("e2"), "s"), Some(vec![2u8; 50]));
+        assert_eq!(c.get(&root(), &eid("e3"), "s"), Some(vec![3u8; 50]));
+    }
+
+    #[test]
+    fn client_cache_get_promotes_to_most_recent() {
+        let mut c = ClientCrdtCache::new(100);
+        c.put(root(), eid("e1"), "s".into(), vec![1u8; 50]);
+        c.put(root(), eid("e2"), "s".into(), vec![2u8; 50]);
+        let _ = c.get(&root(), &eid("e1"), "s"); // promote e1
+        c.put(root(), eid("e3"), "s".into(), vec![3u8; 50]);
+        assert!(
+            c.get(&root(), &eid("e1"), "s").is_some(),
+            "promoted entry must survive eviction"
+        );
+        assert!(
+            c.get(&root(), &eid("e2"), "s").is_none(),
+            "older un-touched entry must be evicted"
+        );
+    }
+
+    #[test]
+    fn client_cache_replaces_in_place() {
+        let mut c = ClientCrdtCache::new(1024);
+        c.put(root(), eid("e1"), "s".into(), b"v1".to_vec());
+        c.put(root(), eid("e1"), "s".into(), b"v2-different-len".to_vec());
+        assert_eq!(
+            c.get(&root(), &eid("e1"), "s"),
+            Some(b"v2-different-len".to_vec())
+        );
+        // current_bytes should reflect only the replacement, not the sum.
+        assert_eq!(c.current_bytes, b"v2-different-len".len());
+    }
 }

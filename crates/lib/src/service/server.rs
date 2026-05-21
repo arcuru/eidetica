@@ -6,7 +6,6 @@
 use std::collections::{HashMap, HashSet};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use tokio::net::UnixListener;
 use tokio::sync::watch;
@@ -16,10 +15,10 @@ use crate::auth::crypto::{PublicKey, generate_challenge, verify_challenge_respon
 use crate::auth::errors::AuthError;
 use crate::auth::types::{Permission, SigKey};
 use crate::auth::validation::permissions::resolve_identity_permission;
+use crate::backend::CacheScope;
 use crate::database::Database;
 use crate::entry::ID;
 use crate::instance::WriteSource;
-use crate::service::cache::ServiceCache;
 use crate::service::error::ServiceError;
 use crate::service::protocol::{
     AuthenticatedDbRequest, AuthenticatedRequest, BackendOp, DatabaseOp, HandshakeAck, MergeState,
@@ -59,8 +58,8 @@ enum ConnectionState {
     /// validates the identity hint against this set and gates against the
     /// resulting *acting* pubkey, so a single connection can drive ops on
     /// databases authored by any key the user has proven they hold.
-    /// `user_uuid` is the session key for the per-user service-layer cache
-    /// (see `service::cache::ServiceCache`).
+    /// `user_uuid` is the per-user scope key for the unified CRDT-state
+    /// cache (see [`crate::backend::CacheScope::User`]).
     /// `pending_key_challenges` holds outstanding registration challenges,
     /// keyed by the pubkey the challenge was issued for. Each challenge is
     /// single-use: the matching `SessionKeyRegister` consumes it whether
@@ -79,14 +78,14 @@ enum ConnectionState {
 ///
 /// The server wraps a full `Instance` so it can dispatch both storage operations
 /// (via the backend) and write callbacks (via `Instance::put_entry()`'s notification path).
+///
+/// CRDT-state caching lives in the underlying `BackendImpl` (scope-keyed
+/// via [`crate::backend::CacheScope`]); wire handlers route through
+/// `instance.backend()` directly rather than keeping a separate
+/// service-layer cache.
 pub struct ServiceServer {
     instance: Instance,
     socket_path: PathBuf,
-    /// Daemon-wide per-user CRDT-state cache. Shared across all connection
-    /// handlers via `Arc`; isolation between users is enforced by the cache's
-    /// `user_uuid` namespace rather than by separate per-connection caches,
-    /// so two connections from the same user share its slice.
-    cache: Arc<ServiceCache>,
 }
 
 impl ServiceServer {
@@ -99,7 +98,6 @@ impl ServiceServer {
         Self {
             instance,
             socket_path: socket_path.into(),
-            cache: Arc::new(ServiceCache::new()),
         }
     }
 
@@ -142,9 +140,8 @@ impl ServiceServer {
                     match accept_result {
                         Ok((stream, _addr)) => {
                             let instance = self.instance.clone();
-                            let cache = self.cache.clone();
                             tokio::spawn(async move {
-                                if let Err(e) = handle_connection(stream, instance, cache).await {
+                                if let Err(e) = handle_connection(stream, instance).await {
                                     tracing::debug!("Connection handler error: {e}");
                                 }
                             });
@@ -171,7 +168,6 @@ impl ServiceServer {
 async fn handle_connection(
     stream: tokio::net::UnixStream,
     instance: Instance,
-    cache: Arc<ServiceCache>,
 ) -> crate::Result<()> {
     let (mut reader, mut writer) = tokio::io::split(stream);
 
@@ -211,23 +207,19 @@ async fn handle_connection(
                 None => break, // Clean EOF
             };
 
-            let response = dispatch(&instance, &cache, &mut state, request).await;
+            let response = dispatch(&instance, &mut state, request).await;
             write_frame(&mut writer, &response).await?;
         }
         Ok(())
     }
     .await;
 
-    // Session teardown: drop this user's slice of the daemon-wide cache
-    // regardless of how the connection ended (clean EOF or I/O error), so
-    // per-user cache growth is bounded to the lifetime of a connection.
-    // (If a connection re-authenticated as several users over its life,
-    // only the final session's slice is reclaimed here; bounding the
-    // mid-connection re-auth case is part of the broader multi-user
-    // hardening, not this connection-scoped cleanup.)
-    if let ConnectionState::Authenticated { user_uuid, .. } = &state {
-        cache.clear_user(user_uuid);
-    }
+    // Session teardown: nothing to reclaim. The unified CRDT-state cache
+    // lives in `BackendImpl` and is bounded by its own eviction policy
+    // (byte-bounded LRU on the in-memory backend; disk-bounded on SQL).
+    // Per-user cache slots survive disconnect intentionally so a
+    // reconnecting client recovers materialized state from tier 2 without
+    // recomputing from entries.
 
     loop_result
 }
@@ -235,11 +227,10 @@ async fn handle_connection(
 /// Dispatch a service request to the appropriate Instance/Backend method.
 async fn dispatch(
     instance: &Instance,
-    cache: &ServiceCache,
     state: &mut ConnectionState,
     request: ServiceRequest,
 ) -> ServiceResponse {
-    match dispatch_inner(instance, cache, state, request).await {
+    match dispatch_inner(instance, state, request).await {
         Ok(resp) => resp,
         Err(e) => ServiceResponse::Error(ServiceError::from(&e)),
     }
@@ -248,7 +239,6 @@ async fn dispatch(
 /// Inner dispatch that returns Result for ergonomic error handling.
 async fn dispatch_inner(
     instance: &Instance,
-    cache: &ServiceCache,
     state: &mut ConnectionState,
     request: ServiceRequest,
 ) -> crate::Result<ServiceResponse> {
@@ -284,17 +274,12 @@ async fn dispatch_inner(
         // (when present and provably in the keyset) or `login_pubkey`
         // otherwise — see `resolve_acting_pubkey`.
         ServiceRequest::Authenticated(inner) => {
-            let (login_pubkey, keyset_snapshot, session_user_uuid) = match state {
+            let (login_pubkey, keyset_snapshot) = match state {
                 ConnectionState::Authenticated {
                     login_pubkey,
                     session_keyset,
-                    user_uuid,
                     ..
-                } => (
-                    login_pubkey.clone(),
-                    session_keyset.clone(),
-                    user_uuid.clone(),
-                ),
+                } => (login_pubkey.clone(), session_keyset.clone()),
                 _ => {
                     return Err(crate::Error::Auth(Box::new(
                         AuthError::InvalidAuthConfiguration {
@@ -353,15 +338,7 @@ async fn dispatch_inner(
                 .await?;
             }
 
-            dispatch_backend_op(
-                instance,
-                cache,
-                &acting_pubkey,
-                &identity,
-                &session_user_uuid,
-                request,
-            )
-            .await
+            dispatch_backend_op(instance, &acting_pubkey, &identity, request).await
         }
 
         // === Authenticated Database-level operations ===
@@ -372,12 +349,17 @@ async fn dispatch_inner(
         // structural tree-scoping is what the Database-level shape buys; the
         // legacy `BackendOp`/`Authenticated` path above is untouched.
         ServiceRequest::AuthenticatedDb(inner) => {
-            let (login_pubkey, keyset_snapshot) = match state {
+            let (login_pubkey, keyset_snapshot, session_user_uuid) = match state {
                 ConnectionState::Authenticated {
                     login_pubkey,
                     session_keyset,
+                    user_uuid,
                     ..
-                } => (login_pubkey.clone(), session_keyset.clone()),
+                } => (
+                    login_pubkey.clone(),
+                    session_keyset.clone(),
+                    user_uuid.clone(),
+                ),
                 _ => {
                     return Err(crate::Error::Auth(Box::new(
                         AuthError::InvalidAuthConfiguration {
@@ -448,7 +430,15 @@ async fn dispatch_inner(
                 .await?;
             }
 
-            dispatch_database_op(instance, &acting_pubkey, &identity, root_id, op).await
+            dispatch_database_op(
+                instance,
+                &acting_pubkey,
+                &identity,
+                &session_user_uuid,
+                root_id,
+                op,
+            )
+            .await
         }
     }
 }
@@ -492,6 +482,7 @@ async fn dispatch_database_op(
     instance: &Instance,
     acting_pubkey: &PublicKey,
     identity: &SigKey,
+    user_uuid: &str,
     root_id: ID,
     op: DatabaseOp,
 ) -> crate::Result<ServiceResponse> {
@@ -581,6 +572,50 @@ async fn dispatch_database_op(
                 .get_path_from_to(&root_id, &store, &merge_base, &entry_ids)
                 .await?;
             Ok(ServiceResponse::MergeState(MergeState { merge_base, path }))
+        }
+
+        DatabaseOp::GetCachedCrdtState { store, key } => {
+            // Per-tree Read gate already ran above. Try the caller's own
+            // User-scoped slot first (where client-uploaded ciphertext for
+            // encrypted stores lives), then fall back to Shared (where the
+            // daemon's own materialization of unencrypted stores lives).
+            // The fallback is what gives cross-user dedup on plaintext
+            // stores: alice triggers a server materialization, blob lands
+            // in Shared, bob's later read finds it without recomputing.
+            let backend = instance.backend();
+            let mut blob = backend
+                .get_cached_crdt_state(
+                    &CacheScope::User(user_uuid.to_string()),
+                    &key,
+                    &store,
+                )
+                .await?;
+            if blob.is_none() {
+                blob = backend
+                    .get_cached_crdt_state(&CacheScope::Shared, &key, &store)
+                    .await?;
+            }
+            Ok(ServiceResponse::CachedCrdtState(blob))
+        }
+
+        DatabaseOp::CacheCrdtState { store, key, blob } => {
+            // Per-tree Read gate already ran above. Per-user trust: the
+            // blob is opaque (cipher- or plaintext) and stored verbatim;
+            // only the submitting user can read it back. We never promote
+            // a client upload to Shared — the daemon can't verify the
+            // merge result, so cross-user visibility would be a poison
+            // vector. Shared writes only come from the daemon's own
+            // LocalDatabaseOps path.
+            instance
+                .backend()
+                .cache_crdt_state(
+                    CacheScope::User(user_uuid.to_string()),
+                    &key,
+                    &store,
+                    blob,
+                )
+                .await?;
+            Ok(ServiceResponse::Ok)
         }
     }
 }
@@ -861,10 +896,8 @@ async fn gate_entry_read(
 /// `dispatch_database_op`.
 async fn dispatch_backend_op(
     instance: &Instance,
-    _cache: &ServiceCache,
     acting_pubkey: &PublicKey,
     identity: &SigKey,
-    _user_uuid: &str,
     op: BackendOp,
 ) -> crate::Result<ServiceResponse> {
     let backend = instance.backend();

@@ -38,7 +38,7 @@ use sqlx::any::AnyPoolOptions;
 
 use crate::Result;
 use crate::backend::errors::BackendError;
-use crate::backend::{BackendImpl, InstanceMetadata, InstanceSecrets, VerificationStatus};
+use crate::backend::{BackendImpl, CacheScope, InstanceMetadata, InstanceSecrets, VerificationStatus};
 use crate::entry::{Entry, ID};
 
 /// Extension trait for sqlx Result types to simplify error handling.
@@ -450,12 +450,23 @@ impl BackendImpl for SqlxBackend {
         traversal::get_store_from_tips(self, tree, store, tips).await
     }
 
-    async fn get_cached_crdt_state(&self, entry_id: &ID, store: &str) -> Result<Option<Vec<u8>>> {
-        storage::get_cached_crdt_state(self, entry_id, store).await
+    async fn get_cached_crdt_state(
+        &self,
+        scope: &CacheScope,
+        entry_id: &ID,
+        store: &str,
+    ) -> Result<Option<Vec<u8>>> {
+        storage::get_cached_crdt_state(self, scope, entry_id, store).await
     }
 
-    async fn cache_crdt_state(&self, entry_id: &ID, store: &str, state: Vec<u8>) -> Result<()> {
-        storage::cache_crdt_state(self, entry_id, store, state).await
+    async fn cache_crdt_state(
+        &self,
+        scope: CacheScope,
+        entry_id: &ID,
+        store: &str,
+        state: Vec<u8>,
+    ) -> Result<()> {
+        storage::cache_crdt_state(self, scope, entry_id, store, state).await
     }
 
     async fn clear_crdt_cache(&self) -> Result<()> {
