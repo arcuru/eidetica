@@ -4,7 +4,7 @@
 
 use crate::Result;
 use crate::backend::errors::BackendError;
-use crate::backend::{InstanceMetadata, InstanceSecrets, VerificationStatus};
+use crate::backend::{CacheScope, InstanceMetadata, InstanceSecrets, VerificationStatus};
 use crate::entry::{Entry, ID};
 
 use super::{SqlxBackend, SqlxResultExt};
@@ -567,40 +567,59 @@ pub async fn set_instance_secrets(backend: &SqlxBackend, secrets: &InstanceSecre
     Ok(())
 }
 
-// === CRDT Cache ===
+// === CRDT Cache (v2: scope-keyed) ===
 
-/// Get cached CRDT state.
+/// Encode a [`CacheScope`] for the `scope_user_uuid` primary-key column.
+/// Empty string sentinel for `Shared`; user uuid string for `User`. See the
+/// schema docstring for why we don't use NULL here.
+fn scope_to_column(scope: &CacheScope) -> &str {
+    match scope {
+        CacheScope::Shared => "",
+        CacheScope::User(uuid) => uuid.as_str(),
+    }
+}
+
+/// Get cached CRDT state for a `(scope, entry_id, store)` slot.
 pub async fn get_cached_crdt_state(
     backend: &SqlxBackend,
+    scope: &CacheScope,
     entry_id: &ID,
     store: &str,
 ) -> Result<Option<Vec<u8>>> {
     let pool = backend.pool();
 
-    let row: Option<(Vec<u8>,)> =
-        sqlx::query_as("SELECT state FROM crdt_cache WHERE entry_id = $1 AND store_name = $2")
-            .bind(entry_id.to_string())
-            .bind(store)
-            .fetch_optional(pool)
-            .await
-            .sql_context("Failed to get cached CRDT state")?;
+    let row: Option<(Vec<u8>,)> = sqlx::query_as(
+        "SELECT state FROM crdt_cache_v2
+         WHERE scope_user_uuid = $1 AND entry_id = $2 AND store_name = $3",
+    )
+    .bind(scope_to_column(scope))
+    .bind(entry_id.to_string())
+    .bind(store)
+    .fetch_optional(pool)
+    .await
+    .sql_context("Failed to get cached CRDT state")?;
 
     Ok(row.map(|(state,)| state))
 }
 
-/// Cache CRDT state.
+/// Cache CRDT state for a `(scope, entry_id, store)` slot. Overwrites any
+/// existing entry on the same slot.
 pub async fn cache_crdt_state(
     backend: &SqlxBackend,
+    scope: CacheScope,
     entry_id: &ID,
     store: &str,
     state: Vec<u8>,
 ) -> Result<()> {
     let pool = backend.pool();
+    let scope_col = scope_to_column(&scope);
 
     if backend.is_sqlite() {
         sqlx::query(
-            "INSERT OR REPLACE INTO crdt_cache (entry_id, store_name, state) VALUES ($1, $2, $3)",
+            "INSERT OR REPLACE INTO crdt_cache_v2
+             (scope_user_uuid, entry_id, store_name, state) VALUES ($1, $2, $3, $4)",
         )
+        .bind(scope_col)
         .bind(entry_id.to_string())
         .bind(store)
         .bind(&state)
@@ -609,9 +628,12 @@ pub async fn cache_crdt_state(
         .sql_context("Failed to cache CRDT state")?;
     } else {
         sqlx::query(
-            "INSERT INTO crdt_cache (entry_id, store_name, state) VALUES ($1, $2, $3)
-             ON CONFLICT (entry_id, store_name) DO UPDATE SET state = EXCLUDED.state",
+            "INSERT INTO crdt_cache_v2 (scope_user_uuid, entry_id, store_name, state)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (scope_user_uuid, entry_id, store_name)
+             DO UPDATE SET state = EXCLUDED.state",
         )
+        .bind(scope_col)
         .bind(entry_id.to_string())
         .bind(store)
         .bind(&state)
@@ -623,11 +645,11 @@ pub async fn cache_crdt_state(
     Ok(())
 }
 
-/// Clear all cached CRDT state.
+/// Clear every cached CRDT state across every scope.
 pub async fn clear_crdt_cache(backend: &SqlxBackend) -> Result<()> {
     let pool = backend.pool();
 
-    sqlx::query("DELETE FROM crdt_cache")
+    sqlx::query("DELETE FROM crdt_cache_v2")
         .execute(pool)
         .await
         .sql_context("Failed to clear CRDT cache")?;

@@ -204,6 +204,38 @@ pub enum DatabaseOp {
     /// Fetch a single entry by id (gated post-fetch by its owning tree). Gate
     /// Read.
     GetEntry { id: ID },
+
+    /// Look up a cached materialized CRDT state. Server returns the previously
+    /// `CacheCrdtState`-submitted blob for `(session user, root_id, key, store)`,
+    /// or `None` on miss. Gate Read.
+    ///
+    /// Used by [`crate::database::ops::RemoteDatabaseOps::get_cached_crdt_state`]
+    /// as the second tier of a two-level cache: the client first checks its own
+    /// per-connection LRU, then falls back to this RPC. The daemon's cache is
+    /// the cross-session source of truth.
+    GetCachedCrdtState { store: String, key: ID },
+
+    /// Stash a client-computed materialized CRDT state for `(session user,
+    /// root_id, key, store)`. Gate Read.
+    ///
+    /// **Per-user trust model**: the daemon stores whatever bytes the
+    /// authenticated user sends, scoped to their `user_uuid`. The blob is
+    /// **opaque** to the daemon — ciphertext for encrypted stores, plaintext
+    /// for plain ones — and the daemon performs no verification of the
+    /// merge result. The trust boundary is the same one the client would have
+    /// with a local-only cache: only the submitting user can poison their
+    /// future reads on this slot.
+    ///
+    /// **Tip-based natural expiry**: keys are derived from tip sets (see
+    /// `create_merge_cache_id`), so an entry whose tip set has advanced is
+    /// simply unreachable — future reads miss against a fresh key. Stale
+    /// entries fall out of the LRU under memory pressure rather than via
+    /// explicit invalidation.
+    CacheCrdtState {
+        store: String,
+        key: ID,
+        blob: Vec<u8>,
+    },
 }
 
 impl DatabaseOp {
@@ -342,6 +374,11 @@ pub enum ServiceResponse {
     MergeState(MergeState),
     /// Optional instance metadata
     InstanceMetadata(Option<InstanceMetadata>),
+    /// Optional cached CRDT state blob (response to
+    /// `DatabaseOp::GetCachedCrdtState`). `None` on cache miss; the daemon
+    /// does not synthesize a value, so the client falls back to recomputing
+    /// from store entries.
+    CachedCrdtState(Option<Vec<u8>>),
     /// Error response
     Error(ServiceError),
     /// Challenge bytes returned in response to `TrustedLoginUser`, plus the

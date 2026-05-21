@@ -671,7 +671,7 @@ async fn test_multi_tip_merge_state_caching() {
         .database()
         .backend()
         .unwrap()
-        .get_cached_crdt_state(&cache_id, "data")
+        .get_cached_crdt_state(&eidetica::backend::CacheScope::Shared, &cache_id, "data")
         .await
         .unwrap();
     assert!(
@@ -701,7 +701,7 @@ async fn test_multi_tip_merge_state_caching() {
         .database()
         .backend()
         .unwrap()
-        .get_cached_crdt_state(&cache_id, "data")
+        .get_cached_crdt_state(&eidetica::backend::CacheScope::Shared, &cache_id, "data")
         .await
         .unwrap();
     assert!(
@@ -774,7 +774,7 @@ async fn test_multi_tip_cache_key_is_order_independent() {
         .database()
         .backend()
         .unwrap()
-        .get_cached_crdt_state(&cache_id, "data")
+        .get_cached_crdt_state(&eidetica::backend::CacheScope::Shared, &cache_id, "data")
         .await
         .unwrap();
     assert!(cached.is_some(), "Cache should be populated");
@@ -801,7 +801,7 @@ async fn test_multi_tip_cache_key_is_order_independent() {
         .database()
         .backend()
         .unwrap()
-        .get_cached_crdt_state(&cache_id, "data")
+        .get_cached_crdt_state(&eidetica::backend::CacheScope::Shared, &cache_id, "data")
         .await
         .unwrap();
     assert!(

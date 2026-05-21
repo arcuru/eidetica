@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use crate::{
     Result,
-    backend::{BackendImpl, InstanceMetadata, InstanceSecrets, VerificationStatus},
+    backend::{BackendImpl, CacheScope, InstanceMetadata, InstanceSecrets, VerificationStatus},
     entry::{Entry, ID},
     instance::WriteSource,
 };
@@ -338,27 +338,36 @@ impl Backend {
         }
     }
 
-    /// Get cached CRDT state. Local delegates to BackendImpl; remote
-    /// returns None (cache is local-only).
+    /// Get cached CRDT state within a scope. Local delegates to
+    /// BackendImpl; remote returns None (remote handles never see the
+    /// in-process backend cache — they go through the service wire).
     pub async fn get_cached_crdt_state(
         &self,
+        scope: &CacheScope,
         entry_id: &ID,
         store: &str,
     ) -> Result<Option<Vec<u8>>> {
         match self {
-            Backend::Local(b) => b.get_cached_crdt_state(entry_id, store).await,
+            Backend::Local(b) => b.get_cached_crdt_state(scope, entry_id, store).await,
             #[cfg(all(unix, feature = "service"))]
             Backend::Remote(_) => Ok(None),
         }
     }
 
-    /// Cache CRDT state. Local delegates to BackendImpl; remote is a no-op.
-    pub async fn cache_crdt_state(&self, entry_id: &ID, store: &str, state: Vec<u8>) -> Result<()> {
+    /// Cache CRDT state within a scope. Local delegates to BackendImpl;
+    /// remote is a no-op.
+    pub async fn cache_crdt_state(
+        &self,
+        scope: CacheScope,
+        entry_id: &ID,
+        store: &str,
+        state: Vec<u8>,
+    ) -> Result<()> {
         match self {
-            Backend::Local(b) => b.cache_crdt_state(entry_id, store, state).await,
+            Backend::Local(b) => b.cache_crdt_state(scope, entry_id, store, state).await,
             #[cfg(all(unix, feature = "service"))]
             Backend::Remote(_) => {
-                let _ = (entry_id, store, state);
+                let _ = (scope, entry_id, store, state);
                 Ok(())
             }
         }

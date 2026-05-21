@@ -9,20 +9,23 @@
 //! [`LocalDatabaseOps`] forwards verbatim to the owning `Instance`'s
 //! [`Backend`](crate::instance::backend::Backend). [`RemoteDatabaseOps`]
 //! translates each method to a wire RPC (DatabaseOp where available,
-//! BackendOp for the rest) and keeps a local in-memory CRDT merge cache.
+//! BackendOp for the rest) and serves CRDT-state caching from a two-tier
+//! stack: a connection-scoped process-lifetime LRU on the
+//! [`RemoteConnection`](crate::service::client::RemoteConnection), plus the
+//! daemon's unified scope-keyed cache (see
+//! [`crate::backend::CacheScope`]) reached via `GetCachedCrdtState` /
+//! `CacheCrdtState` RPCs.
 //!
 //! Database-level verification (the Verified frontier,
 //! `Database::get_tips`/`verified_frontier`) is deliberately *not* part of
 //! this trait and stays in `Database`.
-
-use std::collections::HashMap;
-use std::sync::Mutex;
 
 use async_trait::async_trait;
 
 use crate::{
     Error, Instance, Result, WeakInstance,
     auth::types::SigKey,
+    backend::CacheScope,
     entry::{Entry, ID},
     instance::errors::InstanceError,
     service::client::RemoteConnection,
@@ -166,17 +169,21 @@ impl DatabaseOps for LocalDatabaseOps {
 
     async fn get_cached_crdt_state(&self, entry_id: &ID, store: &str) -> Result<Option<Vec<u8>>> {
         let instance = self.instance()?;
+        // LocalDatabaseOps is the daemon's own in-process path; cache reads
+        // come from the trusted Shared scope.
         instance
             .backend()
-            .get_cached_crdt_state(entry_id, store)
+            .get_cached_crdt_state(&CacheScope::Shared, entry_id, store)
             .await
     }
 
     async fn cache_crdt_state(&self, entry_id: &ID, store: &str, state: Vec<u8>) -> Result<()> {
         let instance = self.instance()?;
+        // Daemon-computed bytes are trusted: write to Shared scope so any
+        // other authorized user reading the same store can dedup.
         instance
             .backend()
-            .cache_crdt_state(entry_id, store, state)
+            .cache_crdt_state(CacheScope::Shared, entry_id, store, state)
             .await
     }
 
@@ -189,12 +196,17 @@ impl DatabaseOps for LocalDatabaseOps {
 /// Remote implementor: translates every [`DatabaseOps`] method to a wire
 /// RPC through a shared [`RemoteConnection`].
 ///
-/// Methods that have a [`DatabaseOp`] variant use it (get_verified_tips,
-/// get_store_entries, submit_signed_entry, get_entry). Methods without a
-/// DatabaseOp variant fall through to the existing [`BackendOp`] path
-/// (get_tips, get_store_tips, get_store_tips_up_to_entries, find_merge_base,
-/// get_path_from_to). The CRDT merge cache is local in-memory — no server
-/// round-trip.
+/// CRDT-state caching is two-tiered. Tier 1 is a connection-scoped
+/// process-lifetime LRU on the `RemoteConnection`, shared across every
+/// `Database` handle on that connection. Tier 2 is the daemon's unified
+/// CRDT-state cache (lives in `BackendImpl`, scope-keyed via
+/// [`CacheScope::User`] for client uploads with fallback to
+/// [`CacheScope::Shared`] for daemon-computed entries), reached via
+/// `GetCachedCrdtState` / `CacheCrdtState` RPCs — durable for the
+/// lifetime of the backend (in-memory for `InMemory`, on-disk for the
+/// SQLx backend). `get_cached_crdt_state` checks tier 1, falls through
+/// to tier 2 on miss, and on a tier-2 hit populates tier 1 so a follow-up
+/// read short-circuits. `cache_crdt_state` double-writes to both tiers.
 ///
 /// The `identity` is the session's auth identity for gating RPCs; it must
 /// match the database's auth settings for the caller's key.
@@ -203,17 +215,6 @@ pub struct RemoteDatabaseOps {
     conn: RemoteConnection,
     root_id: ID,
     identity: SigKey,
-    /// Local in-memory CRDT merge cache. The server's per-user
-    /// `ServiceCache` (keyed `(user_uuid, entry_id, store)`) serves the
-    /// encrypted-store cross-session path; this cache serves the
-    /// single-session fast-path for repeated subtree-state materialization
-    /// during a transaction.
-    ///
-    /// Accessed poison-tolerantly via [`Self::crdt_cache_lock`]: a panic in
-    /// one task while holding this guard must not strand the rest of the
-    /// `Database` handle, since the cache is best-effort performance state
-    /// (a miss recomputes from the backend).
-    crdt_cache: Mutex<HashMap<(ID, String), Vec<u8>>>,
 }
 
 impl RemoteDatabaseOps {
@@ -222,16 +223,7 @@ impl RemoteDatabaseOps {
             conn,
             root_id,
             identity,
-            crdt_cache: Mutex::new(HashMap::new()),
         }
-    }
-
-    /// Lock the CRDT merge cache, tolerating poisoning. See the field-level
-    /// doc on [`Self::crdt_cache`] for the recovery rationale.
-    fn crdt_cache_lock(&self) -> std::sync::MutexGuard<'_, HashMap<(ID, String), Vec<u8>>> {
-        self.crdt_cache
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 
@@ -330,16 +322,53 @@ impl DatabaseOps for RemoteDatabaseOps {
     }
 
     async fn get_cached_crdt_state(&self, entry_id: &ID, store: &str) -> Result<Option<Vec<u8>>> {
-        Ok(self
-            .crdt_cache_lock()
-            .get(&(entry_id.clone(), store.to_string()))
-            .cloned())
+        // Tier 1: connection-shared process-lifetime LRU.
+        if let Some(blob) = self.conn.cache_get(&self.root_id, entry_id, store) {
+            return Ok(Some(blob));
+        }
+        // Tier 2: daemon-side unified cache, durable across sessions.
+        let blob = self
+            .conn
+            .get_cached_crdt_state_remote(
+                self.root_id.clone(),
+                self.identity.clone(),
+                store.to_string(),
+                entry_id.clone(),
+            )
+            .await?;
+        // On tier-2 hit, populate tier 1 so a follow-up read short-circuits.
+        if let Some(b) = &blob {
+            self.conn.cache_put(
+                self.root_id.clone(),
+                entry_id.clone(),
+                store.to_string(),
+                b.clone(),
+            );
+        }
+        Ok(blob)
     }
 
     async fn cache_crdt_state(&self, entry_id: &ID, store: &str, state: Vec<u8>) -> Result<()> {
-        self.crdt_cache_lock()
-            .insert((entry_id.clone(), store.to_string()), state);
-        Ok(())
+        // Tier 1: stash locally first so a same-session re-read hits without
+        // any wire activity even if the tier-2 write later fails.
+        self.conn.cache_put(
+            self.root_id.clone(),
+            entry_id.clone(),
+            store.to_string(),
+            state.clone(),
+        );
+        // Tier 2: propagate to the daemon so future sessions / new handles
+        // can short-circuit the full recompute. Awaited (not fire-and-forget)
+        // so wire errors propagate to the Transaction.
+        self.conn
+            .cache_crdt_state_remote(
+                self.root_id.clone(),
+                self.identity.clone(),
+                store.to_string(),
+                entry_id.clone(),
+                state,
+            )
+            .await
     }
 
     async fn put(&self, entry: Entry) -> Result<()> {

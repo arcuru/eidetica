@@ -94,13 +94,27 @@ pub const CREATE_TABLES: &[&str] = &[
         singleton BIGINT PRIMARY KEY DEFAULT 1 CHECK (singleton = 1),
         data TEXT NOT NULL
     )",
-    // CRDT state cache
-    // `state` holds the serialized CRDT state in the store's chosen format (opaque bytes).
-    "CREATE TABLE IF NOT EXISTS crdt_cache (
+    // CRDT state cache (v2: scope-keyed)
+    //
+    // `scope_user_uuid` is the trust scope: the empty string `''` encodes
+    // `CacheScope::Shared` (daemon-computed, visible to every user with
+    // database read permission); any other string encodes
+    // `CacheScope::User(uuid)` (client-attested bytes, visible only to that
+    // user). An empty-string sentinel is used because PostgreSQL disallows
+    // NULL in primary-key columns; user UUIDs are never empty so the
+    // mapping is unambiguous. `state` is opaque bytes (plaintext for Shared;
+    // ciphertext or plaintext for User, decided client-side).
+    //
+    // The pre-unification table `crdt_cache` (no scope column) is left
+    // untouched if it exists on an upgraded database — it just becomes
+    // unreferenced. The cache is performance state, so cold-rebuilding into
+    // `crdt_cache_v2` on first load is fine.
+    "CREATE TABLE IF NOT EXISTS crdt_cache_v2 (
+        scope_user_uuid TEXT NOT NULL,
         entry_id TEXT NOT NULL,
         store_name TEXT NOT NULL,
         state BLOB NOT NULL,
-        PRIMARY KEY (entry_id, store_name)
+        PRIMARY KEY (scope_user_uuid, entry_id, store_name)
     )",
 ];
 

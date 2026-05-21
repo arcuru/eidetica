@@ -13,7 +13,7 @@ use std::{
     any::Any,
     collections::{HashMap, HashSet},
     path::Path,
-    sync::RwLock,
+    sync::{Mutex, RwLock},
 };
 
 use async_trait::async_trait;
@@ -22,10 +22,13 @@ use serde::{Deserialize, Serialize};
 use crate::{
     Result,
     backend::{
-        BackendImpl, InstanceMetadata, InstanceSecrets, VerificationStatus, errors::BackendError,
+        BackendImpl, CacheScope, InstanceMetadata, InstanceSecrets, VerificationStatus,
+        errors::BackendError,
     },
     entry::{Entry, ID},
 };
+
+use cache::InMemoryCrdtCache;
 
 /// Grouped tree tips cache: (tree_tips, subtree_name -> subtree_tips)
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -76,9 +79,11 @@ pub struct InMemory {
     /// to eliminate lock ordering concerns between entries, verification
     /// status, and tips.
     pub(crate) inner: RwLock<InMemoryInner>,
-    /// CRDT state cache, independent of core data.
-    /// Kept separate because it has no coupling to entries/tips lifecycle.
-    pub(crate) crdt_cache: RwLock<HashMap<String, Vec<u8>>>,
+    /// Scope-keyed, byte-bounded LRU cache for materialized CRDT state.
+    /// `Mutex` (not `RwLock`) because `LruCache::get` mutates ordering, so
+    /// every read is effectively a write under LRU semantics. Hosts both
+    /// `Shared` (daemon-trusted) and `User` (client-attested) entries.
+    pub(crate) crdt_cache: Mutex<InMemoryCrdtCache>,
 }
 
 impl InMemory {
@@ -92,7 +97,7 @@ impl InMemory {
                 instance_secrets: None,
                 tips: HashMap::new(),
             }),
-            crdt_cache: RwLock::new(HashMap::new()),
+            crdt_cache: Mutex::new(InMemoryCrdtCache::new()),
         }
     }
 
@@ -384,12 +389,23 @@ impl BackendImpl for InMemory {
         Ok(())
     }
 
-    async fn get_cached_crdt_state(&self, entry_id: &ID, subtree: &str) -> Result<Option<Vec<u8>>> {
-        cache::get_cached_crdt_state(self, entry_id, subtree)
+    async fn get_cached_crdt_state(
+        &self,
+        scope: &CacheScope,
+        entry_id: &ID,
+        subtree: &str,
+    ) -> Result<Option<Vec<u8>>> {
+        cache::get_cached_crdt_state(self, scope, entry_id, subtree)
     }
 
-    async fn cache_crdt_state(&self, entry_id: &ID, subtree: &str, state: Vec<u8>) -> Result<()> {
-        cache::cache_crdt_state(self, entry_id, subtree, state)
+    async fn cache_crdt_state(
+        &self,
+        scope: CacheScope,
+        entry_id: &ID,
+        subtree: &str,
+        state: Vec<u8>,
+    ) -> Result<()> {
+        cache::cache_crdt_state(self, scope, entry_id, subtree, state)
     }
 
     async fn clear_crdt_cache(&self) -> Result<()> {
