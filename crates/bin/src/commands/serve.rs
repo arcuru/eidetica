@@ -211,11 +211,9 @@ pub async fn run(args: &ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // Save database on shutdown (only needed for InMemory backend)
-        if let Some(in_memory_backend) = app_state
-            .instance
-            .backend()
-            .as_any()
-            .downcast_ref::<InMemory>()
+        let engine = app_state.instance.backend().local_engine();
+        if let Some(in_memory_backend) =
+            engine.as_ref().and_then(|e| e.as_any().downcast_ref::<InMemory>())
         {
             let json_path = data_dir.join("eidetica.json");
             match in_memory_backend.save_to_file(&json_path).await {
@@ -598,13 +596,16 @@ struct HealthResponse {
 
 /// Handler for GET /health - Health check endpoint
 async fn handle_health_endpoint(State(state): State<AppState>) -> axum::Json<HealthResponse> {
-    let backend = state.instance.backend();
-    let backend_type = if let Some(sqlx) = backend.as_any().downcast_ref::<SqlxBackend>() {
+    let engine = state.instance.backend().local_engine();
+    let backend_type = if let Some(sqlx) = engine
+        .as_ref()
+        .and_then(|e| e.as_any().downcast_ref::<SqlxBackend>())
+    {
         match sqlx.kind() {
             DbKind::Sqlite => "sqlite",
             DbKind::Postgres => "postgres",
         }
-    } else if backend.as_any().is::<InMemory>() {
+    } else if engine.as_ref().is_some_and(|e| e.as_any().is::<InMemory>()) {
         "inmemory"
     } else {
         "unknown"
