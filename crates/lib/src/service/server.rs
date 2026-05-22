@@ -582,13 +582,9 @@ async fn dispatch_database_op(
             // The fallback is what gives cross-user dedup on plaintext
             // stores: alice triggers a server materialization, blob lands
             // in Shared, bob's later read finds it without recomputing.
-            let backend = instance.backend();
+            let backend = instance.require_local_engine()?;
             let mut blob = backend
-                .get_cached_crdt_state(
-                    &CacheScope::User(user_uuid.to_string()),
-                    &key,
-                    &store,
-                )
+                .get_cached_crdt_state(&CacheScope::User(user_uuid.to_string()), &key, &store)
                 .await?;
             if blob.is_none() {
                 blob = backend
@@ -605,15 +601,10 @@ async fn dispatch_database_op(
             // a client upload to Shared — the daemon can't verify the
             // merge result, so cross-user visibility would be a poison
             // vector. Shared writes only come from the daemon's own
-            // LocalDatabaseOps path.
+            // in-process (LocalBackend) materialization path.
             instance
-                .backend()
-                .cache_crdt_state(
-                    CacheScope::User(user_uuid.to_string()),
-                    &key,
-                    &store,
-                    blob,
-                )
+                .require_local_engine()?
+                .cache_crdt_state(CacheScope::User(user_uuid.to_string()), &key, &store, blob)
                 .await?;
             Ok(ServiceResponse::Ok)
         }

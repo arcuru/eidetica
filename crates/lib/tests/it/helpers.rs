@@ -5,8 +5,11 @@ use eidetica::{
     Database, Error, FixedClock, Instance, NewUser,
     auth::{crypto::PublicKey, types::AuthKey},
     backend::BackendImpl,
+    backend::VerificationStatus,
     backend::database::InMemory,
     crdt::{Doc, doc::Value},
+    entry::{Entry, ID},
+    instance::backend::Backend,
     store::DocStore,
     user::User,
 };
@@ -659,4 +662,65 @@ macro_rules! impl_test_verify {
 
 impl_test_verify!(dyn BackendImpl);
 impl_test_verify!(eidetica::backend::database::InMemory);
-impl_test_verify!(eidetica::instance::backend::Backend);
+
+impl TestVerify for Arc<dyn Backend> {
+    async fn put_verified(&self, entry: Entry) -> eidetica::Result<()> {
+        self.engine().put_verified(entry).await
+    }
+}
+
+/// Test-only access to a *local* instance's storage engine through the
+/// `Backend` seam.
+///
+/// The production seam (`Arc<dyn Backend>`) deliberately exposes only the
+/// operations local and remote backends share; engine-level operations
+/// (verification status, raw tree dumps, cache control) live on `BackendImpl`
+/// and are reached via [`Backend::local_engine`]. White-box tests poke those
+/// directly, so this trait re-exposes them on the seam handle by delegating to
+/// the local engine. It panics if used against a remote backend — every caller
+/// is a local-only test.
+///
+/// Tracked for cleanup: tests should migrate to an explicit engine accessor.
+/// See the "refactor white-box tests off the engine re-exposure" task.
+pub trait LocalBackendTestExt {
+    fn engine(&self) -> Arc<dyn BackendImpl>;
+    async fn get_verification_status(&self, id: &ID) -> eidetica::Result<VerificationStatus>;
+    async fn update_verification_status(
+        &self,
+        id: &ID,
+        status: VerificationStatus,
+    ) -> eidetica::Result<()>;
+    async fn get_tree(&self, tree: &ID) -> eidetica::Result<Vec<Entry>>;
+    async fn all_roots(&self) -> eidetica::Result<Vec<ID>>;
+    async fn clear_crdt_cache(&self) -> eidetica::Result<()>;
+}
+
+impl LocalBackendTestExt for Arc<dyn Backend> {
+    fn engine(&self) -> Arc<dyn BackendImpl> {
+        self.local_engine().expect("test requires a local backend")
+    }
+    async fn get_verification_status(&self, id: &ID) -> eidetica::Result<VerificationStatus> {
+        self.engine().get_verification_status(id).await
+    }
+    async fn update_verification_status(
+        &self,
+        id: &ID,
+        status: VerificationStatus,
+    ) -> eidetica::Result<()> {
+        self.engine().update_verification_status(id, status).await
+    }
+    async fn get_tree(&self, tree: &ID) -> eidetica::Result<Vec<Entry>> {
+        self.engine().get_tree(tree).await
+    }
+    async fn all_roots(&self) -> eidetica::Result<Vec<ID>> {
+        self.engine().all_roots().await
+    }
+    async fn clear_crdt_cache(&self) -> eidetica::Result<()> {
+        // No local cache exists on a connected instance — the daemon owns it.
+        // Mirror the production seam: a client-side clear is a no-op.
+        match self.local_engine() {
+            Some(engine) => engine.clear_crdt_cache().await,
+            None => Ok(()),
+        }
+    }
+}

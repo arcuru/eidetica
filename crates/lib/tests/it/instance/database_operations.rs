@@ -4,6 +4,7 @@
 //! database creation, tree creation, tree loading, and backend management.
 
 use super::helpers::*;
+use crate::helpers::LocalBackendTestExt;
 use crate::helpers::test_local_instance_with_user as test_instance_with_user;
 use eidetica::crdt::Doc;
 

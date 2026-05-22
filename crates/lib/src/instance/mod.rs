@@ -38,7 +38,9 @@ pub mod settings_merge;
 mod tests;
 
 // Re-export main types for easier access
-use backend::Backend;
+#[cfg(all(unix, feature = "service"))]
+use backend::RemoteBackend;
+use backend::{Backend, LocalBackend};
 pub use errors::InstanceError;
 pub use new_user::NewUser;
 
@@ -210,7 +212,7 @@ impl Drop for WriteCallback {
 /// Instance itself is just a cheap-to-clone handle wrapping Arc<InstanceInternal>.
 pub(crate) struct InstanceInternal {
     /// The database storage backend
-    backend: Backend,
+    backend: Arc<dyn Backend>,
     /// Time provider for timestamps
     clock: Arc<dyn Clock>,
     /// Synchronization module for this database instance
@@ -318,7 +320,7 @@ impl Instance {
     /// Connect to a running Eidetica service daemon over a Unix domain socket.
     ///
     /// This creates a `RemoteConnection` that forwards all storage operations
-    /// to the daemon via RPC, wrapped in a `Backend::Remote` variant.
+    /// to the daemon via RPC, wrapped in a `RemoteBackend`.
     ///
     /// Authentication uses client-side signing. `login_user()` runs the
     /// challenge-response handshake, decrypting the user's signing key
@@ -336,7 +338,7 @@ impl Instance {
     #[cfg(all(unix, feature = "service"))]
     pub async fn connect(socket_path: impl AsRef<std::path::Path>) -> Result<Self> {
         let conn = crate::service::client::RemoteConnection::connect(socket_path).await?;
-        let backend = Backend::Remote(conn);
+        let backend: Arc<dyn Backend> = Arc::new(RemoteBackend::new(conn, None));
 
         // Load metadata from the remote backend
         let metadata = backend
@@ -439,7 +441,7 @@ impl Instance {
 
         // Existing backend: load from metadata + secrets
         let inner = Arc::new(InstanceInternal {
-            backend: Backend::new(backend),
+            backend: Arc::new(LocalBackend::new(backend)),
             clock,
             sync: std::sync::OnceLock::new(),
             metadata,
@@ -574,7 +576,7 @@ impl Instance {
             }
         }
         let inner = Arc::new(InstanceInternal {
-            backend: Backend::new(backend),
+            backend: Arc::new(LocalBackend::new(backend)),
             clock,
             sync: std::sync::OnceLock::new(),
             metadata,
@@ -613,7 +615,7 @@ impl Instance {
         // 5. The real instance is constructed afterward with the correct database IDs
         let temp_instance = Self {
             inner: Arc::new(InstanceInternal {
-                backend: Backend::new(Arc::clone(&backend)),
+                backend: Arc::new(LocalBackend::new(Arc::clone(&backend))),
                 clock: Arc::clone(&clock),
                 sync: std::sync::OnceLock::new(),
                 metadata: InstanceMetadata {
@@ -652,7 +654,7 @@ impl Instance {
 
         // 4. Build real instance
         let inner = Arc::new(InstanceInternal {
-            backend: Backend::new(backend),
+            backend: Arc::new(LocalBackend::new(backend)),
             clock,
             sync: std::sync::OnceLock::new(),
             metadata,
@@ -693,9 +695,27 @@ impl Instance {
         Ok((instance, user))
     }
 
-    /// Get a reference to the backend
-    pub fn backend(&self) -> &Backend {
+    /// Get a reference to the backend seam.
+    pub fn backend(&self) -> &Arc<dyn Backend> {
         &self.inner.backend
+    }
+
+    /// The concrete in-process storage engine, or [`OperationNotSupported`] on
+    /// a remote instance.
+    ///
+    /// Off-seam local-only operations (instance secrets, verification-status
+    /// mutation, `all_roots`/`get_tree` raw dumps, scope-keyed cache) are
+    /// performed through this accessor, so they are reachable only where a
+    /// concrete local backend exists.
+    ///
+    /// [`OperationNotSupported`]: InstanceError::OperationNotSupported
+    pub(crate) fn require_local_engine(&self) -> Result<Arc<dyn BackendImpl>> {
+        self.inner.backend.local_engine().ok_or_else(|| {
+            InstanceError::OperationNotSupported {
+                operation: "local backend engine on remote instance".to_string(),
+            }
+            .into()
+        })
     }
 
     /// The remote connection backing this instance, if it was created via
@@ -705,10 +725,7 @@ impl Instance {
     /// reads through the Database-level wire API while sharing the same
     /// connection and session as the instance's write path.
     pub fn remote_connection(&self) -> Option<RemoteConnection> {
-        match &self.inner.backend {
-            Backend::Remote(conn) => Some(conn.clone()),
-            _ => None,
-        }
+        self.inner.backend.remote_connection()
     }
 
     /// Check if an entry exists in storage.
@@ -774,7 +791,7 @@ impl Instance {
     pub(crate) async fn users_db(&self) -> Result<Database> {
         let db = Database::open(self, &self.inner.metadata.users_db).await?;
         #[cfg(all(unix, feature = "service"))]
-        if let Backend::Remote(_) = self.backend() {
+        if self.remote_connection().is_some() {
             return Ok(db);
         }
         Ok(db.with_key(self.signing_key()?.clone()))
@@ -792,12 +809,12 @@ impl Instance {
     /// Open a system database for an authenticated session.
     ///
     /// On a remote instance this routes every read through the connection's
-    /// Database wire protocol ([`Database::open_remote`] /
-    /// `RemoteDatabaseOps`), gated by the session key's identity — the plain
-    /// [`Database::open`] path only ever uses `LocalDatabaseOps` against the
-    /// client's (empty) backend, so settings/auth reads of a server-owned
-    /// system DB would come back empty. On a local instance it opens against
-    /// the local backend as before. The signing key is attached for writes.
+    /// Database wire protocol ([`Database::open_remote`], a per-handle
+    /// `RemoteBackend`), gated by the session key's identity — the plain
+    /// [`Database::open`] path instead clones the instance's session backend,
+    /// so on a connected instance its reads carry the connection's login
+    /// identity. On a local instance it opens against the local backend as
+    /// before. The signing key is attached for writes.
     pub(crate) async fn open_system_db_for_session(
         &self,
         root_id: &ID,
@@ -809,7 +826,7 @@ impl Instance {
             // `signing_key.public_key()` (the caller's chosen identity for
             // this DB). The hint must be in the connection's session keyset
             // — register it now so subsequent reads through the returned
-            // `RemoteDatabaseOps` are accepted.
+            // `RemoteBackend` are accepted.
             conn.register_session_key(signing_key).await?;
             let identity = SigKey::from_pubkey(&signing_key.public_key());
             return Ok(Database::open_remote(self, conn, root_id, identity)
@@ -874,7 +891,7 @@ impl Instance {
         // the per-tree gate means a freshly-logged-in user with no permissions
         // on `_users` couldn't re-read it over the wire anyway, so we don't try.
         #[cfg(all(unix, feature = "service"))]
-        if let Backend::Remote(conn) = self.backend() {
+        if let Some(conn) = self.remote_connection() {
             let (user_uuid, user_info, signing_key) = conn.trusted_login(user_id, password).await?;
             return crate::user::system_databases::build_user_session(
                 self,
@@ -982,7 +999,7 @@ impl Instance {
         // TODO(service): add an admin-gated `EnableSync` RPC and route
         // through `InstanceAdmin`, so a client can enable sync remotely.
         #[cfg(all(unix, feature = "service"))]
-        if let Backend::Remote(_) = self.backend() {
+        if self.remote_connection().is_some() {
             return Ok(());
         }
 

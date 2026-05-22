@@ -38,7 +38,9 @@ use sqlx::any::AnyPoolOptions;
 
 use crate::Result;
 use crate::backend::errors::BackendError;
-use crate::backend::{BackendImpl, CacheScope, InstanceMetadata, InstanceSecrets, VerificationStatus};
+use crate::backend::{
+    BackendImpl, CacheScope, InstanceMetadata, InstanceSecrets, VerificationStatus,
+};
 use crate::entry::{Entry, ID};
 
 /// Extension trait for sqlx Result types to simplify error handling.

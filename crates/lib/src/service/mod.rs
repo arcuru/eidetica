@@ -8,7 +8,7 @@
 //! ## Architecture
 //!
 //! The RPC boundary sits at the storage operation level. A `RemoteConnection` forwards
-//! all operations over a Unix socket to the daemon, wrapped in a `Backend::Remote` variant.
+//! all operations over a Unix socket to the daemon, backing the `RemoteBackend` seam impl.
 //! `Instance::connect(path)` loads `InstanceMetadata` from the remote backend,
 //! then constructs an Instance with no local secrets.
 //!

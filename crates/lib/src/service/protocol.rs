@@ -209,7 +209,7 @@ pub enum DatabaseOp {
     /// `CacheCrdtState`-submitted blob for `(session user, root_id, key, store)`,
     /// or `None` on miss. Gate Read.
     ///
-    /// Used by [`crate::database::ops::RemoteDatabaseOps::get_cached_crdt_state`]
+    /// Used by [`RemoteBackend::get_cached_crdt_state`](crate::instance::backend::RemoteBackend)
     /// as the second tier of a two-level cache: the client first checks its own
     /// per-connection LRU, then falls back to this RPC. The daemon's cache is
     /// the cross-session source of truth.

@@ -476,8 +476,8 @@ impl Sync {
             .ok_or_else(|| SyncError::InstanceDropped.into())
     }
 
-    /// Get a reference to the backend.
-    pub fn backend(&self) -> Result<Backend> {
+    /// Get a clone of the backend seam.
+    pub fn backend(&self) -> Result<Arc<dyn Backend>> {
         Ok(self.instance()?.backend().clone())
     }
 

@@ -81,7 +81,11 @@ async fn create_branching_tree(
     let mut branches = Vec::new();
 
     // Get the root entry to branch from
-    let backend = tree.backend().expect("Failed to get backend");
+    let backend = tree
+        .backend()
+        .expect("Failed to get backend")
+        .local_engine()
+        .expect("bench requires a local backend");
     let root_entries = backend
         .get_tree(tree.root_id())
         .await
@@ -141,7 +145,11 @@ async fn create_large_tree(tree: &Database, num_entries: usize, structure: &str)
         "wide" => {
             // Create many siblings from root
             // Get the root entry to branch from
-            let backend = tree.backend().expect("Failed to get backend");
+            let backend = tree
+                .backend()
+                .expect("Failed to get backend")
+                .local_engine()
+                .expect("bench requires a local backend");
             let root_entries = backend
                 .get_tree(tree.root_id())
                 .await
@@ -216,7 +224,11 @@ pub fn bench_merge_base_linear_chains(c: &mut Criterion) {
                                 vec![entry_ids[0].clone(), entry_ids[length - 1].clone()];
                             let expected_merge_base = &entry_ids[0]; // In a linear chain, merge base of first and last is the first
 
-                            let backend = tree.backend().expect("Failed to get backend");
+                            let backend = tree
+                                .backend()
+                                .expect("Failed to get backend")
+                                .local_engine()
+                                .expect("bench requires a local backend");
                             let merge_base = backend
                                 .find_merge_base(tree.root_id(), "data", &endpoints)
                                 .await
@@ -255,7 +267,11 @@ pub fn bench_merge_base_diamond_merge(c: &mut Criterion) {
             },
             |(_instance, tree, test_entries, expected_merge_base)| {
                 rt.block_on(async {
-                    let backend = tree.backend().expect("Failed to get backend");
+                    let backend = tree
+                        .backend()
+                        .expect("Failed to get backend")
+                        .local_engine()
+                        .expect("bench requires a local backend");
 
                     let merge_base = backend
                         .find_merge_base(tree.root_id(), "data", &test_entries)
@@ -297,7 +313,11 @@ pub fn bench_tips_finding(c: &mut Criterion) {
                     },
                     |(_instance, tree)| {
                         rt.block_on(async {
-                            let backend = tree.backend().expect("Failed to get backend");
+                            let backend = tree
+                                .backend()
+                                .expect("Failed to get backend")
+                                .local_engine()
+                                .expect("bench requires a local backend");
                             let tips = backend
                                 .get_tips(tree.root_id())
                                 .await
@@ -342,7 +362,11 @@ pub fn bench_tree_traversal_scalability(c: &mut Criterion) {
                         },
                         |(_instance, tree)| {
                             rt.block_on(async {
-                                let backend = tree.backend().expect("Failed to get backend");
+                                let backend = tree
+                                    .backend()
+                                    .expect("Failed to get backend")
+                                    .local_engine()
+                                    .expect("bench requires a local backend");
                                 let entries = backend
                                     .get_tree(tree.root_id())
                                     .await
@@ -436,7 +460,11 @@ pub fn bench_tip_validation(c: &mut Criterion) {
                     },
                     |(_instance, tree, last_entry_id)| {
                         rt.block_on(async {
-                            let backend = tree.backend().expect("Failed to get backend");
+                            let backend = tree
+                                .backend()
+                                .expect("Failed to get backend")
+                                .local_engine()
+                                .expect("bench requires a local backend");
                             let in_memory = backend
                                 .as_any()
                                 .downcast_ref::<InMemory>()
@@ -490,7 +518,11 @@ pub fn bench_get_tree_from_tips(c: &mut Criterion) {
                         },
                         |(_instance, tree, tips)| {
                             rt.block_on(async {
-                                let backend = tree.backend().expect("Failed to get backend");
+                                let backend = tree
+                                    .backend()
+                                    .expect("Failed to get backend")
+                                    .local_engine()
+                                    .expect("bench requires a local backend");
                                 let in_memory = backend
                                     .as_any()
                                     .downcast_ref::<InMemory>()

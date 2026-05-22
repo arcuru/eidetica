@@ -38,6 +38,8 @@
 
 use std::collections::HashMap;
 
+use std::sync::Arc;
+
 use super::{UserKeyManager, admin::InstanceAdmin, types::UserInfo};
 use crate::{
     Database, Error, Instance, Result, Transaction,
@@ -139,8 +141,8 @@ impl User {
         &self.user_database
     }
 
-    /// Get a reference to the backend
-    pub fn backend(&self) -> &Backend {
+    /// Get a reference to the backend seam.
+    pub fn backend(&self) -> &Arc<dyn Backend> {
         self.instance.backend()
     }
 
@@ -421,11 +423,11 @@ impl User {
         //
         // On a connected (remote) instance, the read path must travel as the
         // user's per-DB identity so the daemon's per-tree gate sees a key the
-        // tree actually authorises. `Database::open` would wire
-        // `LocalDatabaseOps`, which on a remote instance forwards through
-        // `Backend::Remote` with the connection's login pubkey — and the
-        // user's login key is not a member of every tree they hold a per-DB
-        // key for. Route through `Database::open_remote` with the per-DB
+        // tree actually authorises. `Database::open` would clone the
+        // instance's session backend, which on a remote instance carries the
+        // connection's login pubkey — and the user's login key is not a member
+        // of every tree they hold a per-DB key for. Route through
+        // `Database::open_remote` with the per-DB
         // identity instead, after proving possession of the per-DB key to
         // the daemon so the identity sits in the connection's session
         // keyset.
