@@ -95,6 +95,19 @@ The returned Instance is fully transparent -- all downstream code (Database, Tra
 - **No plaintext secrets cross the socket.** Authentication operations (user creation, login, key management) run locally in the client. Only storage operations (get, put, tips, etc.) are forwarded to the daemon.
 - **The socket is a local Unix domain socket.** Access is controlled by filesystem permissions on the socket file. Only processes that can reach the socket path can connect.
 
+> ⚠️ **Deployment bootstrap creates a PASSWORDLESS admin.** The NixOS module
+> and the published container image auto-create the initial admin user
+> _without a password_ on first start (so the service can come up on fresh
+> state without manual `daemon init`). Anyone who can reach the service can
+> then act as admin. This is acceptable for a trusted/LAN deployment but
+> **unsafe on a network-exposed bind** (`host = "0.0.0.0"` / a published
+> container port) — restrict access with a firewall or an authenticating
+> reverse proxy. The NixOS module emits a build-time warning when bound to a
+> non-loopback address. An operator-supplied-credential bootstrap (admin
+> password from a file / secret) is a planned P0 follow-up; until then, run
+> `eidetica daemon init --username <NAME>` yourself (with a password) before
+> first start if you need a password-protected admin.
+
 ## Multiple Clients
 
 Multiple clients can connect to the same daemon simultaneously. Each client maintains its own connection and User session:

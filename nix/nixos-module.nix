@@ -73,8 +73,13 @@ in {
 
         The service requires an initialised backend with an admin user. On
         first start (when the backend is not yet initialised) the service
-        bootstraps this user as a passwordless admin. Subsequent starts detect
+        bootstraps this user as a PASSWORDLESS admin. Subsequent starts detect
         the existing instance and skip initialisation.
+
+        Security: a passwordless admin means anyone who can reach the service
+        can act as admin. This is fine for a trusted/LAN deployment but unsafe
+        on a network-exposed bind (`host = "0.0.0.0"`), which emits a warning.
+        An operator-supplied-credential bootstrap is planned (P0 follow-up).
       '';
     };
 
@@ -92,6 +97,23 @@ in {
         message = "services.eidetica.postgresUrl is required when backend is postgres";
       }
     ];
+
+    # Loudly surface the passwordless-admin bootstrap at rebuild time. The
+    # initial admin (`initialUser`) is created WITHOUT a password, so anyone
+    # who can reach the service can act as admin. This is acceptable for a
+    # trusted/LAN deployment but unsafe on a network-exposed (0.0.0.0) bind.
+    #
+    # FIXME(security, P0): replace the unconditional passwordless bootstrap
+    # with an operator-supplied credential (e.g. an `initialPasswordFile`
+    # read via systemd LoadCredential), and fail closed when neither a
+    # password source nor an explicit passwordless opt-in is configured.
+    # Tracked in ../private_docs/service-deployment-followups.md.
+    warnings = optional (cfg.host != "127.0.0.1") ''
+      services.eidetica bootstraps a PASSWORDLESS admin user ("${cfg.initialUser}")
+      on first start, but is bound to ${cfg.host} (not loopback). Any host that
+      can reach it can act as admin. Restrict access (firewall / reverse proxy
+      with auth) or wait for the operator-supplied-credential bootstrap.
+    '';
 
     # Create user and group
     users.users.${cfg.user} = {
