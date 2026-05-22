@@ -1091,10 +1091,20 @@ mod tests {
         // Server should remove stale socket and bind successfully
         let handle = tokio::spawn(async move { server.run(rx).await });
 
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        assert!(socket_path.exists());
-        // Verify it's actually a socket now by connecting
-        let _stream = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
+        // The server binds asynchronously; poll until it accepts a connection
+        // rather than racing a fixed sleep (flaky under parallel test load).
+        let mut stream = None;
+        for _ in 0..200 {
+            if let Ok(s) = tokio::net::UnixStream::connect(&socket_path).await {
+                stream = Some(s);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(
+            stream.is_some(),
+            "server did not bind a connectable socket in time"
+        );
 
         handle.abort();
     }

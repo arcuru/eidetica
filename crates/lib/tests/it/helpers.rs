@@ -1,4 +1,5 @@
 use std::sync::Arc;
+#[cfg(all(unix, feature = "service"))]
 use std::time::Duration;
 
 use eidetica::{
