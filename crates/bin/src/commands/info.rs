@@ -27,7 +27,12 @@ pub async fn run(args: &InfoArgs, format: OutputFormat) -> Result<(), Box<dyn st
     };
 
     let device_id = instance.id();
-    let all_roots = instance.backend().all_roots().await?;
+    let all_roots = instance
+        .backend()
+        .local_engine()
+        .expect("info opens a local backend directly")
+        .all_roots()
+        .await?;
 
     // Filter out system database roots to get user database count
     let system_db_count = if instance.sync().is_some() { 3 } else { 2 };

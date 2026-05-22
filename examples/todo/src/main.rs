@@ -178,17 +178,20 @@ async fn load_or_create_instance_and_user(path: &PathBuf) -> Result<(Instance, U
 }
 
 async fn save_instance(instance: &Instance, path: &PathBuf) -> Result<()> {
-    let database = instance.backend();
+    // Reach the in-process storage engine; this example always runs against a
+    // local backend.
+    let engine = instance.backend().local_engine().ok_or_else(|| {
+        Error::Io(std::io::Error::other(
+            "Cannot save a remote-backed instance",
+        ))
+    })?;
 
-    // Cast the database to InMemory to access save_to_file
-    let in_memory_database = database
-        .as_any()
-        .downcast_ref::<InMemory>()
-        .ok_or_else(|| {
-            Error::Io(std::io::Error::other(
-                "Failed to downcast database to InMemory",
-            ))
-        })?;
+    // Cast the engine to InMemory to access save_to_file
+    let in_memory_database = engine.as_any().downcast_ref::<InMemory>().ok_or_else(|| {
+        Error::Io(std::io::Error::other(
+            "Failed to downcast database to InMemory",
+        ))
+    })?;
 
     in_memory_database.save_to_file(path).await?;
     Ok(())

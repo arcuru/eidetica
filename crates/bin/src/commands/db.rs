@@ -14,7 +14,12 @@ pub async fn list(
     let backend = create_backend(&args.backend_config).await?;
     let instance = Instance::open(backend).await?;
 
-    let all_roots = instance.backend().all_roots().await?;
+    let all_roots = instance
+        .backend()
+        .local_engine()
+        .expect("db list opens a local backend directly")
+        .all_roots()
+        .await?;
 
     // Collect system DB root IDs to filter them out
     let metadata = instance.backend().get_instance_metadata().await?;
