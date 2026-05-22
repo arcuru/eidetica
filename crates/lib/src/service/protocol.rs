@@ -7,10 +7,10 @@
 //!
 //! `ServiceRequest` is a flat enum holding pre-authentication lifecycle messages
 //! (`TrustedLoginUser`, `TrustedLoginProve`), the pre-auth `GetInstanceMetadata`
-//! query, and an `Authenticated` wrapper that carries every storage operation
+//! query, and an `AuthenticatedDb` wrapper that carries every storage operation
 //! (including any user-management writes against `_users`). The wrapper
 //! bundles the `(root_id, identity)` scope so the server can validate each
-//! backend op against the connection's session pubkey and the target database's
+//! op against the connection's session keyset and the target database's
 //! auth settings. Pre-auth verification of the session pubkey happens once at
 //! login via a challenge-response handshake.
 //!
@@ -25,7 +25,7 @@
 //! reminder of that assumption — see § Trusted login threat model in the
 //! Service Architecture doc.
 //!
-//! `Authenticated` requests carry the caller's `root_id`/`identity` and are
+//! `AuthenticatedDb` requests carry the caller's `root_id`/`identity` and are
 //! gated per-tree by the daemon's permission check; clients populate these
 //! from the session established by the `TrustedLogin*` flow.
 
@@ -60,57 +60,13 @@ pub struct HandshakeAck {
     pub protocol_version: u32,
 }
 
-/// Backend storage operations that the server dispatches on behalf of an
-/// authenticated client.
-///
-/// This minimal surface retains only `Get` (entry fetch by id) and
-/// `SetInstanceMetadata` (admin-gated instance config writes). All other
-/// read/write paths have moved to [`DatabaseOp`] via the
-/// [`AuthenticatedDbRequest`] envelope. `BackendOp` is always carried
-/// inside `ServiceRequest::Authenticated` so the server has the
-/// `(root_id, identity)` scope it needs to authorise the op.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum BackendOp {
-    /// Fetch a single entry by id. Gated post-fetch by the entry's owning tree.
-    Get { id: ID },
-    /// Rewrite the daemon's instance metadata (system-DB pointers).
-    /// Gated by `Admin` on `_databases`. Boxed to keep the enum's stack
-    /// footprint small — `InstanceMetadata` dominates the variant size.
-    SetInstanceMetadata { metadata: Box<InstanceMetadata> },
-}
-
-impl BackendOp {
-    /// Returns `None` for every variant: `Get` carries no inline tree id,
-    /// and `SetInstanceMetadata` targets a daemon-global system tree
-    /// (`_databases`) rather than a caller-named one — gated explicitly in
-    /// the server dispatch.
-    pub fn tree_id(&self) -> Option<&ID> {
-        match self {
-            BackendOp::Get { .. } | BackendOp::SetInstanceMetadata { .. } => None,
-        }
-    }
-
-    /// `SetInstanceMetadata` requires `Admin` (gated against `_databases`).
-    /// `Get` is `Read` (gated post-fetch on the entry's owning tree).
-    pub fn required_permission(&self) -> Permission {
-        match self {
-            BackendOp::SetInstanceMetadata { .. } => Permission::Admin(0),
-            BackendOp::Get { .. } => Permission::Read,
-        }
-    }
-}
-
 // ===========================================================================
-// Database-level wire API (additive, parallel to `BackendOp`).
+// Database-level wire API.
 //
-// `BackendOp` mirrors the storage trait, so the whole verification/CRDT/auth
-// stack runs client-side over raw storage primitives — the wire sits *below*
-// the layer where the security model lives. The ops below instead let the
-// server run the `Database` layer on its local instance: verify-on-read and
-// the Verified frontier become server-side by construction, and every op is
-// intrinsically (tree, store, identity)-scoped. Carried in
-// `ServiceRequest::AuthenticatedDb`; the legacy `BackendOp`/`Authenticated`
-// path is untouched and removed only in the final cutover.
+// Every storage operation rides this single op enum: the server runs the
+// `Database` layer on its local instance, so verify-on-read and the Verified
+// frontier are server-side by construction, and every op is intrinsically
+// (tree, store, identity)-scoped. Carried in `ServiceRequest::AuthenticatedDb`.
 // ===========================================================================
 
 /// Which projection of the DAG an op observes. Mirrors the `Database`
@@ -159,9 +115,9 @@ pub struct MergeState {
 /// Database-level operations the server runs on its local `Database`.
 ///
 /// The target database (`root_id`) and identity claim travel in
-/// [`AuthenticatedDbRequest`], exactly as `BackendOp` rides
-/// [`AuthenticatedRequest`]; gates are reused unchanged (Read for begin/get*,
-/// Write for submit).
+/// [`AuthenticatedDbRequest`]; the per-tree gate runs against `root_id`
+/// (Read for begin/get*, Write for submit, Admin-on-`_databases` for
+/// set-metadata) before dispatch.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DatabaseOp {
     /// Acquire everything needed to build+sign a transaction locally for the
@@ -236,6 +192,13 @@ pub enum DatabaseOp {
         key: ID,
         blob: Vec<u8>,
     },
+
+    /// Rewrite the daemon's instance metadata (system-DB pointers). Gated by
+    /// `Admin` on `_databases` (a daemon-global system tree, resolved
+    /// server-side — *not* the request's `root_id`), so the per-tree gate is
+    /// special-cased for this variant in the dispatcher. Boxed to keep the
+    /// enum's stack footprint small — `InstanceMetadata` dominates its size.
+    SetInstanceMetadata { metadata: Box<InstanceMetadata> },
 }
 
 impl DatabaseOp {
@@ -251,6 +214,9 @@ impl DatabaseOp {
     pub fn required_permission(&self) -> Permission {
         match self {
             DatabaseOp::SubmitSignedEntry { .. } => Permission::Write(0),
+            // Gated against `_databases`, not the request's `root_id`; the
+            // dispatcher special-cases this so the value here is advisory.
+            DatabaseOp::SetInstanceMetadata { .. } => Permission::Admin(0),
             DatabaseOp::GetStoreTipsUpToEntries { .. } => Permission::Read,
             DatabaseOp::ComputeMergeState { .. } => Permission::Read,
             _ => Permission::Read,
@@ -258,37 +224,19 @@ impl DatabaseOp {
     }
 }
 
-/// Payload of an `Authenticated` service request.
-///
-/// Bundles the database scope (`root_id`) and identity claim (`identity`) with
-/// the backend op the client wants to run. Carried boxed inside
-/// `ServiceRequest::Authenticated` to keep the top-level enum's stack footprint
-/// flat — `SigKey` and `BackendOp::SetInstanceMetadata`'s payload are large.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AuthenticatedRequest {
-    /// Root entry of the database this op targets. Used by the server to look
-    /// up auth settings for permission resolution.
-    pub root_id: ID,
-    /// Identity claim for the op. The server verifies this against the
-    /// connection's session pubkey before dispatching the inner request.
-    pub identity: SigKey,
-    /// Backend operation to execute.
-    pub request: BackendOp,
-}
-
 /// Payload of an `AuthenticatedDb` service request.
 ///
-/// Database-level analogue of [`AuthenticatedRequest`]: same `(root_id,
-/// identity)` scope and the same server-side gate flow, carrying a
-/// [`DatabaseOp`] instead of a [`BackendOp`]. Boxed for the same reason —
-/// `SigKey` and `DatabaseOp::SubmitSignedEntry` are large.
+/// Bundles the database scope (`root_id`) and identity claim (`identity`) with
+/// the [`DatabaseOp`] to run. Boxed inside `ServiceRequest::AuthenticatedDb` to
+/// keep the top-level enum's stack footprint flat — `SigKey` and
+/// `DatabaseOp::SubmitSignedEntry` are large.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthenticatedDbRequest {
     /// Root entry of the database this op targets (auth-settings lookup +
     /// the implicit tree scope every `DatabaseOp` carries by construction).
     pub root_id: ID,
-    /// Identity claim; verified against the connection's session pubkey
-    /// before dispatch, exactly as for `BackendOp`.
+    /// Identity claim; verified against the connection's session keyset
+    /// before dispatch.
     pub identity: SigKey,
     /// Database operation to execute.
     pub op: DatabaseOp,
@@ -297,7 +245,7 @@ pub struct AuthenticatedDbRequest {
 /// Top-level request from client to server.
 ///
 /// The shape is intentionally flat: pre-auth lifecycle and queries sit beside
-/// the `Authenticated` wrapper rather than under a nested enum. This makes the
+/// the `AuthenticatedDb` wrapper rather than under a nested enum. This makes the
 /// pre-auth surface visible at a glance and keeps the server's dispatch
 /// branches symmetric.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -341,16 +289,10 @@ pub enum ServiceRequest {
         signature: Vec<u8>,
     },
 
-    // === Authenticated wrapper for every backend operation ===
-    /// All backend storage ops travel inside this wrapper. The inner
-    /// `AuthenticatedRequest` carries `(root_id, identity, request)` and is
-    /// boxed to keep the enum's discriminated size compact.
-    Authenticated(Box<AuthenticatedRequest>),
-
-    // === Authenticated wrapper for Database-level operations ===
-    /// Database-level ops travel inside this wrapper (additive, parallel to
-    /// `Authenticated`). The inner `AuthenticatedDbRequest` carries
-    /// `(root_id, identity, op)`; same gate flow, boxed for the same reason.
+    // === Authenticated wrapper for every storage operation ===
+    /// All storage ops travel inside this wrapper. The inner
+    /// `AuthenticatedDbRequest` carries `(root_id, identity, op)` and is boxed
+    /// to keep the enum's discriminated size compact.
     AuthenticatedDb(Box<AuthenticatedDbRequest>),
 }
 
@@ -461,20 +403,20 @@ mod tests {
         ID::from_bytes("test-entry-id")
     }
 
-    fn wrap(op: BackendOp) -> ServiceRequest {
-        ServiceRequest::Authenticated(Box::new(AuthenticatedRequest {
+    fn wrap(op: DatabaseOp) -> ServiceRequest {
+        ServiceRequest::AuthenticatedDb(Box::new(AuthenticatedDbRequest {
             root_id: ID::default(),
             identity: SigKey::default(),
-            request: op,
+            op,
         }))
     }
 
-    /// Extract the inner `BackendOp` from a deserialised request, panicking if
-    /// the variant isn't `Authenticated`.
-    fn unwrap_op(req: ServiceRequest) -> BackendOp {
+    /// Extract the inner `DatabaseOp` from a deserialised request, panicking if
+    /// the variant isn't `AuthenticatedDb`.
+    fn unwrap_op(req: ServiceRequest) -> DatabaseOp {
         match req {
-            ServiceRequest::Authenticated(inner) => inner.request,
-            other => panic!("expected Authenticated, got {other:?}"),
+            ServiceRequest::AuthenticatedDb(inner) => inner.op,
+            other => panic!("expected AuthenticatedDb, got {other:?}"),
         }
     }
 
@@ -499,12 +441,12 @@ mod tests {
     }
 
     #[test]
-    fn test_request_get_serde() {
-        let req = wrap(BackendOp::Get { id: test_id() });
+    fn test_request_get_entry_serde() {
+        let req = wrap(DatabaseOp::GetEntry { id: test_id() });
         let json = serde_json::to_string(&req).unwrap();
         let req2: ServiceRequest = serde_json::from_str(&json).unwrap();
         match unwrap_op(req2) {
-            BackendOp::Get { id } => assert_eq!(id, test_id()),
+            DatabaseOp::GetEntry { id } => assert_eq!(id, test_id()),
             _ => panic!("wrong variant"),
         }
     }

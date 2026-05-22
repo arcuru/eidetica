@@ -29,9 +29,9 @@ use crate::backend::InstanceMetadata;
 use crate::entry::{Entry, ID};
 use crate::service::error::service_error_to_eidetica_error;
 use crate::service::protocol::{
-    AuthenticatedDbRequest, AuthenticatedRequest, BackendOp, DatabaseOp, Handshake, HandshakeAck,
-    MergeState, PROTOCOL_VERSION, ReadScope, ServiceRequest, ServiceResponse, TransactionContext,
-    WireCrdtValue, read_frame, write_frame,
+    AuthenticatedDbRequest, DatabaseOp, Handshake, HandshakeAck, MergeState, PROTOCOL_VERSION,
+    ReadScope, ServiceRequest, ServiceResponse, TransactionContext, WireCrdtValue, read_frame,
+    write_frame,
 };
 use crate::user::UserError;
 use crate::user::crypto::{decrypt_private_key, derive_encryption_key};
@@ -432,13 +432,6 @@ impl RemoteConnection {
 
     // === Response extraction helpers ===
 
-    fn expect_entry(resp: ServiceResponse) -> crate::Result<Entry> {
-        match resp {
-            ServiceResponse::Entry(e) => Ok(e),
-            other => Err(unexpected_response("Entry", &other)),
-        }
-    }
-
     fn expect_ok(resp: ServiceResponse) -> crate::Result<()> {
         match resp {
             ServiceResponse::Ok => Ok(()),
@@ -446,7 +439,7 @@ impl RemoteConnection {
         }
     }
 
-    // === Backend operations (retained) ===
+    // === Instance-level operations ===
 
     /// Build a `SigKey` from the session pubkey, when logged in.
     pub fn session_identity(&self) -> Option<SigKey> {
@@ -454,20 +447,6 @@ impl RemoteConnection {
             .session_read()
             .as_ref()
             .map(|s| SigKey::from_pubkey(&s.session_pubkey))
-    }
-
-    pub async fn get(&self, id: &ID) -> crate::Result<Entry> {
-        let identity = self.session_identity().unwrap_or_default();
-        let resp = self
-            .request_ok(ServiceRequest::Authenticated(Box::new(
-                AuthenticatedRequest {
-                    root_id: ID::default(),
-                    identity,
-                    request: BackendOp::Get { id: id.clone() },
-                },
-            )))
-            .await?;
-        Self::expect_entry(resp)
     }
 
     pub async fn get_instance_metadata(&self) -> crate::Result<Option<InstanceMetadata>> {
@@ -479,17 +458,17 @@ impl RemoteConnection {
     }
 
     pub async fn set_instance_metadata(&self, metadata: &InstanceMetadata) -> crate::Result<()> {
+        // Gated server-side as Admin on `_databases`, not on `root_id`, so the
+        // scope's `root_id` is unused for this op (default is fine).
         let identity = self.session_identity().unwrap_or_default();
         let resp = self
-            .request_ok(ServiceRequest::Authenticated(Box::new(
-                AuthenticatedRequest {
-                    root_id: ID::default(),
-                    identity,
-                    request: BackendOp::SetInstanceMetadata {
-                        metadata: Box::new(metadata.clone()),
-                    },
+            .db_request(
+                ID::default(),
+                identity,
+                DatabaseOp::SetInstanceMetadata {
+                    metadata: Box::new(metadata.clone()),
                 },
-            )))
+            )
             .await?;
         Self::expect_ok(resp)
     }
