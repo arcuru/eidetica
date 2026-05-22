@@ -30,6 +30,16 @@
     cp ${../LICENSE.txt} $out/LICENSE
   '';
 
+  # Entrypoint: bootstrap a passwordless admin on first start, then serve.
+  # `eidetica info` exits non-zero only when the backend is not yet
+  # initialised, so this inits once and no-ops on every subsequent start.
+  entrypoint = pkgs.writeShellScriptBin "eidetica-entrypoint" ''
+    if ! ${eidetica-bin}/bin/eidetica info >/dev/null 2>&1; then
+      ${eidetica-bin}/bin/eidetica daemon init --username admin --passwordless
+    fi
+    exec ${eidetica-bin}/bin/eidetica "$@"
+  '';
+
   # OCI container image
   eidetica-image = pkgs.dockerTools.buildImage {
     name = "eidetica";
@@ -38,12 +48,12 @@
 
     copyToRoot = pkgs.buildEnv {
       name = "image-root";
-      paths = [eidetica-bin licenseFile] ++ nonRootUserSetup;
+      paths = [eidetica-bin licenseFile entrypoint] ++ nonRootUserSetup;
       pathsToLink = ["/bin" "/etc" "/"];
     };
 
     config = {
-      Cmd = ["${eidetica-bin}/bin/eidetica"];
+      Cmd = ["${entrypoint}/bin/eidetica-entrypoint"];
       User = "1000:1000";
       WorkingDir = "/config";
       ExposedPorts = {

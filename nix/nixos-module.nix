@@ -65,6 +65,19 @@ in {
       description = "Group under which eidetica runs.";
     };
 
+    initialUser = mkOption {
+      type = types.str;
+      default = "admin";
+      description = ''
+        Username of the initial admin user created on first start.
+
+        The service requires an initialised backend with an admin user. On
+        first start (when the backend is not yet initialised) the service
+        bootstraps this user as a passwordless admin. Subsequent starts detect
+        the existing instance and skip initialisation.
+      '';
+    };
+
     environment = mkOption {
       type = types.attrsOf types.str;
       default = {};
@@ -114,6 +127,20 @@ in {
         User = cfg.user;
         Group = cfg.group;
         WorkingDirectory = cfg.dataDir;
+
+        # Bootstrap the initial admin user on first start. `eidetica info`
+        # exits non-zero only when the backend is not yet initialised, so this
+        # is idempotent: it inits once, then no-ops on every subsequent start.
+        ExecStartPre = let
+          initIfNeeded = pkgs.writeShellScript "eidetica-init-if-needed" ''
+            if ! ${cfg.package}/bin/eidetica info >/dev/null 2>&1; then
+              ${cfg.package}/bin/eidetica daemon init \
+                --username ${escapeShellArg cfg.initialUser} \
+                --passwordless
+            fi
+          '';
+        in "${initIfNeeded}";
+
         ExecStart = "${cfg.package}/bin/eidetica";
         Restart = "on-failure";
         RestartSec = "5s";
