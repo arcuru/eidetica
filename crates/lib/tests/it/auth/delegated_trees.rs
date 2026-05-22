@@ -23,6 +23,7 @@ use eidetica::{
 };
 
 use super::helpers::*;
+use crate::helpers::LocalBackendTestExt;
 
 /// Test simple tree creation with auth
 #[tokio::test]

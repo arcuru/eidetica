@@ -1,8 +1,8 @@
 //! Remote connection client for the Eidetica service.
 //!
 //! `RemoteConnection` connects to an Eidetica service server and forwards
-//! storage operations as RPC calls. It is used as the `Backend::Remote` variant
-//! and is not a `BackendImpl` — dispatch happens through the `Backend` enum.
+//! storage operations as RPC calls. It backs the `RemoteBackend` implementation
+//! of the `Backend` seam and is not itself a `BackendImpl`.
 //!
 //! Authentication uses the client-side-signing flow described in the Service
 //! Architecture doc § Security Model: `RemoteConnection::trusted_login` drives
@@ -130,7 +130,7 @@ struct RemoteConnectionInner {
     /// key is reused across many ops.
     registered_keys: Mutex<HashSet<PublicKey>>,
     /// Process-lifetime CRDT-state LRU shared across every `Database` handle
-    /// (every `RemoteDatabaseOps`) on this connection. Tier 1 of the
+    /// (every `RemoteBackend`) on this connection. Tier 1 of the
     /// two-level cache; tier 2 is the daemon's unified scope-keyed cache
     /// (lives in `BackendImpl`), reached via `GetCachedCrdtState` /
     /// `CacheCrdtState` RPCs.
@@ -169,8 +169,8 @@ impl RemoteConnectionInner {
 
 /// A connection to a remote Eidetica service server over a Unix domain socket.
 ///
-/// `RemoteConnection` is used as the `Backend::Remote` variant. It provides
-/// the same operations as `BackendImpl` as inherent methods, plus additional
+/// `RemoteConnection` backs the `RemoteBackend` implementation of the `Backend`
+/// seam. It provides the storage operations as inherent methods, plus additional
 /// coordination methods like `notify_entry_written`.
 ///
 /// Cloning is cheap (Arc-backed).
@@ -380,7 +380,7 @@ impl RemoteConnection {
     /// Prove possession of `signing_key` and add its public key to the
     /// connection's session keyset.
     ///
-    /// Used by every `Database` handle whose `RemoteDatabaseOps` carries a
+    /// Used by every `Database` handle whose `RemoteBackend` carries a
     /// per-database identity (e.g. `Database::create` on a connected
     /// instance, or `user.open_database_with_key` over the wire): the daemon
     /// gates reads against the *acting* pubkey from the identity hint, and

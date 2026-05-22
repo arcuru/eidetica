@@ -11,6 +11,8 @@ use eidetica::{
     store::DocStore,
 };
 
+use crate::helpers::LocalBackendTestExt;
+
 // ===== OPERATION HELPERS =====
 
 /// Create operation and add data to specific subtree

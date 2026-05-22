@@ -202,7 +202,7 @@ async fn test_password_store_cache_is_encrypted() {
     // Check cache contains encrypted data, not plaintext
     let backend = database.backend().unwrap();
     if let Some(cached) = backend
-        .get_cached_crdt_state(&eidetica::backend::CacheScope::Shared, &entry_id2, "secrets")
+        .get_cached_crdt_state(database.root_id(), &entry_id2, "secrets")
         .await
         .unwrap()
     {

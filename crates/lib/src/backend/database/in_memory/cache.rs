@@ -153,7 +153,12 @@ mod tests {
     fn shared_and_user_scopes_are_isolated() {
         let mut c = InMemoryCrdtCache::new();
         let k = eid("e1");
-        c.put(CacheScope::Shared, k.clone(), "s".into(), b"shared".to_vec());
+        c.put(
+            CacheScope::Shared,
+            k.clone(),
+            "s".into(),
+            b"shared".to_vec(),
+        );
         c.put(
             CacheScope::User("alice".into()),
             k.clone(),
@@ -235,4 +240,3 @@ mod tests {
         assert!(c.get(&CacheScope::Shared, &eid("e1"), "s").is_none());
     }
 }
-

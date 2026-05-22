@@ -4,6 +4,7 @@
 //! including storing pending requests, listing them, and approving/rejecting them.
 
 use super::helpers::*;
+use crate::helpers::LocalBackendTestExt;
 use eidetica::{
     Database, Entry,
     auth::{

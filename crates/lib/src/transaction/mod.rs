@@ -757,7 +757,7 @@ impl Transaction {
         if let Some(cached_state) = self
             .db
             .ops()
-            .get_cached_crdt_state(&cache_id, subtree_name)
+            .get_cached_crdt_state(self.db.root_id(), &cache_id, subtree_name)
             .await?
         {
             let decrypted = self.decrypt_if_needed(subtree_name, &cached_state)?;
@@ -798,7 +798,7 @@ impl Transaction {
         // This caching only technically works by constructing a custom ID
         self.db
             .ops()
-            .cache_crdt_state(&cache_id, subtree_name, to_cache)
+            .cache_crdt_state(self.db.root_id(), &cache_id, subtree_name, to_cache)
             .await?;
 
         Ok(result)
@@ -834,7 +834,7 @@ impl Transaction {
             if let Some(cached_state) = self
                 .db
                 .ops()
-                .get_cached_crdt_state(entry_id, subtree_name)
+                .get_cached_crdt_state(self.db.root_id(), entry_id, subtree_name)
                 .await?
             {
                 // Decrypt cached state if encryptor is registered
@@ -873,7 +873,7 @@ impl Transaction {
             let to_cache = self.encrypt_if_needed(subtree_name, &serialized_state)?;
             self.db
                 .ops()
-                .cache_crdt_state(entry_id, subtree_name, to_cache)
+                .cache_crdt_state(self.db.root_id(), entry_id, subtree_name, to_cache)
                 .await?;
 
             Ok(result)

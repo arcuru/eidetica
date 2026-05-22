@@ -10,6 +10,8 @@ use std::{future::Future, sync::Arc};
 use rand::{Rng, RngCore, distributions::Alphanumeric};
 use serde_json;
 
+#[cfg(all(unix, feature = "service"))]
+use crate::instance::backend::RemoteBackend;
 use crate::{
     Error, Instance, Result, Transaction, WeakInstance,
     auth::{
@@ -30,9 +32,6 @@ use crate::{
 
 #[cfg(test)]
 mod tests;
-
-mod ops;
-pub use ops::{DatabaseOps, LocalDatabaseOps, RemoteDatabaseOps};
 
 tokio::task_local! {
     /// Set while a `verify()`/validation pass is on the call stack.
@@ -158,12 +157,13 @@ impl From<PrivateKey> for DatabaseKey {
 pub struct Database {
     root: ID,
     instance: WeakInstance,
-    /// Storage seam `Transaction`/`Store` reads flow through. Always
-    /// [`LocalDatabaseOps`] today (forwards to the owning `Instance`'s
-    /// backend, zero behavior change); a remote implementor is swapped in
-    /// here in a later phase. Derived from `instance` only — carrying it
-    /// across `with_key`/`allow_unverified` (`..self`) rebuilds is correct.
-    ops: Arc<dyn DatabaseOps>,
+    /// Storage seam `Transaction`/`Store` reads flow through. On a local
+    /// instance this is a clone of the instance's own [`Backend`] (forwarding
+    /// to the backing engine); on a connected instance a per-handle
+    /// [`RemoteBackend`] bound to this database's acting identity. Derived from
+    /// `instance`/construction only — carrying it across
+    /// `with_key`/`allow_unverified` (`..self`) rebuilds is correct.
+    ops: Arc<dyn Backend>,
     /// Signing key bound to its auth identity for this database
     key: Option<DatabaseKey>,
     /// When `false` (default), reads expose only the maximal all-`Verified`
@@ -262,7 +262,7 @@ impl Database {
         let temp_database_for_bootstrap = Database {
             root: ID::from_bytes(bootstrap_placeholder_id.as_bytes()),
             instance: instance.downgrade(),
-            ops: Arc::new(LocalDatabaseOps::new(instance.downgrade())),
+            ops: instance.backend().clone(),
             key: Some(DatabaseKey::new(signing_key.clone())),
             allow_unverified: false,
         };
@@ -288,21 +288,19 @@ impl Database {
         // Construct the returned Database, wiring its `ops` to match the
         // instance's flavour:
         //
-        // - **Connected (remote) instance** — use `RemoteDatabaseOps` with
-        //   the *new database's* identity (the signing-key's pubkey,
-        //   self-signed as `Admin(0)` by the genesis). The connection's
-        //   login pubkey is the *caller's* (e.g. the registering admin),
-        //   which is **not** a member of the new tree's auth. If we kept
-        //   `LocalDatabaseOps` here, every read `Transaction::commit`
-        //   performs on this database would route through `Backend::Remote`
-        //   with the connection's login identity, and the server's
-        //   per-tree gate would deny it. `RemoteDatabaseOps` holds a
-        //   per-database identity, so all reads use the tree's own member
-        //   key — but the server's gate also requires that key to be in
-        //   the connection's *session keyset*, so we
-        //   `register_session_key(signing_key)` first to do the
+        // - **Connected (remote) instance** — bind a `RemoteBackend` to the
+        //   *new database's* identity (the signing-key's pubkey, self-signed
+        //   as `Admin(0)` by the genesis). The connection's login pubkey is
+        //   the *caller's* (e.g. the registering admin), which is **not** a
+        //   member of the new tree's auth. If we cloned the instance's
+        //   session backend here, every read `Transaction::commit` performs
+        //   on this database would carry the connection's login identity, and
+        //   the server's per-tree gate would deny it. A per-database identity
+        //   makes all reads use the tree's own member key — but the server's
+        //   gate also requires that key to be in the connection's *session
+        //   keyset*, so we `register_session_key(signing_key)` first to do the
         //   proof-of-possession handshake that adds it.
-        // - **Local instance** — keep `LocalDatabaseOps`, unchanged.
+        // - **Local instance** — clone the instance's backend, unchanged.
         #[cfg(all(unix, feature = "service"))]
         if let Some(conn) = instance.remote_connection() {
             let pubkey_for_identity = signing_key.public_key();
@@ -310,10 +308,9 @@ impl Database {
             return Ok(Self {
                 root: new_root_id.clone(),
                 instance: instance.downgrade(),
-                ops: Arc::new(RemoteDatabaseOps::new(
+                ops: Arc::new(RemoteBackend::new(
                     conn,
-                    new_root_id,
-                    SigKey::from_pubkey(&pubkey_for_identity),
+                    Some(SigKey::from_pubkey(&pubkey_for_identity)),
                 )),
                 key: Some(DatabaseKey::new(signing_key)),
                 allow_unverified: false,
@@ -323,7 +320,7 @@ impl Database {
         Ok(Self {
             root: new_root_id,
             instance: instance.downgrade(),
-            ops: Arc::new(LocalDatabaseOps::new(instance.downgrade())),
+            ops: instance.backend().clone(),
             key: Some(DatabaseKey::new(signing_key)),
             allow_unverified: false,
         })
@@ -369,7 +366,7 @@ impl Database {
         Ok(Self {
             root: root_id.clone(),
             instance: instance.downgrade(),
-            ops: Arc::new(LocalDatabaseOps::new(instance.downgrade())),
+            ops: instance.backend().clone(),
             key: None,
             allow_unverified: false,
         })
@@ -398,7 +395,7 @@ impl Database {
         Ok(Self {
             root: root_id.clone(),
             instance: instance.downgrade(),
-            ops: Arc::new(RemoteDatabaseOps::new(conn, root_id.clone(), identity)),
+            ops: Arc::new(RemoteBackend::new(conn, Some(identity))),
             key: None,
             allow_unverified: false,
         })
@@ -736,18 +733,16 @@ impl Database {
             .ok_or_else(|| Error::Instance(Box::new(InstanceError::InstanceDropped)))
     }
 
-    /// Get a reference to the backend
-    pub fn backend(&self) -> Result<Backend> {
+    /// Get a clone of the backend seam.
+    pub fn backend(&self) -> Result<Arc<dyn Backend>> {
         Ok(self.instance()?.backend().clone())
     }
 
     /// The storage seam this handle's `Transaction`/`Store` reads/writes flow
-    /// through. Always [`LocalDatabaseOps`] today; a remote implementor is
-    /// swapped in here in a later phase.
-    // Consumed by the Transaction/Store call-site repoint (next step); the
-    // accessor lands with the seam so the boundary is reviewable on its own.
-    #[allow(dead_code)]
-    pub(crate) fn ops(&self) -> &dyn DatabaseOps {
+    /// through (a [`LocalBackend`](crate::instance::backend::LocalBackend) clone
+    /// of the instance's backend, or a per-handle
+    /// [`RemoteBackend`](crate::instance::backend::RemoteBackend)).
+    pub(crate) fn ops(&self) -> &dyn Backend {
         self.ops.as_ref()
     }
 
@@ -1065,7 +1060,6 @@ impl Database {
     /// A `Result` containing a vector of `ID`s for the tip entries or an error.
     pub async fn get_tips(&self) -> Result<Vec<ID>> {
         let instance = self.instance()?;
-        let backend = instance.backend();
 
         // On a remote instance the server owns verification: `get_verified_tips`
         // already returns the server-side Verified frontier (or empty for a
@@ -1078,15 +1072,14 @@ impl Database {
         //
         // Delegate to `self.ops()` rather than calling the connection
         // directly: when this handle was built via `Database::create` or
-        // `Database::open_remote` its `ops` is a `RemoteDatabaseOps` carrying
-        // the *per-database* identity (the new tree's own member key, or the
-        // caller's chosen identity), which the server's per-tree gate
-        // accepts. Routing through `conn.session_identity()` here would
-        // instead use the connection's (caller's) session pubkey, which is
-        // not a member of a freshly-created tree and gets denied.
-        // `LocalDatabaseOps` on a connected instance still forwards through
-        // `Backend::Remote::get_tips`, which keeps the session-identity
-        // semantics for the `Database::open` path.
+        // `Database::open_remote` its `ops` is a `RemoteBackend` carrying the
+        // *per-database* identity (the new tree's own member key, or the
+        // caller's chosen identity), which the server's per-tree gate accepts.
+        // Routing through `conn.session_identity()` here would instead use the
+        // connection's (caller's) session pubkey, which is not a member of a
+        // freshly-created tree and gets denied. A handle from `Database::open`
+        // on a connected instance instead clones the instance's session
+        // backend, keeping the session-identity semantics for that path.
         if instance.remote_connection().is_some() {
             return match self.ops().get_tips(&self.root).await {
                 Ok(tips) => Ok(tips),
@@ -1095,6 +1088,8 @@ impl Database {
             };
         }
 
+        // Local path: verification-status probing needs the concrete engine.
+        let backend = instance.require_local_engine()?;
         let tips = self.ops().get_tips(&self.root).await?;
 
         // Verification status ops are local-only. On a remote backend the
@@ -1165,7 +1160,7 @@ impl Database {
     /// is observable in the default view until verification reaches the root).
     async fn verified_frontier(&self) -> Result<Vec<ID>> {
         let instance = self.instance()?;
-        let backend = instance.backend();
+        let backend = instance.require_local_engine()?;
 
         // Topologically sorted (height then ID): every parent precedes its
         // children, so a single forward pass can decide prefix membership.
@@ -1252,7 +1247,7 @@ impl Database {
         let id = entry_id.into();
         // Route through `self.ops()` so handles built via `Database::create`
         // or `Database::open_remote` read with the per-DB identity from
-        // their `RemoteDatabaseOps`. Going through `instance.get(id)` would
+        // their `RemoteBackend`. Going through `instance.get(id)` would
         // use the connection's login pubkey, which on a remote instance is
         // denied by the per-tree gate when the login key isn't a member of
         // this tree (e.g. user-tree key created via `User::add_private_key`
@@ -1538,7 +1533,7 @@ impl Database {
         IN_VERIFY
             .scope(true, async move {
                 let instance = self.instance()?;
-                let backend = instance.backend();
+                let backend = instance.require_local_engine()?;
 
                 // Raw tree walk (not `get_tips`) so traversal itself never
                 // re-enters the hook even before the guard is observed.
@@ -1624,6 +1619,6 @@ impl Database {
     /// A `Result` containing a vector of all `Entry` objects in the database
     pub async fn get_all_entries(&self) -> Result<Vec<Entry>> {
         let instance = self.instance()?;
-        instance.backend().get_tree(&self.root).await
+        instance.require_local_engine()?.get_tree(&self.root).await
     }
 }

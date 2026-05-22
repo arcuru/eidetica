@@ -630,7 +630,7 @@ async fn test_verify_is_prefix_closed() {
 /// as they would arrive over sync: stored `Unverified`, no status asserted.
 async fn sync_all_unverified(
     src: &Database,
-    dst_backend: &eidetica::instance::backend::Backend,
+    dst_backend: &std::sync::Arc<dyn eidetica::instance::backend::Backend>,
 ) -> Vec<ID> {
     let entries = src.get_all_entries().await.unwrap();
     let ids: Vec<ID> = entries.iter().map(|e| e.id()).collect();
@@ -1041,8 +1041,8 @@ async fn test_genesis_verifies_after_persist_reload() {
             .unwrap()
             .as_nanos()
     ));
-    let backend1 = instance.backend();
-    backend1
+    let engine1 = instance.backend().engine();
+    engine1
         .as_any()
         .downcast_ref::<InMemory>()
         .expect("test backend is InMemory")

@@ -9,7 +9,6 @@ use eidetica::Entry;
 use eidetica::Instance;
 use eidetica::auth::crypto::{create_challenge_response, sign_entry};
 use eidetica::backend::database::InMemory;
-use eidetica::instance::backend::Backend;
 use eidetica::service::ServiceServer;
 use eidetica::service::protocol::{
     Handshake, HandshakeAck, PROTOCOL_VERSION, ReadScope, ServiceRequest, ServiceResponse,
@@ -313,10 +312,9 @@ async fn test_trusted_login_prove_without_user_errors() {
 
 /// Get a `RemoteConnection` from a client `Instance` created via `Instance::connect`.
 fn remote_conn(instance: &Instance) -> eidetica::service::client::RemoteConnection {
-    match instance.backend().clone() {
-        Backend::Remote(c) => c,
-        _ => unreachable!("test server always creates Remote backend"),
-    }
+    instance
+        .remote_connection()
+        .expect("test server always creates Remote backend")
 }
 
 /// Exercise `DatabaseOp::BeginTransaction` end-to-end over the wire.
@@ -1278,7 +1276,6 @@ async fn test_cache_overwrite_replaces_value() {
 #[tokio::test]
 async fn test_cache_shared_fallback_for_daemon_materialized_state() {
     use eidetica::backend::CacheScope;
-    use eidetica::instance::backend::Backend;
 
     let (socket_path, _tx, server, _dir) = start_test_server().await;
     let (instance, root_id, identity) = setup_db(&server, &socket_path, "alice").await;
@@ -1292,30 +1289,20 @@ async fn test_cache_shared_fallback_for_daemon_materialized_state() {
     // materialization (e.g. `Database::get_store_state` of an unencrypted
     // store). We bypass that ceremony because the goal here is the
     // fallback path, not the materializer.
-    match server.backend() {
-        Backend::Local(b) => b
-            .cache_crdt_state(
-                CacheScope::Shared,
-                &key,
-                store_name,
-                daemon_bytes.clone(),
-            )
-            .await
-            .unwrap(),
-        _ => unreachable!("test server is always Local"),
-    }
+    server
+        .backend()
+        .local_engine()
+        .expect("test server is always Local")
+        .cache_crdt_state(CacheScope::Shared, &key, store_name, daemon_bytes.clone())
+        .await
+        .unwrap();
 
     // Alice has never `CacheCrdtState`'d this key, so `User(alice)` misses
     // — but the wire handler falls back to Shared and serves the
     // daemon-trusted bytes.
     let conn = remote_conn(&instance);
     let result = conn
-        .get_cached_crdt_state_remote(
-            root_id,
-            identity,
-            store_name.to_string(),
-            key,
-        )
+        .get_cached_crdt_state_remote(root_id, identity, store_name.to_string(), key)
         .await
         .unwrap();
     assert_eq!(

@@ -22,7 +22,13 @@ impl SyncHandlerImpl {
                 return Vec::new();
             }
         };
-        match instance.backend().all_roots().await {
+        match instance
+            .backend()
+            .local_engine()
+            .expect("sync requires local backend")
+            .all_roots()
+            .await
+        {
             Ok(roots) => {
                 let mut tree_infos = Vec::new();
                 for root_id in roots {
@@ -156,15 +162,12 @@ impl SyncHandlerImpl {
         }
 
         // Collect ancestors
-        super::utils::collect_ancestors_to_send(
-            self.instance()?
-                .backend()
-                .as_backend_impl()
-                .expect("sync requires local backend"),
-            &missing_tip_ids,
-            peer_tips,
-        )
-        .await
+        let engine = self
+            .instance()?
+            .backend()
+            .local_engine()
+            .expect("sync requires local backend");
+        super::utils::collect_ancestors_to_send(engine.as_ref(), &missing_tip_ids, peer_tips).await
     }
 
     /// Count entries in a tree

@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use super::helpers::enable_sync_for_instance_database;
 use crate::helpers::{
-    add_auth_keys, set_global_auth_key,
+    LocalBackendTestExt, add_auth_keys, set_global_auth_key,
     test_local_instance_with_user_and_key as test_instance_with_user_and_key,
 };
 
