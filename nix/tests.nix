@@ -226,9 +226,15 @@ in {
         nativeBuildInputs = [eidetica-bin pkgs.cargo-nextest];
       } ''
         SOCKET="$TMPDIR/test.sock"
+        DATA="$TMPDIR/data"
 
-        # Start the daemon with inmemory backend
-        eidetica daemon --backend inmemory --socket "$SOCKET" &
+        # The daemon refuses to run an uninitialised backend, so initialise a
+        # fresh sqlite instance first, then start the daemon against the same
+        # data dir. (inmemory can't be used here: init and daemon are separate
+        # processes and an in-memory backend wouldn't persist between them.)
+        eidetica daemon --backend sqlite --data-dir "$DATA" init \
+          --username admin --passwordless
+        eidetica daemon --backend sqlite --data-dir "$DATA" --socket "$SOCKET" &
         DAEMON_PID=$!
         trap 'kill "$DAEMON_PID" 2>/dev/null || true; wait "$DAEMON_PID" 2>/dev/null || true' EXIT
 
