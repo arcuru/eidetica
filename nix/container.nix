@@ -33,8 +33,21 @@
   # Entrypoint: bootstrap a passwordless admin on first start, then serve.
   # `eidetica info` exits non-zero only when the backend is not yet
   # initialised, so this inits once and no-ops on every subsequent start.
+  #
+  # SECURITY: the bootstrapped admin has NO password, so anyone who can reach
+  # the published port can act as admin. Acceptable for local/getting-started
+  # use; unsafe to expose to an untrusted network as-is.
+  #
+  # FIXME(security, P0): replace the unconditional passwordless bootstrap with
+  # an operator-supplied credential (e.g. an admin password read from a mounted
+  # secret / EIDETICA_ADMIN_PASSWORD), failing closed when none is provided and
+  # no explicit passwordless opt-in is set. Tracked in
+  # ../private_docs/service-deployment-followups.md.
   entrypoint = pkgs.writeShellScriptBin "eidetica-entrypoint" ''
     if ! ${eidetica-bin}/bin/eidetica info >/dev/null 2>&1; then
+      echo "WARNING: bootstrapping a PASSWORDLESS admin user 'admin'. Anyone who" >&2
+      echo "         can reach this service can act as admin. Do not expose this" >&2
+      echo "         container to an untrusted network without restricting access." >&2
       ${eidetica-bin}/bin/eidetica daemon init --username admin --passwordless
     fi
     exec ${eidetica-bin}/bin/eidetica "$@"
