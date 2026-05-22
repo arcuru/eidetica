@@ -12,6 +12,8 @@ use serde_json;
 
 #[cfg(all(unix, feature = "service"))]
 use crate::instance::backend::RemoteBackend;
+#[cfg(all(unix, feature = "service"))]
+use crate::service::client::RemoteConnection;
 use crate::{
     Error, Instance, Result, Transaction, WeakInstance,
     auth::{
@@ -26,7 +28,6 @@ use crate::{
     crdt::{CRDT, Doc},
     entry::{Entry, ID},
     instance::{WriteCallback, WriteEvent, backend::Backend, errors::InstanceError},
-    service::client::RemoteConnection,
     store::{SettingsStore, Store},
 };
 
@@ -385,6 +386,7 @@ impl Database {
     /// `Instance::put_entry`), so `Instance::connect` must be used to create
     /// the instance. This is additive — the legacy BackendOp path is
     /// untouched until the Phase 4 cutover.
+    #[cfg(all(unix, feature = "service"))]
     pub async fn open_remote(
         instance: &Instance,
         conn: RemoteConnection,
@@ -841,6 +843,7 @@ impl Database {
     /// one round-trip transaction build: main parents + heights, per-store
     /// subtree parents + heights, settings tips, and the merged `_settings`
     /// CRDT state this entry is authored against.
+    #[cfg(all(unix, feature = "service"))]
     pub async fn transaction_context(
         &self,
         stores: &[String],
@@ -935,6 +938,7 @@ impl Database {
     /// every returned entry is guaranteed `Verified` (the frontier is
     /// ancestor-closed). For [`ReadScope::AllowUnverified`], entries
     /// reachable from unverified tips are included.
+    #[cfg(all(unix, feature = "service"))]
     pub async fn get_store_entries(
         &self,
         store: &str,
@@ -1080,6 +1084,7 @@ impl Database {
         // freshly-created tree and gets denied. A handle from `Database::open`
         // on a connected instance instead clones the instance's session
         // backend, keeping the session-identity semantics for that path.
+        #[cfg(all(unix, feature = "service"))]
         if instance.remote_connection().is_some() {
             return match self.ops().get_tips(&self.root).await {
                 Ok(tips) => Ok(tips),

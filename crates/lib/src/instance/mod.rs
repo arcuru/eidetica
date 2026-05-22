@@ -18,16 +18,14 @@ use handle_trait::Handle;
 
 use crate::{
     Clock, Database, Entry, Result, SystemClock,
-    auth::{
-        SigKey,
-        crypto::{PrivateKey, PublicKey},
-    },
+    auth::crypto::{PrivateKey, PublicKey},
     backend::{BackendImpl, InstanceMetadata, InstanceSecrets},
     entry::ID,
-    service::client::RemoteConnection,
     sync::Sync,
     user::User,
 };
+#[cfg(all(unix, feature = "service"))]
+use crate::{auth::SigKey, service::client::RemoteConnection};
 
 pub mod backend;
 pub mod errors;
@@ -724,6 +722,7 @@ impl Instance {
     /// Useful for constructing a [`Database`](crate::Database) that routes
     /// reads through the Database-level wire API while sharing the same
     /// connection and session as the instance's write path.
+    #[cfg(all(unix, feature = "service"))]
     pub fn remote_connection(&self) -> Option<RemoteConnection> {
         self.inner.backend.remote_connection()
     }
@@ -820,6 +819,7 @@ impl Instance {
         root_id: &ID,
         signing_key: &PrivateKey,
     ) -> Result<Database> {
+        #[cfg(all(unix, feature = "service"))]
         if let Some(conn) = self.remote_connection() {
             // The daemon gates per-tree reads against the acting pubkey
             // from the request's identity hint, and the hint here is
