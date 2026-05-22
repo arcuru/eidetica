@@ -21,8 +21,8 @@ use crate::entry::ID;
 use crate::instance::WriteSource;
 use crate::service::error::ServiceError;
 use crate::service::protocol::{
-    AuthenticatedDbRequest, AuthenticatedRequest, BackendOp, DatabaseOp, HandshakeAck, MergeState,
-    PROTOCOL_VERSION, ServiceRequest, ServiceResponse, read_frame, write_frame,
+    AuthenticatedDbRequest, DatabaseOp, HandshakeAck, MergeState, PROTOCOL_VERSION, ServiceRequest,
+    ServiceResponse, read_frame, write_frame,
 };
 use crate::user::system_databases::lookup_user_record;
 
@@ -265,89 +265,14 @@ async fn dispatch_inner(
             handle_session_key_register(state, pubkey, &signature)
         }
 
-        // === Authenticated backend operations ===
+        // === Authenticated storage operations ===
         //
-        // Gate 1 (chunk 5a): the connection must have completed `TrustedLogin*`.
-        // Gate 2 (chunk 5b): if the op carries a tree id, the *acting* pubkey
-        // must resolve to at least the op's required permission against that
-        // tree's `auth_settings`. The acting pubkey is the identity hint
-        // (when present and provably in the keyset) or `login_pubkey`
-        // otherwise — see `resolve_acting_pubkey`.
-        ServiceRequest::Authenticated(inner) => {
-            let (login_pubkey, keyset_snapshot) = match state {
-                ConnectionState::Authenticated {
-                    login_pubkey,
-                    session_keyset,
-                    ..
-                } => (login_pubkey.clone(), session_keyset.clone()),
-                _ => {
-                    return Err(crate::Error::Auth(Box::new(
-                        AuthError::InvalidAuthConfiguration {
-                            reason: "backend operation requires an authenticated connection; \
-                                 complete TrustedLogin* first"
-                                .to_string(),
-                        },
-                    )));
-                }
-            };
-
-            let AuthenticatedRequest {
-                root_id: _,
-                identity,
-                request,
-            } = *inner;
-
-            // The identity hint must be in the session keyset (proven
-            // possession this connection). Absent hint → act as login pubkey.
-            let acting_pubkey = resolve_acting_pubkey(&identity, &login_pubkey, &keyset_snapshot)?;
-
-            if let Some(tree_id) = request.tree_id() {
-                gate_tree_permission(
-                    instance,
-                    &acting_pubkey,
-                    &identity,
-                    tree_id,
-                    request.required_permission(),
-                    // create-flow passthrough: a not-yet-propagated tree
-                    // must be waved through so `Database::create` works.
-                    false,
-                )
-                .await?;
-            }
-
-            // Gate 3: cross-tree admin-only ops. `SetInstanceMetadata`
-            // rewrites the daemon's pointers to its own system DBs; an
-            // instance admin is, by construction, a user with Admin on
-            // `_databases` (the first-user bootstrap is what grants this).
-            // The op carries no inline tree id, so we resolve the caller's
-            // permission against `_databases.auth_settings` explicitly.
-            // D8: fail closed — `_databases` always exists on an
-            // initialized daemon and this is never a creation flow, so the
-            // create-flow passthrough must not apply here (it would let any
-            // authenticated user rewrite system-DB pointers if `_databases`
-            // were ever unreadable).
-            if matches!(request, BackendOp::SetInstanceMetadata { .. }) {
-                gate_tree_permission(
-                    instance,
-                    &acting_pubkey,
-                    &identity,
-                    instance.databases_db_id(),
-                    Permission::Admin(0),
-                    true,
-                )
-                .await?;
-            }
-
-            dispatch_backend_op(instance, &acting_pubkey, &identity, request).await
-        }
-
-        // === Authenticated Database-level operations ===
-        //
-        // Same gates as `Authenticated`, but every `DatabaseOp` carries its
-        // target `root_id` explicitly, so the per-tree permission gate is
-        // *unconditional* — there is no tree-less op to fall through it. That
-        // structural tree-scoping is what the Database-level shape buys; the
-        // legacy `BackendOp`/`Authenticated` path above is untouched.
+        // Gate 1: the connection must have completed `TrustedLogin*`. Gate 2:
+        // the per-tree permission gate. Every `DatabaseOp` carries its target
+        // `root_id` explicitly, so the gate is *unconditional* — there is no
+        // tree-less op to fall through it — with two exceptions handled below
+        // (`SubmitSignedEntry`, verification-gated; `SetInstanceMetadata`,
+        // gated against the server-known `_databases`, not the request root).
         ServiceRequest::AuthenticatedDb(inner) => {
             let (login_pubkey, keyset_snapshot, session_user_uuid) = match state {
                 ConnectionState::Authenticated {
@@ -397,6 +322,17 @@ async fn dispatch_inner(
             // doc for the full threat analysis.
             let is_submit = matches!(op, DatabaseOp::SubmitSignedEntry { .. });
 
+            // `SetInstanceMetadata` rewrites the daemon's pointers to its own
+            // system DBs. It is gated against `_databases` (a server-known
+            // tree), not the request's `root_id`, so an instance admin — by
+            // construction a user with Admin on `_databases` via the
+            // first-user bootstrap — is required. Fail closed (require_existing
+            // = true): `_databases` always exists on an initialized daemon and
+            // this is never a creation flow, so the create-flow passthrough
+            // must not apply (it would let any authenticated user rewrite
+            // system-DB pointers if `_databases` were ever unreadable).
+            let is_set_metadata = matches!(op, DatabaseOp::SetInstanceMetadata { .. });
+
             // Submit accepts any identity hint (admin transports user-signed
             // entries); every other op resolves an acting pubkey from the
             // keyset and gates per-tree against it.
@@ -414,11 +350,21 @@ async fn dispatch_inner(
             };
 
             // Per-tree permission gate. Unconditional for every op *except*
-            // submit; create-flow passthrough (false) for the rest, so a
-            // not-yet-propagated tree is waved through and database creation
-            // works, identical to the `Authenticated` path. Submit skips the
-            // gate entirely (verification in the handler is its boundary).
-            if !is_submit {
+            // submit (verification in the handler is its boundary) and
+            // set-metadata (gated against `_databases` below). Create-flow
+            // passthrough (false) for the rest, so a not-yet-propagated tree is
+            // waved through and database creation works.
+            if is_set_metadata {
+                gate_tree_permission(
+                    instance,
+                    &acting_pubkey,
+                    &identity,
+                    instance.databases_db_id(),
+                    Permission::Admin(0),
+                    true,
+                )
+                .await?;
+            } else if !is_submit {
                 gate_tree_permission(
                     instance,
                     &acting_pubkey,
@@ -489,9 +435,9 @@ async fn dispatch_database_op(
     match op {
         DatabaseOp::GetEntry { id } => {
             let entry = instance.backend().get(&id).await?;
-            // Same post-fetch owning-tree Read gate as `BackendOp::Get`:
-            // a raw entry id carries no inline tree, so the pre-dispatch
-            // gate could not cover it.
+            // Post-fetch owning-tree Read gate: a raw entry id carries no
+            // inline tree, so the pre-dispatch gate (which keys on `root_id`)
+            // could not cover the entry's real owning tree.
             gate_entry_read(instance, acting_pubkey, identity, &entry).await?;
             Ok(ServiceResponse::Entry(entry))
         }
@@ -606,6 +552,13 @@ async fn dispatch_database_op(
                 .require_local_engine()?
                 .cache_crdt_state(CacheScope::User(user_uuid.to_string()), &key, &store, blob)
                 .await?;
+            Ok(ServiceResponse::Ok)
+        }
+
+        DatabaseOp::SetInstanceMetadata { metadata } => {
+            // Admin-on-`_databases` gate already ran in the dispatcher (against
+            // the server-known system tree, not `root_id`).
+            instance.backend().set_instance_metadata(&metadata).await?;
             Ok(ServiceResponse::Ok)
         }
     }
@@ -876,34 +829,6 @@ async fn gate_entry_read(
         false,
     )
     .await
-}
-
-/// Dispatch a `BackendOp` against the daemon's `Instance` backend.
-///
-/// Called from `dispatch_inner` after the chunk-5a connection-state gate and
-/// the chunk-5b per-tree permission gate have both passed. Retains only `Get`
-/// (post-fetch tree gate) and `SetInstanceMetadata` (admin gate on
-/// `_databases`). All other read/write paths have moved to
-/// `dispatch_database_op`.
-async fn dispatch_backend_op(
-    instance: &Instance,
-    acting_pubkey: &PublicKey,
-    identity: &SigKey,
-    op: BackendOp,
-) -> crate::Result<ServiceResponse> {
-    let backend = instance.backend();
-
-    match op {
-        BackendOp::Get { id } => {
-            let entry = backend.get(&id).await?;
-            gate_entry_read(instance, acting_pubkey, identity, &entry).await?;
-            Ok(ServiceResponse::Entry(entry))
-        }
-        BackendOp::SetInstanceMetadata { metadata } => {
-            backend.set_instance_metadata(&metadata).await?;
-            Ok(ServiceResponse::Ok)
-        }
-    }
 }
 
 #[cfg(test)]
