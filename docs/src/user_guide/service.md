@@ -95,18 +95,33 @@ The returned Instance is fully transparent -- all downstream code (Database, Tra
 - **No plaintext secrets cross the socket.** Authentication operations (user creation, login, key management) run locally in the client. Only storage operations (get, put, tips, etc.) are forwarded to the daemon.
 - **The socket is a local Unix domain socket.** Access is controlled by filesystem permissions on the socket file. Only processes that can reach the socket path can connect.
 
-> ⚠️ **Deployment bootstrap creates a PASSWORDLESS admin.** The NixOS module
-> and the published container image auto-create the initial admin user
-> _without a password_ on first start (so the service can come up on fresh
-> state without manual `daemon init`). Anyone who can reach the service can
-> then act as admin. This is acceptable for a trusted/LAN deployment but
-> **unsafe on a network-exposed bind** (`host = "0.0.0.0"` / a published
-> container port) — restrict access with a firewall or an authenticating
-> reverse proxy. The NixOS module emits a build-time warning when bound to a
-> non-loopback address. An operator-supplied-credential bootstrap (admin
-> password from a file / secret) is a planned P0 follow-up; until then, run
-> `eidetica daemon init --username <NAME>` yourself (with a password) before
-> first start if you need a password-protected admin.
+> ⚠️ **The deployment bootstrap fails closed.** Both the NixOS module and
+> the published container image refuse to start on a fresh backend unless
+> the operator supplies a credential source for the initial admin user.
+> This avoids silently creating a passwordless admin that any reachable
+> client could use.
+>
+> **NixOS module** — set exactly one of:
+>
+> - `services.eidetica.initialPasswordFile = "/path/to/password-file";`
+>   (recommended; read via systemd `LoadCredential` so the service user
+>   never needs read access to the file itself), or
+> - `services.eidetica.allowPasswordlessAdmin = true;` (INSECURE; trusted
+>   or LAN deployments only — the module warns at rebuild time when this
+>   is combined with a non-loopback `host`).
+>
+> **Container image** — provide one of, in priority order:
+>
+> 1. A password file mounted at `/run/secrets/admin_password` (preferred;
+>    keeps the password off the process table and out of
+>    `docker inspect`).
+> 2. `EIDETICA_ADMIN_PASSWORD` env.
+> 3. `EIDETICA_ALLOW_PASSWORDLESS_ADMIN=1` env (INSECURE; local/dev only).
+>
+> Without any of the above the container entrypoint exits 1 with an
+> actionable error. To bootstrap your own admin with a password manually,
+> run `eidetica daemon init --username <NAME>` against the data directory
+> before first start.
 
 ## Multiple Clients
 

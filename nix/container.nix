@@ -30,26 +30,59 @@
     cp ${../LICENSE.txt} $out/LICENSE
   '';
 
-  # Entrypoint: bootstrap a passwordless admin on first start, then serve.
-  # `eidetica info` exits non-zero only when the backend is not yet
-  # initialised, so this inits once and no-ops on every subsequent start.
+  # Entrypoint: on first start, bootstrap the initial admin user from an
+  # operator-supplied credential, then exec the daemon. `eidetica info` exits
+  # non-zero only when the backend is not yet initialised, so this inits once
+  # and no-ops on every subsequent start.
   #
-  # SECURITY: the bootstrapped admin has NO password, so anyone who can reach
-  # the published port can act as admin. Acceptable for local/getting-started
-  # use; unsafe to expose to an untrusted network as-is.
+  # Fails closed: when no credential source is configured the entrypoint
+  # exits 1 with an actionable error rather than silently creating a
+  # passwordless admin.
   #
-  # FIXME(security, P0): replace the unconditional passwordless bootstrap with
-  # an operator-supplied credential (e.g. an admin password read from a mounted
-  # secret / EIDETICA_ADMIN_PASSWORD), failing closed when none is provided and
-  # no explicit passwordless opt-in is set. Tracked in
-  # ../private_docs/service-deployment-followups.md.
+  # Credential sources, in priority order:
+  #   1. File at /run/secrets/admin_password (Docker / Compose / Kubernetes
+  #      secret convention; preferred — keeps the password off the process
+  #      table and out of `docker inspect`).
+  #   2. EIDETICA_ADMIN_PASSWORD environment variable.
+  #   3. EIDETICA_ALLOW_PASSWORDLESS_ADMIN=1 — explicit opt-in to a
+  #      passwordless admin (INSECURE; trusted/LAN or local dev only).
   entrypoint = pkgs.writeShellScriptBin "eidetica-entrypoint" ''
-    if ! ${eidetica-bin}/bin/eidetica info >/dev/null 2>&1; then
-      echo "WARNING: bootstrapping a PASSWORDLESS admin user 'admin'. Anyone who" >&2
-      echo "         can reach this service can act as admin. Do not expose this" >&2
-      echo "         container to an untrusted network without restricting access." >&2
-      ${eidetica-bin}/bin/eidetica daemon init --username admin --passwordless
+    set -eu
+    if ${eidetica-bin}/bin/eidetica info >/dev/null 2>&1; then
+      exec ${eidetica-bin}/bin/eidetica "$@"
     fi
+
+    if [ -r /run/secrets/admin_password ]; then
+      EIDETICA_ADMIN_PASSWORD="$(cat /run/secrets/admin_password)" \
+        ${eidetica-bin}/bin/eidetica daemon init --username admin
+    elif [ -n "''${EIDETICA_ADMIN_PASSWORD:-}" ]; then
+      ${eidetica-bin}/bin/eidetica daemon init --username admin
+    elif [ "''${EIDETICA_ALLOW_PASSWORDLESS_ADMIN:-}" = "1" ]; then
+      echo "WARNING: bootstrapping a PASSWORDLESS admin user 'admin'." >&2
+      echo "         Anyone who can reach this service can act as admin." >&2
+      ${eidetica-bin}/bin/eidetica daemon init --username admin --passwordless
+    else
+      cat >&2 <<'EOF'
+ERROR: refusing to bootstrap admin user without credentials.
+
+The eidetica container needs to initialise an admin user on first start.
+Provide ONE of:
+
+  1) Mount an admin password file at /run/secrets/admin_password
+     (preferred — keeps the password off the process table)
+       -v ./admin-password.txt:/run/secrets/admin_password:ro
+
+  2) Set EIDETICA_ADMIN_PASSWORD
+       -e EIDETICA_ADMIN_PASSWORD=...
+     (visible in `docker inspect`; use a secret store when possible)
+
+  3) Opt in to a PASSWORDLESS admin (INSECURE; anyone reaching the
+     service is admin) — only for local/dev:
+       -e EIDETICA_ALLOW_PASSWORDLESS_ADMIN=1
+EOF
+      exit 1
+    fi
+
     exec ${eidetica-bin}/bin/eidetica "$@"
   '';
 

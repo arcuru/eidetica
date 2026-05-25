@@ -50,6 +50,10 @@
           port = 8080;
           backend = "sqlite";
           host = "0.0.0.0";
+          # Opt in explicitly so the bootstrap assertion passes. The eval
+          # test exercises a non-loopback bind, which also surfaces the
+          # passwordless-on-public-bind warning.
+          allowPasswordlessAdmin = true;
         };
       }
     ];
@@ -182,6 +186,10 @@ in {
           package = eidetica-bin;
           host = "0.0.0.0";
           backend = "sqlite";
+          # VM test runs against a fresh backend with no operator-supplied
+          # credential; opt in to the passwordless bootstrap so the
+          # ExecStartPre check succeeds.
+          allowPasswordlessAdmin = true;
         };
 
         # Ensure networking is available
@@ -298,8 +306,12 @@ in {
         # Use /var/lib instead of /tmp to avoid tmpfs issues with SQLite WAL mode
         machine.succeed("mkdir -p /var/lib/eidetica-data")
         machine.succeed("chown 1000:1000 /var/lib/eidetica-data")
+        # Opt in to the passwordless-admin bootstrap explicitly; the
+        # entrypoint now fails closed without a credential source.
         machine.succeed(
-          "podman run -d --name eidetica-test -p 3000:3000 -v /var/lib/eidetica-data:/data eidetica:dev"
+          "podman run -d --name eidetica-test -p 3000:3000 "
+          "-e EIDETICA_ALLOW_PASSWORDLESS_ADMIN=1 "
+          "-v /var/lib/eidetica-data:/data eidetica:dev"
         )
 
         # Wait for container to start

@@ -73,13 +73,40 @@ in {
 
         The service requires an initialised backend with an admin user. On
         first start (when the backend is not yet initialised) the service
-        bootstraps this user as a PASSWORDLESS admin. Subsequent starts detect
-        the existing instance and skip initialisation.
+        bootstraps this user; subsequent starts detect the existing instance
+        and skip initialisation. The bootstrap credential is controlled by
+        `initialPasswordFile` (recommended) or `allowPasswordlessAdmin` —
+        exactly one of those must be set, or the module refuses to evaluate.
+      '';
+    };
 
-        Security: a passwordless admin means anyone who can reach the service
-        can act as admin. This is fine for a trusted/LAN deployment but unsafe
-        on a network-exposed bind (`host = "0.0.0.0"`), which emits a warning.
-        An operator-supplied-credential bootstrap is planned (P0 follow-up).
+    initialPasswordFile = mkOption {
+      type = types.nullOr types.path;
+      default = null;
+      example = "/run/agenix/eidetica-admin-password";
+      description = ''
+        Path to a file containing the initial admin user's password. The
+        file is read by systemd via `LoadCredential` (so it can live on a
+        root-owned secret store outside the service user's reach) and
+        passed to `eidetica daemon init` via the `EIDETICA_ADMIN_PASSWORD`
+        environment variable on first start.
+
+        Exactly one of `initialPasswordFile` or `allowPasswordlessAdmin`
+        must be set; without either, the module fails closed at evaluation
+        time rather than silently creating a passwordless admin.
+      '';
+    };
+
+    allowPasswordlessAdmin = mkOption {
+      type = types.bool;
+      default = false;
+      description = ''
+        Opt in to bootstrapping the initial admin user **without a
+        password**. A passwordless admin means anyone who can reach the
+        service can act as admin, so only set this for trusted/LAN
+        deployments or local development. Use `initialPasswordFile`
+        instead for any deployment that exposes the service beyond
+        loopback.
       '';
     };
 
@@ -96,23 +123,33 @@ in {
         assertion = cfg.backend != "postgres" || cfg.postgresUrl != null;
         message = "services.eidetica.postgresUrl is required when backend is postgres";
       }
+      {
+        # XOR: exactly one of initialPasswordFile / allowPasswordlessAdmin.
+        # Both unset → fail closed (no silent passwordless bootstrap).
+        # Both set → ambiguous; reject.
+        assertion = (cfg.initialPasswordFile != null) != cfg.allowPasswordlessAdmin;
+        message = ''
+          services.eidetica requires exactly one of the following to bootstrap the initial admin user on first start:
+
+            services.eidetica.initialPasswordFile = "/path/to/password-file";
+              (recommended; the file is read via systemd LoadCredential)
+
+            services.eidetica.allowPasswordlessAdmin = true;
+              (INSECURE — anyone reaching the service becomes admin; trusted/LAN only)
+
+          Without one of these the service would either crash-loop on a fresh backend or silently create a passwordless admin, so the module refuses to evaluate.
+        '';
+      }
     ];
 
-    # Loudly surface the passwordless-admin bootstrap at rebuild time. The
-    # initial admin (`initialUser`) is created WITHOUT a password, so anyone
-    # who can reach the service can act as admin. This is acceptable for a
-    # trusted/LAN deployment but unsafe on a network-exposed (0.0.0.0) bind.
-    #
-    # FIXME(security, P0): replace the unconditional passwordless bootstrap
-    # with an operator-supplied credential (e.g. an `initialPasswordFile`
-    # read via systemd LoadCredential), and fail closed when neither a
-    # password source nor an explicit passwordless opt-in is configured.
-    # Tracked in ../private_docs/service-deployment-followups.md.
-    warnings = optional (cfg.host != "127.0.0.1") ''
-      services.eidetica bootstraps a PASSWORDLESS admin user ("${cfg.initialUser}")
-      on first start, but is bound to ${cfg.host} (not loopback). Any host that
-      can reach it can act as admin. Restrict access (firewall / reverse proxy
-      with auth) or wait for the operator-supplied-credential bootstrap.
+    # Warn loudly when the operator opted into a passwordless admin AND the
+    # service is reachable beyond loopback. The assertion above already
+    # ensures the opt-in is explicit; this just makes the consequence visible
+    # at rebuild time for the dangerous combination.
+    warnings = optional (cfg.allowPasswordlessAdmin && cfg.host != "127.0.0.1") ''
+      services.eidetica.allowPasswordlessAdmin is true and host is ${cfg.host} (not loopback).
+      Anyone who can reach the service can act as admin. Restrict access (firewall /
+      reverse proxy with auth), or switch to services.eidetica.initialPasswordFile.
     '';
 
     # Create user and group
@@ -144,36 +181,61 @@ in {
         }
         // cfg.environment;
 
-      serviceConfig = {
-        Type = "simple";
-        User = cfg.user;
-        Group = cfg.group;
-        WorkingDirectory = cfg.dataDir;
+      serviceConfig =
+        {
+          Type = "simple";
+          User = cfg.user;
+          Group = cfg.group;
+          WorkingDirectory = cfg.dataDir;
 
-        # Bootstrap the initial admin user on first start. `eidetica info`
-        # exits non-zero only when the backend is not yet initialised, so this
-        # is idempotent: it inits once, then no-ops on every subsequent start.
-        ExecStartPre = let
-          initIfNeeded = pkgs.writeShellScript "eidetica-init-if-needed" ''
-            if ! ${cfg.package}/bin/eidetica info >/dev/null 2>&1; then
-              ${cfg.package}/bin/eidetica daemon init \
-                --username ${escapeShellArg cfg.initialUser} \
-                --passwordless
-            fi
-          '';
-        in "${initIfNeeded}";
+          # Bootstrap the initial admin user on first start. `eidetica info`
+          # exits non-zero only when the backend is not yet initialised, so this
+          # is idempotent: it inits once, then no-ops on every subsequent start.
+          # The credential source is decided at module-evaluation time by the
+          # initialPasswordFile / allowPasswordlessAdmin assertion above.
+          ExecStartPre = let
+            initIfNeeded = pkgs.writeShellScript "eidetica-init-if-needed" (
+              ''
+                set -eu
+                if ${cfg.package}/bin/eidetica info >/dev/null 2>&1; then
+                  exit 0
+                fi
+              ''
+              + (
+                if cfg.initialPasswordFile != null
+                then ''
+                  EIDETICA_ADMIN_PASSWORD="$(cat "$CREDENTIALS_DIRECTORY/admin-password")" \
+                    ${cfg.package}/bin/eidetica daemon init \
+                      --username ${escapeShellArg cfg.initialUser}
+                ''
+                else ''
+                  echo "WARNING: bootstrapping a PASSWORDLESS admin user (${escapeShellArg cfg.initialUser})." >&2
+                  echo "         Anyone who can reach the service can act as admin." >&2
+                  ${cfg.package}/bin/eidetica daemon init \
+                    --username ${escapeShellArg cfg.initialUser} \
+                    --passwordless
+                ''
+              )
+            );
+          in "${initIfNeeded}";
 
-        ExecStart = "${cfg.package}/bin/eidetica";
-        Restart = "on-failure";
-        RestartSec = "5s";
+          ExecStart = "${cfg.package}/bin/eidetica";
+          Restart = "on-failure";
+          RestartSec = "5s";
 
-        # Security hardening
-        NoNewPrivileges = true;
-        ProtectSystem = "strict";
-        ProtectHome = true;
-        PrivateTmp = true;
-        ReadWritePaths = [cfg.dataDir];
-      };
+          # Security hardening
+          NoNewPrivileges = true;
+          ProtectSystem = "strict";
+          ProtectHome = true;
+          PrivateTmp = true;
+          ReadWritePaths = [cfg.dataDir];
+        }
+        // optionalAttrs (cfg.initialPasswordFile != null) {
+          # systemd reads the file as root and exposes it to the service at
+          # $CREDENTIALS_DIRECTORY/admin-password, so the unprivileged
+          # service user never needs read access to the original file.
+          LoadCredential = ["admin-password:${cfg.initialPasswordFile}"];
+        };
     };
 
     # Firewall configuration
