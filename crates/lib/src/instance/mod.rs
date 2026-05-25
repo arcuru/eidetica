@@ -784,9 +784,11 @@ impl Instance {
     /// On a local instance the device signing key is attached so users-table
     /// writes (e.g., the local `create_user` path) can sign. On a remote
     /// instance the device key lives on the daemon side and isn't available
-    /// locally; the returned Database is read-only from the client and any
-    /// write paths go through dedicated RPCs (`CreateUser`, etc.) instead of
-    /// being signed locally.
+    /// locally, so no key is attached — the returned handle is read-only.
+    /// Write paths on a remote instance must instead go through
+    /// [`Instance::users_db_for_session`], which attaches the caller's
+    /// session signing key (e.g. admin's key on the `InstanceAdmin`
+    /// `create_user` path) and routes through `Database::open_remote`.
     pub(crate) async fn users_db(&self) -> Result<Database> {
         let db = Database::open(self, &self.inner.metadata.users_db).await?;
         #[cfg(all(unix, feature = "service"))]
@@ -990,14 +992,13 @@ impl Instance {
         // Return `Ok(())` so callers on a connected instance get the same
         // no-op success they would on a local instance where sync is already
         // running daemon-side. Long-term this should become an admin-gated
-        // RPC (parallel to `InstanceAdmin::create_user`) that lets a client
-        // ask the daemon to enable its sync subsystem; until that ships,
-        // the client-side `enable_sync` is intentionally a silent no-op
-        // because the daemon either already has sync running or it doesn't,
-        // and the client can't change that.
+        // operation that lets a client ask the daemon to enable its sync
+        // subsystem; until that ships, the client-side `enable_sync` is
+        // intentionally a silent no-op because the daemon either already
+        // has sync running or it doesn't, and the client can't change that.
         //
-        // TODO(service): add an admin-gated `EnableSync` RPC and route
-        // through `InstanceAdmin`, so a client can enable sync remotely.
+        // TODO(service): expose an admin-gated `enable_sync` on
+        // `InstanceAdmin` so a client can enable sync remotely.
         #[cfg(all(unix, feature = "service"))]
         if self.remote_connection().is_some() {
             return Ok(());
