@@ -3,6 +3,8 @@
 //! This module defines structured error types for tree operations, entry management,
 //! and database operations, providing better error context and type safety compared to string-based errors.
 
+use std::path::PathBuf;
+
 use thiserror::Error;
 
 use crate::entry::ID;
@@ -39,15 +41,61 @@ pub enum InstanceError {
     /// Backend has no Instance on it; the operator must create one before
     /// it can be opened.
     ///
-    /// Returned by [`Instance::open`](super::Instance::open) when the
-    /// backend has no instance metadata. Use
-    /// [`Instance::create`](super::Instance::create) (or
-    /// [`Instance::open_or_create`](super::Instance::open_or_create)) with
-    /// a [`NewUser`](super::NewUser) to initialise it first.
+    /// Returned by [`Instance::connect`](super::Instance::connect) when the
+    /// backend at the URL has no instance metadata. Use
+    /// [`Instance::connect_or_create`](super::Instance::connect_or_create)
+    /// with a [`NewUser`](super::NewUser) to initialise it first.
     #[error(
-        "Instance not initialised on this backend; use Instance::create or Instance::open_or_create"
+        "Instance not initialised on this backend; use Instance::connect_or_create to bootstrap"
     )]
     NotInitialized,
+
+    /// URL failed to parse or is missing required components.
+    #[error("Invalid URL `{url}`: {reason}")]
+    InvalidUrl {
+        /// The URL string the caller provided.
+        url: String,
+        /// What was wrong, with a hint where possible.
+        reason: String,
+    },
+
+    /// Scheme is not recognised (e.g. `mysql://`, `foo://`).
+    #[error("Unsupported URL scheme `{scheme}://`{hint}", hint = match suggested {
+        Some(s) => format!(" — did you mean `{s}://`?"),
+        None => String::new(),
+    })]
+    UnsupportedScheme {
+        /// The scheme the caller passed.
+        scheme: String,
+        /// Best-effort typo suggestion, if any.
+        suggested: Option<&'static str>,
+    },
+
+    /// Scheme is recognised but its backend isn't compiled into this build.
+    #[error(
+        "Backend for `{scheme}://` is not available in this build; rebuild with `--features {missing_feature}`"
+    )]
+    BackendUnavailable {
+        /// The scheme that requires the missing feature.
+        scheme: &'static str,
+        /// Cargo feature flag that enables the backend.
+        missing_feature: &'static str,
+    },
+
+    /// Snapshot file is present but cannot be loaded.
+    #[error("Invalid snapshot at `{path}`: {reason}")]
+    InvalidSnapshot {
+        /// Path to the offending snapshot file.
+        path: PathBuf,
+        /// Why the load failed (parse error, missing metadata, etc.).
+        reason: String,
+    },
+
+    /// Snapshotting is only supported on the in-memory backend.
+    #[error(
+        "Snapshot is only supported on the in-memory backend; use a `memory:///path.json` URL for auto-save on close/Drop, or call `flush()` manually on an in-memory instance"
+    )]
+    SnapshotNotSupported,
 
     /// Entry does not belong to the specified database.
     #[error("Entry '{entry_id}' does not belong to database '{database_id}'")]

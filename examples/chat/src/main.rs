@@ -10,7 +10,7 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use eidetica::{Instance, Result, backend::database::InMemory};
+use eidetica::{Instance, Result};
 use handlers::handle_key_event;
 use ratatui::{Terminal, backend::CrosstermBackend};
 use std::io;
@@ -56,22 +56,18 @@ async fn main() -> Result<()> {
         .or_else(|| std::env::var("USER").ok())
         .unwrap_or_else(|| "Anonymous".to_string());
 
-    // Initialise Eidetica with sync enabled. `open_or_create` matches the
-    // "first run is your first run" UX of an embedded chat client:
-    // whoever launches the example becomes their own admin on first
-    // launch, and the same data dir loads them on subsequent runs.
+    // Initialise Eidetica with sync enabled. `memory://` is ephemeral —
+    // state lives only for the lifetime of this process. Switch to
+    // `sqlite://./chat.db` or `memory:///abs/path/snapshot.json` to keep
+    // history across runs; this example deliberately stays stateless so
+    // each launch is its own room.
     use eidetica::NewUser;
-    let backend = InMemory::new();
     let (instance, maybe_user) =
-        Instance::open_or_create(Box::new(backend), NewUser::passwordless(&username)).await?;
+        Instance::connect_or_create("memory://", NewUser::passwordless(&username)).await?;
     instance.enable_sync().await?;
 
-    // Use the just-created session on first run, or log back in on
-    // subsequent runs.
-    let user = match maybe_user {
-        Some(u) => u,
-        None => instance.login_user(&username, None).await?,
-    };
+    // `memory://` is always a fresh backend
+    let user = maybe_user.expect("memory:// is always fresh on first run");
 
     // Validate and parse transport
     let transport = match args.transport.to_lowercase().as_str() {

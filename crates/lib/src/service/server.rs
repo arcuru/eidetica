@@ -841,7 +841,7 @@ mod tests {
     async fn start_test_server() -> (PathBuf, watch::Sender<()>, Instance) {
         let dir = tempfile::tempdir().unwrap();
         let socket_path = dir.keep().join("test.sock");
-        let (instance, _admin) = Instance::create(
+        let (instance, _admin) = Instance::create_backend(
             Box::new(InMemory::new()),
             crate::NewUser::passwordless("admin"),
         )
@@ -1079,7 +1079,7 @@ mod tests {
         tokio::fs::write(&socket_path, "stale").await.unwrap();
         assert!(socket_path.exists());
 
-        let (instance, _admin) = Instance::create(
+        let (instance, _admin) = Instance::create_backend(
             Box::new(InMemory::new()),
             crate::NewUser::passwordless("admin"),
         )
@@ -1118,7 +1118,7 @@ mod tests {
     async fn test_gate_require_existing_fails_closed_on_absent_db() {
         use crate::auth::crypto::generate_keypair;
 
-        let (instance, _admin) = Instance::create(
+        let (instance, _admin) = Instance::create_backend(
             Box::new(InMemory::new()),
             crate::NewUser::passwordless("admin"),
         )

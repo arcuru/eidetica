@@ -6,28 +6,28 @@ _Assumes basic setup like `use eidetica::{Instance, Database, Error, ...};` and 
 
 ## 1. Initializing the Database (`Instance`)
 
+`Instance::connect_or_create` dispatches by URL scheme. See the [backends concepts page](concepts/backends.md) for the full URL grammar.
+
 <!-- Code block ignored: Requires file system access during testing -->
 
 ```rust,ignore
-use eidetica::{backend::database::Sqlite, Instance};
-use std::path::PathBuf;
+use eidetica::{Instance, NewUser};
 
 #[tokio::main]
 async fn main() -> eidetica::Result<()> {
-    let db_path = PathBuf::from("my_data.db");
+    // Option A: ephemeral in-memory backend (for tests / short-lived processes)
+    let (_instance, _) =
+        Instance::connect_or_create("memory://", NewUser::passwordless("alice")).await?;
 
-    // Option A: Create an in-memory database (for testing)
-    let backend = Sqlite::in_memory().await?;
-    let _instance = Instance::open(Box::new(backend)).await?;
+    // Option B: persistent SQLite database — created on first run, loaded on
+    // subsequent runs. The URL is passed through to sqlx, so any sqlx form
+    // works.
+    let (instance, _) = Instance::connect_or_create(
+        "sqlite://./my_data.db",
+        NewUser::passwordless("alice"),
+    ).await?;
 
-    // Option B: Create or open a persistent SQLite database
-    // SQLite automatically creates the file if it doesn't exist
-    let backend = Sqlite::open(&db_path).await?;
-    let instance = Instance::open(Box::new(backend)).await?;
-
-    // Data persists automatically with SQLite file backend
-    println!("Database opened at {:?}", db_path);
-
+    println!("Database opened at sqlite://./my_data.db");
     Ok(())
 }
 ```
@@ -41,7 +41,7 @@ async fn main() -> eidetica::Result<()> {
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;
@@ -76,7 +76,7 @@ println!("Using Database with root ID: {}", database.root_id());
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;
@@ -127,7 +127,7 @@ struct Task {
 
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;
@@ -182,7 +182,7 @@ println!("Table changes committed in entry: {}", entry_id);
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;
@@ -232,7 +232,7 @@ match config_viewer.get("retry_count").await {
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;
@@ -279,7 +279,7 @@ match tasks_viewer.search(|_| true).await {
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # // Setup database for testing
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;
@@ -350,7 +350,7 @@ The `YDoc` store provides access to Y-CRDT (Yrs) documents for collaborative dat
 # async fn main() -> eidetica::Result<()> {
 # // Setup database for testing
 # let backend = Sqlite::in_memory().await?;
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(backend),
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;
@@ -474,14 +474,15 @@ use std::path::PathBuf;
 
 #[tokio::main]
 async fn main() -> eidetica::Result<()> {
-    let db_path = PathBuf::from("my_database.db");
+    // Create or open a persistent SQLite database by URL. The URL is
+    // passed through to sqlx, so any sqlx-accepted form works.
+    let (instance, _maybe_user) = Instance::connect_or_create(
+        "sqlite://./my_database.db",
+        eidetica::NewUser::passwordless("admin"),
+    ).await?;
 
-    // Create or open a SQLite database file
-    // Data is automatically persisted on each commit
-    let backend = Sqlite::open(&db_path).await?;
-    let instance = Instance::open(Box::new(backend)).await?;
-
-    // Create user via the bootstrapped admin, then log in as the new user
+    // Subsequent runs land on the load arm (`_maybe_user` is `None`); the
+    // operator creates and logs in additional users through the admin path.
     let admin = instance.login_user("admin", None).await?;
     admin.admin().await?.create_user(eidetica::NewUser::passwordless("alice")).await?;
     let mut user = instance.login_user("alice", None).await?;
@@ -490,18 +491,17 @@ async fn main() -> eidetica::Result<()> {
     let default_key = user.get_default_key()?;
     let _database = user.create_database(settings, &default_key).await?;
 
-    // All changes are automatically saved to my_database.db
-    println!("Database created/opened at {:?}", db_path);
-
+    println!("Database created/opened at sqlite://./my_database.db");
     Ok(())
 }
 ```
 
 **Key Points:**
 
-- SQLite automatically handles persistence - no manual save needed
-- Use `Sqlite::in_memory()?` for testing without disk I/O
-- Use `Sqlite::open(&path).await?` for persistent storage
+- SQLite automatically handles persistence — no manual save needed.
+- Use `memory://` for ephemeral state (tests, throwaway processes).
+- Use `sqlite://./path.db` (or any sqlx-accepted URL) for persistent storage.
+- Use `memory:///abs/path/snap.json` if you want in-memory speed plus an opt-in JSON snapshot.
 
 ---
 
@@ -520,7 +520,7 @@ from the default (Verified-frontier) view until this node validates them.
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;
@@ -578,9 +578,9 @@ The chat example demonstrates several advanced patterns:
 
 ```rust,ignore
 // Initialize instance with sync enabled
-let backend = Sqlite::in_memory().await?;
-let instance = Instance::create(Box::new(backend))?;
-instance.enable_sync()?;
+let (instance, _) =
+    Instance::connect_or_create("memory://", NewUser::passwordless("admin")).await?;
+instance.enable_sync().await?;
 
 // Create passwordless user (or use existing) via the bootstrapped admin
 let username = "alice";

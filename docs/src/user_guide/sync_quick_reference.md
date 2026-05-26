@@ -14,7 +14,7 @@ use eidetica::sync::transports::http::HttpTransport;
 
 // Create database with sync enabled
 let backend = Box::new(Sqlite::in_memory().await?);
-let (instance, mut user) = Instance::create(
+let (instance, mut user) = Instance::create_backend(
     backend,
     eidetica::NewUser::passwordless("alice"),
 ).await?;
@@ -39,7 +39,7 @@ sync.accept_connections().await?;
 # async fn main() -> eidetica::Result<()> {
 # // Setup database instance with sync capability
 # let backend = Box::new(Sqlite::in_memory().await?);
-# let (db, _) = Instance::open_or_create(
+# let (db, _) = Instance::connect_or_create_backend(
 #     backend,
 #     eidetica::NewUser::passwordless("admin"),
 # ).await?;
@@ -77,7 +77,7 @@ Declare sync intent with automatic background synchronization:
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(Sqlite::in_memory().await?);
-# let (instance, _) = Instance::open_or_create(
+# let (instance, _) = Instance::connect_or_create_backend(
 #     backend,
 #     eidetica::NewUser::passwordless("admin"),
 # ).await?;
@@ -251,7 +251,7 @@ db.sync()?.update_peer_status(&peer_key, PeerStatus::Inactive)?;
 # async fn main() -> eidetica::Result<()> {
 # use eidetica::sync::transports::http::HttpTransport;
 # let backend = Box::new(Sqlite::in_memory().await?);
-# let (instance, _) = Instance::open_or_create(
+# let (instance, _) = Instance::connect_or_create_backend(
 #     backend,
 #     eidetica::NewUser::passwordless("admin"),
 # ).await?;
@@ -606,12 +606,12 @@ let peer = db.sync()?.connect_to_peer(&addr).await?;
 use eidetica::sync::transports::http::HttpTransport;
 
 // Run multiple sync-enabled databases
-let db1 = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
+let db1 = Instance::open_backend(Box::new(Sqlite::in_memory().await?)).await?;
 db1.enable_sync().await?;
 db1.sync()?.register_transport("http", HttpTransport::builder().bind("127.0.0.1:8080")).await?;
 db1.sync()?.accept_connections().await?;
 
-let db2 = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
+let db2 = Instance::open_backend(Box::new(Sqlite::in_memory().await?)).await?;
 db2.enable_sync().await?;
 db2.sync()?.register_transport("http", HttpTransport::builder().bind("127.0.0.1:8081")).await?;
 db2.sync()?.accept_connections().await?;
@@ -634,14 +634,14 @@ async fn test_iroh_sync_local() -> Result<()> {
     use eidetica::sync::transports::iroh::IrohTransport;
 
     // Setup databases with local Iroh transport (no relay servers)
-    let db1 = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
+    let db1 = Instance::open_backend(Box::new(Sqlite::in_memory().await?)).await?;
     db1.enable_sync().await?;
     db1.sync()?.register_transport("iroh", IrohTransport::builder()
         .relay_mode(RelayMode::Disabled)
     ).await?;
     db1.sync()?.accept_connections().await?;
 
-    let db2 = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
+    let db2 = Instance::open_backend(Box::new(Sqlite::in_memory().await?)).await?;
     db2.enable_sync().await?;
     db2.sync()?.register_transport("iroh", IrohTransport::builder()
         .relay_mode(RelayMode::Disabled)
@@ -670,8 +670,8 @@ use eidetica::sync::transports::http::HttpTransport;
 
 #[tokio::test]
 async fn test_sync_between_peers() -> Result<()> {
-    // Setup first peer (Instance::create bootstraps the first user as admin)
-    let (instance1, mut user1) = Instance::create(
+    // Setup first peer (Instance::create_backend bootstraps the first user as admin)
+    let (instance1, mut user1) = Instance::create_backend(
         Box::new(Sqlite::in_memory().await?),
         eidetica::NewUser::passwordless("peer1"),
     ).await?;
@@ -682,7 +682,7 @@ async fn test_sync_between_peers() -> Result<()> {
     let addr1 = instance1.sync()?.get_server_address_async().await?;
 
     // Setup second peer
-    let (instance2, mut user2) = Instance::create(
+    let (instance2, mut user2) = Instance::create_backend(
         Box::new(Sqlite::in_memory().await?),
         eidetica::NewUser::passwordless("peer2"),
     ).await?;

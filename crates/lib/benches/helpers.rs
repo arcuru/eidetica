@@ -76,9 +76,10 @@ async fn setup_tree_with_backend(backend: Box<dyn BackendImpl>) -> (Instance, Us
     // Bootstrap "bench_user" as the initial admin. They double as the
     // benchmark's only User session and (since they're the first user)
     // hold Admin on the system DBs by construction.
-    let (instance, mut user) = Instance::create(backend, NewUser::passwordless("bench_user"))
-        .await
-        .expect("Benchmark setup failed");
+    let (instance, mut user) =
+        Instance::create_backend(backend, NewUser::passwordless("bench_user"))
+            .await
+            .expect("Benchmark setup failed");
 
     let key_id = user.get_default_key().expect("Failed to get default key");
     let db = user

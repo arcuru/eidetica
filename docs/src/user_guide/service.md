@@ -11,7 +11,7 @@ Daemon mode is useful when:
 - **Background sync** should persist across short-lived client sessions
 - A **long-running process** manages storage while lightweight clients connect on demand
 
-For single-process applications, `Instance::open()` with a local backend is simpler and has no IPC overhead.
+For single-process applications, `Instance::open_backend()` with a local backend is simpler and has no IPC overhead.
 
 ## Starting the Daemon
 
@@ -48,12 +48,13 @@ To start a daemon from Rust code:
 <!-- Code block ignored: Requires async runtime and Unix socket -->
 
 ```rust,ignore
-use eidetica::{Instance, backend::database::Sqlite};
+use eidetica::Instance;
 use eidetica::service::ServiceServer;
 use tokio::sync::watch;
 
-let backend = Sqlite::open("my_data.db").await?;
-let instance = Instance::open(Box::new(backend)).await?;
+// `Instance::connect` accepts a URL describing the backend; here the
+// daemon serves a sqlite file. See the rustdoc for the full URL grammar.
+let instance = Instance::connect("sqlite://./my_data.db").await?;
 
 let (shutdown_tx, shutdown_rx) = watch::channel(());
 let server = ServiceServer::new(instance, "/tmp/eidetica.sock");
@@ -65,7 +66,7 @@ server.run(shutdown_rx).await?;
 
 ## Connecting Clients
 
-Use `Instance::connect()` to create a client-side Instance that communicates with the daemon:
+Clients reach the daemon by passing a `unix://` URL to `Instance::connect`:
 
 <!-- Code block ignored: Requires a running daemon -->
 
@@ -73,7 +74,7 @@ Use `Instance::connect()` to create a client-side Instance that communicates wit
 use eidetica::Instance;
 
 // Connect to a running daemon
-let instance = Instance::connect("/tmp/eidetica.sock").await?;
+let instance = Instance::connect("unix:///tmp/eidetica.sock").await?;
 
 // Use it exactly like a local Instance. The daemon was initialised with
 // an initial admin user via `eidetica daemon init --username ops`
@@ -131,12 +132,12 @@ Multiple clients can connect to the same daemon simultaneously. Each client main
 
 ```rust,ignore
 // Client 1: an admin session creates the new user via the InstanceAdmin path.
-let instance1 = Instance::connect("/tmp/eidetica.sock").await?;
+let instance1 = Instance::connect("unix:///tmp/eidetica.sock").await?;
 let admin = instance1.login_user("ops", None).await?;
 admin.admin().await?.create_user(eidetica::NewUser::passwordless("alice")).await?;
 
 // Client 2 (separate process or task): log in as the user that was just created.
-let instance2 = Instance::connect("/tmp/eidetica.sock").await?;
+let instance2 = Instance::connect("unix:///tmp/eidetica.sock").await?;
 let user = instance2.login_user("alice", None).await?;
 ```
 

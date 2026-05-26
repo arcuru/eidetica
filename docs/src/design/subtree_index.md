@@ -162,7 +162,7 @@ Access via `Transaction::get_index()`.
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(Sqlite::in_memory().await?);
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     backend,
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;
@@ -201,7 +201,7 @@ assert!(info.config.is_empty());
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(Sqlite::in_memory().await?);
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     backend,
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;
@@ -247,7 +247,7 @@ assert!(info.config.contains_key("compression"));
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(Sqlite::in_memory().await?);
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     backend,
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;

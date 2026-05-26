@@ -34,20 +34,19 @@ Here's a simple example:
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use eidetica::{backend::database::Sqlite, Instance, crdt::Doc};
+# use eidetica::{Instance, NewUser, crdt::Doc};
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-    // Create a new in-memory backend
-    let backend = Sqlite::in_memory().await?;
-
-    // Initialise the Instance with Alice as the initial admin user.
-    // The first user created on an instance is automatically granted
+    // Open or initialise an Instance from a URL. `memory://` is an
+    // ephemeral in-process backend — great for tests and embedded use.
+    // The first user created on a fresh instance is automatically granted
     // Admin on the system databases.
-    let (_instance, mut user) = Instance::create(
-        Box::new(backend),
-        eidetica::NewUser::passwordless("alice"),
+    let (_instance, maybe_user) = Instance::connect_or_create(
+        "memory://",
+        NewUser::passwordless("alice"),
     ).await?;
+    let mut user = maybe_user.expect("memory:// is always fresh");
 
     // Create a database in the user's context
     let mut settings = Doc::new();
@@ -61,45 +60,53 @@ Here's a simple example:
 }
 ```
 
-**Note**: This example uses a passwordless user (password is `None`) for simplicity, which is perfect for embedded applications and CLI tools. For multi-user scenarios, you can create password-protected users by passing `Some("password")` instead.
+**Note**: This example uses a passwordless user for simplicity, which is perfect for embedded applications and CLI tools. For multi-user scenarios, create password-protected users with `NewUser::with_password("alice", "pwd")` instead.
 
-The backend determines how your data is stored. The example above uses `Sqlite::in_memory()`, which keeps everything in memory. For persistent storage, use a file-based SQLite database:
+The URL passed to [`Instance::connect_or_create`](https://docs.rs/eidetica/latest/eidetica/struct.Instance.html#method.connect_or_create) selects the backend. Some other common forms:
+
+- `memory://` — ephemeral in-process backend (above).
+- `memory:///abs/path/snap.json` — in-process backend with a JSON snapshot file (load-on-start, writes via [`Instance::flush`](https://docs.rs/eidetica/latest/eidetica/struct.Instance.html#method.flush)).
+- `sqlite://./my_data.db` — embedded SQLite database, persisted automatically. The URL is passed through to `sqlx`, so any sqlx-accepted form works (`?journal_mode=WAL`, `?busy_timeout=5000`, etc.).
+- `postgres://user:pwd@host/db` — embedded PostgreSQL backend.
+- `unix:///run/eidetica/service.sock` — connect to a running [daemon](service.md).
+
+For persistent storage, swap the URL:
 
 <!-- Code block ignored: Requires file system access during testing -->
 
 ```rust,ignore
-use eidetica::{Instance, backend::database::Sqlite, crdt::Doc};
+use eidetica::{Instance, NewUser, crdt::Doc};
 
 #[tokio::main]
 async fn main() -> eidetica::Result<()> {
-    // Create a persistent SQLite backend (data is saved automatically)
-    let backend = Sqlite::open("my_data.db").await?;
-    let instance = Instance::open(Box::new(backend)).await?;
+    // First run: bootstrap a fresh persistent instance.
+    // Subsequent runs: load the existing instance (Option<User> is None).
+    let (instance, maybe_user) = Instance::connect_or_create(
+        "sqlite://./my_data.db",
+        NewUser::passwordless("alice"),
+    ).await?;
 
-    // Create user via the bootstrapped admin
-    let admin = instance.login_user("admin", None).await?;
-    admin.admin().await?.create_user(eidetica::NewUser::passwordless("alice")).await?;
-    let mut user = instance.login_user("alice", None).await?;
+    let mut user = match maybe_user {
+        Some(u) => u,
+        None => instance.login_user("alice", None).await?,
+    };
     // ... all changes are automatically persisted to my_data.db
 
     Ok(())
 }
 ```
 
-You can reopen a previously created database:
+When you only want to load an already-initialised database (strict — errors if missing), use [`Instance::connect`](https://docs.rs/eidetica/latest/eidetica/struct.Instance.html#method.connect):
 
 <!-- Code block ignored: Requires file system access during testing -->
 
 ```rust,ignore
-use eidetica::{Instance, backend::database::Sqlite};
+use eidetica::Instance;
 
 #[tokio::main]
 async fn main() -> eidetica::Result<()> {
-    // Reopen existing SQLite database
-    let backend = Sqlite::open("my_data.db").await?;
-    let instance = Instance::open(Box::new(backend)).await?;
-
-    // Login to existing user
+    // Strict load — errors if the database isn't initialised yet.
+    let instance = Instance::connect("sqlite://./my_data.db").await?;
     let user = instance.login_user("alice", None).await?;
     // ... data persists across restarts
 
@@ -167,7 +174,7 @@ All operations in Eidetica happen within an atomic **Transaction**:
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;
@@ -209,7 +216,7 @@ txn.commit().await?;
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;
@@ -258,7 +265,7 @@ for (id, person) in all_people {
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;
@@ -304,7 +311,7 @@ txn.commit().await?;
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;

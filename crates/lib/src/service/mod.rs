@@ -77,9 +77,19 @@ use std::path::PathBuf;
 
 /// Default socket path for the Eidetica service.
 ///
-/// Uses `$XDG_RUNTIME_DIR/eidetica/service.sock` if available,
-/// falling back to `/tmp/eidetica-$USER/service.sock`.
+/// Resolution order:
+/// 1. `EIDETICA_SOCKET` environment variable, if set.
+/// 2. `$XDG_RUNTIME_DIR/eidetica/service.sock`, if `XDG_RUNTIME_DIR` is set
+///    (the standard Linux convention).
+/// 3. `/tmp/eidetica-$USER/service.sock` as a last-resort fallback.
+///
+/// Used by the daemon CLI to choose where to bind and by
+/// [`default_socket_url`] to construct the equivalent `unix://` URL for
+/// `Instance::connect`.
 pub fn default_socket_path() -> PathBuf {
+    if let Ok(socket) = std::env::var("EIDETICA_SOCKET") {
+        return PathBuf::from(socket);
+    }
     if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
         PathBuf::from(runtime_dir)
             .join("eidetica")
@@ -88,4 +98,17 @@ pub fn default_socket_path() -> PathBuf {
         let user = std::env::var("USER").unwrap_or_else(|_| "unknown".to_string());
         PathBuf::from(format!("/tmp/eidetica-{user}")).join("service.sock")
     }
+}
+
+/// Default `unix://` URL for `Instance::connect`, derived from
+/// [`default_socket_path`].
+///
+/// Convenience for apps that want to connect to the local daemon's socket
+/// without writing the env / `$XDG_RUNTIME_DIR` resolution themselves:
+///
+/// ```ignore
+/// let instance = Instance::connect(eidetica::service::default_socket_url()).await?;
+/// ```
+pub fn default_socket_url() -> String {
+    format!("unix://{}", default_socket_path().display())
 }

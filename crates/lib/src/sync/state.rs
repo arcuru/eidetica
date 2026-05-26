@@ -552,7 +552,7 @@ mod tests {
         use std::sync::Arc;
 
         let clock = Arc::new(FixedClock::default());
-        let (instance, mut user) = Instance::create_with_clock(
+        let (instance, mut user) = Instance::create_backend_with_clock(
             Box::new(InMemory::new()),
             clock.clone(),
             crate::NewUser::passwordless("test"),

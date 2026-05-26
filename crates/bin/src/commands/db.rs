@@ -12,7 +12,7 @@ pub async fn list(
     format: OutputFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let backend = create_backend(&args.backend_config).await?;
-    let instance = Instance::open(backend).await?;
+    let instance = Instance::open_backend(backend).await?;
 
     let all_roots = instance
         .backend()

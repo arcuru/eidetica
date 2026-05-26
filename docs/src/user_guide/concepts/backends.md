@@ -13,7 +13,26 @@ Key responsibilities of a Database:
 - Calculating tips (latest entries) for databases and stores
 - Managing the graph-like structure of entry history
 
-## Available Database Implementations
+## Selecting a Backend via URL
+
+The recommended way to open an Instance is by URL — `Instance::connect(url)` and `Instance::connect_or_create(url, NewUser::…)` dispatch to the right backend based on the URL scheme:
+
+| URL form                            | Backend                                                  | Feature flag       |
+| ----------------------------------- | -------------------------------------------------------- | ------------------ |
+| `sqlite://./my_data.db`             | Embedded SQLite (passed through to `sqlx::sqlite`)       | `sqlite`           |
+| `sqlite:file::memory:?cache=shared` | Embedded SQLite, in-memory (see note)                    | `sqlite`           |
+| `postgres://user:pwd@host/db`       | Embedded PostgreSQL (passed through to `sqlx::postgres`) | `postgres`         |
+| `unix:///run/eidetica/service.sock` | Thin client to a running [daemon](../service.md)         | `service` (unix)   |
+| `memory://`                         | Ephemeral in-process backend (tests/dev only)            | (always available) |
+| `memory:///abs/path/snap.json`      | In-process backend with a JSON snapshot file (tests/dev) | (always available) |
+
+The in-memory sqlite URL requires sqlx's single-colon URI form (`sqlite:` rather than `sqlite://`) due to limitations in sqlx. The `file:` prefix + `cache=shared` are what make the database visible across the connection pool. Without them each pooled connection gets its own isolated database.
+
+Backends whose Cargo feature isn't compiled in return `InstanceError::BackendUnavailable { scheme, missing_feature }` at runtime — no link-time surprise.
+
+For escape-hatch construction (custom sqlx pool config, custom clock, etc.) the per-backend constructors below remain `pub`; see [`Instance::open_backend`](https://docs.rs/eidetica/latest/eidetica/struct.Instance.html#method.open_backend), [`connect_or_create_backend`](https://docs.rs/eidetica/latest/eidetica/struct.Instance.html#method.connect_or_create_backend), and [`create_backend`](https://docs.rs/eidetica/latest/eidetica/struct.Instance.html#method.create_backend) for the URL-less entry points.
+
+## Available Backend Implementations
 
 ### SQLite
 
@@ -22,13 +41,18 @@ SQLite is the default and recommended backend. It provides embedded persistent s
 <!-- Code block ignored: Requires async runtime context -->
 
 ```rust,ignore
+use eidetica::{Instance, NewUser};
+
+// Recommended: by URL.
+let (instance, _) = Instance::connect_or_create(
+    "sqlite://./my_data.db",
+    NewUser::passwordless("alice"),
+).await?;
+
+// Escape-hatch: build the backend manually for custom configuration.
 use eidetica::backend::database::Sqlite;
-
-// File-based storage (async) - recommended for persistent data
 let backend = Sqlite::open("my_data.db").await?;
-
-// In-memory - useful for testing
-let backend = Sqlite::in_memory().await?;
+let instance = Instance::open_backend(Box::new(backend)).await?;
 ```
 
 ### PostgreSQL
@@ -38,58 +62,79 @@ PostgreSQL provides production-grade persistent storage for larger deployments. 
 <!-- Code block ignored: Requires PostgreSQL server -->
 
 ```rust,ignore
-use eidetica::backend::database::Postgres;
+use eidetica::{Instance, NewUser};
 
-let backend = Postgres::connect("postgres://user:pass@localhost/mydb")?;
+// By URL — passed through to sqlx unchanged, so any sqlx-accepted query
+// string works (sslmode, application_name, etc.).
+let (instance, _) = Instance::connect_or_create(
+    "postgres://user:pass@localhost/mydb?sslmode=require",
+    NewUser::passwordless("alice"),
+).await?;
 ```
 
 ### InMemory
 
-The `InMemory` database is a simple in-memory storage implementation:
+The in-process backend is intended for tests, examples, and embedded apps that don't need durable storage. It can optionally serialize to and load from a JSON file via the `memory:///abs/path` URL form.
 
-- Stores all entries in memory
-- Can load from and save to a JSON file
-- Well-suited for development and testing
-- Simple to use and requires no external dependencies
+**Prefer sqlite's in-memory mode when the `sqlite` feature is enabled.** The `sqlite:file::memory:?cache=shared` URL exercises the same backend used in production, so integration tests stay closer to deployed behaviour. Reach for `memory://` only when you've built without the `sqlite` feature or specifically want the JSON-snapshot story.
 
-Example usage:
+**Not for production.** Prefer `sqlite://` (file-backed) or `postgres://` for any deployed workload. Specifically:
+
+- The JSON snapshot format is unstable (`_v: 0`); compatibility may break between versions.
+- The snapshot serializes the device signing key **in plaintext**. For `memory:///path.json`, that key ends up on disk in cleartext — fine for tests, unsafe for production.
+- Every `flush()` rewrites the full backend state; there's no incremental persistence, MVCC, or multi-process access.
+
+The ephemeral sqlite form uses `Instance::connect_or_create` like every other URL:
+
+<!-- Code block ignored: Requires async runtime context -->
+
+```rust,ignore
+use eidetica::{Instance, NewUser};
+
+let (instance, _) = Instance::connect_or_create(
+    "sqlite:file::memory:?cache=shared",
+    NewUser::passwordless("alice"),
+).await?;
+```
+
+The `memory://` URL forms remain useful for tests and short-lived embedded scenarios:
 
 <!-- Code block ignored: Requires file system access during testing -->
 
 ```rust,ignore
-// Create a new in-memory database
-use eidetica::backend::database::InMemory;
-let database = InMemory::new();
-let db = Instance::open(Box::new(database)).await?;
+use eidetica::{Instance, NewUser};
 
-// ... use the database ...
+// Ephemeral (state dies with the process).
+let (instance, _) =
+    Instance::connect_or_create("memory://", NewUser::passwordless("alice")).await?;
 
-// Save to a file (optional)
-let path = PathBuf::from("my_database.json");
-let database_guard = db.backend().lock().await;
-if let Some(in_memory) = database_guard.as_any().downcast_ref::<InMemory>() {
-    in_memory.save_to_file(&path).await?;
-}
-
-// Load from a file
-let database = InMemory::load_from_file(&path).await?;
-let db = Instance::open(Box::new(database)).await?;
+// With a JSON snapshot — loaded on construction, written by flush() or
+// (best-effort) by Drop. The snapshot path must be absolute.
+let (instance, _) = Instance::connect_or_create(
+    "memory:///var/lib/myapp/snap.json",
+    NewUser::passwordless("alice"),
+).await?;
+// ... do work ...
+instance.flush()?; // checkpoint the snapshot to disk atomically; instance keeps running
 ```
+
+`Instance::flush()` is the canonical way to checkpoint an in-memory snapshot. It's reentrant, sync, and takes `&self`, so call it as often as you like — the snapshot path stays armed and the instance keeps working after every flush. The signature is sync because the write itself is sync (`std::fs::write` + atomic rename); from a tokio task it briefly blocks the worker, negligible for small snapshots. The `Drop` impl falls back to a best-effort save on the last handle (errors are logged via `tracing::error!`, not surfaced) — apps that care about snapshot durability should call `flush()` at checkpoints and inspect the `Result`.
 
 ### Remote (Service Daemon)
 
-The `RemoteBackend` connects to an Eidetica [service daemon](../service.md) over a Unix domain socket. All storage operations are forwarded as RPCs to the daemon, which holds the actual backend. This enables multiple processes to share the same storage.
+A `unix://` URL connects to an Eidetica [service daemon](../service.md). All storage operations are forwarded as RPCs to the daemon, which holds the actual backend. This enables multiple client processes to share the same storage.
 
 <!-- Code block ignored: Requires a running daemon -->
 
 ```rust,ignore
 use eidetica::Instance;
 
-// Connect to a running daemon (uses RemoteBackend internally)
-let instance = Instance::connect("/tmp/eidetica.sock").await?;
+let instance = Instance::connect("unix:///run/eidetica/service.sock").await?;
+// Or, with env / default resolution:
+let instance = Instance::connect(eidetica::service::default_socket_url()).await?;
 ```
 
-The `service` feature must be enabled (included in the default `full` feature set). See [Service (Daemon) Mode](../service.md) for setup details.
+The `service` feature must be enabled (included in the default `full` feature set). `connect_or_create` against a `unix://` URL degrades to `connect` — the daemon owns its own initialisation. See [Service (Daemon) Mode](../service.md) for setup details.
 
 ## Database Trait Responsibilities
 

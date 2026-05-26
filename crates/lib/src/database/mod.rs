@@ -211,7 +211,7 @@ impl Database {
     /// # use eidetica::crdt::Doc;
     /// # #[tokio::main]
     /// # async fn main() -> Result<()> {
-    /// let instance = Instance::open(Box::new(InMemory::new())).await?;
+    /// let instance = Instance::open_backend(Box::new(InMemory::new())).await?;
     /// let (signing_key, _public_key) = generate_keypair();
     ///
     /// let mut settings = Doc::new();
@@ -347,7 +347,7 @@ impl Database {
     /// # use eidetica::auth::crypto::generate_keypair;
     /// # #[tokio::main]
     /// # async fn main() -> Result<()> {
-    /// # let instance = Instance::open(Box::new(InMemory::new())).await?;
+    /// # let instance = Instance::open_backend(Box::new(InMemory::new())).await?;
     /// # let (signing_key, _verifying_key) = generate_keypair();
     /// # let root_id = ID::from_bytes(b"existing_database_root_id");
     /// // Open database for reading
@@ -526,7 +526,7 @@ impl Database {
     /// # use eidetica::auth::types::SigKey;
     /// # #[tokio::main]
     /// # async fn main() -> Result<()> {
-    /// # let instance = Instance::open(Box::new(InMemory::new())).await?;
+    /// # let instance = Instance::open_backend(Box::new(InMemory::new())).await?;
     /// # let (signing_key, pubkey) = generate_keypair();
     /// # let root_id = ID::from_bytes(b"database_root_id");
     /// // Find all SigKeys this pubkey can use (sorted highest permission first)
@@ -679,7 +679,7 @@ impl Database {
     /// # use eidetica::auth::crypto::PrivateKey;
     /// # #[tokio::main]
     /// # async fn main() -> Result<()> {
-    /// let instance = Instance::open(Box::new(InMemory::new())).await?;
+    /// let instance = Instance::open_backend(Box::new(InMemory::new())).await?;
     /// # let signing_key = PrivateKey::generate();
     /// # let database = Database::create(&instance, signing_key, Doc::new()).await?;
     ///
@@ -1230,7 +1230,7 @@ impl Database {
     /// # use eidetica::crdt::Doc;
     /// # #[tokio::main]
     /// # async fn main() -> Result<()> {
-    /// # let (_instance, mut user) = Instance::create(
+    /// # let (_instance, mut user) = Instance::create_backend(
     /// #     Box::new(InMemory::new()),
     /// #     NewUser::passwordless("test"),
     /// # ).await?;
@@ -1289,7 +1289,7 @@ impl Database {
     /// # use eidetica::crdt::Doc;
     /// # #[tokio::main]
     /// # async fn main() -> Result<()> {
-    /// # let (_instance, mut user) = Instance::create(
+    /// # let (_instance, mut user) = Instance::create_backend(
     /// #     Box::new(InMemory::new()),
     /// #     NewUser::passwordless("test"),
     /// # ).await?;
@@ -1394,7 +1394,7 @@ impl Database {
     /// # use eidetica::auth::crypto::generate_keypair;
     /// # #[tokio::main]
     /// # async fn main() -> Result<()> {
-    /// # let instance = Instance::open(Box::new(InMemory::new())).await?;
+    /// # let instance = Instance::open_backend(Box::new(InMemory::new())).await?;
     /// # let (signing_key, _public_key) = generate_keypair();
     /// # let database = Database::create(&instance, signing_key, Doc::new()).await?;
     /// // Check if the current key has Admin permission

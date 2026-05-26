@@ -4,7 +4,7 @@ use super::*;
 use crate::{NewUser, backend::database::InMemory};
 
 async fn create_test_user_session() -> (Instance, User) {
-    Instance::create(
+    Instance::create_backend(
         Box::new(InMemory::new()),
         NewUser::with_password("test_user", "test_password"),
     )

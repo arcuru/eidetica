@@ -61,12 +61,14 @@ Template for examples that should be compiled and validated (it might be best to
 
 ```rust
 # extern crate eidetica;
-# use eidetica::{backend::database::Sqlite, Instance};
+# extern crate tokio;
+# use eidetica::{Instance, NewUser};
 #
-# fn create_database() -> eidetica::Result<()> {
-// Create an in-memory SQLite database
-let database = Sqlite::in_memory()?;
-let _db = Instance::new(Box::new(database));
+# #[tokio::main]
+# async fn main() -> eidetica::Result<()> {
+// Open an Instance by URL — `memory://` is an ephemeral in-process backend.
+let (_instance, _) =
+    Instance::connect_or_create("memory://", NewUser::passwordless("alice")).await?;
 
 // Your example code here
 # Ok(())

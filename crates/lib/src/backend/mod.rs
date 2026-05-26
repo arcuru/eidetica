@@ -571,7 +571,7 @@ pub trait BackendImpl: Send + Sync + Any {
     /// Get the instance metadata.
     ///
     /// Returns `None` for a fresh/uninitialized backend, `Some(metadata)` for an
-    /// initialized instance. This is used during `Instance::open()` to determine
+    /// initialized instance. This is used during `Instance::open_backend()` to determine
     /// whether to create a new instance or load an existing one.
     ///
     /// # Returns

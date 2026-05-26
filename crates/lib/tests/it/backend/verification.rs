@@ -215,7 +215,6 @@ async fn test_verification_status_serialization() {
     let temp_file = "/tmp/test_verification_status.json";
     backend
         .save_to_file(temp_file)
-        .await
         .expect("Failed to save backend");
 
     let loaded_backend = InMemory::load_from_file(temp_file)

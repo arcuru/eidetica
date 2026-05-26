@@ -45,7 +45,7 @@ Here's a quick example showing creating a user, database, and writing new data.
 # extern crate eidetica;
 # extern crate tokio;
 # extern crate serde;
-# use eidetica::{backend::database::Sqlite, Instance, crdt::Doc, store::{DocStore, Table}};
+# use eidetica::{Instance, NewUser, crdt::Doc, store::{DocStore, Table}};
 # use serde::{Serialize, Deserialize};
 #
 # #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -55,11 +55,11 @@ Here's a quick example showing creating a user, database, and writing new data.
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-let backend = Sqlite::in_memory().await?;
-let (instance, mut user) = Instance::create(
-    Box::new(backend),
-    eidetica::NewUser::passwordless("alice"),
-).await?;
+// Open an Instance by URL — `memory://` is ephemeral; use `sqlite://./app.db`
+// for persistent storage. See the backends concepts page for the URL grammar.
+let (instance, maybe_user) =
+    Instance::connect_or_create("memory://", NewUser::passwordless("alice")).await?;
+let mut user = maybe_user.expect("memory:// is always fresh");
 
 
 // Create a database

@@ -10,7 +10,7 @@ use crate::output::OutputFormat;
 /// Run the info command
 pub async fn run(args: &InfoArgs, format: OutputFormat) -> Result<(), Box<dyn std::error::Error>> {
     let backend = create_backend(&args.backend_config).await?;
-    let instance = match Instance::open(backend).await {
+    let instance = match Instance::open_backend(backend).await {
         Ok(instance) => instance,
         Err(e) => {
             if let eidetica::Error::Instance(boxed) = &e

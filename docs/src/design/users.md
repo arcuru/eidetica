@@ -345,7 +345,7 @@ Users are created by administrators or self-registration:
 
 **User Lifecycle:**
 
-1. The **initial** user is created at instance bootstrap via `Instance::create(backend, NewUser::…)` (or `Instance::open_or_create` on a fresh backend) and is automatically granted Admin on the system databases — there is no separate hidden admin account.
+1. The **initial** user is created at instance bootstrap via `Instance::create_backend(backend, NewUser::…)` (or `Instance::connect_or_create` on a fresh backend) and is automatically granted Admin on the system databases — there is no separate hidden admin account.
 2. Subsequent users are created by an existing admin via `admin.admin().await?.create_user(NewUser::…)` and land as non-admins until promoted.
 3. Any user logs in via `Instance::login_user()`.
 4. User session provides access to keys and preferences.
@@ -410,7 +410,7 @@ For embedded/single-user scenarios, users can be created without passwords:
 ```rust,ignore
 // Create the instance with Alice as the initial passwordless user.
 // First user becomes Admin automatically.
-let (instance, mut user) = Instance::create(
+let (instance, mut user) = Instance::create_backend(
     backend,
     NewUser::passwordless("alice"),
 ).await?;
@@ -434,7 +434,7 @@ For multi-user scenarios, users have password-based authentication:
 
 ```rust,ignore
 // Bootstrap with Bob as the initial password-protected admin user.
-let (instance, _user) = Instance::create(
+let (instance, _user) = Instance::create_backend(
     backend,
     NewUser::with_password("bob", "password123"),
 ).await?;
@@ -627,7 +627,7 @@ See [key_management.md](./key_management.md) for detailed implementation.
 
 **Password-Protected User:**
 
-1. Admin calls `admin.create_user(NewUser::with_password(username, password))` (or, for the initial admin on a fresh instance, `Instance::create(backend, NewUser::with_password(username, password))`)
+1. Admin calls `admin.create_user(NewUser::with_password(username, password))` (or, for the initial admin on a fresh instance, `Instance::create_backend(backend, NewUser::with_password(username, password))`)
 2. System searches `_users` Table for existing username (race condition possible)
 3. System hashes password with Argon2id and random salt
 4. Generates default Ed25519 keypair for the user (kept in memory only)
@@ -640,7 +640,7 @@ See [key_management.md](./key_management.md) for detailed implementation.
 
 **Passwordless User:**
 
-1. Admin calls `admin.create_user(NewUser::passwordless(username))` (or, for the initial admin, `Instance::create(backend, NewUser::passwordless(username))`)
+1. Admin calls `admin.create_user(NewUser::passwordless(username))` (or, for the initial admin, `Instance::create_backend(backend, NewUser::passwordless(username))`)
 2. System searches `_users` Table for existing username (race condition possible)
 3. Generates default Ed25519 keypair for the user (kept in memory only)
 4. Uses instance `signing_key` from InstanceSecrets

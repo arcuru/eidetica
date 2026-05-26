@@ -149,8 +149,12 @@ impl SqlxBackend {
         // Install any driver support
         sqlx::any::install_default_drivers();
 
-        // Detect if this is an in-memory database
-        let is_in_memory = url.contains("mode=memory");
+        // Detect if this is an in-memory database. Two URL conventions
+        // exist: `?mode=memory` (sqlx's explicit query flag, used by
+        // `Sqlite::in_memory`) and `:memory:` (SQLite's classic magic
+        // filename, embedded in URI-filename forms like
+        // `sqlite:file::memory:?cache=shared`).
+        let is_in_memory = url.contains("mode=memory") || url.contains(":memory:");
 
         // For SQLite in-memory databases with shared cache, we must prevent
         // all connections from being closed. When the last connection closes,

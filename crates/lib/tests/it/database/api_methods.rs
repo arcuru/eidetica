@@ -1019,7 +1019,7 @@ async fn test_verify_uses_pinned_not_current_settings() {
 async fn test_genesis_verifies_after_persist_reload() {
     // Bootstrap "u" as the initial user (also Admin), avoiding the
     // service-mode admin login dance — this is a local persist/reload test.
-    let (instance, mut user) = Instance::create(
+    let (instance, mut user) = Instance::create_backend(
         Box::new(InMemory::new()),
         eidetica::NewUser::passwordless("u"),
     )
@@ -1047,12 +1047,11 @@ async fn test_genesis_verifies_after_persist_reload() {
         .downcast_ref::<InMemory>()
         .expect("test backend is InMemory")
         .save_to_file(&path)
-        .await
         .unwrap();
     let reloaded = InMemory::load_from_file(&path).await.unwrap();
     std::fs::remove_file(&path).ok();
-    // Reload an already-initialised backend — Instance::open is load-only.
-    let instance2 = Instance::open(Box::new(reloaded)).await.unwrap();
+    // Reload an already-initialised backend — Instance::open_backend is load-only.
+    let instance2 = Instance::open_backend(Box::new(reloaded)).await.unwrap();
     let backend2 = instance2.backend();
 
     // Force the whole history Unverified on the reloaded backend.

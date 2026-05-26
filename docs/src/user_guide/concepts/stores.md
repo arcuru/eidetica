@@ -49,7 +49,7 @@ The `DocStore` store provides a document-oriented interface for storing and retr
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(Sqlite::in_memory().await?);
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     backend,
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;
@@ -91,7 +91,7 @@ When using `set_path("a.b.c", value)`, DocStore creates **nested maps**, not fla
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(Sqlite::in_memory().await?);
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     backend,
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;
@@ -141,7 +141,7 @@ The `Table<T>` store manages collections of serializable items, similar to a tab
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(Sqlite::in_memory().await?);
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     backend,
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;
@@ -217,7 +217,7 @@ The `SettingsStore` provides a specialized, type-safe interface for managing dat
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(Sqlite::in_memory().await?);
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     backend,
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;
@@ -255,7 +255,7 @@ transaction.commit().await?;
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # // Setup database for testing
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;
@@ -299,7 +299,7 @@ Multiple auth operations within a transaction are accumulated in a single entry:
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # // Setup database for testing
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;
@@ -375,7 +375,7 @@ The `YDoc` store provides integration with Y-CRDT (Yjs) for real-time collaborat
 # async fn main() -> eidetica::Result<()> {
 # // Setup database for testing
 # let backend = Sqlite::in_memory().await?;
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(backend),
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;
@@ -456,7 +456,7 @@ When you first access a Store using `Transaction::get_store()`, it's automatical
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(Sqlite::in_memory().await?);
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     backend,
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;
@@ -493,7 +493,7 @@ Use `get_index()` to query information about registered subtrees:
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(Sqlite::in_memory().await?);
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     backend,
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;

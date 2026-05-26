@@ -7,6 +7,7 @@
 use std::{
     collections::HashMap,
     future::Future,
+    path::PathBuf,
     pin::Pin,
     sync::{
         Arc, Mutex, Weak,
@@ -31,6 +32,7 @@ pub mod backend;
 pub mod errors;
 pub mod new_user;
 pub mod settings_merge;
+pub mod url;
 
 #[cfg(test)]
 mod tests;
@@ -220,6 +222,20 @@ pub(crate) struct InstanceInternal {
     metadata: InstanceMetadata,
     /// Private instance secrets (None for remote instances without key access)
     secrets: Option<InstanceSecrets>,
+    /// JSON snapshot file path for an in-memory backend constructed via
+    /// `memory:///path.json` (or set explicitly through
+    /// [`Instance::snapshot_to_path`]). [`Instance::flush`] and the
+    /// [`Drop`] safety net write through this. `None` on any non-snapshot
+    /// backend.
+    ///
+    /// The mutex serves double duty: it guards the path slot itself (so
+    /// `set_snapshot_path` doesn't race with readers) AND serializes the
+    /// actual write so concurrent callers from `flush` / `snapshot_to_path`
+    /// / `Drop` don't race on the shared `<path>.tmp` staging file in
+    /// [`InMemory::save_to_file`]. Held across sync I/O only — never
+    /// across an `.await`. Poison-tolerant: a panic mid-write leaves the
+    /// on-disk snapshot unchanged but must not strand the [`Instance`].
+    snapshot_path: Mutex<Option<PathBuf>>,
     /// Per-database callbacks keyed by tree_id. Each callback fires for both
     /// local and remote writes; consumers branch on [`WriteEvent::source`] if
     /// they only care about one.
@@ -264,6 +280,81 @@ impl std::fmt::Debug for InstanceInternal {
             .finish()
     }
 }
+
+impl InstanceInternal {
+    /// Synchronously write a JSON snapshot of the underlying backend to `path`.
+    ///
+    /// Returns [`InstanceError::SnapshotNotSupported`] for any backend other
+    /// than the local in-memory backend. Shared by [`Instance::snapshot_to_path`],
+    /// [`Instance::flush`], and the [`Drop`] fallback so the three can't drift.
+    ///
+    /// **Caller must hold the [`snapshot_path`](Self::snapshot_path) mutex.**
+    /// That lock serializes the write — without it, concurrent callers
+    /// would race on the shared `<path>.tmp` staging file in
+    /// [`InMemory::save_to_file`]. The critical section is fully sync; no
+    /// `.await` happens while the lock is held.
+    fn save_snapshot_locked(&self, path: &std::path::Path) -> Result<()> {
+        use crate::backend::database::InMemory;
+        let engine = self
+            .backend
+            .local_engine()
+            .ok_or(InstanceError::SnapshotNotSupported)?;
+        let in_memory = engine
+            .as_any()
+            .downcast_ref::<InMemory>()
+            .ok_or(InstanceError::SnapshotNotSupported)?;
+        in_memory.save_to_file(path)
+    }
+}
+
+/// Best-effort snapshot save on the *last* `InstanceInternal` drop.
+///
+/// Fires when the `Arc<InstanceInternal>` reaches refcount 0 and a snapshot
+/// path is armed (i.e. the `Instance` was constructed via a
+/// `memory:///path.json` URL). [`Instance::flush`] does **not** clear the
+/// snapshot path, so Drop fires even after a successful `flush()` — the
+/// write is idempotent (same atomic tmp+rename), so the worst case is one
+/// extra write of unchanged JSON.
+///
+/// **Errors are logged via `tracing::error!`, not surfaced** — `Drop` can't
+/// return a `Result` and panicking would be worse than logging. Apps that
+/// care about snapshot durability should call [`Instance::flush`] at
+/// well-defined checkpoints and inspect its `Result`; Drop is a safety net,
+/// not the primary persistence path. If `flush()` failed with a permanent
+/// error (e.g. nonexistent parent directory), Drop will fail the same way
+/// and emit a second log line — accept this redundancy as the cost of a
+/// best-effort fallback.
+///
+/// **Blocking I/O warning:** the snapshot write is synchronous
+/// (`std::fs::write` + `rename`). If the `Instance` is dropped on a tokio
+/// worker thread, this blocks that worker for the duration of the write —
+/// negligible for small snapshots, but pathological for very large ones.
+/// Prefer `flush().await` (which still blocks briefly, but does so under
+/// explicit caller control).
+impl Drop for InstanceInternal {
+    fn drop(&mut self) {
+        // Drop runs at Arc refcount 0, so no other handle can race here —
+        // any in-flight `flush()` future holds `&self` and thus an Arc
+        // clone, which would have prevented Drop from firing. We still
+        // acquire the lock for the write so the locking discipline in
+        // `save_snapshot_locked`'s doc-comment holds uniformly. The lock
+        // is uncontended at this point.
+        let mut guard = match self.snapshot_path.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        let Some(path) = guard.take() else { return };
+
+        if let Err(e) = self.save_snapshot_locked(&path) {
+            tracing::error!(
+                snapshot_path = %path.display(),
+                error = %e,
+                "Drop: snapshot save failed. Call `Instance::flush().await` at \
+                 checkpoints to inspect the error via Result; Drop is a safety net only.",
+            );
+        }
+    }
+}
 /// Database implementation on top of the storage backend.
 ///
 /// Instance manages infrastructure only:
@@ -278,16 +369,17 @@ impl std::fmt::Debug for InstanceInternal {
 /// ## Example
 ///
 /// ```
-/// # use eidetica::{backend::database::InMemory, Instance, NewUser, crdt::Doc};
+/// # use eidetica::{Instance, NewUser, crdt::Doc};
 /// # #[tokio::main]
 /// # async fn main() -> eidetica::Result<()> {
-/// // Create a fresh instance with an initial admin user. The first user
+/// // Bootstrap a fresh instance with an initial admin user. The first user
 /// // created on an instance is automatically granted Admin on the system
 /// // databases.
-/// let (instance, mut user) = Instance::create(
-///     Box::new(InMemory::new()),
+/// let (instance, maybe_user) = Instance::connect_or_create(
+///     "memory://",
 ///     NewUser::passwordless("alice"),
 /// ).await?;
+/// let mut user = maybe_user.expect("memory:// is always fresh");
 ///
 /// // Use User API for operations
 /// let mut settings = Doc::new();
@@ -315,27 +407,312 @@ pub struct WeakInstance {
 }
 
 impl Instance {
-    /// Connect to a running Eidetica service daemon over a Unix domain socket.
+    /// Open a connection to an eidetica instance described by a connection URL.
     ///
-    /// This creates a `RemoteConnection` that forwards all storage operations
-    /// to the daemon via RPC, wrapped in a `RemoteBackend`.
+    /// Strict load: returns [`InstanceError::NotInitialized`] when the URL
+    /// points at an embedded backend (`sqlite://`, `postgres://`, `memory://`)
+    /// that has no eidetica metadata yet. Use
+    /// [`Instance::connect_or_create`] to bootstrap an embedded backend on
+    /// first run.
     ///
-    /// Authentication uses client-side signing. `login_user()` runs the
-    /// challenge-response handshake, decrypting the user's signing key
-    /// in-process and signing the challenge locally; the daemon never
-    /// receives the password or the plaintext signing key and never signs
-    /// on the client's behalf. A connected Instance holds no local instance
-    /// secrets. A key-holding daemon was considered and rejected — see the
-    /// Service Architecture doc § Decision record for the rationale.
+    /// Supported URL schemes:
+    /// - `sqlite://./app.db` — embedded sqlite backend; URL is passed through
+    ///   to `sqlx::sqlite`, so any sqlx-accepted form works
+    ///   (`?mode=rwc&journal_mode=WAL` etc.).
+    /// - `postgres://user:pwd@host/db` — embedded postgres backend; URL is
+    ///   passed through to `sqlx::postgres`.
+    /// - `unix:///run/eidetica/sock` — thin client to a running daemon.
+    /// - `memory://` — empty in-memory backend. Strict load against an
+    ///   empty in-memory backend always errors `NotInitialized`; use
+    ///   `connect_or_create` for a fresh in-memory instance.
+    /// - `memory:///path/to/snap.json` — in-memory backend with a JSON
+    ///   snapshot file (load-on-start; snapshot writes via
+    ///   [`Instance::flush`] / [`Instance::snapshot_to_path`] / Drop fallback).
     ///
-    /// # Arguments
-    /// * `socket_path` - Path to the Unix domain socket
+    /// See [`crate::instance::url`] for the full URL grammar.
     ///
-    /// # Returns
-    /// A Result containing the connected Instance
+    /// # Example
+    ///
+    /// `connect()` only succeeds against an already-initialised backend.
+    /// The two-phase pattern below bootstraps once, then re-opens with
+    /// the strict load:
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> eidetica::Result<()> {
+    /// use eidetica::{Instance, NewUser};
+    ///
+    /// let temp = tempfile::tempdir()?;
+    /// let snapshot = temp.path().join("app.json");
+    /// let url = format!("memory://{}", snapshot.display());
+    ///
+    /// // First run: bootstrap and flush a snapshot to disk.
+    /// {
+    ///     let (instance, maybe_user) =
+    ///         Instance::connect_or_create(&url, NewUser::passwordless("alice")).await?;
+    ///     let _user = maybe_user.expect("fresh bootstrap on first run");
+    ///     instance.flush()?;
+    /// }
+    ///
+    /// // Later: strict connect against the persisted snapshot.
+    /// let instance = Instance::connect(&url).await?;
+    /// let _user = instance.login_user("alice", None).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// Calling `connect()` on a backend with no eidetica metadata returns
+    /// [`InstanceError::NotInitialized`]; reach for
+    /// [`Instance::connect_or_create`] when first-run bootstrap is part
+    /// of the expected lifecycle.
+    pub async fn connect(url: impl AsRef<str>) -> Result<Self> {
+        Self::connect_impl(url.as_ref(), Arc::new(SystemClock)).await
+    }
+
+    /// Open or initialise an eidetica instance described by a connection URL.
+    ///
+    /// On the load arm: identical to [`Instance::connect`]; `initial` is
+    /// silently ignored and the second tuple element is `None`.
+    ///
+    /// On the bootstrap arm: initialises the backend at the URL with the
+    /// supplied [`NewUser`] as the first admin and returns
+    /// `(Instance, Some(User))`. Only embedded backends
+    /// (sqlite/postgres/memory) ever take the bootstrap arm — `unix://` URLs
+    /// degrade to `connect` (the daemon owns its own initialisation), so the
+    /// returned `Option<User>` is always `None` for `unix://`.
+    ///
+    /// # Example
+    /// ```
+    /// # use eidetica::{Instance, NewUser};
+    /// # #[tokio::main]
+    /// # async fn main() -> eidetica::Result<()> {
+    /// let (instance, maybe_user) = Instance::connect_or_create(
+    ///     "memory://",
+    ///     NewUser::passwordless("alice"),
+    /// ).await?;
+    /// let mut user = match maybe_user {
+    ///     Some(u) => u,
+    ///     None => instance.login_user("alice", None).await?,
+    /// };
+    /// # let _ = user.get_default_key()?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn connect_or_create(
+        url: impl AsRef<str>,
+        initial: NewUser,
+    ) -> Result<(Self, Option<User>)> {
+        Self::connect_or_create_impl(url.as_ref(), initial, Arc::new(SystemClock)).await
+    }
+
+    /// Escape hatch: open or initialise an eidetica instance against a
+    /// pre-built [`BackendImpl`] (sqlite, postgres, in-memory, or custom).
+    ///
+    /// Same load-or-bootstrap semantics as [`Instance::connect_or_create`]
+    /// but skips URL parsing. Useful for tests, embedded apps that want to
+    /// configure the backend's pool/runtime manually, or backends not yet
+    /// exposed via a URL scheme.
+    pub async fn connect_or_create_backend(
+        backend: Box<dyn BackendImpl>,
+        initial: NewUser,
+    ) -> Result<(Self, Option<User>)> {
+        Self::connect_or_create_backend_impl(
+            Arc::from(backend),
+            initial,
+            Arc::new(SystemClock),
+            None,
+        )
+        .await
+    }
+
+    /// Strict-load escape hatch: open an eidetica instance against a
+    /// pre-built [`BackendImpl`] that's already been initialised. Mirrors
+    /// [`Instance::connect`]'s strict semantics for the URL-less case.
+    ///
+    /// Errors with [`InstanceError::NotInitialized`] if the backend has no
+    /// instance metadata; use [`Instance::connect_or_create_backend`] when you want
+    /// to bootstrap on an empty backend.
+    pub async fn open_backend(backend: Box<dyn BackendImpl>) -> Result<Self> {
+        Self::open_impl(backend, Arc::new(SystemClock)).await
+    }
+
+    /// Test variant of [`Instance::open_backend`] with an injectable clock.
+    #[cfg(any(test, feature = "testing"))]
+    pub async fn open_backend_with_clock(
+        backend: Box<dyn BackendImpl>,
+        clock: Arc<dyn Clock>,
+    ) -> Result<Self> {
+        Self::open_impl(backend, clock).await
+    }
+
+    /// Strict-create escape hatch: initialise an eidetica instance on a
+    /// fresh pre-built [`BackendImpl`] and bootstrap an initial admin user.
+    ///
+    /// Errors with [`InstanceError::InstanceAlreadyExists`] if the backend
+    /// is already initialised; use [`Instance::connect_or_create_backend`] when the
+    /// caller doesn't want to choose between load and create up front.
+    pub async fn create_backend(
+        backend: Box<dyn BackendImpl>,
+        initial: NewUser,
+    ) -> Result<(Self, User)> {
+        Self::create_backend_impl(backend, initial, Arc::new(SystemClock)).await
+    }
+
+    /// Test variant of [`Instance::create_backend`] with an injectable clock.
+    ///
+    /// Arg order: backend, clock, initial — clock goes in the middle so
+    /// migrating from the prior `create_with_clock` is a pure rename.
+    #[cfg(any(test, feature = "testing"))]
+    pub async fn create_backend_with_clock(
+        backend: Box<dyn BackendImpl>,
+        clock: Arc<dyn Clock>,
+        initial: NewUser,
+    ) -> Result<(Self, User)> {
+        Self::create_backend_impl(backend, initial, clock).await
+    }
+
+    async fn create_backend_impl(
+        backend: Box<dyn BackendImpl>,
+        initial: NewUser,
+        clock: Arc<dyn Clock>,
+    ) -> Result<(Self, User)> {
+        let backend: Arc<dyn BackendImpl> = Arc::from(backend);
+        if backend.get_instance_metadata().await?.is_some() {
+            return Err(InstanceError::InstanceAlreadyExists.into());
+        }
+        Self::create_internal(backend, clock, initial).await
+    }
+
+    // Clock injection is exposed only through the pre-built-backend
+    // variants ([`open_backend_with_clock`] and [`create_backend_with_clock`]).
+    // The URL-based `connect_*` constructors deliberately have no
+    // `_with_clock` siblings: every existing test that needs deterministic
+    // timestamps already builds an `InMemory` backend directly, so a URL-
+    // shaped clock entry point would be dead weight.
+
+    // ============ Internal URL dispatchers ============
+
+    async fn connect_impl(url: &str, clock: Arc<dyn Clock>) -> Result<Self> {
+        let parsed = url::parse(url)?;
+        match parsed {
+            url::ConnectionUrl::Sqlite { url } => Self::connect_sqlite(&url, clock).await,
+            url::ConnectionUrl::Postgres { url } => Self::connect_postgres(&url, clock).await,
+            url::ConnectionUrl::Unix { socket_path } => {
+                Self::connect_unix_socket(socket_path, clock).await
+            }
+            url::ConnectionUrl::Memory { snapshot_path } => {
+                Self::connect_memory(snapshot_path, clock).await
+            }
+        }
+    }
+
+    async fn connect_or_create_impl(
+        url: &str,
+        initial: NewUser,
+        clock: Arc<dyn Clock>,
+    ) -> Result<(Self, Option<User>)> {
+        let parsed = url::parse(url)?;
+        match parsed {
+            url::ConnectionUrl::Sqlite { url } => {
+                let backend = open_sqlite_backend(&url).await?;
+                Self::connect_or_create_backend_impl(Arc::from(backend), initial, clock, None).await
+            }
+            url::ConnectionUrl::Postgres { url } => {
+                let backend = open_postgres_backend(&url).await?;
+                Self::connect_or_create_backend_impl(Arc::from(backend), initial, clock, None).await
+            }
+            url::ConnectionUrl::Unix { socket_path } => {
+                // Daemons own their own initialisation. connect_or_create
+                // against `unix://` degrades to a plain connect; `initial`
+                // is unused on this arm. Log it so the silent drop is
+                // discoverable when debugging "why didn't my initial user
+                // get created?" on a remote URL.
+                tracing::debug!(
+                    socket_path = %socket_path.display(),
+                    username = %initial.username,
+                    "connect_or_create against `unix://` is degrading to `connect`; \
+                     `initial` is ignored — daemons own their own initialisation. \
+                     Run `eidetica daemon init` to bootstrap a daemon-side instance."
+                );
+                let instance = Self::connect_unix_socket(socket_path, clock).await?;
+                Ok((instance, None))
+            }
+            url::ConnectionUrl::Memory { snapshot_path } => {
+                use crate::backend::database::InMemory;
+                // Build the backend from a single `try_load_from_file` call.
+                // `Ok(None)` means the file didn't exist at read time (the
+                // bootstrap-friendly "first run" case → empty backend).
+                // `Ok(Some(loaded))` means the file existed and parsed; if
+                // it carries no instance metadata it's foreign data that
+                // happened to satisfy the `SerializableDatabase` shape, and
+                // we refuse to bootstrap over it (the next snapshot would
+                // silently overwrite the caller's file). Doing the existence
+                // test and the read in one call removes the TOCTOU window a
+                // separate `path.exists()` check would open.
+                let backend: Box<dyn BackendImpl> = match snapshot_path.as_deref() {
+                    None => Box::new(InMemory::new()),
+                    Some(path) => {
+                        let loaded = InMemory::try_load_from_file(path).await.map_err(|e| {
+                            InstanceError::InvalidSnapshot {
+                                path: path.to_path_buf(),
+                                reason: e.to_string(),
+                            }
+                        })?;
+                        match loaded {
+                            None => Box::new(InMemory::new()),
+                            Some(loaded) => {
+                                let boxed: Box<dyn BackendImpl> = Box::new(loaded);
+                                if boxed.get_instance_metadata().await?.is_none() {
+                                    return Err(InstanceError::InvalidSnapshot {
+                                        path: path.to_path_buf(),
+                                        reason: "snapshot file exists but contains no instance \
+                                             metadata; refusing to bootstrap on top of foreign \
+                                             data. Delete or move the file to create a fresh \
+                                             instance at this path."
+                                            .into(),
+                                    }
+                                    .into());
+                                }
+                                boxed
+                            }
+                        }
+                    }
+                };
+                Self::connect_or_create_backend_impl(
+                    Arc::from(backend),
+                    initial,
+                    clock,
+                    snapshot_path,
+                )
+                .await
+            }
+        }
+    }
+
+    /// Internal: load-or-bootstrap against a pre-built backend, optionally
+    /// remembering a snapshot path so Drop / flush can write to it.
+    async fn connect_or_create_backend_impl(
+        backend: Arc<dyn BackendImpl>,
+        initial: NewUser,
+        clock: Arc<dyn Clock>,
+        snapshot_path: Option<PathBuf>,
+    ) -> Result<(Self, Option<User>)> {
+        if let Some(metadata) = backend.get_instance_metadata().await? {
+            let instance = Self::open_impl_arc_with_metadata(backend, clock, metadata).await?;
+            instance.set_snapshot_path(snapshot_path);
+            Ok((instance, None))
+        } else {
+            let (instance, user) = Self::create_internal(backend, clock, initial).await?;
+            instance.set_snapshot_path(snapshot_path);
+            Ok((instance, Some(user)))
+        }
+    }
+
+    // ============ Backend connection helpers ============
+
     #[cfg(all(unix, feature = "service"))]
-    pub async fn connect(socket_path: impl AsRef<std::path::Path>) -> Result<Self> {
-        let conn = crate::service::client::RemoteConnection::connect(socket_path).await?;
+    async fn connect_unix_socket(socket_path: PathBuf, clock: Arc<dyn Clock>) -> Result<Self> {
+        let conn = crate::service::client::RemoteConnection::connect(&socket_path).await?;
         let backend: Arc<dyn Backend> = Arc::new(RemoteBackend::new(conn, None));
 
         // Load metadata from the remote backend
@@ -344,75 +721,151 @@ impl Instance {
             .await?
             .ok_or(InstanceError::DeviceKeyNotFound)?;
 
-        // No local secrets — keys are held server-side after login
+        // No local secrets — keys are held server-side after login.
         let inner = Arc::new(InstanceInternal {
             backend,
-            clock: Arc::new(SystemClock),
+            clock,
             sync: std::sync::OnceLock::new(),
             metadata,
             secrets: None,
+            snapshot_path: Mutex::new(None),
             write_callbacks: Mutex::new(HashMap::new()),
             global_write_callbacks: Mutex::new(Vec::new()),
             next_callback_id: AtomicU64::new(0),
             tree_locks: Mutex::new(HashMap::new()),
         });
-        let instance = Self { inner };
+        Ok(Self { inner })
+    }
+
+    #[cfg(not(all(unix, feature = "service")))]
+    async fn connect_unix_socket(_socket_path: PathBuf, _clock: Arc<dyn Clock>) -> Result<Self> {
+        Err(InstanceError::BackendUnavailable {
+            scheme: "unix",
+            missing_feature: "service",
+        }
+        .into())
+    }
+
+    async fn connect_sqlite(url: &str, clock: Arc<dyn Clock>) -> Result<Self> {
+        let backend = open_sqlite_backend(url).await?;
+        Self::open_impl(backend, clock).await
+    }
+
+    async fn connect_postgres(url: &str, clock: Arc<dyn Clock>) -> Result<Self> {
+        let backend = open_postgres_backend(url).await?;
+        Self::open_impl(backend, clock).await
+    }
+
+    async fn connect_memory(snapshot_path: Option<PathBuf>, clock: Arc<dyn Clock>) -> Result<Self> {
+        use crate::backend::database::InMemory;
+        // Strict load: a snapshot URL that points at a non-existent file
+        // cannot satisfy `connect`'s "must already be initialised" contract.
+        // `try_load_from_file` returns `Ok(None)` when the file doesn't
+        // exist, which we translate into a pointed `InvalidSnapshot`. Using
+        // the same call for the existence test and the read removes the
+        // TOCTOU window a separate `path.exists()` check would open: if the
+        // file vanishes mid-call, the underlying `read_to_string` surfaces
+        // `NotFound` and lands us in the same `None` arm.
+        let backend: Box<dyn BackendImpl> = match snapshot_path.as_deref() {
+            None => Box::new(InMemory::new()),
+            Some(path) => {
+                let loaded = InMemory::try_load_from_file(path).await.map_err(|e| {
+                    InstanceError::InvalidSnapshot {
+                        path: path.to_path_buf(),
+                        reason: e.to_string(),
+                    }
+                })?;
+                match loaded {
+                    Some(loaded) => Box::new(loaded),
+                    None => {
+                        return Err(InstanceError::InvalidSnapshot {
+                            path: path.to_path_buf(),
+                            reason: "snapshot file does not exist; \
+                                     use `Instance::connect_or_create` to bootstrap a new instance \
+                                     at this path, or pass `memory://` for an ephemeral instance"
+                                .into(),
+                        }
+                        .into());
+                    }
+                }
+            }
+        };
+        let instance = Self::open_impl(backend, clock).await?;
+        instance.set_snapshot_path(snapshot_path);
         Ok(instance)
     }
 
-    /// Load an existing Instance from an initialised backend.
+    /// Flush deferred persistence state to disk.
     ///
-    /// Strict load: returns [`InstanceError::NotInitialized`] if the backend
-    /// has no instance metadata yet. Use [`Instance::create`] to initialise a
-    /// fresh backend, or [`Instance::open_or_create`] for a load-or-init
-    /// convenience.
+    /// For an `Instance` constructed via a `memory:///path.json` URL, this
+    /// writes the current backend state to the snapshot path (atomic on
+    /// POSIX — `<path>.tmp` then rename). For sqlite/postgres/unix
+    /// backends this is a no-op; those storage layers handle persistence
+    /// inline.
     ///
-    /// # Arguments
-    /// * `backend` - The storage backend to load from (must already be initialised)
+    /// Idempotent and reentrant — call it as often as you like at
+    /// well-defined checkpoints. The snapshot path stays armed, so the
+    /// [`Drop`] fallback continues to fire on the last handle as a safety
+    /// net. The `Instance` (and any clones) remain fully usable after
+    /// `flush()` returns; this is not a shutdown.
     ///
-    /// # Example
-    /// ```
-    /// # use eidetica::{backend::database::InMemory, Instance, NewUser};
-    /// # #[tokio::main]
-    /// # async fn main() -> eidetica::Result<()> {
-    /// // Once a backend has been initialised by `Instance::create`,
-    /// // subsequent runs against the same persistent backend load via
-    /// // `Instance::open`. The InMemory backend in this doctest can't
-    /// // round-trip across handles; in real code the second invocation
-    /// // would point at the same on-disk SQLite (or Postgres) file:
-    /// //
-    /// //     let instance = Instance::open(Box::new(persistent_backend)).await?;
-    /// //     let user = instance.login_user("alice", None).await?;
-    /// let (_instance, _user) = Instance::create(
-    ///     Box::new(InMemory::new()),
-    ///     NewUser::passwordless("alice"),
-    /// ).await?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn open(backend: Box<dyn BackendImpl>) -> Result<Self> {
-        Self::open_impl(backend, Arc::new(SystemClock)).await
+    /// If `flush()` fails (e.g. nonexistent parent directory), the error
+    /// surfaces in the `Result`. Drop will later try the same write and
+    /// fail the same way, logging via `tracing::error!`. The duplicate
+    /// signal is intentional — Drop must report what it sees.
+    ///
+    /// **Blocking I/O note:** the snapshot write is synchronous
+    /// (`std::fs::write` + `rename`) and runs inline on the caller. Hence
+    /// the sync signature — there is no `.await` inside. If you're calling
+    /// from a tokio task, this briefly blocks the runtime worker;
+    /// negligible for small snapshots.
+    pub fn flush(&self) -> Result<()> {
+        // Acquire the snapshot_path lock once and hold it across the
+        // write — the lock both gates the path slot and serializes the
+        // sync I/O so concurrent flushes don't clobber each other's
+        // staging tempfile. The path stays armed (we read, don't take)
+        // so subsequent flushes and the Drop safety net keep working.
+        let guard = self
+            .inner
+            .snapshot_path
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if let Some(path) = guard.as_deref() {
+            self.inner.save_snapshot_locked(path)?;
+        }
+        Ok(())
     }
 
-    /// Load an existing Instance with a custom clock.
+    /// Write a JSON snapshot of the in-memory backend to `path`.
     ///
-    /// Same strict-load semantics as [`Instance::open`] (errors with
-    /// [`InstanceError::NotInitialized`] on an empty backend), but allows
-    /// injecting a custom clock for controllable timestamps in tests. The
-    /// clock is used for timestamps in height calculations and peer
-    /// tracking.
-    ///
-    /// Only available with the `testing` feature or in test builds.
-    ///
-    /// # Arguments
-    /// * `backend` - The storage backend to load from (must already be initialised)
-    /// * `clock` - The time provider to use (typically [`FixedClock`](crate::FixedClock))
-    #[cfg(any(test, feature = "testing"))]
-    pub async fn open_with_clock(
-        backend: Box<dyn BackendImpl>,
-        clock: Arc<dyn Clock>,
-    ) -> Result<Self> {
-        Self::open_impl(backend, clock).await
+    /// The write goes to `<path>.tmp` and then renames into place. On POSIX
+    /// the rename is atomic; on Windows it is not atomic when the
+    /// destination already exists. Returns
+    /// [`InstanceError::SnapshotNotSupported`] on any backend other than
+    /// the in-memory backend.
+    pub fn snapshot_to_path(&self, path: impl AsRef<std::path::Path>) -> Result<()> {
+        let _guard = self
+            .inner
+            .snapshot_path
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        self.inner.save_snapshot_locked(path.as_ref())
+    }
+
+    /// Stash the snapshot path on the InstanceInternal so Drop / close can
+    /// find it. Only meaningful for in-memory backends — no-op for others.
+    fn set_snapshot_path(&self, path: Option<PathBuf>) {
+        if path.is_none() {
+            return;
+        }
+        // Poison-tolerant: a panic in another holder must not strand the
+        // Instance — the snapshot path is a simple swappable Option.
+        let mut guard = self
+            .inner
+            .snapshot_path
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        *guard = path;
     }
 
     /// Internal load-only implementation that works with any clock.
@@ -420,7 +873,7 @@ impl Instance {
         let backend: Arc<dyn BackendImpl> = Arc::from(backend);
 
         // Strict: require existing InstanceMetadata. Initialisation is the
-        // caller's responsibility (`create` / `open_or_create`).
+        // caller's responsibility (`connect_or_create` / `connect_or_create_backend`).
         let metadata = backend
             .get_instance_metadata()
             .await?
@@ -444,6 +897,7 @@ impl Instance {
             sync: std::sync::OnceLock::new(),
             metadata,
             secrets,
+            snapshot_path: Mutex::new(None),
             write_callbacks: Mutex::new(HashMap::new()),
             global_write_callbacks: Mutex::new(Vec::new()),
             next_callback_id: AtomicU64::new(0),
@@ -452,120 +906,16 @@ impl Instance {
         Ok(Self { inner })
     }
 
-    /// Create a new Instance on a fresh backend with an initial admin user.
-    ///
-    /// Fails with [`InstanceError::InstanceAlreadyExists`] if the backend is
-    /// already initialised. The supplied [`NewUser`] is the first user
-    /// created on the instance and is automatically granted Admin on the
-    /// system databases (via the first-user-becomes-admin logic in
-    /// [`system_databases::create_user`](crate::user::system_databases)).
-    /// The returned [`User`] is already logged in.
-    ///
-    /// # Arguments
-    /// * `backend` - The storage backend to use (must be uninitialised)
-    /// * `initial` - The first user to create on this instance
-    ///
-    /// # Example
-    /// ```
-    /// # use eidetica::{backend::database::InMemory, Instance, NewUser, crdt::Doc};
-    /// # #[tokio::main]
-    /// # async fn main() -> eidetica::Result<()> {
-    /// let (instance, mut user) = Instance::create(
-    ///     Box::new(InMemory::new()),
-    ///     NewUser::passwordless("alice"),
-    /// ).await?;
-    ///
-    /// let mut settings = Doc::new();
-    /// settings.set("name", "my_database");
-    /// let default_key = user.get_default_key()?;
-    /// let db = user.create_database(settings, &default_key).await?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn create(backend: Box<dyn BackendImpl>, initial: NewUser) -> Result<(Self, User)> {
-        Self::create_with_clock_impl(backend, Arc::new(SystemClock), initial).await
-    }
-
-    /// Strict create with an injectable clock — same semantics as
-    /// [`Instance::create`] but allows tests to pin timestamps via
-    /// [`FixedClock`](crate::FixedClock). Mirrors [`Instance::open_with_clock`].
-    #[cfg(any(test, feature = "testing"))]
-    pub async fn create_with_clock(
-        backend: Box<dyn BackendImpl>,
+    /// Load-only helper that accepts an already-arc'd backend and the
+    /// already-fetched metadata. Used by `connect_or_create_backend_impl`,
+    /// which has already inspected metadata to choose between the load
+    /// and bootstrap arms — passing it through avoids a redundant
+    /// `get_instance_metadata` round-trip.
+    async fn open_impl_arc_with_metadata(
+        backend: Arc<dyn BackendImpl>,
         clock: Arc<dyn Clock>,
-        initial: NewUser,
-    ) -> Result<(Self, User)> {
-        Self::create_with_clock_impl(backend, clock, initial).await
-    }
-
-    async fn create_with_clock_impl(
-        backend: Box<dyn BackendImpl>,
-        clock: Arc<dyn Clock>,
-        initial: NewUser,
-    ) -> Result<(Self, User)> {
-        let backend: Arc<dyn BackendImpl> = Arc::from(backend);
-
-        // Check if already initialized
-        if backend.get_instance_metadata().await?.is_some() {
-            return Err(InstanceError::InstanceAlreadyExists.into());
-        }
-
-        // Create new instance
-        Self::create_internal(backend, clock, initial).await
-    }
-
-    /// Load an existing Instance, or create a new one with the supplied
-    /// initial user if the backend is empty.
-    ///
-    /// Returns `(Instance, Some(User))` on a freshly initialised backend
-    /// (the new instance plus the just-created initial user, already logged
-    /// in) and `(Instance, None)` when loading an existing instance — the
-    /// caller is expected to call [`Instance::login_user`] for an existing
-    /// user. Suitable for embedded applications that don't want to choose
-    /// between `open` and `create` up front.
-    ///
-    /// # Example
-    /// ```
-    /// # use eidetica::{backend::database::InMemory, Instance, NewUser};
-    /// # #[tokio::main]
-    /// # async fn main() -> eidetica::Result<()> {
-    /// let (instance, maybe_user) = Instance::open_or_create(
-    ///     Box::new(InMemory::new()),
-    ///     NewUser::passwordless("alice"),
-    /// ).await?;
-    /// let mut user = match maybe_user {
-    ///     Some(u) => u,
-    ///     None => instance.login_user("alice", None).await?,
-    /// };
-    /// # let _ = user.get_default_key()?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn open_or_create(
-        backend: Box<dyn BackendImpl>,
-        initial: NewUser,
-    ) -> Result<(Self, Option<User>)> {
-        let backend: Arc<dyn BackendImpl> = Arc::from(backend);
-        let clock: Arc<dyn Clock> = Arc::new(SystemClock);
-
-        if backend.get_instance_metadata().await?.is_some() {
-            // Existing instance: load only, no initial user produced.
-            let instance = Self::open_impl_arc(backend, clock).await?;
-            Ok((instance, None))
-        } else {
-            let (instance, user) = Self::create_internal(backend, clock, initial).await?;
-            Ok((instance, Some(user)))
-        }
-    }
-
-    /// Load-only helper that accepts an already-arc'd backend. Mirrors
-    /// `open_impl` but reuses the existing Arc — used by `open_or_create`,
-    /// which already checks metadata once and doesn't want to redo the work.
-    async fn open_impl_arc(backend: Arc<dyn BackendImpl>, clock: Arc<dyn Clock>) -> Result<Self> {
-        let metadata = backend
-            .get_instance_metadata()
-            .await?
-            .ok_or(InstanceError::NotInitialized)?;
+        metadata: InstanceMetadata,
+    ) -> Result<Self> {
         let secrets = backend.get_instance_secrets().await?;
         if let Some(ref secrets) = secrets {
             let derived_id = secrets.signing_key.public_key();
@@ -579,6 +929,7 @@ impl Instance {
             sync: std::sync::OnceLock::new(),
             metadata,
             secrets,
+            snapshot_path: Mutex::new(None),
             write_callbacks: Mutex::new(HashMap::new()),
             global_write_callbacks: Mutex::new(Vec::new()),
             next_callback_id: AtomicU64::new(0),
@@ -625,6 +976,7 @@ impl Instance {
                 secrets: Some(InstanceSecrets {
                     signing_key: device_key.clone(),
                 }),
+                snapshot_path: Mutex::new(None),
                 write_callbacks: Mutex::new(HashMap::new()),
                 global_write_callbacks: Mutex::new(Vec::new()),
                 next_callback_id: AtomicU64::new(0),
@@ -657,6 +1009,7 @@ impl Instance {
             sync: std::sync::OnceLock::new(),
             metadata,
             secrets: Some(secrets),
+            snapshot_path: Mutex::new(None),
             write_callbacks: Mutex::new(HashMap::new()),
             global_write_callbacks: Mutex::new(Vec::new()),
             next_callback_id: AtomicU64::new(0),
@@ -1382,13 +1735,14 @@ impl WeakInstance {
     ///
     /// # Example
     /// ```
-    /// # use eidetica::{backend::database::InMemory, Instance, NewUser};
+    /// # use eidetica::{Instance, NewUser};
     /// # #[tokio::main]
     /// # async fn main() -> eidetica::Result<()> {
-    /// let (instance, user) = Instance::create(
-    ///     Box::new(InMemory::new()),
+    /// let (instance, maybe_user) = Instance::connect_or_create(
+    ///     "memory://",
     ///     NewUser::passwordless("alice"),
     /// ).await?;
+    /// let user = maybe_user.expect("memory:// is always fresh");
     /// let weak = instance.downgrade();
     ///
     /// // Upgrade works while instance exists
@@ -1406,4 +1760,36 @@ impl WeakInstance {
     pub fn upgrade(&self) -> Option<Instance> {
         self.inner.upgrade().map(|inner| Instance { inner })
     }
+}
+
+// ============ URL-dispatch backend constructors ============
+
+#[cfg(feature = "sqlite")]
+async fn open_sqlite_backend(url: &str) -> Result<Box<dyn BackendImpl>> {
+    let backend = crate::backend::database::Sqlite::connect(url).await?;
+    Ok(Box::new(backend))
+}
+
+#[cfg(not(feature = "sqlite"))]
+async fn open_sqlite_backend(_url: &str) -> Result<Box<dyn BackendImpl>> {
+    Err(InstanceError::BackendUnavailable {
+        scheme: "sqlite",
+        missing_feature: "sqlite",
+    }
+    .into())
+}
+
+#[cfg(feature = "postgres")]
+async fn open_postgres_backend(url: &str) -> Result<Box<dyn BackendImpl>> {
+    let backend = crate::backend::database::Postgres::connect(url).await?;
+    Ok(Box::new(backend))
+}
+
+#[cfg(not(feature = "postgres"))]
+async fn open_postgres_backend(_url: &str) -> Result<Box<dyn BackendImpl>> {
+    Err(InstanceError::BackendUnavailable {
+        scheme: "postgres",
+        missing_feature: "postgres",
+    }
+    .into())
 }

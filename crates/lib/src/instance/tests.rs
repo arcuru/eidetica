@@ -10,7 +10,7 @@ async fn save_in_memory_backend(instance: &Instance, path: &Path) -> Result<(), 
         .as_any()
         .downcast_ref::<InMemory>()
         .expect("Expected in-memory backend");
-    in_memory.save_to_file(path).await
+    in_memory.save_to_file(path)
 }
 
 async fn load_in_memory_backend(path: &Path) -> Result<InMemory, Error> {
@@ -29,7 +29,7 @@ async fn list_users_via(admin: &User) -> Result<Vec<String>, Error> {
 /// initial admin user. Mirrors the test-harness default and gives every test
 /// a logged-in admin to play with.
 async fn instance_with_admin() -> Result<(Instance, User), Error> {
-    Instance::create(Box::new(InMemory::new()), NewUser::passwordless("admin")).await
+    Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless("admin")).await
 }
 
 #[tokio::test]
@@ -61,7 +61,7 @@ async fn test_create_user() -> Result<(), Error> {
 #[cfg_attr(miri, ignore)] // Argon2 password hashing is extremely slow under Miri
 async fn test_login_user() -> Result<(), Error> {
     // Bootstrap alice as the initial admin with a password.
-    let (instance, _alice) = Instance::create(
+    let (instance, _alice) = Instance::create_backend(
         Box::new(InMemory::new()),
         NewUser::with_password("alice", "password123"),
     )
@@ -81,7 +81,7 @@ async fn test_login_user() -> Result<(), Error> {
 async fn test_new_database() {
     // Bootstrap "test" as the initial user.
     let (_instance, mut user) =
-        Instance::create(Box::new(InMemory::new()), NewUser::passwordless("test"))
+        Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless("test"))
             .await
             .expect("Failed to create test instance");
 
@@ -96,7 +96,7 @@ async fn test_new_database() {
 #[tokio::test]
 async fn test_create_database_with_default_settings() {
     let (_instance, mut user) =
-        Instance::create(Box::new(InMemory::new()), NewUser::passwordless("test"))
+        Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless("test"))
             .await
             .expect("Failed to create test instance");
 
@@ -114,7 +114,7 @@ async fn test_create_database_with_default_settings() {
 #[tokio::test]
 async fn test_new_database_without_key_fails() -> Result<(), Error> {
     let (_instance, mut user) =
-        Instance::create(Box::new(InMemory::new()), NewUser::passwordless("test")).await?;
+        Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless("test")).await?;
 
     // Database creation requires a valid signing key.
     let mut settings = Doc::new();
@@ -133,7 +133,7 @@ async fn test_instance_load_new_backend() -> Result<(), Error> {
 
     // Initialise a fresh backend with alice as initial user, with an
     // injectable clock for deterministic timestamps.
-    let (_instance, user) = Instance::create_with_clock(
+    let (_instance, user) = Instance::create_backend_with_clock(
         Box::new(InMemory::new()),
         Arc::new(FixedClock::default()),
         NewUser::passwordless("alice"),
@@ -154,7 +154,7 @@ async fn test_instance_load_existing_backend() -> Result<(), Error> {
     let path = temp_dir.join("eidetica_test_instance_load.json");
 
     // Create an instance and user, then save the backend
-    let (instance1, mut user1) = Instance::create_with_clock(
+    let (instance1, mut user1) = Instance::create_backend_with_clock(
         Box::new(InMemory::new()),
         Arc::new(FixedClock::default()),
         NewUser::passwordless("bob"),
@@ -176,11 +176,12 @@ async fn test_instance_load_existing_backend() -> Result<(), Error> {
     drop(instance1);
     drop(user1);
 
-    // Load a new backend from the saved file — Instance::open is load-only
+    // Load a new backend from the saved file — Instance::open_backend is load-only
     // and must find existing metadata.
     let backend2 = load_in_memory_backend(&path).await?;
     let instance2 =
-        Instance::open_with_clock(Box::new(backend2), Arc::new(FixedClock::default())).await?;
+        Instance::open_backend_with_clock(Box::new(backend2), Arc::new(FixedClock::default()))
+            .await?;
 
     // Verify the bob user still exists.
     let bob = instance2.login_user("bob", None).await?;
@@ -209,7 +210,7 @@ async fn test_instance_load_device_id_persistence() -> Result<(), Error> {
 
     // Create instance and get device_id
     let (instance1, _user) =
-        Instance::create(Box::new(InMemory::new()), NewUser::passwordless("admin")).await?;
+        Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless("admin")).await?;
     let device_id1 = instance1.id().to_string();
 
     // Save backend
@@ -218,7 +219,7 @@ async fn test_instance_load_device_id_persistence() -> Result<(), Error> {
 
     // Load backend and verify device_id is the same
     let backend2 = load_in_memory_backend(&path).await?;
-    let instance2 = Instance::open(Box::new(backend2)).await?;
+    let instance2 = Instance::open_backend(Box::new(backend2)).await?;
     let device_id2 = instance2.id().to_string();
 
     assert_eq!(
@@ -242,7 +243,7 @@ async fn test_instance_load_with_password_protected_users() -> Result<(), Error>
     let path = temp_dir.join("eidetica_test_password_users.json");
 
     // Bootstrap a password-protected user as initial admin.
-    let (instance1, user1) = Instance::create(
+    let (instance1, user1) = Instance::create_backend(
         Box::new(InMemory::new()),
         NewUser::with_password("secure_alice", "secret123"),
     )
@@ -256,7 +257,7 @@ async fn test_instance_load_with_password_protected_users() -> Result<(), Error>
 
     // Reload and verify password still works
     let backend2 = load_in_memory_backend(&path).await?;
-    let instance2 = Instance::open(Box::new(backend2)).await?;
+    let instance2 = Instance::open_backend(Box::new(backend2)).await?;
 
     // Correct password should work
     let user2 = instance2
@@ -321,7 +322,7 @@ async fn test_instance_load_multiple_users() -> Result<(), Error> {
 
     // Reload and verify all users still exist and can login
     let backend2 = load_in_memory_backend(&path).await?;
-    let instance2 = Instance::open(Box::new(backend2)).await?;
+    let instance2 = Instance::open_backend(Box::new(backend2)).await?;
     let admin2 = instance2.login_user("admin", None).await?;
 
     let users = list_users_via(&admin2).await?;
@@ -360,7 +361,7 @@ async fn test_instance_load_user_databases_persist() -> Result<(), Error> {
     let path = temp_dir.join("eidetica_test_user_dbs.json");
 
     // Bootstrap eve as the initial user.
-    let (instance1, mut user1) = Instance::create_with_clock(
+    let (instance1, mut user1) = Instance::create_backend_with_clock(
         Box::new(InMemory::new()),
         Arc::new(FixedClock::default()),
         NewUser::passwordless("eve"),
@@ -394,7 +395,8 @@ async fn test_instance_load_user_databases_persist() -> Result<(), Error> {
     // Reload and verify databases still exist
     let backend2 = load_in_memory_backend(&path).await?;
     let instance2 =
-        Instance::open_with_clock(Box::new(backend2), Arc::new(FixedClock::default())).await?;
+        Instance::open_backend_with_clock(Box::new(backend2), Arc::new(FixedClock::default()))
+            .await?;
     let user2 = instance2.login_user("eve", None).await?;
 
     // Load databases by root_id and verify their settings
@@ -426,7 +428,7 @@ async fn test_instance_load_idempotency() -> Result<(), Error> {
     let path = temp_dir.join("eidetica_test_idempotency.json");
 
     // Create and save initial state
-    let (instance1, _frank) = Instance::create_with_clock(
+    let (instance1, _frank) = Instance::create_backend_with_clock(
         Box::new(InMemory::new()),
         Arc::new(FixedClock::default()),
         NewUser::passwordless("frank"),
@@ -441,7 +443,8 @@ async fn test_instance_load_idempotency() -> Result<(), Error> {
     for i in 0..3 {
         let backend = load_in_memory_backend(&path).await?;
         let instance =
-            Instance::open_with_clock(Box::new(backend), Arc::new(FixedClock::default())).await?;
+            Instance::open_backend_with_clock(Box::new(backend), Arc::new(FixedClock::default()))
+                .await?;
 
         // Device ID should be the same every time
         let device_id = instance.id().to_string();
@@ -479,7 +482,7 @@ async fn test_instance_load_new_vs_existing() -> Result<(), Error> {
     let path = temp_dir.join("eidetica_test_new_vs_existing.json");
 
     // Create first instance with grace as initial user.
-    let (instance1, _grace) = Instance::create_with_clock(
+    let (instance1, _grace) = Instance::create_backend_with_clock(
         Box::new(InMemory::new()),
         Arc::new(FixedClock::default()),
         NewUser::passwordless("grace"),
@@ -493,7 +496,8 @@ async fn test_instance_load_new_vs_existing() -> Result<(), Error> {
     // Load existing backend
     let backend2 = load_in_memory_backend(&path).await?;
     let instance2 =
-        Instance::open_with_clock(Box::new(backend2), Arc::new(FixedClock::default())).await?;
+        Instance::open_backend_with_clock(Box::new(backend2), Arc::new(FixedClock::default()))
+            .await?;
     let device_id2 = instance2.id().to_string();
 
     // Device ID should match (existing backend)
@@ -507,7 +511,7 @@ async fn test_instance_load_new_vs_existing() -> Result<(), Error> {
     drop(instance2);
 
     // Create a separate fresh instance (different backend) — distinct device id.
-    let (instance3, henry) = Instance::create_with_clock(
+    let (instance3, henry) = Instance::create_backend_with_clock(
         Box::new(InMemory::new()),
         Arc::new(FixedClock::default()),
         NewUser::passwordless("henry"),
@@ -534,14 +538,14 @@ async fn test_instance_load_new_vs_existing() -> Result<(), Error> {
 #[tokio::test]
 #[cfg_attr(miri, ignore)] // Uses file I/O which Miri doesn't support
 async fn test_instance_create_strict_fails_on_existing() -> Result<(), Error> {
-    // Test that Instance::create() fails on already-initialized backend.
+    // Test that Instance::create_backend() fails on already-initialized backend.
     use crate::clock::FixedClock;
 
     let temp_dir = std::env::temp_dir();
     let path = temp_dir.join("eidetica_test_create_strict.json");
 
     // Create first instance with alice as initial user.
-    let (instance1, _alice) = Instance::create_with_clock(
+    let (instance1, _alice) = Instance::create_backend_with_clock(
         Box::new(InMemory::new()),
         Arc::new(FixedClock::default()),
         NewUser::passwordless("alice"),
@@ -554,7 +558,7 @@ async fn test_instance_create_strict_fails_on_existing() -> Result<(), Error> {
 
     // Try to create() on the existing backend - should fail.
     let backend2 = load_in_memory_backend(&path).await?;
-    let result = Instance::create(Box::new(backend2), NewUser::passwordless("bob")).await;
+    let result = Instance::create_backend(Box::new(backend2), NewUser::passwordless("bob")).await;
     assert!(result.is_err(), "create() should fail on existing backend");
 
     // Verify error type
@@ -572,7 +576,8 @@ async fn test_instance_create_strict_fails_on_existing() -> Result<(), Error> {
     // Verify open() still works on the existing backend.
     let backend3 = load_in_memory_backend(&path).await?;
     let instance3 =
-        Instance::open_with_clock(Box::new(backend3), Arc::new(FixedClock::default())).await?;
+        Instance::open_backend_with_clock(Box::new(backend3), Arc::new(FixedClock::default()))
+            .await?;
     let alice = instance3.login_user("alice", None).await?;
     let users = list_users_via(&alice).await?;
     assert_eq!(users.len(), 1, "Should have 1 user (alice)");
@@ -589,9 +594,9 @@ async fn test_instance_create_strict_fails_on_existing() -> Result<(), Error> {
 #[tokio::test]
 #[cfg_attr(miri, ignore)] // Uses SystemTime for timestamps in create_user
 async fn test_instance_create_on_fresh_backend() -> Result<(), Error> {
-    // Test that Instance::create() succeeds on fresh backend.
+    // Test that Instance::create_backend() succeeds on fresh backend.
     let (instance, bob) =
-        Instance::create(Box::new(InMemory::new()), NewUser::passwordless("bob")).await?;
+        Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless("bob")).await?;
     assert_eq!(bob.username(), "bob");
 
     // Bob can immediately log back in.
@@ -603,10 +608,10 @@ async fn test_instance_create_on_fresh_backend() -> Result<(), Error> {
 
 #[tokio::test]
 async fn test_instance_open_fails_on_empty_backend() -> Result<(), Error> {
-    // `Instance::open` is load-only. An empty backend must error with
+    // `Instance::open_backend` is load-only. An empty backend must error with
     // NotInitialized rather than auto-bootstrapping.
     let backend = InMemory::new();
-    let result = Instance::open(Box::new(backend)).await;
+    let result = Instance::open_backend(Box::new(backend)).await;
     let err = result.expect_err("open() must reject an uninitialised backend");
 
     if let crate::Error::Instance(boxed) = &err {
@@ -622,13 +627,288 @@ async fn test_instance_open_fails_on_empty_backend() -> Result<(), Error> {
 
 #[tokio::test]
 #[cfg_attr(miri, ignore)] // Uses file I/O which Miri doesn't support
+async fn test_memory_url_snapshot_round_trip_via_flush() -> Result<(), Error> {
+    // Verifies the `memory:///path.json` URL roundtrip: bootstrap, write
+    // snapshot via flush(), reload from snapshot, login as the persisted
+    // user. Exercises the URL dispatcher, the snapshot path tracking, and
+    // `Instance::flush`.
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let snapshot = temp_dir.path().join("snap.json");
+    let url = format!("memory://{}", snapshot.display());
+
+    // First run: file doesn't exist yet → bootstrap fresh, persist on flush.
+    let (instance, alice) =
+        Instance::connect_or_create(&url, NewUser::passwordless("alice")).await?;
+    let alice = alice.expect("memory:// URL with new snapshot path should bootstrap");
+    assert_eq!(alice.username(), "alice");
+    drop(alice);
+    instance.flush()?;
+    assert!(
+        snapshot.exists(),
+        "flush() should have written the snapshot"
+    );
+    // The instance is still fully usable after flush — flush is a
+    // checkpoint, not a shutdown.
+    let _ = instance.login_user("alice", None).await?;
+    drop(instance);
+
+    // Second run: file exists → load and yield None for the user.
+    let (instance2, maybe_user) =
+        Instance::connect_or_create(&url, NewUser::passwordless("alice")).await?;
+    assert!(
+        maybe_user.is_none(),
+        "load arm should not produce a fresh user"
+    );
+    let alice2 = instance2.login_user("alice", None).await?;
+    assert_eq!(alice2.username(), "alice");
+    drop(alice2);
+
+    // Flushing again with no new writes still leaves a valid snapshot.
+    instance2.flush()?;
+    assert!(snapshot.exists());
+
+    Ok(())
+}
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // Uses file I/O which Miri doesn't support
+async fn test_flush_surfaces_io_error() -> Result<(), Error> {
+    // flush() must surface I/O errors via Result. Drop's safety net will
+    // fail the same way and log via tracing::error!; we don't observe Drop
+    // here — the contract is just "flush returns the error".
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let bad_path = temp_dir.path().join("missing-dir").join("snap.json");
+    let url = format!("memory://{}", bad_path.display());
+
+    let (instance, alice) =
+        Instance::connect_or_create(&url, NewUser::passwordless("alice")).await?;
+    let _ = alice.expect("fresh bootstrap");
+
+    let flush_err = instance.flush().expect_err("flush should fail");
+    // Walk the source chain to confirm the underlying cause is an I/O error;
+    // the top-level Display is the BackendError shell ("File I/O error")
+    // and doesn't include the underlying message.
+    let mut found_io = false;
+    let mut src: Option<&(dyn std::error::Error + 'static)> = Some(&flush_err);
+    while let Some(e) = src {
+        if e.downcast_ref::<std::io::Error>().is_some() {
+            found_io = true;
+            break;
+        }
+        src = e.source();
+    }
+    assert!(
+        found_io,
+        "expected an underlying io::Error in the chain, got: {flush_err}",
+    );
+    // Sanity: the file we tried to write is still absent.
+    assert!(!bad_path.exists(), "snapshot file should not exist");
+    Ok(())
+}
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)]
+async fn test_memory_url_drop_fallback_writes_snapshot() -> Result<(), Error> {
+    // Verifies the Drop fallback: if the caller drops without calling
+    // flush(), the snapshot is still written (best-effort, errors logged).
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let snapshot = temp_dir.path().join("drop-snap.json");
+    let url = format!("memory://{}", snapshot.display());
+
+    let (instance, alice) =
+        Instance::connect_or_create(&url, NewUser::passwordless("alice")).await?;
+    let _ = alice.expect("fresh bootstrap");
+    // Drop instance and the user (drop the User first so its Instance handle
+    // releases). No flush() — we exercise the Drop path.
+    drop(instance);
+
+    assert!(
+        snapshot.exists(),
+        "Drop fallback should have written the snapshot"
+    );
+    // Snapshot should round-trip: opening with strict `connect` succeeds.
+    let _reloaded = Instance::connect(&url).await?;
+    Ok(())
+}
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // Uses file I/O which Miri doesn't support
+async fn test_connect_or_create_rejects_foreign_data() -> Result<(), Error> {
+    // A pre-existing JSON file that parses into `SerializableDatabase` but
+    // carries no instance metadata must not be silently bootstrapped over —
+    // the next snapshot would overwrite the caller's file. Documents the
+    // safety contract called out in connect_or_create_impl.
+    let temp_dir = tempfile::tempdir().unwrap();
+    let snapshot = temp_dir.path().join("foreign.json");
+    std::fs::write(
+        &snapshot,
+        r#"{"entries":{},"verification_status":{},"tips":{}}"#,
+    )
+    .unwrap();
+
+    let url = format!("memory://{}", snapshot.display());
+    let err = Instance::connect_or_create(&url, NewUser::passwordless("alice"))
+        .await
+        .expect_err("foreign data must not be bootstrapped over");
+    let msg = format!("{err}");
+    assert!(msg.contains("foreign data"), "{msg}");
+    assert!(msg.contains("snapshot file"), "{msg}");
+    // File must be unchanged — refusal is the whole point.
+    let on_disk = std::fs::read_to_string(&snapshot).unwrap();
+    assert!(on_disk.contains("\"entries\""), "{on_disk}");
+    Ok(())
+}
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // Uses file I/O which Miri doesn't support
+async fn test_connect_strict_missing_snapshot_errors() -> Result<(), Error> {
+    // Strict `connect` against a snapshot URL whose file doesn't exist must
+    // surface `InvalidSnapshot` with a message pointing at `connect_or_create`,
+    // not the generic `NotInitialized` an empty backend would otherwise produce.
+    let temp_dir = tempfile::tempdir().unwrap();
+    let missing = temp_dir.path().join("not-there.json");
+    let url = format!("memory://{}", missing.display());
+
+    let err = Instance::connect(&url)
+        .await
+        .expect_err("missing snapshot must error");
+    let msg = format!("{err}");
+    assert!(msg.contains("does not exist"), "{msg}");
+    assert!(msg.contains("connect_or_create"), "{msg}");
+    assert!(
+        !missing.exists(),
+        "strict connect must not create the snapshot file"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // Uses file I/O which Miri doesn't support
+async fn test_flush_keeps_snapshot_armed_for_drop() -> Result<(), Error> {
+    // `flush()` is reentrant: it must NOT take/clear the snapshot path, so
+    // the Drop safety net still fires after a successful flush. We prove
+    // this by flushing, deleting the on-disk file, then dropping — the
+    // file must reappear (Drop rewrote it).
+    let temp_dir = tempfile::tempdir().unwrap();
+    let snapshot = temp_dir.path().join("rearm.json");
+    let url = format!("memory://{}", snapshot.display());
+
+    let (instance, alice) =
+        Instance::connect_or_create(&url, NewUser::passwordless("alice")).await?;
+    drop(alice.expect("fresh bootstrap"));
+
+    instance.flush()?;
+    assert!(snapshot.exists(), "flush should have written the snapshot");
+
+    std::fs::remove_file(&snapshot).unwrap();
+    assert!(!snapshot.exists(), "precondition: file should be gone");
+
+    drop(instance);
+
+    assert!(
+        snapshot.exists(),
+        "Drop must rewrite snapshot — the path stays armed after flush()"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // Uses file I/O which Miri doesn't support
+async fn test_roundtrip_after_flush() -> Result<(), Error> {
+    // Round-trip via explicit flush() (rather than relying on the Drop
+    // fallback as `test_memory_url_drop_fallback_writes_snapshot` does).
+    // Confirms the load arm of strict `connect` finds metadata that
+    // `flush()` wrote.
+    let temp_dir = tempfile::tempdir().unwrap();
+    let snapshot = temp_dir.path().join("roundtrip.json");
+    let url = format!("memory://{}", snapshot.display());
+
+    let initial_device_id = {
+        let (instance, alice) =
+            Instance::connect_or_create(&url, NewUser::passwordless("alice")).await?;
+        drop(alice.expect("fresh bootstrap"));
+        instance.flush()?;
+        // Drop after this scope — but we already have the persisted state.
+        instance.id().to_string()
+    };
+
+    let reloaded = Instance::connect(&url).await?;
+    assert_eq!(
+        reloaded.id().to_string(),
+        initial_device_id,
+        "device id must survive flush + reload"
+    );
+    // The persisted user is still there.
+    let alice = reloaded.login_user("alice", None).await?;
+    assert_eq!(alice.username(), "alice");
+    Ok(())
+}
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // Uses file I/O which Miri doesn't support
+async fn test_concurrent_flushes_are_serialized() -> Result<(), Error> {
+    // Many concurrent flush() calls must all succeed and leave a valid
+    // snapshot on disk. Without the snapshot_write_lock they would race
+    // on the shared `<path>.tmp`; the test fails by either returning an
+    // error from one of the flushes or leaving a corrupted snapshot that
+    // a subsequent `connect` can't load.
+    let temp_dir = tempfile::tempdir().unwrap();
+    let snapshot = temp_dir.path().join("concurrent.json");
+    let url = format!("memory://{}", snapshot.display());
+
+    let (instance, alice) =
+        Instance::connect_or_create(&url, NewUser::passwordless("alice")).await?;
+    drop(alice.expect("fresh bootstrap"));
+
+    let mut handles = Vec::with_capacity(16);
+    for _ in 0..16 {
+        let inst = instance.clone();
+        // `flush()` is sync (std::fs::write + a std::sync::Mutex held
+        // across the I/O), so we contend across blocking threads rather
+        // than awaiting in async tasks.
+        handles.push(tokio::task::spawn_blocking(move || inst.flush()));
+    }
+    for handle in handles {
+        handle
+            .await
+            .expect("flush task panicked")
+            .expect("concurrent flush failed");
+    }
+
+    // No leftover staging tempfile.
+    let mut tmp_path = snapshot.clone().into_os_string();
+    tmp_path.push(".tmp");
+    assert!(
+        !std::path::Path::new(&tmp_path).exists(),
+        "staging file `{}` should be cleaned up after the last rename",
+        std::path::Path::new(&tmp_path).display()
+    );
+
+    // Drop the instance so its own Drop-time write happens before reload.
+    drop(instance);
+
+    // The on-disk snapshot must still be a well-formed, fully-initialised
+    // instance.
+    let reloaded = Instance::connect(&url).await?;
+    let _alice = reloaded.login_user("alice", None).await?;
+    Ok(())
+}
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // Uses file I/O which Miri doesn't support
 async fn test_open_or_create_fresh_and_existing() -> Result<(), Error> {
     let temp_dir = std::env::temp_dir();
     let path = temp_dir.join("eidetica_test_open_or_create.json");
 
     // Fresh: should return Some(User) for the just-created initial user.
-    let (instance1, maybe_user) =
-        Instance::open_or_create(Box::new(InMemory::new()), NewUser::passwordless("alice")).await?;
+    let (instance1, maybe_user) = Instance::connect_or_create_backend(
+        Box::new(InMemory::new()),
+        NewUser::passwordless("alice"),
+    )
+    .await?;
     let alice = maybe_user.expect("fresh backend should yield the initial user");
     assert_eq!(alice.username(), "alice");
 
@@ -638,7 +918,7 @@ async fn test_open_or_create_fresh_and_existing() -> Result<(), Error> {
 
     // Existing: should return None (caller logs in explicitly).
     let backend2 = load_in_memory_backend(&path).await?;
-    let (instance2, maybe_user) = Instance::open_or_create(
+    let (instance2, maybe_user) = Instance::connect_or_create_backend(
         Box::new(backend2),
         // The supplied NewUser is unused on the existing-instance branch;
         // we still have to provide one because the signature requires it.
@@ -659,5 +939,25 @@ async fn test_open_or_create_fresh_and_existing() -> Result<(), Error> {
         std::fs::remove_file(&path).ok();
     }
 
+    Ok(())
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+#[cfg_attr(miri, ignore)]
+async fn test_sqlite_in_memory_url_round_trip() -> Result<(), Error> {
+    // sqlx's URI-filename form is the canonical in-memory sqlite URL.
+    // Verifies the URL parser accepts the single-colon form and the
+    // backend's `is_in_memory` detection sees `:memory:`, so the pool
+    // keeps a connection alive long enough for the round trip.
+    let url = "sqlite:file::memory:?cache=shared";
+    let (instance, alice) =
+        Instance::connect_or_create(url, NewUser::passwordless("alice")).await?;
+    let alice = alice.expect("fresh in-memory sqlite should bootstrap");
+    assert_eq!(alice.username(), "alice");
+
+    // Schema setup + a real login round-trip across pool connections.
+    let alice2 = instance.login_user("alice", None).await?;
+    assert_eq!(alice2.username(), "alice");
     Ok(())
 }

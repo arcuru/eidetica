@@ -7,8 +7,8 @@ use eidetica::{
     backend::{BackendImpl, database::InMemory},
 };
 
-async fn save_backend(backend: &InMemory, path: &Path) -> Result<()> {
-    backend.save_to_file(path).await
+fn save_backend(backend: &InMemory, path: &Path) -> Result<()> {
+    backend.save_to_file(path)
 }
 
 async fn load_backend(path: &Path) -> Result<InMemory> {
@@ -31,7 +31,7 @@ async fn test_in_memory_backend_save_and_load() {
         backend.put_verified(entry).await.unwrap();
 
         // Save to file
-        let save_result = save_backend(&backend, &file_path).await;
+        let save_result = save_backend(&backend, &file_path);
         assert!(save_result.is_ok());
     }
 
@@ -133,7 +133,7 @@ async fn test_save_load_with_various_entries() {
     backend.put_verified(entry_with_subtree).await.unwrap();
 
     // Save to file
-    save_backend(&backend, &file_path).await.unwrap();
+    save_backend(&backend, &file_path).unwrap();
 
     // Load back into a new backend
     let loaded_backend = load_backend(&file_path).await.unwrap();
