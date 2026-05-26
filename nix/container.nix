@@ -47,43 +47,43 @@
   #   3. EIDETICA_ALLOW_PASSWORDLESS_ADMIN=1 — explicit opt-in to a
   #      passwordless admin (INSECURE; trusted/LAN or local dev only).
   entrypoint = pkgs.writeShellScriptBin "eidetica-entrypoint" ''
-    set -eu
-    if ${eidetica-bin}/bin/eidetica info >/dev/null 2>&1; then
-      exec ${eidetica-bin}/bin/eidetica "$@"
-    fi
+        set -eu
+        if ${eidetica-bin}/bin/eidetica info >/dev/null 2>&1; then
+          exec ${eidetica-bin}/bin/eidetica "$@"
+        fi
 
-    if [ -r /run/secrets/admin_password ]; then
-      EIDETICA_ADMIN_PASSWORD="$(cat /run/secrets/admin_password)" \
-        ${eidetica-bin}/bin/eidetica daemon init --username admin
-    elif [ -n "''${EIDETICA_ADMIN_PASSWORD:-}" ]; then
-      ${eidetica-bin}/bin/eidetica daemon init --username admin
-    elif [ "''${EIDETICA_ALLOW_PASSWORDLESS_ADMIN:-}" = "1" ]; then
-      echo "WARNING: bootstrapping a PASSWORDLESS admin user 'admin'." >&2
-      echo "         Anyone who can reach this service can act as admin." >&2
-      ${eidetica-bin}/bin/eidetica daemon init --username admin --passwordless
-    else
-      cat >&2 <<'EOF'
-ERROR: refusing to bootstrap admin user without credentials.
+        if [ -r /run/secrets/admin_password ]; then
+          EIDETICA_ADMIN_PASSWORD="$(cat /run/secrets/admin_password)" \
+            ${eidetica-bin}/bin/eidetica daemon init --username admin
+        elif [ -n "''${EIDETICA_ADMIN_PASSWORD:-}" ]; then
+          ${eidetica-bin}/bin/eidetica daemon init --username admin
+        elif [ "''${EIDETICA_ALLOW_PASSWORDLESS_ADMIN:-}" = "1" ]; then
+          echo "WARNING: bootstrapping a PASSWORDLESS admin user 'admin'." >&2
+          echo "         Anyone who can reach this service can act as admin." >&2
+          ${eidetica-bin}/bin/eidetica daemon init --username admin --passwordless
+        else
+          cat >&2 <<'EOF'
+    ERROR: refusing to bootstrap admin user without credentials.
 
-The eidetica container needs to initialise an admin user on first start.
-Provide ONE of:
+    The eidetica container needs to initialise an admin user on first start.
+    Provide ONE of:
 
-  1) Mount an admin password file at /run/secrets/admin_password
-     (preferred — keeps the password off the process table)
-       -v ./admin-password.txt:/run/secrets/admin_password:ro
+      1) Mount an admin password file at /run/secrets/admin_password
+         (preferred — keeps the password off the process table)
+           -v ./admin-password.txt:/run/secrets/admin_password:ro
 
-  2) Set EIDETICA_ADMIN_PASSWORD
-       -e EIDETICA_ADMIN_PASSWORD=...
-     (visible in `docker inspect`; use a secret store when possible)
+      2) Set EIDETICA_ADMIN_PASSWORD
+           -e EIDETICA_ADMIN_PASSWORD=...
+         (visible in `docker inspect`; use a secret store when possible)
 
-  3) Opt in to a PASSWORDLESS admin (INSECURE; anyone reaching the
-     service is admin) — only for local/dev:
-       -e EIDETICA_ALLOW_PASSWORDLESS_ADMIN=1
-EOF
-      exit 1
-    fi
+      3) Opt in to a PASSWORDLESS admin (INSECURE; anyone reaching the
+         service is admin) — only for local/dev:
+           -e EIDETICA_ALLOW_PASSWORDLESS_ADMIN=1
+    EOF
+          exit 1
+        fi
 
-    exec ${eidetica-bin}/bin/eidetica "$@"
+        exec ${eidetica-bin}/bin/eidetica "$@"
   '';
 
   # OCI container image

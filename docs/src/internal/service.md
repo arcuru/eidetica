@@ -125,18 +125,18 @@ pub struct AuthenticatedDbRequest {
 
 Every storage operation rides a single `DatabaseOp` enum carried in `AuthenticatedDbRequest`. The server runs its own `Database` on its local `Instance`, so verification-on-read, the Verified frontier, and CRDT-state materialization happen server-side by construction. Each variant is tree-scoped through the containing request's `root_id`.
 
-| Variant                                  | Purpose                                                                                                                                                                              |
-| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `BeginTransaction { stores, scope }`     | Acquire parent tips, settings tips, and merged settings needed to build+sign a transaction locally for `stores`, parents drawn from `scope`'s projection. Read.                      |
-| `SubmitSignedEntry { entry }`            | Submit a finished, client-signed entry. Server stores it `Unverified` and runs its own verification pass. **Verification-gated, not session-gated** (see below).                     |
-| `GetVerifiedTips`                        | Database's Verified-frontier tips. Read.                                                                                                                                             |
-| `GetStoreState { store }`                | Server-materialized merged state of an **unencrypted** store, against the server's Verified frontier. Returns a `WireCrdtValue`. Read.                                               |
-| `GetStoreEntries { store, tips, scope }` | Ordered (by subtree height), verified, opaque store entries reachable from `tips` in `scope` — the universal primitive, including encrypted stores. Read.                            |
-| `GetStoreTipsUpToEntries { store, .. }`  | Store tips reachable from given main-tree entry IDs. Read.                                                                                                                           |
-| `ComputeMergeState { store, .. }`        | Lowest common ancestor + path to tip entries in a store DAG, fused into one RPC. Read.                                                                                               |
-| `GetEntry { id }`                        | Fetch a single entry by id (gating tree resolved server-side post-fetch). Read.                                                                                                      |
-| `GetCachedCrdtState { store, key }`      | Look up a previously cached materialized CRDT state for `(session user, root_id, key, store)`. Read.                                                                                 |
-| `CacheCrdtState { store, key, blob }`    | Stash a client-computed materialized CRDT state. The blob is opaque to the daemon and scoped to the authenticated user. Read.                                                        |
+| Variant                                  | Purpose                                                                                                                                                                          |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BeginTransaction { stores, scope }`     | Acquire parent tips, settings tips, and merged settings needed to build+sign a transaction locally for `stores`, parents drawn from `scope`'s projection. Read.                  |
+| `SubmitSignedEntry { entry }`            | Submit a finished, client-signed entry. Server stores it `Unverified` and runs its own verification pass. **Verification-gated, not session-gated** (see below).                 |
+| `GetVerifiedTips`                        | Database's Verified-frontier tips. Read.                                                                                                                                         |
+| `GetStoreState { store }`                | Server-materialized merged state of an **unencrypted** store, against the server's Verified frontier. Returns a `WireCrdtValue`. Read.                                           |
+| `GetStoreEntries { store, tips, scope }` | Ordered (by subtree height), verified, opaque store entries reachable from `tips` in `scope` — the universal primitive, including encrypted stores. Read.                        |
+| `GetStoreTipsUpToEntries { store, .. }`  | Store tips reachable from given main-tree entry IDs. Read.                                                                                                                       |
+| `ComputeMergeState { store, .. }`        | Lowest common ancestor + path to tip entries in a store DAG, fused into one RPC. Read.                                                                                           |
+| `GetEntry { id }`                        | Fetch a single entry by id (gating tree resolved server-side post-fetch). Read.                                                                                                  |
+| `GetCachedCrdtState { store, key }`      | Look up a previously cached materialized CRDT state for `(session user, root_id, key, store)`. Read.                                                                             |
+| `CacheCrdtState { store, key, blob }`    | Stash a client-computed materialized CRDT state. The blob is opaque to the daemon and scoped to the authenticated user. Read.                                                    |
 | `SetInstanceMetadata { metadata }`       | Rewrite daemon-level pointers to its own system DBs. Special-cased server-side to gate `Admin` on `_databases` (a daemon-global system tree) instead of the request's `root_id`. |
 
 Operations deliberately **not** exposed over the wire — `update_verification_status`, `get_instance_secrets`, `all_roots`, and the verification/enumeration queries — live on the concrete local `BackendImpl` engine (reached via `Backend::local_engine`), so a `RemoteBackend` simply does not provide them.
@@ -266,17 +266,17 @@ The server runs its own `Database` on a local `Instance`, so verification-on-rea
 
 `Transaction`, `Store`, `Database`, and `Instance` all drive I/O through a single `Backend` trait (`crate::instance::backend::Backend`) with no local-vs-remote branching at the call sites:
 
-| Method                                                                      | Purpose                                                      |
-| --------------------------------------------------------------------------- | ------------------------------------------------------------ |
-| `get(id)`                                                                   | Fetch a single entry                                         |
-| `get_tips(tree)` / `get_store_tips(tree, store)`                            | Raw DAG tips (Verified-frontier filtering stays in `Database`) |
-| `get_store_tips_up_to_entries(tree, store, up_to)`                          | Store tips reachable from given main-tree entries            |
-| `get_store_from_tips(tree, store, tips)`                                    | Every store entry reachable from `tips`                      |
-| `find_merge_base(tree, store, ids)` / `get_path_from_to(tree, store, ..)`   | LCA + path within a store                                    |
-| `get_cached_crdt_state` / `cache_crdt_state`                                | CRDT merge cache (see [CRDT Cache](#crdt-cache))             |
-| `put(entry)`                                                                | Persist an entry                                             |
-| `write_entry(verification, entry, source)`                                  | Persist a signed entry, applying verification and dispatching local callbacks |
-| `get_instance_metadata` / `set_instance_metadata`                           | Daemon-global system-DB pointers                             |
+| Method                                                                    | Purpose                                                                       |
+| ------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `get(id)`                                                                 | Fetch a single entry                                                          |
+| `get_tips(tree)` / `get_store_tips(tree, store)`                          | Raw DAG tips (Verified-frontier filtering stays in `Database`)                |
+| `get_store_tips_up_to_entries(tree, store, up_to)`                        | Store tips reachable from given main-tree entries                             |
+| `get_store_from_tips(tree, store, tips)`                                  | Every store entry reachable from `tips`                                       |
+| `find_merge_base(tree, store, ids)` / `get_path_from_to(tree, store, ..)` | LCA + path within a store                                                     |
+| `get_cached_crdt_state` / `cache_crdt_state`                              | CRDT merge cache (see [CRDT Cache](#crdt-cache))                              |
+| `put(entry)`                                                              | Persist an entry                                                              |
+| `write_entry(verification, entry, source)`                                | Persist a signed entry, applying verification and dispatching local callbacks |
+| `get_instance_metadata` / `set_instance_metadata`                         | Daemon-global system-DB pointers                                              |
 
 The trait is the _intersection_ of what both implementations can honor with the same meaning. Off-seam local-only operations (instance secrets, verification-status mutation, raw `all_roots`/`get_tree` listings, scope-keyed cache access) are deliberately **not** on the trait and live on the concrete in-process engine. They are reached only where one exists, via `Backend::local_engine() -> Option<Arc<dyn BackendImpl>>` (returns `None` on a remote backend).
 
