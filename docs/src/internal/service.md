@@ -1,6 +1,6 @@
 # Service (Daemon) Architecture
 
-The service module (`crate::service`) enables running Eidetica as a local daemon over a Unix domain socket. The RPC boundary sits at the storage-operation level: a `RemoteConnection` forwards a curated set of backend operations to the daemon, wrapped in the `Backend::Remote` enum variant, so higher-level abstractions (`Database`, stores, sync) work transparently against a remote Instance.
+The service module (`crate::service`) enables running Eidetica as a local daemon over a Unix domain socket. The RPC boundary sits at the storage-operation level: a `RemoteConnection` forwards every Database-level storage operation to the daemon. Higher-level code (`Database`, stores, `Transaction`, `Instance`) drives I/O through a single `Backend` trait whose remote implementation (`RemoteBackend`) wraps the connection, so the call sites are identical for local and connected instances.
 
 ## Architecture Overview
 
@@ -12,17 +12,18 @@ graph LR
     I --> B[Backend: SQLite/InMemory]
 ```
 
-The server wraps a full `Instance` (not just a backend) so it can handle both storage operations and write notifications. A client calls `Instance::connect(path)`, which establishes a `RemoteConnection`, wraps it as `Backend::Remote(conn)`, fetches `InstanceMetadata` over the wire, and constructs an Instance with **no local secrets** (`secrets: None`) — signing keys are derived client-side after login, never held by the constructed Instance until a user logs in.
+The server wraps a full `Instance` (not just a backend) so it can handle both storage operations and write notifications. A client calls `Instance::connect(path)`, which establishes a `RemoteConnection`, wraps it as a `RemoteBackend`, fetches `InstanceMetadata` over the wire, and constructs an Instance with **no local secrets** (`secrets: None`) — signing keys are derived client-side after login, never held by the constructed Instance until a user logs in.
 
 ### Module Structure
 
 | Module              | Role                                                                                              |
 | ------------------- | ------------------------------------------------------------------------------------------------- |
-| `service::protocol` | Wire types: `Handshake`, `ServiceRequest`, `ServiceResponse`, `BackendOp`, frame I/O              |
+| `service::protocol` | Wire types: `Handshake`, `ServiceRequest`, `ServiceResponse`, `DatabaseOp`, frame I/O             |
 | `service::error`    | `ServiceError` wire format and error reconstruction                                               |
 | `service::server`   | `ServiceServer` — accepts connections, runs the auth state machine, gates and dispatches requests |
-| `service::client`   | `RemoteConnection` — the `Backend::Remote` transport + `trusted_login`                            |
-| `service::cache`    | `ServiceCache` — daemon-local, per-user CRDT-state cache (crate-private)                          |
+| `service::client`   | `RemoteConnection` — the `RemoteBackend` transport + `trusted_login`                              |
+
+The daemon-side, per-user CRDT-state cache lives on the backend engine itself (`backend::BackendImpl`, keyed by [`CacheScope`](#crdt-cache)) rather than in a separate service-layer cache module.
 
 ## Wire Protocol
 
@@ -70,7 +71,7 @@ sequenceDiagram
     end
 
     loop Authenticated request/response
-        C->>S: ServiceRequest::Authenticated(AuthenticatedRequest) | AuthenticatedDb(...)
+        C->>S: ServiceRequest::AuthenticatedDb(AuthenticatedDbRequest)
         S->>C: ServiceResponse
     end
 
@@ -80,7 +81,7 @@ sequenceDiagram
 1. **Handshake**: client sends `Handshake { protocol_version }`; server validates and acks. On mismatch the server acks with its own version and closes the connection.
 2. **Trusted login** (see Security Model below): a challenge-response over the user's root key. `GetInstanceMetadata` is the only other request permitted before login.
 3. **Optional session-key registration**: once authenticated, the client may prove possession of additional pubkeys via `SessionKeyChallenge`/`SessionKeyRegister`. Each successfully proven pubkey joins the connection's `session_keyset` and can then act as the identity on subsequent ops. See [Session Keyset](#session-keyset) below.
-4. **Authenticated request loop**: every backend operation travels inside `ServiceRequest::Authenticated` or `ServiceRequest::AuthenticatedDb`. One response per request, strictly sequential per connection (`RemoteConnection` serializes all I/O through a mutex).
+4. **Authenticated request loop**: every storage operation travels inside `ServiceRequest::AuthenticatedDb`. One response per request, strictly sequential per connection (`RemoteConnection` serializes all I/O through a mutex).
 5. **Termination**: client closes its write half (EOF); the server detects EOF and cleans up.
 
 ## Security Model
@@ -108,18 +109,11 @@ The top-level request enum is intentionally flat, keeping the pre-auth surface v
 | `GetInstanceMetadata`                          | Pre-auth — fetch server identity (used by `Instance::connect`)                                     |
 | `SessionKeyChallenge { pubkey }`               | Post-auth — request a challenge bound to `pubkey` so the client can prove possession               |
 | `SessionKeyRegister { pubkey, signature }`     | Post-auth — return the signed challenge; on success `pubkey` joins the connection's session keyset |
-| `Authenticated(Box<AuthenticatedRequest>)`     | A `BackendOp` (today: `Get` or `SetInstanceMetadata`)                                              |
-| `AuthenticatedDb(Box<AuthenticatedDbRequest>)` | A `DatabaseOp` — the primary surface for every Database read/write                                 |
+| `AuthenticatedDb(Box<AuthenticatedDbRequest>)` | A `DatabaseOp` — the single envelope for every storage operation                                   |
 
-Both authenticated envelopes carry an identity claim that the server validates against the connection's session keyset before dispatch:
+`AuthenticatedDbRequest` carries an identity claim that the server validates against the connection's session keyset before dispatch:
 
 ```rust,ignore
-pub struct AuthenticatedRequest {
-    pub root_id: ID,      // database whose auth_settings gate this op
-    pub identity: SigKey, // claim; hint pubkey must be in session_keyset
-    pub request: BackendOp,
-}
-
 pub struct AuthenticatedDbRequest {
     pub root_id: ID,      // database whose auth_settings gate this op
     pub identity: SigKey, // claim; hint pubkey must be in session_keyset
@@ -127,25 +121,29 @@ pub struct AuthenticatedDbRequest {
 }
 ```
 
-### BackendOp — the curated wire surface
+### DatabaseOp — the wire surface
 
-The original design mirrored the entire storage trait onto the socket, one variant per method, exposing unauthenticated internal primitives. With the Database-level wire API (`DatabaseOp` / `AuthenticatedDb`) carrying every Database read/write, `BackendOp` is now reduced to two variants that don't have a natural Database-level home:
+Every storage operation rides a single `DatabaseOp` enum carried in `AuthenticatedDbRequest`. The server runs its own `Database` on its local `Instance`, so verification-on-read, the Verified frontier, and CRDT-state materialization happen server-side by construction. Each variant is tree-scoped through the containing request's `root_id`.
 
-| Variant                            | Purpose                                                                                |
-| ---------------------------------- | -------------------------------------------------------------------------------------- |
-| `Get { id }`                       | Fetch a single entry by id (gated post-fetch against the entry's owning tree).         |
-| `SetInstanceMetadata { metadata }` | Rewrite daemon-level pointers to its own system DBs. Gated against `_databases` Admin. |
+| Variant                                  | Purpose                                                                                                                                                                              |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `BeginTransaction { stores, scope }`     | Acquire parent tips, settings tips, and merged settings needed to build+sign a transaction locally for `stores`, parents drawn from `scope`'s projection. Read.                      |
+| `SubmitSignedEntry { entry }`            | Submit a finished, client-signed entry. Server stores it `Unverified` and runs its own verification pass. **Verification-gated, not session-gated** (see below).                     |
+| `GetVerifiedTips`                        | Database's Verified-frontier tips. Read.                                                                                                                                             |
+| `GetStoreState { store }`                | Server-materialized merged state of an **unencrypted** store, against the server's Verified frontier. Returns a `WireCrdtValue`. Read.                                               |
+| `GetStoreEntries { store, tips, scope }` | Ordered (by subtree height), verified, opaque store entries reachable from `tips` in `scope` — the universal primitive, including encrypted stores. Read.                            |
+| `GetStoreTipsUpToEntries { store, .. }`  | Store tips reachable from given main-tree entry IDs. Read.                                                                                                                           |
+| `ComputeMergeState { store, .. }`        | Lowest common ancestor + path to tip entries in a store DAG, fused into one RPC. Read.                                                                                               |
+| `GetEntry { id }`                        | Fetch a single entry by id (gating tree resolved server-side post-fetch). Read.                                                                                                      |
+| `GetCachedCrdtState { store, key }`      | Look up a previously cached materialized CRDT state for `(session user, root_id, key, store)`. Read.                                                                                 |
+| `CacheCrdtState { store, key, blob }`    | Stash a client-computed materialized CRDT state. The blob is opaque to the daemon and scoped to the authenticated user. Read.                                                        |
+| `SetInstanceMetadata { metadata }`       | Rewrite daemon-level pointers to its own system DBs. Special-cased server-side to gate `Admin` on `_databases` (a daemon-global system tree) instead of the request's `root_id`. |
 
-See [BackendOp surface reduction](#backendop-surface-reduction) below for the full list of operations that _used_ to ride here and where each one moved.
-
-Operations deliberately **not** exposed over the wire — `update_verification_status`, `get_instance_secrets`, `all_roots`, and the verification/enumeration queries — return `InstanceError::OperationNotSupported` on a `Backend::Remote`, rather than a silent wrong answer.
+Operations deliberately **not** exposed over the wire — `update_verification_status`, `get_instance_secrets`, `all_roots`, and the verification/enumeration queries — live on the concrete local `BackendImpl` engine (reached via `Backend::local_engine`), so a `RemoteBackend` simply does not provide them.
 
 `update_verification_status` is off-wire **by design, not just for tidiness**: verification is a local trust decision. If a client could set it over the socket, a client (or anything that reached the socket) could assert "this entry is `Verified`" without the server having validated it — exactly the caller-asserted-status hole the storage API was hardened to close. So the daemon's Instance owns verification: it stores everything `Unverified` and runs `Database::verify()` itself. The frontier/`allow_unverified` distinction is applied by the daemon-side `Database`, and every client connected to the same daemon therefore observes the same verified view.
 
-Two helpers drive the per-tree gate:
-
-- `BackendOp::tree_id() -> Option<&ID>` — the op's scope when it carries one inline. Returns `None` for both surviving variants (`Get` is gated post-fetch from the entry's owning tree; `SetInstanceMetadata` is gated explicitly against `_databases`).
-- `BackendOp::required_permission() -> Permission` — `Admin(0)` for `SetInstanceMetadata`, `Read` for `Get`.
+`DatabaseOp::required_permission() -> Permission` returns `Write(0)` for `SubmitSignedEntry` (advisory only — the per-tree gate is skipped for submit), `Admin(0)` for `SetInstanceMetadata` (advisory — gated against `_databases` instead of `root_id`), and `Read` for every other variant.
 
 ### ServiceResponse
 
@@ -199,7 +197,7 @@ Each `RemoteConnection` caches successful registrations in a `Mutex<HashSet<Publ
 
 The handle constructors that need per-DB identities register on the caller's behalf, so most client code never touches the registration API directly:
 
-- `Database::create(instance, signing_key, settings)` registers `signing_key` before constructing the returned `RemoteDatabaseOps` handle.
+- `Database::create(instance, signing_key, settings)` registers `signing_key` before constructing the returned `RemoteBackend`-backed handle.
 - `Database::open_remote(.., identity)` is paired by `Instance::open_system_db_for_session(root, signing_key)`, which registers `signing_key` before opening.
 - `User::open_database_with_key(root, key_id)` registers the user-held signing key for `key_id` before routing through `Database::open_remote` on a connected instance.
 
@@ -208,8 +206,8 @@ The handle constructors that need per-DB identities register on the caller's beh
 Authenticated requests pass three gates before dispatch:
 
 1. **Gate 1 — connection state**: the connection must be `Authenticated`. The identity hint, if any, must have its `pubkey` field present in the connection's `session_keyset` (proof of possession registered earlier). The resolved value becomes the **acting pubkey** for this op; an absent hint defaults to `login_pubkey`. The cross-check rejects identity claims for keys the client never proved — an attacker that hijacks an authenticated session still can't act as a key whose private material isn't on the client. **Submit (`DatabaseOp::SubmitSignedEntry`) is exempt** from this check: an admin transporting a user-signed entry legitimately carries a non-keyset identity, and the verification gate downstream is the real boundary (see [Verification-gated submit](#verification-gated-submit)).
-2. **Gate 2 — per-tree permission**: if `tree_id().is_some()`, the server loads that database's `auth_settings`, resolves the **acting** pubkey's permission, and rejects the op unless it covers `required_permission()`. Resolution tries direct membership first; on miss it falls back to the wildcard (`*`) slot, so a tree's global grant actually applies to any keyset member that isn't otherwise listed. `Get` carries no inline tree id, so it is gated _post-fetch_ (`gate_entry_read`): the fetched entry's owning tree is resolved and `Read` is required before content is returned.
-3. **Gate 3 — cross-tree admin**: `SetInstanceMetadata` carries no tree id, so it is gated explicitly against `_databases.auth_settings` requiring `Admin`. It fails closed if `_databases` is unreadable (D8).
+2. **Gate 2 — per-tree permission**: the server loads `auth_settings` for the request's `root_id`, resolves the **acting** pubkey's permission, and rejects the op unless it covers `required_permission()`. Resolution tries direct membership first; on miss it falls back to the wildcard (`*`) slot, so a tree's global grant actually applies to any keyset member that isn't otherwise listed. `GetEntry` is gated _post-fetch_ (`gate_entry_read`): the fetched entry's owning tree is resolved and `Read` is required before content is returned, in case the entry's owning tree differs from the request's `root_id`.
+3. **Gate 3 — cross-tree admin**: `SetInstanceMetadata` rewrites daemon-global pointers, so its gate ignores the request's `root_id` and is applied against `_databases.auth_settings` requiring `Admin`. The dispatcher special-cases this variant; it fails closed if `_databases` is unreadable (D8).
 
 Authorization for entry-id-keyed writes is being hardened separately (tracked as D1); see V1 Limitations.
 
@@ -245,47 +243,56 @@ Unrecognized combinations fall back to an `Io` error carrying the original messa
 
 ## Write Coordination
 
-`Instance::put_entry()` stores an entry through the backend and fires client-side write callbacks. On a local backend it also captures pre-write tips so callbacks see what changed; on a connected (`Backend::Remote`) instance the local backend has no data — the daemon owns the canonical DAG — so the pre-write `get_tips` call is skipped, and client-side callbacks get an empty `previous_tips`. The actual `Put` travels as `DatabaseOp::SubmitSignedEntry` (verification-gated, see [above](#verification-gated-submit)).
+`Instance::put_entry()` stores an entry through the backend and fires client-side write callbacks. On a local backend it also captures pre-write tips so callbacks see what changed; on a connected instance (`RemoteBackend`) the daemon owns the canonical DAG, so the pre-write `get_tips` call is skipped, and client-side callbacks get an empty `previous_tips`. The actual write travels as `DatabaseOp::SubmitSignedEntry` (verification-gated, see [above](#verification-gated-submit)).
 
 Server-side write notifications drive sync triggers in the daemon's own callback path; the legacy `NotifyEntryWritten` RPC is gone — the submit handler does the notification itself in-process. The client-side `dispatch_write_callbacks` retains its `previous_tips` approximation for the local-instance case and a documented empty-set for remote callbacks.
 
 ## CRDT Cache
 
-Service-mode CRDT-cache ops are served from a daemon-local `ServiceCache` keyed by `(user_uuid, entry_id, store)` rather than the backend's global cache, closing the cross-user poisoning vector. The cache is content-addressable underneath: identical bytes uploaded by N users are stored once and refcounted. The backend's own cache machinery is unchanged and still serves local (non-service) flows; the two caches are independent by design.
+CRDT-state caching is unified on the local backend engine (`BackendImpl`) under a single LRU keyed by [`CacheScope`](crate::backend::CacheScope):
+
+- `CacheScope::Shared` — daemon-computed state for unencrypted stores (visible to every connected user; the bytes were produced by the trusted server-side merge).
+- `CacheScope::User(uuid)` — client-uploaded state for encrypted stores or any other client-merged result (scoped to the submitting user's uuid; only that user can poison their own future reads on this slot).
+
+When the daemon serves `DatabaseOp::GetCachedCrdtState` / `CacheCrdtState`, it routes through the same `BackendImpl` LRU as a local instance, supplying `CacheScope::User(session_user)` so user-supplied blobs cannot leak across connections. Local (non-service) flows still use `CacheScope::Shared` for daemon-computed merges. The single cache is the source of truth on either path; the two scopes give cross-user isolation without a separate `ServiceCache` data structure.
+
+Clients additionally keep a per-connection in-memory LRU on `RemoteBackend` so repeated subtree-state materialization within one transaction does not round-trip to the daemon.
 
 ## Database-Level Wire API
 
-The `BackendOp`/`ServiceRequest::Authenticated` path mirrors the low-level storage trait: auth, verification, and CRDT merge run client-side over raw storage primitives. This places the security model _above_ the wire boundary — the daemon is a passive key-value store.
+The server runs its own `Database` on a local `Instance`, so verification-on-read, the Verified frontier, and CRDT-state materialization happen server-side by construction. Every op is intrinsically tree-scoped through the containing `AuthenticatedDbRequest`.
 
-The `DatabaseOp`/`ServiceRequest::AuthenticatedDb` path (added in Phase 4/5) inverts this: the server runs its own `Database` on a local `Instance`, so verification-on-read, the Verified frontier, and CRDT state materialization become server-side by construction. Every op is intrinsically tree-scoped through the containing `AuthenticatedDbRequest`.
+### Unified `Backend` seam
 
-### DatabaseOps trait seam
+`Transaction`, `Store`, `Database`, and `Instance` all drive I/O through a single `Backend` trait (`crate::instance::backend::Backend`) with no local-vs-remote branching at the call sites:
 
-`Database` no longer calls `Instance::backend()` directly. Instead it holds an `Arc<dyn DatabaseOps>`, a narrow trait mirroring the backend-read paths that `Transaction` and `Store` types depend on:
+| Method                                                                      | Purpose                                                      |
+| --------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| `get(id)`                                                                   | Fetch a single entry                                         |
+| `get_tips(tree)` / `get_store_tips(tree, store)`                            | Raw DAG tips (Verified-frontier filtering stays in `Database`) |
+| `get_store_tips_up_to_entries(tree, store, up_to)`                          | Store tips reachable from given main-tree entries            |
+| `get_store_from_tips(tree, store, tips)`                                    | Every store entry reachable from `tips`                      |
+| `find_merge_base(tree, store, ids)` / `get_path_from_to(tree, store, ..)`   | LCA + path within a store                                    |
+| `get_cached_crdt_state` / `cache_crdt_state`                                | CRDT merge cache (see [CRDT Cache](#crdt-cache))             |
+| `put(entry)`                                                                | Persist an entry                                             |
+| `write_entry(verification, entry, source)`                                  | Persist a signed entry, applying verification and dispatching local callbacks |
+| `get_instance_metadata` / `set_instance_metadata`                           | Daemon-global system-DB pointers                             |
 
-| Method                                               | Purpose                                                  |
-| ---------------------------------------------------- | -------------------------------------------------------- |
-| `get(id)`                                            | Fetch a single entry                                     |
-| `get_tips(tree)` / `get_store_tips(tree, store)`     | Raw DAG tips, no Verified-frontier filtering             |
-| `get_store_tips_up_to_entries(tree, store, up_to)`   | Tips reachable from given entries                        |
-| `find_merge_base(tree, store, ids)`                  | Lowest common ancestor within a store                    |
-| `get_path_from_to(...)` / `get_store_from_tips(...)` | Entry traversal and store reconstruction                 |
-| `get_cached_crdt_state` / `cache_crdt_state`         | CRDT merge cache (local merge-materialization fast-path) |
-| `put(entry)`                                         | Persist a (client-signed) entry                          |
+The trait is the _intersection_ of what both implementations can honor with the same meaning. Off-seam local-only operations (instance secrets, verification-status mutation, raw `all_roots`/`get_tree` listings, scope-keyed cache access) are deliberately **not** on the trait and live on the concrete in-process engine. They are reached only where one exists, via `Backend::local_engine() -> Option<Arc<dyn BackendImpl>>` (returns `None` on a remote backend).
 
-`Transaction` and all `Store` types are unchanged — they already funnel I/O through their `Database` handle, so the seam is invisible below the `Database` level. Two implementations exist:
+Two implementations exist:
 
-- **`LocalDatabaseOps`** — forwards every call to the owning `Instance`'s `Backend` (the pre-seam path). Created from a `WeakInstance` so a `Database` rebuilt via `with_key`/`allow_unverified` (using `..self`) keeps a correct ops handle.
-- **`RemoteDatabaseOps`** — translates each method to a wire RPC through the shared `RemoteConnection`. Methods with a `DatabaseOp` variant (`get` → `GetEntry`, `get_store_from_tips` → `GetStoreEntries`, `put` → `SubmitSignedEntry`, etc.) use the authenticated-DB RPC path. Methods without a wire equivalent (`find_merge_base`, `get_path_from_to`) return `OperationNotSupported`. The CRDT merge cache (`get_cached_crdt_state`/`cache_crdt_state`) is local in-memory (a `Mutex<HashMap<(ID, String), Vec<u8>>>`) — no round-trip for repeated subtree-state materialization during a transaction.
+- **`LocalBackend`** — wraps an `Arc<dyn BackendImpl>` (the concrete in-process storage engine). `local_engine()` returns it.
+- **`RemoteBackend`** — wraps a `RemoteConnection` and translates each method to a wire RPC. Carries only an optional acting identity (`None` = the connection's session identity); tree-scoped methods take the tree from the caller, and `get` derives its gating tree server-side from the fetched entry, so no per-handle root is bound and one connection multiplexes every per-database identity via the session keyset. `local_engine()` returns `None`.
 
-`Database` chooses the implementor at construction time:
+`Database` selects the implementation at construction time:
 
 ```rust,ignore
-// Local
-ops: Arc::new(LocalDatabaseOps::new(instance.downgrade())),
+// Local: share the Instance's backend.
+ops: instance.backend().clone(),
 
-// Remote (service)
-ops: Arc::new(RemoteDatabaseOps::new(conn, root_id, identity)),
+// Remote (service): a per-handle RemoteBackend bound to the calling identity.
+ops: Arc::new(RemoteBackend::new(conn, Some(identity))),
 ```
 
 ### Encrypted-store split
@@ -296,7 +303,7 @@ Encrypted stores (wrapped in `PasswordStore`) are opaque to the daemon — the d
 
 - **`GetStoreEntries { store, tips, scope }`** — the **universal primitive** for encrypted stores. Returns opaque `Entry` objects reachable from `tips`, ordered by subtree height, already verified against the server's Verified frontier. The client receives encrypted entries it can decrypt and CRDT-merge locally. This works identically for encrypted and unencrypted stores — the server never touches content.
 
-- **`GetCachedCrdtState`/`CacheCrdtState`** (retained from the `BackendOp` surface, also forwarded through `RemoteDatabaseOps`'s in-memory cache) provide a per-session CRDT-merge fast-path that avoids re-fetching entries whose merged state is already cached. The daemon's per-user `ServiceCache` (keyed `(user_uuid, entry_id, store)`) serves the cross-session path; the `RemoteDatabaseOps` local cache serves intra-session repeated materialization.
+- **`GetCachedCrdtState`/`CacheCrdtState`** provide a CRDT-merge fast-path that avoids re-fetching entries whose merged state is already cached. The daemon serves these through its `BackendImpl`'s `CacheScope::User(uuid)` slot (cross-session, per-user); `RemoteBackend` also keeps its own per-connection in-memory LRU for intra-transaction repeats without a round-trip. See [CRDT Cache](#crdt-cache).
 
 The encrypted-store-over-service test (`test_database_encrypted_store_roundtrip`) exercises the full path: writes encrypted data server-side via a local `Database`, then reads entries via `RemoteConnection::get_store_entries` and confirms the opaque entries carry the correct subtree markers. Decryption and local merge are client-only.
 
@@ -315,19 +322,16 @@ Every `DatabaseOp` variant is intrinsically tree-scoped via `root_id` — there 
 
 `SubmitSignedEntry` is the exception — verification-gated, not session-gated, as covered in [Access Control](#access-control-the-three-gates) above.
 
-### BackendOp surface reduction
+### One envelope, one op enum
 
-The original design mirrored every storage trait method onto a `BackendOp` variant. With the `DatabaseOp` path covering every Database-level read and write, the legacy surface was reduced to just `Get` and `SetInstanceMetadata`. The mapping for the removed variants:
+The current wire is the result of a series of consolidations:
 
-| Removed variant                                              | New home                                                                                                                 |
-| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
-| `Put`                                                        | `DatabaseOp::SubmitSignedEntry` (verification-gated)                                                                     |
-| `GetTips`                                                    | `DatabaseOp::GetVerifiedTips` (server-side Verified frontier)                                                            |
-| `GetStoreTips`, `GetStoreTipsUpToEntries`                    | `DatabaseOp::GetStoreTipsUpToEntries` (store-specific)                                                                   |
-| `FindMergeBase`, `GetPathFromTo`                             | `DatabaseOp::ComputeMergeState` (LCA + path in one RPC)                                                                  |
-| `GetTree`, `GetStore`, `GetTreeFromTips`, `GetStoreFromTips` | `DatabaseOp::GetStoreEntries` (universal opaque-entry primitive) and `DatabaseOp::GetStoreState` (unencrypted fast path) |
-| `GetCachedCrdtState`, `CacheCrdtState`                       | `RemoteDatabaseOps`' local `Mutex<HashMap>` cache (no wire round-trip)                                                   |
-| `NotifyEntryWritten`                                         | Removed; the server's `SubmitSignedEntry` handler fires its own write callbacks in-process                               |
+- An earlier draft mirrored every storage-trait method onto its own `BackendOp` variant, carried in a separate `ServiceRequest::Authenticated(AuthenticatedRequest)` envelope. That surface placed auth/verification/merge above the wire boundary, treating the daemon as a passive key-value store.
+- The Database-level `DatabaseOp` / `AuthenticatedDb` path was added alongside it so the daemon could own verification-on-read, the Verified frontier, and CRDT-state materialization.
+- The collapse landed `SetInstanceMetadata` into `DatabaseOp` (dispatcher-special-cased to gate against `_databases`), folded `Get` into `DatabaseOp::GetEntry`, and removed the parallel `BackendOp` enum, `ServiceRequest::Authenticated`, and `AuthenticatedRequest` outright.
+- The earlier `NotifyEntryWritten` RPC was removed: the server's `SubmitSignedEntry` handler fires its own write callbacks in-process.
+
+The shape today is a single envelope (`AuthenticatedDb(Box<AuthenticatedDbRequest>)`) carrying a single op enum (`DatabaseOp`) over every storage operation.
 
 ## Feature Gate
 
@@ -363,9 +367,9 @@ The architectural seam — wire-path tests vs. subsystem tests — is explicit a
 
 This is a **single trusted local client** v1. The following are deferred with tracked follow-ups:
 
-- **Lock-poisoning panics**: the `Arc`-shared `ServiceCache` mutex and the per-connection session `RwLock` use `lock().unwrap()`; a panic in one handler can cascade. Documented at the lock sites; must be fixed before serving multiple or untrusted clients.
+- **Lock-poisoning posture**: the per-connection session `RwLock` and the `RemoteBackend` per-connection cache mutex are poison-tolerant (handlers recover the guard from a poisoned lock rather than panicking), but other `std::sync::Mutex` sites in the service path still use `lock().unwrap()`. Documented at the lock sites; the remaining ones must be audited before serving multiple or untrusted clients.
 - **Verification status is never asserted over the wire**: the service protocol carries no way for a client to assert a verification status; entries arriving over the wire are stored `Unverified` and earn `Verified` only via the daemon's own validation pass. The status model, the pinned-settings validation that makes it staleness-free, the disclosure posture, and the unbuilt authority-_reduction_ (revocation) gap are documented in the [Verification Model](../design/verification.md) design doc.
-- **`get_tips()` on a remote Database delegates to `self.ops()`**: handles built via `Database::create` or `Database::open_remote` carry a `RemoteDatabaseOps` with a per-DB identity; reads use that identity (not the connection's login pubkey). Handles built via plain `Database::open` on a connected instance use `LocalDatabaseOps` over `Backend::Remote`, which still reads with the login pubkey — appropriate for code that wants the connection's default identity. The previous heuristic remote-detection in `Database::get_tips` was replaced with an explicit ops delegation.
+- **`get_tips()` on a connected Database delegates to `self.ops()`**: handles built via `Database::create` or `Database::open_remote` carry a `RemoteBackend` bound to a per-DB identity; reads use that identity (not the connection's login pubkey). Handles built via plain `Database::open` on a connected instance share the `Instance`'s `RemoteBackend` (which uses the connection's default session identity) — appropriate for code that wants the connection's login pubkey to drive reads. The previous heuristic remote-detection in `Database::get_tips` was replaced with an explicit ops delegation.
 - **No server-push notifications**: clients see the latest state on each request but are not notified of entries arriving from sync peers. A future bidirectional protocol would add a `Notification` frame type and a client-side background reader.
 - **No sync delegation**: `enable_sync()` on a remote Instance is a silent no-op (sync runs daemon-side; the client can't enable it from over the wire). A future admin-gated `EnableSync` RPC would let a client ask the daemon to enable its sync subsystem, parallel to how `InstanceAdmin::create_user` reaches `_users` today.
 

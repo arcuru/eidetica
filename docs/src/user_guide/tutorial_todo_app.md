@@ -28,28 +28,32 @@ This shows how the `Sqlite` backend provides persistent storage. Data is automat
 
 ### 2. Users (`User`)
 
-Users provide authenticated access to databases. A `User` manages signing keys and database access. The Todo example creates a passwordless user for simplicity:
+Users provide authenticated access to databases. A `User` manages signing keys and database access. The Todo example creates a passwordless user for simplicity, bootstrapping it as the initial admin on a fresh data file via `Instance::open_or_create`:
 
 ```rust,ignore
-async fn get_or_create_user(instance: &Instance) -> Result<User> {
+async fn load_or_create_instance_and_user(
+    backend: Box<dyn BackendImpl>,
+) -> Result<(Instance, User)> {
     let username = "todo-user";
 
-    // Try to login first
-    match instance.login_user(username, None).await {
-        Ok(user) => {
+    // open_or_create returns Some(user) only when bootstrapping a fresh
+    // backend — on subsequent runs it loads the existing instance and
+    // returns None for the user, so we log back in.
+    let (instance, maybe_user) =
+        Instance::open_or_create(backend, NewUser::passwordless(username)).await?;
+
+    let user = match maybe_user {
+        Some(u) => {
+            println!("✓ Initialised new instance and bootstrapped {username} as admin");
+            u
+        }
+        None => {
+            let u = instance.login_user(username, None).await?;
             println!("✓ Logged in as passwordless user: {username}");
-            Ok(user)
+            u
         }
-        Err(e) if e.is_not_found() => {
-            // User doesn't exist, create it
-            println!("Creating new passwordless user: {username}");
-            instance.create_user(username, None).await?;
-            let user = instance.login_user(username, None).await?;
-            println!("✓ Created and logged in as passwordless user: {username}");
-            Ok(user)
-        }
-        Err(e) => Err(e),
-    }
+    };
+    Ok((instance, user))
 }
 ```
 
