@@ -84,7 +84,7 @@ Once you've initialized a tracing subscriber, all Eidetica operations will autom
 # async fn main() -> eidetica::Result<()> {
 let backend = Box::new(Sqlite::in_memory().await?);
 // Initialise with alice as the first/admin user — this logs at INFO level.
-let (instance, mut user) = Instance::create(
+let (instance, mut user) = Instance::create_backend(
     backend,
     eidetica::NewUser::passwordless("alice"),
 ).await?;

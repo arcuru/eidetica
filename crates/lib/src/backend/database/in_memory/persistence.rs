@@ -122,6 +122,13 @@ impl<'de> Deserialize<'de> for InMemory {
 
 /// Saves the entire database state (all entries) to a specified file as JSON.
 ///
+/// **Atomicity:** the write goes to `<path>.tmp` first, then renames into
+/// place. On POSIX the final rename is atomic — a process crash mid-write
+/// leaves the previous snapshot intact and any stale `.tmp` is overwritten
+/// on the next save. On Windows the rename is not atomic when the
+/// destination already exists, so a crash during the rename can leave a
+/// stale `.tmp` and an out-of-date snapshot.
+///
 /// # Arguments
 /// * `backend` - The InMemory database to save
 /// * `path` - The path to the file where the state should be saved.
@@ -146,12 +153,54 @@ pub(crate) fn save_to_file<P: AsRef<Path>>(backend: &InMemory, path: P) -> Resul
 
     let json = serde_json::to_string_pretty(&serializable)
         .map_err(|e| -> Error { BackendError::SerializationFailed { source: e }.into() })?;
-    std::fs::write(path, json).map_err(|e| -> Error { BackendError::FileIo { source: e }.into() })
+
+    // Write to a sibling tempfile, then atomic rename. `<path>.tmp` is the
+    // standard convention; a stale tempfile from a crashed previous run is
+    // overwritten on the next save.
+    let path = path.as_ref();
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp_path = std::path::PathBuf::from(tmp);
+
+    std::fs::write(&tmp_path, json.as_bytes())
+        .map_err(|e| -> Error { BackendError::FileIo { source: e }.into() })?;
+    std::fs::rename(&tmp_path, path).map_err(|e| -> Error {
+        // Best-effort cleanup of the tempfile if rename failed; ignore
+        // any cleanup error (the original failure is what the caller
+        // needs to see).
+        let _ = std::fs::remove_file(&tmp_path);
+        BackendError::FileIo { source: e }.into()
+    })
+}
+
+/// Attempts to load the database state from a specified JSON file.
+///
+/// Returns `Ok(None)` when the file does not exist; the caller decides
+/// whether that's a fresh-start signal or an error (strict load vs.
+/// bootstrap). Other I/O errors and deserialisation errors surface
+/// directly.
+///
+/// Reading the bytes and parsing happen in a single call so there's no
+/// TOCTOU window between an external "does this snapshot exist?" check
+/// and the actual read.
+pub(crate) fn try_load_from_file<P: AsRef<Path>>(path: P) -> Result<Option<InMemory>> {
+    match std::fs::read_to_string(path) {
+        Ok(json) => {
+            let database: InMemory = serde_json::from_str(&json).map_err(|e| -> Error {
+                BackendError::DeserializationFailed { source: e }.into()
+            })?;
+            Ok(Some(database))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(BackendError::FileIo { source: e }.into()),
+    }
 }
 
 /// Loads the database state from a specified JSON file.
 ///
 /// If the file does not exist, a new, empty `InMemory` database is returned.
+/// Callers that need to distinguish "missing" from "loaded empty" should
+/// use [`try_load_from_file`] instead.
 ///
 /// # Arguments
 /// * `path` - The path to the file from which to load the state.
@@ -159,14 +208,5 @@ pub(crate) fn save_to_file<P: AsRef<Path>>(backend: &InMemory, path: P) -> Resul
 /// # Returns
 /// A `Result` containing the loaded `InMemory` database or an I/O or deserialization error.
 pub(crate) fn load_from_file<P: AsRef<Path>>(path: P) -> Result<InMemory> {
-    match std::fs::read_to_string(path) {
-        Ok(json) => {
-            let database: InMemory = serde_json::from_str(&json).map_err(|e| -> Error {
-                BackendError::DeserializationFailed { source: e }.into()
-            })?;
-            Ok(database)
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(InMemory::new()),
-        Err(e) => Err(BackendError::FileIo { source: e }.into()),
-    }
+    Ok(try_load_from_file(path)?.unwrap_or_else(InMemory::new))
 }

@@ -481,7 +481,7 @@ impl Encryptor for PasswordEncryptor {
 /// # use eidetica::auth::generate_keypair;
 /// # async fn example() -> eidetica::Result<()> {
 /// # let backend = InMemory::new();
-/// # let instance = Instance::open(Box::new(backend)).await?;
+/// # let instance = Instance::open_backend(Box::new(backend)).await?;
 /// # let (private_key, _) = generate_keypair();
 /// # let db = Database::create(&instance, private_key, Doc::new()).await?;
 /// let tx = db.new_transaction().await?;
@@ -503,7 +503,7 @@ impl Encryptor for PasswordEncryptor {
 /// # use eidetica::auth::generate_keypair;
 /// # async fn example() -> eidetica::Result<()> {
 /// # let backend = InMemory::new();
-/// # let instance = Instance::open(Box::new(backend)).await?;
+/// # let instance = Instance::open_backend(Box::new(backend)).await?;
 /// # let (private_key, _) = generate_keypair();
 /// # let db = Database::create(&instance, private_key, Doc::new()).await?;
 /// let tx = db.new_transaction().await?;
@@ -674,7 +674,7 @@ impl<S: Store> PasswordStore<S> {
     /// # use eidetica::auth::generate_keypair;
     /// # async fn example() -> eidetica::Result<()> {
     /// # let backend = InMemory::new();
-    /// # let instance = Instance::open(Box::new(backend)).await?;
+    /// # let instance = Instance::open_backend(Box::new(backend)).await?;
     /// # let (private_key, _) = generate_keypair();
     /// # let db = Database::create(&instance, private_key, Doc::new()).await?;
     /// let tx = db.new_transaction().await?;
@@ -990,7 +990,7 @@ impl<S: Store> PasswordStore<S> {
     /// # use eidetica::auth::generate_keypair;
     /// # async fn example() -> eidetica::Result<()> {
     /// # let backend = InMemory::new();
-    /// # let instance = Instance::open(Box::new(backend)).await?;
+    /// # let instance = Instance::open_backend(Box::new(backend)).await?;
     /// # let (private_key, _) = generate_keypair();
     /// # let db = Database::create(&instance, private_key, Doc::new()).await?;
     /// # let tx = db.new_transaction().await?;

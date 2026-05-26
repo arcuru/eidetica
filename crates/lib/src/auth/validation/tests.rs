@@ -327,9 +327,10 @@ async fn test_complete_delegation_workflow() {
 
     // Create a backend and database for testing
     let backend = Box::new(InMemory::new());
-    let (instance, _admin) = Instance::create(backend, crate::NewUser::passwordless("admin"))
-        .await
-        .expect("Failed to create test instance");
+    let (instance, _admin) =
+        Instance::create_backend(backend, crate::NewUser::passwordless("admin"))
+            .await
+            .expect("Failed to create test instance");
 
     // Generate a separate key for the delegated user role
     let (_, delegated_pubkey) = generate_keypair();
@@ -429,9 +430,10 @@ async fn test_delegated_tree_requires_tips() {
 
     // Create a backend and database for testing
     let backend = Box::new(InMemory::new());
-    let (instance, _admin) = Instance::create(backend, crate::NewUser::passwordless("admin"))
-        .await
-        .expect("Failed to create test instance");
+    let (instance, _admin) =
+        Instance::create_backend(backend, crate::NewUser::passwordless("admin"))
+            .await
+            .expect("Failed to create test instance");
 
     // Create a simple delegated tree
     let delegated_tree = Database::create(
@@ -513,9 +515,10 @@ async fn test_nested_delegation_with_permission_clamping() {
 
     // Create a backend and database for testing
     let backend = Box::new(InMemory::new());
-    let (instance, _admin) = Instance::create(backend, crate::NewUser::passwordless("admin"))
-        .await
-        .expect("Failed to create test instance");
+    let (instance, _admin) =
+        Instance::create_backend(backend, crate::NewUser::passwordless("admin"))
+            .await
+            .expect("Failed to create test instance");
 
     // Generate a separate key for the delegated user
     let (_, user_pubkey) = generate_keypair();

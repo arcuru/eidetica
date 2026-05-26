@@ -310,7 +310,7 @@ mod tests {
 
     async fn create_test_database() -> (Instance, Database) {
         // Bootstrap "test" as the initial user, who is automatically Admin.
-        let (instance, mut user) = Instance::create(
+        let (instance, mut user) = Instance::create_backend(
             Box::new(InMemory::new()),
             crate::NewUser::passwordless("test"),
         )

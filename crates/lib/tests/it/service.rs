@@ -29,7 +29,7 @@ use tokio::sync::watch;
 async fn start_test_server() -> (PathBuf, watch::Sender<()>, Instance, TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let socket_path = dir.path().join("test.sock");
-    let (instance, _admin) = Instance::create(
+    let (instance, _admin) = Instance::create_backend(
         Box::new(InMemory::new()),
         eidetica::NewUser::passwordless("admin"),
     )
@@ -65,15 +65,17 @@ async fn create_user_via_admin(server: &Instance, username: &str) {
 /// key as Admin(0). The client authenticates via the remote connection.
 async fn setup_db(
     server: &Instance,
-    socket_path: &PathBuf,
+    socket_path: &std::path::Path,
     username: &str,
 ) -> (Instance, eidetica::entry::ID, eidetica::auth::types::SigKey) {
-    // Admin was created by Instance::open bootstrap — use it to create the test user.
+    // Admin was created by Instance::open_backend bootstrap — use it to create the test user.
     crate::helpers::create_user(server, username, None)
         .await
         .unwrap();
 
-    let instance = Instance::connect(socket_path).await.unwrap();
+    let instance = Instance::connect(format!("unix://{}", socket_path.display()))
+        .await
+        .unwrap();
     let user = instance.login_user(username, None).await.unwrap();
     let pubkey = user.get_default_key().unwrap();
 
@@ -102,7 +104,9 @@ async fn setup_db(
 #[tokio::test]
 async fn test_connect_and_create_instance() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
-    let _instance = Instance::connect(&socket_path).await.unwrap();
+    let _instance = Instance::connect(format!("unix://{}", socket_path.display()))
+        .await
+        .unwrap();
     let users = crate::helpers::list_users(&server).await.unwrap();
     // Admin user bootstrapped at Instance creation
     assert_eq!(users.len(), 1);
@@ -117,7 +121,9 @@ async fn test_user_lifecycle() {
         .await
         .unwrap();
 
-    let instance = Instance::connect(&socket_path).await.unwrap();
+    let instance = Instance::connect(format!("unix://{}", socket_path.display()))
+        .await
+        .unwrap();
 
     let user = instance.login_user("alice", None).await.unwrap();
     assert_eq!(user.username(), "alice");
@@ -141,7 +147,9 @@ async fn test_user_lifecycle() {
 async fn test_error_propagation() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
     create_user_via_admin(&server, "err-test").await;
-    let instance = Instance::connect(&socket_path).await.unwrap();
+    let instance = Instance::connect(format!("unix://{}", socket_path.display()))
+        .await
+        .unwrap();
     let user = instance.login_user("err-test", None).await.unwrap();
 
     let pubkey = user.get_default_key().unwrap();
@@ -162,7 +170,9 @@ async fn test_error_propagation() {
 #[tokio::test]
 async fn test_unauthenticated_backend_op_rejected() {
     let (socket_path, _tx, _server, _dir) = start_test_server().await;
-    let instance = Instance::connect(&socket_path).await.unwrap();
+    let instance = Instance::connect(format!("unix://{}", socket_path.display()))
+        .await
+        .unwrap();
 
     let conn = remote_conn(&instance);
     let result = conn
@@ -184,8 +194,12 @@ async fn test_concurrent_clients() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
     create_user_via_admin(&server, "bob").await;
 
-    let instance1 = Instance::connect(&socket_path).await.unwrap();
-    let instance2 = Instance::connect(&socket_path).await.unwrap();
+    let instance1 = Instance::connect(format!("unix://{}", socket_path.display()))
+        .await
+        .unwrap();
+    let instance2 = Instance::connect(format!("unix://{}", socket_path.display()))
+        .await
+        .unwrap();
 
     let _user1 = instance1.login_user("bob", None).await.unwrap();
     let user2 = instance2.login_user("bob", None).await.unwrap();
@@ -197,7 +211,9 @@ async fn test_instance_connect_convenience() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
     create_user_via_admin(&server, "charlie").await;
 
-    let _instance = Instance::connect(&socket_path).await.unwrap();
+    let _instance = Instance::connect(format!("unix://{}", socket_path.display()))
+        .await
+        .unwrap();
     let mut users = crate::helpers::list_users(&server).await.unwrap();
     // `list_users` returns users in UUID order (random per run), so sort
     // before comparing — the set is what matters, not iteration order.
@@ -208,7 +224,9 @@ async fn test_instance_connect_convenience() {
 #[tokio::test]
 async fn test_instance_identity_round_trip() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
-    let client = Instance::connect(&socket_path).await.unwrap();
+    let client = Instance::connect(format!("unix://{}", socket_path.display()))
+        .await
+        .unwrap();
 
     assert_eq!(client.id(), server.id());
 }
@@ -333,7 +351,9 @@ async fn test_database_begin_transaction() {
         .unwrap();
     let root_id = server_db.root_id().clone();
 
-    let instance = Instance::connect(&socket_path).await.unwrap();
+    let instance = Instance::connect(format!("unix://{}", socket_path.display()))
+        .await
+        .unwrap();
     let user = instance.login_user("alice", None).await.unwrap();
 
     let pubkey = user.get_default_key().unwrap();
@@ -427,7 +447,9 @@ async fn test_database_get_store_state() {
         .await
         .unwrap();
 
-    let instance = Instance::connect(&socket_path).await.unwrap();
+    let instance = Instance::connect(format!("unix://{}", socket_path.display()))
+        .await
+        .unwrap();
     let user = instance.login_user("alice", None).await.unwrap();
 
     let pubkey = user.get_default_key().unwrap();
@@ -655,7 +677,9 @@ async fn test_backend_get_tips_denied_for_unauthorised_user() {
 
     // Create bob and try to read alice's database.
     create_user_via_admin(&server, "bob").await;
-    let bob_inst = Instance::connect(&socket_path).await.unwrap();
+    let bob_inst = Instance::connect(format!("unix://{}", socket_path.display()))
+        .await
+        .unwrap();
     let bob_user = bob_inst.login_user("bob", None).await.unwrap();
     let bob_key = bob_user.get_default_key().unwrap();
     let bob_identity = eidetica::auth::types::SigKey::from_pubkey(&bob_key);
@@ -688,7 +712,9 @@ async fn test_backend_get_denied_cross_tree() {
 
     // Bob is logged in but has no access.
     create_user_via_admin(&server, "bob").await;
-    let bob_inst = Instance::connect(&socket_path).await.unwrap();
+    let bob_inst = Instance::connect(format!("unix://{}", socket_path.display()))
+        .await
+        .unwrap();
     let bob_user = bob_inst.login_user("bob", None).await.unwrap();
     let bob_key = bob_user.get_default_key().unwrap();
     let bob_identity = eidetica::auth::types::SigKey::from_pubkey(&bob_key);
@@ -710,7 +736,9 @@ async fn test_backend_get_denied_cross_tree() {
 async fn test_set_instance_metadata_allowed_for_admin() {
     let (socket_path, _tx, _server, _dir) = start_test_server().await;
 
-    let instance = Instance::connect(&socket_path).await.unwrap();
+    let instance = Instance::connect(format!("unix://{}", socket_path.display()))
+        .await
+        .unwrap();
     let _admin = instance.login_user("admin", None).await.unwrap();
 
     let current = instance
@@ -732,7 +760,9 @@ async fn test_set_instance_metadata_denied_for_non_admin() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
     create_user_via_admin(&server, "bob").await;
 
-    let bob_inst = Instance::connect(&socket_path).await.unwrap();
+    let bob_inst = Instance::connect(format!("unix://{}", socket_path.display()))
+        .await
+        .unwrap();
     let _bob = bob_inst.login_user("bob", None).await.unwrap();
 
     let current = bob_inst
@@ -893,7 +923,9 @@ async fn test_submit_cross_session_signed_by_tree_admin_becomes_verified() {
 
     // The bootstrap admin (NOT bob) connects over the wire. Admin holds
     // Admin on `_users`/`_databases` but is *not* a member of bob's tree.
-    let admin_inst = Instance::connect(&socket_path).await.unwrap();
+    let admin_inst = Instance::connect(format!("unix://{}", socket_path.display()))
+        .await
+        .unwrap();
     let _admin_user = admin_inst.login_user("admin", None).await.unwrap();
     let conn = remote_conn(&admin_inst);
 
@@ -996,7 +1028,9 @@ async fn test_submit_unauthorized_signer_stays_invisible_in_default_reads() {
 
     // Admin connects and signs an entry with the *admin* key, which has no
     // auth on bob's tree.
-    let admin_inst = Instance::connect(&socket_path).await.unwrap();
+    let admin_inst = Instance::connect(format!("unix://{}", socket_path.display()))
+        .await
+        .unwrap();
     let admin_user = admin_inst.login_user("admin", None).await.unwrap();
     let admin_pub = admin_user.get_default_key().unwrap();
     let admin_sk = admin_user.get_signing_key(&admin_pub).unwrap();
@@ -1048,7 +1082,9 @@ async fn test_daemon_survives_abrupt_client_disconnect() {
 
     // Client A connects, logs in, then is dropped without any teardown.
     {
-        let instance = Instance::connect(&socket_path).await.unwrap();
+        let instance = Instance::connect(format!("unix://{}", socket_path.display()))
+            .await
+            .unwrap();
         let _user = instance.login_user("alice", None).await.unwrap();
         // Drop instance — the underlying UnixStream tears down without the
         // server ever seeing an EOF-after-request boundary.
@@ -1057,7 +1093,9 @@ async fn test_daemon_survives_abrupt_client_disconnect() {
     // Daemon must still answer fresh connections. Anything else (a `connect`
     // hang, an authentication failure, a server crash) means abrupt drops are
     // poisoning shared state.
-    let instance = Instance::connect(&socket_path).await.unwrap();
+    let instance = Instance::connect(format!("unix://{}", socket_path.display()))
+        .await
+        .unwrap();
     let user = instance.login_user("alice", None).await.unwrap();
     assert_eq!(user.username(), "alice");
 }
@@ -1092,7 +1130,9 @@ async fn test_daemon_survives_malformed_frame_from_client() {
     }
 
     // Daemon should still serve a fresh connection.
-    let instance = Instance::connect(&socket_path).await.unwrap();
+    let instance = Instance::connect(format!("unix://{}", socket_path.display()))
+        .await
+        .unwrap();
     let user = instance.login_user("alice", None).await.unwrap();
     assert_eq!(user.username(), "alice");
 }
@@ -1121,7 +1161,9 @@ async fn test_daemon_survives_half_written_request_frame() {
         drop(writer);
     }
 
-    let instance = Instance::connect(&socket_path).await.unwrap();
+    let instance = Instance::connect(format!("unix://{}", socket_path.display()))
+        .await
+        .unwrap();
     let user = instance.login_user("alice", None).await.unwrap();
     assert_eq!(user.username(), "alice");
 }
@@ -1208,7 +1250,9 @@ async fn test_cache_survives_reconnect() {
 
     // Fresh connection + login = fresh tier 1, but the daemon's ServiceCache
     // still has the entry. Verify it.
-    let instance2 = Instance::connect(&socket_path).await.unwrap();
+    let instance2 = Instance::connect(format!("unix://{}", socket_path.display()))
+        .await
+        .unwrap();
     let _user2 = instance2.login_user("alice", None).await.unwrap();
     let conn2 = remote_conn(&instance2);
 

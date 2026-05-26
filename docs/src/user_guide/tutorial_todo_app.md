@@ -10,37 +10,40 @@ The Todo example demonstrates Eidetica's key components working together in a re
 
 The `Instance` is your main entry point. It wraps a storage backend and manages users and databases.
 
-The Todo example implements `load_or_create_instance()` to handle loading existing backends or creating new ones:
+The Todo example loads or initialises an instance by URL. `connect_or_create` handles both the first-run and reopen cases:
 
 ```rust,ignore
-async fn load_or_create_instance(path: &PathBuf) -> Result<Instance> {
-    // SQLite handles both creation and loading automatically
-    let backend = Sqlite::open(path).await?;
-    let instance = Instance::open(Box::new(backend)).await?;
+async fn load_or_create_instance(path: &Path) -> Result<Instance> {
+    // SQLite handles both creation and loading automatically.
+    // The URL is passed through to sqlx — `mode=rwc` tells sqlx to
+    // create the database file on first run if it doesn't exist.
+    let url = format!("sqlite://{}?mode=rwc", path.display());
+    let (instance, _maybe_user) =
+        Instance::connect_or_create(&url, NewUser::passwordless("todo-user")).await?;
 
     println!("✓ Instance initialized");
-
     Ok(instance)
 }
 ```
 
-This shows how the `Sqlite` backend provides persistent storage. Data is automatically saved to the SQLite file. Authentication is managed through the User system (see below).
+Data is automatically saved to the SQLite file. Authentication is managed through the User system (see below).
 
 ### 2. Users (`User`)
 
-Users provide authenticated access to databases. A `User` manages signing keys and database access. The Todo example creates a passwordless user for simplicity, bootstrapping it as the initial admin on a fresh data file via `Instance::open_or_create`:
+Users provide authenticated access to databases. A `User` manages signing keys and database access. The Todo example creates a passwordless user for simplicity, bootstrapping it as the initial admin on a fresh data file via `Instance::connect_or_create`:
 
 ```rust,ignore
-async fn load_or_create_instance_and_user(
-    backend: Box<dyn BackendImpl>,
-) -> Result<(Instance, User)> {
+async fn load_or_create_instance_and_user(path: &Path) -> Result<(Instance, User)> {
     let username = "todo-user";
+    // SQLite via the URL surface — `sqlite://<path>` is handed through to
+    // sqlx, and `mode=rwc` tells sqlx to create the file on first run.
+    let url = format!("sqlite://{}?mode=rwc", path.display());
 
-    // open_or_create returns Some(user) only when bootstrapping a fresh
-    // backend — on subsequent runs it loads the existing instance and
-    // returns None for the user, so we log back in.
+    // connect_or_create returns Some(user) only when bootstrapping a
+    // fresh backend — on subsequent runs it loads the existing instance
+    // and returns None for the user, so we log back in.
     let (instance, maybe_user) =
-        Instance::open_or_create(backend, NewUser::passwordless(username)).await?;
+        Instance::connect_or_create(&url, NewUser::passwordless(username)).await?;
 
     let user = match maybe_user {
         Some(u) => {

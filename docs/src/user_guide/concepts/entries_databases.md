@@ -58,7 +58,7 @@ You interact with Databases through Transactions:
 # #[tokio::main]
 # async fn main() -> Result<()> {
 #     let backend = Sqlite::in_memory().await?;
-#     let (instance, mut user) = eidetica::Instance::create(
+#     let (instance, mut user) = eidetica::Instance::create_backend(
 #         Box::new(backend),
 #         eidetica::NewUser::passwordless("alice"),
 #     ).await?;
@@ -90,7 +90,7 @@ Each Database maintains its settings as a key-value store in a special "settings
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # // Setup database for testing
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;

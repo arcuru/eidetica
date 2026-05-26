@@ -14,7 +14,7 @@ Eidetica's sync system enables real-time data synchronization between distribute
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(Sqlite::in_memory().await?);
-let (instance, mut user) = Instance::create(
+let (instance, mut user) = Instance::create_backend(
     backend,
     eidetica::NewUser::passwordless("alice"),
 ).await?;
@@ -170,7 +170,7 @@ For persistent sync relationships:
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(Sqlite::in_memory().await?);
-# let (instance, _) = Instance::open_or_create(
+# let (instance, _) = Instance::connect_or_create_backend(
 #     backend,
 #     eidetica::NewUser::passwordless("admin"),
 # ).await?;
@@ -213,7 +213,7 @@ Configure per-database sync behavior:
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(Sqlite::in_memory().await?);
-# let (instance, _) = Instance::open_or_create(
+# let (instance, _) = Instance::connect_or_create_backend(
 #     backend,
 #     eidetica::NewUser::passwordless("admin"),
 # ).await?;

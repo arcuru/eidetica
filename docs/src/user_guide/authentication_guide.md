@@ -15,7 +15,7 @@ Every Eidetica database requires authentication. Here's the minimal setup:
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let backend = Sqlite::in_memory().await?;
-# let (instance, _) = Instance::open_or_create(
+# let (instance, _) = Instance::connect_or_create_backend(
 #     Box::new(backend),
 #     eidetica::NewUser::passwordless("admin"),
 # ).await?;
@@ -44,8 +44,9 @@ txn.commit().await?;  // Automatically signed
 
 **Mandatory Authentication**: Every entry must be signed - no exceptions.
 
-**First User Becomes Admin**: Whoever is named in the [`NewUser`] passed to `Instance::create` (or `open_or_create` on a fresh backend) is the instance's first user **and** is automatically granted `Admin(0)` on the system databases (`_users`, `_databases`). There is no hidden default account: production deployments run `eidetica daemon init --username <NAME> [--password PASS | --passwordless]` with explicit credentials. Subsequent users are created by an existing admin via `admin.admin().await?.create_user(NewUser::…)` and land as non-admins until promoted.
+**First User Becomes Admin**: Whoever is named in the [`NewUser`] passed to `Instance::connect_or_create` (URL-based) or [`Instance::create_backend`] (pre-built backend) is the instance's first user **and** is automatically granted `Admin(0)` on the system databases (`_users`, `_databases`). There is no hidden default account: production deployments run `eidetica daemon init --username <NAME> [--password PASS | --passwordless]` with explicit credentials. Subsequent users are created by an existing admin via `admin.admin().await?.create_user(NewUser::…)` and land as non-admins until promoted.
 
+[`Instance::create_backend`]: https://docs.rs/eidetica/latest/eidetica/struct.Instance.html#method.create_backend
 [`NewUser`]: https://docs.rs/eidetica/latest/eidetica/instance/struct.NewUser.html
 
 **Permission Levels**:
@@ -72,7 +73,7 @@ Give other users access to your database:
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # // Setup database for testing
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;
@@ -108,7 +109,7 @@ Allow anyone to read your database:
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;
@@ -143,7 +144,7 @@ Create a collaborative database where anyone can read and write without individu
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;
@@ -181,7 +182,7 @@ transaction.commit().await?;
 ```rust,ignore
 use eidetica::{Instance, backend::database::Sqlite};
 
-let instance = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
+let instance = Instance::open_backend(Box::new(Sqlite::in_memory().await?)).await?;
 
 // Log in as an existing user
 let mut user = instance.login_user("bob", None).await?;
@@ -221,7 +222,7 @@ Remove a user's access:
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;
@@ -262,7 +263,7 @@ Note: Historical entries created by revoked keys remain valid.
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # // Setup database for testing
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;
@@ -330,7 +331,7 @@ When you delegate to another database:
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;
@@ -387,7 +388,7 @@ Delegations are stored in the **delegating database's** auth settings by the del
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;
@@ -432,7 +433,7 @@ These are names in the **delegated database's** auth settings that point to **pu
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;
@@ -474,7 +475,7 @@ A delegation path is a sequence of steps that traverses from the delegating data
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;
@@ -708,7 +709,7 @@ The simplest approach for collaborative databases is to use global wildcard perm
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;

@@ -11,7 +11,7 @@ use crate::{
 #[tokio::test]
 async fn test_find_sigkeys_returns_sorted_by_permission() -> Result<()> {
     // Create instance
-    let (instance, _admin) = Instance::create(
+    let (instance, _admin) = Instance::create_backend(
         Box::new(InMemory::new()),
         crate::NewUser::passwordless("admin"),
     )
@@ -62,7 +62,7 @@ async fn test_find_sigkeys_returns_sorted_by_permission() -> Result<()> {
 
 #[tokio::test]
 async fn test_create_bootstraps_signing_key_as_admin_zero() -> Result<()> {
-    let (instance, _admin) = Instance::create(
+    let (instance, _admin) = Instance::create_backend(
         Box::new(InMemory::new()),
         crate::NewUser::passwordless("admin"),
     )
@@ -87,7 +87,7 @@ async fn test_create_bootstraps_signing_key_as_admin_zero() -> Result<()> {
 
 #[tokio::test]
 async fn test_create_rejects_preconfigured_auth() -> Result<()> {
-    let (instance, _admin) = Instance::create(
+    let (instance, _admin) = Instance::create_backend(
         Box::new(InMemory::new()),
         crate::NewUser::passwordless("admin"),
     )
@@ -125,7 +125,7 @@ async fn test_create_rejects_preconfigured_auth() -> Result<()> {
 
 /// Helper: create an Instance + Database for callback tests
 async fn setup_callback_test() -> (Instance, Database) {
-    let (instance, _admin) = Instance::create(
+    let (instance, _admin) = Instance::create_backend(
         Box::new(InMemory::new()),
         crate::NewUser::passwordless("admin"),
     )

@@ -170,7 +170,7 @@ pub async fn create_databases_tracking(
 /// # Returns
 /// A tuple of `(user_uuid, UserInfo, root_private_key)`. The private key is
 /// the one just generated for this user; callers (e.g.
-/// [`Instance::create`](crate::Instance::create) or
+/// [`Instance::create_backend`](crate::Instance::create_backend) or
 /// [`InstanceAdmin::create_user`](crate::user::InstanceAdmin::create_user))
 /// can hand it straight to [`build_user_session`] to materialise a logged-in
 /// [`User`](crate::user::User) without re-decrypting the key from storage.
@@ -682,7 +682,7 @@ mod tests {
     async fn setup_instance() -> (Instance, PrivateKey, crate::user::User) {
         use crate::clock::FixedClock;
 
-        let (instance, admin) = Instance::create_with_clock(
+        let (instance, admin) = Instance::create_backend_with_clock(
             Box::new(InMemory::new()),
             Arc::new(FixedClock::default()),
             crate::NewUser::passwordless("admin"),

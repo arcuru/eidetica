@@ -12,7 +12,7 @@
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(Sqlite::in_memory().await?);
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     backend,
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;
@@ -43,7 +43,7 @@ tx.commit().await?;
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(Sqlite::in_memory().await?);
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     backend,
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;
@@ -85,7 +85,7 @@ tx.commit().await?;
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let backend = Box::new(Sqlite::in_memory().await?);
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     backend,
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;

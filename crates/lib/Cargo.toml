@@ -17,7 +17,7 @@ y-crdt = ["dep:yrs"]
 sqlite = ["dep:sqlx"]
 postgres = ["dep:sqlx"]
 # Exposes internal testing utilities
-# Includes FixedClock, Instance::open_with_clock, and other internal hooks.
+# Includes FixedClock, Instance::*_with_clock, and other internal hooks.
 testing = []
 
 [dependencies]

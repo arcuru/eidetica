@@ -84,7 +84,7 @@ pub async fn run(args: &ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
     // Load the existing Instance — initialise via `eidetica daemon init`
     // first if the backend is empty. The auto-bootstrapped `admin/admin`
     // pair is gone.
-    let instance = match Instance::open(backend_box).await {
+    let instance = match Instance::open_backend(backend_box).await {
         Ok(instance) => instance,
         Err(e) => {
             if let eidetica::Error::Instance(boxed) = &e
@@ -216,7 +216,7 @@ pub async fn run(args: &ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
             engine.as_ref().and_then(|e| e.as_any().downcast_ref::<InMemory>())
         {
             let json_path = data_dir.join("eidetica.json");
-            match in_memory_backend.save_to_file(&json_path).await {
+            match in_memory_backend.save_to_file(&json_path) {
                 Ok(_) => {
                     tracing::info!("Database saved to {}", json_path.display());
                     println!("\nDatabase saved successfully");

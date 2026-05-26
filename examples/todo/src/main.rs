@@ -1,21 +1,20 @@
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
 use eidetica::{
-    Database, Error, Instance, Result,
-    backend::database::InMemory,
+    Database, Instance, Result,
     crdt::Doc,
     store::{StoreError, Table, YDoc},
     user::User,
     y_crdt::{Map as YMap, Transact},
 };
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
-    /// Path to the database file to use
-    #[arg(short, long, default_value = "todo_db.json")]
+    /// Path to the SQLite database file to use.
+    #[arg(short, long, default_value = "todo.db")]
     database_path: PathBuf,
 
     #[command(subcommand)]
@@ -94,7 +93,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Load or create the instance + the single application user.
-    let (instance, mut user) = load_or_create_instance_and_user(&cli.database_path).await?;
+    let (_instance, mut user) = load_or_create_instance_and_user(&cli.database_path).await?;
 
     // Load or create the todo database
     let todo_database = load_or_create_todo_database(&mut user).await?;
@@ -138,29 +137,28 @@ async fn main() -> Result<()> {
         return Err(e);
     }
 
-    // Save the instance
-    save_instance(&instance, &cli.database_path).await
+    // SQLite handles persistence inline — every committed transaction is
+    // durable, so there's no explicit save step.
+    Ok(())
 }
 
 /// Open (or bootstrap) the embedded instance and return it together with
 /// the single application user.
 ///
-/// On a fresh data file, [`Instance::open_or_create`] mints the
+/// On a fresh data file, [`Instance::connect_or_create`] mints the
 /// `todo-user` as the initial admin (the example is single-user). On
 /// subsequent runs the file already has metadata, so the call loads the
 /// existing instance and we log back in.
-async fn load_or_create_instance_and_user(path: &PathBuf) -> Result<(Instance, User)> {
+async fn load_or_create_instance_and_user(path: &Path) -> Result<(Instance, User)> {
     use eidetica::NewUser;
 
     let username = "todo-user";
-    let backend: Box<dyn eidetica::backend::BackendImpl> = if path.exists() {
-        Box::new(InMemory::load_from_file(path).await?)
-    } else {
-        Box::new(InMemory::new())
-    };
+    // SQLite via the URL surface — `sqlite://<path>` is handed through to
+    // sqlx, and `mode=rwc` tells sqlx to create the file on first run.
+    let url = format!("sqlite://{}?mode=rwc", path.display());
 
     let (instance, maybe_user) =
-        Instance::open_or_create(backend, NewUser::passwordless(username)).await?;
+        Instance::connect_or_create(&url, NewUser::passwordless(username)).await?;
 
     let user = match maybe_user {
         Some(u) => {
@@ -175,26 +173,6 @@ async fn load_or_create_instance_and_user(path: &PathBuf) -> Result<(Instance, U
     };
 
     Ok((instance, user))
-}
-
-async fn save_instance(instance: &Instance, path: &PathBuf) -> Result<()> {
-    // Reach the in-process storage engine; this example always runs against a
-    // local backend.
-    let engine = instance.backend().local_engine().ok_or_else(|| {
-        Error::Io(std::io::Error::other(
-            "Cannot save a remote-backed instance",
-        ))
-    })?;
-
-    // Cast the engine to InMemory to access save_to_file
-    let in_memory_database = engine.as_any().downcast_ref::<InMemory>().ok_or_else(|| {
-        Error::Io(std::io::Error::other(
-            "Failed to downcast database to InMemory",
-        ))
-    })?;
-
-    in_memory_database.save_to_file(path).await?;
-    Ok(())
 }
 
 async fn load_or_create_todo_database(user: &mut User) -> Result<Database> {

@@ -31,7 +31,7 @@ Using a `Transaction` follows a distinct lifecycle:
     # async fn main() -> eidetica::Result<()> {
     # // Setup database
     # let backend = Sqlite::in_memory().await?;
-    # let (instance, mut user) = Instance::create(
+    # let (instance, mut user) = Instance::create_backend(
     #     Box::new(backend),
     #     eidetica::NewUser::passwordless("alice"),
     # ).await?;
@@ -63,7 +63,7 @@ Using a `Transaction` follows a distinct lifecycle:
     # async fn main() -> eidetica::Result<()> {
     # // Setup database and transaction
     # let backend = Sqlite::in_memory().await?;
-    # let (instance, mut user) = Instance::create(
+    # let (instance, mut user) = Instance::create_backend(
     #     Box::new(backend),
     #     eidetica::NewUser::passwordless("alice"),
     # ).await?;
@@ -101,7 +101,7 @@ Using a `Transaction` follows a distinct lifecycle:
     # async fn main() -> eidetica::Result<()> {
     # // Setup database and transaction
     # let backend = Sqlite::in_memory().await?;
-    # let (instance, mut user) = Instance::create(
+    # let (instance, mut user) = Instance::create_backend(
     #     Box::new(backend),
     #     eidetica::NewUser::passwordless("alice"),
     # ).await?;
@@ -138,7 +138,7 @@ Using a `Transaction` follows a distinct lifecycle:
     # async fn main() -> eidetica::Result<()> {
     # // Setup database
     # let backend = Sqlite::in_memory().await?;
-    # let (instance, mut user) = Instance::create(
+    # let (instance, mut user) = Instance::create_backend(
     #     Box::new(backend),
     #     eidetica::NewUser::passwordless("alice"),
     # ).await?;
@@ -176,7 +176,7 @@ For the common pattern of "create a transaction, do some work, commit," `Databas
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # let backend = Sqlite::in_memory().await?;
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(backend),
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;
@@ -220,7 +220,7 @@ Within transactions, you can manage database settings using `SettingsStore`. Thi
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 # // Setup database for testing
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;
@@ -283,7 +283,7 @@ Configure the height strategy for the entire database via `SettingsStore`:
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;
@@ -313,7 +313,7 @@ Individual stores can override the database strategy for independent height trac
 #
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(Sqlite::in_memory().await?),
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;
@@ -366,7 +366,7 @@ While `Transaction`s are essential for writes, you can perform reads without an 
 # async fn main() -> eidetica::Result<()> {
 # // Setup database with some data
 # let backend = Sqlite::in_memory().await?;
-# let (instance, mut user) = eidetica::Instance::create(
+# let (instance, mut user) = eidetica::Instance::create_backend(
 #     Box::new(backend),
 #     eidetica::NewUser::passwordless("alice"),
 # ).await?;

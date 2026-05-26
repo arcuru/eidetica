@@ -147,7 +147,7 @@ pub async fn test_instance() -> Instance {
 #[allow(dead_code)]
 pub async fn test_local_instance() -> Instance {
     let clock = Arc::new(FixedClock::default());
-    let (instance, _admin) = Instance::create_with_clock(
+    let (instance, _admin) = Instance::create_backend_with_clock(
         Box::new(InMemory::new()),
         clock,
         NewUser::passwordless("admin"),
@@ -247,7 +247,7 @@ async fn test_remote_instance() -> Instance {
     let socket_path = dir.path().join("test.sock");
 
     let (server, _admin) =
-        Instance::create(Box::new(InMemory::new()), NewUser::passwordless("admin"))
+        Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless("admin"))
             .await
             .expect("Failed to create server-side Instance");
     let service = ServiceServer::new(server.clone(), socket_path.clone());
@@ -270,7 +270,7 @@ async fn test_remote_instance() -> Instance {
         "daemon socket did not appear within 500ms"
     );
 
-    let instance = Instance::connect(&socket_path)
+    let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .expect("Failed to connect to test daemon");
     instance
@@ -318,7 +318,7 @@ async fn test_remote_instance_with_user(username: &str) -> (Instance, User) {
     let socket_path = dir.path().join("test.sock");
 
     let (server, _admin) =
-        Instance::create(Box::new(InMemory::new()), NewUser::passwordless("admin"))
+        Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless("admin"))
             .await
             .expect("Failed to create server-side Instance");
     let service = ServiceServer::new(server.clone(), socket_path.clone());
@@ -344,7 +344,7 @@ async fn test_remote_instance_with_user(username: &str) -> (Instance, User) {
         .await
         .expect("Failed to create user server-side");
 
-    let instance = Instance::connect(&socket_path)
+    let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .expect("Failed to connect to test daemon");
     let user = instance
@@ -404,7 +404,7 @@ async fn test_remote_instance_with_user_and_key(
     let socket_path = dir.path().join("test.sock");
 
     let (server, _admin) =
-        Instance::create(Box::new(InMemory::new()), NewUser::passwordless("admin"))
+        Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless("admin"))
             .await
             .expect("Failed to create server-side Instance");
     let service = ServiceServer::new(server.clone(), socket_path.clone());
@@ -439,7 +439,7 @@ async fn test_remote_instance_with_user_and_key(
         .expect("Failed to add key server-side");
 
     // Connect and authenticate as the user.
-    let instance = Instance::connect(&socket_path)
+    let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .expect("Failed to connect to test daemon");
     let user = instance

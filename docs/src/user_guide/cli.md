@@ -108,7 +108,7 @@ eidetica daemon [OPTIONS]
 | `--data-dir`     | `-d`  | current dir   | `EIDETICA_DATA_DIR`     | Data directory for storage files                                |
 | `--postgres-url` |       | —             | `EIDETICA_POSTGRES_URL` | PostgreSQL connection URL (required when backend is `postgres`) |
 
-The daemon runs until interrupted with SIGINT or SIGTERM. Clients connect using `Instance::connect(socket_path)`. See [Service (Daemon) Mode](service.md) for full documentation.
+The daemon runs until interrupted with SIGINT or SIGTERM. Clients connect using `Instance::connect("unix://...")`. See [Service (Daemon) Mode](service.md) for full documentation.
 
 ### `db list`
 

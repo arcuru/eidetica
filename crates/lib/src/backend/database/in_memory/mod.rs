@@ -109,18 +109,29 @@ impl InMemory {
 
     /// Saves the entire database state (all entries) to a specified file as JSON.
     ///
+    /// The write is atomic on POSIX (writes to `<path>.tmp` then renames
+    /// into place). On Windows the final rename is not atomic when the
+    /// destination already exists.
+    ///
+    /// This is synchronous — the body is just `std::fs::write` + `rename`
+    /// with no await points — so it's safe to call from `Drop` impls and
+    /// other non-async contexts. Callers on a tokio runtime should be
+    /// aware that the write briefly blocks the calling worker thread.
+    ///
     /// # Arguments
     /// * `path` - The path to the file where the state should be saved.
     ///
     /// # Returns
     /// A `Result` indicating success or an I/O or serialization error.
-    pub async fn save_to_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+    pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
         persistence::save_to_file(self, path)
     }
 
     /// Loads the database state from a specified JSON file.
     ///
     /// If the file does not exist, a new, empty `InMemory` database is returned.
+    /// Callers that need to tell "missing" apart from "loaded empty" should
+    /// use [`Self::try_load_from_file`].
     ///
     /// # Arguments
     /// * `path` - The path to the file from which to load the state.
@@ -129,6 +140,15 @@ impl InMemory {
     /// A `Result` containing the loaded `InMemory` database or an I/O or deserialization error.
     pub async fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         persistence::load_from_file(path)
+    }
+
+    /// Like [`Self::load_from_file`], but returns `Ok(None)` when the file
+    /// does not exist instead of falling back to an empty backend. Lets
+    /// callers distinguish "no snapshot yet" from "snapshot loaded as
+    /// empty" without a separate `path.exists()` round-trip (and the TOCTOU
+    /// window that comes with it).
+    pub async fn try_load_from_file<P: AsRef<Path>>(path: P) -> Result<Option<Self>> {
+        persistence::try_load_from_file(path)
     }
 
     /// Sort entries by their height within a tree (exposed for testing)

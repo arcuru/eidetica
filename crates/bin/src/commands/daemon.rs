@@ -24,7 +24,7 @@ use crate::cli::{BackendConfig, DaemonArgs, DaemonInitArgs};
 /// Run the Eidetica daemon against an already-initialised backend.
 ///
 /// Errors with a pointer to `eidetica daemon init` if the backend hasn't been
-/// initialised yet (i.e. `Instance::open` returns
+/// initialised yet (i.e. `Instance::open_backend` returns
 /// [`InstanceError::NotInitialized`]).
 pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing
@@ -39,7 +39,7 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize Instance — load only. Map NotInitialized to a friendly
     // pointer at `daemon init`.
-    let instance = match Instance::open(backend).await {
+    let instance = match Instance::open_backend(backend).await {
         Ok(instance) => instance,
         Err(e) => {
             if let eidetica::Error::Instance(boxed) = &e
@@ -70,7 +70,7 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
     );
     println!();
     println!("Connect with:");
-    println!("  Instance::connect(\"{}\")", socket_path.display());
+    println!("  Instance::connect(\"unix://{}\")", socket_path.display());
     println!();
     println!("Press Ctrl+C to shutdown");
 
@@ -98,7 +98,7 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
 ///
 /// Builds the [`NewUser`] from `--username` + one of `--password` /
 /// `--passwordless` / an interactive double-prompt, then calls
-/// [`Instance::create`]. Exits after initialisation; the operator runs
+/// [`Instance::create_backend`]. Exits after initialisation; the operator runs
 /// `eidetica daemon` separately to actually serve the socket.
 pub async fn run_init(
     args: &DaemonInitArgs,
@@ -135,7 +135,7 @@ pub async fn run_init(
     };
 
     let backend = create_backend(backend_args).await?;
-    let (instance, _user) = match Instance::create(backend, new_user).await {
+    let (instance, _user) = match Instance::create_backend(backend, new_user).await {
         Ok(pair) => pair,
         Err(e) => {
             if let eidetica::Error::Instance(boxed) = &e

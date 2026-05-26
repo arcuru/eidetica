@@ -20,7 +20,7 @@ async fn create_test_database() -> (Instance, Database) {
 
 /// Helper to create a test instance and database with a custom clock
 async fn create_test_database_with_clock(clock: Arc<dyn Clock>) -> (Instance, Database) {
-    let (instance, mut user) = Instance::create_with_clock(
+    let (instance, mut user) = Instance::create_backend_with_clock(
         Box::new(InMemory::new()),
         clock,
         eidetica::NewUser::passwordless("test"),

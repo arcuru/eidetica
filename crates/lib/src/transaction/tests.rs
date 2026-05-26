@@ -13,7 +13,7 @@ use crate::{
 async fn test_prevent_auth_corruption() {
     let backend = InMemory::new();
     let (instance, _admin) =
-        Instance::create(Box::new(backend), crate::NewUser::passwordless("admin"))
+        Instance::create_backend(Box::new(backend), crate::NewUser::passwordless("admin"))
             .await
             .unwrap();
     let (private_key, _) = generate_keypair();

@@ -3,8 +3,8 @@
 //! [`NewUser`] is the request shape for "create a user with these settings",
 //! used in two places:
 //!
-//! - [`Instance::create`](super::Instance::create) and
-//!   [`Instance::open_or_create`](super::Instance::open_or_create) — the
+//! - [`Instance::create_backend`](super::Instance::create_backend) and
+//!   [`Instance::connect_or_create`](super::Instance::connect_or_create) — the
 //!   initial user who bootstraps a fresh instance, automatically granted
 //!   Admin on the system databases by virtue of being the first user.
 //! - [`InstanceAdmin::create_user`](crate::user::InstanceAdmin::create_user) —
