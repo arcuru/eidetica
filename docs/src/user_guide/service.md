@@ -130,11 +130,12 @@ Multiple clients can connect to the same daemon simultaneously. Each client main
 <!-- Code block ignored: Requires a running daemon -->
 
 ```rust,ignore
-// Client 1
+// Client 1: an admin session creates the new user via the InstanceAdmin path.
 let instance1 = Instance::connect("/tmp/eidetica.sock").await?;
-instance1.create_user(eidetica::NewUser::passwordless("alice")).await?;
+let admin = instance1.login_user("ops", None).await?;
+admin.admin().await?.create_user(eidetica::NewUser::passwordless("alice")).await?;
 
-// Client 2 (separate process or task)
+// Client 2 (separate process or task): log in as the user that was just created.
 let instance2 = Instance::connect("/tmp/eidetica.sock").await?;
 let user = instance2.login_user("alice", None).await?;
 ```

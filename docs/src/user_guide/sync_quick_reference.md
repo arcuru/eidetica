@@ -670,21 +670,24 @@ use eidetica::sync::transports::http::HttpTransport;
 
 #[tokio::test]
 async fn test_sync_between_peers() -> Result<()> {
-    // Setup first peer
-    let instance1 = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
+    // Setup first peer (Instance::create bootstraps the first user as admin)
+    let (instance1, mut user1) = Instance::create(
+        Box::new(Sqlite::in_memory().await?),
+        eidetica::NewUser::passwordless("peer1"),
+    ).await?;
     instance1.enable_sync().await?;
-    instance1.create_user(eidetica::NewUser::passwordless("peer1")).await?;
-    let mut user1 = instance1.login_user("peer1", None).await?;
     instance1.sync()?.register_transport("http", HttpTransport::builder().bind("127.0.0.1:0")).await?;
     instance1.sync()?.accept_connections().await?;
 
     let addr1 = instance1.sync()?.get_server_address_async().await?;
 
     // Setup second peer
-    let instance2 = Instance::open(Box::new(Sqlite::in_memory().await?)).await?;
+    let (instance2, mut user2) = Instance::create(
+        Box::new(Sqlite::in_memory().await?),
+        eidetica::NewUser::passwordless("peer2"),
+    ).await?;
     instance2.enable_sync().await?;
-    instance2.create_user(eidetica::NewUser::passwordless("peer2")).await?;
-    let mut user2 = instance2.login_user("peer2", None).await?;
+    instance2.sync()?.register_transport("http", HttpTransport::builder().bind("127.0.0.1:0")).await?;
     instance2.sync()?.register_transport("http", HttpTransport::builder().bind("127.0.0.1:0")).await?;
 
     // Connect peers

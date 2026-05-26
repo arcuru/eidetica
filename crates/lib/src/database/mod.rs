@@ -375,17 +375,13 @@ impl Database {
 
     /// Open a database for remote access through a service connection.
     ///
-    /// Constructs a [`Database`] handle that routes every [`Transaction`]/
-    /// [`Store`] read through the connection's DatabaseOp/BackendOp wire
-    /// protocol instead of the local backend. The `identity` is the session's
-    /// auth identity for gating RPCs; it must match the database's auth
-    /// settings for the caller's key.
-    ///
-    /// The returned handle's write path still goes through the `Instance`'s
-    /// [`Backend`](crate::instance::backend::Backend) (via
-    /// `Instance::put_entry`), so `Instance::connect` must be used to create
-    /// the instance. This is additive — the legacy BackendOp path is
-    /// untouched until the Phase 4 cutover.
+    /// Constructs a [`Database`] handle whose backing
+    /// [`Backend`](crate::instance::backend::Backend) is a
+    /// [`RemoteBackend`](crate::instance::backend::RemoteBackend) bound to
+    /// `identity`, so every [`Transaction`]/[`Store`] read and write travels
+    /// over the connection as a `DatabaseOp` under that identity. The
+    /// `identity` must match the database's auth settings for the caller's
+    /// key. `Instance::connect` must be used to create the instance.
     #[cfg(all(unix, feature = "service"))]
     pub async fn open_remote(
         instance: &Instance,
