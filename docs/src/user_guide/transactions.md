@@ -391,3 +391,62 @@ if let Ok(_user) = users_viewer.get(&user_id).await {
 A `SubtreeViewer` provides read-only access based on the latest committed state (tips) of that specific store at the time the viewer is created. It does _not_ allow modifications and does not require a `commit()`.
 
 Choose `with_transaction` for the common case of writing to one or more stores and committing. Use `new_transaction()` directly when you need the commit ID or complex control flow. Choose `get_store_viewer` for simple, read-only access to the latest state.
+
+## Write Callbacks
+
+`Database::on_write` registers a callback that fires every time entries are
+written to that database — both local commits and entries received via
+sync. Useful for "rebuild a derived view when this DB changes," "wake up a
+UI," or any other change-driven workflow.
+
+```rust,no_run
+# extern crate eidetica;
+# extern crate tokio;
+# use eidetica::{Database, Result};
+# async fn example(database: &Database) -> Result<()> {
+let cb = database.on_write(|event, db| {
+    let count = event.entries().len();
+    let source = event.source();
+    let db_id = db.root_id().clone();
+    async move {
+        println!("{count} entries written to {db_id} ({source:?})");
+        Ok(())
+    }
+}).await?;
+
+// Drop `cb` to unregister, or keep the callback registered for the life
+// of the Instance with `cb.detach()`.
+# Ok(())
+# }
+```
+
+The returned `WriteCallback` handle controls the registration's lifetime:
+drop it to unregister, or call `.detach()` to keep the callback live until
+the `Instance` itself drops.
+
+### Callback timing — local vs. connected
+
+The timing contract depends on whether the `Instance` is **local** (one
+backend in this process) or **connected** (built via `Instance::connect`
+to a daemon over a Unix socket):
+
+| Aspect                              | Local `Instance`                                                                  | Connected `Instance`                                                                                              |
+| ----------------------------------- | --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| When does the callback fire?        | Inline with the write — completes before `commit().await` returns.                | When the daemon's push notification arrives back over the socket. Asynchronous to `commit().await`.               |
+| Is `previous_tips` populated?       | Yes — captured pre-write under the per-tree lock.                                 | Yes — populated by the daemon's canonical pre-write tips.                                                         |
+| Who orders the callbacks?           | This process. Each tree has a serial ordering; cross-process ordering is via sync. | The daemon. Every subscriber — including the committing client — observes callbacks in the same canonical order. |
+| Cross-client visibility?            | Only via sync.                                                                    | Built-in — another client's commit through the same daemon fires this client's callback as soon as the daemon pushes. |
+
+The asynchronous fire on a connected `Instance` is intentional. By
+deferring to the daemon's ordering, every subscriber sees writes in the
+same sequence — your own callback, another client's callback for your
+write, and a sync-peer entry that arrived between them are all interleaved
+by the daemon and pushed in that order to everyone. The trade-off is that
+`commit().await` returning no longer means *your own* callback has run; if
+you need synchronous "callback fired before commit returned" semantics for
+your own writes, use a local `Instance`.
+
+On a connected `Instance`, the first `on_write` registration for a given
+database lazily subscribes that client to push notifications for it.
+Subsequent registrations on the same database reuse that subscription.
+Subscriptions are torn down implicitly when the client disconnects.

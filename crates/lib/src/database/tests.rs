@@ -153,6 +153,7 @@ async fn test_local_write_callback_fires() {
             events_clone.lock().unwrap().push((prev_tips, source));
             async { Ok(()) }
         })
+        .await
         .unwrap();
 
     // First commit
@@ -190,6 +191,7 @@ async fn test_local_write_event_contains_single_entry() {
             counts_clone.lock().unwrap().push(event.entries().len());
             async { Ok(()) }
         })
+        .await
         .unwrap();
 
     let txn = db.new_transaction().await.unwrap();
@@ -224,6 +226,7 @@ async fn test_remote_write_callback_fires_via_put_remote_entries() {
                 Ok(())
             }
         })
+        .await
         .unwrap();
 
     // Commit locally — should NOT record (callback filters to remote only)
@@ -270,6 +273,7 @@ async fn test_remote_write_previous_tips() {
                 Ok(())
             }
         })
+        .await
         .unwrap();
 
     // Commit locally to advance tips
@@ -305,6 +309,7 @@ async fn test_empty_remote_batch_does_not_fire_callback() {
             *count_clone.lock().unwrap() += 1;
             async { Ok(()) }
         })
+        .await
         .unwrap();
 
     instance
@@ -327,6 +332,7 @@ async fn test_callback_error_does_not_block_other_callbacks() {
         .on_write(move |_event, _db| async {
             Err(crate::Error::Io(std::io::Error::other("test error")))
         })
+        .await
         .unwrap();
 
     // Second callback should still execute
@@ -335,6 +341,7 @@ async fn test_callback_error_does_not_block_other_callbacks() {
             *flag.lock().unwrap() = true;
             async { Ok(()) }
         })
+        .await
         .unwrap();
 
     let txn = db.new_transaction().await.unwrap();
@@ -357,6 +364,7 @@ async fn test_drop_write_callback_unregisters() {
             *count_clone.lock().unwrap() += 1;
             async { Ok(()) }
         })
+        .await
         .unwrap();
 
     // Fires while handle is alive
@@ -393,6 +401,7 @@ async fn test_drop_only_unregisters_that_callback() {
             *cb1_clone.lock().unwrap() += 1;
             async { Ok(()) }
         })
+        .await
         .unwrap();
 
     let cb2_clone = cb2_count.clone();
@@ -401,6 +410,7 @@ async fn test_drop_only_unregisters_that_callback() {
             *cb2_clone.lock().unwrap() += 1;
             async { Ok(()) }
         })
+        .await
         .unwrap();
 
     // Both fire on the first commit
@@ -440,6 +450,7 @@ async fn test_remote_callback_receives_only_stored_entries() {
             Ok(())
         }
     })
+    .await
     .unwrap()
     .detach();
 
@@ -485,6 +496,7 @@ async fn test_detached_write_callback_outlives_handle() {
         *count_clone.lock().unwrap() += 1;
         async { Ok(()) }
     })
+    .await
     .unwrap()
     .detach();
 
@@ -526,6 +538,7 @@ async fn test_concurrent_writes_serialize_previous_tips() {
                 events_clone.lock().unwrap().push((prev, ids));
                 async { Ok(()) }
             })
+            .await
             .unwrap();
 
         let db_a = db.clone();
