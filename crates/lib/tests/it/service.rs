@@ -11,14 +11,26 @@ use eidetica::auth::crypto::{create_challenge_response, sign_entry};
 use eidetica::backend::database::InMemory;
 use eidetica::service::ServiceServer;
 use eidetica::service::protocol::{
-    Handshake, HandshakeAck, PROTOCOL_VERSION, ReadScope, ServiceRequest, ServiceResponse,
-    read_frame, write_frame,
+    Handshake, HandshakeAck, PROTOCOL_VERSION, ReadScope, ServerFrame, ServiceRequest,
+    ServiceResponse, read_frame, write_frame,
 };
 use eidetica::store::{DocStore, PasswordStore};
 use tempfile::TempDir;
-use tokio::io::{AsyncWriteExt, ReadHalf, WriteHalf};
+use tokio::io::{AsyncRead, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::net::UnixStream;
 use tokio::sync::watch;
+
+/// Read the next server frame and unwrap it as a `ServiceResponse`. Tests
+/// that drive the server at the raw protocol layer don't subscribe to
+/// notifications, so an interleaved `Notification` would be a real bug —
+/// hence the panic on the wrong variant.
+async fn read_response<R: AsyncRead + Unpin>(reader: &mut R) -> ServiceResponse {
+    let frame: ServerFrame = read_frame(reader).await.unwrap().unwrap();
+    match frame {
+        ServerFrame::Response(resp) => *resp,
+        ServerFrame::Notification(n) => panic!("unexpected notification frame: {n:?}"),
+    }
+}
 
 /// Start a test server with InMemory backend; returns (path, shutdown, server-side
 /// Instance, tempdir guard).
@@ -266,7 +278,7 @@ async fn test_trusted_login_challenge_response_round_trip() {
     )
     .await
     .unwrap();
-    let resp: ServiceResponse = read_frame(&mut reader).await.unwrap().unwrap();
+    let resp: ServiceResponse = read_response(&mut reader).await;
     let challenge = match resp {
         ServiceResponse::TrustedLoginChallenge { challenge, .. } => challenge,
         other => panic!("expected TrustedLoginChallenge, got {other:?}"),
@@ -280,7 +292,7 @@ async fn test_trusted_login_challenge_response_round_trip() {
     )
     .await
     .unwrap();
-    let resp: ServiceResponse = read_frame(&mut reader).await.unwrap().unwrap();
+    let resp: ServiceResponse = read_response(&mut reader).await;
     assert!(matches!(resp, ServiceResponse::TrustedLoginOk));
 }
 
@@ -297,7 +309,7 @@ async fn test_trusted_login_unknown_user_errors() {
     )
     .await
     .unwrap();
-    let resp: ServiceResponse = read_frame(&mut reader).await.unwrap().unwrap();
+    let resp: ServiceResponse = read_response(&mut reader).await;
     match resp {
         ServiceResponse::Error(e) => {
             assert!(
@@ -322,7 +334,7 @@ async fn test_trusted_login_prove_without_user_errors() {
     )
     .await
     .unwrap();
-    let resp: ServiceResponse = read_frame(&mut reader).await.unwrap().unwrap();
+    let resp: ServiceResponse = read_response(&mut reader).await;
     assert!(matches!(resp, ServiceResponse::Error(_)));
 }
 
@@ -798,7 +810,7 @@ async fn test_trusted_login_bad_signature_errors_and_resets() {
     )
     .await
     .unwrap();
-    let resp: ServiceResponse = read_frame(&mut reader).await.unwrap().unwrap();
+    let resp: ServiceResponse = read_response(&mut reader).await;
     assert!(matches!(
         resp,
         ServiceResponse::TrustedLoginChallenge { .. }
@@ -812,7 +824,7 @@ async fn test_trusted_login_bad_signature_errors_and_resets() {
     )
     .await
     .unwrap();
-    let resp: ServiceResponse = read_frame(&mut reader).await.unwrap().unwrap();
+    let resp: ServiceResponse = read_response(&mut reader).await;
     assert!(matches!(resp, ServiceResponse::Error(_)));
 
     write_frame(
@@ -823,7 +835,7 @@ async fn test_trusted_login_bad_signature_errors_and_resets() {
     )
     .await
     .unwrap();
-    let resp: ServiceResponse = read_frame(&mut reader).await.unwrap().unwrap();
+    let resp: ServiceResponse = read_response(&mut reader).await;
     assert!(matches!(resp, ServiceResponse::Error(_)));
 }
 
@@ -1123,7 +1135,7 @@ async fn test_daemon_survives_malformed_frame_from_client() {
         // either way, the daemon must not panic or wedge.
         let _ = tokio::time::timeout(
             Duration::from_secs(2),
-            read_frame::<_, ServiceResponse>(&mut reader),
+            read_frame::<_, ServerFrame>(&mut reader),
         )
         .await
         .expect("server must close the bad connection within the timeout");
@@ -1393,5 +1405,404 @@ async fn test_cache_encrypted_store_roundtrip() {
         result,
         Some(ciphertext),
         "daemon must store and return ciphertext bytes verbatim — the cache is byte-blind"
+    );
+}
+
+// =============================================================================
+// Server-push write notifications (`Notification::DatabaseWrite`).
+//
+// Exercises the end-to-end path: client `Database::on_write` registration sends
+// `DatabaseOp::SubscribeWrites`, daemon's global write callback fans events
+// out to subscribed connections, client reader task routes notifications into
+// the local callback registry.
+//
+// Generous timeouts: the notification is asynchronous to `commit().await` on a
+// connected instance (by design — see `Database::on_write` docs § Callback
+// timing). 2s is enormous for a Unix-socket round-trip but absorbs CI jitter.
+// =============================================================================
+
+/// Helper: drain a callback-fed channel until `min` events arrive (or timeout).
+async fn collect_events<T>(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<T>,
+    min: usize,
+    timeout_secs: u64,
+) -> Vec<T> {
+    let mut out = Vec::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
+    while out.len() < min {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match tokio::time::timeout(remaining, rx.recv()).await {
+            Ok(Some(v)) => out.push(v),
+            Ok(None) => break, // channel closed
+            Err(_) => break,   // timeout
+        }
+    }
+    out
+}
+
+#[tokio::test]
+async fn test_on_write_fires_for_local_commit_on_connected_instance() {
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    create_user_via_admin(&server, "alice").await;
+
+    let instance = Instance::connect(format!("unix://{}", socket_path.display()))
+        .await
+        .unwrap();
+    let mut user = instance.login_user("alice", None).await.unwrap();
+    let pubkey = user.get_default_key().unwrap();
+
+    let mut settings = eidetica::crdt::Doc::new();
+    settings.set("name", "callback_test");
+    let db = user.create_database(settings, &pubkey).await.unwrap();
+
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<usize>();
+    let _cb = db
+        .on_write(move |event, _db| {
+            let count = event.entries().len();
+            let tx = event_tx.clone();
+            async move {
+                let _ = tx.send(count);
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+
+    db.with_transaction(|tx| async move {
+        let store = tx.get_store::<DocStore>("data").await?;
+        store.set("k", "v").await?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+
+    let events = collect_events(&mut event_rx, 1, 2).await;
+    assert_eq!(events.len(), 1, "exactly one notification");
+    assert_eq!(events[0], 1, "exactly one entry in the event");
+}
+
+#[tokio::test]
+async fn test_on_write_fires_across_clients_on_same_daemon() {
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    create_user_via_admin(&server, "alice").await;
+
+    // Set up a database server-side so both clients have the same root_id.
+    let mut server_user = server.login_user("alice", None).await.unwrap();
+    let mut settings = eidetica::crdt::Doc::new();
+    settings.set("name", "cross_client_test");
+    let server_key = server_user.get_default_key().unwrap();
+    let server_db = server_user
+        .create_database(settings, &server_key)
+        .await
+        .unwrap();
+    let root_id = server_db.root_id().clone();
+
+    // Observer client: registers on_write, waits.
+    let observer = Instance::connect(format!("unix://{}", socket_path.display()))
+        .await
+        .unwrap();
+    let observer_user = observer.login_user("alice", None).await.unwrap();
+    let observer_db = observer_user.open_database(&root_id).await.unwrap();
+
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    let _cb = observer_db
+        .on_write(move |_event, _db| {
+            let tx = event_tx.clone();
+            async move {
+                let _ = tx.send(());
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+
+    // Writer client: connects, commits an entry. The observer must see it.
+    let writer = Instance::connect(format!("unix://{}", socket_path.display()))
+        .await
+        .unwrap();
+    let writer_user = writer.login_user("alice", None).await.unwrap();
+    let writer_db = writer_user.open_database(&root_id).await.unwrap();
+    writer_db
+        .with_transaction(|tx| async move {
+            let store = tx.get_store::<DocStore>("data").await?;
+            store.set("from", "writer").await?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let events = collect_events(&mut event_rx, 1, 2).await;
+    assert_eq!(
+        events.len(),
+        1,
+        "observer must see writer's commit via daemon push"
+    );
+}
+
+#[tokio::test]
+async fn test_on_write_previous_tips_populated_on_connected_instance() {
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    create_user_via_admin(&server, "alice").await;
+
+    let instance = Instance::connect(format!("unix://{}", socket_path.display()))
+        .await
+        .unwrap();
+    let mut user = instance.login_user("alice", None).await.unwrap();
+    let pubkey = user.get_default_key().unwrap();
+
+    let mut settings = eidetica::crdt::Doc::new();
+    settings.set("name", "prev_tips_test");
+    let db = user.create_database(settings, &pubkey).await.unwrap();
+
+    let (event_tx, mut event_rx) =
+        tokio::sync::mpsc::unbounded_channel::<(Vec<eidetica::entry::ID>, Vec<eidetica::entry::ID>)>();
+    let _cb = db
+        .on_write(move |event, _db| {
+            let entries: Vec<_> = event.entries().iter().map(|e| e.id()).collect();
+            let prev_tips = event.previous_tips().to_vec();
+            let tx = event_tx.clone();
+            async move {
+                let _ = tx.send((entries, prev_tips));
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+
+    // Two sequential commits; the second's previous_tips must include the
+    // first entry's id (and must not be empty — the V1 behavior before this
+    // change).
+    db.with_transaction(|tx| async move {
+        let store = tx.get_store::<DocStore>("data").await?;
+        store.set("k", "v1").await?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    db.with_transaction(|tx| async move {
+        let store = tx.get_store::<DocStore>("data").await?;
+        store.set("k", "v2").await?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+
+    let events = collect_events(&mut event_rx, 2, 2).await;
+    assert_eq!(events.len(), 2, "both commits must surface as callbacks");
+    let (entries_1, _prev_1) = &events[0];
+    let (_entries_2, prev_2) = &events[1];
+    assert!(
+        !prev_2.is_empty(),
+        "second callback's previous_tips must be populated (got empty — daemon push not delivering canonical tips)"
+    );
+    assert!(
+        prev_2.contains(&entries_1[0]),
+        "second callback's previous_tips must include the first commit's entry id; got prev={prev_2:?}, first_entry={:?}",
+        entries_1[0]
+    );
+}
+
+#[tokio::test]
+async fn test_on_write_dropped_handle_stops_callback() {
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    create_user_via_admin(&server, "alice").await;
+
+    let instance = Instance::connect(format!("unix://{}", socket_path.display()))
+        .await
+        .unwrap();
+    let mut user = instance.login_user("alice", None).await.unwrap();
+    let pubkey = user.get_default_key().unwrap();
+
+    let mut settings = eidetica::crdt::Doc::new();
+    settings.set("name", "drop_test");
+    let db = user.create_database(settings, &pubkey).await.unwrap();
+
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    let cb = db
+        .on_write(move |_event, _db| {
+            let tx = event_tx.clone();
+            async move {
+                let _ = tx.send(());
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+
+    // First commit: callback fires.
+    db.with_transaction(|tx| async move {
+        let store = tx.get_store::<DocStore>("data").await?;
+        store.set("k", "v1").await?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let first = collect_events(&mut event_rx, 1, 2).await;
+    assert_eq!(first.len(), 1, "first commit must fire callback");
+
+    // Drop the WriteCallback handle — unregisters from the local registry.
+    // The daemon may still push (subscription persists on the connection),
+    // but with no callback registered the dispatch is a no-op.
+    drop(cb);
+
+    db.with_transaction(|tx| async move {
+        let store = tx.get_store::<DocStore>("data").await?;
+        store.set("k", "v2").await?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+
+    // Give the daemon round-trip a moment to complete; if a callback were
+    // going to fire (regression), it would do so well within 500ms on a
+    // local Unix socket.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let after_drop = collect_events(&mut event_rx, 1, 0).await;
+    assert!(
+        after_drop.is_empty(),
+        "dropped WriteCallback must stop firing user code; got {after_drop:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_on_write_only_fires_for_subscribed_tree() {
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    create_user_via_admin(&server, "alice").await;
+
+    let instance = Instance::connect(format!("unix://{}", socket_path.display()))
+        .await
+        .unwrap();
+    let mut user = instance.login_user("alice", None).await.unwrap();
+    let pubkey = user.get_default_key().unwrap();
+
+    let mut settings_a = eidetica::crdt::Doc::new();
+    settings_a.set("name", "tree_a");
+    let db_a = user.create_database(settings_a, &pubkey).await.unwrap();
+
+    let mut settings_b = eidetica::crdt::Doc::new();
+    settings_b.set("name", "tree_b");
+    let db_b = user.create_database(settings_b, &pubkey).await.unwrap();
+
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    let _cb = db_a
+        .on_write(move |_event, _db| {
+            let tx = event_tx.clone();
+            async move {
+                let _ = tx.send(());
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+
+    // Commit to tree B; tree A's callback must not fire.
+    db_b.with_transaction(|tx| async move {
+        let store = tx.get_store::<DocStore>("data").await?;
+        store.set("k", "v").await?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let cross_tree = collect_events(&mut event_rx, 1, 0).await;
+    assert!(
+        cross_tree.is_empty(),
+        "callback on tree A must not fire for writes to tree B; got {cross_tree:?}"
+    );
+
+    // Now commit to tree A — the callback must fire.
+    db_a.with_transaction(|tx| async move {
+        let store = tx.get_store::<DocStore>("data").await?;
+        store.set("k", "v").await?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let same_tree = collect_events(&mut event_rx, 1, 2).await;
+    assert_eq!(
+        same_tree.len(),
+        1,
+        "callback on tree A must fire for tree A's own commit"
+    );
+}
+
+/// Race two `on_write` registrations on the same tree from separate tasks,
+/// then commit immediately after both await-points return. Both callbacks
+/// must observe the commit — i.e. the second-to-arrive registration must
+/// have waited for the in-flight `SubscribeWrites` to land before returning,
+/// not raced ahead with the daemon still unsubscribed.
+#[tokio::test]
+async fn test_on_write_concurrent_registrations_both_observe_commit() {
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    create_user_via_admin(&server, "alice").await;
+
+    let instance = Instance::connect(format!("unix://{}", socket_path.display()))
+        .await
+        .unwrap();
+    let mut user = instance.login_user("alice", None).await.unwrap();
+    let pubkey = user.get_default_key().unwrap();
+
+    let mut settings = eidetica::crdt::Doc::new();
+    settings.set("name", "race_test");
+    let db = user.create_database(settings, &pubkey).await.unwrap();
+
+    let (tx_a, mut rx_a) = tokio::sync::mpsc::unbounded_channel::<()>();
+    let (tx_b, mut rx_b) = tokio::sync::mpsc::unbounded_channel::<()>();
+
+    let db_for_a = db.clone();
+    let db_for_b = db.clone();
+    let reg_a = tokio::spawn(async move {
+        db_for_a
+            .on_write(move |_event, _db| {
+                let tx = tx_a.clone();
+                async move {
+                    let _ = tx.send(());
+                    Ok(())
+                }
+            })
+            .await
+            .unwrap()
+    });
+    let reg_b = tokio::spawn(async move {
+        db_for_b
+            .on_write(move |_event, _db| {
+                let tx = tx_b.clone();
+                async move {
+                    let _ = tx.send(());
+                    Ok(())
+                }
+            })
+            .await
+            .unwrap()
+    });
+    let (_cb_a, _cb_b) = tokio::try_join!(reg_a, reg_b).unwrap();
+
+    // Both `on_write().await` calls have returned. A commit issued now must
+    // be visible to both callbacks — if the follower returned without
+    // awaiting the leader's subscribe, this commit could land before the
+    // daemon recognized the subscription and one callback (or both) would
+    // miss it.
+    db.with_transaction(|tx| async move {
+        let store = tx.get_store::<DocStore>("data").await?;
+        store.set("k", "v").await?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+
+    let events_a = collect_events(&mut rx_a, 1, 2).await;
+    let events_b = collect_events(&mut rx_b, 1, 2).await;
+    assert_eq!(
+        events_a.len(),
+        1,
+        "first registration must observe the commit; got {events_a:?}"
+    );
+    assert_eq!(
+        events_b.len(),
+        1,
+        "second (concurrent) registration must observe the commit; got {events_b:?}"
     );
 }
