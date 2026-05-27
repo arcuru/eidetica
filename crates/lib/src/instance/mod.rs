@@ -104,6 +104,24 @@ pub struct WriteEvent {
 }
 
 impl WriteEvent {
+    /// Construct a `WriteEvent` from wire fields received over the service
+    /// transport. Used by the client-side reader task when a
+    /// `Notification::DatabaseWrite` arrives — the daemon owns the
+    /// canonical DAG, so the `previous_tips` here are the daemon's
+    /// pre-write tips, not the client's local placeholder.
+    #[cfg(all(unix, feature = "service"))]
+    pub(crate) fn from_wire(
+        entries: Vec<Entry>,
+        previous_tips: Vec<ID>,
+        source: WriteSource,
+    ) -> Self {
+        Self {
+            entries,
+            previous_tips,
+            source,
+        }
+    }
+
     /// Get the entries written in this event.
     ///
     /// For local writes (transaction commits), this always contains exactly one entry.
@@ -713,6 +731,11 @@ impl Instance {
     #[cfg(all(unix, feature = "service"))]
     async fn connect_unix_socket(socket_path: PathBuf, clock: Arc<dyn Clock>) -> Result<Self> {
         let conn = crate::service::client::RemoteConnection::connect(&socket_path).await?;
+        // Keep a clone for the post-construction `attach_instance` call:
+        // the reader task spawned inside `RemoteConnection::connect` needs a
+        // `WeakInstance` to route push notifications into, and the Instance
+        // doesn't exist yet here.
+        let conn_for_attach = conn.clone();
         let backend: Arc<dyn Backend> = Arc::new(RemoteBackend::new(conn, None));
 
         // Load metadata from the remote backend
@@ -734,7 +757,15 @@ impl Instance {
             next_callback_id: AtomicU64::new(0),
             tree_locks: Mutex::new(HashMap::new()),
         });
-        Ok(Self { inner })
+        let instance = Self { inner };
+        // Hand the reader task a Weak reference so it can dispatch
+        // server-pushed `Notification::DatabaseWrite` frames into this
+        // Instance's callback registry. Must run *after* the Instance is
+        // constructed; until then the reader task drops notifications
+        // (none can arrive because the client only subscribes lazily on
+        // the first `Database::on_write` call).
+        conn_for_attach.attach_instance(instance.downgrade());
+        Ok(instance)
     }
 
     #[cfg(not(all(unix, feature = "service")))]
@@ -1385,8 +1416,13 @@ impl Instance {
         // Users should call register_transport() to add transports
         sync_arc.start_background_sync()?;
 
-        // Register global callback for automatic sync on local writes.
-        // Detached: lives for the life of the Instance.
+        // Sync wants to observe writes across *every* tree, including
+        // trees created after this point — there's no fixed tree set to
+        // register per-db callbacks against, so this is one of the few
+        // legitimate uses of `register_global_write_callback`. Idempotent
+        // because `enable_sync` early-returns at the top if sync is
+        // already initialized (`self.inner.sync.get().is_some()`); without
+        // that guard this would register a duplicate hook every call.
         let sync_for_callback = Arc::clone(&sync_arc);
         self.register_global_write_callback(move |event, database| {
             let sync = Arc::clone(&sync_for_callback);
@@ -1465,17 +1501,29 @@ impl Instance {
         id
     }
 
-    /// Register a global callback fired for every write across every database.
+    /// Register a non-removable callback fired for **every** write on **every**
+    /// database for the life of the Instance.
+    ///
+    /// This is purpose-built for hooks that need to observe writes across
+    /// the entire Instance — including writes to trees created *after* the
+    /// hook is registered. The only legitimate use is something that
+    /// genuinely doesn't know its target tree set up front: today, just
+    /// sync (which wants to react to every local write so it can propagate
+    /// to peers, and registers its hook once during `enable_sync`).
+    ///
+    /// **Not the right primitive for connection-scoped fan-out.** If you
+    /// know up front which trees a consumer cares about (e.g. service
+    /// clients subscribing per-tree via `DatabaseOp::SubscribeWrites`),
+    /// register per-database callbacks with [`Self::register_write_callback`]
+    /// instead. Per-db callbacks have a removal path
+    /// ([`Self::remove_write_callback`]) which lets you tear them down on
+    /// disconnect; this API does not.
     ///
     /// Callers branch on [`WriteEvent::source`] inside the closure if they
-    /// only care about one source.
-    ///
-    /// Note: there is intentionally no `WriteCallback` handle or remove path
-    /// for global callbacks. The only current caller is sync's permanent hook
-    /// (OnceLock-guarded) which is registered for the life of the Instance.
-    /// If a future caller needs lifecycle management on a global callback,
-    /// add `remove_global_write_callback` and a global variant of
-    /// `WriteCallback`.
+    /// only care about one source. Caller is responsible for idempotency
+    /// (registering N times produces N firings); the canonical pattern is
+    /// to guard the registration site with a `OnceLock` so it cannot run
+    /// twice on the same Instance.
     pub(crate) fn register_global_write_callback<F, Fut>(&self, callback: F)
     where
         F: for<'a> Fn(&'a WriteEvent, &'a Database) -> Fut + Send + std::marker::Sync + 'static,
@@ -1556,30 +1604,43 @@ impl Instance {
         // tips here would also gate against the *connection's* login pubkey
         // (not the per-DB acting identity from the Database handle), which
         // breaks the legitimate "create-a-tree-with-a-non-login-key" flow.
-        // Remote callbacks therefore see an empty `previous_tips` — this is
-        // a documented limitation of `Database::on_write` on a connected
-        // Instance, lifted when the server-push notification path lands.
+        // The client also skips firing callbacks locally on this path (see
+        // step 3 below) — the daemon round-trips a `Notification::DatabaseWrite`
+        // back with its own canonical `previous_tips` and we fire from
+        // there instead.
         #[cfg(all(unix, feature = "service"))]
-        let previous_tips = if self.remote_connection().is_some() {
+        let is_connected = self.remote_connection().is_some();
+        #[cfg(not(all(unix, feature = "service")))]
+        let is_connected = false;
+
+        let previous_tips = if is_connected {
             Vec::new()
         } else {
             self.get_tips(tree_id).await?
         };
-        #[cfg(not(all(unix, feature = "service")))]
-        let previous_tips = self.get_tips(tree_id).await?;
 
         // 2. Persist to backend storage (and notify server for remote backends)
         self.backend()
             .write_entry(verification, entry.clone(), source)
             .await?;
 
-        // 3. Build event and fire callbacks
-        let event = WriteEvent {
-            entries: vec![entry],
-            previous_tips,
-            source,
-        };
-        self.fire_write_callbacks(tree_id, &event).await;
+        // 3. Build event and fire callbacks — but only locally.
+        //
+        // On a connected instance the daemon is the sole publisher of
+        // write events: it fires its own callback registry when it stores
+        // the entry, then pushes a `Notification::DatabaseWrite` back to
+        // every subscribed client (including this one). Firing here as
+        // well would double-deliver to local user callbacks. See the
+        // `Database::on_write` rustdoc for the timing contract this gives
+        // callers on a connected instance.
+        if !is_connected {
+            let event = WriteEvent {
+                entries: vec![entry],
+                previous_tips,
+                source,
+            };
+            self.fire_write_callbacks(tree_id, &event).await;
+        }
 
         Ok(())
     }
@@ -1660,7 +1721,11 @@ impl Instance {
     /// Fires per-database callbacks for `tree_id` then global callbacks. Each
     /// callback fires for both local and remote writes; consumers branch on
     /// [`WriteEvent::source`] internally.
-    async fn fire_write_callbacks(&self, tree_id: &ID, event: &WriteEvent) {
+    ///
+    /// `pub(crate)` so the service module's reader task can drive this
+    /// directly when a `Notification::DatabaseWrite` arrives from the
+    /// daemon — that path is the *sole* publisher on a connected instance.
+    pub(crate) async fn fire_write_callbacks(&self, tree_id: &ID, event: &WriteEvent) {
         let per_db_callbacks = self
             .inner
             .write_callbacks

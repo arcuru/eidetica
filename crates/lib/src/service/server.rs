@@ -6,9 +6,11 @@
 use std::collections::{HashMap, HashSet};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::net::UnixListener;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 
 use crate::Instance;
 use crate::auth::crypto::{PublicKey, generate_challenge, verify_challenge_response};
@@ -18,13 +20,76 @@ use crate::auth::validation::permissions::resolve_identity_permission;
 use crate::backend::CacheScope;
 use crate::database::Database;
 use crate::entry::ID;
-use crate::instance::WriteSource;
+use crate::instance::{CallbackId, WriteSource};
 use crate::service::error::ServiceError;
 use crate::service::protocol::{
-    AuthenticatedDbRequest, DatabaseOp, HandshakeAck, MergeState, PROTOCOL_VERSION, ServiceRequest,
-    ServiceResponse, read_frame, write_frame,
+    AuthenticatedDbRequest, DatabaseOp, HandshakeAck, MergeState, Notification, PROTOCOL_VERSION,
+    ServerFrame, ServiceRequest, ServiceResponse, read_frame, write_frame,
 };
 use crate::user::system_databases::lookup_user_record;
+
+/// Connection identifier. Monotonic per server-run; reused only after
+/// `AtomicU64` wraps (effectively never on a real daemon). Purely
+/// diagnostic now — registry-based routing went away in the per-db
+/// callback refactor.
+type ConnectionId = u64;
+
+/// Per-connection context carried through the dispatch chain. Holds:
+///
+/// - `tx`: the writer-channel sender — both `ServerFrame::Response`s from
+///   the dispatcher and `ServerFrame::Notification`s from subscribed
+///   per-db callbacks ride through this same channel, so the order
+///   observed by the client is the order frames hit `frame_tx`.
+/// - `instance`: needed in `Drop` to call `remove_write_callback` for
+///   the connection's registered subscriptions.
+/// - `subscribed`: `root_id -> CallbackId` for every `SubscribeWrites`
+///   this connection has done. Cleaned up on disconnect (via the guard's
+///   `Drop`) and on explicit `UnsubscribeWrites`.
+///
+/// There is no per-connection registry on the server. Each subscription
+/// is just a per-db callback registered against the daemon's Instance
+/// (`Instance::register_write_callback`); the daemon's existing
+/// `fire_write_callbacks` dispatch path handles fan-out by walking the
+/// per-tree callback list, no separate fan-out mechanism required.
+struct ConnectionContext {
+    conn_id: ConnectionId,
+    tx: mpsc::UnboundedSender<ServerFrame>,
+    instance: Instance,
+    subscribed: std::sync::Mutex<HashMap<ID, CallbackId>>,
+}
+
+impl ConnectionContext {
+    fn subscribed_lock(&self) -> std::sync::MutexGuard<'_, HashMap<ID, CallbackId>> {
+        self.subscribed
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+/// RAII cleanup: on connection drop (clean EOF, error, or panic), call
+/// `Instance::remove_write_callback` for every subscription this
+/// connection registered. Holds an `Arc<ConnectionContext>` rather than
+/// borrowing so the cleanup path is identical for every exit case
+/// without sprinkling `remove_*` calls through the connection handler.
+struct ConnectionGuard {
+    ctx: Arc<ConnectionContext>,
+}
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        let subs = self.ctx.subscribed_lock();
+        if !subs.is_empty() {
+            tracing::debug!(
+                conn_id = self.ctx.conn_id,
+                "Unregistering {} subscriptions on disconnect",
+                subs.len()
+            );
+        }
+        for (tree_id, id) in subs.iter() {
+            self.ctx.instance.remove_write_callback(tree_id, *id);
+        }
+    }
+}
 
 /// Per-connection authentication state.
 ///
@@ -134,15 +199,22 @@ impl ServiceServer {
 
         tracing::info!("Service server listening on {}", self.socket_path.display());
 
+        // Diagnostic per-connection counter — purely for logging. No
+        // registry-based routing needed; each connection's subscriptions
+        // live as per-db callbacks on the Instance, dispatched by the
+        // existing `fire_write_callbacks` path.
+        let next_conn_id = Arc::new(AtomicU64::new(1));
+
         loop {
             tokio::select! {
                 accept_result = listener.accept() => {
                     match accept_result {
                         Ok((stream, _addr)) => {
                             let instance = self.instance.clone();
+                            let conn_id = next_conn_id.fetch_add(1, Ordering::Relaxed);
                             tokio::spawn(async move {
-                                if let Err(e) = handle_connection(stream, instance).await {
-                                    tracing::debug!("Connection handler error: {e}");
+                                if let Err(e) = handle_connection(stream, instance, conn_id).await {
+                                    tracing::debug!(conn_id, "Connection handler error: {e}");
                                 }
                             });
                         }
@@ -165,13 +237,32 @@ impl ServiceServer {
 }
 
 /// Handle a single client connection.
+///
+/// I/O is split across two tasks:
+///
+/// - **Writer task** (spawned below) owns the `WriteHalf` and drains an
+///   `mpsc::UnboundedReceiver<ServerFrame>` into `write_frame` in
+///   submission order. Responses (dispatched from the request loop) and
+///   server-pushed notifications (from subscribed per-db callbacks both
+///   capture clones of the same `frame_tx`, so a single connection-local
+///   order is preserved.
+///
+/// - **This task** owns the `ReadHalf`, runs the auth/request loop, and
+///   sends `ServerFrame::Response(...)` into the channel. It also holds
+///   a [`ConnectionGuard`] whose Drop unregisters every subscription this
+///   connection made on every exit path (clean EOF, error, or panic).
+///
+/// Handshake still runs inline on the read side first; the writer task is
+/// not started until the handshake succeeds, so a version-mismatch close
+/// uses the simpler inline writer path.
 async fn handle_connection(
     stream: tokio::net::UnixStream,
     instance: Instance,
+    conn_id: ConnectionId,
 ) -> crate::Result<()> {
     let (mut reader, mut writer) = tokio::io::split(stream);
 
-    // 1. Read and validate handshake
+    // 1. Read and validate handshake (inline writer, no channel yet).
     let handshake: crate::service::protocol::Handshake = match read_frame(&mut reader).await? {
         Some(h) => h,
         None => return Ok(()), // Client disconnected before handshake
@@ -198,7 +289,34 @@ async fn handle_connection(
     };
     write_frame(&mut writer, &ack).await?;
 
-    // 2. Request/response loop with per-connection auth state
+    // 2. Spin up the per-connection writer task.
+    //
+    // TODO(backpressure): this is `unbounded_channel`, so a stalled client
+    // reader buffers notifications in daemon memory without limit. Fine for
+    // the v1 single-trusted-local-client posture; before serving multiple
+    // or untrusted clients, switch to a bounded channel with an explicit
+    // drop-oldest (or disconnect-the-laggard) policy. Sized to the worst-
+    // case ingest burst — sync catch-up is the dominant case.
+    let (frame_tx, mut frame_rx) = mpsc::unbounded_channel::<ServerFrame>();
+    let writer_task = tokio::spawn(async move {
+        while let Some(frame) = frame_rx.recv().await {
+            if let Err(e) = write_frame(&mut writer, &frame).await {
+                tracing::debug!(conn_id, "Connection writer error: {e}");
+                break;
+            }
+        }
+    });
+
+    let ctx = Arc::new(ConnectionContext {
+        conn_id,
+        tx: frame_tx.clone(),
+        instance: instance.clone(),
+        subscribed: std::sync::Mutex::new(HashMap::new()),
+    });
+    let guard = ConnectionGuard { ctx: ctx.clone() };
+
+    // 3. Request/response loop with per-connection auth state. Responses
+    //    travel through the writer channel as `ServerFrame::Response`.
     let mut state = ConnectionState::PreAuth;
     let loop_result: crate::Result<()> = async {
         loop {
@@ -207,19 +325,51 @@ async fn handle_connection(
                 None => break, // Clean EOF
             };
 
-            let response = dispatch(&instance, &mut state, request).await;
-            write_frame(&mut writer, &response).await?;
+            let response = dispatch(&instance, &mut state, &ctx, request).await;
+            if frame_tx
+                .send(ServerFrame::Response(Box::new(response)))
+                .is_err()
+            {
+                // Writer task has exited; nothing more we can send.
+                break;
+            }
         }
         Ok(())
     }
     .await;
 
-    // Session teardown: nothing to reclaim. The unified CRDT-state cache
-    // lives in `BackendImpl` and is bounded by its own eviction policy
-    // (byte-bounded LRU on the in-memory backend; disk-bounded on SQL).
-    // Per-user cache slots survive disconnect intentionally so a
-    // reconnecting client recovers materialized state from tier 2 without
-    // recomputing from entries.
+    // Cleanup ordering matters — every clone of `frame_tx` must be
+    // dropped before `writer_task.await` can complete (the task is
+    // waiting on `frame_rx.recv()`, which only returns `None` when no
+    // senders remain):
+    //
+    // 1. Drop the local `frame_tx` (this fn's own clone).
+    // 2. Drop `guard`, which runs `ConnectionGuard::drop` and calls
+    //    `Instance::remove_write_callback(tree_id, id)` for every
+    //    subscription this connection registered. Each removed callback
+    //    Arc drops its captured `tx` clone. (No-op when nothing was
+    //    subscribed — e.g. handshake-then-malformed-frame paths.)
+    // 3. Drop `ctx` — releases `ctx.tx`, the last sender clone held
+    //    on the request-loop side.
+    // 4. The writer task's `recv()` returns `None`; the task exits and
+    //    `writer_task.await` finishes.
+    //
+    // Note: a callback dispatch in flight when step 2 runs holds its
+    // own Arc to the closure (from `fire_write_callbacks`'s snapshot).
+    // It can still send a final notification through its captured `tx`
+    // before that Arc is released; the writer task will drain that
+    // frame before exiting in step 4.
+    drop(frame_tx);
+    drop(guard);
+    drop(ctx);
+    let _ = writer_task.await;
+
+    // Session teardown: subscription cleanup ran via the guard's Drop.
+    // The unified CRDT-state cache lives in `BackendImpl` and is bounded
+    // by its own eviction policy (byte-bounded LRU on the in-memory
+    // backend; disk-bounded on SQL). Per-user cache slots survive
+    // disconnect intentionally so a reconnecting client recovers
+    // materialized state from tier 2 without recomputing from entries.
 
     loop_result
 }
@@ -228,9 +378,10 @@ async fn handle_connection(
 async fn dispatch(
     instance: &Instance,
     state: &mut ConnectionState,
+    ctx: &ConnectionContext,
     request: ServiceRequest,
 ) -> ServiceResponse {
-    match dispatch_inner(instance, state, request).await {
+    match dispatch_inner(instance, state, ctx, request).await {
         Ok(resp) => resp,
         Err(e) => ServiceResponse::Error(ServiceError::from(&e)),
     }
@@ -240,6 +391,7 @@ async fn dispatch(
 async fn dispatch_inner(
     instance: &Instance,
     state: &mut ConnectionState,
+    ctx: &ConnectionContext,
     request: ServiceRequest,
 ) -> crate::Result<ServiceResponse> {
     match request {
@@ -378,6 +530,7 @@ async fn dispatch_inner(
 
             dispatch_database_op(
                 instance,
+                ctx,
                 &acting_pubkey,
                 &identity,
                 &session_user_uuid,
@@ -426,6 +579,7 @@ fn resolve_acting_pubkey(
 /// and the Verified frontier are server-side **by construction**.
 async fn dispatch_database_op(
     instance: &Instance,
+    ctx: &ConnectionContext,
     acting_pubkey: &PublicKey,
     identity: &SigKey,
     user_uuid: &str,
@@ -559,6 +713,54 @@ async fn dispatch_database_op(
             // Admin-on-`_databases` gate already ran in the dispatcher (against
             // the server-known system tree, not `root_id`).
             instance.backend().set_instance_metadata(&metadata).await?;
+            Ok(ServiceResponse::Ok)
+        }
+
+        DatabaseOp::SubscribeWrites => {
+            // Per-tree Read gate already ran in the dispatcher.
+            //
+            // Subscription is just a per-db callback registered against the
+            // daemon's Instance. The callback's body pushes a notification
+            // frame into this connection's writer channel; the daemon's
+            // existing `fire_write_callbacks` dispatch handles fan-out by
+            // walking the per-tree callback list. No separate registry or
+            // global-publisher hook needed.
+            //
+            // Idempotent: a tree this connection has already subscribed to
+            // is a no-op (we'd otherwise register a second callback that
+            // pushes a duplicate frame on every write).
+            let mut subs = ctx.subscribed_lock();
+            if subs.contains_key(&root_id) {
+                return Ok(ServiceResponse::Ok);
+            }
+            let tx = ctx.tx.clone();
+            let id = instance.register_write_callback(root_id.clone(), move |event, db| {
+                // `mpsc::UnboundedSender::send` is non-blocking and takes
+                // `&self`, so this fits the `Fn(&WriteEvent, &Database)`
+                // bound. The returned future is a no-op — the work is the
+                // synchronous push above. Send failure (writer task gone)
+                // is silently dropped; the connection is about to be
+                // torn down and the guard's Drop will unregister us next.
+                let frame = ServerFrame::Notification(Notification::DatabaseWrite {
+                    root_id: db.root_id().clone(),
+                    entries: event.entries().to_vec(),
+                    previous_tips: event.previous_tips().to_vec(),
+                    source: event.source(),
+                });
+                let _ = tx.send(frame);
+                async move { Ok(()) }
+            });
+            subs.insert(root_id, id);
+            Ok(ServiceResponse::Ok)
+        }
+
+        DatabaseOp::UnsubscribeWrites => {
+            // Per-tree Read gate already ran. Idempotent: unsubscribing a
+            // tree this connection was not subscribed to is a no-op.
+            let removed = ctx.subscribed_lock().remove(&root_id);
+            if let Some(id) = removed {
+                instance.remove_write_callback(&root_id, id);
+            }
             Ok(ServiceResponse::Ok)
         }
     }
@@ -1026,8 +1228,12 @@ mod tests {
         .await
         .unwrap();
 
-        let resp: Option<ServiceResponse> = read_frame(&mut reader).await.unwrap();
-        match resp.unwrap() {
+        let frame: Option<ServerFrame> = read_frame(&mut reader).await.unwrap();
+        let resp = match frame.unwrap() {
+            ServerFrame::Response(r) => *r,
+            other => panic!("Expected Response frame, got {other:?}"),
+        };
+        match resp {
             ServiceResponse::Error(e) => {
                 assert_eq!(
                     e.module, "auth",
@@ -1061,8 +1267,12 @@ mod tests {
             .await
             .unwrap();
 
-        let resp: Option<ServiceResponse> = read_frame(&mut reader).await.unwrap();
-        match resp.unwrap() {
+        let frame: Option<ServerFrame> = read_frame(&mut reader).await.unwrap();
+        let resp = match frame.unwrap() {
+            ServerFrame::Response(r) => *r,
+            other => panic!("Expected Response frame, got {other:?}"),
+        };
+        match resp {
             ServiceResponse::InstanceMetadata(Some(_meta)) => {
                 // Server was initialized so metadata should exist
             }

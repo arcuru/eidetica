@@ -38,6 +38,7 @@ use crate::auth::crypto::PublicKey;
 use crate::auth::types::{Permission, SigKey};
 use crate::backend::InstanceMetadata;
 use crate::entry::{Entry, ID};
+use crate::instance::WriteSource;
 use crate::service::error::ServiceError;
 use crate::user::UserInfo;
 
@@ -199,6 +200,20 @@ pub enum DatabaseOp {
     /// special-cased for this variant in the dispatcher. Boxed to keep the
     /// enum's stack footprint small — `InstanceMetadata` dominates its size.
     SetInstanceMetadata { metadata: Box<InstanceMetadata> },
+
+    /// Subscribe this connection to write notifications for the request's
+    /// `root_id`. After the server returns `Ok`, every write the daemon
+    /// observes on that tree (local commits via `SubmitSignedEntry`, sync
+    /// ingest via `put_remote_entries`, etc.) is pushed back to this
+    /// connection as a [`Notification::DatabaseWrite`] frame. Idempotent:
+    /// re-subscribing is a no-op. Gate Read on `root_id`. Subscriptions are
+    /// cleared automatically when the connection drops.
+    SubscribeWrites,
+
+    /// Stop pushing write notifications for the request's `root_id` to this
+    /// connection. Idempotent: unsubscribing a tree that wasn't subscribed
+    /// is a no-op. Gate Read on `root_id`.
+    UnsubscribeWrites,
 }
 
 impl DatabaseOp {
@@ -219,6 +234,8 @@ impl DatabaseOp {
             DatabaseOp::SetInstanceMetadata { .. } => Permission::Admin(0),
             DatabaseOp::GetStoreTipsUpToEntries { .. } => Permission::Read,
             DatabaseOp::ComputeMergeState { .. } => Permission::Read,
+            DatabaseOp::SubscribeWrites => Permission::Read,
+            DatabaseOp::UnsubscribeWrites => Permission::Read,
             _ => Permission::Read,
         }
     }
@@ -294,6 +311,71 @@ pub enum ServiceRequest {
     /// `AuthenticatedDbRequest` carries `(root_id, identity, op)` and is boxed
     /// to keep the enum's discriminated size compact.
     AuthenticatedDb(Box<AuthenticatedDbRequest>),
+}
+
+/// Server-initiated push to the client, interleaved with normal responses
+/// at any point after a connection has authenticated.
+///
+/// Notifications are not solicited by a specific request; the client signs up
+/// for them with a [`DatabaseOp::SubscribeWrites`] and unsubscribes by
+/// dropping the connection or sending [`DatabaseOp::UnsubscribeWrites`].
+///
+/// TODO(notify-id-only): the current `DatabaseWrite` shape ships full
+/// `Entry` payloads. This is convenient (the client can rebuild a
+/// `WriteEvent` and fire callbacks with no follow-up round-trip) but has
+/// two costs worth fixing before multi-user / untrusted-client work:
+///
+/// 1. **Security**: per-tree Read is gated once at `SubscribeWrites`; the
+///    publisher fan-out does not re-check on each event. If a subscriber's
+///    permission is revoked while the connection is live, the daemon
+///    keeps shipping entry contents. Shipping IDs only would reduce this
+///    to leaking "a write happened on tree X" — the entries themselves
+///    would only reach the client through an explicit, currently-gated
+///    read.
+/// 2. **Efficiency**: sync ingest can batch many entries; pushing each
+///    one to every subscriber multiplies bandwidth by subscriber count.
+///
+/// Planned shape: `DatabaseWrite { root_id, entry_ids: Vec<ID>,
+/// previous_tips: Vec<ID>, source }`. The client-side dispatcher would
+/// fetch entries on-demand if a user callback inspects `event.entries()`;
+/// callbacks that only care about *that* a write happened (the common
+/// case for cache invalidation / UI wake-ups) would never touch the wire
+/// for the bodies. Requires adding a `Vec<Entry>` accessor on `WriteEvent`
+/// that lazily fetches, or a dedicated `entries().await` method.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum Notification {
+    /// A write landed on the daemon for `root_id`. Mirrors the daemon's
+    /// internal `WriteEvent` so the client can rebuild one and feed its
+    /// callback registry without further round-trips. Carries the daemon's
+    /// pre-write tips (the canonical `previous_tips`, not the empty
+    /// placeholder the client would have on its own) and the `source`
+    /// distinction so consumers can branch on local-vs-sync.
+    DatabaseWrite {
+        root_id: ID,
+        entries: Vec<Entry>,
+        previous_tips: Vec<ID>,
+        source: WriteSource,
+    },
+}
+
+/// Envelope for every frame the server writes to a client.
+///
+/// Strict request/response responses ride `Response`; server-initiated
+/// pushes (subscribed write events) ride `Notification`. The reader task on
+/// the client demuxes by variant: `Response` frames go to the next pending
+/// oneshot in FIFO order, `Notification` frames go to the local callback
+/// dispatcher.
+///
+/// `Response` boxes its payload because `ServiceResponse` is large (the
+/// `TrustedLoginChallenge` variant carries a full `UserInfo`), and an
+/// unboxed enum would force every `Notification` frame to carry that
+/// stack footprint too.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ServerFrame {
+    /// A response to a previously-sent [`ServiceRequest`].
+    Response(Box<ServiceResponse>),
+    /// A server-initiated push (subscription-driven).
+    Notification(Notification),
 }
 
 /// Response from server to client.
@@ -589,6 +671,75 @@ mod tests {
         let json = serde_json::to_string(&resp).unwrap();
         let resp2: ServiceResponse = serde_json::from_str(&json).unwrap();
         assert!(matches!(resp2, ServiceResponse::TrustedLoginOk));
+    }
+
+    #[test]
+    fn test_database_op_subscribe_writes_serde() {
+        let req = wrap(DatabaseOp::SubscribeWrites);
+        let json = serde_json::to_string(&req).unwrap();
+        let req2: ServiceRequest = serde_json::from_str(&json).unwrap();
+        assert!(matches!(unwrap_op(req2), DatabaseOp::SubscribeWrites));
+    }
+
+    #[test]
+    fn test_database_op_unsubscribe_writes_serde() {
+        let req = wrap(DatabaseOp::UnsubscribeWrites);
+        let json = serde_json::to_string(&req).unwrap();
+        let req2: ServiceRequest = serde_json::from_str(&json).unwrap();
+        assert!(matches!(unwrap_op(req2), DatabaseOp::UnsubscribeWrites));
+    }
+
+    #[test]
+    fn test_subscribe_ops_gate_read() {
+        assert_eq!(
+            DatabaseOp::SubscribeWrites.required_permission(),
+            Permission::Read
+        );
+        assert_eq!(
+            DatabaseOp::UnsubscribeWrites.required_permission(),
+            Permission::Read
+        );
+    }
+
+    #[test]
+    fn test_server_frame_response_serde() {
+        let frame = ServerFrame::Response(Box::new(ServiceResponse::Ok));
+        let json = serde_json::to_string(&frame).unwrap();
+        let frame2: ServerFrame = serde_json::from_str(&json).unwrap();
+        match frame2 {
+            ServerFrame::Response(resp) => match *resp {
+                ServiceResponse::Ok => {}
+                other => panic!("expected ServiceResponse::Ok, got {other:?}"),
+            },
+            other => panic!("expected ServerFrame::Response(Ok), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_server_frame_notification_serde() {
+        let notif = Notification::DatabaseWrite {
+            root_id: test_id(),
+            entries: vec![],
+            previous_tips: vec![ID::from_bytes("tip-1"), ID::from_bytes("tip-2")],
+            source: WriteSource::Remote,
+        };
+        let frame = ServerFrame::Notification(notif);
+        let json = serde_json::to_string(&frame).unwrap();
+        let frame2: ServerFrame = serde_json::from_str(&json).unwrap();
+        match frame2 {
+            ServerFrame::Notification(Notification::DatabaseWrite {
+                root_id,
+                entries,
+                previous_tips,
+                source,
+            }) => {
+                assert_eq!(root_id, test_id());
+                assert!(entries.is_empty());
+                assert_eq!(previous_tips.len(), 2);
+                assert_eq!(source, WriteSource::Remote);
+            }
+            other => panic!("expected ServerFrame::Notification(DatabaseWrite), got {other:?}"),
+        }
     }
 
     #[tokio::test]

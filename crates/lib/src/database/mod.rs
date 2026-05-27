@@ -631,27 +631,7 @@ impl Database {
     /// writes to the database tree (identified by root ID), regardless of which
     /// `Database` handle performed the write or registered the callback.
     ///
-    /// # ⚠️ Limited semantics on a connected (remote) [`Instance`]
-    ///
-    /// On a daemon-backed [`Instance`], `on_write` is **best-effort and partial**.
-    /// It only observes writes whose commit ran through this client's
-    /// [`Instance::put_entry`]. The following writes are **not** observed:
-    ///
-    /// - Commits made by other client processes connected to the same daemon.
-    /// - Entries the daemon receives via sync from peers.
-    /// - Anything the daemon writes outside this client's commit path.
-    ///
-    /// In addition, [`WriteEvent::previous_tips`] is **always empty** for writes
-    /// that go through a remote backend — the canonical DAG lives on the daemon
-    /// and the client has nothing local to read tips from. Callbacks that diff
-    /// `previous_tips` against `event.entries()` will see "the world was empty"
-    /// on every event.
-    ///
-    /// If you need full cross-client / cross-sync notification semantics, use a
-    /// local [`Instance`] for now. A server-push subscription path is planned —
-    /// when it lands, this method will gain the same contract on remote.
-    ///
-    /// # Callback contract (local [`Instance`])
+    /// # Callback contract
     ///
     /// - **Local writes**: fires once per transaction commit; the [`WriteEvent`]
     ///   contains exactly one entry.
@@ -670,6 +650,34 @@ impl Database {
     ///   that is held while callbacks run. A callback must not commit a
     ///   transaction on the same tree it was invoked for — that would
     ///   deadlock. Spawn a task or write to a different tree instead.
+    ///
+    /// # Callback timing
+    ///
+    /// On a **local** [`Instance`], callbacks complete before
+    /// [`Transaction::commit`](crate::Transaction::commit)`.await` returns —
+    /// the firing path is inline with the write and the per-tree lock is
+    /// held the whole way.
+    ///
+    /// On a **connected** [`Instance`] (one built via
+    /// [`Instance::connect`](crate::Instance::connect)), callbacks fire
+    /// when a `Notification::DatabaseWrite` arrives back from the daemon —
+    /// typically microseconds after `commit().await` returns, but
+    /// asynchronous to it. This is by design: the daemon is the **sole
+    /// orderer** of writes on a connected setup, so every subscriber —
+    /// including the committing client — observes callbacks in the same
+    /// daemon-canonical order. Two clients submitting concurrently see
+    /// each other's writes in the same sequence; a single client's
+    /// callbacks never race a remote-source event into a different
+    /// observable order than the daemon has it. The trade-off is a small
+    /// asynchrony at the commit boundary — if you need a synchronous
+    /// "callback fired before commit returned" guarantee, use a local
+    /// [`Instance`].
+    ///
+    /// On a connected instance the first `on_write` registration for a
+    /// given tree lazily sends a `SubscribeWrites` op to the daemon;
+    /// further registrations on the same tree reuse that subscription.
+    /// Subscriptions live for the connection's lifetime — disconnecting
+    /// the client implicitly unsubscribes.
     ///
     /// # Example
     /// ```rust,no_run
@@ -691,7 +699,7 @@ impl Database {
     ///         println!("{count} entries written to {db_id} ({source:?})");
     ///         Ok(())
     ///     }
-    /// })?;
+    /// }).await?;
     ///
     /// // Drop `cb` to unregister, or:
     /// cb.detach(); // keep registered for the life of the Instance
@@ -701,7 +709,7 @@ impl Database {
     ///
     /// If a callback needs the [`Instance`], call [`Database::instance`] on
     /// the `db` argument.
-    pub fn on_write<F, Fut>(&self, callback: F) -> Result<WriteCallback>
+    pub async fn on_write<F, Fut>(&self, callback: F) -> Result<WriteCallback>
     where
         F: for<'a> Fn(&'a WriteEvent, &'a Database) -> Fut + Send + std::marker::Sync + 'static,
         Fut: std::future::Future<Output = Result<()>> + Send + 'static,
@@ -709,11 +717,26 @@ impl Database {
         let instance = self.instance()?;
         let tree_id = self.root_id().clone();
         let id = instance.register_write_callback(tree_id.clone(), callback);
-        Ok(WriteCallback::new_per_database(
-            instance.downgrade(),
-            tree_id,
-            id,
-        ))
+        let cb = WriteCallback::new_per_database(instance.downgrade(), tree_id.clone(), id);
+
+        // On a connected (daemon-backed) instance, ensure the daemon is
+        // pushing notifications for this tree before returning — otherwise
+        // an immediately-following commit could race the subscribe and lose
+        // its notification, since the daemon doesn't replay missed events.
+        // `subscribe_writes` is itself concurrency-safe and idempotent: it
+        // short-circuits when the tree is already subscribed and serialises
+        // racing registrations through a per-tree `Notify`, so every caller
+        // observes the subscription as live before returning. Database
+        // handles built with a key carry an explicit identity; keyless
+        // handles fall back to `SigKey::default()`, which the daemon
+        // resolves to the connection's login pubkey.
+        #[cfg(all(unix, feature = "service"))]
+        if let Some(conn) = instance.remote_connection() {
+            let identity = self.auth_identity().cloned().unwrap_or_default();
+            conn.subscribe_writes(tree_id, identity).await?;
+        }
+
+        Ok(cb)
     }
 
     /// Get the ID of the root entry

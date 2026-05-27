@@ -13,25 +13,26 @@
 //! envelope and are dispatched against the user's identity; the daemon gates
 //! each one per-tree against the target database's auth settings.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
 use lru::LruCache;
 use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::UnixStream;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify, oneshot};
 
 use crate::auth::crypto::PrivateKey;
 use crate::auth::crypto::{PublicKey, create_challenge_response};
 use crate::auth::types::SigKey;
 use crate::backend::InstanceMetadata;
 use crate::entry::{Entry, ID};
+use crate::instance::{WeakInstance, WriteEvent};
 use crate::service::error::service_error_to_eidetica_error;
 use crate::service::protocol::{
-    AuthenticatedDbRequest, DatabaseOp, Handshake, HandshakeAck, MergeState, PROTOCOL_VERSION,
-    ReadScope, ServiceRequest, ServiceResponse, TransactionContext, WireCrdtValue, read_frame,
-    write_frame,
+    AuthenticatedDbRequest, DatabaseOp, Handshake, HandshakeAck, MergeState, Notification,
+    PROTOCOL_VERSION, ReadScope, ServerFrame, ServiceRequest, ServiceResponse, TransactionContext,
+    WireCrdtValue, read_frame, write_frame,
 };
 use crate::user::UserError;
 use crate::user::crypto::{decrypt_private_key, derive_encryption_key};
@@ -108,9 +109,52 @@ struct SessionState {
     session_pubkey: PublicKey,
 }
 
+/// Per-tree subscription state for [`RemoteConnectionInner::subscribed_trees`].
+///
+/// `InFlight` carries a `Notify` whose waiters are released exactly once when
+/// the leader finishes the wire round-trip (success or failure). Followers
+/// re-check the map after waking — success transitions to `Subscribed` (they
+/// return `Ok`), failure removes the entry (one of them becomes the next
+/// leader on retry).
+enum SubState {
+    InFlight(Arc<Notify>),
+    Subscribed,
+}
+
+/// Role assignment for one entry into [`RemoteConnection::subscribe_writes`].
+/// Decided under the `subscribed_trees` mutex and consumed outside it so the
+/// std::Mutex is never held across an `await`.
+enum SubRole {
+    /// This task owns the wire round-trip and must transition the state +
+    /// `notify_waiters` when it finishes (success or failure).
+    Leader(Arc<Notify>),
+    /// Another task is already subscribing; await its notify and re-check.
+    Follower(Arc<Notify>),
+}
+
 /// Internal state for a remote connection, wrapped in Arc for Clone.
 struct RemoteConnectionInner {
-    stream: Mutex<(ReadHalf<UnixStream>, WriteHalf<UnixStream>)>,
+    /// Owns the write half of the socket. `tokio::sync::Mutex` because
+    /// `write_frame` is async (held across awaits). Only ever held for the
+    /// duration of one frame's write plus the FIFO push into [`Self::pending`];
+    /// the await on the response itself happens *after* the lock is released
+    /// so concurrent callers don't serialise on read-side latency.
+    writer: Mutex<WriteHalf<UnixStream>>,
+    /// FIFO of awaiting response slots. `request()` pushes one before
+    /// releasing the writer lock; the reader task pops the front on every
+    /// `ServerFrame::Response` so request and response order line up. The
+    /// VecDeque is guarded by a plain `std::sync::Mutex` — never held
+    /// across an await — so it can't deadlock with the writer lock.
+    pending: std::sync::Mutex<VecDeque<oneshot::Sender<ServiceResponse>>>,
+    /// Set once by [`RemoteConnection::attach_instance`] right after
+    /// `Instance::connect` has finished building the Instance. The reader
+    /// task reads (cheap clone of the inner `Weak`) on each
+    /// [`Notification::DatabaseWrite`] to dispatch into the instance's
+    /// callback registry. Stays `None` until attach; notifications can't
+    /// arrive in that window because the client subscribes lazily on the
+    /// first `Database::on_write` registration, which itself can't run
+    /// until the Instance exists.
+    weak_instance: std::sync::Mutex<Option<WeakInstance>>,
     /// Set on successful `trusted_login`; read by `backend_request` to populate
     /// the `Authenticated` envelope's identity field. `RwLock` because reads
     /// are far more frequent than the one-shot login write.
@@ -129,6 +173,18 @@ struct RemoteConnectionInner {
     /// per-request wire chatter for the common case where a single per-DB
     /// key is reused across many ops.
     registered_keys: Mutex<HashSet<PublicKey>>,
+    /// Per-tree subscription state. Entries are inserted on first call to
+    /// [`RemoteConnection::subscribe_writes`] and never removed on success
+    /// (subscriptions live for the connection's lifetime; the daemon scrubs
+    /// them on disconnect).
+    ///
+    /// The two states coordinate concurrent registrations against the same
+    /// tree: exactly one task is the "leader" that drives the wire round-trip;
+    /// other tasks observe `InFlight(notify)`, await the notify, and re-check
+    /// state. On leader success the state transitions to `Subscribed` and
+    /// followers return `Ok`; on leader failure the entry is removed so the
+    /// next waker can take leadership and retry.
+    subscribed_trees: std::sync::Mutex<HashMap<ID, SubState>>,
     /// Process-lifetime CRDT-state LRU shared across every `Database` handle
     /// (every `RemoteBackend`) on this connection. Tier 1 of the
     /// two-level cache; tier 2 is the daemon's unified scope-keyed cache
@@ -165,6 +221,13 @@ impl RemoteConnectionInner {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
+
+    /// Acquire the pending-queue lock, tolerating poisoning.
+    fn pending_lock(&self) -> std::sync::MutexGuard<'_, VecDeque<oneshot::Sender<ServiceResponse>>> {
+        self.pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 }
 
 /// A connection to a remote Eidetica service server over a Unix domain socket.
@@ -188,7 +251,11 @@ impl std::fmt::Debug for RemoteConnection {
 impl RemoteConnection {
     /// Connect to a service server at the given socket path.
     ///
-    /// Performs the protocol handshake and returns a connection ready for use.
+    /// Performs the protocol handshake, then spawns a background reader
+    /// task that demuxes [`ServerFrame`]s: `Response` frames pop the next
+    /// pending oneshot in FIFO order, `Notification` frames dispatch into
+    /// the attached `Instance`'s callback registry (after
+    /// [`Self::attach_instance`] has been called).
     pub async fn connect(path: impl AsRef<Path>) -> crate::Result<Self> {
         let stream = UnixStream::connect(path.as_ref()).await?;
         let (mut reader, mut writer) = tokio::io::split(stream);
@@ -217,16 +284,40 @@ impl RemoteConnection {
             )));
         }
 
-        Ok(Self {
-            inner: Arc::new(RemoteConnectionInner {
-                stream: Mutex::new((reader, writer)),
-                session: RwLock::new(None),
-                registered_keys: Mutex::new(HashSet::new()),
-                crdt_cache: std::sync::Mutex::new(ClientCrdtCache::new(
-                    CLIENT_CACHE_CAPACITY_BYTES,
-                )),
-            }),
-        })
+        let inner = Arc::new(RemoteConnectionInner {
+            writer: Mutex::new(writer),
+            pending: std::sync::Mutex::new(VecDeque::new()),
+            weak_instance: std::sync::Mutex::new(None),
+            session: RwLock::new(None),
+            registered_keys: Mutex::new(HashSet::new()),
+            subscribed_trees: std::sync::Mutex::new(HashMap::new()),
+            crdt_cache: std::sync::Mutex::new(ClientCrdtCache::new(CLIENT_CACHE_CAPACITY_BYTES)),
+        });
+
+        // Spawn the reader task. It holds an Arc clone of `inner` so the
+        // connection (and its pending queue) stay live as long as any
+        // request is in flight, and exits cleanly on EOF / read error /
+        // failure-to-deserialize. On exit it drops the remaining oneshot
+        // senders, which surfaces as a `RecvError` on the awaiting
+        // request().
+        let inner_for_reader = inner.clone();
+        tokio::spawn(run_reader_task(reader, inner_for_reader));
+
+        Ok(Self { inner })
+    }
+
+    /// Attach an `Instance` to this connection so the reader task can
+    /// dispatch incoming [`Notification::DatabaseWrite`]s into the
+    /// instance's callback registry. Called exactly once by
+    /// `Instance::connect` after the Instance has been constructed.
+    /// Subsequent calls overwrite the previous reference, but no caller
+    /// does that today.
+    pub(crate) fn attach_instance(&self, weak: WeakInstance) {
+        *self
+            .inner
+            .weak_instance
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(weak);
     }
 
     /// Look up a cached materialized CRDT state in the connection-shared
@@ -241,18 +332,35 @@ impl RemoteConnection {
         self.inner.crdt_cache_lock().put(root_id, key, store, blob);
     }
 
-    /// Send a request and read the response.
+    /// Send a request and await its response.
+    ///
+    /// Take the writer lock; push a oneshot into the pending FIFO; write
+    /// the frame; release the lock; await the oneshot. Pushing the
+    /// oneshot *while still holding the writer lock* guarantees the FIFO
+    /// order in `pending` lines up with the on-wire order so the reader
+    /// task pairs each `ServerFrame::Response` with the right caller.
+    /// Concurrent `request()` calls do not serialise on the response
+    /// wait — only on the (cheap) frame write.
     async fn request(&self, req: ServiceRequest) -> crate::Result<ServiceResponse> {
-        let mut stream = self.inner.stream.lock().await;
-        let (ref mut reader, ref mut writer) = *stream;
-        write_frame(writer, &req).await?;
-        let resp: ServiceResponse = read_frame(reader).await?.ok_or_else(|| {
+        let (tx, rx) = oneshot::channel::<ServiceResponse>();
+        {
+            let mut writer = self.inner.writer.lock().await;
+            // Push *before* writing the frame so the FIFO is consistent
+            // with the order frames hit the wire. If the write fails we
+            // pop the just-pushed sender so a future caller doesn't get
+            // matched to a response that never comes.
+            self.inner.pending_lock().push_back(tx);
+            if let Err(e) = write_frame(&mut *writer, &req).await {
+                let _ = self.inner.pending_lock().pop_back();
+                return Err(e);
+            }
+        }
+        rx.await.map_err(|_| {
             crate::Error::Io(std::io::Error::new(
                 std::io::ErrorKind::ConnectionAborted,
                 "Server closed connection unexpectedly",
             ))
-        })?;
-        Ok(resp)
+        })
     }
 
     /// Send a request and convert error responses to `crate::Error`.
@@ -471,6 +579,81 @@ impl RemoteConnection {
             )
             .await?;
         Self::expect_ok(resp)
+    }
+
+    /// Subscribe this connection to write notifications for `tree_id`.
+    ///
+    /// Safe to call concurrently from multiple tasks for the same `tree_id`:
+    /// exactly one task drives the wire round-trip, the rest await its
+    /// `Notify` and inherit the outcome. On success every caller returns `Ok`
+    /// only *after* the daemon has registered the subscription, so an
+    /// immediately-following commit on this connection cannot race the
+    /// subscribe and lose its notification. On failure the local state is
+    /// rolled back so a subsequent call can retry — a caller whose retry
+    /// becomes the new leader may succeed even if a previous leader did not.
+    ///
+    /// Idempotent across calls: a tree that is already `Subscribed` returns
+    /// `Ok` without any wire activity. The server's `ConnectionRegistry` is
+    /// also idempotent. Identity is gated server-side as Read on `tree_id`.
+    pub(crate) async fn subscribe_writes(
+        &self,
+        tree_id: ID,
+        identity: SigKey,
+    ) -> crate::Result<()> {
+        loop {
+            // Decide our role under the std::Mutex without holding it across
+            // any await: leader inserts `InFlight(notify)` and proceeds to the
+            // wire call; followers clone the notify and `await` it below.
+            let role = {
+                let mut subs = self.subscribed_trees_lock();
+                match subs.get(&tree_id) {
+                    Some(SubState::Subscribed) => return Ok(()),
+                    Some(SubState::InFlight(n)) => SubRole::Follower(n.clone()),
+                    None => {
+                        let n = Arc::new(Notify::new());
+                        subs.insert(tree_id.clone(), SubState::InFlight(n.clone()));
+                        SubRole::Leader(n)
+                    }
+                }
+            };
+
+            match role {
+                SubRole::Follower(notify) => {
+                    notify.notified().await;
+                    // Re-check: success → return Ok; failure (entry removed)
+                    // → loop, where this task may become the next leader.
+                    continue;
+                }
+                SubRole::Leader(notify) => {
+                    let result = self
+                        .db_request(tree_id.clone(), identity, DatabaseOp::SubscribeWrites)
+                        .await
+                        .and_then(Self::expect_ok);
+                    {
+                        let mut subs = self.subscribed_trees_lock();
+                        match &result {
+                            Ok(()) => {
+                                subs.insert(tree_id.clone(), SubState::Subscribed);
+                            }
+                            Err(_) => {
+                                subs.remove(&tree_id);
+                            }
+                        }
+                    }
+                    // Wake everyone exactly once; new waiters that arrive
+                    // after this point land in the post-transition state.
+                    notify.notify_waiters();
+                    return result;
+                }
+            }
+        }
+    }
+
+    fn subscribed_trees_lock(&self) -> std::sync::MutexGuard<'_, HashMap<ID, SubState>> {
+        self.inner
+            .subscribed_trees
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
     }
 
     // === Database operations (DatabaseOp via AuthenticatedDb envelope) ===
@@ -694,6 +877,116 @@ fn unexpected_response(expected: &str, actual: &ServiceResponse) -> crate::Error
         std::io::ErrorKind::InvalidData,
         format!("Expected {expected} response, got {actual:?}"),
     ))
+}
+
+/// Background task driving the read half of the socket.
+///
+/// Loops on [`read_frame`] and demuxes by [`ServerFrame`] variant:
+///
+/// - `Response(r)`: pop the front of the pending FIFO and resolve its
+///   oneshot. If the queue is empty something has gone badly wrong
+///   (server sent more responses than the client issued requests) — log
+///   and continue.
+/// - `Notification(Notification::DatabaseWrite { … })`: upgrade the
+///   attached `WeakInstance` and route the event into its callback
+///   registry via [`crate::Instance::fire_write_callbacks`]. If no
+///   instance is attached yet or the instance has been dropped, the
+///   notification is silently dropped — both are expected end-states,
+///   not errors.
+///
+/// Exit conditions: clean EOF (server closed), any read error, or any
+/// deserialisation error. On exit the task drops its `Arc<inner>`, which
+/// in turn drops every remaining oneshot sender in `pending`, surfacing
+/// as a `RecvError` on each awaiting `request()` (translated to a
+/// connection-closed `io::Error` there).
+async fn run_reader_task(mut reader: ReadHalf<UnixStream>, inner: Arc<RemoteConnectionInner>) {
+    loop {
+        let frame_result: crate::Result<Option<ServerFrame>> = read_frame(&mut reader).await;
+        let frame = match frame_result {
+            Ok(Some(f)) => f,
+            Ok(None) => break, // Clean EOF
+            Err(e) => {
+                tracing::debug!("RemoteConnection reader error: {e}");
+                break;
+            }
+        };
+
+        match frame {
+            ServerFrame::Response(resp) => {
+                let next = inner.pending_lock().pop_front();
+                match next {
+                    Some(tx) => {
+                        // Receiver dropped → the caller has already given
+                        // up. Not an error worth logging.
+                        let _ = tx.send(*resp);
+                    }
+                    None => {
+                        tracing::warn!(
+                            "RemoteConnection reader: response with no pending request; dropping"
+                        );
+                    }
+                }
+            }
+            ServerFrame::Notification(notif) => {
+                dispatch_notification(&inner, notif);
+            }
+        }
+    }
+
+    // Drain pending; dropping each sender surfaces `RecvError` on the
+    // awaiting caller. This is the connection-closed signal callers see.
+    inner.pending_lock().clear();
+}
+
+/// Route a `Notification` into the attached `Instance`'s callback registry.
+///
+/// **Must not block the reader.** User callbacks may issue their own wire
+/// ops (e.g. `Database::open` over the connected instance), and those ops
+/// land their responses through *this same reader task*. Awaiting the
+/// dispatch inline would deadlock — the reader can't deliver the response
+/// the dispatch is waiting for. Spawning the dispatch lets the reader
+/// return to its `read_frame` loop immediately.
+fn dispatch_notification(inner: &Arc<RemoteConnectionInner>, notif: Notification) {
+    let weak = {
+        let guard = inner
+            .weak_instance
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.clone()
+    };
+    let Some(weak) = weak else {
+        // Instance not yet attached. Subscribe-on-first-callback can't run
+        // before attach, so this only fires in the (test/dev) shape where
+        // someone subscribed manually before constructing the Instance.
+        tracing::debug!("RemoteConnection: notification received before attach_instance; dropping");
+        return;
+    };
+    let Some(instance) = weak.upgrade() else {
+        tracing::debug!("RemoteConnection: instance dropped; reader exiting next round");
+        return;
+    };
+
+    // TODO(dispatch-bound): unbounded `tokio::spawn` per notification. The
+    // spawn itself is required (see fn doc — inline await would deadlock
+    // the reader against user callbacks that issue wire calls), but under
+    // sustained write load this creates unbounded tasks. A per-connection
+    // serial dispatcher (single drain task fed by a bounded queue) would
+    // give the same deadlock-avoidance with a memory cap. Not a v1 issue
+    // since the trusted local client controls its own write rate; revisit
+    // alongside the notification-payload redesign below (TODO(notify-id-only)).
+    tokio::spawn(async move {
+        match notif {
+            Notification::DatabaseWrite {
+                root_id,
+                entries,
+                previous_tips,
+                source,
+            } => {
+                let event = WriteEvent::from_wire(entries, previous_tips, source);
+                instance.fire_write_callbacks(&root_id, &event).await;
+            }
+        }
+    });
 }
 
 #[cfg(test)]

@@ -162,7 +162,11 @@ the wire. (See [Core Concepts](core_concepts.md) for the verification model.)
 
 ## Limitations
 
-- **No server-push notifications.** Clients see the latest state on each request but are not proactively notified when the daemon receives entries from sync peers. Polling or re-reading is required to observe external changes.
 - **Sync management is server-side.** Sync runs in the daemon's process and a connected client can't drive its lifecycle from over the wire. `enable_sync()` on a remote Instance returns `Ok(())` as a no-op so calling code that wraps it doesn't error out; to actually enable sync, configure it on the daemon's Instance before clients connect, or use the daemon CLI with sync options. A future admin-gated `EnableSync` RPC would let a client ask the daemon to enable its sync subsystem remotely.
 - **Unix-only.** The service module requires Unix domain sockets and is not available on Windows.
 - **Feature flag required.** The `service` feature must be enabled (included in the default `full` feature set).
+
+For the `Database::on_write` semantics on a connected Instance — including
+the deliberate trade that callbacks fire asynchronously to `commit()` in
+exchange for a single daemon-canonical event ordering — see [Write
+Callbacks](transactions.md#write-callbacks).

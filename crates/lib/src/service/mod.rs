@@ -46,17 +46,20 @@
 //! the entry `Unverified`, then runs its own verification pass before the
 //! entry is exposed on any default read.
 //!
-//! ## V1 Limitations
+//! On a connected setup the daemon is also the **sole publisher** of write
+//! events for [`Database::on_write`](crate::Database::on_write) callbacks:
+//! a connected client's `Instance::put_entry` deliberately *does not* fire
+//! its local callback registry, because the daemon will round-trip a
+//! `Notification::DatabaseWrite` (carried in a `ServerFrame::Notification`
+//! envelope) back to every subscribed connection. A client subscribes to
+//! a tree lazily on the first `Database::on_write` registration via
+//! `DatabaseOp::SubscribeWrites`. Subscriptions live for the connection's
+//! lifetime; disconnecting implicitly unsubscribes everything. This single
+//! ordering means every subscriber — including the originating client —
+//! observes callbacks in the daemon's canonical order, with full
+//! `previous_tips` (no client-side placeholder).
 //!
-//! - **No server-push notifications**: Clients see latest state on each request
-//!   but are not notified when the daemon receives entries from sync peers, or
-//!   when another client writes through the same daemon. As a consequence,
-//!   [`Database::on_write`](crate::Database::on_write) on a connected
-//!   [`Instance`](crate::Instance) observes only writes this client's own
-//!   commit path produced — see that method's doc for the full caveat list.
-//!   Future: bidirectional framing with a `Notification` variant alongside
-//!   `Response`, plus a client-side reader task that routes notifications to
-//!   the local callback registry.
+//! ## V1 Limitations
 //!
 //! - **`enable_sync()` on remote Instance**: A silent no-op (returns `Ok(())`)
 //!   rather than building a client-side sync module that would race the
