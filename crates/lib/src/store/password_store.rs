@@ -619,7 +619,7 @@ impl<S: Store> Store for PasswordStore<S> {
         }
     }
 
-    async fn init(txn: &Transaction, subtree_name: String) -> Result<Self> {
+    async fn register(txn: &Transaction, subtree_name: String) -> Result<Self> {
         // Register in _index with empty config (marks as uninitialized)
         let index_store = txn.get_index().await?;
         index_store
