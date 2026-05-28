@@ -118,6 +118,27 @@ pub trait Store: Sized + Registered + Send + Sync {
         Ok(store)
     }
 
+    /// Opens this Store on a transaction, registering the subtree if it does not
+    /// yet exist.
+    ///
+    /// This is the consumer-facing entry point for attaching a Store to a
+    /// transaction. The default implementation delegates to
+    /// `Transaction::get_store`, which checks `_index` and dispatches to either
+    /// [`Self::load`] (for an existing subtree) or [`Self::register`] (for a new
+    /// one). Stores with construction needs that do not fit the load/register
+    /// split — cross-subtree merge, external state, conditional initialization —
+    /// may override this method directly.
+    ///
+    /// # Arguments
+    /// * `txn` - The transaction this Store will operate within.
+    /// * `name` - The subtree name identifying this data partition.
+    ///
+    /// # Returns
+    /// A `Result<Self>` containing the opened Store.
+    async fn open(txn: &Transaction, name: impl Into<String> + Send) -> Result<Self> {
+        txn.get_store::<Self>(name).await
+    }
+
     /// Gets the current configuration for this Store from the `_index` subtree.
     ///
     /// # Returns
