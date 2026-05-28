@@ -72,6 +72,15 @@ pub enum TransactionError {
     /// Backend operation failed during commit
     #[error("Backend operation failed during commit: {reason}")]
     BackendOperationFailed { reason: String },
+
+    /// Attempt to open a system subtree (`_settings`, `_root`, `_index`, …) at
+    /// a moment when the transaction has locked them. Currently used by
+    /// `Database::create_with_init` to prevent its init callback from
+    /// clobbering the system subtrees that `create_with_init` itself manages.
+    #[error(
+        "System subtree '{name}' is locked for this transaction (init callbacks may not open `_`-prefixed subtrees directly)"
+    )]
+    SystemSubtreeLocked { name: String },
 }
 
 impl TransactionError {

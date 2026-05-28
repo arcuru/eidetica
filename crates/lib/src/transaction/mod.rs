@@ -22,7 +22,10 @@ mod tests;
 
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 pub use errors::TransactionError;
@@ -168,6 +171,25 @@ pub struct Transaction {
     /// When an encryptor is registered, the transaction automatically encrypts writes
     /// and decrypts reads for that subtree
     encryptors: Arc<Mutex<HashMap<String, Box<dyn Encryptor>>>>,
+    /// When true, `get_store` rejects any `_`-prefixed subtree name. Used by
+    /// `Database::create_with_init` to keep its init callback from opening the
+    /// system subtrees (`_settings`, `_root`, `_index`) that `create_with_init`
+    /// itself manages. Legitimate internal paths — `get_index()` (via
+    /// `Registry::new` → `DocStore::load`) and `Store::register`'s own
+    /// `_index` updates — bypass `get_store` and remain unaffected.
+    system_subtrees_locked: Arc<AtomicBool>,
+}
+
+/// RAII guard returned by [`Transaction::lock_system_subtrees`]. Releases the
+/// lock on drop, covering early-return-via-`?` and panic-unwind alike.
+pub(crate) struct SystemSubtreeLockGuard {
+    flag: Arc<AtomicBool>,
+}
+
+impl Drop for SystemSubtreeLockGuard {
+    fn drop(&mut self) {
+        self.flag.store(false, Ordering::Release);
+    }
 }
 
 impl Transaction {
@@ -221,7 +243,30 @@ impl Transaction {
             db: database.clone(),
             provided_signing_key: None,
             encryptors: Arc::new(Mutex::new(HashMap::new())),
+            system_subtrees_locked: Arc::new(AtomicBool::new(false)),
         })
+    }
+
+    /// Lock the system subtrees (`_settings`, `_root`, `_index`) for the
+    /// returned guard's lifetime.
+    ///
+    /// While the guard is live, [`Self::get_store`] rejects any subtree name
+    /// beginning with `_` (the system-subtree prefix). Used by
+    /// [`Database::create_with_init`] to guard its init callback against
+    /// clobbering `_settings`/`_root`/`_index`, all of which `create_with_init`
+    /// manages itself or via a dedicated accessor. The lock releases on the
+    /// guard's `Drop`, so it covers both early-return-via-`?` and panic-unwind
+    /// paths.
+    ///
+    /// The lock is process-local state on the (cloned-by-Arc) transaction;
+    /// clones share the same flag. Legitimate internal paths — `get_index()`
+    /// (via `Registry::new` → `DocStore::load`) and `Store::register`'s own
+    /// `_index` writes — bypass `get_store` and are unaffected.
+    pub(crate) fn lock_system_subtrees(&self) -> SystemSubtreeLockGuard {
+        self.system_subtrees_locked.store(true, Ordering::Release);
+        SystemSubtreeLockGuard {
+            flag: self.system_subtrees_locked.clone(),
+        }
     }
 
     /// Set signing key directly for user context (internal API).
@@ -511,12 +556,16 @@ impl Transaction {
     {
         let subtree_name = subtree_name.into();
 
-        // Initialize subtree parents before checking _index
-        self.init_subtree_parents(&subtree_name).await?;
-
         // Skip special system subtrees to avoid circular dependencies
         let is_system_subtree =
             subtree_name == INDEX || subtree_name == SETTINGS || subtree_name == ROOT;
+
+        if is_system_subtree && self.system_subtrees_locked.load(Ordering::Acquire) {
+            return Err(TransactionError::SystemSubtreeLocked { name: subtree_name }.into());
+        }
+
+        // Initialize subtree parents before checking _index
+        self.init_subtree_parents(&subtree_name).await?;
 
         if is_system_subtree {
             // System subtrees don't use _index registration
