@@ -552,7 +552,7 @@ impl<S: Store> Registered for PasswordStore<S> {
 impl<S: Store> Store for PasswordStore<S> {
     type Data = S::Data;
 
-    async fn new(txn: &Transaction, subtree_name: String) -> Result<Self> {
+    async fn load(txn: &Transaction, subtree_name: String) -> Result<Self> {
         // Try to load config from _index to determine state
         let index_store = txn.get_index().await?;
         let info = index_store.get_entry(&subtree_name).await?;
@@ -1020,6 +1020,6 @@ impl<S: Store> PasswordStore<S> {
         // so it transparently decrypts on read and encrypts on commit.
         // We call S::new() directly, bypassing Transaction::get_store() type
         // checking, since type consistency was already verified in open().
-        S::new(&self.transaction, self.name.clone()).await
+        S::load(&self.transaction, self.name.clone()).await
     }
 }

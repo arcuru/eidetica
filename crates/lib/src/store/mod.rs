@@ -63,7 +63,7 @@ pub trait Store: Sized + Registered + Send + Sync {
     /// # Arguments
     /// * `txn` - The `Transaction` this `Store` instance will read from and potentially write to.
     /// * `subtree_name` - The name identifying this specific data partition within the `Database`.
-    async fn new(txn: &Transaction, subtree_name: String) -> Result<Self>;
+    async fn load(txn: &Transaction, subtree_name: String) -> Result<Self>;
 
     /// Returns the name of this subtree.
     fn name(&self) -> &str;
@@ -113,7 +113,7 @@ pub trait Store: Sized + Registered + Send + Sync {
     /// # Returns
     /// A `Result<Self>` containing the initialized Store.
     async fn init(txn: &Transaction, subtree_name: String) -> Result<Self> {
-        let store = Self::new(txn, subtree_name).await?;
+        let store = Self::load(txn, subtree_name).await?;
         store.set_config(Self::default_config()).await?;
         Ok(store)
     }

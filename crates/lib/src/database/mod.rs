@@ -1031,7 +1031,7 @@ impl Database {
         T: Store,
     {
         let txn = self.new_transaction().await?;
-        T::new(&txn, name.into()).await
+        T::load(&txn, name.into()).await
     }
 
     /// Get the current tips (leaf entries) of the main database branch.
