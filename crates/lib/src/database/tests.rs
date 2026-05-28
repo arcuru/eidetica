@@ -575,3 +575,98 @@ async fn test_concurrent_writes_serialize_previous_tips() {
         );
     }
 }
+
+/// Two callbacks on the same tree, registered at different cursors,
+/// each see *their own* `previous_tips` on the next fire. This locks
+/// in the per-callback cursor semantics introduced by the cursor
+/// refactor (private brain note:
+/// write-callback-cursor-refactor-plan.md).
+#[tokio::test]
+async fn test_per_callback_cursor_independent_previous_tips() {
+    let (_instance, db) = setup_callback_test().await;
+
+    // Tips at T0 (before any commit).
+    let tips_t0 = db.get_tips().await.unwrap();
+
+    // First commit. cb1 will be registered at T0 *before* this commit
+    // exists, so cb1's cursor stays at T0; cb2 is registered after,
+    // anchored at T1.
+    let cb1_events: Arc<Mutex<Vec<Vec<crate::entry::ID>>>> = Arc::new(Mutex::new(Vec::new()));
+    let cb1_events_clone = cb1_events.clone();
+    let _cb1 = db
+        .on_write_at_tips(tips_t0.clone(), move |event, _db| {
+            let prev = event.previous_tips().to_vec();
+            let evs = cb1_events_clone.clone();
+            async move {
+                evs.lock().unwrap().push(prev);
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+
+    let txn = db.new_transaction().await.unwrap();
+    let store = txn.get_store::<DocStore>("data").await.unwrap();
+    store.set("k", "v1").await.unwrap();
+    let id1 = txn.commit().await.unwrap();
+
+    let tips_t1 = db.get_tips().await.unwrap();
+    assert!(
+        tips_t1.contains(&id1),
+        "tips_t1 must include the just-committed entry"
+    );
+
+    // Register cb2 at T1 — its cursor anchors here, distinct from cb1's.
+    let cb2_events: Arc<Mutex<Vec<Vec<crate::entry::ID>>>> = Arc::new(Mutex::new(Vec::new()));
+    let cb2_events_clone = cb2_events.clone();
+    let _cb2 = db
+        .on_write_at_tips(tips_t1.clone(), move |event, _db| {
+            let prev = event.previous_tips().to_vec();
+            let evs = cb2_events_clone.clone();
+            async move {
+                evs.lock().unwrap().push(prev);
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+
+    // Second commit. cb1's first event has prev=T1 (its cursor advanced
+    // when commit-1 fired). cb2's first event has prev=T1 (its initial
+    // cursor). Wait — cb1's *first* fire was for commit-1: prev=T0,
+    // entries=[id1], cursor advances to T1. cb1's *second* fire (this
+    // commit) should have prev=T1.
+    let txn = db.new_transaction().await.unwrap();
+    let store = txn.get_store::<DocStore>("data").await.unwrap();
+    store.set("k", "v2").await.unwrap();
+    let id2 = txn.commit().await.unwrap();
+
+    let cb1_recorded = cb1_events.lock().unwrap().clone();
+    let cb2_recorded = cb2_events.lock().unwrap().clone();
+
+    // cb1: two fires. First with prev=T0 (initial cursor), second with
+    // prev=T1 (cursor advanced after first fire).
+    assert_eq!(cb1_recorded.len(), 2, "cb1 should fire twice");
+    assert_eq!(
+        cb1_recorded[0], tips_t0,
+        "cb1's first fire's prev should equal its initial cursor (T0)"
+    );
+    assert!(
+        cb1_recorded[1].contains(&id1),
+        "cb1's second fire's prev should reflect the post-commit-1 cursor; got {:?}",
+        cb1_recorded[1]
+    );
+
+    // cb2: one fire (registered after commit-1), with prev=T1 (initial
+    // cursor) — independent of cb1's cursor history.
+    assert_eq!(cb2_recorded.len(), 1, "cb2 should fire once (post-register)");
+    assert!(
+        cb2_recorded[0].contains(&id1),
+        "cb2's first fire's prev should equal its initial cursor (T1, which contains id1); got {:?}",
+        cb2_recorded[0]
+    );
+    assert!(
+        !cb2_recorded[0].contains(&id2),
+        "cb2's first fire's prev must NOT yet contain id2 (the entry it is being notified about)"
+    );
+}
