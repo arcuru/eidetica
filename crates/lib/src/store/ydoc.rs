@@ -213,7 +213,7 @@ impl Registered for YDoc {
 impl Store for YDoc {
     type Data = YrsBinary;
 
-    async fn new(txn: &Transaction, subtree_name: String) -> Result<Self> {
+    async fn load(txn: &Transaction, subtree_name: String) -> Result<Self> {
         Ok(Self {
             name: subtree_name,
             txn: txn.clone(),

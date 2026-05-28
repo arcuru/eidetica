@@ -41,7 +41,7 @@ impl SettingsStore {
     /// # Returns
     /// A Result containing the SettingsStore or an error if creation fails
     pub(crate) fn new(transaction: &Transaction) -> Result<Self> {
-        // Note: We create DocStore directly here instead of using Store::new()
+        // Note: We create DocStore directly here instead of using Store::load()
         // because SettingsStore is a wrapper that doesn't implement the Store trait itself.
         // This avoids the async requirement for this simple internal construction.
         let inner = DocStore {

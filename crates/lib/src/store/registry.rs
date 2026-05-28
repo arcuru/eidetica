@@ -144,7 +144,7 @@ impl Registry {
         // get_store -> get_index -> Registry::new -> get_store cycle
         transaction.init_subtree_parents(&name).await?;
         // Create DocStore directly instead of going through get_store
-        let inner = DocStore::new(transaction, name).await?;
+        let inner = DocStore::load(transaction, name).await?;
         Ok(Self { inner })
     }
 
