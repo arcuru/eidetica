@@ -1,5 +1,6 @@
 //! User module integration tests
 
+mod builder_tests;
 mod database_operations_tests;
 mod database_tracking_tests;
 mod helpers;

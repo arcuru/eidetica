@@ -7,7 +7,7 @@ mod errors;
 pub use errors::StoreError;
 
 mod docstore;
-pub use docstore::DocStore;
+pub use docstore::{DocStore, DocStoreInit};
 
 mod value_editor;
 pub use value_editor::ValueEditor;

@@ -69,6 +69,9 @@ pub enum UserError {
 
     #[error("No keys available for user")]
     NoKeysAvailable,
+
+    #[error("Duplicate store name in DatabaseBuilder: {name}")]
+    DuplicateBuilderStore { name: String },
 }
 
 impl UserError {

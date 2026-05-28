@@ -53,8 +53,11 @@ use crate::{
     user::{SyncSettings, TrackedDatabase, UserError},
 };
 
+mod builder;
 #[cfg(test)]
 mod tests;
+
+pub use builder::DatabaseBuilder;
 
 /// User session object, returned after successful login
 ///
@@ -262,6 +265,17 @@ impl User {
 
     // === Database Operations (User Context) ===
 
+    /// Start building a new database via the chainable [`DatabaseBuilder`] API.
+    ///
+    /// The builder collects settings, key policy, and store initializers, then
+    /// produces a fully-initialized database in a single genesis entry when
+    /// [`DatabaseBuilder::build`] is called.
+    ///
+    /// For the lower-level direct constructor see [`Self::create_database`].
+    pub fn new_database(&mut self) -> DatabaseBuilder<'_> {
+        DatabaseBuilder::new(self)
+    }
+
     /// Create a new database with explicit key selection.
     ///
     /// This method requires you to specify which key should be used to create and manage
@@ -290,6 +304,32 @@ impl User {
     /// let database = user.new_database(settings, key_id)?;
     /// ```
     pub async fn create_database(&mut self, settings: Doc, key_id: &PublicKey) -> Result<Database> {
+        self.create_database_with_init(settings, key_id, async |_| Ok(()))
+            .await
+    }
+
+    /// Creates a new database with an initialization callback that runs inside
+    /// the genesis transaction.
+    ///
+    /// This is the underlying constructor used by [`Self::create_database`] and by
+    /// [`Self::new_database`] (the builder API). The callback receives the
+    /// genesis transaction after `_settings` and `_root` have been staged but
+    /// before commit, allowing additional subtrees to be written into the same
+    /// entry that establishes the database root. See
+    /// [`Database::create_with_init`] for details on the atomicity guarantee.
+    ///
+    /// After the genesis entry commits, this method performs the standard
+    /// user-side tracking write (key-database mapping, `TrackedDatabase` entry)
+    /// in a separate transaction on the user's own system database.
+    pub async fn create_database_with_init<F>(
+        &mut self,
+        settings: Doc,
+        key_id: &PublicKey,
+        init: F,
+    ) -> Result<Database>
+    where
+        F: AsyncFnOnce(&Transaction) -> Result<()>,
+    {
         use crate::user::types::{SyncSettings, UserKey};
 
         // Get the signing key from UserKeyManager
@@ -302,7 +342,8 @@ impl User {
             .clone();
 
         // Create the database with the provided key directly
-        let database = Database::create(&self.instance, signing_key, settings).await?;
+        let database =
+            Database::create_with_init(&self.instance, signing_key, settings, init).await?;
 
         // Store the mapping in UserKey and track the database
         let tx = self.user_database.new_transaction().await?;
