@@ -43,5 +43,5 @@ pub mod types;
 pub use admin::InstanceAdmin;
 pub use errors::UserError;
 pub use key_manager::UserKeyManager;
-pub use session::User;
+pub use session::{DatabaseBuilder, User};
 pub use types::*;
