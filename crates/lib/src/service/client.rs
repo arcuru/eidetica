@@ -15,6 +15,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 use lru::LruCache;
@@ -195,6 +196,23 @@ struct RemoteConnectionInner {
     /// rationale as `session` — a panic in one task must not strand the
     /// rest of the connection, since cache state is rebuildable.
     crdt_cache: std::sync::Mutex<ClientCrdtCache>,
+    /// Set to `true` when the reader task exits (clean EOF, socket error,
+    /// or deserialization failure). Once set, [`RemoteConnection::request`]
+    /// short-circuits with `ConnectionAborted` instead of pushing a fresh
+    /// oneshot that would never be matched.
+    ///
+    /// Required because dropping the user-visible `RemoteConnection` does
+    /// not tear down the inner Arc (the reader task holds its own clone);
+    /// post-reader-exit calls would otherwise queue a sender into
+    /// [`Self::pending`] and `await` indefinitely on a `recv()` that no
+    /// one can fulfil. `pending` is cleared on reader exit, but a fresh
+    /// request landing *after* the clear would push a new sender into
+    /// the now-orphan queue.
+    ///
+    /// Ordering: the reader task sets this with `Release` ordering before
+    /// clearing `pending`, so any `Acquire` load that observes `true` is
+    /// guaranteed to also observe the empty queue.
+    closed: AtomicBool,
 }
 
 impl RemoteConnectionInner {
@@ -292,6 +310,7 @@ impl RemoteConnection {
             registered_keys: Mutex::new(HashSet::new()),
             subscribed_trees: std::sync::Mutex::new(HashMap::new()),
             crdt_cache: std::sync::Mutex::new(ClientCrdtCache::new(CLIENT_CACHE_CAPACITY_BYTES)),
+            closed: AtomicBool::new(false),
         });
 
         // Spawn the reader task. It holds an Arc clone of `inner` so the
@@ -341,10 +360,30 @@ impl RemoteConnection {
     /// task pairs each `ServerFrame::Response` with the right caller.
     /// Concurrent `request()` calls do not serialise on the response
     /// wait — only on the (cheap) frame write.
+    ///
+    /// Two `closed` checks gate the path: a cheap `Acquire` load before
+    /// acquiring the writer lock (the common-case fast path) and a second
+    /// re-check inside the lock *after* pushing the oneshot, in case the
+    /// reader exited concurrently between the first check and the push.
+    /// The reader sets `closed` with `Release` ordering *before* clearing
+    /// `pending`, so a load that sees `true` is guaranteed to see the
+    /// empty (or about-to-be-empty) queue. Without the post-push check,
+    /// a fresh request landing right after the reader clears could push
+    /// a sender into the orphan queue and `rx.await` forever.
     async fn request(&self, req: ServiceRequest) -> crate::Result<ServiceResponse> {
+        if self.inner.closed.load(Ordering::Acquire) {
+            return Err(connection_aborted());
+        }
         let (tx, rx) = oneshot::channel::<ServiceResponse>();
         {
             let mut writer = self.inner.writer.lock().await;
+            // Re-check under the writer lock to close the race where the
+            // reader exits and clears `pending` between our pre-check and
+            // this point. If we observe `closed` now, drop our oneshot on
+            // the floor without pushing — no reader means no response.
+            if self.inner.closed.load(Ordering::Acquire) {
+                return Err(connection_aborted());
+            }
             // Push *before* writing the frame so the FIFO is consistent
             // with the order frames hit the wire. If the write fails we
             // pop the just-pushed sender so a future caller doesn't get
@@ -355,12 +394,7 @@ impl RemoteConnection {
                 return Err(e);
             }
         }
-        rx.await.map_err(|_| {
-            crate::Error::Io(std::io::Error::new(
-                std::io::ErrorKind::ConnectionAborted,
-                "Server closed connection unexpectedly",
-            ))
-        })
+        rx.await.map_err(|_| connection_aborted())
     }
 
     /// Send a request and convert error responses to `crate::Error`.
@@ -879,6 +913,15 @@ fn unexpected_response(expected: &str, actual: &ServiceResponse) -> crate::Error
     ))
 }
 
+/// Canonical "connection torn down" error returned to any caller whose
+/// request couldn't reach (or be answered by) the daemon.
+fn connection_aborted() -> crate::Error {
+    crate::Error::Io(std::io::Error::new(
+        std::io::ErrorKind::ConnectionAborted,
+        "Server closed connection unexpectedly",
+    ))
+}
+
 /// Background task driving the read half of the socket.
 ///
 /// Loops on [`read_frame`] and demuxes by [`ServerFrame`] variant:
@@ -932,6 +975,13 @@ async fn run_reader_task(mut reader: ReadHalf<UnixStream>, inner: Arc<RemoteConn
             }
         }
     }
+
+    // Mark the connection closed *before* clearing `pending`, with
+    // `Release` ordering paired against `request()`'s `Acquire` load.
+    // Any post-exit `request()` that observes `true` is guaranteed to
+    // observe the empty queue and bail with `ConnectionAborted` instead
+    // of pushing a sender no one will ever pop.
+    inner.closed.store(true, Ordering::Release);
 
     // Drain pending; dropping each sender surfaces `RecvError` on the
     // awaiting caller. This is the connection-closed signal callers see.

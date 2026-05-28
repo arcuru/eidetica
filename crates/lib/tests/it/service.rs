@@ -1806,3 +1806,45 @@ async fn test_on_write_concurrent_registrations_both_observe_commit() {
         "second (concurrent) registration must observe the commit; got {events_b:?}"
     );
 }
+
+/// Regression: a client request issued *after* the reader task has exited
+/// (because the daemon shut down its side) must surface
+/// `ConnectionAborted` promptly instead of hanging forever on a oneshot
+/// no one will pop.
+///
+/// Pre-fix: the client checked nothing — it took the writer lock, pushed
+/// a sender into the pending FIFO, wrote the frame (which could still
+/// succeed against an OS write buffer briefly after peer close), and then
+/// awaited a response from a dead connection. The dispatcher's `clear()`
+/// had already run by then, so no one would ever fulfil the sender.
+#[tokio::test]
+async fn test_request_after_reader_exit_returns_connection_aborted() {
+    let (socket_path, tx_shutdown, _server, _dir) = start_test_server().await;
+    create_user_via_admin(&_server, "alice").await;
+
+    let instance = Instance::connect(format!("unix://{}", socket_path.display()))
+        .await
+        .unwrap();
+    let _user = instance.login_user("alice", None).await.unwrap();
+    let conn = remote_conn(&instance);
+
+    // Shut the daemon down and wait for the reader task to actually drain
+    // the closed socket. 250ms is enormous on a local socket but absorbs
+    // CI jitter and the scheduler hop into `run_reader_task`'s EOF arm.
+    drop(tx_shutdown);
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    // Any new request must bail with `ConnectionAborted` within the
+    // timeout — emphatically *not* hang waiting for a response.
+    let result = tokio::time::timeout(
+        Duration::from_secs(2),
+        conn.get_instance_metadata(),
+    )
+    .await
+    .expect("request after reader exit must not hang");
+    let err = result.expect_err("request after reader exit must return Err");
+    assert!(
+        matches!(&err, eidetica::Error::Io(e) if e.kind() == std::io::ErrorKind::ConnectionAborted),
+        "expected ConnectionAborted, got: {err:?}",
+    );
+}
