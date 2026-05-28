@@ -28,7 +28,7 @@ use crate::auth::crypto::{PublicKey, create_challenge_response};
 use crate::auth::types::SigKey;
 use crate::backend::InstanceMetadata;
 use crate::entry::{Entry, ID};
-use crate::instance::{WeakInstance, WriteEvent};
+use crate::instance::WeakInstance;
 use crate::service::error::service_error_to_eidetica_error;
 use crate::service::protocol::{
     AuthenticatedDbRequest, DatabaseOp, Handshake, HandshakeAck, MergeState, Notification,
@@ -1032,11 +1032,42 @@ fn dispatch_notification(inner: &Arc<RemoteConnectionInner>, notif: Notification
                 previous_tips,
                 source,
             } => {
-                let event = WriteEvent::from_wire(entries, previous_tips, source);
-                instance.fire_write_callbacks(&root_id, &event).await;
+                // The wire doesn't carry `post_tips` yet (step 4 of the
+                // cursor refactor adds it). Compute it client-side from
+                // `previous_tips` + the batch: tips of (previous_tips ∪
+                // entries) = anything in that union with no child in
+                // that union. Order-independent, so we don't need to
+                // topo-sort the batch.
+                let post_tips = compute_post_tips(&previous_tips, &entries);
+                instance
+                    .fire_write_callbacks(&root_id, &entries, &previous_tips, &post_tips, source)
+                    .await;
             }
         }
     });
+}
+
+/// Compute the tips of `previous_tips ∪ entries` from a batch where each
+/// entry's parents are known. An id is a tip iff it appears in the union
+/// and no entry in the union has it as a parent.
+///
+/// Used by the wire dispatch path until the wire grows an explicit
+/// `post_tips` field on `Notification::DatabaseWrite` (step 4 of the
+/// cursor refactor — see ../private_docs/write-callback-cursor-refactor-plan.md).
+fn compute_post_tips(previous_tips: &[ID], entries: &[Entry]) -> Vec<ID> {
+    let mut all_known: HashSet<ID> = previous_tips.iter().cloned().collect();
+    for entry in entries {
+        all_known.insert(entry.id());
+    }
+    let mut covered: HashSet<ID> = HashSet::new();
+    for entry in entries {
+        for parent in entry.parents().unwrap_or_default() {
+            if all_known.contains(&parent) {
+                covered.insert(parent);
+            }
+        }
+    }
+    all_known.into_iter().filter(|id| !covered.contains(id)).collect()
 }
 
 #[cfg(test)]

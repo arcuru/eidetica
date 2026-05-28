@@ -104,24 +104,6 @@ pub struct WriteEvent {
 }
 
 impl WriteEvent {
-    /// Construct a `WriteEvent` from wire fields received over the service
-    /// transport. Used by the client-side reader task when a
-    /// `Notification::DatabaseWrite` arrives — the daemon owns the
-    /// canonical DAG, so the `previous_tips` here are the daemon's
-    /// pre-write tips, not the client's local placeholder.
-    #[cfg(all(unix, feature = "service"))]
-    pub(crate) fn from_wire(
-        entries: Vec<Entry>,
-        previous_tips: Vec<ID>,
-        source: WriteSource,
-    ) -> Self {
-        Self {
-            entries,
-            previous_tips,
-            source,
-        }
-    }
-
     /// Get the entries written in this event.
     ///
     /// For local writes (transaction commits), this always contains exactly one entry.
@@ -160,8 +142,34 @@ pub(crate) type AsyncWriteCallbackFn = Arc<
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct CallbackId(u64);
 
-/// Type alias for a collection of write callbacks paired with their ids.
-type CallbackVec = Vec<(CallbackId, AsyncWriteCallbackFn)>;
+/// One per-database callback registration plus the cursor that tracks the
+/// frontier this specific callback has observed.
+///
+/// Each fire reads the cursor, builds a [`WriteEvent`] with the cursor
+/// as `previous_tips`, advances the cursor to the post-write tips, and
+/// then invokes the callback. The cursor mutex is held synchronously
+/// during the read/advance — never across the user callback's `.await`.
+///
+/// Stored in `Vec<Arc<PerDbCallbackEntry>>` on each tree so
+/// `fire_write_callbacks` can snapshot Arcs under the registry mutex
+/// and run the dispatches outside it.
+pub(crate) struct PerDbCallbackEntry {
+    pub(crate) id: CallbackId,
+    /// Cursor — the post-write tips of the most recent event this
+    /// callback has been delivered, or the user-provided initial tips
+    /// from the registration call before any event has fired.
+    pub(crate) last_tips: std::sync::Mutex<Vec<ID>>,
+    pub(crate) callback: AsyncWriteCallbackFn,
+}
+
+/// Type alias for the per-database callback list on a tree.
+type PerDbCallbackVec = Vec<Arc<PerDbCallbackEntry>>;
+
+/// Type alias for the global write callback list. Globals fire for every
+/// write on every tree (used by sync today). No cursor — globals are
+/// tree-agnostic and don't have a meaningful per-tree frontier to track,
+/// so they continue to use whatever `previous_tips` the caller passes in.
+type GlobalCallbackVec = Vec<(CallbackId, AsyncWriteCallbackFn)>;
 
 /// Handle to a registered write callback. **Drop to unregister.**
 ///
@@ -254,12 +262,16 @@ pub(crate) struct InstanceInternal {
     /// across an `.await`. Poison-tolerant: a panic mid-write leaves the
     /// on-disk snapshot unchanged but must not strand the [`Instance`].
     snapshot_path: Mutex<Option<PathBuf>>,
-    /// Per-database callbacks keyed by tree_id. Each callback fires for both
-    /// local and remote writes; consumers branch on [`WriteEvent::source`] if
-    /// they only care about one.
-    write_callbacks: Mutex<HashMap<ID, CallbackVec>>,
+    /// Per-database callbacks keyed by tree_id. Each entry carries its own
+    /// cursor (`last_tips`) so fires can build a callback-specific
+    /// `previous_tips` regardless of when the callback registered or when
+    /// the most recent fire actually advanced its frontier. Consumers
+    /// branch on [`WriteEvent::source`] if they only care about one
+    /// source.
+    write_callbacks: Mutex<HashMap<ID, PerDbCallbackVec>>,
     /// Global callbacks fired for every write across every database.
-    global_write_callbacks: Mutex<CallbackVec>,
+    /// Tree-agnostic — no per-callback cursor.
+    global_write_callbacks: Mutex<GlobalCallbackVec>,
     /// Monotonic id source for [`CallbackId`].
     next_callback_id: AtomicU64,
     /// Per-tree async locks serializing the
@@ -281,14 +293,20 @@ impl std::fmt::Debug for InstanceInternal {
                 "write_callbacks",
                 &format!(
                     "<{} per-db callbacks>",
-                    self.write_callbacks.lock().unwrap().len()
+                    self.write_callbacks
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .len()
                 ),
             )
             .field(
                 "global_write_callbacks",
                 &format!(
                     "<{} global callbacks>",
-                    self.global_write_callbacks.lock().unwrap().len()
+                    self.global_write_callbacks
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .len()
                 ),
             )
             .field(
@@ -1477,11 +1495,28 @@ impl Instance {
     // All entry writes go through Instance::put_entry() which handles backend storage
     // and callback dispatch. This centralizes write coordination and ensures hooks fire.
 
-    /// Register a per-database callback. Fires for both local and remote writes.
+    /// Register a per-database callback. Fires for writes to `tree_id` on
+    /// this Instance.
     ///
-    /// Returns the [`CallbackId`] of the registration. Callers wrap this in a
-    /// [`WriteCallback`] handle (see [`Database::on_write`]) to manage lifetime.
-    pub(crate) fn register_write_callback<F, Fut>(&self, tree_id: ID, callback: F) -> CallbackId
+    /// `initial_tips` seeds the callback's cursor — the first
+    /// [`WriteEvent`] this callback receives will have `previous_tips`
+    /// equal to `initial_tips`, and the cursor advances on each
+    /// subsequent fire to that fire's post-write tips. Callers that
+    /// want "tell me about everything after the point I just read at"
+    /// pass the tips they just read; callers that want "tell me about
+    /// everything from this empty cursor forward" can pass `vec![]`
+    /// (the first fire's `previous_tips` will be empty, and the
+    /// subscriber walks the DAG to discover the gap).
+    ///
+    /// Returns the [`CallbackId`] of the registration. Callers wrap
+    /// this in a [`WriteCallback`] handle (see
+    /// [`Database::on_write_at_tips`]) to manage lifetime.
+    pub(crate) fn register_write_callback<F, Fut>(
+        &self,
+        tree_id: ID,
+        initial_tips: Vec<ID>,
+        callback: F,
+    ) -> CallbackId
     where
         F: for<'a> Fn(&'a WriteEvent, &'a Database) -> Fut + Send + std::marker::Sync + 'static,
         Fut: Future<Output = Result<()>> + Send + 'static,
@@ -1491,13 +1526,18 @@ impl Instance {
             let fut = callback(event, database);
             Box::pin(fut) as AsyncWriteCallbackFuture<'_>
         });
+        let entry = Arc::new(PerDbCallbackEntry {
+            id,
+            last_tips: std::sync::Mutex::new(initial_tips),
+            callback: cb,
+        });
         self.inner
             .write_callbacks
             .lock()
-            .unwrap()
+            .unwrap_or_else(|p| p.into_inner())
             .entry(tree_id)
             .or_default()
-            .push((id, cb));
+            .push(entry);
         id
     }
 
@@ -1537,15 +1577,19 @@ impl Instance {
         self.inner
             .global_write_callbacks
             .lock()
-            .unwrap()
+            .unwrap_or_else(|p| p.into_inner())
             .push((id, cb));
     }
 
     /// Remove a per-database callback by id. No-op if not found.
     pub(crate) fn remove_write_callback(&self, tree_id: &ID, id: CallbackId) {
-        let mut callbacks = self.inner.write_callbacks.lock().unwrap();
+        let mut callbacks = self
+            .inner
+            .write_callbacks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         if let Some(vec) = callbacks.get_mut(tree_id) {
-            vec.retain(|(cb_id, _)| *cb_id != id);
+            vec.retain(|entry| entry.id != id);
             if vec.is_empty() {
                 callbacks.remove(tree_id);
             }
@@ -1560,7 +1604,11 @@ impl Instance {
     /// `previous_tips` would not reflect the first write — breaking the
     /// "diff against current tips" contract documented on [`WriteEvent`].
     fn tree_lock(&self, tree_id: &ID) -> Arc<tokio::sync::Mutex<()>> {
-        let mut locks = self.inner.tree_locks.lock().unwrap();
+        let mut locks = self
+            .inner
+            .tree_locks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         Arc::clone(
             locks
                 .entry(tree_id.clone())
@@ -1646,12 +1694,18 @@ impl Instance {
         // accumulated state can only ever rest on entries that have
         // passed local validation.
         if !is_connected && verification == VerificationStatus::Verified {
-            let event = WriteEvent {
-                entries: vec![entry],
-                previous_tips,
+            // Compute post-write tips for cursor advance. Cheap: just
+            // re-read `Backend::get_tips` post-put. Each per-callback
+            // cursor advances to this value.
+            let post_tips = self.get_tips(tree_id).await.unwrap_or_default();
+            self.fire_write_callbacks(
+                tree_id,
+                &[entry],
+                &previous_tips,
+                &post_tips,
                 source,
-            };
-            self.fire_write_callbacks(tree_id, &event).await;
+            )
+            .await;
         }
 
         Ok(())
@@ -1784,35 +1838,73 @@ impl Instance {
             }
         }
         if !promoted.is_empty() {
-            let event = WriteEvent {
-                entries: promoted,
-                previous_tips,
+            // post_tips for cursor advance: raw backend tips after the
+            // verify pass settled. Cheap one-shot read.
+            let post_tips = self.get_tips(tree_id).await.unwrap_or_default();
+            self.fire_write_callbacks(
+                tree_id,
+                &promoted,
+                &previous_tips,
+                &post_tips,
                 source,
-            };
-            self.fire_write_callbacks(tree_id, &event).await;
+            )
+            .await;
         }
         Ok(())
     }
 
     /// Dispatch callbacks for a write event.
     ///
-    /// Fires per-database callbacks for `tree_id` then global callbacks. Each
-    /// callback fires for both local and remote writes; consumers branch on
-    /// [`WriteEvent::source`] internally.
+    /// Per-database callbacks for `tree_id` get **per-callback events**:
+    /// each callback's `previous_tips` is read from its own cursor and
+    /// the cursor advances to `post_tips` synchronously around the
+    /// fire. The cursor mutex is released before the user callback is
+    /// awaited, so a slow callback does not stall other callbacks'
+    /// cursor reads on a concurrent fire.
+    ///
+    /// **Per-callback dispatch is concurrent.** Cursor advancement
+    /// happens synchronously in arrival order under each callback's
+    /// own mutex, then every callback's closure is spawned on its own
+    /// tokio task. A slow callback for one subscriber doesn't stall
+    /// other subscribers' callbacks for the same event. The dispatcher
+    /// awaits every spawned task before returning, so the per-tree
+    /// dispatch worker's "this notification is finished" point still
+    /// serialises against the next event on the same tree — the
+    /// inter-event ordering contract documented on
+    /// [`Database::on_write`](crate::Database::on_write) is preserved.
+    ///
+    /// Global callbacks fire with a single shared event whose
+    /// `previous_tips` is the caller-supplied `previous_tips`
+    /// argument — globals don't track per-tree cursors and continue
+    /// to receive the pre-write tips view. Globals also dispatch
+    /// concurrently across subscribers.
     ///
     /// `pub(crate)` so the service module's reader task can drive this
     /// directly when a `Notification::DatabaseWrite` arrives from the
-    /// daemon — that path is the *sole* publisher on a connected instance.
-    pub(crate) async fn fire_write_callbacks(&self, tree_id: &ID, event: &WriteEvent) {
+    /// daemon — that path is the *sole* publisher on a connected
+    /// instance.
+    pub(crate) async fn fire_write_callbacks(
+        &self,
+        tree_id: &ID,
+        entries: &[Entry],
+        previous_tips: &[ID],
+        post_tips: &[ID],
+        source: WriteSource,
+    ) {
         let per_db_callbacks = self
             .inner
             .write_callbacks
             .lock()
-            .unwrap()
+            .unwrap_or_else(|p| p.into_inner())
             .get(tree_id)
             .cloned();
 
-        let global_callbacks = self.inner.global_write_callbacks.lock().unwrap().clone();
+        let global_callbacks = self
+            .inner
+            .global_write_callbacks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
 
         let has_callbacks = per_db_callbacks.is_some() || !global_callbacks.is_empty();
         if !has_callbacks {
@@ -1828,29 +1920,71 @@ impl Instance {
             }
         };
 
+        // Single JoinSet across per-db + global callbacks: phase 1
+        // (cursor read+advance under each callback's own std::Mutex)
+        // happens synchronously in arrival order before any task is
+        // spawned, so cursors commit deterministically; phase 2 runs
+        // every closure concurrently and the dispatcher awaits the
+        // whole set before returning.
+        let mut joins = tokio::task::JoinSet::new();
+
         if let Some(callbacks) = per_db_callbacks {
-            for (id, callback) in callbacks {
-                if let Err(e) = callback(event, &database).await {
-                    tracing::error!(
-                        tree_id = %tree_id,
-                        source = ?event.source(),
-                        callback_id = ?id,
-                        "Per-database callback failed: {}", e
-                    );
-                }
+            for entry in callbacks {
+                let cb_previous = {
+                    let mut guard = entry
+                        .last_tips
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    std::mem::replace(&mut *guard, post_tips.to_vec())
+                };
+                let event = WriteEvent {
+                    entries: entries.to_vec(),
+                    previous_tips: cb_previous,
+                    source,
+                };
+                let cb = entry.callback.clone();
+                let database_for_cb = database.clone();
+                let tree_id_for_cb = tree_id.clone();
+                let cb_id = entry.id;
+                joins.spawn(async move {
+                    if let Err(e) = cb(&event, &database_for_cb).await {
+                        tracing::error!(
+                            tree_id = %tree_id_for_cb,
+                            source = ?source,
+                            callback_id = ?cb_id,
+                            "Per-database callback failed: {}", e
+                        );
+                    }
+                });
             }
         }
 
+        // Globals: every subscriber gets its own owned clone of the
+        // shared pre-write-tips event so their closures can run
+        // concurrently with each other and with the per-db callbacks
+        // above. A WriteEvent is two `Vec<ID>` + a Copy enum; cloning
+        // it per global is cheap relative to the spawn cost.
         for (id, callback) in global_callbacks {
-            if let Err(e) = callback(event, &database).await {
-                tracing::error!(
-                    tree_id = %tree_id,
-                    source = ?event.source(),
-                    callback_id = ?id,
-                    "Global callback failed: {}", e
-                );
-            }
+            let event = WriteEvent {
+                entries: entries.to_vec(),
+                previous_tips: previous_tips.to_vec(),
+                source,
+            };
+            let database_for_cb = database.clone();
+            let tree_id_for_cb = tree_id.clone();
+            joins.spawn(async move {
+                if let Err(e) = callback(&event, &database_for_cb).await {
+                    tracing::error!(
+                        tree_id = %tree_id_for_cb,
+                        source = ?source,
+                        callback_id = ?id,
+                        "Global callback failed: {}", e
+                    );
+                }
+            });
         }
+
+        while joins.join_next().await.is_some() {}
     }
 
     /// Downgrade to a weak reference.

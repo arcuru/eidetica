@@ -742,9 +742,62 @@ impl Database {
         F: for<'a> Fn(&'a WriteEvent, &'a Database) -> Fut + Send + std::marker::Sync + 'static,
         Fut: std::future::Future<Output = Result<()>> + Send + 'static,
     {
+        // Convenience: read current tips, then register at those tips.
+        //
+        // The "current tips" here come from this method's own
+        // `get_tips` call, **not** from any read the caller may have
+        // done before calling `on_write`. If the caller built initial
+        // state from a separate read at some `T0`, a write may have
+        // landed between that read and this `get_tips`, putting the
+        // cursor at `T1 ≥ T0`. The first callback fire's
+        // `previous_tips` will then be `T1`, not `T0`, and the caller
+        // observes `previous_tips != their_initial_tips` (a small
+        // race-window mismatch — typically one lock-acquisition apart
+        // on a local instance).
+        //
+        // Use [`Self::on_write_at_tips`] to close that window: pass
+        // exactly the tips your initial-state read used, and the first
+        // fire's `previous_tips` will match.
+        let tips = self.get_tips().await.unwrap_or_default();
+        self.on_write_at_tips(tips, callback).await
+    }
+
+    /// Register a callback with an explicit initial cursor.
+    ///
+    /// Primitive form of [`Self::on_write`]. The `tips` you pass become
+    /// this callback's initial cursor, and the first event the
+    /// callback receives will have `previous_tips = tips`. Subsequent
+    /// events' `previous_tips` are the previous event's post-write
+    /// tips — each callback owns its own continuous timeline.
+    ///
+    /// Use this when you need a hard guarantee that the cursor matches
+    /// some other tip set you've already used (typically the tips
+    /// returned by an initial-state read you did before subscribing):
+    ///
+    /// ```rust,no_run
+    /// # use eidetica::*;
+    /// # async fn doit(db: Database) -> Result<()> {
+    /// let tips = db.get_tips().await?;
+    /// // ... read initial state at `tips` ...
+    /// let _cb = db.on_write_at_tips(tips, |_event, _db| async move { Ok(()) }).await?;
+    /// // First callback fire's previous_tips will exactly equal the
+    /// // `tips` we read at — no race-window mismatch with subsequent
+    /// // commits.
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn on_write_at_tips<F, Fut>(
+        &self,
+        tips: Vec<ID>,
+        callback: F,
+    ) -> Result<WriteCallback>
+    where
+        F: for<'a> Fn(&'a WriteEvent, &'a Database) -> Fut + Send + std::marker::Sync + 'static,
+        Fut: std::future::Future<Output = Result<()>> + Send + 'static,
+    {
         let instance = self.instance()?;
         let tree_id = self.root_id().clone();
-        let id = instance.register_write_callback(tree_id.clone(), callback);
+        let id = instance.register_write_callback(tree_id.clone(), tips, callback);
         let cb = WriteCallback::new_per_database(instance.downgrade(), tree_id.clone(), id);
 
         // On a connected (daemon-backed) instance, ensure the daemon is

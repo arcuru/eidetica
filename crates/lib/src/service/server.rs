@@ -764,35 +764,85 @@ async fn dispatch_database_op(
             //
             // Idempotent: a tree this connection has already subscribed to
             // is a no-op (we'd otherwise register a second callback that
-            // pushes a duplicate frame on every write).
-            let mut subs = ctx.subscribed_lock();
-            if subs.contains_key(&root_id) {
-                return Ok(ServiceResponse::Ok);
+            // pushes a duplicate frame on every write). Take the lock
+            // briefly to early-out, then release before any await — the
+            // std::Mutex isn't `Send` and can't cross an await point.
+            //
+            // Under the current dispatch shape the per-connection request
+            // loop is single-threaded (one frame → one dispatch → one
+            // response), so a second `SubscribeWrites` for the same tree
+            // on the same connection can only arrive *after* the first
+            // call has fully completed and recorded its subscription. The
+            // post-await Entry-API guard below is therefore **defensive
+            // against a future shape change** (per-connection parallel
+            // dispatch, or another path that takes `ctx` and registers
+            // callbacks concurrently) rather than fixing a present race.
+            // Cheap to keep — one Entry-API call plus a single
+            // `remove_write_callback` in the unreachable Occupied arm.
+            {
+                let subs = ctx.subscribed_lock();
+                if subs.contains_key(&root_id) {
+                    return Ok(ServiceResponse::Ok);
+                }
             }
             let tx = ctx.tx.clone();
-            let id = instance.register_write_callback(root_id.clone(), move |event, db| {
-                // `mpsc::UnboundedSender::send` is non-blocking and takes
-                // `&self`, so this fits the `Fn(&WriteEvent, &Database)`
-                // bound. The returned future is a no-op — the work is the
-                // synchronous push above. Send failure (writer task gone)
-                // is silently dropped; the connection is about to be
-                // torn down and the guard's Drop will unregister us next.
-                //
-                // The closure only fires for settled-state writes today
-                // (Verified). Unverified writes go through `put_entry`
-                // without firing `fire_write_callbacks`, so no notification
-                // ever ships for them — subscribers observe a clean
-                // promote-only stream.
-                let frame = ServerFrame::Notification(Notification::DatabaseWrite {
-                    root_id: db.root_id().clone(),
-                    entries: event.entries().to_vec(),
-                    previous_tips: event.previous_tips().to_vec(),
-                    source: event.source(),
-                });
-                let _ = tx.send(frame);
-                async move { Ok(()) }
-            });
-            subs.insert(root_id, id);
+            // Initial cursor for the subscription is whatever the daemon
+            // considers the current raw tips. The wire `SubscribeWrites`
+            // doesn't carry `tips` yet (step 4 of the cursor refactor
+            // adds it); for now we pin the subscription to the daemon's
+            // current view at subscribe-time, which matches the existing
+            // "no replay" behavior — clients see events strictly after
+            // subscription. The closure's `event.previous_tips` will
+            // start at this initial cursor value and advance per fire.
+            let initial_tips = instance.get_tips(&root_id).await.unwrap_or_default();
+            let id = instance.register_write_callback(
+                root_id.clone(),
+                initial_tips,
+                move |event, db| {
+                    // `mpsc::UnboundedSender::send` is non-blocking and
+                    // takes `&self`, so this fits the
+                    // `Fn(&WriteEvent, &Database)` bound. The returned
+                    // future is a no-op — the work is the synchronous
+                    // push above. Send failure (writer task gone) is
+                    // silently dropped; the connection is about to be
+                    // torn down and the guard's Drop will unregister
+                    // us next.
+                    //
+                    // The closure only fires for settled-state writes
+                    // today (Verified). Unverified writes go through
+                    // `put_entry` without firing `fire_write_callbacks`,
+                    // so no notification ever ships for them — subscribers
+                    // observe a clean promote-only stream.
+                    let frame = ServerFrame::Notification(Notification::DatabaseWrite {
+                        root_id: db.root_id().clone(),
+                        entries: event.entries().to_vec(),
+                        previous_tips: event.previous_tips().to_vec(),
+                        source: event.source(),
+                    });
+                    let _ = tx.send(frame);
+                    async move { Ok(()) }
+                },
+            );
+            // Re-acquire the lock to record this connection's subscription.
+            // Defensive Entry-API guard: in the current shape (single-
+            // threaded per-connection dispatch) the Occupied arm is
+            // unreachable — see the comment above the early-out check.
+            // Kept so that a future shape change (parallel dispatch per
+            // connection, or another concurrent path that takes `ctx`)
+            // can't leave us with two callbacks pushing duplicate frames
+            // on every write; the loser drops its just-registered
+            // callback and the first registration stays.
+            use std::collections::hash_map::Entry as MapEntry;
+            let mut subs = ctx.subscribed_lock();
+            match subs.entry(root_id.clone()) {
+                MapEntry::Vacant(slot) => {
+                    slot.insert(id);
+                }
+                MapEntry::Occupied(_) => {
+                    drop(subs);
+                    instance.remove_write_callback(&root_id, id);
+                }
+            }
             Ok(ServiceResponse::Ok)
         }
 
