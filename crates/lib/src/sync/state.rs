@@ -492,7 +492,7 @@ impl<'a> SyncStateManager<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Entry, Instance, backend::database::InMemory, crdt::Doc};
+    use crate::{Entry, Instance, backend::database::InMemory};
 
     #[test]
     fn test_sync_cursor() {
@@ -561,8 +561,7 @@ mod tests {
         .expect("Failed to create test instance");
         instance.enable_sync().await.unwrap();
 
-        let key_id = user.add_private_key(None).await.unwrap();
-        let user_tree = user.create_database(Doc::new(), &key_id).await.unwrap();
+        let (user_tree, _) = user.new_database().build().await.unwrap();
         let tree_id = user_tree.root_id().clone();
 
         // Get the sync instance and its tree

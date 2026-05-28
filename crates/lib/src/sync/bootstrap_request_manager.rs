@@ -215,13 +215,16 @@ mod tests {
         .await
         .expect("Failed to create test instance");
 
-        let key_id = user.add_private_key(None).await.unwrap();
-
         let mut sync_settings = Doc::new();
         sync_settings.set("name", "_sync");
         sync_settings.set("type", "sync_settings");
 
-        let database = user.create_database(sync_settings, &key_id).await.unwrap();
+        let (database, _) = user
+            .new_database()
+            .settings(sync_settings)
+            .build()
+            .await
+            .unwrap();
 
         (instance, database, clock)
     }
