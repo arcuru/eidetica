@@ -631,16 +631,12 @@ async fn dispatch_database_op(
             // every default read by the frontier cut — D1 is closed by
             // construction here, not by gate-hardening a raw `Put`.
             //
-            // Subscribers only ever see settled-state events. The
+            // Subscribers only ever see settled-state events: the
             // `put_entry(.., Unverified, ..)` is a no-fire path by
-            // design (see `Instance::put_entry`);
-            // `verify_and_fire_promotions` below runs verify and emits a
-            // single Verified `WriteEvent` *iff* the submitted entry
-            // settled. Capture `previous_tips` before the put so a
-            // subsequent commit's event's `previous_tips` correctly
-            // contains this entry's id once it Verifies.
-            let entry_for_event = *entry.clone();
-            let pre_tips = instance.get_tips(&root_id).await.unwrap_or_default();
+            // design (see `Instance::put_entry`), and `Database::verify`
+            // fires its own batched `Verified` event for any entries
+            // the pass settles. The handler just chains the two — no
+            // extra fire bookkeeping here.
             instance
                 .put_entry(
                     &root_id,
@@ -649,14 +645,7 @@ async fn dispatch_database_op(
                     WriteSource::Remote,
                 )
                 .await?;
-            instance
-                .verify_and_fire_promotions(
-                    &root_id,
-                    vec![entry_for_event],
-                    pre_tips,
-                    WriteSource::Remote,
-                )
-                .await?;
+            Database::open(instance, &root_id).await?.verify().await?;
             Ok(ServiceResponse::Ok)
         }
 
