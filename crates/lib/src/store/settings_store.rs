@@ -317,8 +317,7 @@ mod tests {
         .await
         .expect("Failed to create test instance");
 
-        let key_id = user.add_private_key(None).await.unwrap();
-        let database = user.create_database(Doc::new(), &key_id).await.unwrap();
+        let (database, _) = user.new_database().build().await.unwrap();
 
         // Set initial database name using transaction
         let transaction = database.new_transaction().await.unwrap();
