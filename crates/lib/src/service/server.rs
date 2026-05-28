@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::net::UnixListener;
 use tokio::sync::{mpsc, watch};
+use tokio::task::JoinSet;
 
 use crate::Instance;
 use crate::auth::crypto::{PublicKey, generate_challenge, verify_challenge_response};
@@ -205,6 +206,13 @@ impl ServiceServer {
         // existing `fire_write_callbacks` path.
         let next_conn_id = Arc::new(AtomicU64::new(1));
 
+        // Track active per-connection tasks so shutdown actually
+        // disconnects them. Without this the shutdown signal only stops
+        // the accept loop; live handlers keep running until the client
+        // closes its end, which means "shutdown" is half-done — clients
+        // hang on response reads from a daemon they were told had stopped.
+        let mut handlers = JoinSet::new();
+
         loop {
             tokio::select! {
                 accept_result = listener.accept() => {
@@ -212,7 +220,7 @@ impl ServiceServer {
                         Ok((stream, _addr)) => {
                             let instance = self.instance.clone();
                             let conn_id = next_conn_id.fetch_add(1, Ordering::Relaxed);
-                            tokio::spawn(async move {
+                            handlers.spawn(async move {
                                 if let Err(e) = handle_connection(stream, instance, conn_id).await {
                                     tracing::debug!(conn_id, "Connection handler error: {e}");
                                 }
@@ -229,6 +237,16 @@ impl ServiceServer {
                 }
             }
         }
+
+        // Abort live handlers. Each aborted task drops its `UnixStream`
+        // halves, which the client observes as a clean EOF on its read
+        // side — the reader task exits, sets `closed`, and any in-flight
+        // or subsequent `request()` surfaces `ConnectionAborted`.
+        handlers.abort_all();
+        // Drain to completion so the tempdir-owned socket file isn't
+        // pulled out from under any handler that hasn't yet observed
+        // the abort.
+        while handlers.join_next().await.is_some() {}
 
         // Clean up socket file
         let _ = tokio::fs::remove_file(&self.socket_path).await;
