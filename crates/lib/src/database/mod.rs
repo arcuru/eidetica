@@ -230,6 +230,38 @@ impl Database {
         signing_key: PrivateKey,
         initial_settings: Doc,
     ) -> Result<Self> {
+        Self::create_with_init(instance, signing_key, initial_settings, async |_| Ok(())).await
+    }
+
+    /// Creates a new database with an initialization callback that runs inside
+    /// the genesis transaction.
+    ///
+    /// This is the underlying constructor used by [`Self::create`] and by
+    /// `User::new_database()` (the builder API). The callback receives the
+    /// genesis transaction after `_settings` and `_root` have been staged but
+    /// before commit, allowing additional subtrees — stores, initial doc data,
+    /// records — to be written into the same entry that establishes the
+    /// database root.
+    ///
+    /// All writes performed in the callback become part of the single genesis
+    /// entry: one signed entry, one backend write, atomic. If the callback
+    /// returns an error, the transaction is dropped without committing and no
+    /// database is created.
+    ///
+    /// # Arguments
+    /// * `instance` - Instance handle for storage and coordination
+    /// * `signing_key` - The private key for this database (becomes Admin(0))
+    /// * `initial_settings` - Initial settings document (must not contain auth)
+    /// * `init` - Callback run against the genesis transaction before commit
+    pub async fn create_with_init<F>(
+        instance: &Instance,
+        signing_key: PrivateKey,
+        initial_settings: Doc,
+        init: F,
+    ) -> Result<Self>
+    where
+        F: AsyncFnOnce(&Transaction) -> Result<()>,
+    {
         let mut initial_settings = initial_settings;
         let pubkey = signing_key.public_key();
 
@@ -282,6 +314,18 @@ impl Database {
 
         // Add entropy to the entry metadata to ensure unique database IDs even with identical settings
         txn.set_metadata_entropy(rand::thread_rng().next_u64())?;
+
+        // Lock system subtrees (`_settings`, `_root`, `_index`) for the
+        // duration of the init callback. The callback gets a `&Transaction`
+        // that rejects `_*` opens via `get_store` / `Store::open`, so callers
+        // can't accidentally clobber subtrees that `create_with_init` itself
+        // manages. Internal paths (Registry, Store::register's `_index`
+        // writes) bypass `get_store` and remain functional. The guard releases
+        // on drop, so the lock lifts on both early-return and panic-unwind.
+        {
+            let _lock = txn.lock_system_subtrees();
+            init(&txn).await?;
+        }
 
         // Commit the initial entry
         let new_root_id = txn.commit().await?;
