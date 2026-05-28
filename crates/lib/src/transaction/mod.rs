@@ -520,7 +520,7 @@ impl Transaction {
 
         if is_system_subtree {
             // System subtrees don't use _index registration
-            return T::new(self, subtree_name).await;
+            return T::load(self, subtree_name).await;
         }
 
         // Check _index to determine if this is a new or existing subtree
@@ -539,7 +539,7 @@ impl Transaction {
             }
 
             // Type supported - create the Store
-            T::new(self, subtree_name).await
+            T::load(self, subtree_name).await
         } else {
             // New subtree - init registers it in _index
             T::init(self, subtree_name).await
