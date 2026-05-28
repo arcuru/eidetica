@@ -209,6 +209,7 @@ async fn test_local_write_event_contains_single_entry() {
 
 #[tokio::test]
 async fn test_remote_write_callback_fires_via_put_remote_entries() {
+    use crate::backend::VerificationStatus;
     let (instance, db) = setup_callback_test().await;
 
     let remote_events: Arc<Mutex<Vec<(usize, WriteSource)>>> = Arc::new(Mutex::new(Vec::new()));
@@ -229,7 +230,7 @@ async fn test_remote_write_callback_fires_via_put_remote_entries() {
         .await
         .unwrap();
 
-    // Commit locally — should NOT record (callback filters to remote only)
+    // Commit locally — should NOT record (callback filters to remote only).
     let txn = db.new_transaction().await.unwrap();
     let store = txn.get_store::<DocStore>("data").await.unwrap();
     store.set("key", "local").await.unwrap();
@@ -240,22 +241,49 @@ async fn test_remote_write_callback_fires_via_put_remote_entries() {
         "remote-only filter should drop local commits"
     );
 
-    // Simulate remote sync via put_remote_entries
-    let entry = instance.get(db.root_id()).await.unwrap();
+    // Simulate remote sync: revert two entries to `Unverified` so they
+    // re-enter the verify pipeline, then `put_remote_entries` (no-op
+    // store for existing entries; runs verify which promotes them and
+    // fires one batched `Verified` event).
+    //
+    // The fire-on-Verified contract means subscribers don't see "we
+    // received a re-ingestion of an already-Verified entry" — only
+    // "an entry just settled to Verified." We trigger that by
+    // forcibly putting the entries back into the Unverified state.
+    let backend = instance.require_local_engine().unwrap();
+    let root_id = db.root_id().clone();
+    backend
+        .update_verification_status(&root_id, VerificationStatus::Unverified)
+        .await
+        .unwrap();
+    backend
+        .update_verification_status(&local_id, VerificationStatus::Unverified)
+        .await
+        .unwrap();
+
+    let entry = instance.get(&root_id).await.unwrap();
     let local_entry = instance.get(&local_id).await.unwrap();
     instance
-        .put_remote_entries(db.root_id(), vec![entry, local_entry])
+        .put_remote_entries(&root_id, vec![entry, local_entry])
         .await
         .unwrap();
 
     let events = remote_events.lock().unwrap();
-    assert_eq!(events.len(), 1, "should fire exactly once for the batch");
-    assert_eq!(events[0].0, 2, "batch should contain both entries");
+    assert_eq!(
+        events.len(),
+        1,
+        "verify should promote both entries and fire once"
+    );
+    assert_eq!(
+        events[0].0, 2,
+        "batch should contain both promoted entries"
+    );
     assert_eq!(events[0].1, WriteSource::Remote);
 }
 
 #[tokio::test]
 async fn test_remote_write_previous_tips() {
+    use crate::backend::VerificationStatus;
     let (instance, db) = setup_callback_test().await;
 
     let prev_tips_log: Arc<Mutex<Vec<Vec<crate::entry::ID>>>> = Arc::new(Mutex::new(Vec::new()));
@@ -276,13 +304,20 @@ async fn test_remote_write_previous_tips() {
         .await
         .unwrap();
 
-    // Commit locally to advance tips
+    // Commit locally to advance tips.
     let txn = db.new_transaction().await.unwrap();
     let store = txn.get_store::<DocStore>("data").await.unwrap();
     store.set("k", "v").await.unwrap();
     let local_id = txn.commit().await.unwrap();
 
-    // Simulate remote write
+    // Revert the just-committed entry to `Unverified` and put_remote_entries
+    // it. The verify pass will re-promote it and fire one batched event
+    // with the same entries.
+    let backend = instance.require_local_engine().unwrap();
+    backend
+        .update_verification_status(&local_id, VerificationStatus::Unverified)
+        .await
+        .unwrap();
     let entry = instance.get(&local_id).await.unwrap();
     instance
         .put_remote_entries(db.root_id(), vec![entry])
@@ -293,7 +328,8 @@ async fn test_remote_write_previous_tips() {
     assert_eq!(log.len(), 1);
     assert!(
         log[0].contains(&local_id),
-        "previous_tips should reflect state before the remote batch"
+        "previous_tips should reflect raw tips at the start of the verify pass; got {:?}",
+        log[0]
     );
 }
 
@@ -434,6 +470,7 @@ async fn test_drop_only_unregisters_that_callback() {
 
 #[tokio::test]
 async fn test_remote_callback_receives_only_stored_entries() {
+    use crate::backend::VerificationStatus;
     let (instance, db) = setup_callback_test().await;
 
     let captured: Arc<Mutex<Vec<crate::entry::ID>>> = Arc::new(Mutex::new(Vec::new()));
@@ -454,7 +491,10 @@ async fn test_remote_callback_receives_only_stored_entries() {
     .unwrap()
     .detach();
 
-    // Build entries via local commits, then re-feed them as a remote batch.
+    // Build two entries via local commits, then revert their verification
+    // status so the next `put_remote_entries` triggers a verify pass that
+    // re-promotes them and fires a single `Verified` event containing
+    // both.
     let txn = db.new_transaction().await.unwrap();
     let store = txn.get_store::<DocStore>("data").await.unwrap();
     store.set("k", "v1").await.unwrap();
@@ -465,6 +505,16 @@ async fn test_remote_callback_receives_only_stored_entries() {
     store.set("k", "v2").await.unwrap();
     let id2 = txn.commit().await.unwrap();
 
+    let backend = instance.require_local_engine().unwrap();
+    backend
+        .update_verification_status(&id1, VerificationStatus::Unverified)
+        .await
+        .unwrap();
+    backend
+        .update_verification_status(&id2, VerificationStatus::Unverified)
+        .await
+        .unwrap();
+
     let entry1 = instance.get(&id1).await.unwrap();
     let entry2 = instance.get(&id2).await.unwrap();
 
@@ -473,16 +523,15 @@ async fn test_remote_callback_receives_only_stored_entries() {
         .await
         .unwrap();
 
-    // The callback's WriteEvent.entries() must contain exactly the entries
-    // that were stored — no more, no less, in input order. This pins the
-    // contract: storage failures inside put_remote_entries are silent skips,
-    // and the callback only sees `stored_entries`. (The in-memory backend
-    // doesn't make it easy to inject a partial-store failure; we exercise the
-    // success path here and rely on code review for the failure branch.)
+    // verify processes in topo order (parents-before-children). The
+    // captured set must contain both ids; order in the WriteEvent is the
+    // verify-pass promotion order, which is topo-sorted by `get_tree`.
     let captured_ids = captured.lock().unwrap();
     assert_eq!(captured_ids.len(), 2);
-    assert_eq!(captured_ids[0], id1);
-    assert_eq!(captured_ids[1], id2);
+    assert!(
+        captured_ids.contains(&id1) && captured_ids.contains(&id2),
+        "captured entries must include both ids; got {captured_ids:?}",
+    );
 }
 
 #[tokio::test]

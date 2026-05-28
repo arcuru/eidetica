@@ -27,7 +27,7 @@ use crate::{
     constants::{ROOT, SETTINGS},
     crdt::{CRDT, Doc},
     entry::{Entry, ID},
-    instance::{WriteCallback, WriteEvent, backend::Backend, errors::InstanceError},
+    instance::{WriteCallback, WriteEvent, WriteSource, backend::Backend, errors::InstanceError},
     store::{SettingsStore, Store},
 };
 
@@ -1632,34 +1632,61 @@ impl Database {
     /// not-yet-built path. Local-only — verification is a per-node decision
     /// and is never delegated to a peer.
     pub async fn verify(&self) -> Result<VerifyReport> {
+        let instance = self.instance()?;
+
+        // Hold the per-tree write lock for the whole pass + fire so the
+        // promoted-batch event serialises against concurrent
+        // `put_entry` fires on this tree. Callers must not hold this
+        // lock when calling `verify`. (The two main callers,
+        // `put_remote_entries` and the service `SubmitSignedEntry`
+        // handler, release their own lock before calling verify.)
+        let lock = instance.tree_lock(self.root_id());
+        let _guard = lock.lock().await;
+
         // Suppress the access-time auto-verify hook for the whole pass:
         // validation reads the database (delegation → settings → tips) and
         // must not recurse back into verification.
-        IN_VERIFY
+        let (report, promoted, fire_tips) = IN_VERIFY
             .scope(true, async move {
-                let instance = self.instance()?;
                 let backend = instance.require_local_engine()?;
 
                 // Raw tree walk (not `get_tips`) so traversal itself never
                 // re-enters the hook even before the guard is observed.
+                //
+                // TODO(verify-targeted-walk): retire the full `get_tree`
+                // scan in favour of "walk from raw tips up to the
+                // Verified boundary." That bound the cost to O(K) where
+                // K is the Unverified region size. The earlier attempt
+                // tripped the
+                // `test_verify_uses_pinned_not_current_settings` case
+                // (deep Verified entry manually reverted to Unverified
+                // and hidden behind a Verified descendant — prefix-
+                // closure normally rules this out but verify is the
+                // recovery primitive, so it has to handle it). Land
+                // alongside a backend-side Unverified-id index keyed by
+                // tree.
                 let entries = backend.get_tree(self.root_id()).await?;
+                let pre_tips = backend.get_tips(self.root_id()).await?;
                 let mut report = VerifyReport::default();
+                let mut promoted: Vec<Entry> = Vec::new();
 
                 for entry in &entries {
                     let id = entry.id();
-                    if backend.get_verification_status(&id).await? != VerificationStatus::Unverified
+                    if backend.get_verification_status(&id).await?
+                        != VerificationStatus::Unverified
                     {
                         continue;
                     }
 
-                    // Verification is prefix-closed: an entry's trust rests on
-                    // its entire history, so it can only be `Verified` if every
-                    // ancestor is. `get_tree` is topo-sorted (parents before
-                    // children), so each parent's status is already final for
-                    // this pass.
+                    // Verification is prefix-closed: an entry's trust rests
+                    // on its entire history, so it can only be `Verified`
+                    // if every ancestor is. `get_tree` is topo-sorted
+                    // (parents before children), so each parent's status
+                    // is already final for this pass.
                     //
                     // - any ancestor `Failed` → the branch is tainted; this
-                    //   entry is `Failed` too (quarantine propagates forward);
+                    //   entry is `Failed` too (quarantine propagates
+                    //   forward);
                     // - any ancestor still `Unverified` → cannot trust this
                     //   entry yet; leave it for a later pass.
                     let parents = entry.parents().unwrap_or_default();
@@ -1670,9 +1697,6 @@ impl Database {
                             Ok(VerificationStatus::Verified) => {}
                             Ok(VerificationStatus::Failed) => compromised = true,
                             Ok(VerificationStatus::Unverified) => blocked = true,
-                            // Parent not held locally yet (partial sync): we
-                            // cannot establish the history, so this entry is
-                            // blocked until the parent arrives — not an error.
                             Err(e) if e.is_not_found() => blocked = true,
                             Err(e) => return Err(e),
                         }
@@ -1697,20 +1721,52 @@ impl Database {
                                 .validate_entry(entry, &auth_settings, Some(&instance))
                                 .await
                                 .unwrap_or(false);
-                            let new_status = if valid {
+                            if valid {
+                                backend
+                                    .update_verification_status(&id, VerificationStatus::Verified)
+                                    .await?;
                                 report.verified += 1;
-                                VerificationStatus::Verified
+                                promoted.push(entry.clone());
                             } else {
+                                backend
+                                    .update_verification_status(&id, VerificationStatus::Failed)
+                                    .await?;
                                 report.failed += 1;
-                                VerificationStatus::Failed
-                            };
-                            backend.update_verification_status(&id, new_status).await?;
+                            }
                         }
                     }
                 }
-                Ok(report)
+
+                Ok::<_, crate::Error>((report, promoted, pre_tips))
             })
-            .await
+            .await?;
+
+        // Fire one batched `Verified` event for the promotion, if any.
+        // Outside the IN_VERIFY scope so the callbacks' own reads aren't
+        // suppressed. Still under the per-tree write lock — the lock is
+        // dropped when this method returns.
+        //
+        // Pre- and post-pass tips are *the same* raw backend tips: verify
+        // only mutates verification statuses, never the DAG structure.
+        // For per-callback cursor advancement that means the cursor moves
+        // to `pre_tips` (which includes the just-promoted entries), which
+        // is the correct frontier — subscribers see the same
+        // `previous_tips` they'd see for any subsequent fire until
+        // something else writes to the tree.
+        if !promoted.is_empty() {
+            let instance = self.instance()?;
+            instance
+                .fire_write_callbacks(
+                    self.root_id(),
+                    &promoted,
+                    &fire_tips,
+                    &fire_tips,
+                    WriteSource::Remote,
+                )
+                .await;
+        }
+
+        Ok(report)
     }
 
     // === DATABASE QUERIES ===

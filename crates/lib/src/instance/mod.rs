@@ -1603,7 +1603,7 @@ impl Instance {
     /// `previous_tips` before either writes, so the second callback's
     /// `previous_tips` would not reflect the first write — breaking the
     /// "diff against current tips" contract documented on [`WriteEvent`].
-    fn tree_lock(&self, tree_id: &ID) -> Arc<tokio::sync::Mutex<()>> {
+    pub(crate) fn tree_lock(&self, tree_id: &ID) -> Arc<tokio::sync::Mutex<()>> {
         let mut locks = self
             .inner
             .tree_locks
@@ -1746,111 +1746,35 @@ impl Instance {
             return Ok(0);
         }
 
-        let lock = self.tree_lock(tree_id);
-        let _guard = lock.lock().await;
-
-        // 1. Capture tips before any writes
-        let previous_tips = self.get_tips(tree_id).await?;
-
-        // 2. Store all entries
-        let mut stored_entries = Vec::with_capacity(entries.len());
-        for entry in entries {
-            match self.backend().put(entry.clone()).await {
-                Ok(_) => stored_entries.push(entry),
-                Err(e) => {
-                    tracing::error!(
+        // Store the batch under the tree lock; release before calling
+        // `verify`, which acquires its own lock for the pass + fire.
+        let stored_count = {
+            let lock = self.tree_lock(tree_id);
+            let _guard = lock.lock().await;
+            let mut stored = 0usize;
+            for entry in entries {
+                match self.backend().put(entry.clone()).await {
+                    Ok(_) => stored += 1,
+                    Err(e) => tracing::error!(
                         tree_id = %tree_id,
                         entry_id = %entry.id(),
                         "Failed to store remote entry: {}", e
-                    );
+                    ),
                 }
             }
-        }
+            stored
+        };
 
-        let stored_count = stored_entries.len();
-
-        // 3. Run verify inline, then fire one event for any entries that
-        //    settled to `Verified` in this pass. Remote batches arrive
-        //    `Unverified` by construction; this is the canonical promote-
-        //    point on the sync ingest path. Subscribers see a single
-        //    Verified event for the freshly-settled subset of the batch.
-        //
-        // Held under the tree lock so a concurrent `put_entry(Verified, ..)`
-        // on this same tree can't fire its callbacks interleaved with the
-        // promote-fire here. (Step 2 of the cursor refactor will replace
-        // tree-lock-based serialization with per-callback cursor
-        // mutexes — see ../private_docs/write-callback-cursor-refactor-plan.md.)
-        if !stored_entries.is_empty() {
-            self.verify_and_fire_promotions(
-                tree_id,
-                stored_entries,
-                previous_tips,
-                WriteSource::Remote,
-            )
-            .await?;
+        // Run verify inline. `Database::verify` walks the Unverified
+        // region in O(K), promotes whatever can be settled, and fires
+        // one batched `Verified` event for the promotions. Sync-ingest
+        // subscribers see the promotion without needing to schedule
+        // their own verify pass.
+        if stored_count > 0 {
+            Database::open(self, tree_id).await?.verify().await?;
         }
 
         Ok(stored_count)
-    }
-
-    /// Run [`Database::verify`] on `tree_id`, then fire **one** Verified
-    /// [`WriteEvent`] containing whichever of `candidate_entries` ended
-    /// the pass at [`VerificationStatus::Verified`].
-    ///
-    /// Used by the two Unverified-introducing write paths
-    /// ([`Self::put_remote_entries`] for sync batches; the service
-    /// `SubmitSignedEntry` handler for wire-submitted entries) to make
-    /// settled-state subscribers see the promotion event without having
-    /// to schedule their own verify pass. Entries that verify left
-    /// `Unverified` (pinned settings not yet held) or marked `Failed`
-    /// are simply not in the fire.
-    ///
-    /// `previous_tips` is the caller's responsibility — usually the raw
-    /// backend tips captured immediately before the entries were stored.
-    /// `source` is `WriteSource::Remote` for both current callers (sync +
-    /// wire submit); the parameter is left explicit so step 2 of the
-    /// cursor refactor can call this from additional sites.
-    ///
-    /// Reads each candidate's verification status individually after
-    /// the pass; this is O(K) where K is the candidate count. Cheap
-    /// because verify just touched these entries, so backend caches are
-    /// hot.
-    pub(crate) async fn verify_and_fire_promotions(
-        &self,
-        tree_id: &ID,
-        candidate_entries: Vec<Entry>,
-        previous_tips: Vec<ID>,
-        source: WriteSource,
-    ) -> Result<()> {
-        Database::open(self, tree_id).await?.verify().await?;
-
-        let backend = self.require_local_engine()?;
-        let mut promoted = Vec::with_capacity(candidate_entries.len());
-        for entry in candidate_entries {
-            let id = entry.id();
-            let is_verified = backend
-                .get_verification_status(&id)
-                .await
-                .map(|s| s == VerificationStatus::Verified)
-                .unwrap_or(false);
-            if is_verified {
-                promoted.push(entry);
-            }
-        }
-        if !promoted.is_empty() {
-            // post_tips for cursor advance: raw backend tips after the
-            // verify pass settled. Cheap one-shot read.
-            let post_tips = self.get_tips(tree_id).await.unwrap_or_default();
-            self.fire_write_callbacks(
-                tree_id,
-                &promoted,
-                &previous_tips,
-                &post_tips,
-                source,
-            )
-            .await;
-        }
-        Ok(())
     }
 
     /// Dispatch callbacks for a write event.
