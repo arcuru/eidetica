@@ -541,8 +541,8 @@ impl Transaction {
             // Type supported - create the Store
             T::load(self, subtree_name).await
         } else {
-            // New subtree - init registers it in _index
-            T::init(self, subtree_name).await
+            // New subtree - register adds it to _index
+            T::register(self, subtree_name).await
         }
     }
 

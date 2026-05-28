@@ -70,7 +70,7 @@ pub trait Store: Sized + Registered + Send + Sync {
 
     /// Returns a reference to the transaction this Store is associated with.
     ///
-    /// This is used by the default implementations of `init()`, `get_config()`,
+    /// This is used by the default implementations of `register()`, `get_config()`,
     /// and `set_config()` to access the index store.
     fn transaction(&self) -> &Transaction;
 
@@ -101,7 +101,7 @@ pub trait Store: Sized + Registered + Send + Sync {
     /// its type and default configuration in the index.
     ///
     /// The default implementation:
-    /// 1. Creates the Store using `Self::new()`
+    /// 1. Creates the Store using `Self::load()`
     /// 2. Registers it in `_index` with `Self::type_id()` and `Self::default_config()`
     ///
     /// Store implementations can override this to customize initialization behavior.
@@ -112,7 +112,7 @@ pub trait Store: Sized + Registered + Send + Sync {
     ///
     /// # Returns
     /// A `Result<Self>` containing the initialized Store.
-    async fn init(txn: &Transaction, subtree_name: String) -> Result<Self> {
+    async fn register(txn: &Transaction, subtree_name: String) -> Result<Self> {
         let store = Self::load(txn, subtree_name).await?;
         store.set_config(Self::default_config()).await?;
         Ok(store)
@@ -134,7 +134,7 @@ pub trait Store: Sized + Registered + Send + Sync {
     /// Sets the configuration for this Store in the `_index` subtree.
     ///
     /// This method updates the `_index` with the Store's type ID and the provided
-    /// configuration. It's called automatically by `init()` and can be used to
+    /// configuration. It's called automatically by `register()` and can be used to
     /// update configuration during a transaction.
     ///
     /// # Arguments
