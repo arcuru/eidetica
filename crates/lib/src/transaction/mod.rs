@@ -491,6 +491,13 @@ impl Transaction {
     /// If this is the first time this subtree is accessed within the transaction,
     /// its parent tips will be fetched and stored.
     ///
+    /// # Prefer [`Store::open`] for new code
+    ///
+    /// `T::open(&txn, name)` is the preferred entry point — same dispatch,
+    /// no turbofish at the call site, and uniform with user-defined Stores
+    /// that ship inherent or trait-method opening. This method remains as
+    /// the underlying dispatcher and continues to work for existing callers.
+    ///
     /// # Type Parameters
     /// * `T` - The concrete `Store` implementation type to create.
     ///
