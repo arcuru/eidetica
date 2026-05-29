@@ -1458,6 +1458,9 @@ async fn test_on_write_fires_for_local_commit_on_connected_instance() {
     settings.set("name", "callback_test");
     let db = user.create_database(settings, &pubkey).await.unwrap();
 
+    // Single fire per submit under the fire-on-Verified model — no
+    // need to filter on verification state, every notification we
+    // receive here is settled.
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<usize>();
     let _cb = db
         .on_write(move |event, _db| {
@@ -1480,7 +1483,7 @@ async fn test_on_write_fires_for_local_commit_on_connected_instance() {
     .unwrap();
 
     let events = collect_events(&mut event_rx, 1, 2).await;
-    assert_eq!(events.len(), 1, "exactly one notification");
+    assert_eq!(events.len(), 1, "exactly one Verified notification");
     assert_eq!(events[0], 1, "exactly one entry in the event");
 }
 
@@ -1557,6 +1560,7 @@ async fn test_on_write_previous_tips_populated_on_connected_instance() {
     settings.set("name", "prev_tips_test");
     let db = user.create_database(settings, &pubkey).await.unwrap();
 
+    // Single fire per commit under fire-on-Verified — no filter needed.
     let (event_tx, mut event_rx) =
         tokio::sync::mpsc::unbounded_channel::<(Vec<eidetica::entry::ID>, Vec<eidetica::entry::ID>)>();
     let _cb = db
@@ -1805,6 +1809,103 @@ async fn test_on_write_concurrent_registrations_both_observe_commit() {
         1,
         "second (concurrent) registration must observe the commit; got {events_b:?}"
     );
+}
+
+/// Regression: notifications dispatched to user callbacks on a connected
+/// client must arrive in daemon-canonical order, even under burst load.
+///
+/// Pre-fix: every notification spawned its own dispatch task, so the
+/// callback for notification N+1 could start before notification N's
+/// callback finished — and could even run on a different worker thread.
+/// A user counting `event.entries()[0]` height (or similar) would see
+/// arrivals interleaved by the scheduler, not by the daemon's send
+/// order.
+///
+/// Post-fix: a single per-connection drain task `await`s each callback
+/// before the next, so the order observed by the user matches the order
+/// the daemon pushed.
+#[tokio::test]
+async fn test_on_write_preserves_daemon_canonical_order_under_burst() {
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    create_user_via_admin(&server, "alice").await;
+
+    let instance = Instance::connect(format!("unix://{}", socket_path.display()))
+        .await
+        .unwrap();
+    let mut user = instance.login_user("alice", None).await.unwrap();
+    let pubkey = user.get_default_key().unwrap();
+
+    let mut settings = eidetica::crdt::Doc::new();
+    settings.set("name", "ordering_test");
+    let db = user.create_database(settings, &pubkey).await.unwrap();
+
+    // Each callback yields *before* it records its arrival index, then
+    // sleeps for a tiny stagger to make it easy for a per-notification
+    // `tokio::spawn` to land out of order. The serial dispatcher must
+    // serialise them so the recorded order is monotonic.
+    // One fire per commit under fire-on-Verified; no need to filter on
+    // verification status. Per-fire ordering is what this test asserts.
+    let arrivals: std::sync::Arc<std::sync::Mutex<Vec<u64>>> = Default::default();
+    let next_seq = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let arrivals_for_cb = arrivals.clone();
+    let next_seq_for_cb = next_seq.clone();
+    let _cb = db
+        .on_write(move |_event, _db| {
+            let arrivals = arrivals_for_cb.clone();
+            let next_seq = next_seq_for_cb.clone();
+            async move {
+                // Yield + sleep stagger: maximise the window for an
+                // out-of-order dispatcher to reorder if it could.
+                tokio::task::yield_now().await;
+                tokio::time::sleep(Duration::from_millis(2)).await;
+                let seq = next_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                arrivals.lock().unwrap().push(seq);
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+
+    // Burst commits. Each one is its own daemon-side write, so each
+    // becomes a separate notification frame, pushed in order.
+    let n: u64 = 12;
+    for i in 0..n {
+        db.with_transaction(move |tx| async move {
+            let store = tx.get_store::<DocStore>("data").await?;
+            store.set("k", format!("v{i}")).await?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+
+    // Wait for all callbacks to land.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if arrivals.lock().unwrap().len() >= n as usize {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let recorded = arrivals.lock().unwrap().clone();
+    assert_eq!(
+        recorded.len(),
+        n as usize,
+        "every commit must surface as a callback (serialiser must not drop events)"
+    );
+    // The serial dispatcher guarantees the i'th callback to fire records
+    // sequence `i`, monotonically. Pre-fix this assertion would fail
+    // intermittently under the yield+sleep stagger.
+    for (expected, got) in recorded.iter().enumerate() {
+        assert_eq!(
+            *got as usize, expected,
+            "callbacks must fire in daemon-canonical order; got {recorded:?}"
+        );
+    }
 }
 
 /// Regression: a client request issued *after* the reader task has exited
