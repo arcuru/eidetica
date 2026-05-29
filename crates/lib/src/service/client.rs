@@ -16,12 +16,12 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, Weak};
 
 use lru::LruCache;
 use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::UnixStream;
-use tokio::sync::{Mutex, Notify, oneshot};
+use tokio::sync::{Mutex, Notify, mpsc, oneshot};
 
 use crate::auth::crypto::PrivateKey;
 use crate::auth::crypto::{PublicKey, create_challenge_response};
@@ -213,6 +213,36 @@ struct RemoteConnectionInner {
     /// clearing `pending`, so any `Acquire` load that observes `true` is
     /// guaranteed to also observe the empty queue.
     closed: AtomicBool,
+    /// Per-tree dispatch lanes. The reader routes each incoming
+    /// `Notification::DatabaseWrite` by `root_id` into the matching
+    /// tree's `mpsc<Notification>` (lazily creating one + spawning a
+    /// per-tree worker on first notification for the tree). Each
+    /// worker pulls from its own channel and `await`s
+    /// `Instance::fire_write_callbacks` sequentially — sequential
+    /// within a tree (cursor advancement is well-defined), concurrent
+    /// across trees (a slow callback on one tree doesn't stall any
+    /// other tree's dispatches on this connection).
+    ///
+    /// **Why per-tree, not per-connection.** User-callback work is
+    /// per-tree; cursor advancement is per-tree; the only ordering
+    /// constraint we actually need is per-tree. The previous
+    /// single-drain-task model serialised across trees and could
+    /// stall an entire connection on one slow callback.
+    ///
+    /// **Why the reader doesn't await inline.** User callbacks may
+    /// issue wire calls (e.g. `Database::open` on a connected
+    /// instance) whose responses land through *this same reader*.
+    /// Awaiting a callback inline would deadlock the reader against
+    /// the response it needs to deliver. Routing to a separate worker
+    /// task keeps the reader free.
+    ///
+    /// Each worker holds `Weak<RemoteConnectionInner>` so it doesn't
+    /// keep `inner` alive. When `inner` drops (every user-facing
+    /// `RemoteConnection` released *and* the reader has exited),
+    /// every sender in this map drops, each worker's `recv()` returns
+    /// `None`, and workers exit cleanly without prolonging
+    /// `inner`'s lifetime.
+    tree_workers: std::sync::Mutex<HashMap<ID, mpsc::UnboundedSender<Notification>>>,
 }
 
 impl RemoteConnectionInner {
@@ -311,14 +341,18 @@ impl RemoteConnection {
             subscribed_trees: std::sync::Mutex::new(HashMap::new()),
             crdt_cache: std::sync::Mutex::new(ClientCrdtCache::new(CLIENT_CACHE_CAPACITY_BYTES)),
             closed: AtomicBool::new(false),
+            tree_workers: std::sync::Mutex::new(HashMap::new()),
         });
 
         // Spawn the reader task. It holds an Arc clone of `inner` so the
         // connection (and its pending queue) stay live as long as any
         // request is in flight, and exits cleanly on EOF / read error /
         // failure-to-deserialize. On exit it drops the remaining oneshot
-        // senders, which surfaces as a `RecvError` on the awaiting
-        // request().
+        // senders (surfaces as `RecvError` on awaiting `request()`s) and
+        // also drops every per-tree worker channel, which causes those
+        // workers to exit. No separate dispatch task — per-tree workers
+        // are spawned lazily by the reader on first notification per
+        // tree.
         let inner_for_reader = inner.clone();
         tokio::spawn(run_reader_task(reader, inner_for_reader));
 
@@ -633,6 +667,7 @@ impl RemoteConnection {
         &self,
         tree_id: ID,
         identity: SigKey,
+        tips: Vec<ID>,
     ) -> crate::Result<()> {
         loop {
             // Decide our role under the std::Mutex without holding it across
@@ -660,7 +695,11 @@ impl RemoteConnection {
                 }
                 SubRole::Leader(notify) => {
                     let result = self
-                        .db_request(tree_id.clone(), identity, DatabaseOp::SubscribeWrites)
+                        .db_request(
+                            tree_id.clone(),
+                            identity,
+                            DatabaseOp::SubscribeWrites { tips: tips.clone() },
+                        )
                         .await
                         .and_then(Self::expect_ok);
                     {
@@ -971,7 +1010,7 @@ async fn run_reader_task(mut reader: ReadHalf<UnixStream>, inner: Arc<RemoteConn
                 }
             }
             ServerFrame::Notification(notif) => {
-                dispatch_notification(&inner, notif);
+                route_notification(&inner, notif);
             }
         }
     }
@@ -986,88 +1025,136 @@ async fn run_reader_task(mut reader: ReadHalf<UnixStream>, inner: Arc<RemoteConn
     // Drain pending; dropping each sender surfaces `RecvError` on the
     // awaiting caller. This is the connection-closed signal callers see.
     inner.pending_lock().clear();
+
+    // Drop every per-tree worker sender. Each worker's `recv()` returns
+    // `None`, the worker exits cleanly, and the next `Arc<inner>` drop
+    // is unobstructed. This is needed because tree workers hold
+    // `Weak<inner>` and would otherwise spin (or, more accurately,
+    // wait for their channel to close, which happens when the sender
+    // here drops).
+    inner
+        .tree_workers
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clear();
 }
 
-/// Route a `Notification` into the attached `Instance`'s callback registry.
+/// Route a notification to its per-tree worker, spawning one if this is
+/// the first notification for the tree on this connection.
 ///
-/// **Must not block the reader.** User callbacks may issue their own wire
-/// ops (e.g. `Database::open` over the connected instance), and those ops
-/// land their responses through *this same reader task*. Awaiting the
-/// dispatch inline would deadlock — the reader can't deliver the response
-/// the dispatch is waiting for. Spawning the dispatch lets the reader
-/// return to its `read_frame` loop immediately.
-fn dispatch_notification(inner: &Arc<RemoteConnectionInner>, notif: Notification) {
-    let weak = {
-        let guard = inner
-            .weak_instance
+/// Worker spawn is lazy: we don't create a worker for a tree until the
+/// daemon actually pushes a notification for it. The map of per-tree
+/// senders lives in `inner.tree_workers` (std mutex; the map is touched
+/// for at most a single insert + clone per notification).
+///
+/// Sends are best-effort: if the worker has already exited (e.g. the
+/// connection is winding down and `inner` is mid-drop), the send fails
+/// and we silently drop. Same posture as the previous single-dispatch
+/// shape.
+///
+/// TODO(dispatch-bound): per-tree channels are still `unbounded`.
+/// Under sustained write load on one tree, that worker's queue grows
+/// without limit. Switch to a bounded per-tree channel with a
+/// drop-oldest (or disconnect-the-laggard) policy alongside the
+/// analogous server-side `TODO(backpressure)`.
+fn route_notification(inner: &Arc<RemoteConnectionInner>, notif: Notification) {
+    let tree_id = match &notif {
+        Notification::DatabaseWrite { root_id, .. } => root_id.clone(),
+    };
+    let tx = {
+        let mut workers = inner
+            .tree_workers
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        guard.clone()
+            .unwrap_or_else(|p| p.into_inner());
+        workers
+            .entry(tree_id)
+            .or_insert_with(|| {
+                let (tx, rx) = mpsc::unbounded_channel::<Notification>();
+                let weak = Arc::downgrade(inner);
+                tokio::spawn(run_tree_worker(rx, weak));
+                tx
+            })
+            .clone()
     };
-    let Some(weak) = weak else {
-        // Instance not yet attached. Subscribe-on-first-callback can't run
-        // before attach, so this only fires in the (test/dev) shape where
-        // someone subscribed manually before constructing the Instance.
-        tracing::debug!("RemoteConnection: notification received before attach_instance; dropping");
-        return;
-    };
-    let Some(instance) = weak.upgrade() else {
-        tracing::debug!("RemoteConnection: instance dropped; reader exiting next round");
-        return;
-    };
+    let _ = tx.send(notif);
+}
 
-    // TODO(dispatch-bound): unbounded `tokio::spawn` per notification. The
-    // spawn itself is required (see fn doc — inline await would deadlock
-    // the reader against user callbacks that issue wire calls), but under
-    // sustained write load this creates unbounded tasks. A per-connection
-    // serial dispatcher (single drain task fed by a bounded queue) would
-    // give the same deadlock-avoidance with a memory cap. Not a v1 issue
-    // since the trusted local client controls its own write rate; revisit
-    // alongside the notification-payload redesign below (TODO(notify-id-only)).
-    tokio::spawn(async move {
+/// Drain one tree's notification queue, dispatching to the attached
+/// `Instance`'s callback registry in arrival order.
+///
+/// **Ordering guarantee within the tree.** Notifications are processed
+/// strictly one at a time — the next `recv()` doesn't run until the
+/// previous callback's `fire_write_callbacks().await` has returned.
+/// The reader pushes in the order frames hit the socket, so user
+/// callbacks for this tree observe events in the daemon's canonical
+/// order.
+///
+/// **No ordering guarantee across trees.** Different trees have their
+/// own worker tasks; a slow callback on tree A doesn't stall tree B's
+/// dispatches on the same connection. This is the load-bearing
+/// difference from the previous single-drain-task shape.
+///
+/// **Why this can't be inline in the reader.** User callbacks may
+/// issue wire ops (e.g. `Database::open` over the connected instance)
+/// whose responses land through the same reader. Awaiting a callback
+/// inline would deadlock the reader against the response it is
+/// supposed to deliver. Per-tree workers keep the reader free.
+///
+/// **Lifecycle.** Holds `Weak<RemoteConnectionInner>` so it does not
+/// extend `inner`'s lifetime. When the reader exits it clears
+/// `tree_workers`, dropping every sender; `recv()` returns `None`;
+/// this worker exits.
+async fn run_tree_worker(
+    mut rx: mpsc::UnboundedReceiver<Notification>,
+    weak_inner: Weak<RemoteConnectionInner>,
+) {
+    while let Some(notif) = rx.recv().await {
+        // Snapshot the attached `WeakInstance` per-notification under
+        // the std mutex — never held across an await. Worst case is
+        // `None`, which we treat as "instance not attached yet" (the
+        // attach-vs-first-notification race is impossible in practice
+        // because attach happens before `Instance::connect` returns,
+        // and subscriptions only start after that).
+        let weak_instance = {
+            let Some(inner) = weak_inner.upgrade() else {
+                tracing::debug!(
+                    "RemoteConnection tree worker: inner gone; exiting"
+                );
+                return;
+            };
+            let guard = inner
+                .weak_instance
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.clone()
+        };
+        let Some(weak) = weak_instance else {
+            tracing::debug!(
+                "RemoteConnection tree worker: notification before attach_instance; dropping"
+            );
+            continue;
+        };
+        let Some(instance) = weak.upgrade() else {
+            tracing::debug!(
+                "RemoteConnection tree worker: instance dropped; ignoring notification"
+            );
+            continue;
+        };
+
         match notif {
             Notification::DatabaseWrite {
                 root_id,
                 entries,
                 previous_tips,
+                post_tips,
                 source,
             } => {
-                // The wire doesn't carry `post_tips` yet (step 4 of the
-                // cursor refactor adds it). Compute it client-side from
-                // `previous_tips` + the batch: tips of (previous_tips ∪
-                // entries) = anything in that union with no child in
-                // that union. Order-independent, so we don't need to
-                // topo-sort the batch.
-                let post_tips = compute_post_tips(&previous_tips, &entries);
                 instance
                     .fire_write_callbacks(&root_id, &entries, &previous_tips, &post_tips, source)
                     .await;
             }
         }
-    });
-}
-
-/// Compute the tips of `previous_tips ∪ entries` from a batch where each
-/// entry's parents are known. An id is a tip iff it appears in the union
-/// and no entry in the union has it as a parent.
-///
-/// Used by the wire dispatch path until the wire grows an explicit
-/// `post_tips` field on `Notification::DatabaseWrite` (step 4 of the
-/// cursor refactor — see ../private_docs/write-callback-cursor-refactor-plan.md).
-fn compute_post_tips(previous_tips: &[ID], entries: &[Entry]) -> Vec<ID> {
-    let mut all_known: HashSet<ID> = previous_tips.iter().cloned().collect();
-    for entry in entries {
-        all_known.insert(entry.id());
     }
-    let mut covered: HashSet<ID> = HashSet::new();
-    for entry in entries {
-        for parent in entry.parents().unwrap_or_default() {
-            if all_known.contains(&parent) {
-                covered.insert(parent);
-            }
-        }
-    }
-    all_known.into_iter().filter(|id| !covered.contains(id)).collect()
 }
 
 #[cfg(test)]

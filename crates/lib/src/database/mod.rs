@@ -797,24 +797,37 @@ impl Database {
     {
         let instance = self.instance()?;
         let tree_id = self.root_id().clone();
-        let id = instance.register_write_callback(tree_id.clone(), tips, callback);
+        // Local registry uses `tips` as the per-callback cursor; the
+        // wire path (if any) also needs them so the daemon-side
+        // subscription cursor is pinned at the same value. Clone once
+        // here; both are tiny `Vec<ID>`s.
+        let id = instance.register_write_callback(tree_id.clone(), tips.clone(), callback);
         let cb = WriteCallback::new_per_database(instance.downgrade(), tree_id.clone(), id);
 
         // On a connected (daemon-backed) instance, ensure the daemon is
         // pushing notifications for this tree before returning — otherwise
-        // an immediately-following commit could race the subscribe and lose
-        // its notification, since the daemon doesn't replay missed events.
-        // `subscribe_writes` is itself concurrency-safe and idempotent: it
-        // short-circuits when the tree is already subscribed and serialises
-        // racing registrations through a per-tree `Notify`, so every caller
-        // observes the subscription as live before returning. Database
-        // handles built with a key carry an explicit identity; keyless
-        // handles fall back to `SigKey::default()`, which the daemon
-        // resolves to the connection's login pubkey.
+        // an immediately-following commit could race the subscribe and
+        // lose its notification, since the daemon doesn't replay missed
+        // events. `subscribe_writes` is itself concurrency-safe and
+        // idempotent: it short-circuits when the tree is already
+        // subscribed and serialises racing registrations through a
+        // per-tree `Notify`, so every caller observes the subscription
+        // as live before returning. Database handles built with a key
+        // carry an explicit identity; keyless handles fall back to
+        // `SigKey::default()`, which the daemon resolves to the
+        // connection's login pubkey.
+        //
+        // The `tips` we hand to `subscribe_writes` become the daemon's
+        // subscription cursor, so the first notification's
+        // `previous_tips` exactly equals the tips this caller passed
+        // in — no race-window mismatch between the daemon's view and
+        // the client's local cursor.
         #[cfg(all(unix, feature = "service"))]
         if let Some(conn) = instance.remote_connection() {
             let identity = self.auth_identity().cloned().unwrap_or_default();
-            conn.subscribe_writes(tree_id, identity).await?;
+            conn.subscribe_writes(tree_id, identity, tips).await?;
+        } else {
+            let _ = tips;
         }
 
         Ok(cb)

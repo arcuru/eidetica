@@ -741,7 +741,7 @@ async fn dispatch_database_op(
             Ok(ServiceResponse::Ok)
         }
 
-        DatabaseOp::SubscribeWrites => {
+        DatabaseOp::SubscribeWrites { tips } => {
             // Per-tree Read gate already ran in the dispatcher.
             //
             // Subscription is just a per-db callback registered against the
@@ -775,15 +775,16 @@ async fn dispatch_database_op(
                 }
             }
             let tx = ctx.tx.clone();
-            // Initial cursor for the subscription is whatever the daemon
-            // considers the current raw tips. The wire `SubscribeWrites`
-            // doesn't carry `tips` yet (step 4 of the cursor refactor
-            // adds it); for now we pin the subscription to the daemon's
-            // current view at subscribe-time, which matches the existing
-            // "no replay" behavior — clients see events strictly after
-            // subscription. The closure's `event.previous_tips` will
-            // start at this initial cursor value and advance per fire.
-            let initial_tips = instance.get_tips(&root_id).await.unwrap_or_default();
+            // Initial cursor: the client's supplied `tips` if non-empty;
+            // otherwise the daemon's current tips at subscribe-time
+            // (captured here, which is the "I have no initial state;
+            // give me events from now" posture documented on the wire
+            // variant). The cursor advances per fire as usual.
+            let initial_tips = if tips.is_empty() {
+                instance.get_tips(&root_id).await.unwrap_or_default()
+            } else {
+                tips
+            };
             let id = instance.register_write_callback(
                 root_id.clone(),
                 initial_tips,
@@ -806,6 +807,7 @@ async fn dispatch_database_op(
                         root_id: db.root_id().clone(),
                         entries: event.entries().to_vec(),
                         previous_tips: event.previous_tips().to_vec(),
+                        post_tips: event.post_tips().to_vec(),
                         source: event.source(),
                     });
                     let _ = tx.send(frame);

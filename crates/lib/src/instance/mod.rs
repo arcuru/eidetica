@@ -96,9 +96,14 @@ pub struct WriteEvent {
     /// exactly one entry. For remote sync, this is the full batch of entries
     /// that were received and stored together.
     entries: Vec<Entry>,
-    /// The DAG tips of the database immediately before this write.
-    /// Consumers can diff current tips against these to determine what changed.
+    /// The DAG tips this callback was last delivered at — its cursor
+    /// before this fire. Subsequent fires for the same callback will have
+    /// `previous_tips = this fire's post_tips`.
     previous_tips: Vec<ID>,
+    /// The DAG tips after this write. Equal to this callback's cursor
+    /// *after* the fire. Useful for "what's the frontier I'm now caught
+    /// up to" without an extra `get_tips` call.
+    post_tips: Vec<ID>,
     /// Whether this write originated locally or from a remote sync.
     source: WriteSource,
 }
@@ -112,12 +117,22 @@ impl WriteEvent {
         &self.entries
     }
 
-    /// Get the DAG tips of the database before this write.
+    /// Get the DAG tips at this callback's cursor *before* this fire.
     ///
-    /// Use these to determine what changed: walk from the database's current tips
-    /// back to these previous tips to find all new entries.
+    /// The first fire on a freshly-registered callback returns the
+    /// initial tips passed at registration time. Subsequent fires
+    /// return the previous fire's `post_tips`.
     pub fn previous_tips(&self) -> &[ID] {
         &self.previous_tips
+    }
+
+    /// Get the DAG tips at this callback's cursor *after* this fire.
+    ///
+    /// The cursor advances to this value before the callback is awaited,
+    /// so the next fire on the same callback will have
+    /// `previous_tips() == this fire's post_tips()`.
+    pub fn post_tips(&self) -> &[ID] {
+        &self.post_tips
     }
 
     /// The source of this write (local commit or remote sync).
@@ -1952,6 +1967,7 @@ impl Instance {
                 let event = WriteEvent {
                     entries: entries.to_vec(),
                     previous_tips: cb_previous,
+                    post_tips: post_tips.to_vec(),
                     source,
                 };
                 let cb = entry.callback.clone();
@@ -1980,6 +1996,7 @@ impl Instance {
             let event = WriteEvent {
                 entries: entries.to_vec(),
                 previous_tips: previous_tips.to_vec(),
+                post_tips: post_tips.to_vec(),
                 source,
             };
             let database_for_cb = database.clone();

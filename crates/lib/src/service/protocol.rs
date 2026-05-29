@@ -202,13 +202,31 @@ pub enum DatabaseOp {
     SetInstanceMetadata { metadata: Box<InstanceMetadata> },
 
     /// Subscribe this connection to write notifications for the request's
-    /// `root_id`. After the server returns `Ok`, every write the daemon
-    /// observes on that tree (local commits via `SubmitSignedEntry`, sync
-    /// ingest via `put_remote_entries`, etc.) is pushed back to this
-    /// connection as a [`Notification::DatabaseWrite`] frame. Idempotent:
-    /// re-subscribing is a no-op. Gate Read on `root_id`. Subscriptions are
-    /// cleared automatically when the connection drops.
-    SubscribeWrites,
+    /// `root_id`, with an explicit initial cursor (`tips`).
+    ///
+    /// After the server returns `Ok`, every write the daemon observes on
+    /// that tree (local commits via `SubmitSignedEntry`, sync ingest via
+    /// `put_remote_entries`, etc.) is pushed back to this connection as a
+    /// [`Notification::DatabaseWrite`] frame. The frame's `previous_tips`
+    /// is computed from the daemon-side subscription cursor — initially
+    /// the `tips` supplied here, and advanced to each event's `post_tips`
+    /// as the daemon fires.
+    ///
+    /// **Cursor semantics**: pass the tips you just read your initial
+    /// state at. The first notification's `previous_tips` will exactly
+    /// equal `tips`, so the client can diff `tips → notification.post_tips`
+    /// to discover anything that happened between the initial read and
+    /// the daemon recognising the subscription. An empty `tips` means
+    /// "I have no initial state; start from the daemon's current view"
+    /// (the first notification's `previous_tips` will be the daemon's
+    /// tips at subscribe-time, captured under the per-tree lock).
+    ///
+    /// Idempotent: re-subscribing a tree this connection already
+    /// subscribed to is a no-op (`tips` on the re-call is ignored;
+    /// the cursor stays at whatever it was). Gate Read on `root_id`.
+    /// Subscriptions are cleared automatically when the connection
+    /// drops.
+    SubscribeWrites { tips: Vec<ID> },
 
     /// Stop pushing write notifications for the request's `root_id` to this
     /// connection. Idempotent: unsubscribing a tree that wasn't subscribed
@@ -234,7 +252,7 @@ impl DatabaseOp {
             DatabaseOp::SetInstanceMetadata { .. } => Permission::Admin(0),
             DatabaseOp::GetStoreTipsUpToEntries { .. } => Permission::Read,
             DatabaseOp::ComputeMergeState { .. } => Permission::Read,
-            DatabaseOp::SubscribeWrites => Permission::Read,
+            DatabaseOp::SubscribeWrites { .. } => Permission::Read,
             DatabaseOp::UnsubscribeWrites => Permission::Read,
             _ => Permission::Read,
         }
@@ -357,14 +375,25 @@ pub enum Notification {
     /// A settled-state write landed on the daemon for `root_id`. Mirrors
     /// the daemon's internal `WriteEvent` so the client can rebuild one
     /// and feed its callback registry without further round-trips.
-    /// Carries the daemon's pre-write tips (the canonical
-    /// `previous_tips`, not the empty placeholder the client would have
-    /// on its own) and the `source` distinction so consumers can branch
-    /// on local-vs-sync.
+    ///
+    /// - `previous_tips` is the daemon-side subscription cursor at the
+    ///   moment of this fire — i.e. the `previous_tips` of the event
+    ///   the daemon dispatched to this subscription's callback. Useful
+    ///   for thin-forwarder topologies and trace/debug.
+    /// - `post_tips` is the daemon's tips *after* this write. The
+    ///   client uses it to advance every local per-callback cursor for
+    ///   this tree — each local callback's next event will have
+    ///   `previous_tips = post_tips` (the cursor moves forward by
+    ///   exactly one event).
+    /// - `entries` is the settled batch (always Verified — see the
+    ///   enum-level rustdoc).
+    /// - `source` distinguishes local-vs-sync for consumers that want
+    ///   to branch.
     DatabaseWrite {
         root_id: ID,
         entries: Vec<Entry>,
         previous_tips: Vec<ID>,
+        post_tips: Vec<ID>,
         source: WriteSource,
     },
 }
@@ -686,10 +715,26 @@ mod tests {
 
     #[test]
     fn test_database_op_subscribe_writes_serde() {
-        let req = wrap(DatabaseOp::SubscribeWrites);
+        let req = wrap(DatabaseOp::SubscribeWrites {
+            tips: vec![ID::from_bytes("t1"), ID::from_bytes("t2")],
+        });
         let json = serde_json::to_string(&req).unwrap();
         let req2: ServiceRequest = serde_json::from_str(&json).unwrap();
-        assert!(matches!(unwrap_op(req2), DatabaseOp::SubscribeWrites));
+        match unwrap_op(req2) {
+            DatabaseOp::SubscribeWrites { tips } => assert_eq!(tips.len(), 2),
+            other => panic!("expected SubscribeWrites, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_database_op_subscribe_writes_empty_tips_serde() {
+        let req = wrap(DatabaseOp::SubscribeWrites { tips: vec![] });
+        let json = serde_json::to_string(&req).unwrap();
+        let req2: ServiceRequest = serde_json::from_str(&json).unwrap();
+        match unwrap_op(req2) {
+            DatabaseOp::SubscribeWrites { tips } => assert!(tips.is_empty()),
+            other => panic!("expected SubscribeWrites, got {other:?}"),
+        }
     }
 
     #[test]
@@ -703,7 +748,7 @@ mod tests {
     #[test]
     fn test_subscribe_ops_gate_read() {
         assert_eq!(
-            DatabaseOp::SubscribeWrites.required_permission(),
+            DatabaseOp::SubscribeWrites { tips: vec![] }.required_permission(),
             Permission::Read
         );
         assert_eq!(
@@ -732,6 +777,7 @@ mod tests {
             root_id: test_id(),
             entries: vec![],
             previous_tips: vec![ID::from_bytes("tip-1"), ID::from_bytes("tip-2")],
+            post_tips: vec![ID::from_bytes("post-1")],
             source: WriteSource::Remote,
         };
         let frame = ServerFrame::Notification(notif);
@@ -742,11 +788,13 @@ mod tests {
                 root_id,
                 entries,
                 previous_tips,
+                post_tips,
                 source,
             }) => {
                 assert_eq!(root_id, test_id());
                 assert!(entries.is_empty());
                 assert_eq!(previous_tips.len(), 2);
+                assert_eq!(post_tips, vec![ID::from_bytes("post-1")]);
                 assert_eq!(source, WriteSource::Remote);
             }
             other => panic!("expected ServerFrame::Notification(DatabaseWrite), got {other:?}"),

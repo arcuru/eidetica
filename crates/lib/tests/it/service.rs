@@ -1811,6 +1811,90 @@ async fn test_on_write_concurrent_registrations_both_observe_commit() {
     );
 }
 
+/// Regression: per-tree dispatch on the client means a slow callback on
+/// tree A does not stall callbacks on tree B. The single-drain-task
+/// shape this replaced would have serialised them.
+#[tokio::test]
+async fn test_on_write_per_tree_concurrent_dispatch() {
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    create_user_via_admin(&server, "alice").await;
+
+    let instance = Instance::connect(format!("unix://{}", socket_path.display()))
+        .await
+        .unwrap();
+    let mut user = instance.login_user("alice", None).await.unwrap();
+    let pubkey = user.get_default_key().unwrap();
+
+    let mut settings_a = eidetica::crdt::Doc::new();
+    settings_a.set("name", "tree_a_slow");
+    let db_a = user.create_database(settings_a, &pubkey).await.unwrap();
+    let mut settings_b = eidetica::crdt::Doc::new();
+    settings_b.set("name", "tree_b_fast");
+    let db_b = user.create_database(settings_b, &pubkey).await.unwrap();
+
+    // A's callback sleeps for 300ms before flipping `a_done`. B's
+    // callback runs immediately and records whether `a_done` is set at
+    // the moment it observes the write. If dispatch were serial across
+    // trees, B's callback would only run *after* A's sleep completes
+    // (a_done == true). Per-tree dispatch means B's callback runs
+    // independently and should see a_done == false.
+    use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+    let a_done = std::sync::Arc::new(AtomicBool::new(false));
+    let b_observed: std::sync::Arc<std::sync::Mutex<Option<bool>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(None));
+
+    let a_done_for_a = a_done.clone();
+    let _cb_a = db_a
+        .on_write(move |_event, _db| {
+            let a_done = a_done_for_a.clone();
+            async move {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                a_done.store(true, AtomicOrdering::Relaxed);
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+    let a_done_for_b = a_done.clone();
+    let b_observed_for_b = b_observed.clone();
+    let _cb_b = db_b
+        .on_write(move |_event, _db| {
+            let a_done = a_done_for_b.clone();
+            let observed = b_observed_for_b.clone();
+            async move {
+                let snapshot = a_done.load(AtomicOrdering::Relaxed);
+                *observed.lock().unwrap() = Some(snapshot);
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+
+    // Commit to both trees. Order doesn't matter; the daemon's per-tree
+    // callback fires push notifications independently.
+    let commit_a = db_a.with_transaction(|tx| async move {
+        let store = tx.get_store::<DocStore>("data").await?;
+        store.set("k", "v_a").await?;
+        Ok(())
+    });
+    let commit_b = db_b.with_transaction(|tx| async move {
+        let store = tx.get_store::<DocStore>("data").await?;
+        store.set("k", "v_b").await?;
+        Ok(())
+    });
+    tokio::try_join!(commit_a, commit_b).unwrap();
+
+    // Wait long enough for B's notification to round-trip and its
+    // callback to record, but well before A's 300ms sleep finishes.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let observation = *b_observed.lock().unwrap();
+    assert_eq!(
+        observation,
+        Some(false),
+        "B's callback must run before A's slow callback finishes; per-tree dispatch broken if Some(true) or None: {observation:?}",
+    );
+}
+
 /// Regression: notifications dispatched to user callbacks on a connected
 /// client must arrive in daemon-canonical order, even under burst load.
 ///
