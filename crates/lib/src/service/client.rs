@@ -181,6 +181,13 @@ struct SessionState {
 /// failure). Followers re-check the map after waking — success
 /// transitions to `Subscribed` (they return `Ok`), failure removes
 /// the entry (one of them becomes the next leader on retry).
+/// Defensive against a future shape change: under the current
+/// [`RemoteConnectionInner::subscription_locks`] fence,
+/// [`RemoteConnection::subscribe_writes`] is per-tree-serialized and
+/// no caller can observe `InFlight` for a tree it's about to subscribe
+/// to. Kept so a future relaxation of the fence (e.g. per-connection
+/// rather than per-tree) doesn't silently re-introduce the
+/// concurrent-leader race the `Notify` originally guarded.
 ///
 /// `Idle` records the moment the last local callback for this tree
 /// was dropped. The daemon-side subscription is still alive — we
@@ -188,7 +195,10 @@ struct SessionState {
 /// grace window expires can transition straight back to `Subscribed`
 /// without a wire round-trip. A periodic sweep task removes Idle
 /// entries that have been quiet long enough, sending
-/// `UnsubscribeWrites` to the daemon at that point.
+/// `UnsubscribeWrites` to the daemon at that point under the same
+/// per-tree fence the subscribe path uses, so a sweep's Unsubscribe
+/// is fully acked before any racing re-subscribe can send its
+/// Subscribe — no daemon-side `Sub → Unsub` inversion possible.
 enum SubState {
     InFlight(Arc<Notify>),
     Subscribed {
@@ -264,6 +274,42 @@ struct RemoteConnectionInner {
     /// followers return `Ok`; on leader failure the entry is removed so the
     /// next waker can take leadership and retry.
     subscribed_trees: std::sync::Mutex<HashMap<ID, SubState>>,
+    /// Per-tree async mutexes that fence wire-subscription state
+    /// transitions on this connection: held across the full
+    /// `SubscribeWrites` / `UnsubscribeWrites` request-response by the
+    /// leader path of [`RemoteConnection::subscribe_writes`] and by the
+    /// lazy-unsubscribe sweep ([`run_sweep_task`]).
+    ///
+    /// Closes the latent sweep-vs-resubscribe race in the gap between
+    /// the sweep removing an `Idle` entry from `subscribed_trees` and
+    /// its `UnsubscribeWrites` reaching the daemon: a racing
+    /// `subscribe_writes` could observe `None`, send `SubscribeWrites`,
+    /// and — if the daemon processed Subscribe before the in-flight
+    /// Unsubscribe — end Sub → Unsub (silent broken delivery).
+    ///
+    /// **Why the race is currently latent**: the daemon's per-connection
+    /// request loop is serial today (`server.rs` SubscribeWrites
+    /// handler comment), so Subscribe queues behind in-flight
+    /// Unsubscribe and gets processed after — end Subscribed. The
+    /// fence is structural future-proofing against a daemon shape
+    /// change to per-connection parallel dispatch. Cheap to maintain
+    /// (one async mutex per active tree, held only across sweep and
+    /// subscribe wire RTTs) and removes the dependency on the daemon
+    /// invariant entirely. Holding this lock across the daemon's ack
+    /// means a `subscribe_writes` arriving while a sweep is in flight
+    /// on the same tree blocks until the daemon has fully processed
+    /// the unsubscribe, regardless of dispatch shape.
+    ///
+    /// Deliberately a separate lock from [`crate::instance::Instance`]'s
+    /// `tree_lock`: that lock serializes local `put_entry`/`verify`
+    /// against callback-dispatch coherence; reusing it here would
+    /// stall local writes on the same tree for an Unsubscribe RTT
+    /// for no correctness benefit.
+    ///
+    /// Shape mirrors `Instance::tree_lock`: std mutex around a hashmap
+    /// of `Arc<tokio::sync::Mutex<()>>` so the per-tree guard can be
+    /// cloned out and held across awaits.
+    subscription_locks: std::sync::Mutex<HashMap<ID, Arc<Mutex<()>>>>,
     /// Process-lifetime CRDT-state LRU shared across every `Database` handle
     /// (every `RemoteBackend`) on this connection. Tier 1 of the
     /// two-level cache; tier 2 is the daemon's unified scope-keyed cache
@@ -354,6 +400,46 @@ impl RemoteConnectionInner {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
+
+    /// Get-or-insert the per-tree subscription mutex. The returned
+    /// `Arc` is cheap to clone; the caller takes `lock().await` on it
+    /// outside the std mutex guard.
+    ///
+    /// See the field-level doc on [`Self::subscription_locks`] for the
+    /// race this fence closes.
+    fn subscription_lock(&self, tree_id: &ID) -> Arc<Mutex<()>> {
+        let mut locks = self
+            .subscription_locks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        Arc::clone(
+            locks
+                .entry(tree_id.clone())
+                .or_insert_with(|| Arc::new(Mutex::new(()))),
+        )
+    }
+
+    /// Mark this connection dead and drop all dependent state. Used by
+    /// the reader task on its own exit path and by the sweep when an
+    /// `UnsubscribeWrites` times out (a daemon that can't ack a trivial
+    /// hashmap removal in seconds is broken; tear down and let the
+    /// caller reconnect).
+    ///
+    /// Same three-step sequence as the reader's exit cleanup:
+    /// 1. Mark `closed` with `Release` ordering so future `request()`
+    ///    calls short-circuit before pushing senders into an orphan
+    ///    queue.
+    /// 2. Drain `pending` — every awaiting caller sees `RecvError`
+    ///    and surfaces `ConnectionAborted`.
+    /// 3. Drop every per-tree worker sender so workers exit cleanly.
+    fn mark_dead(&self) {
+        self.closed.store(true, Ordering::Release);
+        self.pending_lock().clear();
+        self.tree_workers
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
+    }
 }
 
 /// A connection to a remote Eidetica service server over a Unix domain socket.
@@ -417,6 +503,7 @@ impl RemoteConnection {
             session: RwLock::new(None),
             registered_keys: Mutex::new(HashSet::new()),
             subscribed_trees: std::sync::Mutex::new(HashMap::new()),
+            subscription_locks: std::sync::Mutex::new(HashMap::new()),
             crdt_cache: std::sync::Mutex::new(ClientCrdtCache::new(CLIENT_CACHE_CAPACITY_BYTES)),
             closed: AtomicBool::new(false),
             tree_workers: std::sync::Mutex::new(HashMap::new()),
@@ -735,24 +822,41 @@ impl RemoteConnection {
 
     /// Subscribe this connection to write notifications for `tree_id`.
     ///
-    /// Safe to call concurrently from multiple tasks for the same `tree_id`:
-    /// exactly one task drives the wire round-trip, the rest await its
-    /// `Notify` and inherit the outcome. On success every caller returns `Ok`
-    /// only *after* the daemon has registered the subscription, so an
-    /// immediately-following commit on this connection cannot race the
-    /// subscribe and lose its notification. On failure the local state is
-    /// rolled back so a subsequent call can retry — a caller whose retry
-    /// becomes the new leader may succeed even if a previous leader did not.
+    /// Safe to call concurrently from multiple tasks for the same
+    /// `tree_id`: serialized per-tree via
+    /// [`RemoteConnectionInner::subscription_locks`] so only one task
+    /// at a time decides state + runs the wire round-trip. The fence
+    /// also serializes against the lazy-unsubscribe sweep — if a
+    /// sweep is mid-`UnsubscribeWrites` for this tree, this call
+    /// blocks until the daemon has fully acked the unsubscribe, then
+    /// observes `None` and sends a fresh `SubscribeWrites`. Wire
+    /// order Unsubscribe → Subscribe is preserved end-to-end,
+    /// independent of the daemon's request-dispatch shape.
     ///
-    /// Idempotent across calls: a tree that is already `Subscribed` returns
-    /// `Ok` without any wire activity. The server's `ConnectionRegistry` is
-    /// also idempotent. Identity is gated server-side as Read on `tree_id`.
+    /// Returns `Ok` only *after* the daemon has registered the
+    /// subscription, so an immediately-following commit on this
+    /// connection cannot race the subscribe and lose its
+    /// notification. On failure the local state is rolled back so a
+    /// subsequent call can retry.
+    ///
+    /// Idempotent across calls: a tree that is already `Subscribed`
+    /// returns `Ok` without any wire activity. The server's
+    /// `ConnectionRegistry` is also idempotent. Identity is gated
+    /// server-side as Read on `tree_id`.
     pub(crate) async fn subscribe_writes(
         &self,
         tree_id: ID,
         identity: SigKey,
         tips: Vec<ID>,
     ) -> crate::Result<()> {
+        // Per-tree subscription fence. Held across the entire state
+        // decision + (leader path's) wire round-trip so a concurrent
+        // sweep that's mid-`UnsubscribeWrites` for this tree can't
+        // interleave its frame between our state read and our Subscribe.
+        // See `RemoteConnectionInner::subscription_locks` for the race
+        // this closes.
+        let sub_lock = self.inner.subscription_lock(&tree_id);
+        let _sub_guard = sub_lock.lock().await;
         loop {
             // Decide our role under the std::Mutex without holding it across
             // any await: leader inserts `InFlight(notify)` and proceeds to the
@@ -1163,28 +1267,14 @@ async fn run_reader_task(mut reader: ReadHalf<UnixStream>, inner: Arc<RemoteConn
         }
     }
 
-    // Mark the connection closed *before* clearing `pending`, with
-    // `Release` ordering paired against `request()`'s `Acquire` load.
-    // Any post-exit `request()` that observes `true` is guaranteed to
-    // observe the empty queue and bail with `ConnectionAborted` instead
-    // of pushing a sender no one will ever pop.
-    inner.closed.store(true, Ordering::Release);
-
-    // Drain pending; dropping each sender surfaces `RecvError` on the
-    // awaiting caller. This is the connection-closed signal callers see.
-    inner.pending_lock().clear();
-
-    // Drop every per-tree worker sender. Each worker's `recv()` returns
-    // `None`, the worker exits cleanly, and the next `Arc<inner>` drop
-    // is unobstructed. This is needed because tree workers hold
-    // `Weak<inner>` and would otherwise spin (or, more accurately,
-    // wait for their channel to close, which happens when the sender
-    // here drops).
-    inner
-        .tree_workers
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .clear();
+    // Mark the connection dead with `Release` ordering paired against
+    // `request()`'s `Acquire` load: any post-exit caller that observes
+    // `true` is guaranteed to also see the drained `pending` queue and
+    // bail with `ConnectionAborted` instead of pushing a sender no one
+    // will ever pop. The helper also drops every per-tree worker
+    // sender so workers exit cleanly without prolonging `inner`'s
+    // lifetime.
+    inner.mark_dead();
 }
 
 /// Route a notification to its per-tree worker, spawning one if this is
@@ -1316,39 +1406,50 @@ async fn run_tree_worker(
     }
 }
 
+/// Bound on how long the sweep waits for the daemon's
+/// `UnsubscribeWrites` ack before declaring the connection broken.
+///
+/// The daemon's handler is a single hashmap removal — well under a
+/// millisecond on local transport, single-digit ms over loopback TCP.
+/// Five seconds is a generous "is the daemon alive at all" bound; on
+/// expiry we mark the connection dead via
+/// [`RemoteConnectionInner::mark_dead`] and let callers reconnect.
+const UNSUBSCRIBE_RTT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Periodically tear down `Idle` per-tree subscriptions whose grace
 /// window has elapsed.
 ///
 /// Wakes every [`SWEEP_INTERVAL`]; for each entry in
-/// `subscribed_trees` that's been `Idle` for longer than
-/// [`IDLE_GRACE_WINDOW`], the sweep:
+/// `subscribed_trees` that *appears* to be `Idle` past
+/// [`IDLE_GRACE_WINDOW`], the sweep processes that tree under its
+/// per-tree subscription fence (see
+/// `RemoteConnectionInner::subscription_locks`):
 ///
-/// 1. Atomically (under the std mutex) removes the entry from the
-///    `subscribed_trees` map and captures the identity it was
-///    registered with. A racing re-registration after this point sees
-///    no entry and takes the leader/follower path — issuing a fresh
-///    `SubscribeWrites`, no leakage of subscription identity.
-/// 2. Sends `UnsubscribeWrites` to the daemon outside the lock.
-///    Failures are logged at debug — the daemon may have already
-///    cleaned up (connection-shutdown path) or the wire could be
-///    closing, neither is a correctness problem.
+/// 1. Acquire `subscription_lock(tree_id)`. This serializes with the
+///    leader path in [`RemoteConnection::subscribe_writes`], which
+///    must take the same lock before any mutation of
+///    `subscribed_trees`. A racing re-registration that arrived after
+///    the candidate snapshot blocks here until our unsubscribe is
+///    fully acked.
+/// 2. Re-check state under the `subscribed_trees` std mutex. If still
+///    `Idle` past grace, remove the entry and capture its identity
+///    for the wire call. If the state changed (re-registered, swept
+///    by another path) skip.
+/// 3. Send `UnsubscribeWrites` via [`RemoteConnection::unsubscribe_writes`]
+///    wrapped in [`tokio::time::timeout`] of [`UNSUBSCRIBE_RTT_TIMEOUT`].
+///    On timeout the daemon is wedged on a trivial op — mark the
+///    connection dead and exit.
+/// 4. Release `subscription_lock`. A pending `subscribe_writes` on
+///    this tree can now proceed: it observes `None` in
+///    `subscribed_trees`, takes the leader path, and sends a fresh
+///    `SubscribeWrites` — guaranteed to land on the daemon *after*
+///    our `UnsubscribeWrites` because we held the fence across the
+///    ack, independent of the daemon's request-dispatch shape.
 ///
-/// Holds `Weak<RemoteConnectionInner>` so it doesn't extend
-/// `inner`'s lifetime. Exits when the upgrade fails (last `Arc<inner>`
-/// dropped → connection torn down).
-///
-/// **Race-window note**: between step 1's lock release and step 2's
-/// wire send, a new `on_write` registration on the same tree could
-/// race in. It would observe `None` in `subscribed_trees` and take
-/// the leader path, issuing a fresh `SubscribeWrites`. If `Subscribe`
-/// reaches the writer mutex before our `Unsubscribe`, the daemon
-/// orders Sub → Unsub and ends up unsubscribed — but our local state
-/// thinks `Subscribed`, leading to silent broken delivery. On a Unix
-/// socket the window is microseconds (both calls take
-/// `writer.lock().await` and the call that took it first wins,
-/// preserving send order on the wire). Documented as a known v1
-/// race; an "Unsubscribing" sub-state with a Notify is the proper
-/// fix when it becomes load-bearing.
+/// Holds `Weak<RemoteConnectionInner>` so it doesn't extend `inner`'s
+/// lifetime. Exits when the upgrade fails (last `Arc<inner>` dropped →
+/// connection torn down) or when the timeout path marks the connection
+/// dead.
 async fn run_sweep_task(weak_inner: Weak<RemoteConnectionInner>) {
     let grace = idle_grace_window();
     let mut ticker = tokio::time::interval(sweep_interval());
@@ -1362,36 +1463,22 @@ async fn run_sweep_task(weak_inner: Weak<RemoteConnectionInner>) {
             return;
         };
 
-        // Atomically collect Idle entries past grace + remove them
-        // from the map. Identity travels out for the unsubscribe wire
-        // call. No await inside the lock.
-        let due: Vec<(ID, SigKey)> = {
-            let mut subs = inner
+        // Cheap snapshot: collect tree IDs that *appear* to be Idle
+        // past grace. The per-tree fence below re-checks under the
+        // std mutex so a re-registration that lands between snapshot
+        // and fence acquisition is honored.
+        let candidates: Vec<ID> = {
+            let subs = inner
                 .subscribed_trees
                 .lock()
                 .unwrap_or_else(|p| p.into_inner());
             let now = std::time::Instant::now();
-            let due_keys: Vec<ID> = subs
-                .iter()
+            subs.iter()
                 .filter_map(|(id, state)| match state {
                     SubState::Idle { since, .. } if now.duration_since(*since) >= grace => {
                         Some(id.clone())
                     }
                     _ => None,
-                })
-                .collect();
-            due_keys
-                .into_iter()
-                .filter_map(|id| match subs.remove(&id) {
-                    Some(SubState::Idle { identity, .. }) => Some((id, identity)),
-                    other => {
-                        // Lost a race with another transition — put it
-                        // back if it was anything other than Idle.
-                        if let Some(state) = other {
-                            subs.insert(id, state);
-                        }
-                        None
-                    }
                 })
                 .collect()
         };
@@ -1402,13 +1489,70 @@ async fn run_sweep_task(weak_inner: Weak<RemoteConnectionInner>) {
         // hold a strong reference to `inner` across the wire calls.
         let conn = RemoteConnection { inner };
 
-        for (tree_id, identity) in due {
-            match conn.unsubscribe_writes(tree_id.clone(), identity).await {
-                Ok(()) => tracing::debug!(?tree_id, "lazy unsubscribe complete"),
-                Err(e) => tracing::debug!(
+        for tree_id in candidates {
+            // Per-tree fence: hold across the full Unsubscribe RTT so
+            // a concurrent `subscribe_writes` on the same tree must
+            // wait for the daemon's ack before sending its Subscribe.
+            // See `RemoteConnectionInner::subscription_locks`.
+            let sub_lock = conn.inner.subscription_lock(&tree_id);
+            let _sub_guard = sub_lock.lock().await;
+
+            // Re-check under the std mutex now that we hold the
+            // fence. If a re-registration won the race before we got
+            // the fence, state will be `Subscribed` (or `InFlight` /
+            // absent on an unrelated race) and we skip — the next
+            // sweep tick will pick it up if it goes Idle again.
+            let identity = {
+                let mut subs = conn
+                    .inner
+                    .subscribed_trees
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
+                let now = std::time::Instant::now();
+                match subs.get(&tree_id) {
+                    Some(SubState::Idle { since, .. }) if now.duration_since(*since) >= grace => {
+                        // Still due — pull the entry out so a racing
+                        // `subscribe_writes` (queued behind our
+                        // subscription_lock) will observe `None` when
+                        // it finally proceeds and take the leader path.
+                        match subs.remove(&tree_id) {
+                            Some(SubState::Idle { identity, .. }) => Some(identity),
+                            _ => unreachable!("just observed Idle under the same lock"),
+                        }
+                    }
+                    _ => None,
+                }
+            };
+
+            let Some(identity) = identity else {
+                continue;
+            };
+
+            // Wire round-trip under the fence. Timeout-then-teardown
+            // on hang: a daemon that can't ack a hashmap removal in
+            // five seconds is broken; mark dead and let the next
+            // caller reconnect. Don't release the fence and continue
+            // — that re-opens the race we're fencing against.
+            match tokio::time::timeout(
+                UNSUBSCRIBE_RTT_TIMEOUT,
+                conn.unsubscribe_writes(tree_id.clone(), identity),
+            )
+            .await
+            {
+                Ok(Ok(())) => tracing::debug!(?tree_id, "lazy unsubscribe complete"),
+                Ok(Err(e)) => tracing::debug!(
                     ?tree_id,
                     "lazy unsubscribe failed (connection likely closing): {e}"
                 ),
+                Err(_elapsed) => {
+                    tracing::error!(
+                        ?tree_id,
+                        "lazy unsubscribe timed out after {:?}; tearing down connection",
+                        UNSUBSCRIBE_RTT_TIMEOUT,
+                    );
+                    conn.inner.mark_dead();
+                    return;
+                }
             }
         }
     }
