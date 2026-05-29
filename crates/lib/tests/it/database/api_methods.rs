@@ -1009,7 +1009,10 @@ async fn test_verify_uses_pinned_not_current_settings() {
     // `d` (it would stop at the still-Verified descendant). The
     // revocation entry above is a child of `d` and is the relevant
     // descendant here.
-    instance.demote_to_unverified(tree.root_id(), &d).await.unwrap();
+    instance
+        .demote_to_unverified(tree.root_id(), &d)
+        .await
+        .unwrap();
     let report = tree.verify().await.unwrap();
     assert!(
         report.failed == 0,

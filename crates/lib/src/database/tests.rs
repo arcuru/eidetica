@@ -741,7 +741,11 @@ async fn test_per_callback_cursor_independent_previous_tips() {
 
     // cb2: one fire (registered after commit-1), with prev=T1 (initial
     // cursor) — independent of cb1's cursor history.
-    assert_eq!(cb2_recorded.len(), 1, "cb2 should fire once (post-register)");
+    assert_eq!(
+        cb2_recorded.len(),
+        1,
+        "cb2 should fire once (post-register)"
+    );
     assert!(
         cb2_recorded[0].contains(&id1),
         "cb2's first fire's prev should equal its initial cursor (T1, which contains id1); got {:?}",
@@ -810,8 +814,14 @@ async fn test_ids_added_multi_commit_topo_order() {
     let pos1 = added.iter().position(|i| i == &id1).expect("id1 in added");
     let pos2 = added.iter().position(|i| i == &id2).expect("id2 in added");
     let pos3 = added.iter().position(|i| i == &id3).expect("id3 in added");
-    assert!(pos1 < pos2, "id1 (parent) must precede id2 (child) in topo order");
-    assert!(pos2 < pos3, "id2 (parent) must precede id3 (child) in topo order");
+    assert!(
+        pos1 < pos2,
+        "id1 (parent) must precede id2 (child) in topo order"
+    );
+    assert!(
+        pos2 < pos3,
+        "id2 (parent) must precede id3 (child) in topo order"
+    );
 }
 
 #[tokio::test]
@@ -840,8 +850,14 @@ async fn test_ids_added_skips_entries_before_cursor() {
     let added = db.ids_added(&after_first, &post).await.unwrap();
 
     assert!(!added.contains(&id1), "entry at cursor must be excluded");
-    assert!(added.contains(&id2), "post-cursor entry id2 must be included");
-    assert!(added.contains(&id3), "post-cursor entry id3 must be included");
+    assert!(
+        added.contains(&id2),
+        "post-cursor entry id2 must be included"
+    );
+    assert!(
+        added.contains(&id3),
+        "post-cursor entry id3 must be included"
+    );
     assert_eq!(added.len(), 2, "exactly the two post-cursor entries");
 }
 
