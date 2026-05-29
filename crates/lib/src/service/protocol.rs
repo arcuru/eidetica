@@ -347,34 +347,23 @@ pub enum ServiceRequest {
 /// they observe is for entries that already satisfy the daemon's auth
 /// settings.
 ///
-/// TODO(notify-id-only): the current `DatabaseWrite` shape ships full
-/// `Entry` payloads. This is convenient (the client can rebuild a
-/// `WriteEvent` and fire callbacks with no follow-up round-trip) but has
-/// two costs worth fixing before multi-user / untrusted-client work:
+/// The frame carries cursor brackets only — no entry payloads, no entry
+/// IDs. Subscribers that need to enumerate the new entries expand the
+/// brackets locally via
+/// [`Database::ids_added`](crate::Database::ids_added). This decision
+/// has two consequences:
 ///
 /// 1. **Security**: per-tree Read is gated once at `SubscribeWrites`; the
-///    publisher fan-out does not re-check on each event. If a subscriber's
-///    permission is revoked while the connection is live, the daemon
-///    keeps shipping entry contents. Shipping IDs only would reduce this
-///    to leaking "a write happened on tree X" — the entries themselves
-///    would only reach the client through an explicit, currently-gated
-///    read.
-/// 2. **Efficiency**: sync ingest can batch many entries; pushing each
-///    one to every subscriber multiplies bandwidth by subscriber count.
-///
-/// Planned shape: `DatabaseWrite { root_id, entry_ids: Vec<ID>,
-/// previous_tips: Vec<ID>, source }`. The client-side dispatcher would
-/// fetch entries on-demand if a user callback inspects
-/// `event.entries()`; callbacks that only care about *that* a write
-/// happened (the common case for cache invalidation / UI wake-ups) would
-/// never touch the wire for the bodies. Requires adding a `Vec<Entry>`
-/// accessor on `WriteEvent` that lazily fetches, or a dedicated
-/// `entries().await` method.
+///    publisher fan-out does not re-check on each event. Shipping
+///    cursors only means a subscriber whose permission is revoked
+///    mid-session can at most learn that *some* write happened on the
+///    tree — never the contents of those writes, which would only reach
+///    the client through an explicit, currently-gated read.
+/// 2. **Efficiency**: sync ingest can batch many entries; a cursor pair
+///    is constant-size regardless of batch width.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Notification {
-    /// A settled-state write landed on the daemon for `root_id`. Mirrors
-    /// the daemon's internal `WriteEvent` so the client can rebuild one
-    /// and feed its callback registry without further round-trips.
+    /// A settled-state write landed on the daemon for `root_id`.
     ///
     /// - `previous_tips` is the daemon-side subscription cursor at the
     ///   moment of this fire — i.e. the `previous_tips` of the event
@@ -385,13 +374,10 @@ pub enum Notification {
     ///   this tree — each local callback's next event will have
     ///   `previous_tips = post_tips` (the cursor moves forward by
     ///   exactly one event).
-    /// - `entries` is the settled batch (always Verified — see the
-    ///   enum-level rustdoc).
     /// - `source` distinguishes local-vs-sync for consumers that want
     ///   to branch.
     DatabaseWrite {
         root_id: ID,
-        entries: Vec<Entry>,
         previous_tips: Vec<ID>,
         post_tips: Vec<ID>,
         source: WriteSource,
@@ -775,7 +761,6 @@ mod tests {
     fn test_server_frame_notification_serde() {
         let notif = Notification::DatabaseWrite {
             root_id: test_id(),
-            entries: vec![],
             previous_tips: vec![ID::from_bytes("tip-1"), ID::from_bytes("tip-2")],
             post_tips: vec![ID::from_bytes("post-1")],
             source: WriteSource::Remote,
@@ -786,13 +771,11 @@ mod tests {
         match frame2 {
             ServerFrame::Notification(Notification::DatabaseWrite {
                 root_id,
-                entries,
                 previous_tips,
                 post_tips,
                 source,
             }) => {
                 assert_eq!(root_id, test_id());
-                assert!(entries.is_empty());
                 assert_eq!(previous_tips.len(), 2);
                 assert_eq!(post_tips, vec![ID::from_bytes("post-1")]);
                 assert_eq!(source, WriteSource::Remote);

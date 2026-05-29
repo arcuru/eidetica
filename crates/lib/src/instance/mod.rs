@@ -48,7 +48,13 @@ pub use new_user::NewUser;
 ///
 /// This distinction allows different callbacks to be triggered based on the write source,
 /// enabling behaviors like "only trigger sync for local writes" or "only update UI for remote writes".
+///
+/// Marked `#[non_exhaustive]` so additional source variants can be added in the
+/// future (e.g. a distinct `Promoted` for verify-pass fires that surface
+/// already-stored entries) without breaking exhaustive `match` arms in user
+/// code. Always include a wildcard arm when matching.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub enum WriteSource {
     /// Write originated from a local transaction commit
     Local,
@@ -56,46 +62,38 @@ pub enum WriteSource {
     Remote,
 }
 
-/// Context provided to write callbacks describing what changed in the database.
+/// A cursor-advance notification delivered to a write callback.
 ///
-/// For local writes (transaction commits), this contains a single entry.
-/// For remote writes (sync), this may contain a batch of entries that were
-/// received and stored together.
-///
-/// # Catching up on missed writes
-///
-/// The `previous_tips` field contains the DAG tips of the database *before* the
-/// write(s) that triggered this callback. Consumers can use this to determine
-/// exactly what changed by walking the DAG from the current tips back to these
-/// previous tips. This is analogous to `git log previous_tip..HEAD`.
-///
-/// This design means callbacks never need to "miss" writes — even if multiple
-/// entries are batched (as in sync), the consumer can reconstruct the full set
-/// of changes from the tip diff.
-///
-/// # Example
+/// A `WriteEvent` carries *no entry payloads* — only the cursor brackets
+/// (`previous_tips` → `post_tips`) and the [`WriteSource`]. Callbacks that
+/// only care that *something* changed (cache invalidation, UI wake-ups)
+/// can act on the event directly without touching the wire or the DAG.
+/// Callbacks that need to enumerate or fetch the new entries call
+/// [`Database::ids_added`](crate::Database::ids_added) with the brackets:
 ///
 /// ```rust,no_run
-/// # use eidetica::instance::WriteEvent;
-/// # fn example(event: &WriteEvent) {
-/// // Check what stores were touched
-/// for entry in event.entries() {
-///     if entry.in_subtree("messages") {
-///         // A write touched the "messages" store
-///     }
+/// # use eidetica::{instance::WriteEvent, Database, Result};
+/// # async fn example(event: &WriteEvent, db: &Database) -> Result<()> {
+/// // Enumerate the IDs added between the two cursors
+/// let new_ids = db.ids_added(event.previous_tips(), event.post_tips()).await?;
+/// for id in new_ids {
+///     // … fetch entry bodies via db.get_entry(id) if needed …
 /// }
-///
-/// // Use previous_tips to find what's new
-/// let prev = event.previous_tips();
-/// // Walk DAG from current tips back to prev to find all new entries
-/// # }
+/// # Ok(()) }
 /// ```
+///
+/// Cursor semantics: `previous_tips` is this callback's frontier *before*
+/// this fire — the user-supplied initial tips on the first fire, then the
+/// preceding fire's `post_tips` on each subsequent fire. The cursor
+/// advances to `post_tips` synchronously *before* the user closure is
+/// awaited, so the next fire is guaranteed to bracket against the latest
+/// observed frontier even if the closure is slow.
+///
+/// Fires only on settled-state (Verified) writes. See
+/// [`Notification::DatabaseWrite`](crate::service::protocol::Notification::DatabaseWrite)
+/// rustdoc for the verification contract.
 #[derive(Debug, Clone)]
 pub struct WriteEvent {
-    /// The entries written in this event. For local writes, this is always
-    /// exactly one entry. For remote sync, this is the full batch of entries
-    /// that were received and stored together.
-    entries: Vec<Entry>,
     /// The DAG tips this callback was last delivered at — its cursor
     /// before this fire. Subsequent fires for the same callback will have
     /// `previous_tips = this fire's post_tips`.
@@ -109,14 +107,6 @@ pub struct WriteEvent {
 }
 
 impl WriteEvent {
-    /// Get the entries written in this event.
-    ///
-    /// For local writes (transaction commits), this always contains exactly one entry.
-    /// For remote writes (sync), this contains the full batch of entries received together.
-    pub fn entries(&self) -> &[Entry] {
-        &self.entries
-    }
-
     /// Get the DAG tips at this callback's cursor *before* this fire.
     ///
     /// The first fire on a freshly-registered callback returns the
@@ -1748,14 +1738,8 @@ impl Instance {
             // re-read `Backend::get_tips` post-put. Each per-callback
             // cursor advances to this value.
             let post_tips = self.get_tips(tree_id).await.unwrap_or_default();
-            self.fire_write_callbacks(
-                tree_id,
-                &[entry],
-                &previous_tips,
-                &post_tips,
-                source,
-            )
-            .await;
+            self.fire_write_callbacks(tree_id, &previous_tips, &post_tips, source)
+                .await;
         }
 
         Ok(())
@@ -1948,7 +1932,6 @@ impl Instance {
     pub(crate) async fn fire_write_callbacks(
         &self,
         tree_id: &ID,
-        entries: &[Entry],
         previous_tips: &[ID],
         post_tips: &[ID],
         source: WriteSource,
@@ -2000,7 +1983,6 @@ impl Instance {
                     std::mem::replace(&mut *guard, post_tips.to_vec())
                 };
                 let event = WriteEvent {
-                    entries: entries.to_vec(),
                     previous_tips: cb_previous,
                     post_tips: post_tips.to_vec(),
                     source,
@@ -2029,7 +2011,6 @@ impl Instance {
         // it per global is cheap relative to the spawn cost.
         for (id, callback) in global_callbacks {
             let event = WriteEvent {
-                entries: entries.to_vec(),
                 previous_tips: previous_tips.to_vec(),
                 post_tips: post_tips.to_vec(),
                 source,

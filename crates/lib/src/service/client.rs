@@ -1200,11 +1200,23 @@ async fn run_reader_task(mut reader: ReadHalf<UnixStream>, inner: Arc<RemoteConn
 /// and we silently drop. Same posture as the previous single-dispatch
 /// shape.
 ///
-/// TODO(dispatch-bound): per-tree channels are still `unbounded`.
-/// Under sustained write load on one tree, that worker's queue grows
-/// without limit. Switch to a bounded per-tree channel with a
-/// drop-oldest (or disconnect-the-laggard) policy alongside the
-/// analogous server-side `TODO(backpressure)`.
+/// TODO(dispatch-bound): per-tree channels are `unbounded`. Under
+/// sustained write load on one tree, a slow user callback lets that
+/// worker's queue grow without limit, holding all queued notifications
+/// in client memory.
+///
+/// Under the cursor-only `Notification::DatabaseWrite` shape, drops are
+/// *recoverable*: a worker that drops event N still receives event N+1
+/// whose `post_tips` reflects the daemon's latest frontier, and the user
+/// callback's next fire's `previous_tips = post_tips_of_N+1` lets
+/// `ids_added` pick up any skipped IDs. So drop-oldest via
+/// `Mutex<VecDeque<Notification>> + Notify` is the right v2 shape —
+/// roughly a 30-line primitive isolated to this file. Bound size is the
+/// tunable; `~256` is a reasonable starting point.
+///
+/// Deferred for its own PR (alongside server-side
+/// [`TODO(backpressure)`]) so the drop-semantics tests get focused
+/// review.
 fn route_notification(inner: &Arc<RemoteConnectionInner>, notif: Notification) {
     let tree_id = match &notif {
         Notification::DatabaseWrite { root_id, .. } => root_id.clone(),
@@ -1292,13 +1304,12 @@ async fn run_tree_worker(
         match notif {
             Notification::DatabaseWrite {
                 root_id,
-                entries,
                 previous_tips,
                 post_tips,
                 source,
             } => {
                 instance
-                    .fire_write_callbacks(&root_id, &entries, &previous_tips, &post_tips, source)
+                    .fire_write_callbacks(&root_id, &previous_tips, &post_tips, source)
                     .await;
             }
         }

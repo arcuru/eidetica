@@ -1463,10 +1463,13 @@ async fn test_on_write_fires_for_local_commit_on_connected_instance() {
     // receive here is settled.
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<usize>();
     let _cb = db
-        .on_write(move |event, _db| {
-            let count = event.entries().len();
+        .on_write(move |event, db| {
+            let prev = event.previous_tips().to_vec();
+            let post = event.post_tips().to_vec();
+            let db = db.clone();
             let tx = event_tx.clone();
             async move {
+                let count = db.ids_added(&prev, &post).await?.len();
                 let _ = tx.send(count);
                 Ok(())
             }
@@ -1564,11 +1567,13 @@ async fn test_on_write_previous_tips_populated_on_connected_instance() {
     let (event_tx, mut event_rx) =
         tokio::sync::mpsc::unbounded_channel::<(Vec<eidetica::entry::ID>, Vec<eidetica::entry::ID>)>();
     let _cb = db
-        .on_write(move |event, _db| {
-            let entries: Vec<_> = event.entries().iter().map(|e| e.id()).collect();
+        .on_write(move |event, db| {
             let prev_tips = event.previous_tips().to_vec();
+            let post_tips = event.post_tips().to_vec();
+            let db = db.clone();
             let tx = event_tx.clone();
             async move {
+                let entries = db.ids_added(&prev_tips, &post_tips).await?;
                 let _ = tx.send((entries, prev_tips));
                 Ok(())
             }

@@ -309,12 +309,33 @@ async fn handle_connection(
 
     // 2. Spin up the per-connection writer task.
     //
-    // TODO(backpressure): this is `unbounded_channel`, so a stalled client
-    // reader buffers notifications in daemon memory without limit. Fine for
-    // the v1 single-trusted-local-client posture; before serving multiple
-    // or untrusted clients, switch to a bounded channel with an explicit
-    // drop-oldest (or disconnect-the-laggard) policy. Sized to the worst-
-    // case ingest burst — sync catch-up is the dominant case.
+    // TODO(backpressure): this channel is `unbounded`, so a stalled client
+    // reader buffers frames in daemon memory without limit. Acceptable
+    // under the v1 trust posture (single trusted local client over a Unix
+    // socket — an unresponsive reader is treated as a client-side bug, not
+    // an attacker). Before serving multiple or untrusted clients this
+    // needs a bound + drop policy. Complication: this single channel
+    // carries both `Response` and `Notification` frames. Naive bounding
+    // is wrong — dropping a `Response` breaks request/response
+    // correlation. Two viable shapes for the follow-up:
+    //
+    //   a) **Split**: separate `response_tx` (bounded, block-send) from
+    //      `notification_tx` (bounded, drop-oldest); writer `select!`s
+    //      with response priority. Cleanest semantics but touches every
+    //      `frame_tx.clone()` site and the cleanup-ordering comment at
+    //      the end of this function needs migration.
+    //
+    //   b) **Variant-aware drop**: bound the single channel; on full,
+    //      `try_send` returns `Full(frame)`; reject if Notification,
+    //      block if Response. Less plumbing, policy duplicated per send
+    //      site.
+    //
+    // Under the cursor-only `Notification::DatabaseWrite` shape (no entry
+    // bodies, just `previous_tips`/`post_tips`), drops are *recoverable*:
+    // a subscriber that misses event N still sees event N+1's `post_tips`
+    // and calls `ids_added(cursor, post_tips)` to catch up. That makes
+    // drop-oldest the right policy and considerably softens the cost of
+    // dropping at all — but the work still needs doing for prod.
     let (frame_tx, mut frame_rx) = mpsc::unbounded_channel::<ServerFrame>();
     let writer_task = tokio::spawn(async move {
         while let Some(frame) = frame_rx.recv().await {
@@ -805,7 +826,6 @@ async fn dispatch_database_op(
                     // observe a clean promote-only stream.
                     let frame = ServerFrame::Notification(Notification::DatabaseWrite {
                         root_id: db.root_id().clone(),
-                        entries: event.entries().to_vec(),
                         previous_tips: event.previous_tips().to_vec(),
                         post_tips: event.post_tips().to_vec(),
                         source: event.source(),

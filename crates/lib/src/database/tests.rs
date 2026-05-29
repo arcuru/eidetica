@@ -180,16 +180,23 @@ async fn test_local_write_callback_fires() {
 }
 
 #[tokio::test]
-async fn test_local_write_event_contains_single_entry() {
+async fn test_local_write_event_brackets_one_entry() {
     let (_instance, db) = setup_callback_test().await;
 
-    let entry_counts: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(Vec::new()));
-    let counts_clone = entry_counts.clone();
+    let added_counts: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(Vec::new()));
+    let counts_clone = added_counts.clone();
 
     let _cb = db
-        .on_write(move |event, _db| {
-            counts_clone.lock().unwrap().push(event.entries().len());
-            async { Ok(()) }
+        .on_write(move |event, db| {
+            let prev = event.previous_tips().to_vec();
+            let post = event.post_tips().to_vec();
+            let db = db.clone();
+            let counts = counts_clone.clone();
+            async move {
+                let ids = db.ids_added(&prev, &post).await?;
+                counts.lock().unwrap().push(ids.len());
+                Ok(())
+            }
         })
         .await
         .unwrap();
@@ -199,11 +206,11 @@ async fn test_local_write_event_contains_single_entry() {
     store.set("k", "v").await.unwrap();
     txn.commit().await.unwrap();
 
-    let counts = entry_counts.lock().unwrap();
+    let counts = added_counts.lock().unwrap();
     assert_eq!(counts.len(), 1);
     assert_eq!(
         counts[0], 1,
-        "local write events should contain exactly one entry"
+        "local write should bracket exactly one new entry"
     );
 }
 
@@ -212,17 +219,16 @@ async fn test_remote_write_callback_fires_via_put_remote_entries() {
     use crate::backend::VerificationStatus;
     let (instance, db) = setup_callback_test().await;
 
-    let remote_events: Arc<Mutex<Vec<(usize, WriteSource)>>> = Arc::new(Mutex::new(Vec::new()));
+    let remote_events: Arc<Mutex<Vec<WriteSource>>> = Arc::new(Mutex::new(Vec::new()));
     let events_clone = remote_events.clone();
 
     let _cb = db
         .on_write(move |event, _db| {
             let source = event.source();
-            let count = event.entries().len();
             let events = events_clone.clone();
             async move {
                 if source == WriteSource::Remote {
-                    events.lock().unwrap().push((count, source));
+                    events.lock().unwrap().push(source);
                 }
                 Ok(())
             }
@@ -250,6 +256,15 @@ async fn test_remote_write_callback_fires_via_put_remote_entries() {
     // received a re-ingestion of an already-Verified entry" — only
     // "an entry just settled to Verified." We trigger that by
     // forcibly putting the entries back into the Unverified state.
+    //
+    // Note: under the cursor-only WriteEvent shape, the callback's
+    // cursor was already advanced past these entries by the prior
+    // local-commit fire. The verify-promotion fire therefore lands
+    // with `previous_tips == post_tips` (the DAG didn't change — only
+    // verification status did). `ids_added` would correctly return
+    // empty for this fire. We assert the fire *happens* with the
+    // expected source; cursor-diff enumeration is covered by the
+    // dedicated `ids_added` tests.
     let backend = instance.require_local_engine().unwrap();
     let root_id = db.root_id().clone();
     backend
@@ -272,13 +287,9 @@ async fn test_remote_write_callback_fires_via_put_remote_entries() {
     assert_eq!(
         events.len(),
         1,
-        "verify should promote both entries and fire once"
+        "verify should fire one batched Remote event for the promotion"
     );
-    assert_eq!(
-        events[0].0, 2,
-        "batch should contain both promoted entries"
-    );
-    assert_eq!(events[0].1, WriteSource::Remote);
+    assert_eq!(events[0], WriteSource::Remote);
 }
 
 #[tokio::test]
@@ -469,32 +480,26 @@ async fn test_drop_only_unregisters_that_callback() {
 }
 
 #[tokio::test]
-async fn test_remote_callback_receives_only_stored_entries() {
+async fn test_remote_callback_catches_up_promoted_entries_via_ids_added() {
+    // Verifies the canonical sync-ingest shape: a callback registered with
+    // a stale cursor catches up on every entry promoted by the subsequent
+    // verify pass via `ids_added(prev, post)`.
+    //
+    // Sequence:
+    //   1. Two entries are committed locally (no callback yet — no fires,
+    //      no cursor moves).
+    //   2. Both are demoted to Unverified, simulating the state the daemon
+    //      would observe after raw sync ingest (entries on disk, not yet
+    //      settled).
+    //   3. A callback is registered with `on_write_at_tips(vec![root_id])`
+    //      — the cursor anchored at the pre-sync frontier.
+    //   4. `put_remote_entries` runs the verify pass, which promotes both
+    //      entries and fires once. `ids_added(prev=cursor=[root], post=raw_tips)`
+    //      yields exactly the two promoted entries.
     use crate::backend::VerificationStatus;
     let (instance, db) = setup_callback_test().await;
 
-    let captured: Arc<Mutex<Vec<crate::entry::ID>>> = Arc::new(Mutex::new(Vec::new()));
-    let captured_clone = captured.clone();
-
-    db.on_write(move |event, _db| {
-        let ids: Vec<_> = event.entries().iter().map(|e| e.id()).collect();
-        let source = event.source();
-        let captured = captured_clone.clone();
-        async move {
-            if source == WriteSource::Remote {
-                captured.lock().unwrap().extend(ids);
-            }
-            Ok(())
-        }
-    })
-    .await
-    .unwrap()
-    .detach();
-
-    // Build two entries via local commits, then revert their verification
-    // status so the next `put_remote_entries` triggers a verify pass that
-    // re-promotes them and fires a single `Verified` event containing
-    // both.
+    // Two local commits (no callback, no fires).
     let txn = db.new_transaction().await.unwrap();
     let store = txn.get_store::<DocStore>("data").await.unwrap();
     store.set("k", "v1").await.unwrap();
@@ -505,6 +510,7 @@ async fn test_remote_callback_receives_only_stored_entries() {
     store.set("k", "v2").await.unwrap();
     let id2 = txn.commit().await.unwrap();
 
+    // Demote both to Unverified.
     let backend = instance.require_local_engine().unwrap();
     backend
         .update_verification_status(&id1, VerificationStatus::Unverified)
@@ -515,22 +521,44 @@ async fn test_remote_callback_receives_only_stored_entries() {
         .await
         .unwrap();
 
+    // Now register the callback with the cursor anchored at the root —
+    // i.e. the pre-sync frontier from the callback's perspective.
+    let root_id = db.root_id().clone();
+    let captured: Arc<Mutex<Vec<crate::entry::ID>>> = Arc::new(Mutex::new(Vec::new()));
+    let captured_clone = captured.clone();
+
+    db.on_write_at_tips(vec![root_id.clone()], move |event, db| {
+        let prev = event.previous_tips().to_vec();
+        let post = event.post_tips().to_vec();
+        let source = event.source();
+        let db = db.clone();
+        let captured = captured_clone.clone();
+        async move {
+            if source == WriteSource::Remote {
+                let ids = db.ids_added(&prev, &post).await?;
+                captured.lock().unwrap().extend(ids);
+            }
+            Ok(())
+        }
+    })
+    .await
+    .unwrap()
+    .detach();
+
+    // Replay the entries through the remote-ingest path. The backend already
+    // holds them, so the put is a no-op; verify is what promotes them and
+    // fires the Remote event.
     let entry1 = instance.get(&id1).await.unwrap();
     let entry2 = instance.get(&id2).await.unwrap();
-
     instance
-        .put_remote_entries(db.root_id(), vec![entry1, entry2])
+        .put_remote_entries(&root_id, vec![entry1, entry2])
         .await
         .unwrap();
 
-    // verify processes in topo order (parents-before-children). The
-    // captured set must contain both ids; order in the WriteEvent is the
-    // verify-pass promotion order, which is topo-sorted by `get_tree`.
     let captured_ids = captured.lock().unwrap();
-    assert_eq!(captured_ids.len(), 2);
     assert!(
         captured_ids.contains(&id1) && captured_ids.contains(&id2),
-        "captured entries must include both ids; got {captured_ids:?}",
+        "ids_added must surface both promoted entries; got {captured_ids:?}",
     );
 }
 
@@ -581,11 +609,16 @@ async fn test_concurrent_writes_serialize_previous_tips() {
         let events_clone = events.clone();
 
         let _cb = db
-            .on_write(move |event, _db| {
+            .on_write(move |event, db| {
                 let prev = event.previous_tips().to_vec();
-                let ids: Vec<_> = event.entries().iter().map(|e| e.id()).collect();
-                events_clone.lock().unwrap().push((prev, ids));
-                async { Ok(()) }
+                let post = event.post_tips().to_vec();
+                let db = db.clone();
+                let evs = events_clone.clone();
+                async move {
+                    let ids = db.ids_added(&prev, &post).await?;
+                    evs.lock().unwrap().push((prev, ids));
+                    Ok(())
+                }
             })
             .await
             .unwrap();

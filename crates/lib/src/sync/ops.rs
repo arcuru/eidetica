@@ -437,11 +437,17 @@ impl Sync {
             return Ok(());
         }
 
-        // Queue each entry for sync with each peer
+        // Queue each entry for sync with each peer. The event no longer
+        // carries entry payloads — expand the cursor advance back into a
+        // concrete set of IDs by walking the DAG diff. Cost is bounded
+        // by the cursor delta, not the full tree.
         let tree_id = database.root_id();
 
-        for entry in event.entries() {
-            let entry_id = entry.id();
+        let new_ids = database
+            .ids_added(event.previous_tips(), event.post_tips())
+            .await?;
+
+        for entry_id in &new_ids {
             debug!(
                 database_id = %tree_id,
                 entry_id = %entry_id,
@@ -450,7 +456,7 @@ impl Sync {
             );
 
             for peer_id in &peers {
-                self.queue_entry_for_sync(peer_id, &entry_id, tree_id)?;
+                self.queue_entry_for_sync(peer_id, entry_id, tree_id)?;
             }
         }
 

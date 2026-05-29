@@ -633,13 +633,15 @@ impl Database {
     ///
     /// # Callback contract
     ///
-    /// - **Local writes**: fires once per transaction commit; the [`WriteEvent`]
-    ///   contains exactly one entry.
-    /// - **Remote writes**: fires once per sync batch (not per entry); the
-    ///   [`WriteEvent`] may contain multiple entries received together.
-    /// - All entries in the event are fully persisted before the callback fires.
-    /// - [`WriteEvent::previous_tips`] contains the DAG tips from before the
-    ///   write, so consumers can determine exactly what changed.
+    /// - **Local writes**: fires once per transaction commit. The
+    ///   [`WriteEvent`] carries cursor brackets only — call
+    ///   [`Database::ids_added`] with `event.previous_tips()` and
+    ///   `event.post_tips()` to enumerate the single new entry.
+    /// - **Remote writes**: fires once per sync batch (not per entry).
+    ///   `ids_added(prev, post)` yields the full set of new IDs in topo
+    ///   order.
+    /// - All entries that fall inside the cursor advance are fully
+    ///   persisted before the callback fires.
     /// - Errors are logged but do not prevent other callbacks from running.
     /// - The `db` argument is a **read-only** [`Database`] handle (no
     ///   [`DatabaseKey`] configured): you can read settings, entries, and
@@ -720,11 +722,13 @@ impl Database {
     /// # let database = Database::create(&instance, signing_key, Doc::new()).await?;
     ///
     /// let cb = database.on_write(|event, db| {
-    ///     let count = event.entries().len();
     ///     let source = event.source();
-    ///     let db_id = db.root_id().clone();
+    ///     let prev = event.previous_tips().to_vec();
+    ///     let post = event.post_tips().to_vec();
+    ///     let db = db.clone();
     ///     async move {
-    ///         println!("{count} entries written to {db_id} ({source:?})");
+    ///         let new_ids = db.ids_added(&prev, &post).await?;
+    ///         println!("{} entries written to {} ({source:?})", new_ids.len(), db.root_id());
     ///         Ok(())
     ///     }
     /// }).await?;
@@ -1666,8 +1670,14 @@ impl Database {
             return Ok(Vec::new());
         }
 
-        let instance = self.instance()?;
-        let backend = instance.require_local_engine()?;
+        // Routes through `self.ops()` so handles built via
+        // `Database::create` / `Database::open_remote` walk over the
+        // wire with the per-DB identity. On a local instance this is
+        // a clone of the local backend; on a connected instance each
+        // `get(id)` is a permission-checked round-trip to the daemon,
+        // which is the security gate the cursor-only push model relies
+        // on.
+        let ops = self.ops();
 
         // 1. Walk parents from `previous_tips` to build the excluded set —
         //    every ID that the caller has already observed. Missing
@@ -1679,7 +1689,7 @@ impl Database {
             if !excluded.insert(id.clone()) {
                 continue;
             }
-            let entry = match backend.get(&id).await {
+            let entry = match ops.get(&id).await {
                 Ok(e) => e,
                 Err(e) if e.is_not_found() => continue,
                 Err(e) => return Err(e),
@@ -1702,7 +1712,7 @@ impl Database {
             if excluded.contains(&id) {
                 continue;
             }
-            let entry = backend.get(&id).await?;
+            let entry = ops.get(&id).await?;
             for p in entry.parents().unwrap_or_default() {
                 queue.push_back(p);
             }
@@ -1787,7 +1797,7 @@ impl Database {
         // Suppress the access-time auto-verify hook for the whole pass:
         // validation reads the database (delegation → settings → tips) and
         // must not recurse back into verification.
-        let (report, promoted, fire_tips) = IN_VERIFY
+        let (report, any_promoted, fire_tips) = IN_VERIFY
             .scope(true, async move {
                 let backend = instance.require_local_engine()?;
 
@@ -1872,7 +1882,7 @@ impl Database {
                 //    logic as the legacy `get_tree`-walk verify, just
                 //    bounded to the Unverified region.
                 let mut report = VerifyReport::default();
-                let mut promoted: Vec<Entry> = Vec::new();
+                let mut any_promoted = false;
                 for id in &order {
                     let entry = unverified.get(id).expect("topo id is in set");
                     let parents = entry.parents().unwrap_or_default();
@@ -1912,7 +1922,7 @@ impl Database {
                                     .update_verification_status(id, VerificationStatus::Verified)
                                     .await?;
                                 report.verified += 1;
-                                promoted.push(entry.clone());
+                                any_promoted = true;
                             } else {
                                 backend
                                     .update_verification_status(id, VerificationStatus::Failed)
@@ -1923,7 +1933,7 @@ impl Database {
                     }
                 }
 
-                Ok::<_, crate::Error>((report, promoted, raw_tips))
+                Ok::<_, crate::Error>((report, any_promoted, raw_tips))
             })
             .await?;
 
@@ -1939,16 +1949,10 @@ impl Database {
         // is the correct frontier — subscribers see the same
         // `previous_tips` they'd see for any subsequent fire until
         // something else writes to the tree.
-        if !promoted.is_empty() {
+        if any_promoted {
             let instance = self.instance()?;
             instance
-                .fire_write_callbacks(
-                    self.root_id(),
-                    &promoted,
-                    &fire_tips,
-                    &fire_tips,
-                    WriteSource::Remote,
-                )
+                .fire_write_callbacks(self.root_id(), &fire_tips, &fire_tips, WriteSource::Remote)
                 .await;
         }
 
