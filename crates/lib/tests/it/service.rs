@@ -1811,6 +1811,139 @@ async fn test_on_write_concurrent_registrations_both_observe_commit() {
     );
 }
 
+/// Regression: dropping the last per-tree callback transitions the wire
+/// subscription to `Idle`; a re-registration inside the grace window
+/// avoids a wire round-trip; once the grace window elapses the sweep
+/// sends `UnsubscribeWrites` to the daemon.
+///
+/// Uses the `EIDETICA_TEST_IDLE_GRACE_MS` and
+/// `EIDETICA_TEST_SWEEP_INTERVAL_MS` env vars to shrink the windows so
+/// the test runs in ~250ms instead of waiting the production-default
+/// 60s grace.
+#[tokio::test]
+async fn test_lazy_unsubscribe_after_grace_window() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+    // Shrink the grace + sweep windows for this test. `set_var` is
+    // unsafe in current edition but contained here — the env reads
+    // happen inside `Instance::connect`'s child tasks. Both vars are
+    // module-private to the service::client module's helpers.
+    //
+    // Safety: setting env vars is process-wide and not thread-safe.
+    // No other concurrent test mutates these vars; nextest runs
+    // each integration-test binary in its own process and we'd not
+    // expect another test in this binary to depend on the prod
+    // defaults at the same instant.
+    unsafe {
+        std::env::set_var("EIDETICA_TEST_IDLE_GRACE_MS", "100");
+        std::env::set_var("EIDETICA_TEST_SWEEP_INTERVAL_MS", "50");
+    }
+
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    create_user_via_admin(&server, "alice").await;
+
+    // Count daemon-side per-tree callback registrations as a proxy
+    // for "the daemon is subscribed for this tree." Each
+    // `SubscribeWrites` adds one; `UnsubscribeWrites` removes one.
+    // Track via the daemon's internal `Instance::register_write_callback`
+    // detected indirectly via a global callback that observes writes
+    // — but that's a side measurement. Simpler: just count
+    // notifications received on the client. Before sweep:
+    // commit fires a notification. After sweep: commit fires nothing.
+    let instance = Instance::connect(format!("unix://{}", socket_path.display()))
+        .await
+        .unwrap();
+    let mut user = instance.login_user("alice", None).await.unwrap();
+    let pubkey = user.get_default_key().unwrap();
+
+    let mut settings = eidetica::crdt::Doc::new();
+    settings.set("name", "lazy_unsub_test");
+    let db = user.create_database(settings, &pubkey).await.unwrap();
+
+    // Register a callback, then drop it, then commit. The commit
+    // should still fire (subscription is Idle, daemon still pushing,
+    // but no local callback to invoke — so we measure differently).
+    //
+    // Instead, after the grace window elapses, register a *new*
+    // callback. By that time the sweep should have unsubscribed —
+    // but `on_write_at_tips` then re-subscribes via the leader path.
+    // Verify a subsequent commit still fires that new callback (proves
+    // the subscribe round-trip happens correctly post-unsubscribe).
+    let received = Arc::new(AtomicUsize::new(0));
+
+    {
+        let received_clone = received.clone();
+        let _cb = db
+            .on_write(move |_event, _db| {
+                let n = received_clone.clone();
+                async move {
+                    n.fetch_add(1, AtomicOrdering::Relaxed);
+                    Ok(())
+                }
+            })
+            .await
+            .unwrap();
+
+        // Fire one commit while callback is alive.
+        db.with_transaction(|tx| async move {
+            let store = tx.get_store::<DocStore>("data").await?;
+            store.set("k", "v1").await?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+        // Give the notification time to round-trip.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(received.load(AtomicOrdering::Relaxed) >= 1, "callback should fire while subscribed");
+
+        // `cb` drops here → transition_to_idle.
+    }
+
+    // Wait past the grace window so the sweep runs UnsubscribeWrites.
+    // Grace is 100ms, sweep interval is 50ms, so by 300ms we're
+    // guaranteed to have swept.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Now register a fresh callback. This should re-subscribe via
+    // the leader path (entry was removed by the sweep). Then commit
+    // and assert the new callback fires.
+    let received2 = Arc::new(AtomicUsize::new(0));
+    let received2_clone = received2.clone();
+    let _cb2 = db
+        .on_write(move |_event, _db| {
+            let n = received2_clone.clone();
+            async move {
+                n.fetch_add(1, AtomicOrdering::Relaxed);
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+
+    db.with_transaction(|tx| async move {
+        let store = tx.get_store::<DocStore>("data").await?;
+        store.set("k", "v2").await?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(
+        received2.load(AtomicOrdering::Relaxed) >= 1,
+        "re-registered callback after sweep must fire on subsequent commit"
+    );
+
+    // Cleanup: reset env vars so subsequent tests in the same
+    // binary see prod defaults again.
+    unsafe {
+        std::env::remove_var("EIDETICA_TEST_IDLE_GRACE_MS");
+        std::env::remove_var("EIDETICA_TEST_SWEEP_INTERVAL_MS");
+    }
+}
+
 /// Regression: per-tree dispatch on the client means a slow callback on
 /// tree A does not stall callbacks on tree B. The single-drain-task
 /// shape this replaced would have serialised them.

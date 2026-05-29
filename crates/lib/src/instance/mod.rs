@@ -242,7 +242,29 @@ impl Drop for WriteCallback {
             return;
         }
         if let Some(instance) = self.instance.upgrade() {
-            instance.remove_write_callback(&self.tree_id, self.id);
+            // On a connected instance, dropping the last local callback
+            // for this tree transitions the wire-side subscription to
+            // `Idle`. Daemon-side stays subscribed through a grace
+            // window so a quick re-registration is a no-op; the sweep
+            // task in the connection unsubscribes after the window
+            // elapses.
+            //
+            // The local-instance build doesn't read the `was_last`
+            // signal; bind it under the `cfg` so the inactive build
+            // doesn't carry a dead variable.
+            #[cfg(all(unix, feature = "service"))]
+            {
+                let was_last = instance.remove_write_callback(&self.tree_id, self.id);
+                if was_last
+                    && let Some(conn) = instance.remote_connection()
+                {
+                    conn.transition_to_idle(&self.tree_id);
+                }
+            }
+            #[cfg(not(all(unix, feature = "service")))]
+            {
+                let _ = instance.remove_write_callback(&self.tree_id, self.id);
+            }
         }
     }
 }
@@ -1596,19 +1618,32 @@ impl Instance {
             .push((id, cb));
     }
 
-    /// Remove a per-database callback by id. No-op if not found.
-    pub(crate) fn remove_write_callback(&self, tree_id: &ID, id: CallbackId) {
+    /// Remove a per-database callback by id. Returns `true` iff the
+    /// removal emptied the per-tree callback list (i.e. this was the
+    /// last live callback for `tree_id` on this Instance). No-op if
+    /// the id isn't registered.
+    ///
+    /// Callers use the `true` return to drive lifecycle hooks on the
+    /// connection's subscription state: dropping the last local
+    /// callback for a tree on a connected instance is the trigger to
+    /// transition the wire subscription to `Idle` (see
+    /// [`crate::service::client::RemoteConnection::transition_to_idle`]).
+    pub(crate) fn remove_write_callback(&self, tree_id: &ID, id: CallbackId) -> bool {
         let mut callbacks = self
             .inner
             .write_callbacks
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         if let Some(vec) = callbacks.get_mut(tree_id) {
+            let before = vec.len();
             vec.retain(|entry| entry.id != id);
+            let removed = vec.len() < before;
             if vec.is_empty() {
                 callbacks.remove(tree_id);
+                return removed;
             }
         }
+        false
     }
 
     /// Acquire (or create) the per-tree async lock that serializes the
