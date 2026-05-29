@@ -442,19 +442,19 @@ The timing contract depends on whether the `Instance` is **local** (one
 backend in this process) or **connected** (built via `Instance::connect`
 to a daemon over a Unix socket):
 
-| Aspect                              | Local `Instance`                                                                  | Connected `Instance`                                                                                              |
-| ----------------------------------- | --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| When does the callback fire?        | Inline with the write — completes before `commit().await` returns.                | When the daemon's push notification arrives back over the socket. Asynchronous to `commit().await`.               |
-| Is `previous_tips` populated?       | Yes — captured pre-write under the per-tree lock.                                 | Yes — populated by the daemon's canonical pre-write tips.                                                         |
-| Who orders the callbacks?           | This process. Each tree has a serial ordering; cross-process ordering is via sync. | The daemon. Every subscriber — including the committing client — observes callbacks in the same canonical order. |
-| Cross-client visibility?            | Only via sync.                                                                    | Built-in — another client's commit through the same daemon fires this client's callback as soon as the daemon pushes. |
+| Aspect                        | Local `Instance`                                                                   | Connected `Instance`                                                                                                  |
+| ----------------------------- | ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| When does the callback fire?  | Inline with the write — completes before `commit().await` returns.                 | When the daemon's push notification arrives back over the socket. Asynchronous to `commit().await`.                   |
+| Is `previous_tips` populated? | Yes — captured pre-write under the per-tree lock.                                  | Yes — populated by the daemon's canonical pre-write tips.                                                             |
+| Who orders the callbacks?     | This process. Each tree has a serial ordering; cross-process ordering is via sync. | The daemon. Every subscriber — including the committing client — observes callbacks in the same canonical order.      |
+| Cross-client visibility?      | Only via sync.                                                                     | Built-in — another client's commit through the same daemon fires this client's callback as soon as the daemon pushes. |
 
 The asynchronous fire on a connected `Instance` is intentional. By
 deferring to the daemon's ordering, every subscriber sees writes in the
 same sequence — your own callback, another client's callback for your
 write, and a sync-peer entry that arrived between them are all interleaved
 by the daemon and pushed in that order to everyone. The trade-off is that
-`commit().await` returning no longer means *your own* callback has run; if
+`commit().await` returning no longer means _your own_ callback has run; if
 you need synchronous "callback fired before commit returned" semantics for
 your own writes, use a local `Instance`.
 

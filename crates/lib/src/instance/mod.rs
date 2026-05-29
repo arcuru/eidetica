@@ -246,9 +246,7 @@ impl Drop for WriteCallback {
             #[cfg(all(unix, feature = "service"))]
             {
                 let was_last = instance.remove_write_callback(&self.tree_id, self.id);
-                if was_last
-                    && let Some(conn) = instance.remote_connection()
-                {
+                if was_last && let Some(conn) = instance.remote_connection() {
                     conn.transition_to_idle(&self.tree_id);
                 }
             }
@@ -1851,19 +1849,11 @@ impl Instance {
     }
 
     #[cfg(not(any(test, feature = "testing")))]
-    pub(crate) async fn demote_to_unverified(
-        &self,
-        tree_id: &ID,
-        entry_id: &ID,
-    ) -> Result<()> {
+    pub(crate) async fn demote_to_unverified(&self, tree_id: &ID, entry_id: &ID) -> Result<()> {
         self.demote_to_unverified_impl(tree_id, entry_id).await
     }
 
-    async fn demote_to_unverified_impl(
-        &self,
-        tree_id: &ID,
-        entry_id: &ID,
-    ) -> Result<()> {
+    async fn demote_to_unverified_impl(&self, tree_id: &ID, entry_id: &ID) -> Result<()> {
         use std::collections::{HashMap, HashSet, VecDeque};
         let backend = self.require_local_engine()?;
         let entries = backend.get_tree(tree_id).await?;

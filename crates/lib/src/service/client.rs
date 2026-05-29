@@ -301,6 +301,26 @@ struct RemoteConnectionInner {
     /// on the same tree blocks until the daemon has fully processed
     /// the unsubscribe, regardless of dispatch shape.
     ///
+    /// **Correctness contract this fence depends on**: the daemon
+    /// must serialize `SubscribeWrites` / `UnsubscribeWrites` *per
+    /// tree* within a single connection. Today this holds trivially
+    /// via per-connection serial dispatch. A future shape change to
+    /// per-connection+tree-parallel dispatch (the natural next step,
+    /// mirroring the client's `tree_workers`) also satisfies the
+    /// contract: within tree X the daemon would still order
+    /// Unsubscribe → Subscribe, while unrelated work on tree Y
+    /// proceeds in parallel. The fence stays correct under that
+    /// shape with no further work.
+    ///
+    /// What would break the fence: a daemon that *parallelizes
+    /// requests within a single tree* on one connection, freely
+    /// reordering Subscribe/Unsubscribe processing for the same
+    /// `root_id`. That shape would also break verify, settled-state
+    /// cursor advancement, and other invariants — it's not a
+    /// realistic future direction. If it ever becomes one, this
+    /// fence is insufficient and the design needs to revisit
+    /// ack-then-Subscribe vs. an `Unsubscribing { notify }` sub-state.
+    ///
     /// Deliberately a separate lock from [`crate::instance::Instance`]'s
     /// `tree_lock`: that lock serializes local `put_entry`/`verify`
     /// against callback-dispatch coherence; reusing it here would
@@ -396,7 +416,9 @@ impl RemoteConnectionInner {
     }
 
     /// Acquire the pending-queue lock, tolerating poisoning.
-    fn pending_lock(&self) -> std::sync::MutexGuard<'_, VecDeque<oneshot::Sender<ServiceResponse>>> {
+    fn pending_lock(
+        &self,
+    ) -> std::sync::MutexGuard<'_, VecDeque<oneshot::Sender<ServiceResponse>>> {
         self.pending
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1317,10 +1339,7 @@ fn route_notification(inner: &Arc<RemoteConnectionInner>, notif: Notification) {
         Notification::DatabaseWrite { root_id, .. } => root_id.clone(),
     };
     let tx = {
-        let mut workers = inner
-            .tree_workers
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let mut workers = inner.tree_workers.lock().unwrap_or_else(|p| p.into_inner());
         workers
             .entry(tree_id)
             .or_insert_with(|| {
@@ -1372,9 +1391,7 @@ async fn run_tree_worker(
         // and subscriptions only start after that).
         let weak_instance = {
             let Some(inner) = weak_inner.upgrade() else {
-                tracing::debug!(
-                    "RemoteConnection tree worker: inner gone; exiting"
-                );
+                tracing::debug!("RemoteConnection tree worker: inner gone; exiting");
                 return;
             };
             let guard = inner

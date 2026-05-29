@@ -1564,8 +1564,10 @@ async fn test_on_write_previous_tips_populated_on_connected_instance() {
     let db = user.create_database(settings, &pubkey).await.unwrap();
 
     // Single fire per commit under fire-on-Verified — no filter needed.
-    let (event_tx, mut event_rx) =
-        tokio::sync::mpsc::unbounded_channel::<(Vec<eidetica::entry::ID>, Vec<eidetica::entry::ID>)>();
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<(
+        Vec<eidetica::entry::ID>,
+        Vec<eidetica::entry::ID>,
+    )>();
     let _cb = db
         .on_write(move |event, db| {
             let prev_tips = event.previous_tips().to_vec();
@@ -1901,7 +1903,10 @@ async fn test_lazy_unsubscribe_after_grace_window() {
 
         // Give the notification time to round-trip.
         tokio::time::sleep(Duration::from_millis(150)).await;
-        assert!(received.load(AtomicOrdering::Relaxed) >= 1, "callback should fire while subscribed");
+        assert!(
+            received.load(AtomicOrdering::Relaxed) >= 1,
+            "callback should fire while subscribed"
+        );
 
         // `cb` drops here → transition_to_idle.
     }
@@ -2159,12 +2164,9 @@ async fn test_request_after_reader_exit_returns_connection_aborted() {
 
     // Any new request must bail with `ConnectionAborted` within the
     // timeout — emphatically *not* hang waiting for a response.
-    let result = tokio::time::timeout(
-        Duration::from_secs(2),
-        conn.get_instance_metadata(),
-    )
-    .await
-    .expect("request after reader exit must not hang");
+    let result = tokio::time::timeout(Duration::from_secs(2), conn.get_instance_metadata())
+        .await
+        .expect("request after reader exit must not hang");
     let err = result.expect_err("request after reader exit must return Err");
     assert!(
         matches!(&err, eidetica::Error::Io(e) if e.kind() == std::io::ErrorKind::ConnectionAborted),
