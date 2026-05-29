@@ -1632,6 +1632,8 @@ impl Database {
     /// not-yet-built path. Local-only — verification is a per-node decision
     /// and is never delegated to a peer.
     pub async fn verify(&self) -> Result<VerifyReport> {
+        use std::collections::{HashMap, HashSet, VecDeque};
+
         let instance = self.instance()?;
 
         // Hold the per-tree write lock for the whole pass + fire so the
@@ -1650,45 +1652,90 @@ impl Database {
             .scope(true, async move {
                 let backend = instance.require_local_engine()?;
 
-                // Raw tree walk (not `get_tips`) so traversal itself never
-                // re-enters the hook even before the guard is observed.
-                //
-                // TODO(verify-targeted-walk): retire the full `get_tree`
-                // scan in favour of "walk from raw tips up to the
-                // Verified boundary." That bound the cost to O(K) where
-                // K is the Unverified region size. The earlier attempt
-                // tripped the
-                // `test_verify_uses_pinned_not_current_settings` case
-                // (deep Verified entry manually reverted to Unverified
-                // and hidden behind a Verified descendant — prefix-
-                // closure normally rules this out but verify is the
-                // recovery primitive, so it has to handle it). Land
-                // alongside a backend-side Unverified-id index keyed by
-                // tree.
-                let entries = backend.get_tree(self.root_id()).await?;
-                let pre_tips = backend.get_tips(self.root_id()).await?;
-                let mut report = VerifyReport::default();
-                let mut promoted: Vec<Entry> = Vec::new();
+                // 1. Outer boundary of the Unverified region: raw DAG
+                //    tips. (Failed/Verified tips both terminate the walk
+                //    below; no pre-filter needed.)
+                let raw_tips = backend.get_tips(self.root_id()).await?;
 
-                for entry in &entries {
-                    let id = entry.id();
-                    if backend.get_verification_status(&id).await?
-                        != VerificationStatus::Unverified
-                    {
+                // 2. Walk parents from those tips, collecting the
+                //    Unverified region. `Verified` and `Failed` entries
+                //    are the inner boundary — by prefix-closure their
+                //    ancestors are already settled. Demotions cascade
+                //    through `Instance::demote_to_unverified`, so a
+                //    `Verified` entry hiding an `Unverified` descendant
+                //    cannot occur and we never need to descend past
+                //    a Verified entry.
+                let mut unverified: HashMap<ID, Entry> = HashMap::new();
+                let mut visited: HashSet<ID> = HashSet::new();
+                let mut queue: VecDeque<ID> = raw_tips.iter().cloned().collect();
+                while let Some(id) = queue.pop_front() {
+                    if !visited.insert(id.clone()) {
                         continue;
                     }
+                    let status = match backend.get_verification_status(&id).await {
+                        Ok(s) => s,
+                        // Tree-internal reference we don't hold yet
+                        // (partial sync): skip; descendants stay
+                        // Unverified and a later pass picks them up
+                        // once the parent arrives.
+                        Err(e) if e.is_not_found() => continue,
+                        Err(e) => return Err(e),
+                    };
+                    match status {
+                        VerificationStatus::Verified | VerificationStatus::Failed => continue,
+                        VerificationStatus::Unverified => {
+                            let entry = backend.get(&id).await?;
+                            for p in entry.parents().unwrap_or_default() {
+                                queue.push_back(p);
+                            }
+                            unverified.insert(id, entry);
+                        }
+                    }
+                }
 
-                    // Verification is prefix-closed: an entry's trust rests
-                    // on its entire history, so it can only be `Verified`
-                    // if every ancestor is. `get_tree` is topo-sorted
-                    // (parents before children), so each parent's status
-                    // is already final for this pass.
-                    //
-                    // - any ancestor `Failed` → the branch is tainted; this
-                    //   entry is `Failed` too (quarantine propagates
-                    //   forward);
-                    // - any ancestor still `Unverified` → cannot trust this
-                    //   entry yet; leave it for a later pass.
+                // 3. Topo-sort the Unverified subgraph (Kahn's,
+                //    scoped). Parents outside the set are pre-settled
+                //    boundary entries and don't contribute to
+                //    in-degree.
+                let mut in_degree: HashMap<ID, usize> =
+                    HashMap::with_capacity(unverified.len());
+                let mut children: HashMap<ID, Vec<ID>> = HashMap::new();
+                for (id, entry) in &unverified {
+                    let mut d = 0usize;
+                    for p in entry.parents().unwrap_or_default() {
+                        if unverified.contains_key(&p) {
+                            d += 1;
+                            children.entry(p).or_default().push(id.clone());
+                        }
+                    }
+                    in_degree.insert(id.clone(), d);
+                }
+                let mut topo_queue: VecDeque<ID> = in_degree
+                    .iter()
+                    .filter(|&(_, &d)| d == 0)
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                let mut order: Vec<ID> = Vec::with_capacity(unverified.len());
+                while let Some(id) = topo_queue.pop_front() {
+                    order.push(id.clone());
+                    if let Some(kids) = children.get(&id) {
+                        for kid in kids {
+                            let d = in_degree.get_mut(kid).expect("in_degree entry exists");
+                            *d -= 1;
+                            if *d == 0 {
+                                topo_queue.push_back(kid.clone());
+                            }
+                        }
+                    }
+                }
+
+                // 4. Process parents-before-children. Same per-entry
+                //    logic as the legacy `get_tree`-walk verify, just
+                //    bounded to the Unverified region.
+                let mut report = VerifyReport::default();
+                let mut promoted: Vec<Entry> = Vec::new();
+                for id in &order {
+                    let entry = unverified.get(id).expect("topo id is in set");
                     let parents = entry.parents().unwrap_or_default();
                     let mut compromised = false;
                     let mut blocked = false;
@@ -1703,7 +1750,7 @@ impl Database {
                     }
                     if compromised {
                         backend
-                            .update_verification_status(&id, VerificationStatus::Failed)
+                            .update_verification_status(id, VerificationStatus::Failed)
                             .await?;
                         report.failed += 1;
                         continue;
@@ -1723,13 +1770,13 @@ impl Database {
                                 .unwrap_or(false);
                             if valid {
                                 backend
-                                    .update_verification_status(&id, VerificationStatus::Verified)
+                                    .update_verification_status(id, VerificationStatus::Verified)
                                     .await?;
                                 report.verified += 1;
                                 promoted.push(entry.clone());
                             } else {
                                 backend
-                                    .update_verification_status(&id, VerificationStatus::Failed)
+                                    .update_verification_status(id, VerificationStatus::Failed)
                                     .await?;
                                 report.failed += 1;
                             }
@@ -1737,7 +1784,7 @@ impl Database {
                     }
                 }
 
-                Ok::<_, crate::Error>((report, promoted, pre_tips))
+                Ok::<_, crate::Error>((report, promoted, raw_tips))
             })
             .await?;
 

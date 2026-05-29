@@ -995,10 +995,15 @@ async fn test_verify_uses_pinned_not_current_settings() {
 
     // Force `d` Unverified and re-verify. Validation must run against the
     // settings `d` pinned (key Active) — so it verifies, NOT Failed.
-    backend
-        .update_verification_status(&d, VerificationStatus::Unverified)
-        .await
-        .unwrap();
+    //
+    // Demote via `Instance::demote_to_unverified` rather than the raw
+    // backend API so the `Verified` set's prefix-closure invariant is
+    // maintained: every `Verified` descendant of `d` also gets demoted
+    // to `Unverified`, otherwise the targeted-walk verify can't find
+    // `d` (it would stop at the still-Verified descendant). The
+    // revocation entry above is a child of `d` and is the relevant
+    // descendant here.
+    instance.demote_to_unverified(tree.root_id(), &d).await.unwrap();
     let report = tree.verify().await.unwrap();
     assert!(
         report.failed == 0,
