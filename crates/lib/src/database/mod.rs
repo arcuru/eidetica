@@ -1620,6 +1620,132 @@ impl Database {
         Ok(PinnedSettings::Complete(auth_settings))
     }
 
+    /// Return the IDs of entries reachable from `post_tips` but not from
+    /// `previous_tips`, in topological order (parents before children).
+    ///
+    /// This is the canonical way to enumerate the entries added between two
+    /// cursors of this database — typically the cursors supplied by a
+    /// [`WriteEvent`](crate::instance::WriteEvent)'s
+    /// [`previous_tips()`](crate::instance::WriteEvent::previous_tips) and
+    /// [`post_tips()`](crate::instance::WriteEvent::post_tips). Callbacks that
+    /// only care that *something* changed can ignore this; callbacks that
+    /// need to enumerate or fetch entry contents call this to expand the
+    /// cursor advance into a concrete set of IDs.
+    ///
+    /// The walk is bounded by the cursor diff — cost is proportional to the
+    /// number of entries *added* between the two cursors, not to the full
+    /// DAG.
+    ///
+    /// # Behavior
+    ///
+    /// - If `previous_tips == post_tips`, returns an empty vector.
+    /// - If `previous_tips` is empty, returns every ID reachable from
+    ///   `post_tips` (i.e. the full ancestor closure of those tips).
+    /// - If `post_tips` references an entry that does not exist locally,
+    ///   returns an `EntryNotFound` error.
+    /// - Verification status is **not** filtered. `WriteEvent` fires only
+    ///   for settled-state writes, so callers driven by an event observe
+    ///   only Verified IDs in practice. Callers using this directly should
+    ///   filter via `Backend::get_verification_status` if needed.
+    ///
+    /// # Errors
+    ///
+    /// - `EntryNotFound` if any tip in `post_tips` is missing locally.
+    ///   Missing entries reachable through `previous_tips` are silently
+    ///   skipped — they're treated as outside the "excluded" boundary,
+    ///   which is the conservative direction (we may over-report rather
+    ///   than under-report).
+    pub async fn ids_added(
+        &self,
+        previous_tips: &[ID],
+        post_tips: &[ID],
+    ) -> Result<Vec<ID>> {
+        use std::collections::{HashMap, HashSet, VecDeque};
+
+        if previous_tips == post_tips {
+            return Ok(Vec::new());
+        }
+
+        let instance = self.instance()?;
+        let backend = instance.require_local_engine()?;
+
+        // 1. Walk parents from `previous_tips` to build the excluded set —
+        //    every ID that the caller has already observed. Missing
+        //    entries (partial sync) are skipped silently; their absence
+        //    can only cause us to over-report, never to miss new IDs.
+        let mut excluded: HashSet<ID> = HashSet::new();
+        let mut queue: VecDeque<ID> = previous_tips.iter().cloned().collect();
+        while let Some(id) = queue.pop_front() {
+            if !excluded.insert(id.clone()) {
+                continue;
+            }
+            let entry = match backend.get(&id).await {
+                Ok(e) => e,
+                Err(e) if e.is_not_found() => continue,
+                Err(e) => return Err(e),
+            };
+            for p in entry.parents().unwrap_or_default() {
+                queue.push_back(p);
+            }
+        }
+
+        // 2. Walk parents from `post_tips`, collecting any ID not in the
+        //    excluded set. A `post_tips` ID that's missing locally is a
+        //    hard error — the caller's cursor references unknown state.
+        let mut added: HashMap<ID, Entry> = HashMap::new();
+        let mut visited: HashSet<ID> = HashSet::new();
+        let mut queue: VecDeque<ID> = post_tips.iter().cloned().collect();
+        while let Some(id) = queue.pop_front() {
+            if !visited.insert(id.clone()) {
+                continue;
+            }
+            if excluded.contains(&id) {
+                continue;
+            }
+            let entry = backend.get(&id).await?;
+            for p in entry.parents().unwrap_or_default() {
+                queue.push_back(p);
+            }
+            added.insert(id, entry);
+        }
+
+        // 3. Topo sort the added set (Kahn's, scoped). Parents outside
+        //    the set are pre-observed boundary entries and don't count
+        //    toward in-degree.
+        let mut in_degree: HashMap<ID, usize> = HashMap::with_capacity(added.len());
+        let mut children: HashMap<ID, Vec<ID>> = HashMap::new();
+        for (id, entry) in &added {
+            let mut d = 0usize;
+            for p in entry.parents().unwrap_or_default() {
+                if added.contains_key(&p) {
+                    d += 1;
+                    children.entry(p).or_default().push(id.clone());
+                }
+            }
+            in_degree.insert(id.clone(), d);
+        }
+        let mut topo_queue: VecDeque<ID> = in_degree
+            .iter()
+            .filter(|&(_, &d)| d == 0)
+            .map(|(id, _)| id.clone())
+            .collect();
+        let mut order: Vec<ID> = Vec::with_capacity(added.len());
+        while let Some(id) = topo_queue.pop_front() {
+            if let Some(kids) = children.get(&id) {
+                for kid in kids {
+                    let d = in_degree.get_mut(kid).expect("in_degree entry exists");
+                    *d -= 1;
+                    if *d == 0 {
+                        topo_queue.push_back(kid.clone());
+                    }
+                }
+            }
+            order.push(id);
+        }
+
+        Ok(order)
+    }
+
     /// Attempt to verify every `Unverified` entry in this database.
     ///
     /// For each `Unverified` entry, reconstruct the `_settings` it pins
