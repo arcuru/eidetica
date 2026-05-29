@@ -719,3 +719,119 @@ async fn test_per_callback_cursor_independent_previous_tips() {
         "cb2's first fire's prev must NOT yet contain id2 (the entry it is being notified about)"
     );
 }
+
+// ===== ids_added DAG-diff helper =====
+
+#[tokio::test]
+async fn test_ids_added_empty_when_cursors_equal() {
+    let (_instance, db) = setup_callback_test().await;
+    let tips = db.get_tips().await.unwrap();
+    let added = db.ids_added(&tips, &tips).await.unwrap();
+    assert!(added.is_empty(), "equal cursors should yield empty diff");
+}
+
+#[tokio::test]
+async fn test_ids_added_single_commit() {
+    let (_instance, db) = setup_callback_test().await;
+    let prev = db.get_tips().await.unwrap();
+
+    let txn = db.new_transaction().await.unwrap();
+    let store = txn.get_store::<DocStore>("data").await.unwrap();
+    store.set("k", "v1").await.unwrap();
+    let id1 = txn.commit().await.unwrap();
+
+    let post = db.get_tips().await.unwrap();
+    let added = db.ids_added(&prev, &post).await.unwrap();
+
+    assert_eq!(
+        added,
+        vec![id1.clone()],
+        "single commit should add exactly the new entry"
+    );
+}
+
+#[tokio::test]
+async fn test_ids_added_multi_commit_topo_order() {
+    let (_instance, db) = setup_callback_test().await;
+    let prev = db.get_tips().await.unwrap();
+
+    let txn = db.new_transaction().await.unwrap();
+    let store = txn.get_store::<DocStore>("data").await.unwrap();
+    store.set("k", "v1").await.unwrap();
+    let id1 = txn.commit().await.unwrap();
+
+    let txn = db.new_transaction().await.unwrap();
+    let store = txn.get_store::<DocStore>("data").await.unwrap();
+    store.set("k", "v2").await.unwrap();
+    let id2 = txn.commit().await.unwrap();
+
+    let txn = db.new_transaction().await.unwrap();
+    let store = txn.get_store::<DocStore>("data").await.unwrap();
+    store.set("k", "v3").await.unwrap();
+    let id3 = txn.commit().await.unwrap();
+
+    let post = db.get_tips().await.unwrap();
+    let added = db.ids_added(&prev, &post).await.unwrap();
+
+    assert_eq!(added.len(), 3, "three commits should add three entries");
+    let pos1 = added.iter().position(|i| i == &id1).expect("id1 in added");
+    let pos2 = added.iter().position(|i| i == &id2).expect("id2 in added");
+    let pos3 = added.iter().position(|i| i == &id3).expect("id3 in added");
+    assert!(pos1 < pos2, "id1 (parent) must precede id2 (child) in topo order");
+    assert!(pos2 < pos3, "id2 (parent) must precede id3 (child) in topo order");
+}
+
+#[tokio::test]
+async fn test_ids_added_skips_entries_before_cursor() {
+    let (_instance, db) = setup_callback_test().await;
+
+    // Commit one entry, then snapshot the cursor *after* it.
+    let txn = db.new_transaction().await.unwrap();
+    let store = txn.get_store::<DocStore>("data").await.unwrap();
+    store.set("k", "v1").await.unwrap();
+    let id1 = txn.commit().await.unwrap();
+    let after_first = db.get_tips().await.unwrap();
+
+    // Two more commits past that cursor.
+    let txn = db.new_transaction().await.unwrap();
+    let store = txn.get_store::<DocStore>("data").await.unwrap();
+    store.set("k", "v2").await.unwrap();
+    let id2 = txn.commit().await.unwrap();
+
+    let txn = db.new_transaction().await.unwrap();
+    let store = txn.get_store::<DocStore>("data").await.unwrap();
+    store.set("k", "v3").await.unwrap();
+    let id3 = txn.commit().await.unwrap();
+
+    let post = db.get_tips().await.unwrap();
+    let added = db.ids_added(&after_first, &post).await.unwrap();
+
+    assert!(!added.contains(&id1), "entry at cursor must be excluded");
+    assert!(added.contains(&id2), "post-cursor entry id2 must be included");
+    assert!(added.contains(&id3), "post-cursor entry id3 must be included");
+    assert_eq!(added.len(), 2, "exactly the two post-cursor entries");
+}
+
+#[tokio::test]
+async fn test_ids_added_empty_previous_returns_full_closure() {
+    let (_instance, db) = setup_callback_test().await;
+
+    let txn = db.new_transaction().await.unwrap();
+    let store = txn.get_store::<DocStore>("data").await.unwrap();
+    store.set("k", "v1").await.unwrap();
+    let id1 = txn.commit().await.unwrap();
+
+    let post = db.get_tips().await.unwrap();
+    let added = db.ids_added(&[], &post).await.unwrap();
+
+    // With empty cursor, every ancestor reachable from post_tips is "added",
+    // which for a fresh database is the root + every committed entry.
+    assert!(
+        added.contains(&id1),
+        "empty cursor should include all reachable entries; missing id1"
+    );
+    assert!(
+        added.contains(db.root_id()),
+        "empty cursor should include the root entry"
+    );
+}
