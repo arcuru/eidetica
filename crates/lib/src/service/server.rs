@@ -18,7 +18,7 @@ use crate::auth::crypto::{PublicKey, generate_challenge, verify_challenge_respon
 use crate::auth::errors::AuthError;
 use crate::auth::types::{Permission, SigKey};
 use crate::auth::validation::permissions::resolve_identity_permission;
-use crate::backend::CacheScope;
+use crate::backend::{CacheScope, VerificationStatus};
 use crate::database::Database;
 use crate::entry::ID;
 use crate::instance::{CallbackId, WriteSource};
@@ -630,15 +630,33 @@ async fn dispatch_database_op(
             // poisoned entry never reaches `Verified` and is excluded from
             // every default read by the frontier cut — D1 is closed by
             // construction here, not by gate-hardening a raw `Put`.
+            //
+            // Subscribers only ever see settled-state events. The
+            // `put_entry(.., Unverified, ..)` is a no-fire path by
+            // design (see `Instance::put_entry`);
+            // `verify_and_fire_promotions` below runs verify and emits a
+            // single Verified `WriteEvent` *iff* the submitted entry
+            // settled. Capture `previous_tips` before the put so a
+            // subsequent commit's event's `previous_tips` correctly
+            // contains this entry's id once it Verifies.
+            let entry_for_event = *entry.clone();
+            let pre_tips = instance.get_tips(&root_id).await.unwrap_or_default();
             instance
                 .put_entry(
                     &root_id,
-                    crate::backend::VerificationStatus::Unverified,
+                    VerificationStatus::Unverified,
                     *entry,
                     WriteSource::Remote,
                 )
                 .await?;
-            Database::open(instance, &root_id).await?.verify().await?;
+            instance
+                .verify_and_fire_promotions(
+                    &root_id,
+                    vec![entry_for_event],
+                    pre_tips,
+                    WriteSource::Remote,
+                )
+                .await?;
             Ok(ServiceResponse::Ok)
         }
 
@@ -759,6 +777,12 @@ async fn dispatch_database_op(
                 // synchronous push above. Send failure (writer task gone)
                 // is silently dropped; the connection is about to be
                 // torn down and the guard's Drop will unregister us next.
+                //
+                // The closure only fires for settled-state writes today
+                // (Verified). Unverified writes go through `put_entry`
+                // without firing `fire_write_callbacks`, so no notification
+                // ever ships for them — subscribers observe a clean
+                // promote-only stream.
                 let frame = ServerFrame::Notification(Notification::DatabaseWrite {
                     root_id: db.root_id().clone(),
                     entries: event.entries().to_vec(),

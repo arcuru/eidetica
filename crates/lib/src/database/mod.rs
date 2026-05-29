@@ -673,6 +673,34 @@ impl Database {
     /// "callback fired before commit returned" guarantee, use a local
     /// [`Instance`].
     ///
+    /// Callbacks are also serialised on the client: a per-connection
+    /// drain task pulls notifications off the wire and `await`s each
+    /// user callback to completion before processing the next. Two
+    /// notifications for the *same* connection therefore never overlap.
+    /// (Callbacks for *different* trees, registered through the same
+    /// connection, share this single dispatcher — a slow callback will
+    /// hold up other trees' dispatches on the same connection. Spawn
+    /// from inside the callback if you need fanout.)
+    ///
+    /// # Settled-state only
+    ///
+    /// Callbacks fire **only for entries that have passed local
+    /// verification** — i.e. entries the system considers `Verified`.
+    /// Direct `put_entry(Verified, _)` (local commits, trusted
+    /// in-process writes) fires immediately. Off-node entries that
+    /// arrive `Unverified` (sync ingest, wire-submitted entries) are
+    /// stored silently; the subsequent verification pass is where
+    /// promotion to `Verified` happens, and a Verified fire follows
+    /// from there once that pass runs.
+    ///
+    /// **Known v1 gap**: sync-ingested entries do not fire until
+    /// something triggers a verification pass on their tree (today:
+    /// the access-time auto-verify hook in `get_tips`). Subscribers
+    /// that only listen and never read may observe latency in seeing
+    /// sync-arrived content. Closed in step 2 of the cursor refactor
+    /// where `put_remote_entries` will call `verify()` inline after
+    /// the batch.
+    ///
     /// On a connected instance the first `on_write` registration for a
     /// given tree lazily sends a `SubscribeWrites` op to the daemon;
     /// further registrations on the same tree reuse that subscription.

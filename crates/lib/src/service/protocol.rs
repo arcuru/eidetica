@@ -320,6 +320,15 @@ pub enum ServiceRequest {
 /// for them with a [`DatabaseOp::SubscribeWrites`] and unsubscribes by
 /// dropping the connection or sending [`DatabaseOp::UnsubscribeWrites`].
 ///
+/// Notifications fire **only for settled-state writes** — i.e. entries
+/// that have passed local verification on the daemon. An entry that
+/// arrives `Unverified` (via sync, or as a `SubmitSignedEntry` body) is
+/// ingested silently and only produces a notification once the daemon's
+/// verification pass promotes it to `Verified`. Subscribers therefore
+/// never need to track verification state themselves; every notification
+/// they observe is for entries that already satisfy the daemon's auth
+/// settings.
+///
 /// TODO(notify-id-only): the current `DatabaseWrite` shape ships full
 /// `Entry` payloads. This is convenient (the client can rebuild a
 /// `WriteEvent` and fire callbacks with no follow-up round-trip) but has
@@ -337,19 +346,21 @@ pub enum ServiceRequest {
 ///
 /// Planned shape: `DatabaseWrite { root_id, entry_ids: Vec<ID>,
 /// previous_tips: Vec<ID>, source }`. The client-side dispatcher would
-/// fetch entries on-demand if a user callback inspects `event.entries()`;
-/// callbacks that only care about *that* a write happened (the common
-/// case for cache invalidation / UI wake-ups) would never touch the wire
-/// for the bodies. Requires adding a `Vec<Entry>` accessor on `WriteEvent`
-/// that lazily fetches, or a dedicated `entries().await` method.
+/// fetch entries on-demand if a user callback inspects
+/// `event.entries()`; callbacks that only care about *that* a write
+/// happened (the common case for cache invalidation / UI wake-ups) would
+/// never touch the wire for the bodies. Requires adding a `Vec<Entry>`
+/// accessor on `WriteEvent` that lazily fetches, or a dedicated
+/// `entries().await` method.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Notification {
-    /// A write landed on the daemon for `root_id`. Mirrors the daemon's
-    /// internal `WriteEvent` so the client can rebuild one and feed its
-    /// callback registry without further round-trips. Carries the daemon's
-    /// pre-write tips (the canonical `previous_tips`, not the empty
-    /// placeholder the client would have on its own) and the `source`
-    /// distinction so consumers can branch on local-vs-sync.
+    /// A settled-state write landed on the daemon for `root_id`. Mirrors
+    /// the daemon's internal `WriteEvent` so the client can rebuild one
+    /// and feed its callback registry without further round-trips.
+    /// Carries the daemon's pre-write tips (the canonical
+    /// `previous_tips`, not the empty placeholder the client would have
+    /// on its own) and the `source` distinction so consumers can branch
+    /// on local-vs-sync.
     DatabaseWrite {
         root_id: ID,
         entries: Vec<Entry>,

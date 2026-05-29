@@ -20,7 +20,7 @@ use handle_trait::Handle;
 use crate::{
     Clock, Database, Entry, Result, SystemClock,
     auth::crypto::{PrivateKey, PublicKey},
-    backend::{BackendImpl, InstanceMetadata, InstanceSecrets},
+    backend::{BackendImpl, InstanceMetadata, InstanceSecrets, VerificationStatus},
     entry::ID,
     sync::Sync,
     user::User,
@@ -1624,16 +1624,28 @@ impl Instance {
             .write_entry(verification, entry.clone(), source)
             .await?;
 
-        // 3. Build event and fire callbacks — but only locally.
+        // 3. Build event and fire callbacks — but only on a local
+        //    instance, and only for entries that arrive `Verified`.
         //
-        // On a connected instance the daemon is the sole publisher of
-        // write events: it fires its own callback registry when it stores
-        // the entry, then pushes a `Notification::DatabaseWrite` back to
-        // every subscribed client (including this one). Firing here as
-        // well would double-deliver to local user callbacks. See the
-        // `Database::on_write` rustdoc for the timing contract this gives
-        // callers on a connected instance.
-        if !is_connected {
+        // **Connected instance**: the daemon is the sole publisher of
+        // write events. It fires its own callback registry when it
+        // stores the entry, then pushes a `Notification::DatabaseWrite`
+        // back to every subscribed client (including this one). Firing
+        // here too would double-deliver. See `Database::on_write` for
+        // the timing contract.
+        //
+        // **Unverified path**: skipped on purpose. Subscribers only
+        // ever see *settled-state* writes — i.e. Verified. An entry
+        // that arrives `Unverified` (over the wire as a
+        // `SubmitSignedEntry` body, or via sync as a remote batch) is
+        // ingested silently here; the subsequent local verification
+        // pass (the caller's responsibility to schedule) decides
+        // whether it ever becomes a fire-eligible Verified entry, and
+        // if so fires from there. This closes the
+        // Failed-in-`previous_tips` semantic hole: a subscriber's
+        // accumulated state can only ever rest on entries that have
+        // passed local validation.
+        if !is_connected && verification == VerificationStatus::Verified {
             let event = WriteEvent {
                 entries: vec![entry],
                 previous_tips,
@@ -1703,17 +1715,83 @@ impl Instance {
 
         let stored_count = stored_entries.len();
 
-        // 3. Fire callbacks once for the whole batch
+        // 3. Run verify inline, then fire one event for any entries that
+        //    settled to `Verified` in this pass. Remote batches arrive
+        //    `Unverified` by construction; this is the canonical promote-
+        //    point on the sync ingest path. Subscribers see a single
+        //    Verified event for the freshly-settled subset of the batch.
+        //
+        // Held under the tree lock so a concurrent `put_entry(Verified, ..)`
+        // on this same tree can't fire its callbacks interleaved with the
+        // promote-fire here. (Step 2 of the cursor refactor will replace
+        // tree-lock-based serialization with per-callback cursor
+        // mutexes — see ../private_docs/write-callback-cursor-refactor-plan.md.)
         if !stored_entries.is_empty() {
-            let event = WriteEvent {
-                entries: stored_entries,
+            self.verify_and_fire_promotions(
+                tree_id,
+                stored_entries,
                 previous_tips,
-                source: WriteSource::Remote,
-            };
-            self.fire_write_callbacks(tree_id, &event).await;
+                WriteSource::Remote,
+            )
+            .await?;
         }
 
         Ok(stored_count)
+    }
+
+    /// Run [`Database::verify`] on `tree_id`, then fire **one** Verified
+    /// [`WriteEvent`] containing whichever of `candidate_entries` ended
+    /// the pass at [`VerificationStatus::Verified`].
+    ///
+    /// Used by the two Unverified-introducing write paths
+    /// ([`Self::put_remote_entries`] for sync batches; the service
+    /// `SubmitSignedEntry` handler for wire-submitted entries) to make
+    /// settled-state subscribers see the promotion event without having
+    /// to schedule their own verify pass. Entries that verify left
+    /// `Unverified` (pinned settings not yet held) or marked `Failed`
+    /// are simply not in the fire.
+    ///
+    /// `previous_tips` is the caller's responsibility — usually the raw
+    /// backend tips captured immediately before the entries were stored.
+    /// `source` is `WriteSource::Remote` for both current callers (sync +
+    /// wire submit); the parameter is left explicit so step 2 of the
+    /// cursor refactor can call this from additional sites.
+    ///
+    /// Reads each candidate's verification status individually after
+    /// the pass; this is O(K) where K is the candidate count. Cheap
+    /// because verify just touched these entries, so backend caches are
+    /// hot.
+    pub(crate) async fn verify_and_fire_promotions(
+        &self,
+        tree_id: &ID,
+        candidate_entries: Vec<Entry>,
+        previous_tips: Vec<ID>,
+        source: WriteSource,
+    ) -> Result<()> {
+        Database::open(self, tree_id).await?.verify().await?;
+
+        let backend = self.require_local_engine()?;
+        let mut promoted = Vec::with_capacity(candidate_entries.len());
+        for entry in candidate_entries {
+            let id = entry.id();
+            let is_verified = backend
+                .get_verification_status(&id)
+                .await
+                .map(|s| s == VerificationStatus::Verified)
+                .unwrap_or(false);
+            if is_verified {
+                promoted.push(entry);
+            }
+        }
+        if !promoted.is_empty() {
+            let event = WriteEvent {
+                entries: promoted,
+                previous_tips,
+                source,
+            };
+            self.fire_write_callbacks(tree_id, &event).await;
+        }
+        Ok(())
     }
 
     /// Dispatch callbacks for a write event.
