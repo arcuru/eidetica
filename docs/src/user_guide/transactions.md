@@ -405,11 +405,15 @@ UI," or any other change-driven workflow.
 # use eidetica::{Database, Result};
 # async fn example(database: &Database) -> Result<()> {
 let cb = database.on_write(|event, db| {
-    let count = event.entries().len();
     let source = event.source();
-    let db_id = db.root_id().clone();
+    let prev = event.previous_tips().to_vec();
+    let post = event.post_tips().to_vec();
+    let db = db.clone();
     async move {
-        println!("{count} entries written to {db_id} ({source:?})");
+        // Expand the cursor advance into the concrete set of new entry IDs.
+        // Skip this for "any write" wake-ups — the brackets alone suffice.
+        let new_ids = db.ids_added(&prev, &post).await?;
+        println!("{} entries written to {} ({source:?})", new_ids.len(), db.root_id());
         Ok(())
     }
 }).await?;
@@ -419,6 +423,14 @@ let cb = database.on_write(|event, db| {
 # Ok(())
 # }
 ```
+
+`WriteEvent` carries cursor brackets only — `previous_tips` (the
+callback's own frontier before this fire) and `post_tips` (the
+frontier after). Callbacks that just need a "something changed"
+ping can act directly on the event; callbacks that need to
+enumerate the new entries call
+[`Database::ids_added`](https://docs.rs/eidetica/latest/eidetica/struct.Database.html#method.ids_added)
+with those brackets.
 
 The returned `WriteCallback` handle controls the registration's lifetime:
 drop it to unregister, or call `.detach()` to keep the callback live until
