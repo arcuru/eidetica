@@ -268,7 +268,7 @@ async fn test_database_supports_stores() {
 #[tokio::test]
 async fn test_multiple_users_create_databases() {
     let (instance, _) =
-        setup_instance_with_users(&[("alice", None), ("bob", None), ("charlie", None)]).await;
+        setup_local_instance_with_users(&[("alice", None), ("bob", None), ("charlie", None)]).await;
 
     // Each user creates a database
     let mut alice = login_user(&instance, "alice", None).await;

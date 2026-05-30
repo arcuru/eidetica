@@ -14,7 +14,7 @@ use super::helpers::*;
 #[tokio::test]
 async fn test_many_users_create_databases() {
     let user_count = 5;
-    let (instance, _) = setup_instance_with_users(&[
+    let (instance, _) = setup_local_instance_with_users(&[
         ("user1", None),
         ("user2", None),
         ("user3", None),
@@ -113,7 +113,7 @@ async fn test_database_created_by_one_user() {
 
 #[tokio::test]
 async fn test_multiple_simultaneous_logins() {
-    let (instance, _) = setup_instance_with_users(&[("alice", None), ("bob", None)]).await;
+    let (instance, _) = setup_local_instance_with_users(&[("alice", None), ("bob", None)]).await;
 
     // Simulate simultaneous logins
     let alice1 = login_user(&instance, "alice", None).await;
