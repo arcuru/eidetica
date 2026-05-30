@@ -165,8 +165,8 @@ async fn test_save_load_with_various_entries() {
     );
 
     // Check tips match
-    let orig_tips = backend.get_tips(&root_id).await.unwrap();
-    let loaded_tips = loaded_backend.get_tips(&root_id).await.unwrap();
+    let orig_tips = backend.snapshot(&root_id).await.unwrap().into_tips();
+    let loaded_tips = loaded_backend.snapshot(&root_id).await.unwrap().into_tips();
     assert_eq!(orig_tips.len(), loaded_tips.len());
 
     // Should have 3 tips (grandchild, entry_with_subtree, and child2)

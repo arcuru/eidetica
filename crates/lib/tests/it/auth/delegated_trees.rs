@@ -73,7 +73,7 @@ async fn test_delegated_tree_basic_validation() -> Result<()> {
     // Test delegated tree validation
     let mut validator = AuthValidator::new();
     let main_auth_settings = main_tree.get_settings().await?.auth_snapshot().await?;
-    let delegated_tips = delegated_tree.get_tips().await?;
+    let delegated_tips = delegated_tree.snapshot().await?.into_tips();
 
     // Create delegation path - DelegationStep uses root tree ID and tips
     let delegated_auth_id = SigKey::Delegation {
@@ -127,7 +127,7 @@ async fn test_delegated_tree_permission_clamping() -> Result<()> {
     // Test permission clamping
     let mut validator = AuthValidator::new();
     let main_auth_settings = main_tree.get_settings().await?.auth_snapshot().await?;
-    let delegated_tips = delegated_tree.get_tips().await?;
+    let delegated_tips = delegated_tree.snapshot().await?.into_tips();
 
     let delegated_auth_id = SigKey::Delegation {
         path: vec![DelegationStep {
@@ -182,7 +182,7 @@ async fn test_nested_delegation() -> Result<()> {
     .await?;
 
     // Add delegation to user tree
-    let user_tips = user_tree.get_tips().await?;
+    let user_tips = user_tree.snapshot().await?.into_tips();
     let user_tree_root = user_tree.root_id().clone();
     let txn = org_tree.new_transaction().await?;
     {
@@ -206,7 +206,7 @@ async fn test_nested_delegation() -> Result<()> {
     .await?;
 
     // Add delegation to org tree
-    let org_tips = org_tree.get_tips().await?;
+    let org_tips = org_tree.snapshot().await?.into_tips();
     let org_tree_root = org_tree.root_id().clone();
     let txn = main_tree.new_transaction().await?;
     {
@@ -288,7 +288,7 @@ async fn test_delegated_tree_with_revoked_keys() -> Result<()> {
     .await?;
 
     // Add delegation to delegated tree
-    let delegated_tips = delegated_tree.get_tips().await?;
+    let delegated_tips = delegated_tree.snapshot().await?.into_tips();
     let delegated_tree_root = delegated_tree.root_id().clone();
     let txn = main_tree.new_transaction().await?;
     {
@@ -377,7 +377,7 @@ async fn test_delegation_depth_limits() -> Result<()> {
     .await?;
 
     // Add delegation to delegated tree
-    let delegated_tips = delegated_tree.get_tips().await?;
+    let delegated_tips = delegated_tree.snapshot().await?.into_tips();
     let delegated_tree_root = delegated_tree.root_id().clone();
     let txn = main_tree.new_transaction().await?;
     {
@@ -451,7 +451,7 @@ async fn test_delegated_tree_min_bound_upgrade() -> Result<()> {
         ],
     )
     .await?;
-    let delegated_tips = delegated_tree.get_tips().await?;
+    let delegated_tips = delegated_tree.snapshot().await?.into_tips();
 
     // ---------------- Main tree with delegation using SettingsStore API ----------------
     let main_tree = user.create_database(Doc::new(), &main_admin_key).await?;
@@ -537,7 +537,7 @@ async fn test_delegated_tree_priority_preservation() -> Result<()> {
         ],
     )
     .await?;
-    let delegated_tips = delegated_tree.get_tips().await?;
+    let delegated_tips = delegated_tree.snapshot().await?.into_tips();
 
     // Main tree delegates with max Write(8) (more privileged) and no min using SettingsStore API
     let main_tree = user.create_database(Doc::new(), &main_admin_key).await?;
@@ -599,7 +599,7 @@ async fn test_delegation_depth_limit_exact() -> Result<()> {
         &[("admin", &admin_key, Permission::Admin(0), KeyStatus::Active)],
     )
     .await?;
-    let tips = tree.get_tips().await?;
+    let tips = tree.snapshot().await?.into_tips();
 
     // Build a chain exactly 10 levels deep
     let mut delegation_steps = Vec::new();
@@ -823,7 +823,7 @@ async fn open_via_delegation(
     signing_key: PrivateKey,
     hint_key_id: &PublicKey,
 ) -> Result<Database> {
-    let identity_db_tips = pair.identity_db.get_tips().await?;
+    let identity_db_tips = pair.identity_db.snapshot().await?.into_tips();
     let delegation_sigkey = SigKey::Delegation {
         path: vec![DelegationStep {
             tree: pair.identity_db.root_id().clone(),
@@ -1006,7 +1006,7 @@ async fn test_delegated_entry_validation_across_instances() -> Result<()> {
     // Get tip entries from target_db on instance B and validate them
     let target_tips = instance_b
         .backend()
-        .get_tips(pair.target_db.root_id())
+        .snapshot(pair.target_db.root_id())
         .await?;
     assert!(
         !target_tips.is_empty(),
@@ -1082,7 +1082,11 @@ async fn test_delegated_entry_synced_unverified_then_verified() -> Result<()> {
     );
     // It is now visible in the default Verified-frontier view on B.
     assert!(
-        target_db_b.get_tips().await?.contains(&delegated_entry),
+        target_db_b
+            .snapshot()
+            .await?
+            .into_tips()
+            .contains(&delegated_entry),
         "verified delegated entry must be on the frontier"
     );
 
@@ -1125,7 +1129,7 @@ async fn test_delegated_write_secondary_identity_key() -> Result<()> {
     txn.commit().await?;
 
     // Open target_db using the secondary key via delegation
-    let identity_db_tips = identity_db.get_tips().await?;
+    let identity_db_tips = identity_db.snapshot().await?.into_tips();
     let delegation_sigkey = SigKey::Delegation {
         path: vec![DelegationStep {
             tree: identity_db.root_id().clone(),

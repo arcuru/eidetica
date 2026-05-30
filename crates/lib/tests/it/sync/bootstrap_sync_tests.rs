@@ -37,7 +37,7 @@ async fn test_bootstrap_sync_from_zero_state() {
     // Debug server state
     let server_tips = server_instance
         .backend()
-        .get_tips(&test_tree_id)
+        .snapshot(&test_tree_id)
         .await
         .unwrap();
     println!("🧪 DEBUG: Server tips: {server_tips:?}");
@@ -86,7 +86,7 @@ async fn test_bootstrap_sync_from_zero_state() {
     );
 
     // Verify client has tips
-    let tips = client_instance.backend().get_tips(&test_tree_id).await;
+    let tips = client_instance.backend().snapshot(&test_tree_id).await;
     println!("🧪 DEBUG: Client tips result: {tips:?}");
     match tips {
         Ok(tip_vec) => {
@@ -181,7 +181,7 @@ async fn test_incremental_sync_after_bootstrap() {
     // Verify tips have been updated
     let tips = client_instance
         .backend()
-        .get_tips(&test_tree_id)
+        .snapshot(&test_tree_id)
         .await
         .unwrap();
     assert!(

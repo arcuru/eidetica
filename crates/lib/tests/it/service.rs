@@ -919,7 +919,7 @@ async fn test_submit_cross_session_signed_by_tree_admin_becomes_verified() {
         .await
         .unwrap();
     let bob_root = bob_db.root_id().clone();
-    let initial_tips = bob_db.get_tips().await.unwrap();
+    let initial_tips = bob_db.snapshot().await.unwrap().into_tips();
 
     // The bootstrap admin (NOT bob) connects over the wire. Admin holds
     // Admin on `_users`/`_databases` but is *not* a member of bob's tree.
@@ -994,7 +994,7 @@ async fn test_submit_cross_session_signed_by_tree_admin_becomes_verified() {
         );
 
     // The submitted entry is in bob's Verified frontier.
-    let tips_after = bob_db.get_tips().await.unwrap();
+    let tips_after = bob_db.snapshot().await.unwrap().into_tips();
     assert!(
         tips_after.contains(&entry_id),
         "submitted entry must be a Verified tip; tips={tips_after:?}, entry={entry_id}"
@@ -1024,7 +1024,7 @@ async fn test_submit_unauthorized_signer_stays_invisible_in_default_reads() {
         .await
         .unwrap();
     let bob_root = bob_db.root_id().clone();
-    let initial_tips = bob_db.get_tips().await.unwrap();
+    let initial_tips = bob_db.snapshot().await.unwrap().into_tips();
 
     // Admin connects and signs an entry with the *admin* key, which has no
     // auth on bob's tree.
@@ -1054,7 +1054,7 @@ async fn test_submit_unauthorized_signer_stays_invisible_in_default_reads() {
 
     // Bob's Verified frontier is unchanged: the unauthorized entry never
     // graduated past Unverified/Failed and is excluded from default reads.
-    let tips_after = bob_db.get_tips().await.unwrap();
+    let tips_after = bob_db.snapshot().await.unwrap().into_tips();
     assert!(
         !tips_after.contains(&entry_id),
         "unauthorized-signer entry must NOT appear in Verified frontier; tips={tips_after:?}"

@@ -4,8 +4,8 @@ use tracing::{debug, info};
 
 use super::{Sync, SyncError, user_sync_manager::UserSyncManager};
 use crate::{
-    Database, Result, entry::ID, instance::settings_merge::merge_sync_settings, store::Table,
-    user::types::TrackedDatabase,
+    Database, Result, Snapshot, entry::ID, instance::settings_merge::merge_sync_settings,
+    store::Table, user::types::TrackedDatabase,
 };
 
 impl Sync {
@@ -68,10 +68,10 @@ impl Sync {
         let prefs_db = Database::open(&instance, preferences_db_id)
             .await?
             .with_key(device_key.clone());
-        let current_tips = prefs_db.get_tips().await?;
+        let current_snapshot = prefs_db.snapshot().await?;
 
-        // Check if preferences have changed via tip comparison
-        if current_tips == old_tips {
+        // Check if preferences have changed via snapshot comparison (set-equal).
+        if current_snapshot == Snapshot::from(old_tips.clone()) {
             debug!(user_uuid = %user_uuid_str, "No changes to user preferences, skipping update");
             return Ok(());
         }
@@ -163,7 +163,7 @@ impl Sync {
 
         // Update stored tips to reflect processed state
         user_mgr
-            .update_tracked_tips(user_uuid_str, &current_tips)
+            .update_tracked_tips(user_uuid_str, current_snapshot.tips())
             .await?;
 
         // Commit all changes atomically

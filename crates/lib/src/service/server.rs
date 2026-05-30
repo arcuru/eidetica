@@ -443,12 +443,12 @@ async fn dispatch_database_op(
         }
 
         DatabaseOp::GetVerifiedTips => {
-            // The server runs the Database layer, so `get_tips()` returns the
+            // The server runs the Database layer, so `snapshot()` returns the
             // Verified frontier by construction — no client-side verify, no
             // remote-detection heuristic.
             let db = Database::open(instance, &root_id).await?;
-            let tips = db.get_tips().await?;
-            Ok(ServiceResponse::Ids(tips))
+            let snapshot = db.snapshot().await?;
+            Ok(ServiceResponse::Ids(snapshot.into_tips()))
         }
 
         DatabaseOp::SubmitSignedEntry { entry } => {
@@ -500,11 +500,12 @@ async fn dispatch_database_op(
 
         DatabaseOp::GetStoreTipsUpToEntries { store, up_to } => {
             let db = Database::open(instance, &root_id).await?;
-            let ids = db
+            let boundary = crate::Snapshot::from(up_to);
+            let snapshot = db
                 .ops()
-                .get_store_tips_up_to_entries(&root_id, &store, &up_to)
+                .store_snapshot_at(&root_id, &store, &boundary)
                 .await?;
-            Ok(ServiceResponse::Ids(ids))
+            Ok(ServiceResponse::Ids(snapshot.into_tips()))
         }
 
         DatabaseOp::ComputeMergeState { store, entry_ids } => {

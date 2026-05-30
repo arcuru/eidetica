@@ -3,6 +3,7 @@
 //! This module contains tests for Table subtree functionality including
 //! CRUD operations, search functionality, UUID generation, and multiple operations.
 
+use eidetica::Snapshot;
 use eidetica::store::Table;
 
 use super::helpers::*;
@@ -666,7 +667,7 @@ async fn test_table_delete_concurrent_modifications() {
     // Branch A: Delete the record
     let op_branch_a = ctx
         .database()
-        .new_transaction_with_tips([base_entry_id.clone()])
+        .new_transaction_at(&Snapshot::from([base_entry_id.clone()]))
         .await
         .expect("Failed to start branch A");
     {
@@ -688,7 +689,7 @@ async fn test_table_delete_concurrent_modifications() {
     // Branch B: Update the same record
     let op_branch_b = ctx
         .database()
-        .new_transaction_with_tips([base_entry_id])
+        .new_transaction_at(&Snapshot::from([base_entry_id]))
         .await
         .expect("Failed to start branch B");
     {

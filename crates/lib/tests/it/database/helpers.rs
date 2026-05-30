@@ -4,7 +4,7 @@
 //! core operations, API methods, merging algorithms, and settings management.
 
 use eidetica::{
-    Database, Instance,
+    Database, Instance, Snapshot,
     auth::crypto::PublicKey,
     crdt::{Doc, doc::Value},
     entry::ID,
@@ -63,7 +63,7 @@ pub async fn create_branch_from_entry(
     data: &[(&str, &str)],
 ) -> ID {
     let txn = tree
-        .new_transaction_with_tips(std::slice::from_ref(entry_id))
+        .new_transaction_at(&Snapshot::from(std::slice::from_ref(entry_id)))
         .await
         .expect("Failed to create branch operation");
     {
@@ -173,9 +173,9 @@ pub async fn create_diamond_pattern(
     .await;
 
     // Create merge entry (D) from both branches
-    let merge_tips = vec![branch_b_id.clone(), branch_c_id.clone()];
+    let merge_snapshot = Snapshot::from(vec![branch_b_id.clone(), branch_c_id.clone()]);
     let txn = tree
-        .new_transaction_with_tips(&merge_tips)
+        .new_transaction_at(&merge_snapshot)
         .await
         .expect("Failed to create merge operation");
     {

@@ -214,7 +214,7 @@ async fn test_get_tips() {
     backend.put_verified(root.clone()).await.unwrap();
 
     // Initially, root is the only tip
-    let tips = backend.get_tips(&root_id).await.unwrap();
+    let tips = backend.snapshot(&root_id).await.unwrap().into_tips();
     assert_eq!(tips.len(), 1);
     assert_eq!(tips[0], root_id);
 
@@ -228,7 +228,7 @@ async fn test_get_tips() {
     backend.put_verified(entry_a.clone()).await.unwrap();
 
     // Now A should be the only tip
-    let tips = backend.get_tips(&root_id).await.unwrap();
+    let tips = backend.snapshot(&root_id).await.unwrap().into_tips();
     assert_eq!(tips.len(), 1);
     assert_eq!(tips[0], id_a);
 
@@ -242,7 +242,7 @@ async fn test_get_tips() {
     backend.put_verified(entry_b.clone()).await.unwrap();
 
     // Now B should be the only tip from that branch
-    let tips = backend.get_tips(&root_id).await.unwrap();
+    let tips = backend.snapshot(&root_id).await.unwrap().into_tips();
     assert_eq!(tips.len(), 1);
     assert_eq!(tips[0], id_b);
 
@@ -256,7 +256,7 @@ async fn test_get_tips() {
     backend.put_verified(entry_c.clone()).await.unwrap();
 
     // Now should have 2 tips: B and C
-    let tips = backend.get_tips(&root_id).await.unwrap();
+    let tips = backend.snapshot(&root_id).await.unwrap().into_tips();
     assert_eq!(tips.len(), 2);
     assert!(tips.contains(&id_b));
     assert!(tips.contains(&id_c));

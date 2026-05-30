@@ -3,7 +3,7 @@
 //! This module contains tests for operations using custom tips including
 //! branching, parallel operations, and tip-based state management.
 
-use eidetica::{crdt::doc::Value, store::DocStore};
+use eidetica::{Snapshot, crdt::doc::Value, store::DocStore};
 
 use super::helpers::*;
 use crate::helpers::*;
@@ -34,7 +34,7 @@ async fn test_transaction_with_custom_tips() {
     // Create operation from entry A using new_transaction_with_tips
     let op_from_a = ctx
         .database()
-        .new_transaction_with_tips(std::slice::from_ref(&entry_a_id))
+        .new_transaction_at(&Snapshot::from(std::slice::from_ref(&entry_a_id)))
         .await
         .unwrap();
     let store_from_a = op_from_a.get_store::<DocStore>("data").await.unwrap();
@@ -78,7 +78,7 @@ async fn test_transaction_multiple_subtrees_with_custom_tips() {
     // Create branch that only modifies users
     let op_users = ctx
         .database()
-        .new_transaction_with_tips(std::slice::from_ref(&base_id))
+        .new_transaction_at(&Snapshot::from(std::slice::from_ref(&base_id)))
         .await
         .unwrap();
     let users_branch = op_users.get_store::<DocStore>("users").await.unwrap();
@@ -88,7 +88,7 @@ async fn test_transaction_multiple_subtrees_with_custom_tips() {
     // Create branch that only modifies posts
     let op_posts = ctx
         .database()
-        .new_transaction_with_tips([base_id])
+        .new_transaction_at(&Snapshot::from([base_id]))
         .await
         .unwrap();
     let posts_branch = op_posts.get_store::<DocStore>("posts").await.unwrap();
@@ -98,7 +98,7 @@ async fn test_transaction_multiple_subtrees_with_custom_tips() {
     // Create merge operation
     let op_merge = ctx
         .database()
-        .new_transaction_with_tips([users_id.clone(), posts_id.clone()])
+        .new_transaction_at(&Snapshot::from([users_id.clone(), posts_id.clone()]))
         .await
         .unwrap();
     let users_merge = op_merge.get_store::<DocStore>("users").await.unwrap();
@@ -119,7 +119,7 @@ async fn test_transaction_multiple_subtrees_with_custom_tips() {
     // Verify final state has all data
     let op_final = ctx
         .database()
-        .new_transaction_with_tips([merge_id])
+        .new_transaction_at(&Snapshot::from([merge_id]))
         .await
         .unwrap();
     let users_final = op_final.get_store::<DocStore>("users").await.unwrap();
@@ -149,7 +149,7 @@ async fn test_transaction_custom_tips_subtree_in_ancestors_not_tips() {
     // Create a parallel branch that also has subtree data
     let txn2 = ctx
         .database()
-        .new_transaction_with_tips(std::slice::from_ref(&entry1_id))
+        .new_transaction_at(&Snapshot::from(std::slice::from_ref(&entry1_id)))
         .await
         .unwrap();
     let store2 = txn2.get_store::<DocStore>("data").await.unwrap();
@@ -159,7 +159,7 @@ async fn test_transaction_custom_tips_subtree_in_ancestors_not_tips() {
     // Create another branch that does NOT touch the "data" subtree at all
     let txn3 = ctx
         .database()
-        .new_transaction_with_tips([entry1_id])
+        .new_transaction_at(&Snapshot::from([entry1_id]))
         .await
         .unwrap();
     // Only touch a different subtree
@@ -171,7 +171,7 @@ async fn test_transaction_custom_tips_subtree_in_ancestors_not_tips() {
     // entry2_id has subtree data, entry3_id does NOT have subtree data
     let txn4 = ctx
         .database()
-        .new_transaction_with_tips([entry2_id.clone(), entry3_id.clone()])
+        .new_transaction_at(&Snapshot::from([entry2_id.clone(), entry3_id.clone()]))
         .await
         .unwrap();
     let store4 = txn4.get_store::<DocStore>("data").await.unwrap();
@@ -224,7 +224,7 @@ async fn test_transaction_custom_tips_no_subtree_data_in_tips() {
     // The "data" subtree should still be accessible from their common ancestor (entry1)
     let txn4 = ctx
         .database()
-        .new_transaction_with_tips([entry2_id.clone(), entry3_id.clone()])
+        .new_transaction_at(&Snapshot::from([entry2_id.clone(), entry3_id.clone()]))
         .await
         .unwrap();
     let store4 = txn4.get_store::<DocStore>("data").await.unwrap();

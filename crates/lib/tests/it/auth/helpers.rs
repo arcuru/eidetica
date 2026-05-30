@@ -258,7 +258,7 @@ pub async fn create_delegation_ref(
     max_permission: Permission,
     min_permission: Option<Permission>,
 ) -> Result<DelegatedTreeRef> {
-    let tips = tree.get_tips().await?;
+    let tips = tree.snapshot().await?.into_tips();
     Ok(DelegatedTreeRef {
         permission_bounds: PermissionBounds {
             max: max_permission,
@@ -341,7 +341,11 @@ impl DelegationChain {
         let mut steps = Vec::new();
 
         for tree in self.trees.iter() {
-            let tips = tree.get_tips().await.expect("Failed to get tips");
+            let tips = tree
+                .snapshot()
+                .await
+                .expect("Failed to get tips")
+                .into_tips();
             steps.push(DelegationStep {
                 tree: tree.root_id().clone(),
                 tips,

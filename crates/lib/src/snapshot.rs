@@ -118,8 +118,27 @@ impl<const N: usize> From<[ID; N]> for Snapshot {
     }
 }
 
+impl<const N: usize> From<&[ID; N]> for Snapshot {
+    fn from(tips: &[ID; N]) -> Self {
+        Self::new(tips.to_vec())
+    }
+}
+
+impl From<&Vec<ID>> for Snapshot {
+    fn from(tips: &Vec<ID>) -> Self {
+        Self::new(tips.clone())
+    }
+}
+
 impl AsRef<[ID]> for Snapshot {
     fn as_ref(&self) -> &[ID] {
+        &self.tips
+    }
+}
+
+impl std::ops::Deref for Snapshot {
+    type Target = [ID];
+    fn deref(&self) -> &[ID] {
         &self.tips
     }
 }

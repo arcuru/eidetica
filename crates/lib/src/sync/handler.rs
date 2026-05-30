@@ -911,8 +911,8 @@ impl SyncHandlerImpl {
             Ok(i) => i,
             Err(e) => return SyncResponse::Error(format!("Instance dropped: {e}")),
         };
-        let our_tips = match instance.backend().get_tips(tree_id).await {
-            Ok(tips) => tips,
+        let our_tips: Vec<ID> = match instance.backend().snapshot(tree_id).await {
+            Ok(snap) => snap.into_tips(),
             Err(e) => {
                 error!(tree_id = %tree_id, error = %e, "Failed to get our tips");
                 return SyncResponse::Error(format!("Failed to get tips: {e}"));

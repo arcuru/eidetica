@@ -281,14 +281,14 @@ async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
     let current_tips = device1_database
         .backend()
         .expect("Failed to get backend")
-        .get_tips(&room_id)
+        .snapshot(&room_id)
         .await
         .expect("Failed to get tips");
     println!("🔍 Device 1 current tree tips before adding C: {current_tips:?}");
     let current_subtree_tips = device1_database
         .backend()
         .expect("Failed to get backend")
-        .get_store_tips(&room_id, "messages")
+        .store_snapshot(&room_id, "messages")
         .await
         .expect("Failed to get store tips");
     println!("🔍 Device 1 current messages store tips before adding C: {current_subtree_tips:?}");

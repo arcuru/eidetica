@@ -309,7 +309,12 @@ async fn test_incremental_sync_tracks_tree_peer_relationship() {
         .unwrap();
 
     // Get current tips for incremental sync
-    let tips = instance.backend().get_tips(&tree_id).await.unwrap();
+    let tips = instance
+        .backend()
+        .snapshot(&tree_id)
+        .await
+        .unwrap()
+        .into_tips();
 
     // Create incremental sync request (non-empty tips)
     let sync_request = SyncTreeRequest {
