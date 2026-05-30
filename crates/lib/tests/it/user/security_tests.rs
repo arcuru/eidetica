@@ -36,7 +36,7 @@ async fn test_empty_password_different_from_no_password() {
 async fn test_case_sensitive_passwords() {
     let username = "bob";
     let password = "MyPassword";
-    let (instance, _) = setup_instance_with_user(username, Some(password)).await;
+    let (instance, _) = setup_local_instance_with_user(username, Some(password)).await;
 
     // Wrong case should fail
     let result = instance.login_user(username, Some("mypassword")).await;
@@ -78,7 +78,7 @@ async fn test_long_password() {
 #[tokio::test]
 async fn test_key_ids_are_unique_per_user() {
     let (instance, _) =
-        setup_instance_with_users(&[("alice", None), ("bob", None), ("charlie", None)]).await;
+        setup_local_instance_with_users(&[("alice", None), ("bob", None), ("charlie", None)]).await;
 
     let alice = login_user(&instance, "alice", None).await;
     let bob = login_user(&instance, "bob", None).await;
@@ -222,7 +222,7 @@ async fn test_database_access_requires_key() {
 
 #[tokio::test]
 async fn test_multiple_sessions_see_persisted_changes() {
-    let (instance, username) = setup_instance_with_user("alice", None).await;
+    let (instance, username) = setup_local_instance_with_user("alice", None).await;
 
     // Session 1: Add a key
     let mut user1 = login_user(&instance, &username, None).await;

@@ -21,7 +21,7 @@ use eidetica::{
 
 #[tokio::test]
 async fn test_independent_users_coexist() {
-    let (instance, _) = setup_instance_with_users(&[
+    let (instance, _) = setup_local_instance_with_users(&[
         ("alice", None),
         ("bob", Some("bob_pass")),
         ("charlie", None),
@@ -96,7 +96,7 @@ async fn test_independent_users_coexist() {
 
 #[tokio::test]
 async fn test_multi_device_key_management_and_database_access() {
-    let (instance, username) = setup_instance_with_user("alice", None).await;
+    let (instance, username) = setup_local_instance_with_user("alice", None).await;
 
     // Session 1: Desktop - Create user's first database with default key
     let mut user1 = instance
@@ -181,7 +181,7 @@ async fn test_multi_device_key_management_and_database_access() {
 #[tokio::test]
 async fn test_team_scenario_multiple_users_own_databases() {
     let (instance, _) =
-        setup_instance_with_users(&[("alice", None), ("bob", None), ("charlie", None)]).await;
+        setup_local_instance_with_users(&[("alice", None), ("bob", None), ("charlie", None)]).await;
 
     // Each team member creates their own project database
     let mut alice = instance
@@ -267,7 +267,8 @@ async fn test_collaborative_database_with_global_permissions() {
     // Setup two users on the same instance
     let alice_name = "alice";
     let bob_name = "bob";
-    let (instance, _) = setup_instance_with_users(&[(alice_name, None), (bob_name, None)]).await;
+    let (instance, _) =
+        setup_local_instance_with_users(&[(alice_name, None), (bob_name, None)]).await;
 
     // Alice logs in and creates a database with global Write(10) permission
     let mut alice = login_user(&instance, alice_name, None).await;

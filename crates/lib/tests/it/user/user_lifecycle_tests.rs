@@ -54,7 +54,7 @@ async fn test_create_multiple_users_same_instance() {
         ("diana", Some("another_password")),
     ];
 
-    let (instance, usernames) = setup_instance_with_users(user_configs).await;
+    let (instance, usernames) = setup_local_instance_with_users(user_configs).await;
 
     assert_eq!(usernames.len(), 4, "Should have created 4 users");
 
@@ -165,7 +165,7 @@ async fn test_login_nonexistent_user() {
 #[tokio::test]
 async fn test_multiple_sequential_logins_same_user() {
     let username = "frank";
-    let (instance, _) = setup_instance_with_user(username, None).await;
+    let (instance, _) = setup_local_instance_with_user(username, None).await;
 
     // Login multiple times sequentially
     let _user1 = login_user(&instance, username, None).await;
@@ -180,7 +180,7 @@ async fn test_multiple_sequential_logins_same_user() {
 #[tokio::test]
 async fn test_logout_clears_session() {
     let username = "grace";
-    let (instance, _) = setup_instance_with_user(username, None).await;
+    let (instance, _) = setup_local_instance_with_user(username, None).await;
 
     let user = login_user(&instance, username, None).await;
 
@@ -195,7 +195,7 @@ async fn test_logout_clears_session() {
 async fn test_logout_and_relogin() {
     let username = "henry";
     let password = "password123";
-    let (instance, _) = setup_instance_with_user(username, Some(password)).await;
+    let (instance, _) = setup_local_instance_with_user(username, Some(password)).await;
 
     // First session
     let user1 = login_user(&instance, username, Some(password)).await;
@@ -212,7 +212,7 @@ async fn test_logout_and_relogin() {
 #[tokio::test]
 async fn test_logout_multiple_sessions() {
     let username = "iris";
-    let (instance, _) = setup_instance_with_user(username, None).await;
+    let (instance, _) = setup_local_instance_with_user(username, None).await;
 
     // Create multiple sessions and logout each one
     let user1 = login_user(&instance, username, None).await;

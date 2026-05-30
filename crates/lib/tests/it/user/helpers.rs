@@ -37,13 +37,30 @@ pub async fn setup_instance() -> Instance {
 ///
 /// Returns (Instance, username) for easy access.
 ///
-/// Uses an always-local instance: the failing test patterns that go on
-/// to log in multiple sessions for the same user against this instance
-/// (e.g. multi-device key management) rely on each session seeing keys
-/// that other sessions added, which works naturally with a process-local
-/// instance. See [`setup_two_passwordless_users`] for the
-/// one-identity-per-connection rationale.
+/// Honors `TEST_BACKEND=service`: in service mode this returns a connected
+/// remote Instance, so callers exercise the wire path. Single-session use
+/// only — tests that log in multiple sessions on the same Instance (multi-
+/// device key visibility, sequential-login lifecycle) must use
+/// [`setup_local_instance_with_user`] instead, since the wire connection
+/// model is one-identity-per-connection and a second `login_user` would
+/// clobber the first session's `session_pubkey`.
 pub async fn setup_instance_with_user(
+    username: &str,
+    password: Option<&str>,
+) -> (Instance, String) {
+    let instance = crate::helpers::test_instance().await;
+    admin_create_user(&instance, username, password).await;
+    (instance, username.to_string())
+}
+
+/// Always-local variant of [`setup_instance_with_user`] for tests that log
+/// in multiple sessions on the same Instance — multi-device key visibility,
+/// sequential-login lifecycle, logout/relogin, etc. Bypasses
+/// `TEST_BACKEND=service` because the wire model is one-identity-per-
+/// connection (a second `login_user` against a connected Instance would
+/// clobber the first session's `session_pubkey`). Single-session tests
+/// should prefer [`setup_instance_with_user`] for wire coverage.
+pub async fn setup_local_instance_with_user(
     username: &str,
     password: Option<&str>,
 ) -> (Instance, String) {
@@ -56,12 +73,30 @@ pub async fn setup_instance_with_user(
 ///
 /// Returns (Instance, Vec<username>).
 ///
-/// Uses an always-local instance: tests that build a list of users with
-/// this helper invariably go on to log in as several of them against the
-/// same `Instance`, and the wire model can hold only one session per
-/// connection. See [`setup_two_passwordless_users`] for the same
-/// reasoning.
+/// Honors `TEST_BACKEND=service`. Same single-session constraint as
+/// [`setup_instance_with_user`]: only the first `login_user` call against
+/// the returned Instance is wire-safe. Tests that log in as more than one
+/// user (or the same user repeatedly) must use
+/// [`setup_local_instance_with_users`].
 pub async fn setup_instance_with_users(
+    user_configs: &[(&str, Option<&str>)],
+) -> (Instance, Vec<String>) {
+    let instance = crate::helpers::test_instance().await;
+    let mut usernames = Vec::new();
+
+    for (username, password) in user_configs {
+        admin_create_user(&instance, username, *password).await;
+        usernames.push(username.to_string());
+    }
+
+    (instance, usernames)
+}
+
+/// Always-local variant of [`setup_instance_with_users`] for tests that
+/// log in as more than one of the created users (or the same user
+/// multiple times) on the shared Instance. See
+/// [`setup_local_instance_with_user`] for the wire-model rationale.
+pub async fn setup_local_instance_with_users(
     user_configs: &[(&str, Option<&str>)],
 ) -> (Instance, Vec<String>) {
     let instance = crate::helpers::test_local_instance().await;
