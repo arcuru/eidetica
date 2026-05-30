@@ -267,7 +267,7 @@ async fn test_circular_delegation_simple() -> Result<()> {
 
     // Create a tree (signing key becomes Admin(0))
     let tree = user.create_database(Doc::new(), &key_id).await?;
-    let tree_tips = tree.get_tips().await?;
+    let tree_tips = tree.snapshot().await?.into_tips();
 
     // Create delegation path that references the same tree
     let circular_delegation = SigKey::Delegation {

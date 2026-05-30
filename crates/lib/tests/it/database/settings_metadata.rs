@@ -4,7 +4,7 @@
 //! settings tips tracking, metadata propagation, and historical validation.
 
 use eidetica::{
-    Entry,
+    Entry, Snapshot,
     crdt::{Doc, doc::Value},
     store::DocStore,
 };
@@ -325,7 +325,7 @@ async fn test_settings_metadata_with_branching() {
 
     // Create two branches from base
     let branch1_op = tree
-        .new_transaction_with_tips(std::slice::from_ref(&base_id))
+        .new_transaction_at(&Snapshot::from(std::slice::from_ref(&base_id)))
         .await
         .unwrap();
     let branch1_store = branch1_op.get_store::<DocStore>("data").await.unwrap();
@@ -333,7 +333,7 @@ async fn test_settings_metadata_with_branching() {
     let branch1_id = branch1_op.commit().await.unwrap();
 
     let branch2_op = tree
-        .new_transaction_with_tips(std::slice::from_ref(&base_id))
+        .new_transaction_at(&Snapshot::from(std::slice::from_ref(&base_id)))
         .await
         .unwrap();
     let branch2_store = branch2_op.get_store::<DocStore>("data").await.unwrap();
@@ -342,7 +342,7 @@ async fn test_settings_metadata_with_branching() {
 
     // Update settings on one branch
     let settings_op = tree
-        .new_transaction_with_tips(std::slice::from_ref(&branch1_id))
+        .new_transaction_at(&Snapshot::from(std::slice::from_ref(&branch1_id)))
         .await
         .unwrap();
     let settings_store = settings_op
@@ -357,7 +357,10 @@ async fn test_settings_metadata_with_branching() {
 
     // Create merge operation
     let merge_tips = vec![settings_id.clone(), branch2_id.clone()];
-    let merge_op = tree.new_transaction_with_tips(&merge_tips).await.unwrap();
+    let merge_op = tree
+        .new_transaction_at(&Snapshot::from(&merge_tips))
+        .await
+        .unwrap();
     let merge_store = merge_op.get_store::<DocStore>("data").await.unwrap();
     merge_store.set("merged", "true").await.unwrap();
     let merge_id = merge_op.commit().await.unwrap();

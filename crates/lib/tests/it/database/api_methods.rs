@@ -4,7 +4,7 @@
 //! authentication, validation, and error handling.
 
 use eidetica::{
-    Database, Instance,
+    Database, Instance, Snapshot,
     auth::{
         crypto::generate_keypair,
         types::{AuthKey, KeyStatus, Permission, SigKey},
@@ -520,7 +520,7 @@ async fn test_database_verify_promotes_unverified_and_access_hook() {
         .update_verification_status(&id, VerificationStatus::Unverified)
         .await
         .unwrap();
-    let tips = tree.get_tips().await.unwrap();
+    let tips = tree.snapshot().await.unwrap().into_tips();
     assert!(!tips.is_empty(), "the verified tip must remain visible");
     assert_eq!(
         backend.get_verification_status(&id).await.unwrap(),
@@ -559,18 +559,24 @@ async fn test_verified_frontier_prefix_cut_and_allow_unverified() {
 
     // Default view: `b` is not in the Verified prefix, so neither is its
     // descendant `c` (ancestor-closed). The frontier falls back to `a`.
-    let tips = tree.get_tips().await.unwrap();
+    let tips = tree.snapshot().await.unwrap().into_tips();
     assert_eq!(tips, vec![a.clone()], "frontier must cut back to `a`");
     assert!(!tips.contains(&b) && !tips.contains(&c));
 
     // allow_unverified view: raw tip `c` is visible (only `Failed` `b` is
     // dropped from the set; `c` itself is still a Verified tip).
-    let loose_tips = tree.clone().allow_unverified().get_tips().await.unwrap();
+    let loose_tips = tree
+        .clone()
+        .allow_unverified()
+        .snapshot()
+        .await
+        .unwrap()
+        .into_tips();
     assert_eq!(loose_tips, vec![c.clone()], "loose view keeps raw tip `c`");
 
     // The setting is per-handle and composes with the original handle being
     // unchanged.
-    assert_eq!(tree.get_tips().await.unwrap(), vec![a]);
+    assert_eq!(tree.snapshot().await.unwrap().into_tips(), vec![a]);
 }
 
 /// Verification is prefix-closed: it must be impossible for an entry to be
@@ -680,7 +686,7 @@ async fn test_cross_instance_sync_then_verify_cascade() {
         );
     }
     // The tip is now visible in the default (Verified-frontier) view on B.
-    assert_eq!(db_b.get_tips().await.unwrap(), vec![c]);
+    assert_eq!(db_b.snapshot().await.unwrap().into_tips(), vec![c]);
 }
 
 /// An entry whose pinned `_settings` ancestor set is not fully held locally
@@ -701,7 +707,7 @@ async fn test_incomplete_pinned_settings_stays_unverified_then_recovers() {
         AuthKey::active(Some("k2"), Permission::Write(10)),
     )
     .await;
-    let s = tree_a.get_tips().await.unwrap()[0].clone();
+    let s = tree_a.snapshot().await.unwrap().into_tips()[0].clone();
     let d = add_data_to_subtree(&tree_a, "data", &[("k", "v")]).await;
 
     // Sync everything to B *except* the settings entry `s`. `get_tree` is a
@@ -755,7 +761,7 @@ async fn test_diamond_dag_taint_propagation() {
     // Merge a and b into c.
     let c = {
         let txn = tree
-            .new_transaction_with_tips(&[a.clone(), b.clone()])
+            .new_transaction_at(&Snapshot::from(&[a.clone(), b.clone()]))
             .await
             .unwrap();
         txn.get_store::<DocStore>("data")
@@ -797,11 +803,11 @@ async fn test_diamond_dag_taint_propagation() {
 
     // Frontier cuts to the surviving verified branch `b`; the loose view
     // still drops Failed `c`, leaving nothing (c is the only raw tip).
-    assert_eq!(tree.get_tips().await.unwrap(), vec![b]);
+    assert_eq!(tree.snapshot().await.unwrap().into_tips(), vec![b]);
     assert!(
         tree.clone()
             .allow_unverified()
-            .get_tips()
+            .snapshot()
             .await
             .unwrap()
             .is_empty(),
@@ -827,7 +833,7 @@ async fn test_allow_unverified_composes_with_key_for_writes() {
         .update_verification_status(&a, VerificationStatus::Failed)
         .await
         .unwrap();
-    let default_tips = tree.get_tips().await.unwrap();
+    let default_tips = tree.snapshot().await.unwrap().into_tips();
     assert!(
         !default_tips.contains(&b),
         "default view must not expose state behind a Failed ancestor"
@@ -836,7 +842,7 @@ async fn test_allow_unverified_composes_with_key_for_writes() {
     // The loose handle keeps the signing key (set via `..self`) and sees the
     // raw tip `b`, so it can commit on top of it.
     let loose = tree.clone().allow_unverified();
-    assert_eq!(loose.get_tips().await.unwrap(), vec![b.clone()]);
+    assert_eq!(loose.snapshot().await.unwrap().into_tips(), vec![b.clone()]);
     let e = add_data_to_subtree(&loose, "data", &[("s", "e")]).await;
 
     // The new entry was locally validated → Verified, and built on `b`.
@@ -850,8 +856,8 @@ async fn test_allow_unverified_composes_with_key_for_writes() {
     );
     // Loose view advances to `e`; the default frontier is still cut (the new
     // entry sits behind the Failed `a`, so it remains hidden by default).
-    assert_eq!(loose.get_tips().await.unwrap(), vec![e.clone()]);
-    assert!(!tree.get_tips().await.unwrap().contains(&e));
+    assert_eq!(loose.snapshot().await.unwrap().into_tips(), vec![e.clone()]);
+    assert!(!tree.snapshot().await.unwrap().into_tips().contains(&e));
 }
 
 /// The access-time auto-verify hook in `get_tips` must handle *multiple*
@@ -878,7 +884,7 @@ async fn test_access_hook_promotes_multiple_unverified_tips() {
 
     // A plain default read: the hook fires because tips are Unverified and
     // must promote *both* diverged tips.
-    let tips = tree.get_tips().await.unwrap();
+    let tips = tree.snapshot().await.unwrap().into_tips();
     assert_eq!(
         tips.len(),
         2,
@@ -1098,7 +1104,7 @@ async fn test_deep_chain_frontier_cut() {
         .await
         .unwrap();
 
-    let tips = tree.get_tips().await.unwrap();
+    let tips = tree.snapshot().await.unwrap().into_tips();
     assert_eq!(
         tips,
         vec![chain[failed_idx - 1].clone()],
@@ -1107,7 +1113,12 @@ async fn test_deep_chain_frontier_cut() {
     // The loose view keeps the raw tip (#29) — only Failed is dropped, and
     // #29 itself is Verified.
     assert_eq!(
-        tree.clone().allow_unverified().get_tips().await.unwrap(),
+        tree.clone()
+            .allow_unverified()
+            .snapshot()
+            .await
+            .unwrap()
+            .into_tips(),
         vec![chain[29].clone()]
     );
 }

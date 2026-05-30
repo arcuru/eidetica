@@ -10,6 +10,7 @@ use crate::{
     backend::{BackendImpl, CacheScope, InstanceMetadata, VerificationStatus},
     entry::{Entry, ID},
     instance::WriteSource,
+    snapshot::Snapshot,
 };
 
 /// A [`Backend`] backed by a local [`BackendImpl`] (e.g. `InMemory`, SQLx).
@@ -39,27 +40,25 @@ impl Backend for LocalBackend {
         self.0.get(id).await
     }
 
-    async fn get_tips(&self, tree: &ID) -> Result<Vec<ID>> {
-        self.0.get_tips(tree).await
+    async fn snapshot(&self, tree: &ID) -> Result<Snapshot> {
+        self.0.snapshot(tree).await
     }
 
-    async fn get_store_tips(&self, tree: &ID, store: &str) -> Result<Vec<ID>> {
-        self.0.get_store_tips(tree, store).await
+    async fn store_snapshot(&self, tree: &ID, store: &str) -> Result<Snapshot> {
+        self.0.store_snapshot(tree, store).await
     }
 
-    async fn get_store_tips_up_to_entries(
+    async fn store_snapshot_at(
         &self,
         tree: &ID,
         store: &str,
-        up_to: &[ID],
-    ) -> Result<Vec<ID>> {
-        self.0
-            .get_store_tips_up_to_entries(tree, store, up_to)
-            .await
+        main_snapshot: &Snapshot,
+    ) -> Result<Snapshot> {
+        self.0.store_snapshot_at(tree, store, main_snapshot).await
     }
 
-    async fn get_store_from_tips(&self, tree: &ID, store: &str, tips: &[ID]) -> Result<Vec<Entry>> {
-        self.0.get_store_from_tips(tree, store, tips).await
+    async fn store_at(&self, tree: &ID, store: &str, snapshot: &Snapshot) -> Result<Vec<Entry>> {
+        self.0.store_at(tree, store, snapshot).await
     }
 
     async fn find_merge_base(&self, tree: &ID, store: &str, entry_ids: &[ID]) -> Result<ID> {

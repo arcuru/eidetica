@@ -4,6 +4,7 @@
 //! deletes, nested values, and staging isolation.
 
 use eidetica::{
+    Snapshot,
     constants::SETTINGS,
     crdt::{Doc, doc::Value},
     store::DocStore,
@@ -107,7 +108,7 @@ async fn test_transaction_staged_data_isolation() {
     // Create operation from entry1
     let txn2 = ctx
         .database()
-        .new_transaction_with_tips(std::slice::from_ref(&entry1_id))
+        .new_transaction_at(&Snapshot::from(std::slice::from_ref(&entry1_id)))
         .await
         .unwrap();
     let store2 = txn2.get_store::<DocStore>("data").await.unwrap();
@@ -126,7 +127,7 @@ async fn test_transaction_staged_data_isolation() {
     // Create another operation from same tip - should not see staged data
     let txn3 = ctx
         .database()
-        .new_transaction_with_tips([entry1_id])
+        .new_transaction_at(&Snapshot::from([entry1_id]))
         .await
         .unwrap();
     let store3 = txn3.get_store::<DocStore>("data").await.unwrap();
@@ -141,7 +142,7 @@ async fn test_transaction_staged_data_isolation() {
     // Create operation from entry2 - should see committed staged data
     let txn4 = ctx
         .database()
-        .new_transaction_with_tips([entry2_id])
+        .new_transaction_at(&Snapshot::from([entry2_id]))
         .await
         .unwrap();
     let store4 = txn4.get_store::<DocStore>("data").await.unwrap();

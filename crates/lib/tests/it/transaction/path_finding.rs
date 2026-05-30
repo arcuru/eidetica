@@ -3,7 +3,7 @@
 //! This module contains tests for complex scenarios involving LCA (Lowest Common Ancestor)
 //! computation, path finding, and deterministic ordering in diamond and merge patterns.
 
-use eidetica::{entry::ID, store::DocStore};
+use eidetica::{Snapshot, entry::ID, store::DocStore};
 
 use super::helpers::*;
 use crate::helpers::*;
@@ -21,7 +21,7 @@ async fn test_transaction_diamond_pattern() {
     // Create two branches from base
     let op_left = ctx
         .database()
-        .new_transaction_with_tips(std::slice::from_ref(&base_id))
+        .new_transaction_at(&Snapshot::from(std::slice::from_ref(&base_id)))
         .await
         .unwrap();
     let store_left = op_left.get_store::<DocStore>("data").await.unwrap();
@@ -31,7 +31,7 @@ async fn test_transaction_diamond_pattern() {
 
     let op_right = ctx
         .database()
-        .new_transaction_with_tips([base_id])
+        .new_transaction_at(&Snapshot::from([base_id]))
         .await
         .unwrap();
     let store_right = op_right.get_store::<DocStore>("data").await.unwrap();
@@ -42,7 +42,7 @@ async fn test_transaction_diamond_pattern() {
     // Create merge operation with both branches as tips
     let op_merge = ctx
         .database()
-        .new_transaction_with_tips([left_id.clone(), right_id.clone()])
+        .new_transaction_at(&Snapshot::from([left_id.clone(), right_id.clone()]))
         .await
         .unwrap();
     let store_merge = op_merge.get_store::<DocStore>("data").await.unwrap();
@@ -91,7 +91,7 @@ async fn test_get_path_from_to_diamond_pattern() {
     // B branches from A
     let op_b = ctx
         .database()
-        .new_transaction_with_tips(std::slice::from_ref(&entry_a_id))
+        .new_transaction_at(&Snapshot::from(std::slice::from_ref(&entry_a_id)))
         .await
         .unwrap();
     let store_b = op_b.get_store::<DocStore>("data").await.unwrap();
@@ -101,7 +101,7 @@ async fn test_get_path_from_to_diamond_pattern() {
     // C also branches from A (parallel to B)
     let op_c = ctx
         .database()
-        .new_transaction_with_tips([entry_a_id])
+        .new_transaction_at(&Snapshot::from([entry_a_id]))
         .await
         .unwrap();
     let store_c = op_c.get_store::<DocStore>("data").await.unwrap();
@@ -111,7 +111,7 @@ async fn test_get_path_from_to_diamond_pattern() {
     // D merges B and C
     let op_d = ctx
         .database()
-        .new_transaction_with_tips([entry_b_id.clone(), entry_c_id.clone()])
+        .new_transaction_at(&Snapshot::from([entry_b_id.clone(), entry_c_id.clone()]))
         .await
         .unwrap();
     let store_d = op_d.get_store::<DocStore>("data").await.unwrap();
@@ -126,7 +126,7 @@ async fn test_get_path_from_to_diamond_pattern() {
     // This will internally call get_path_from_to when computing merged state
     let op_final = ctx
         .database()
-        .new_transaction_with_tips([entry_d_id])
+        .new_transaction_at(&Snapshot::from([entry_d_id]))
         .await
         .unwrap();
     let store_final = op_final.get_store::<DocStore>("data").await.unwrap();
@@ -166,7 +166,7 @@ async fn test_get_path_from_to_diamond_between_lca_and_tip() {
     // Branch A
     let op_a = ctx
         .database()
-        .new_transaction_with_tips(std::slice::from_ref(&lca_id))
+        .new_transaction_at(&Snapshot::from(std::slice::from_ref(&lca_id)))
         .await
         .unwrap();
     let store_a = op_a.get_store::<DocStore>("data").await.unwrap();
@@ -176,7 +176,7 @@ async fn test_get_path_from_to_diamond_between_lca_and_tip() {
     // Branch B (parallel to A)
     let op_b = ctx
         .database()
-        .new_transaction_with_tips(std::slice::from_ref(&lca_id))
+        .new_transaction_at(&Snapshot::from(std::slice::from_ref(&lca_id)))
         .await
         .unwrap();
     let store_b = op_b.get_store::<DocStore>("data").await.unwrap();
@@ -186,7 +186,7 @@ async fn test_get_path_from_to_diamond_between_lca_and_tip() {
     // Step 3: Create tip C that merges both A and B
     let op_c = ctx
         .database()
-        .new_transaction_with_tips([a_id.clone(), b_id.clone()])
+        .new_transaction_at(&Snapshot::from([a_id.clone(), b_id.clone()]))
         .await
         .unwrap();
     let store_c = op_c.get_store::<DocStore>("data").await.unwrap();
@@ -196,7 +196,7 @@ async fn test_get_path_from_to_diamond_between_lca_and_tip() {
     // Step 4: Create another tip D independently
     let op_d = ctx
         .database()
-        .new_transaction_with_tips([lca_id])
+        .new_transaction_at(&Snapshot::from([lca_id]))
         .await
         .unwrap();
     let store_d = op_d.get_store::<DocStore>("data").await.unwrap();
@@ -210,7 +210,7 @@ async fn test_get_path_from_to_diamond_between_lca_and_tip() {
     // Or LCA -> B -> C (missing branch A modifications)
     let op_final = ctx
         .database()
-        .new_transaction_with_tips([c_id.clone(), d_id.clone()])
+        .new_transaction_at(&Snapshot::from([c_id.clone(), d_id.clone()]))
         .await
         .unwrap();
     let store_final = op_final.get_store::<DocStore>("data").await.unwrap();
@@ -261,7 +261,7 @@ async fn test_correct_lca_and_path_sorting() {
     // Branch A (height 1)
     let op_a = ctx
         .database()
-        .new_transaction_with_tips(std::slice::from_ref(&root_id))
+        .new_transaction_at(&Snapshot::from(std::slice::from_ref(&root_id)))
         .await
         .unwrap();
     let store_a = op_a.get_store::<DocStore>("data").await.unwrap();
@@ -272,7 +272,7 @@ async fn test_correct_lca_and_path_sorting() {
     // Branch B (height 1)
     let op_b = ctx
         .database()
-        .new_transaction_with_tips(std::slice::from_ref(&root_id))
+        .new_transaction_at(&Snapshot::from(std::slice::from_ref(&root_id)))
         .await
         .unwrap();
     let store_b = op_b.get_store::<DocStore>("data").await.unwrap();
@@ -283,7 +283,7 @@ async fn test_correct_lca_and_path_sorting() {
     // Branch C (height 1)
     let op_c = ctx
         .database()
-        .new_transaction_with_tips([root_id])
+        .new_transaction_at(&Snapshot::from([root_id]))
         .await
         .unwrap();
     let store_c = op_c.get_store::<DocStore>("data").await.unwrap();
@@ -294,7 +294,7 @@ async fn test_correct_lca_and_path_sorting() {
     // Step 3: Create merge tip from A and B (height 2)
     let op_merge = ctx
         .database()
-        .new_transaction_with_tips([a_id.clone(), b_id.clone()])
+        .new_transaction_at(&Snapshot::from([a_id.clone(), b_id.clone()]))
         .await
         .unwrap();
     let store_merge = op_merge.get_store::<DocStore>("data").await.unwrap();
@@ -305,7 +305,7 @@ async fn test_correct_lca_and_path_sorting() {
     // Step 4: Create another tip from C (height 2)
     let op_other = ctx
         .database()
-        .new_transaction_with_tips([c_id])
+        .new_transaction_at(&Snapshot::from([c_id]))
         .await
         .unwrap();
     let store_other = op_other.get_store::<DocStore>("data").await.unwrap();
@@ -319,7 +319,7 @@ async fn test_correct_lca_and_path_sorting() {
     // Sorting order is critical for deterministic CRDT merge
     let op_final = ctx
         .database()
-        .new_transaction_with_tips([merge_id.clone(), other_id.clone()])
+        .new_transaction_at(&Snapshot::from([merge_id.clone(), other_id.clone()]))
         .await
         .unwrap();
     let store_final = op_final.get_store::<DocStore>("data").await.unwrap();
@@ -343,7 +343,7 @@ async fn test_correct_lca_and_path_sorting() {
     for _i in 0..5 {
         let txn_test = ctx
             .database()
-            .new_transaction_with_tips([merge_id.clone(), other_id.clone()])
+            .new_transaction_at(&Snapshot::from([merge_id.clone(), other_id.clone()]))
             .await
             .unwrap();
         let store_test = txn_test.get_store::<DocStore>("data").await.unwrap();
@@ -382,7 +382,7 @@ async fn test_deterministic_operations_with_helper() {
     // Create independent branch
     let other_op = ctx
         .database()
-        .new_transaction_with_tips([diamond.base.clone()])
+        .new_transaction_at(&Snapshot::from([diamond.base.clone()]))
         .await
         .unwrap();
     let other_store = other_op.get_store::<DocStore>("data").await.unwrap();
@@ -419,7 +419,7 @@ async fn test_complex_path_finding_scenario() {
     for (step, data) in branches {
         let txn = ctx
             .database()
-            .new_transaction_with_tips([root_id.clone()])
+            .new_transaction_at(&Snapshot::from([root_id.clone()]))
             .await
             .unwrap();
         let store = txn.get_store::<DocStore>("data").await.unwrap();
@@ -433,7 +433,7 @@ async fn test_complex_path_finding_scenario() {
     for (i, branch_id) in branch_ids.iter().enumerate() {
         let txn = ctx
             .database()
-            .new_transaction_with_tips([branch_id.clone()])
+            .new_transaction_at(&Snapshot::from([branch_id.clone()]))
             .await
             .unwrap();
         let store = txn.get_store::<DocStore>("data").await.unwrap();
@@ -444,7 +444,10 @@ async fn test_complex_path_finding_scenario() {
     // Create two merges
     let merge1_op = ctx
         .database()
-        .new_transaction_with_tips([extended_ids[0].clone(), extended_ids[1].clone()])
+        .new_transaction_at(&Snapshot::from([
+            extended_ids[0].clone(),
+            extended_ids[1].clone(),
+        ]))
         .await
         .unwrap();
     let merge1_store = merge1_op.get_store::<DocStore>("data").await.unwrap();
@@ -453,7 +456,10 @@ async fn test_complex_path_finding_scenario() {
 
     let merge2_op = ctx
         .database()
-        .new_transaction_with_tips([extended_ids[2].clone(), extended_ids[3].clone()])
+        .new_transaction_at(&Snapshot::from([
+            extended_ids[2].clone(),
+            extended_ids[3].clone(),
+        ]))
         .await
         .unwrap();
     let merge2_store = merge2_op.get_store::<DocStore>("data").await.unwrap();
@@ -508,7 +514,7 @@ async fn test_find_merge_base_with_bypass_path() {
     // Step 2: Create A (branches from R)
     let op_a = ctx
         .database()
-        .new_transaction_with_tips(std::slice::from_ref(&r_id))
+        .new_transaction_at(&Snapshot::from(std::slice::from_ref(&r_id)))
         .await
         .unwrap();
     let store_a = op_a.get_store::<DocStore>("data").await.unwrap();
@@ -518,7 +524,7 @@ async fn test_find_merge_base_with_bypass_path() {
     // Step 3: Create X (also branches from R, parallel to A)
     let op_x = ctx
         .database()
-        .new_transaction_with_tips(std::slice::from_ref(&r_id))
+        .new_transaction_at(&Snapshot::from(std::slice::from_ref(&r_id)))
         .await
         .unwrap();
     let store_x = op_x.get_store::<DocStore>("data").await.unwrap();
@@ -528,7 +534,7 @@ async fn test_find_merge_base_with_bypass_path() {
     // Step 4: Create B (child of A only)
     let op_b = ctx
         .database()
-        .new_transaction_with_tips(std::slice::from_ref(&a_id))
+        .new_transaction_at(&Snapshot::from(std::slice::from_ref(&a_id)))
         .await
         .unwrap();
     let store_b = op_b.get_store::<DocStore>("data").await.unwrap();
@@ -538,7 +544,7 @@ async fn test_find_merge_base_with_bypass_path() {
     // Step 5: Create C (child of BOTH A and X - this creates the bypass!)
     let op_c = ctx
         .database()
-        .new_transaction_with_tips([a_id.clone(), x_id.clone()])
+        .new_transaction_at(&Snapshot::from([a_id.clone(), x_id.clone()]))
         .await
         .unwrap();
     let store_c = op_c.get_store::<DocStore>("data").await.unwrap();
@@ -548,7 +554,7 @@ async fn test_find_merge_base_with_bypass_path() {
     // Step 6: Create D (child of B only)
     let op_d = ctx
         .database()
-        .new_transaction_with_tips(std::slice::from_ref(&b_id))
+        .new_transaction_at(&Snapshot::from(std::slice::from_ref(&b_id)))
         .await
         .unwrap();
     let store_d = op_d.get_store::<DocStore>("data").await.unwrap();
@@ -558,7 +564,7 @@ async fn test_find_merge_base_with_bypass_path() {
     // Step 7: Create E (tip, child of D)
     let op_e = ctx
         .database()
-        .new_transaction_with_tips(std::slice::from_ref(&d_id))
+        .new_transaction_at(&Snapshot::from(std::slice::from_ref(&d_id)))
         .await
         .unwrap();
     let store_e = op_e.get_store::<DocStore>("data").await.unwrap();
@@ -568,7 +574,7 @@ async fn test_find_merge_base_with_bypass_path() {
     // Step 8: Create F (tip, child of C)
     let op_f = ctx
         .database()
-        .new_transaction_with_tips(std::slice::from_ref(&c_id))
+        .new_transaction_at(&Snapshot::from(std::slice::from_ref(&c_id)))
         .await
         .unwrap();
     let store_f = op_f.get_store::<DocStore>("data").await.unwrap();
@@ -580,7 +586,7 @@ async fn test_find_merge_base_with_bypass_path() {
     // With correct merge base: finds R, includes all data including X
     let op_final = ctx
         .database()
-        .new_transaction_with_tips([e_id.clone(), f_id.clone()])
+        .new_transaction_at(&Snapshot::from([e_id.clone(), f_id.clone()]))
         .await
         .unwrap();
     let store_final = op_final.get_store::<DocStore>("data").await.unwrap();
@@ -682,7 +688,10 @@ async fn test_multi_tip_merge_state_caching() {
     // Read state with multiple tips - this should populate the cache
     let tx = ctx
         .database()
-        .new_transaction_with_tips([diamond.left.clone(), diamond.right.clone()])
+        .new_transaction_at(&Snapshot::from([
+            diamond.left.clone(),
+            diamond.right.clone(),
+        ]))
         .await
         .unwrap();
     let store = tx.get_store::<DocStore>("data").await.unwrap();
@@ -712,7 +721,10 @@ async fn test_multi_tip_merge_state_caching() {
     // Read again - should hit cache and return same result
     let tx2 = ctx
         .database()
-        .new_transaction_with_tips([diamond.left.clone(), diamond.right.clone()])
+        .new_transaction_at(&Snapshot::from([
+            diamond.left.clone(),
+            diamond.right.clone(),
+        ]))
         .await
         .unwrap();
     let store2 = tx2.get_store::<DocStore>("data").await.unwrap();
@@ -750,7 +762,10 @@ async fn test_multi_tip_cache_key_is_order_independent() {
     // Read with tips in order [left, right]
     let tx1 = ctx
         .database()
-        .new_transaction_with_tips([diamond.left.clone(), diamond.right.clone()])
+        .new_transaction_at(&Snapshot::from([
+            diamond.left.clone(),
+            diamond.right.clone(),
+        ]))
         .await
         .unwrap();
     let store1 = tx1.get_store::<DocStore>("data").await.unwrap();
@@ -790,7 +805,10 @@ async fn test_multi_tip_cache_key_is_order_independent() {
     // Read with tips in REVERSE order [right, left]
     let tx2 = ctx
         .database()
-        .new_transaction_with_tips([diamond.right.clone(), diamond.left.clone()])
+        .new_transaction_at(&Snapshot::from([
+            diamond.right.clone(),
+            diamond.left.clone(),
+        ]))
         .await
         .unwrap();
     let store2 = tx2.get_store::<DocStore>("data").await.unwrap();

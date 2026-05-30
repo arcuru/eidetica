@@ -357,7 +357,7 @@ async fn test_complete_delegation_workflow() {
     txn.commit().await.unwrap();
 
     // Get the actual tips from the delegated tree
-    let delegated_tips = delegated_tree.get_tips().await.unwrap();
+    let delegated_tips = delegated_tree.snapshot().await.unwrap().into_tips();
 
     // Create the main tree — signing key bootstrapped as Admin(0)
     let main_tree = Database::create(
@@ -545,7 +545,7 @@ async fn test_nested_delegation_with_permission_clamping() {
         .unwrap();
     txn.commit().await.unwrap();
 
-    let user_tips = user_tree.get_tips().await.unwrap();
+    let user_tips = user_tree.snapshot().await.unwrap().into_tips();
 
     // 2. Create intermediate delegated tree that delegates to user tree
     let intermediate_tree = Database::create(
@@ -574,7 +574,7 @@ async fn test_nested_delegation_with_permission_clamping() {
         .unwrap();
     txn.commit().await.unwrap();
 
-    let intermediate_tips = intermediate_tree.get_tips().await.unwrap();
+    let intermediate_tips = intermediate_tree.snapshot().await.unwrap().into_tips();
 
     // 3. Create main tree that delegates to intermediate tree
     // Signing key stays at Admin(0) — matches original test intent.

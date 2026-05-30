@@ -4,7 +4,7 @@
 //! operations, custom tips, diamond patterns, and data isolation scenarios.
 
 use eidetica::{
-    Database, Instance,
+    Database, Instance, Snapshot,
     crdt::{Doc, doc::Value},
     entry::ID,
     store::DocStore,
@@ -74,7 +74,7 @@ pub async fn create_diamond_pattern(tree: &Database) -> DiamondIds {
 
     // Create left branch
     let left_op = tree
-        .new_transaction_with_tips(std::slice::from_ref(&base_id))
+        .new_transaction_at(&Snapshot::from(std::slice::from_ref(&base_id)))
         .await
         .unwrap();
     let left_store = left_op.get_store::<DocStore>("data").await.unwrap();
@@ -84,7 +84,7 @@ pub async fn create_diamond_pattern(tree: &Database) -> DiamondIds {
 
     // Create right branch
     let right_op = tree
-        .new_transaction_with_tips([base_id.clone()])
+        .new_transaction_at(&Snapshot::from([base_id.clone()]))
         .await
         .unwrap();
     let right_store = right_op.get_store::<DocStore>("data").await.unwrap();
@@ -109,7 +109,10 @@ pub struct DiamondIds {
 /// Create a merge operation from diamond pattern
 pub async fn create_merge_from_diamond(tree: &Database, diamond: &DiamondIds) -> ID {
     let merge_op = tree
-        .new_transaction_with_tips([diamond.left.clone(), diamond.right.clone()])
+        .new_transaction_at(&Snapshot::from([
+            diamond.left.clone(),
+            diamond.right.clone(),
+        ]))
         .await
         .unwrap();
     let merge_store = merge_op.get_store::<DocStore>("data").await.unwrap();
@@ -240,7 +243,7 @@ pub async fn create_lca_test_scenario(tree: &Database) -> LcaTestIds {
 
     // Create branch A
     let a_op = tree
-        .new_transaction_with_tips(std::slice::from_ref(&lca_id))
+        .new_transaction_at(&Snapshot::from(std::slice::from_ref(&lca_id)))
         .await
         .unwrap();
     let a_store = a_op.get_store::<DocStore>("data").await.unwrap();
@@ -249,7 +252,7 @@ pub async fn create_lca_test_scenario(tree: &Database) -> LcaTestIds {
 
     // Create branch B (parallel to A)
     let b_op = tree
-        .new_transaction_with_tips(std::slice::from_ref(&lca_id))
+        .new_transaction_at(&Snapshot::from(std::slice::from_ref(&lca_id)))
         .await
         .unwrap();
     let b_store = b_op.get_store::<DocStore>("data").await.unwrap();
@@ -258,7 +261,7 @@ pub async fn create_lca_test_scenario(tree: &Database) -> LcaTestIds {
 
     // Create merge tip
     let merge_op = tree
-        .new_transaction_with_tips([a_id.clone(), b_id.clone()])
+        .new_transaction_at(&Snapshot::from([a_id.clone(), b_id.clone()]))
         .await
         .unwrap();
     let merge_store = merge_op.get_store::<DocStore>("data").await.unwrap();
@@ -267,7 +270,7 @@ pub async fn create_lca_test_scenario(tree: &Database) -> LcaTestIds {
 
     // Create independent tip
     let indep_op = tree
-        .new_transaction_with_tips([lca_id.clone()])
+        .new_transaction_at(&Snapshot::from([lca_id.clone()]))
         .await
         .unwrap();
     let indep_store = indep_op.get_store::<DocStore>("data").await.unwrap();
@@ -288,7 +291,10 @@ pub struct LcaTestIds {
 
 /// Verify that LCA path finding includes all expected data
 pub async fn assert_lca_path_completeness(tree: &Database, tips: &[ID], expected_keys: &[&str]) {
-    let txn = tree.new_transaction_with_tips(tips).await.unwrap();
+    let txn = tree
+        .new_transaction_at(&Snapshot::from(tips.to_vec()))
+        .await
+        .unwrap();
     let store = txn.get_store::<DocStore>("data").await.unwrap();
     let state = store.get_all().await.unwrap();
 
@@ -307,7 +313,10 @@ pub async fn test_deterministic_operations(tree: &Database, tips: &[ID], iterati
     let mut results = Vec::new();
 
     for _i in 0..iterations {
-        let txn = tree.new_transaction_with_tips(tips).await.unwrap();
+        let txn = tree
+            .new_transaction_at(&Snapshot::from(tips.to_vec()))
+            .await
+            .unwrap();
         let store = txn.get_store::<DocStore>("data").await.unwrap();
         let state = store.get_all().await.unwrap();
         results.push(state);

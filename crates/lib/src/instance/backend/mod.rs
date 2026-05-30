@@ -31,6 +31,7 @@ use crate::{
     backend::{BackendImpl, InstanceMetadata, VerificationStatus},
     entry::{Entry, ID},
     instance::WriteSource,
+    snapshot::Snapshot,
 };
 
 /// The storage operations `Transaction`/`Store`/`Database`/`Instance` perform,
@@ -45,23 +46,23 @@ pub trait Backend: Send + Sync + std::fmt::Debug {
     /// Retrieve an entry by ID.
     async fn get(&self, id: &ID) -> Result<Entry>;
 
-    /// Raw tips of `tree` (no Verified-frontier filtering — that stays in
-    /// `Database`).
-    async fn get_tips(&self, tree: &ID) -> Result<Vec<ID>>;
+    /// Raw [`Snapshot`] of `tree` (no Verified-frontier filtering — that stays
+    /// in `Database`).
+    async fn snapshot(&self, tree: &ID) -> Result<Snapshot>;
 
-    /// Raw tips of `store` within `tree`.
-    async fn get_store_tips(&self, tree: &ID, store: &str) -> Result<Vec<ID>>;
+    /// Raw [`Snapshot`] of `store` within `tree`.
+    async fn store_snapshot(&self, tree: &ID, store: &str) -> Result<Snapshot>;
 
-    /// Store tips reachable up to the given main-tree entries.
-    async fn get_store_tips_up_to_entries(
+    /// Store snapshot reachable as of a specific main-tree snapshot.
+    async fn store_snapshot_at(
         &self,
         tree: &ID,
         store: &str,
-        up_to: &[ID],
-    ) -> Result<Vec<ID>>;
+        main_snapshot: &Snapshot,
+    ) -> Result<Snapshot>;
 
-    /// Every entry of `store` reachable from `tips`.
-    async fn get_store_from_tips(&self, tree: &ID, store: &str, tips: &[ID]) -> Result<Vec<Entry>>;
+    /// Every entry of `store` reachable from `snapshot`.
+    async fn store_at(&self, tree: &ID, store: &str, snapshot: &Snapshot) -> Result<Vec<Entry>>;
 
     /// Lowest common ancestor of `entry_ids` within `store`.
     async fn find_merge_base(&self, tree: &ID, store: &str, entry_ids: &[ID]) -> Result<ID>;

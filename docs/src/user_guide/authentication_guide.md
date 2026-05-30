@@ -344,7 +344,7 @@ When you delegate to another database:
 # let project_database = user.create_database(Doc::new(), &default_key).await?;
 // Get the user's database root and current tips
 let user_root = alice_database.root_id().clone();
-let user_tips = alice_database.get_tips().await?;
+let user_tips = alice_database.snapshot().await?.into_tips();
 
 // Add delegation reference to project database
 let transaction = project_database.new_transaction().await?;
@@ -395,7 +395,7 @@ Delegations are stored in the **delegating database's** auth settings by the del
 # let default_key = user.get_default_key()?;
 # let alice_db = user.create_database(Doc::new(), &default_key).await?;
 # let alice_root = alice_db.root_id().clone();
-# let alice_tips = alice_db.get_tips().await?;
+# let alice_tips = alice_db.snapshot().await?.into_tips();
 # let project_db = user.create_database(Doc::new(), &default_key).await?;
 # let transaction = project_db.new_transaction().await?;
 # let settings = transaction.get_settings()?;
@@ -482,7 +482,7 @@ A delegation path is a sequence of steps that traverses from the delegating data
 # let default_key = user.get_default_key()?;
 # let project_db = user.create_database(Doc::new(), &default_key).await?;
 # let user_db = user.create_database(Doc::new(), &default_key).await?;
-# let user_tips = user_db.get_tips().await?;
+# let user_tips = user_db.snapshot().await?.into_tips();
 // Create a delegation path:
 // - path: list of delegated trees to traverse (by root ID)
 // - hint: identifies the final signer in the last delegated tree

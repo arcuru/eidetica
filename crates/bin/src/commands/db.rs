@@ -47,7 +47,7 @@ pub async fn list(
 
             let mut rows = Vec::with_capacity(user_roots.len());
             for root in &user_roots {
-                let tips = instance.backend().get_tips(root).await?;
+                let tips = instance.backend().snapshot(root).await?;
                 rows.push(vec![root.to_string(), tips.len().to_string()]);
             }
             print_table(&["ROOT ID", "TIPS"], &rows);
@@ -55,7 +55,7 @@ pub async fn list(
         OutputFormat::Json => {
             let mut entries = Vec::with_capacity(user_roots.len());
             for root in &user_roots {
-                let tips = instance.backend().get_tips(root).await?;
+                let tips = instance.backend().snapshot(root).await?;
                 entries.push(serde_json::json!({
                     "id": root.to_string(),
                     "tips": tips.len(),

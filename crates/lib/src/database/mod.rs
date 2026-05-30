@@ -15,7 +15,7 @@ use crate::instance::backend::RemoteBackend;
 #[cfg(all(unix, feature = "service"))]
 use crate::service::client::RemoteConnection;
 use crate::{
-    Error, Instance, Result, Transaction, WeakInstance,
+    Error, Instance, Result, Snapshot, Transaction, WeakInstance,
     auth::{
         crypto::{PrivateKey, PublicKey},
         errors::AuthError,
@@ -582,8 +582,8 @@ impl Database {
                 }
 
                 // Get current tips for the delegated tree
-                let tips = match instance.backend().get_tips(delegated_root_id).await {
-                    Ok(t) => t,
+                let tips = match instance.backend().snapshot(delegated_root_id).await {
+                    Ok(snap) => snap.into_tips(),
                     Err(_) => continue,
                 };
 
@@ -798,23 +798,23 @@ impl Database {
     /// # Returns
     /// A `Result<Transaction>` containing the new atomic transaction
     pub async fn new_transaction(&self) -> Result<Transaction> {
-        let tips = self.get_tips().await?;
-        self.new_transaction_with_tips(&tips).await
+        let snapshot = self.snapshot().await?;
+        self.new_transaction_at(&snapshot).await
     }
 
-    /// Create a new atomic transaction on this database with specific parent tips
+    /// Create a new atomic transaction on this database anchored at a specific snapshot.
     ///
-    /// This creates a new atomic transaction that will have the specified entries as parents
-    /// instead of using the current database tips. This allows creating complex DAG structures
+    /// The transaction's parents are taken from the provided snapshot's tips instead of
+    /// the database's current state. This allows creating complex DAG structures
     /// like diamond patterns for testing and advanced use cases.
     ///
     /// # Arguments
-    /// * `tips` - The specific parent tips to use for this transaction
+    /// * `snapshot` - The snapshot to anchor the transaction at
     ///
     /// # Returns
     /// A `Result<Transaction>` containing the new atomic transaction
-    pub async fn new_transaction_with_tips(&self, tips: impl AsRef<[ID]>) -> Result<Transaction> {
-        let mut txn = Transaction::new_with_tips(self, tips.as_ref()).await?;
+    pub async fn new_transaction_at(&self, snapshot: &Snapshot) -> Result<Transaction> {
+        let mut txn = Transaction::new_at(self, snapshot).await?;
 
         // Set provided signing key from DatabaseKey
         if let Some(key) = &self.key {
@@ -852,11 +852,12 @@ impl Database {
             allow_unverified: matches!(scope, ReadScope::AllowUnverified),
             ..self.clone()
         };
-        let main_tips = db_for_tips.get_tips().await?;
+        let main_snapshot = db_for_tips.snapshot().await?;
+        let main_tips = main_snapshot.tips();
 
         // -- main parents: (tip, height) ------------------------------
         let mut main_parents = Vec::with_capacity(main_tips.len());
-        for tip in &main_tips {
+        for tip in main_tips {
             let entry = self.ops().get(tip).await?;
             main_parents.push((tip.clone(), entry.height()));
         }
@@ -864,12 +865,12 @@ impl Database {
         // -- per-store subtree parents: (tip, subtree_height) ---------
         let mut subtree_parents = std::collections::BTreeMap::new();
         for store in stores {
-            let child_tips = self
+            let child_snap = self
                 .ops()
-                .get_store_tips_up_to_entries(self.root_id(), store, &main_tips)
+                .store_snapshot_at(self.root_id(), store, &main_snapshot)
                 .await?;
-            let mut pairs = Vec::with_capacity(child_tips.len());
-            for tip in &child_tips {
+            let mut pairs = Vec::with_capacity(child_snap.len());
+            for tip in child_snap.tips() {
                 let entry = self.ops().get(tip).await?;
                 let height = entry.subtree_height(store).unwrap_or(0);
                 pairs.push((tip.clone(), height));
@@ -880,11 +881,12 @@ impl Database {
         // -- settings tips (pinned in entry metadata) -----------------
         let settings_tips = self
             .ops()
-            .get_store_tips_up_to_entries(self.root_id(), SETTINGS, &main_tips)
-            .await?;
+            .store_snapshot_at(self.root_id(), SETTINGS, &main_snapshot)
+            .await?
+            .into_tips();
 
         // -- merged _settings state as serde_json::Value --------------
-        let txn = Transaction::new_with_tips(self, &main_tips).await?;
+        let txn = Transaction::new_at(self, &main_snapshot).await?;
         let settings_doc: Doc = txn.get_full_state(SETTINGS).await?;
         let settings_value = serde_json::to_value(&settings_doc)?;
 
@@ -941,9 +943,8 @@ impl Database {
         tips: &[ID],
         _scope: crate::service::protocol::ReadScope,
     ) -> Result<Vec<Entry>> {
-        self.ops()
-            .get_store_from_tips(self.root_id(), store, tips)
-            .await
+        let snapshot = Snapshot::from(tips.to_vec());
+        self.ops().store_at(self.root_id(), store, &snapshot).await
     }
 
     /// Execute a closure within a transaction and commit the result.
@@ -1057,15 +1058,15 @@ impl Database {
     /// raw tips unchanged (the server owns verification).
     ///
     /// # Returns
-    /// A `Result` containing a vector of `ID`s for the tip entries or an error.
-    pub async fn get_tips(&self) -> Result<Vec<ID>> {
+    /// A `Result` containing the [`Snapshot`] of tip entries or an error.
+    pub async fn snapshot(&self) -> Result<Snapshot> {
         let instance = self.instance()?;
 
-        // On a remote instance the server owns verification: `get_verified_tips`
+        // On a remote instance the server owns verification: `snapshot`
         // already returns the server-side Verified frontier (or empty for a
         // not-yet-propagated tree, e.g. `Database::create`'s bootstrap
         // placeholder root — `EntryNotFound` is mapped to empty to match
-        // `Backend::get_tips`'s contract). Return it directly: the local
+        // `Backend::snapshot`'s contract). Return it directly: the local
         // verification machinery below (status probe, auto-verify,
         // `verified_frontier`) is local-only and would fail on a remote
         // backend anyway (e.g. `verified_frontier`'s `backend.get_tree(...)`).
@@ -1082,16 +1083,16 @@ impl Database {
         // backend, keeping the session-identity semantics for that path.
         #[cfg(all(unix, feature = "service"))]
         if instance.remote_connection().is_some() {
-            return match self.ops().get_tips(&self.root).await {
-                Ok(tips) => Ok(tips),
-                Err(e) if e.is_not_found() => Ok(Vec::new()),
+            return match self.ops().snapshot(&self.root).await {
+                Ok(snap) => Ok(snap),
+                Err(e) if e.is_not_found() => Ok(Snapshot::EMPTY),
                 Err(e) => Err(e),
             };
         }
 
         // Local path: verification-status probing needs the concrete engine.
         let backend = instance.require_local_engine()?;
-        let tips = self.ops().get_tips(&self.root).await?;
+        let tips = self.ops().snapshot(&self.root).await?.into_tips();
 
         // Verification status ops are local-only. On a remote backend the
         // server owns verification (and stores everything Unverified until
@@ -1099,7 +1100,7 @@ impl Database {
         if let Some(first) = tips.first()
             && backend.get_verification_status(first).await.is_err()
         {
-            return Ok(tips);
+            return Ok(Snapshot::new(tips));
         }
 
         // Access-time opportunistic verification: if any tip is still
@@ -1122,11 +1123,11 @@ impl Database {
                 }
             }
             if any_unverified {
-                // Boxed: this call closes a get_tips → verify →
-                // validate_entry → delegation → get_settings → get_tips
+                // Boxed: this call closes a snapshot → verify →
+                // validate_entry → delegation → get_settings → snapshot
                 // async cycle; the box gives it a finite future size.
                 let _ = Box::pin(self.verify()).await;
-                self.ops().get_tips(&self.root).await?
+                self.ops().snapshot(&self.root).await?.into_tips()
             } else {
                 tips
             }
@@ -1137,7 +1138,7 @@ impl Database {
         // reconstruct pinned `_settings` (the frontier filter itself depends
         // on verification status, which is exactly what verify is computing).
         if !self.allow_unverified && !auto_verify_suppressed() {
-            return self.verified_frontier().await;
+            return self.verified_frontier().await.map(Snapshot::new);
         }
 
         // `allow_unverified` view: keep Unverified tips, drop only Failed.
@@ -1147,7 +1148,7 @@ impl Database {
                 visible.push(t);
             }
         }
-        Ok(visible)
+        Ok(Snapshot::new(visible))
     }
 
     /// Compute the tips of the maximal all-`Verified` prefix of the DAG.
@@ -1200,9 +1201,9 @@ impl Database {
     /// A `Result` containing a vector of the tip `Entry` objects or an error.
     pub async fn get_tip_entries(&self) -> Result<Vec<Entry>> {
         let instance = self.instance()?;
-        let tips = self.get_tips().await?;
+        let snapshot = self.snapshot().await?;
         let mut entries = Vec::new();
-        for id in &tips {
+        for id in snapshot.tips() {
             entries.push(instance.get(id).await?);
         }
         Ok(entries)
@@ -1416,7 +1417,7 @@ impl Database {
     }
 
     /// Reconstruct the `_settings` auth config an entry's signature is pinned
-    /// to, from the `settings_tips` recorded in its signed metadata.
+    /// to, from the `settings_snapshot` recorded in its signed metadata.
     ///
     /// Validation must run against the settings the entry pinned — not the
     /// current settings — so granting authority later cannot retroactively
@@ -1430,10 +1431,10 @@ impl Database {
         let instance = self.instance()?;
         let backend = instance.backend();
 
-        // The pin: `_settings` tips recorded in the entry's signed metadata.
+        // The pin: `_settings` snapshot recorded in the entry's signed metadata.
         let settings_tips: Vec<ID> = match entry.metadata() {
             Some(raw) => match serde_json::from_slice::<crate::transaction::EntryMetadata>(raw) {
-                Ok(md) => md.settings_tips,
+                Ok(md) => md.settings_snapshot.into_tips(),
                 // Unparsable metadata ⇒ we cannot establish the pin.
                 Err(_) => return Ok(PinnedSettings::Incomplete),
             },
@@ -1485,8 +1486,9 @@ impl Database {
         // Reconstruct the merged `_settings` Doc as of the pinned tips.
         // Entries come back root-first; `_settings` is a system subtree and
         // is never encrypted, so deserialize directly.
+        let effective_snapshot = Snapshot::from(effective_tips.clone());
         let entries = backend
-            .get_store_from_tips(self.root_id(), SETTINGS, &effective_tips)
+            .store_at(self.root_id(), SETTINGS, &effective_snapshot)
             .await?;
         let mut settings_doc = Doc::default();
         for e in &entries {

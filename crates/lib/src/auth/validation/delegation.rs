@@ -77,7 +77,7 @@ impl DelegationResolver {
             })?;
 
             // Validate tips
-            let current_tips = current_backend.get_tips(&root_id).await.map_err(|e| {
+            let current_snapshot = current_backend.snapshot(&root_id).await.map_err(|e| {
                 AuthError::InvalidAuthConfiguration {
                     reason: format!(
                         "Failed to get current tips for delegated tree '{root_id}': {e}"
@@ -86,7 +86,7 @@ impl DelegationResolver {
             })?;
 
             let tips_valid = self
-                .validate_tip_ancestry(&step.tips, &current_tips, &current_backend)
+                .validate_tip_ancestry(&step.tips, current_snapshot.tips(), &current_backend)
                 .await?;
             if !tips_valid {
                 return Err(AuthError::InvalidDelegationTips {

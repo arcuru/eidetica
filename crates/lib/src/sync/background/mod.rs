@@ -738,11 +738,12 @@ impl BackgroundSync {
 
             // Get our tips for this tree (empty if tree doesn't exist)
             let instance = self.instance()?;
-            let our_tips = instance
+            let our_tips: Vec<ID> = instance
                 .backend()
-                .get_tips(tree_id)
+                .snapshot(tree_id)
                 .await
-                .map_err(|e| SyncError::BackendError(format!("Failed to get local tips: {e}")))?;
+                .map_err(|e| SyncError::BackendError(format!("Failed to get local tips: {e}")))?
+                .into_tips();
 
             // Get our device public key for automatic peer tracking
             let our_device_pubkey = Some(instance.id());

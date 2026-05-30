@@ -3,7 +3,7 @@
 //! This module contains tests for fundamental Tree operations including
 //! entry creation, subtree operations, atomic operations, and tip management.
 
-use eidetica::{constants::SETTINGS, store::DocStore, store::Table};
+use eidetica::{Snapshot, constants::SETTINGS, store::DocStore, store::Table};
 use serde::{Deserialize, Serialize};
 
 use super::helpers::*;
@@ -33,7 +33,11 @@ async fn test_insert_into_tree() {
     let id2 = txn2.commit().await.expect("Failed to commit transaction");
 
     // Verify tips include id2
-    let tips = tree.get_tips().await.expect("Failed to get tips");
+    let tips = tree
+        .snapshot()
+        .await
+        .expect("Failed to get tips")
+        .into_tips();
     assert!(tips.contains(&id2));
     assert!(!tips.contains(&id1)); // id1 should no longer be a tip
 
@@ -216,7 +220,7 @@ async fn test_txn_scenarios() {
 
     // --- 1. Modify multiple subtrees in one transaction and read staged data ---
     let txn1 = tree.new_transaction().await.expect("Txn1: Failed to start");
-    let initial_tip = tree.get_tips().await.unwrap()[0].clone();
+    let initial_tip = tree.snapshot().await.unwrap().into_tips()[0].clone();
     {
         let store_a = txn1
             .get_store::<DocStore>("sub_a")
@@ -289,7 +293,7 @@ async fn test_txn_scenarios() {
     // If it's not an error, check the tip is still changed to the empty commit
     assert!(commit_empty_result.is_ok());
     assert_eq!(
-        tree.get_tips().await.unwrap()[0],
+        tree.snapshot().await.unwrap().into_tips()[0],
         commit_empty_result.unwrap(),
         "Empty commit should still be a tip"
     );
@@ -418,7 +422,11 @@ async fn test_get_tips() {
     let (_instance, tree) = setup_tree().await;
 
     // Initially, the tree should have one tip (the root entry)
-    let initial_tips = tree.get_tips().await.expect("Failed to get initial tips");
+    let initial_tips = tree
+        .snapshot()
+        .await
+        .expect("Failed to get initial tips")
+        .into_tips();
     assert_eq!(
         initial_tips.len(),
         1,
@@ -429,7 +437,11 @@ async fn test_get_tips() {
     let entry1_id = add_data_to_subtree(&tree, "data", &[("key1", "value1")]).await;
 
     // Tips should now include entry1_id
-    let tips_after_op1 = tree.get_tips().await.expect("Failed to get tips after op1");
+    let tips_after_op1 = tree
+        .snapshot()
+        .await
+        .expect("Failed to get tips after op1")
+        .into_tips();
     assert_eq!(
         tips_after_op1.len(),
         1,
@@ -448,7 +460,11 @@ async fn test_get_tips() {
     let entry2_id = add_data_to_subtree(&tree, "data", &[("key2", "value2")]).await;
 
     // Tips should now include entry2_id
-    let tips_after_op2 = tree.get_tips().await.expect("Failed to get tips after op2");
+    let tips_after_op2 = tree
+        .snapshot()
+        .await
+        .expect("Failed to get tips after op2")
+        .into_tips();
     assert_eq!(
         tips_after_op2.len(),
         1,
@@ -498,7 +514,7 @@ async fn test_new_transaction_with_tips() {
 
     // Create operation with custom tips (using entry1 instead of current tip)
     let custom_op = tree
-        .new_transaction_with_tips([entry1_id.clone()])
+        .new_transaction_at(&Snapshot::from([entry1_id.clone()]))
         .await
         .expect("Failed to create custom operation");
     let custom_store = custom_op
@@ -525,7 +541,7 @@ async fn test_new_transaction_with_tips() {
 
     // Now we should have two tips: entry2_id and custom_entry_id
     let tips_after_branch = tree
-        .get_tips()
+        .snapshot()
         .await
         .expect("Failed to get tips after branch");
     assert_eq!(
@@ -576,7 +592,7 @@ async fn test_new_transaction_with_specific_tips() {
 
     // Create operation starting from entry A (should see only A)
     let op_from_a = tree
-        .new_transaction_with_tips(std::slice::from_ref(&entry_a_id))
+        .new_transaction_at(&Snapshot::from(std::slice::from_ref(&entry_a_id)))
         .await
         .expect("Failed to create op from A");
     let store_from_a = op_from_a
@@ -603,7 +619,7 @@ async fn test_new_transaction_with_specific_tips() {
 
     // Create operation starting from entry B (should see A and B but not C)
     let op_from_b = tree
-        .new_transaction_with_tips([entry_b_id])
+        .new_transaction_at(&Snapshot::from([entry_b_id]))
         .await
         .expect("Failed to create op from B");
     let store_from_b = op_from_b
@@ -630,7 +646,7 @@ async fn test_new_transaction_with_specific_tips() {
 
     // Create operation starting from entry C (should see all)
     let op_from_c = tree
-        .new_transaction_with_tips([entry_c_id])
+        .new_transaction_at(&Snapshot::from([entry_c_id]))
         .await
         .expect("Failed to create op from C");
     let store_from_c = op_from_c
@@ -666,7 +682,7 @@ async fn test_new_transaction_with_specific_tips() {
 
     // Verify the branch only sees data from A
     let op_verify_branch = tree
-        .new_transaction_with_tips([branch_id])
+        .new_transaction_at(&Snapshot::from([branch_id]))
         .await
         .expect("Failed to create verify op");
     let store_verify_branch = op_verify_branch
@@ -713,7 +729,7 @@ async fn test_new_transaction_with_multiple_tips() {
     // Create operation with multiple tips (merge operation)
     let merge_tips = vec![branch1_id.clone(), branch2_id.clone()];
     let op_merge = tree
-        .new_transaction_with_tips(&merge_tips)
+        .new_transaction_at(&Snapshot::from(&merge_tips))
         .await
         .expect("Failed to create merge operation");
     let store_merge = op_merge

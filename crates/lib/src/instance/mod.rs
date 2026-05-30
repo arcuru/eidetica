@@ -1091,8 +1091,8 @@ impl Instance {
     /// of the database by the Instance. This method checks if we're tracking
     /// the database's tip state.
     pub async fn has_database(&self, root_id: &ID) -> bool {
-        match self.inner.backend.get_tips(root_id).await {
-            Ok(tips) => !tips.is_empty(),
+        match self.inner.backend.snapshot(root_id).await {
+            Ok(snap) => !snap.is_empty(),
             Err(_) => false,
         }
     }
@@ -1124,9 +1124,13 @@ impl Instance {
         self.inner.backend.put(entry).await
     }
 
-    /// Get tips for a tree
-    pub(crate) async fn get_tips(&self, tree: &crate::entry::ID) -> Result<Vec<crate::entry::ID>> {
-        self.inner.backend.get_tips(tree).await
+    /// Returns the current [`crate::Snapshot`] of `tree` — its DAG tips. See
+    /// [`Database::snapshot`] for the public entry point.
+    pub(crate) async fn snapshot(
+        &self,
+        tree: &crate::entry::ID,
+    ) -> Result<crate::snapshot::Snapshot> {
+        self.inner.backend.snapshot(tree).await
     }
 
     // === System database accessors ===
@@ -1563,10 +1567,10 @@ impl Instance {
         let previous_tips = if self.remote_connection().is_some() {
             Vec::new()
         } else {
-            self.get_tips(tree_id).await?
+            self.snapshot(tree_id).await?.into_tips()
         };
         #[cfg(not(all(unix, feature = "service")))]
-        let previous_tips = self.get_tips(tree_id).await?;
+        let previous_tips = self.snapshot(tree_id).await?.into_tips();
 
         // 2. Persist to backend storage (and notify server for remote backends)
         self.backend()
@@ -1623,7 +1627,7 @@ impl Instance {
         let _guard = lock.lock().await;
 
         // 1. Capture tips before any writes
-        let previous_tips = self.get_tips(tree_id).await?;
+        let previous_tips = self.snapshot(tree_id).await?.into_tips();
 
         // 2. Store all entries
         let mut stored_entries = Vec::with_capacity(entries.len());

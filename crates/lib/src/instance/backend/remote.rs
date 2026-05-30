@@ -10,6 +10,7 @@ use crate::{
     entry::{Entry, ID},
     instance::WriteSource,
     service::{client::RemoteConnection, protocol::ReadScope},
+    snapshot::Snapshot,
 };
 
 /// A [`Backend`] that translates every storage operation to a wire RPC over a
@@ -62,30 +63,30 @@ impl Backend for RemoteBackend {
             .await
     }
 
-    async fn get_tips(&self, tree: &ID) -> Result<Vec<ID>> {
+    async fn snapshot(&self, tree: &ID) -> Result<Snapshot> {
         match self
             .conn
             .get_verified_tips(tree.clone(), self.identity())
             .await
         {
-            Ok(tips) => Ok(tips),
-            Err(e) if e.is_not_found() => Ok(Vec::new()),
+            Ok(tips) => Ok(Snapshot::new(tips)),
+            Err(e) if e.is_not_found() => Ok(Snapshot::EMPTY),
             Err(e) => Err(e),
         }
     }
 
-    async fn get_store_tips(&self, tree: &ID, store: &str) -> Result<Vec<ID>> {
+    async fn store_snapshot(&self, tree: &ID, store: &str) -> Result<Snapshot> {
         let tree_tips = match self
             .conn
             .get_verified_tips(tree.clone(), self.identity())
             .await
         {
             Ok(tips) => tips,
-            Err(e) if e.is_not_found() => return Ok(Vec::new()),
+            Err(e) if e.is_not_found() => return Ok(Snapshot::EMPTY),
             Err(e) => return Err(e),
         };
         if tree_tips.is_empty() {
-            return Ok(Vec::new());
+            return Ok(Snapshot::EMPTY);
         }
         match self
             .conn
@@ -97,41 +98,41 @@ impl Backend for RemoteBackend {
             )
             .await
         {
-            Ok(tips) => Ok(tips),
-            Err(e) if e.is_not_found() => Ok(Vec::new()),
+            Ok(tips) => Ok(Snapshot::new(tips)),
+            Err(e) if e.is_not_found() => Ok(Snapshot::EMPTY),
             Err(e) => Err(e),
         }
     }
 
-    async fn get_store_tips_up_to_entries(
+    async fn store_snapshot_at(
         &self,
         tree: &ID,
         store: &str,
-        up_to: &[ID],
-    ) -> Result<Vec<ID>> {
+        main_snapshot: &Snapshot,
+    ) -> Result<Snapshot> {
         match self
             .conn
             .get_store_tips_up_to_entries(
                 tree.clone(),
                 self.identity(),
                 store.to_string(),
-                up_to.to_vec(),
+                main_snapshot.tips().to_vec(),
             )
             .await
         {
-            Ok(tips) => Ok(tips),
-            Err(e) if e.is_not_found() => Ok(Vec::new()),
+            Ok(tips) => Ok(Snapshot::new(tips)),
+            Err(e) if e.is_not_found() => Ok(Snapshot::EMPTY),
             Err(e) => Err(e),
         }
     }
 
-    async fn get_store_from_tips(&self, tree: &ID, store: &str, tips: &[ID]) -> Result<Vec<Entry>> {
+    async fn store_at(&self, tree: &ID, store: &str, snapshot: &Snapshot) -> Result<Vec<Entry>> {
         self.conn
             .get_store_entries(
                 tree.clone(),
                 self.identity(),
                 store.to_string(),
-                tips.to_vec(),
+                snapshot.tips().to_vec(),
                 ReadScope::Verified,
             )
             .await

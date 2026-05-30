@@ -29,7 +29,7 @@ pub use errors::TransactionError;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Database, Result, Store,
+    Database, Result, Snapshot, Store,
     auth::{
         AuthSettings,
         crypto::{PrivateKey, sign_entry},
@@ -126,11 +126,15 @@ pub(crate) trait Encryptor: Send + Sync {
 /// Metadata structure for entries
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct EntryMetadata {
-    /// Tips of the _settings subtree at the time this entry was created.
+    /// Snapshot of the `_settings` subtree at the time this entry was created.
     /// This is the entry's **pin**: the exact `_settings` state its
     /// signature must be validated against. Used for sync performance,
     /// sparse-checkout validation, and deferred re-verification.
-    pub(crate) settings_tips: Vec<ID>,
+    ///
+    /// Wire name remains `settings_tips` for on-disk stability — `Snapshot`
+    /// serializes as a bare ID array, identical to the legacy `Vec<ID>` shape.
+    #[serde(rename = "settings_tips")]
+    pub(crate) settings_snapshot: Snapshot,
     /// Random entropy for ensuring unique IDs for root entries
     pub(crate) entropy: Option<u64>,
 }
@@ -167,22 +171,19 @@ pub struct Transaction {
 }
 
 impl Transaction {
-    /// Creates a new atomic transaction for a specific `Database` with custom parent tips.
+    /// Creates a new atomic transaction for a specific `Database` anchored at a snapshot.
     ///
     /// Initializes an internal `EntryBuilder` with its main parent pointers set to the
-    /// specified tips instead of the current database tips. This allows creating
-    /// transactions that branch from specific points in the database history.
-    ///
-    /// This enables creating diamond patterns and other complex DAG structures
-    /// for testing and advanced use cases.
+    /// snapshot's tips instead of the database's current state. This allows creating
+    /// transactions that branch from specific points in the database history (e.g.
+    /// diamond patterns).
     ///
     /// # Arguments
     /// * `database` - The `Database` this transaction will modify.
-    /// * `tips` - The specific parent tips to use for this transaction. Must contain at least one tip.
-    ///
-    /// # Returns
-    /// A `Result<Self>` containing the new transaction or an error if tips are empty or invalid.
-    pub(crate) async fn new_with_tips(database: &Database, tips: &[ID]) -> Result<Self> {
+    /// * `snapshot` - The snapshot to anchor the transaction at. Must contain at least one tip,
+    ///   unless this transaction is creating the database's root entry.
+    pub(crate) async fn new_at(database: &Database, snapshot: &Snapshot) -> Result<Self> {
+        let tips = snapshot.tips();
         // Validate that tips are not empty, unless we're creating the root entry
         if tips.is_empty() {
             // Check if this is a root entry creation by seeing if the database root exists in backend
@@ -410,8 +411,8 @@ impl Transaction {
         let mut metadata = builder
             .metadata()
             .and_then(|m| serde_json::from_slice::<EntryMetadata>(m).ok())
-            .unwrap_or_else(|| EntryMetadata {
-                settings_tips: Vec::new(),
+            .unwrap_or(EntryMetadata {
+                settings_snapshot: Snapshot::EMPTY,
                 entropy: None,
             });
 
@@ -461,8 +462,13 @@ impl Transaction {
         // Fetch tips if needed (no borrow held across this await)
         let tips = if needs_tips {
             let backend = self.db.ops();
-            // FIXME: we should get the subtree tips while still using the parent pointers
-            Some(backend.get_store_tips(self.db.root_id(), subtree).await?)
+            // FIXME: we should get the subtree snapshot while still using the parent pointers
+            Some(
+                backend
+                    .store_snapshot(self.db.root_id(), subtree)
+                    .await?
+                    .into_tips(),
+            )
         } else {
             None
         };
@@ -542,10 +548,12 @@ impl Transaction {
 
     /// Get the subtree tips reachable from the given main tree entries.
     async fn get_subtree_tips(&self, subtree_name: &str, main_parents: &[ID]) -> Result<Vec<ID>> {
+        let boundary = Snapshot::from(main_parents.to_vec());
         self.db
             .ops()
-            .get_store_tips_up_to_entries(self.db.root_id(), subtree_name, main_parents)
+            .store_snapshot_at(self.db.root_id(), subtree_name, &boundary)
             .await
+            .map(Snapshot::into_tips)
     }
 
     /// Initialize subtree parents if this is the first time accessing this subtree
@@ -671,19 +679,23 @@ impl Transaction {
 
         // Initialize subtree tips if needed (async operations)
         if needs_init {
-            let current_database_tips = self.db.ops().get_tips(self.db.root_id()).await?;
+            let current_database_snapshot = self.db.ops().snapshot(self.db.root_id()).await?;
 
-            let tips = if main_parents == current_database_tips {
+            // Set-equal comparison via Snapshot canonical form.
+            let parents_snapshot = Snapshot::from(main_parents.clone());
+            let tips = if parents_snapshot == current_database_snapshot {
                 let backend = self.db.ops();
                 backend
-                    .get_store_tips(self.db.root_id(), subtree_name)
+                    .store_snapshot(self.db.root_id(), subtree_name)
                     .await?
+                    .into_tips()
             } else {
                 // This transaction uses custom tips - use special handler
                 self.db
                     .ops()
-                    .get_store_tips_up_to_entries(self.db.root_id(), subtree_name, &main_parents)
+                    .store_snapshot_at(self.db.root_id(), subtree_name, &parents_snapshot)
                     .await?
+                    .into_tips()
             };
 
             // Update RefCell after async operations
@@ -845,14 +857,11 @@ impl Transaction {
 
             // Step 2: Batch fetch all ancestors sorted by height (root first)
             // This single query replaces N recursive queries
+            let boundary = Snapshot::from([entry_id.clone()]);
             let entries = self
                 .db
                 .ops()
-                .get_store_from_tips(
-                    self.db.root_id(),
-                    subtree_name,
-                    std::slice::from_ref(entry_id),
-                )
+                .store_at(self.db.root_id(), subtree_name, &boundary)
                 .await?;
 
             // Step 3: Merge all entries in order (already sorted by height, root first)
@@ -1038,13 +1047,13 @@ impl Transaction {
             builder.remove_empty_subtrees_mut()?;
         }
 
-        // Add metadata with settings tips for all entries
-        // Get the backend to access settings tips (do async ops before RefCell borrow)
-        let db_tips = self.db.get_tips().await?;
-        let settings_tips = self
+        // Add metadata with settings snapshot for all entries
+        // Get the backend to access the settings snapshot (do async ops before RefCell borrow)
+        let db_snapshot = self.db.snapshot().await?;
+        let settings_snapshot = self
             .db
             .ops()
-            .get_store_tips_up_to_entries(self.db.root_id(), SETTINGS, &db_tips)
+            .store_snapshot_at(self.db.root_id(), SETTINGS, &db_snapshot)
             .await?;
 
         // Clone the builder from RefCell (limit borrow scope to avoid holding across await)
@@ -1060,13 +1069,13 @@ impl Transaction {
         let mut metadata = builder
             .metadata()
             .and_then(|m| serde_json::from_slice::<EntryMetadata>(m).ok())
-            .unwrap_or_else(|| EntryMetadata {
-                settings_tips: Vec::new(),
+            .unwrap_or(EntryMetadata {
+                settings_snapshot: Snapshot::EMPTY,
                 entropy: None,
             });
 
-        // Update settings tips
-        metadata.settings_tips = settings_tips;
+        // Update settings snapshot
+        metadata.settings_snapshot = settings_snapshot;
 
         // Serialize the metadata
         let metadata_json = serde_json::to_vec(&metadata)?;
