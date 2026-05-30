@@ -28,6 +28,7 @@ pub mod height;
 pub mod instance;
 #[cfg(all(unix, feature = "service"))]
 pub mod service;
+pub mod snapshot;
 pub mod store;
 pub mod sync;
 pub mod transaction;
@@ -41,6 +42,7 @@ pub use database::{Database, DatabaseKey};
 pub use entry::{Entry, ID};
 pub use height::HeightStrategy;
 pub use instance::{Instance, NewUser, WeakInstance, WriteCallback, WriteEvent, WriteSource};
+pub use snapshot::Snapshot;
 pub use store::{Registered, Store};
 /// Re-export fundamental types for easier access.
 pub use transaction::Transaction;
