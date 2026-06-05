@@ -25,5 +25,4 @@ jobs:
       enable-magic-cache: "false"
       extra-substituters: https://cache.eidetica.dev
       extra-trusted-public-keys: cache.eidetica.dev-1:eND5gRJlbnool3ZLCWT2H8kkygWS8JcsU76HYXbWPBI=
-    secrets:
-      PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+    secrets: inherit
