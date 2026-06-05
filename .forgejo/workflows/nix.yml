@@ -6,6 +6,22 @@
 #   CACHIX_AUTH_TOKEN: Token for pushing to Cachix (eidetica cache)
 #   CODECOV_TOKEN: Token for uploading coverage to Codecov
 #
+# Hardening notes (Forgejo-specific — diverges from GitHub Actions):
+#   - `permissions: contents: read` is decorative on current Forgejo:
+#     the workflow `permissions:` block is silently ignored by the
+#     Forgejo runner (services/actions/task.go has no scope-narrowing
+#     branch). Upstream Gitea 1.26+ honors it; Forgejo has not ported.
+#     Kept here for forward-compat, portability, and readable intent.
+#   - `if: github.repository_owner == 'arcuru'` IS honored — Forgejo
+#     populates the github context from Repo.OwnerName (context.go:107).
+#     Treat it as defense-in-depth: Forgejo already strips secrets and
+#     issues a read-only token to fork-PR runs (secret.go:43, task.go:181),
+#     so the fence is belt-and-braces rather than the primary control.
+#   - actions/checkout is pinned to v4: Forgejo Actions runner does not
+#     support v5+. Do not bump.
+#   - Matrix values reach `run:` blocks through `env:` passthrough, not
+#     `${{ }}` interpolation.
+
 name: Nix
 
 on:
@@ -13,10 +29,14 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    if: github.repository_owner == 'arcuru'
     container:
       image: nixos/nix:latest@sha256:d5cce2440bda1f966357732c06d86cb92368069fb52dfb6b2bae8725eea488a5
     steps:
@@ -42,6 +62,7 @@ jobs:
   doc:
     name: Doc
     runs-on: ubuntu-latest
+    if: github.repository_owner == 'arcuru'
     container:
       image: nixos/nix:latest@sha256:d5cce2440bda1f966357732c06d86cb92368069fb52dfb6b2bae8725eea488a5
     steps:
@@ -65,6 +86,7 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    if: github.repository_owner == 'arcuru'
     container:
       image: nixos/nix:latest@sha256:d5cce2440bda1f966357732c06d86cb92368069fb52dfb6b2bae8725eea488a5
     steps:
@@ -94,7 +116,7 @@ jobs:
   test-backends:
     name: Test Backends (${{ matrix.backend }})
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
+    if: github.repository_owner == 'arcuru' && github.ref == 'refs/heads/main'
     strategy:
       matrix:
         backend: [inmemory, postgres]
@@ -115,14 +137,16 @@ jobs:
           ATTIC_AUTH_TOKEN: "${{ secrets.ATTIC_AUTH_TOKEN }}"
 
       - name: Test ${{ matrix.backend }}
+        env:
+          BACKEND: ${{ matrix.backend }}
         run: |
           nix-fast-build --skip-cached --no-nom --no-link \
-            -f '.#legacyPackages.x86_64-linux.test.${{ matrix.backend }}'
+            -f ".#legacyPackages.x86_64-linux.test.$BACKEND"
 
   coverage:
     name: Coverage (${{ matrix.backend }})
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
+    if: github.repository_owner == 'arcuru' && github.ref == 'refs/heads/main'
     strategy:
       matrix:
         backend: [sqlite, inmemory, postgres]
@@ -143,15 +167,19 @@ jobs:
           ATTIC_AUTH_TOKEN: "${{ secrets.ATTIC_AUTH_TOKEN }}"
 
       - name: Build coverage
+        env:
+          BACKEND: ${{ matrix.backend }}
         run: |
           nix-fast-build --skip-cached --no-nom --no-link \
-            -f '.#legacyPackages.x86_64-linux.coverage.${{ matrix.backend }}'
+            -f ".#legacyPackages.x86_64-linux.coverage.$BACKEND"
 
       - name: Extract coverage data
+        env:
+          BACKEND: ${{ matrix.backend }}
         run: |
-          cp "$(nix path-info '.#coverage.${{ matrix.backend }}')/lcov.info" lcov.info
+          cp "$(nix path-info ".#coverage.$BACKEND")/lcov.info" lcov.info
           if command -v attic &> /dev/null; then
-            attic push eidetica "$(nix path-info '.#coverage.${{ matrix.backend }}')"
+            attic push eidetica "$(nix path-info ".#coverage.$BACKEND")"
           fi
 
       - name: Upload coverage to Codecov
@@ -167,7 +195,7 @@ jobs:
   sanitize:
     name: Sanitize (${{ matrix.sanitizer }})
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
+    if: github.repository_owner == 'arcuru' && github.ref == 'refs/heads/main'
     strategy:
       matrix:
         sanitizer: [asan, lsan]
@@ -188,8 +216,10 @@ jobs:
           ATTIC_AUTH_TOKEN: "${{ secrets.ATTIC_AUTH_TOKEN }}"
 
       - name: Run ${{ matrix.sanitizer }}
+        env:
+          SANITIZER: ${{ matrix.sanitizer }}
         run: |
-          PATHS=$(nix build .#sanitize.${{ matrix.sanitizer }} --no-link --print-out-paths)
+          PATHS=$(nix build ".#sanitize.$SANITIZER" --no-link --print-out-paths)
           if command -v attic &> /dev/null; then
             echo "$PATHS" | xargs attic push eidetica
           fi
@@ -197,7 +227,7 @@ jobs:
   artifacts:
     name: Artifacts
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
+    if: github.repository_owner == 'arcuru' && github.ref == 'refs/heads/main'
     needs: [lint, doc, test]
     container:
       image: nixos/nix:latest@sha256:d5cce2440bda1f966357732c06d86cb92368069fb52dfb6b2bae8725eea488a5
