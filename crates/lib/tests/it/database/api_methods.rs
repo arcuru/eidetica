@@ -514,7 +514,7 @@ async fn test_database_verify_promotes_unverified_and_access_hook() {
         VerificationStatus::Verified
     );
 
-    // Access-time hook: force Unverified again, then a plain `get_tips()`
+    // Access-time hook: force Unverified again, then a plain `snapshot()`
     // must opportunistically verify it.
     backend
         .update_verification_status(&id, VerificationStatus::Unverified)
@@ -860,7 +860,7 @@ async fn test_allow_unverified_composes_with_key_for_writes() {
     assert!(!tree.snapshot().await.unwrap().into_tips().contains(&e));
 }
 
-/// The access-time auto-verify hook in `get_tips` must handle *multiple*
+/// The access-time auto-verify hook in `snapshot` must handle *multiple*
 /// diverged `Unverified` tips, not just a single one, promoting all of them
 /// in the opportunistic pass.
 #[tokio::test]

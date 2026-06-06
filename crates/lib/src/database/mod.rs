@@ -39,7 +39,7 @@ tokio::task_local! {
     ///
     /// Verification reads the database (delegation resolution opens trees,
     /// reads settings → tips), and the access-time auto-verify hook in
-    /// [`Database::get_tips`] would otherwise re-enter verification
+    /// [`Database::snapshot`] would otherwise re-enter verification
     /// unboundedly. While this is set, the hook is suppressed and reads
     /// return raw (still `Failed`-filtered) tips.
     static IN_VERIFY: bool;
@@ -280,7 +280,7 @@ impl Database {
         initial_settings.set("auth", auth_settings.as_doc().clone());
 
         // Create the initial root entry using a temporary Database and Transaction.
-        // This placeholder ID should not exist in the backend, so get_tips will be empty.
+        // This placeholder ID should not exist in the backend, so snapshot will be empty.
         let bootstrap_placeholder_id = format!(
             "bootstrap_root_{}",
             rand::thread_rng()
@@ -976,7 +976,7 @@ impl Database {
     /// [`sort_entries_by_subtree_height`](crate::backend::database::in_memory::cache::sort_entries_by_subtree_height).
     ///
     /// When `scope` is [`ReadScope::Verified`] and `tips` are the
-    /// Verified-frontier tips from [`get_tips`](Self::get_tips),
+    /// Verified-frontier tips from [`snapshot`](Self::snapshot),
     /// every returned entry is guaranteed `Verified` (the frontier is
     /// ancestor-closed). For [`ReadScope::AllowUnverified`], entries
     /// reachable from unverified tips are included.
@@ -1505,7 +1505,7 @@ impl Database {
         };
 
         // Completeness: every pinned tip and its full `_settings` ancestor
-        // closure must be present locally. `get_store_from_tips` silently
+        // closure must be present locally. `store_at` silently
         // skips absent ancestors, so an explicit walk is required — a missing
         // ancestor would otherwise yield a wrong (partial) auth config.
         let mut stack: Vec<ID> = effective_tips.clone();
@@ -1582,7 +1582,7 @@ impl Database {
                 let instance = self.instance()?;
                 let backend = instance.require_local_engine()?;
 
-                // Raw tree walk (not `get_tips`) so traversal itself never
+                // Raw tree walk (not `snapshot`) so traversal itself never
                 // re-enters the hook even before the guard is observed.
                 let entries = backend.get_tree(self.root_id()).await?;
                 let mut report = VerifyReport::default();
@@ -1660,7 +1660,7 @@ impl Database {
     /// Get all entries in this database.
     ///
     /// ⚠️ **Warning**: This method loads all entries into memory. Use with caution on large databases.
-    /// Consider using `get_tips()` or `get_tip_entries()` for more efficient access patterns.
+    /// Consider using `snapshot()` or `get_tip_entries()` for more efficient access patterns.
     ///
     /// # Returns
     /// A `Result` containing a vector of all `Entry` objects in the database
