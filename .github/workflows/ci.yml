@@ -18,15 +18,23 @@ jobs:
       - name: Setup Nix
         uses: ./.github/actions/setup-nix
 
+      # On PRs: build the checks only — fast feedback, integration is push-only.
       - name: Checks
+        if: github.event_name == 'pull_request'
         run: |
           nix-fast-build --skip-cached --no-nom --no-link
 
-      - name: Integration tests
-        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+      # On push/dispatch: build checks + integration in ONE nix-fast-build
+      # invocation. nix-fast-build only takes a single target, so we point it at
+      # the `.#legacyPackages.x86_64-linux.ci` aggregate (checks + integration).
+      # A single dependency graph shares testCheckArtifacts (built once) and lets
+      # the integration VM's serial boot/run overlap the check compiles, instead
+      # of the two running back-to-back as separate steps.
+      - name: Checks + integration
+        if: github.event_name != 'pull_request'
         run: |
           nix-fast-build --skip-cached --no-nom --no-link \
-            -f '.#legacyPackages.x86_64-linux.integration.default'
+            -f '.#legacyPackages.x86_64-linux.ci'
 
   ci-arm:
     name: CI (aarch64-linux)
