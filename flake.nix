@@ -216,6 +216,21 @@
               default = mkAll "eval" nixTests.eval;
               all = mkAll "eval" nixTests.eval;
             };
+
+          # Combined push-CI target: the full check set (including the
+          # module-injected treefmt check, via config.checks) plus integration
+          # tests, as a single attrset. nix-fast-build only accepts one target,
+          # so this lets the push pipeline build checks and integration in one
+          # invocation — one dependency graph that shares testCheckArtifacts and
+          # overlaps the integration VM's serial boot/run with the check
+          # compiles instead of running them back-to-back. Integration is
+          # Linux-only (gated on stdenv.isLinux); on other systems this is just
+          # the checks. Not used by `nix flake check`, which builds `checks`.
+          ci =
+            config.checks
+            // lib.optionalAttrs pkgs.stdenv.isLinux {
+              integration = mkAll "integration" nixTests.integration;
+            };
         };
 
         # Standard packages output for `nix build` (bare) and `nix build .#eidetica-bin`
