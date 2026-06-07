@@ -418,7 +418,7 @@ async fn test_get_store_viewer() {
 }
 
 #[tokio::test]
-async fn test_get_tips() {
+async fn test_snapshot() {
     let (_instance, tree) = setup_tree().await;
 
     // Initially, the tree should have one tip (the root entry)

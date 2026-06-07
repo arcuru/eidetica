@@ -480,7 +480,7 @@ fn all_paths_pass_through(
 ///
 /// # Returns
 /// A `Result` containing a vector of entry IDs that are tips in the tree.
-pub(crate) fn get_tips(inner: &mut InMemoryInner, tree: &ID) -> Result<Vec<ID>> {
+pub(crate) fn snapshot(inner: &mut InMemoryInner, tree: &ID) -> Result<Vec<ID>> {
     // Check if we have cached tree tips
     if let Some(cache) = inner.tips.get(tree) {
         return Ok(cache.tree_tips.iter().cloned().collect());
@@ -511,8 +511,8 @@ pub(crate) fn get_tips(inner: &mut InMemoryInner, tree: &ID) -> Result<Vec<ID>> 
 
 /// Compute store tips by scanning all entries in the tree.
 ///
-/// This is a helper function that avoids recursion between get_store_tips
-/// and get_store_tips_up_to_entries.
+/// This is a helper function that avoids recursion between store_snapshot
+/// and store_snapshot_at.
 fn compute_store_tips_from_all_entries(
     inner: &InMemoryInner,
     tree: &ID,
@@ -546,7 +546,7 @@ fn compute_store_tips_from_all_entries(
 ///
 /// # Returns
 /// A `Result` containing a vector of entry IDs that are tips in the subtree.
-pub(crate) fn get_store_tips(
+pub(crate) fn store_snapshot(
     inner: &mut InMemoryInner,
     tree: &ID,
     subtree: &str,
@@ -582,7 +582,7 @@ pub(crate) fn get_store_tips(
 ///
 /// # Returns
 /// A `Result` containing a vector of entry IDs that are subtree tips within the scope.
-pub(crate) fn get_store_tips_up_to_entries(
+pub(crate) fn store_snapshot_at(
     inner: &mut InMemoryInner,
     tree: &ID,
     subtree: &str,
@@ -593,7 +593,7 @@ pub(crate) fn get_store_tips_up_to_entries(
     }
 
     // Fast path: if main_entries represents current tree tips, use cached subtree tips
-    let current_tree_tips = get_tips(inner, tree)?;
+    let current_tree_tips = snapshot(inner, tree)?;
     if main_entries == current_tree_tips {
         // Check cache first - O(1) lookup
         if let Some(cache) = inner.tips.get(tree)

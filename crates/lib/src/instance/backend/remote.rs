@@ -90,12 +90,7 @@ impl Backend for RemoteBackend {
         }
         match self
             .conn
-            .get_store_tips_up_to_entries(
-                tree.clone(),
-                self.identity(),
-                store.to_string(),
-                tree_tips,
-            )
+            .store_snapshot_at(tree.clone(), self.identity(), store.to_string(), tree_tips)
             .await
         {
             Ok(tips) => Ok(Snapshot::new(tips)),
@@ -112,7 +107,7 @@ impl Backend for RemoteBackend {
     ) -> Result<Snapshot> {
         match self
             .conn
-            .get_store_tips_up_to_entries(
+            .store_snapshot_at(
                 tree.clone(),
                 self.identity(),
                 store.to_string(),

@@ -12,13 +12,13 @@ use crate::entry::{Entry, ID};
 use super::{SqlxBackend, SqlxResultExt};
 
 /// Get tree tips (entries with no children in the main tree).
-pub async fn get_tips(backend: &SqlxBackend, tree: &ID) -> Result<Vec<ID>> {
+pub async fn snapshot(backend: &SqlxBackend, tree: &ID) -> Result<Vec<ID>> {
     // Find a store with empty string name, used for tree-level tips
-    get_store_tips(backend, tree, "").await
+    store_snapshot(backend, tree, "").await
 }
 
 /// Get store tips (entries with no children in a specific store).
-pub async fn get_store_tips(backend: &SqlxBackend, tree: &ID, store: &str) -> Result<Vec<ID>> {
+pub async fn store_snapshot(backend: &SqlxBackend, tree: &ID, store: &str) -> Result<Vec<ID>> {
     let pool = backend.pool();
 
     let rows: Vec<(String,)> =
@@ -33,7 +33,7 @@ pub async fn get_store_tips(backend: &SqlxBackend, tree: &ID, store: &str) -> Re
 }
 
 /// Get store tips that are reachable from the given main tree entries.
-pub async fn get_store_tips_up_to_entries(
+pub async fn store_snapshot_at(
     backend: &SqlxBackend,
     tree: &ID,
     store: &str,
@@ -44,11 +44,11 @@ pub async fn get_store_tips_up_to_entries(
     }
 
     // Fast path: if main_entries are current tree tips, use tips table directly
-    let current_tree_tips = get_tips(backend, tree).await?;
+    let current_tree_tips = snapshot(backend, tree).await?;
     let main_entries_set: HashSet<_> = main_entries.iter().collect();
     let current_tips_set: HashSet<_> = current_tree_tips.iter().collect();
     if main_entries_set == current_tips_set {
-        return get_store_tips(backend, tree, store).await;
+        return store_snapshot(backend, tree, store).await;
     }
 
     let pool = backend.pool();
@@ -501,7 +501,7 @@ pub async fn get_tree_from_tips(
 ///
 /// Only includes entries that belong to the specified tree and store. Tips that don't
 /// belong to the tree or store are ignored.
-pub async fn get_store_from_tips(
+pub async fn store_at(
     backend: &SqlxBackend,
     tree: &ID,
     store: &str,

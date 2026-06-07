@@ -200,7 +200,7 @@ async fn test_backend_get_tree_from_tips() {
 }
 
 #[tokio::test]
-async fn test_get_tips() {
+async fn test_snapshot() {
     let backend = test_backend().await;
 
     // Create a simple tree structure:

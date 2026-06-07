@@ -296,7 +296,7 @@ impl BackendImpl for InMemory {
         }
         // Slow path: compute and cache with write lock
         let mut inner = self.inner.write().unwrap();
-        traversal::get_tips(&mut inner, tree).map(Snapshot::new)
+        traversal::snapshot(&mut inner, tree).map(Snapshot::new)
     }
 
     async fn store_snapshot(&self, tree: &ID, subtree: &str) -> Result<Snapshot> {
@@ -311,7 +311,7 @@ impl BackendImpl for InMemory {
         }
         // Slow path: compute and cache with write lock
         let mut inner = self.inner.write().unwrap();
-        traversal::get_store_tips(&mut inner, tree, subtree).map(Snapshot::new)
+        traversal::store_snapshot(&mut inner, tree, subtree).map(Snapshot::new)
     }
 
     async fn store_snapshot_at(
@@ -321,7 +321,7 @@ impl BackendImpl for InMemory {
         main_snapshot: &Snapshot,
     ) -> Result<Snapshot> {
         let mut inner = self.inner.write().unwrap();
-        traversal::get_store_tips_up_to_entries(&mut inner, tree, subtree, main_snapshot.tips())
+        traversal::store_snapshot_at(&mut inner, tree, subtree, main_snapshot.tips())
             .map(Snapshot::new)
     }
 
@@ -381,7 +381,7 @@ impl BackendImpl for InMemory {
 
     async fn store_at(&self, tree: &ID, subtree: &str, snapshot: &Snapshot) -> Result<Vec<Entry>> {
         let inner = self.inner.read().unwrap();
-        storage::get_store_from_tips(&inner, tree, subtree, snapshot.tips())
+        storage::store_at(&inner, tree, subtree, snapshot.tips())
     }
 
     async fn get_instance_metadata(&self) -> Result<Option<InstanceMetadata>> {
