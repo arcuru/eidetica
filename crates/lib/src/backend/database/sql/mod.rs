@@ -404,11 +404,11 @@ impl BackendImpl for SqlxBackend {
     }
 
     async fn snapshot(&self, tree: &ID) -> Result<Snapshot> {
-        traversal::get_tips(self, tree).await.map(Snapshot::new)
+        traversal::snapshot(self, tree).await.map(Snapshot::new)
     }
 
     async fn store_snapshot(&self, tree: &ID, store: &str) -> Result<Snapshot> {
-        traversal::get_store_tips(self, tree, store)
+        traversal::store_snapshot(self, tree, store)
             .await
             .map(Snapshot::new)
     }
@@ -419,7 +419,7 @@ impl BackendImpl for SqlxBackend {
         store: &str,
         main_snapshot: &Snapshot,
     ) -> Result<Snapshot> {
-        traversal::get_store_tips_up_to_entries(self, tree, store, main_snapshot.tips())
+        traversal::store_snapshot_at(self, tree, store, main_snapshot.tips())
             .await
             .map(Snapshot::new)
     }
@@ -458,7 +458,7 @@ impl BackendImpl for SqlxBackend {
     }
 
     async fn store_at(&self, tree: &ID, store: &str, snapshot: &Snapshot) -> Result<Vec<Entry>> {
-        traversal::get_store_from_tips(self, tree, store, snapshot.tips()).await
+        traversal::store_at(self, tree, store, snapshot.tips()).await
     }
 
     async fn get_cached_crdt_state(

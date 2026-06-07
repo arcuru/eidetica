@@ -42,7 +42,7 @@ async fn test_backend_subtree_operations() {
 }
 
 #[tokio::test]
-async fn test_backend_get_store_from_tips() {
+async fn test_backend_store_at() {
     let backend = test_backend().await;
     let subtree_name = "my_subtree";
 
@@ -208,7 +208,7 @@ async fn test_backend_get_store_from_tips() {
 }
 
 #[tokio::test]
-async fn test_get_store_tips() {
+async fn test_store_snapshot() {
     let backend = test_backend().await;
 
     // Create a tree with subtrees
@@ -314,10 +314,10 @@ async fn test_get_store_tips() {
 }
 
 // ============================================================================
-// Slow Path Tests for get_store_tips_up_to_entries
+// Slow Path Tests for store_snapshot_at
 // ============================================================================
 //
-// These tests specifically exercise the "slow path" of get_store_tips_up_to_entries,
+// These tests specifically exercise the "slow path" of store_snapshot_at,
 // which is triggered when `main_entries` doesn't match the current tree tips.
 // This happens when querying historical tips at specific points in history.
 
@@ -330,7 +330,7 @@ async fn test_get_store_tips() {
 /// Each entry is in subtree "sub1".
 /// Test queries tips at: {A}, {B}, {C}, and {A, B} to verify slow path correctness.
 #[tokio::test]
-async fn test_get_store_tips_up_to_entries_linear_chain() {
+async fn test_store_snapshot_at_linear_chain() {
     let backend = test_backend().await;
     let subtree = "sub1";
 
@@ -463,7 +463,7 @@ async fn test_get_store_tips_up_to_entries_linear_chain() {
 /// All entries are in subtree "sub1".
 /// Test queries at different stages of the diamond.
 #[tokio::test]
-async fn test_get_store_tips_up_to_entries_diamond_pattern() {
+async fn test_store_snapshot_at_diamond_pattern() {
     let backend = test_backend().await;
     let subtree = "sub1";
 
@@ -593,7 +593,7 @@ async fn test_get_store_tips_up_to_entries_diamond_pattern() {
 ///
 /// Test that historical tips for each subtree are computed correctly.
 #[tokio::test]
-async fn test_get_store_tips_up_to_entries_multiple_subtrees() {
+async fn test_store_snapshot_at_multiple_subtrees() {
     let backend = test_backend().await;
 
     // Build tree with two parallel branches
@@ -748,9 +748,9 @@ async fn test_get_store_tips_up_to_entries_multiple_subtrees() {
     assert_eq!(sub1_tips_at_cd[0], id_c);
 }
 
-/// Test edge cases for get_store_tips_up_to_entries slow path.
+/// Test edge cases for store_snapshot_at slow path.
 #[tokio::test]
-async fn test_get_store_tips_up_to_entries_edge_cases() {
+async fn test_store_snapshot_at_edge_cases() {
     let backend = test_backend().await;
     let subtree = "sub1";
 
@@ -834,7 +834,7 @@ async fn test_get_store_tips_up_to_entries_edge_cases() {
 /// All entries are in subtree "sub1".
 /// Tests various historical tip queries on this complex structure.
 #[tokio::test]
-async fn test_get_store_tips_up_to_entries_complex_dag() {
+async fn test_store_snapshot_at_complex_dag() {
     let backend = test_backend().await;
     let subtree = "sub1";
 

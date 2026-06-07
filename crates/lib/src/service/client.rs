@@ -599,7 +599,7 @@ impl RemoteConnection {
     }
 
     /// Subtree tips reachable from given main-tree entries.
-    pub async fn get_store_tips_up_to_entries(
+    pub async fn store_snapshot_at(
         &self,
         root_id: ID,
         identity: SigKey,

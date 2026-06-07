@@ -297,7 +297,7 @@ pub fn bench_tips_finding(c: &mut Criterion) {
         .enable_all()
         .build()
         .expect("Failed to build Tokio runtime");
-    let mut group = c.benchmark_group("get_tips");
+    let mut group = c.benchmark_group("snapshot");
 
     for num_tips in [5, 10, 25] {
         group.bench_with_input(

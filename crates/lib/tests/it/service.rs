@@ -656,7 +656,7 @@ async fn test_database_encrypted_store_roundtrip() {
 
 /// Positive control: owner can read via `get_verified_tips`.
 #[tokio::test]
-async fn test_backend_get_tips_allowed_for_owner() {
+async fn test_backend_snapshot_allowed_for_owner() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
     let (instance, root_id, identity) = setup_db(&server, &socket_path, "alice").await;
 
@@ -670,7 +670,7 @@ async fn test_backend_get_tips_allowed_for_owner() {
 
 /// Negative control: unauthorised user is rejected.
 #[tokio::test]
-async fn test_backend_get_tips_denied_for_unauthorised_user() {
+async fn test_backend_snapshot_denied_for_unauthorised_user() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
     let (_alice_inst, alice_db_id, _alice_identity) =
         setup_db(&server, &socket_path, "alice").await;

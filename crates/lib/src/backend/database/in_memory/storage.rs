@@ -310,7 +310,7 @@ pub(crate) fn get_tree_from_tips(
 }
 
 /// Retrieves all entries belonging to a specific subtree within a tree up to the given tips, sorted topologically.
-pub(crate) fn get_store_from_tips(
+pub(crate) fn store_at(
     inner: &InMemoryInner,
     tree: &ID,
     subtree: &str,
