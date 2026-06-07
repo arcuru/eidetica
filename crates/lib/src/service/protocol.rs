@@ -134,7 +134,7 @@ pub enum DatabaseOp {
     /// verification pass against the tree's pinned auth is the boundary). The
     /// `required_permission()` value below is advisory only for this variant.
     SubmitSignedEntry { entry: Box<Entry> },
-    /// The database's Verified-frontier tips (server runs `Database::get_tips`
+    /// The database's Verified-frontier tips (server runs `Database::snapshot`
     /// on its local instance). Gate Read.
     GetVerifiedTips,
     /// Server-materialized merged state of an **unencrypted** store, against

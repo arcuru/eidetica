@@ -140,8 +140,8 @@ The `service` feature must be enabled (included in the default `full` feature se
 
 The `Database` trait (`eidetica::backend::Database`) defines the core interface required for storage. Beyond simple `get` and `put` for entries, it includes methods crucial for navigating the database's history and structure:
 
-- `get_tips(tree_id)`: Finds the latest entries in a specific `Database`.
-- `get_subtree_tips(tree_id, subtree_name)`: Finds the latest entries _for a specific `Store`_ within a `Database`.
+- `snapshot(tree_id)`: Finds the latest entries in a specific `Database`.
+- `store_snapshot(tree_id, subtree_name)`: Finds the latest entries _for a specific `Store`_ within a `Database`.
 - `all_roots()`: Finds all top-level `Database` roots stored in the database.
 - `get_tree(tree_id)` / `get_subtree(...)`: Retrieve all entries for a database/store, typically sorted topologically (required for some history operations, potentially expensive).
 

@@ -343,12 +343,12 @@ println!(
 );
 
 // Default read: only the Verified frontier is visible.
-let tips = database.get_tips().await?;
+let tips = database.snapshot().await?;
 
 // Opt into the looser view to also see Unverified tips (e.g. to inspect
 // data whose pinned _settings this node has not received yet). Failed
 // entries are always dropped, in both views.
-let pending = database.clone().allow_unverified().get_tips().await?;
+let pending = database.clone().allow_unverified().snapshot().await?;
 ```
 
 `still_unverified` counts entries left pending because their pinned

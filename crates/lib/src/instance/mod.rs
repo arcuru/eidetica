@@ -245,7 +245,7 @@ pub(crate) struct InstanceInternal {
     /// Monotonic id source for [`CallbackId`].
     next_callback_id: AtomicU64,
     /// Per-tree async locks serializing the
-    /// `get_tips` → backend write → callback dispatch sequence so
+    /// `snapshot` → backend write → callback dispatch sequence so
     /// `WriteEvent::previous_tips` is consistent for concurrent writers
     /// to the same tree.
     tree_locks: Mutex<HashMap<ID, Arc<tokio::sync::Mutex<()>>>>,
@@ -1509,7 +1509,7 @@ impl Instance {
     }
 
     /// Acquire (or create) the per-tree async lock that serializes the
-    /// `get_tips` → backend write → callback dispatch sequence.
+    /// `snapshot` → backend write → callback dispatch sequence.
     ///
     /// Without this, two concurrent writers to the same tree both snapshot
     /// `previous_tips` before either writes, so the second callback's

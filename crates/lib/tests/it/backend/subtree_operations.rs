@@ -27,7 +27,7 @@ async fn test_backend_subtree_operations() {
     let child_id = child_entry.id();
     backend.put_verified(child_entry).await.unwrap();
 
-    // Test get_store_tips
+    // Test store_snapshot
     let subtree_tips_result = backend.store_snapshot(&root_id, "subtree1").await;
     assert!(subtree_tips_result.is_ok());
     let subtree_tips = subtree_tips_result.unwrap();

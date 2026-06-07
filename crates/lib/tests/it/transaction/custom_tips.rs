@@ -31,7 +31,7 @@ async fn test_transaction_with_custom_tips() {
     store_c.set("c_data", "value_c").await.unwrap();
     let _entry_c_id = op_c.commit().await.unwrap();
 
-    // Create operation from entry A using new_transaction_with_tips
+    // Create operation from entry A using new_transaction_at
     let op_from_a = ctx
         .database()
         .new_transaction_at(&Snapshot::from(std::slice::from_ref(&entry_a_id)))

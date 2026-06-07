@@ -537,10 +537,10 @@ println!(
 );
 
 // Default read shows only the Verified frontier.
-let visible = database.get_tips().await?;
+let visible = database.snapshot().await?;
 
 // Inspect not-yet-verified data explicitly (Failed is still dropped).
-let with_pending = database.clone().allow_unverified().get_tips().await?;
+let with_pending = database.clone().allow_unverified().snapshot().await?;
 let _ = (visible, with_pending);
 # Ok(())
 # }
