@@ -29,15 +29,15 @@ async fn test_backend_error_handling() {
     let get_result = backend.get(&non_existent_id).await;
     assert!(get_result.is_err());
 
-    // get_tips for non-existent tree returns an empty vector
+    // snapshot for non-existent tree returns an empty vector
     let tips_result = backend.snapshot(&non_existent_id).await;
     assert!(
         tips_result.is_ok(),
-        "get_tips should succeed for non-existent tree"
+        "snapshot should succeed for non-existent tree"
     );
     assert!(
         tips_result.unwrap().is_empty(),
-        "get_tips should return empty vector for non-existent tree"
+        "snapshot should return empty vector for non-existent tree"
     );
 
     // get_store for non-existent tree returns an empty vector
@@ -53,17 +53,17 @@ async fn test_backend_error_handling() {
         "get_store should return empty vector for non-existent tree"
     );
 
-    // get_store_tips for non-existent tree returns an empty vector
+    // store_snapshot for non-existent tree returns an empty vector
     let subtree_tips_result = backend
         .store_snapshot(&non_existent_id, "non_existent_subtree")
         .await;
     assert!(
         subtree_tips_result.is_ok(),
-        "get_store_tips should succeed for non-existent tree"
+        "store_snapshot should succeed for non-existent tree"
     );
     assert!(
         subtree_tips_result.unwrap().is_empty(),
-        "get_store_tips should return empty vector for non-existent tree"
+        "store_snapshot should return empty vector for non-existent tree"
     );
 }
 
