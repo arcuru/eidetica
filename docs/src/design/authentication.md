@@ -590,6 +590,26 @@ To validate entries with delegated database keys:
 
 This mechanism ensures that once a key revocation is observed in a delegated database, no entry can use an older version of that database where the key was still valid.
 
+#### Implementation Status: Snapshot Pinning and the Monotonicity Floor
+
+The "latest known tips" high-water-mark above describes the intended end state. The validation path implemented today (`crates/lib/src/auth/validation/delegation.rs`) realizes a related but narrower guarantee. It is documented here explicitly so the design above is not mistaken for the current behavior.
+
+**What is enforced today**, per delegation step:
+
+1. **Tree-membership validation.** Every claimed tip must be a real entry belonging to _that_ delegated database, verified via `get_tree_from_tips`. The earlier implementation only checked that a tip existed _somewhere_ in the backend, so a tip from an unrelated tree was accepted; that hole is closed.
+2. **Snapshot-pinned resolution.** The delegated database's auth settings are read **as of the claimed tips**, not its live head. Permissions are evaluated at the state the signer actually observed, so a later change in the delegated database does not retroactively alter how an already-signed entry resolves.
+3. **Monotonicity floor.** The claimed snapshot may not regress below the snapshot the parent database has **committed** for that delegation — the `tips` field of the `DelegatedTreeRef` (`TreeReference.tips`), which was previously dead data in validation. Equivalently, every committed-floor tip must be reachable from the claimed tips. This stops an entry from time-travelling the delegated database backwards to resurrect auth state the parent has already advanced past (for example a since-revoked key). Advancing the floor is an admin-gated `_settings` write on the parent database.
+4. **Bounded fan-out.** The wire-supplied delegation path length (`MAX_DELEGATION_STEPS`) and per-step claimed-tip count (`MAX_DELEGATION_TIPS`) are bounded, so a single signature key cannot force unbounded backend work before the authorization gate decides.
+
+**How this differs from "latest known tips" above.** The floor is a pointer the parent database commits by an explicit admin settings write, _not_ an automatically-tracked high-water-mark advanced by every observing entry (design step 4 of §Tip Tracking and Validation). It bounds regression against the last committed pointer; it does not yet pin the snapshot fully.
+
+**Known gaps (tracked follow-ups, not yet implemented):**
+
+- **Strict per-entry monotonicity.** The floor is the only monotonicity guarantee. Two sibling entries under the same parent state may still pin _different_ snapshots, provided both are at or above the committed floor.
+- **Settings-write monotonic gate.** Nothing yet forces the committed floor pointer itself to move only forward; an admin settings write could move it backwards, re-opening the regression window. Gating delegation-pointer updates to be monotonic is required to fully close this.
+
+Both gaps are marked `FIXME(security)` in `auth/validation/entry.rs` and `auth/validation/delegation.rs`.
+
 ### Key Revocation
 
 Delegated database key deletion is always treated as `revoked` status in the main database. This prevents new entries from building on the deleted key's content while preserving the historical content during merges. This approach maintains the integrity of existing entries while preventing future reliance on removed authentication credentials.
@@ -748,6 +768,8 @@ graph TD
 - **Replay Attacks**: Content-addressable IDs prevent entry duplication
 - **Administrative Hierarchy Violations**: Lower priority keys cannot modify higher priority keys (but can modify equal priority keys)
 - **Permission Boundary Violations**: Delegated database permissions are constrained within their specified min/max bounds
+- **Cross-Tree Tip Forgery**: Claimed delegation tips are validated as members of the referenced delegated database, not merely as entries existing somewhere in the backend
+- **Delegated-Tree Snapshot Regression (bounded)**: Auth resolution is pinned to the snapshot the signer claimed, and that snapshot may not regress below the parent's committed floor (see §Implementation Status). Note the residual gaps documented there — this is not yet a full per-entry pin
 - **Race Conditions**: Last Write Wins provides deterministic conflict resolution
 
 #### Requires Manual Recovery
@@ -774,6 +796,8 @@ graph TD
 #### Partial Mitigation
 
 - **DoS via Large Histories**: Priority system limits damage from compromised lower-priority keys
+- **DoS via Delegation Amplification**: Delegation path length and per-step claimed-tip count are bounded, capping the backend work an unauthenticated signature key can force before authorization; deeper amplification within those bounds is still possible
+- **Delegated-Tree Snapshot Regression**: The monotonicity floor bounds regression against the parent's committed pointer, but strict per-entry monotonicity and a monotonic gate on the committed pointer itself are not yet implemented (see §Implementation Status)
 - **Social Engineering**: Administrative hierarchy limits scope of individual key compromise
 - **Timestamp Manipulation**: LWW conflict resolution is deterministic but may be influenced by the chosen timestamp resolution algorithm
 - **Administrative Confusion**: Network partitions may result in unexpected administrative states due to LWW resolution
@@ -796,7 +820,7 @@ The current validation process:
 4. **Validate Signature**: Verify the Ed25519 signature against the entry content hash
 5. **Check Permissions**: Ensure the key has sufficient permissions for the operation
 
-**Current features include**: Direct key validation, delegated database resolution, tip validation, and permission clamping.
+**Current features include**: Direct key validation, delegated database resolution, snapshot-pinned tip validation (tree-membership checks plus the monotonicity floor described in §Implementation Status), and permission clamping.
 
 ### Verification Status vs. Signature Validity
 
