@@ -97,6 +97,34 @@ pub enum AuthError {
         tree_id: ID,
     },
 
+    /// Delegation path exceeds the maximum allowed number of steps.
+    ///
+    /// The delegation path is wire-supplied on the entry's signature key, and
+    /// each step drives backend work before the authorization gate decides.
+    /// Bounding the path length caps that amplification (a flat path of N steps
+    /// is the chain-depth analog of N levels of recursion).
+    #[error("Delegation path too long: {len} steps (max {max})")]
+    DelegationPathTooLong {
+        /// Number of steps supplied
+        len: usize,
+        /// Maximum allowed
+        max: usize,
+    },
+
+    /// A delegation step claims more tips than allowed.
+    ///
+    /// Claimed tips are wire-supplied and each drives DAG traversal; the per-step
+    /// count is bounded to cap that amplification.
+    #[error("Delegation step for tree {tree_id} claims too many tips: {len} (max {max})")]
+    DelegationTipsTooMany {
+        /// The delegated tree root ID
+        tree_id: ID,
+        /// Number of tips claimed
+        len: usize,
+        /// Maximum allowed
+        max: usize,
+    },
+
     /// Attempted to revoke an entry that is not a key.
     #[error("Cannot revoke non-key entry: {key_name}")]
     CannotRevokeNonKey {
@@ -245,6 +273,8 @@ impl AuthError {
                 | AuthError::DelegatedTreeLoadFailed { .. }
                 | AuthError::InvalidDelegationTips { .. }
                 | AuthError::DelegationNotFound { .. }
+                | AuthError::DelegationPathTooLong { .. }
+                | AuthError::DelegationTipsTooMany { .. }
         )
     }
 
