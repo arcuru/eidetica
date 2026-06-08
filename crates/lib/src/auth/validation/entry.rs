@@ -100,13 +100,17 @@ impl AuthValidator {
             }
         };
 
-        // FIXME(security): The claimed tips in a delegation SigKey are mostly
-        // unused. DelegationResolver::validate_tip_ancestry only checks that
-        // claimed tips exist as entries in the backend (not even tree-scoped),
-        // and then the code loads the delegated tree's *current* auth settings
-        // regardless of what tips were claimed. The claimed tips should instead
-        // determine which auth settings snapshot is used for resolution, so that
-        // permissions are evaluated at the state the signer actually observed.
+        // The claimed tips in a delegation SigKey pin resolution: the delegated
+        // tree's auth settings are read as of those tips (not its live head), and
+        // the tips may not regress below the snapshot the parent tree committed
+        // for the delegation (see DelegationResolver::resolve_delegation_path_with_depth).
+        //
+        // FIXME(security): this is the settings-pointer floor only — still a known
+        // gap. Two hardening steps remain: (1) strict per-entry non-regression
+        // (sibling entries above the committed floor can still pick different
+        // snapshots), and (2) a monotonic gate on settings writes so the committed
+        // pointer itself cannot be moved backwards. Until both land, the floor
+        // bounds regression but does not fully pin the delegated-tree snapshot.
 
         // Determine operation type from entry content
         let operation = if entry.subtrees().contains(&SETTINGS.to_string()) {

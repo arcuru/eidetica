@@ -984,12 +984,7 @@ async fn setup_delegation_with_floor(
 /// The claimed delegated-tree snapshot must not regress below the snapshot the
 /// parent tree committed (the settings-pointer floor). Pinning at the floor (or
 /// ahead of it) resolves; pinning behind it is rejected.
-///
-/// `should_panic` documents the pre-fix flaw: today the regressed snapshot is
-/// accepted, so the `expect_err` below panics. The fix commit removes this
-/// attribute and the assertion holds for real.
 #[tokio::test]
-#[should_panic(expected = "claiming a snapshot behind the committed floor must be rejected")]
 async fn test_delegation_floor_rejects_snapshot_regression() {
     // Floor committed at snapshot 2 (the newer state).
     let (instance, delegated_tree, delegated_pubkey, snap1, snap2, main_auth) =
@@ -1053,15 +1048,7 @@ async fn test_delegation_resolves_settings_at_claimed_tips() {
 }
 
 /// F5a: a delegation path longer than the cap is rejected before backend work.
-///
-/// `should_panic` documents the pre-fix behaviour: the over-long path is still
-/// rejected today, but only incidentally and *after* walking the chain (it
-/// surfaces as a downstream `Delegation not found` rather than an up-front
-/// bound), so the cap-specific assertion fails. The fix adds the early cap and
-/// removes this attribute. Unlike the foreign-tip / floor / live-head tests,
-/// this is amplification hardening, not an accept-vs-reject auth bypass.
 #[tokio::test]
-#[should_panic(expected = "expected DelegationPathTooLong, got:")]
 async fn test_delegation_path_length_capped() {
     let (instance, delegated_tree, delegated_pubkey, _s1, snap2, main_auth) =
         setup_delegation_with_floor(false).await;
@@ -1086,14 +1073,7 @@ async fn test_delegation_path_length_capped() {
 }
 
 /// F5a: a step claiming more tips than the cap is rejected before backend work.
-///
-/// `should_panic` documents the pre-fix behaviour: the fabricated tips are still
-/// rejected today, but only *after* backend traversal (as `InvalidDelegationTips`
-/// "don't match") rather than by an up-front per-step bound, so the cap-specific
-/// assertion fails. The fix adds the early cap and removes this attribute. Like
-/// the path test, this is amplification hardening, not an auth bypass.
 #[tokio::test]
-#[should_panic(expected = "expected DelegationTipsTooMany, got:")]
 async fn test_delegation_tips_count_capped() {
     let (instance, delegated_tree, delegated_pubkey, _s1, _s2, main_auth) =
         setup_delegation_with_floor(false).await;
@@ -1123,11 +1103,7 @@ async fn test_delegation_tips_count_capped() {
 /// F5b-1: a claimed tip that is a real entry of *another* tree is rejected.
 /// The prior `backend.get().is_ok()` check accepted any entry that existed
 /// anywhere in the backend; the tree-scoped check rejects it.
-///
-/// `should_panic` documents the pre-fix flaw: the foreign tip is accepted today,
-/// so the `expect_err` panics. The fix commit removes this attribute.
 #[tokio::test]
-#[should_panic(expected = "a tip from another tree must be rejected")]
 async fn test_delegation_rejects_foreign_tip() {
     let (instance, delegated_tree, delegated_pubkey, _s1, _s2, main_auth) =
         setup_delegation_with_floor(false).await;
@@ -1166,12 +1142,7 @@ async fn test_delegation_rejects_foreign_tip() {
 /// resolve with the older (higher) permission. This is the regression test for
 /// "claimed tips were ignored" -- pre-fix, resolution read the delegated tree's
 /// live head and saw the downgrade regardless of which tips the signer claimed.
-///
-/// `should_panic` documents the pre-fix flaw: resolution reads the live-head
-/// Read downgrade instead of the pinned Admin(5), so the assertion panics. The
-/// fix commit removes this attribute.
 #[tokio::test]
-#[should_panic(expected = "pinned tips must resolve the Admin(5) state")]
 async fn test_delegation_reads_auth_state_at_pinned_tips_not_live_head() {
     use crate::{
         Instance,
