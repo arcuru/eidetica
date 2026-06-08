@@ -389,10 +389,10 @@ async fn test_delegation_depth_limits() -> Result<()> {
     txn.commit().await?;
 
     // Create a deeply nested delegation that should exceed the limit
-    // We'll create a chain with 12 levels (exceeds MAX_DELEGATION_DEPTH of 10)
+    // We'll create a chain with 12 levels (exceeds MAX_DELEGATION_STEPS of 10)
     let mut delegation_steps = Vec::new();
 
-    // Add 12 intermediate delegation steps (exceeds MAX_DELEGATION_DEPTH of 10)
+    // Add 12 intermediate delegation steps (exceeds MAX_DELEGATION_STEPS of 10)
     for _ in 0..12 {
         delegation_steps.push(DelegationStep {
             tree: delegated_tree_root.clone(),
@@ -414,7 +414,14 @@ async fn test_delegation_depth_limits() -> Result<()> {
 
     assert!(result.is_err());
     let error_msg = result.unwrap_err().to_string();
-    assert!(error_msg.contains("Maximum delegation depth") || error_msg.contains("not found"));
+    // The path-length cap rejects the over-limit chain up front; the older
+    // "Maximum delegation depth" / "not found" branches remain valid fallbacks.
+    assert!(
+        error_msg.contains("Delegation path too long")
+            || error_msg.contains("Maximum delegation depth")
+            || error_msg.contains("not found"),
+        "unexpected error for over-limit delegation chain: {error_msg}"
+    );
 
     Ok(())
 }
