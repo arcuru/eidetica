@@ -873,3 +873,407 @@ async fn test_global_permission_vs_specific_key() {
         result2.err()
     );
 }
+
+/// Build an instance with a delegated tree (carrying `delegated_pubkey` as
+/// Admin) and a main tree that declares the delegation pinned at `floor_tips`.
+/// Returns everything needed to drive `resolve_sig_key` against it.
+async fn setup_delegation_with_floor(
+    floor_at_first_snapshot: bool,
+) -> (
+    crate::Instance,
+    Database,
+    PublicKey,
+    Vec<ID>, // snapshot 1 tips (older)
+    Vec<ID>, // snapshot 2 tips (newer)
+    AuthSettings,
+) {
+    use crate::{
+        Instance,
+        auth::types::{DelegatedTreeRef, PermissionBounds, TreeReference},
+        backend::database::InMemory,
+    };
+
+    let backend = Box::new(InMemory::new());
+    let (instance, _admin) =
+        Instance::create_backend(backend, crate::NewUser::passwordless("admin"))
+            .await
+            .expect("Failed to create test instance");
+
+    let (_, delegated_pubkey) = generate_keypair();
+
+    let delegated_tree = Database::create(
+        &instance,
+        instance.signing_key().unwrap().clone(),
+        Doc::new(),
+    )
+    .await
+    .unwrap();
+
+    // Snapshot 1: delegated user added.
+    let txn = delegated_tree.new_transaction().await.unwrap();
+    txn.get_settings()
+        .unwrap()
+        .set_auth_key(
+            &delegated_pubkey,
+            AuthKey::active(Some("delegated_user"), Permission::Admin(5)),
+        )
+        .await
+        .unwrap();
+    txn.commit().await.unwrap();
+    let snap1 = delegated_tree.snapshot().await.unwrap().into_tips();
+
+    // Snapshot 2: an unrelated settings write advances the delegated tree.
+    let txn = delegated_tree.new_transaction().await.unwrap();
+    txn.get_settings()
+        .unwrap()
+        .set_name("delegated-renamed")
+        .await
+        .unwrap();
+    txn.commit().await.unwrap();
+    let snap2 = delegated_tree.snapshot().await.unwrap().into_tips();
+    assert_ne!(snap1, snap2, "second commit must advance the tips");
+
+    let floor = if floor_at_first_snapshot {
+        snap1.clone()
+    } else {
+        snap2.clone()
+    };
+
+    let main_tree = Database::create(
+        &instance,
+        instance.signing_key().unwrap().clone(),
+        Doc::new(),
+    )
+    .await
+    .unwrap();
+    let txn = main_tree.new_transaction().await.unwrap();
+    txn.get_settings()
+        .unwrap()
+        .add_delegated_tree(DelegatedTreeRef {
+            permission_bounds: PermissionBounds {
+                max: Permission::Write(10),
+                min: Some(Permission::Read),
+            },
+            tree: TreeReference {
+                root: delegated_tree.root_id().clone(),
+                tips: floor,
+            },
+        })
+        .await
+        .unwrap();
+    txn.commit().await.unwrap();
+
+    let main_auth = main_tree
+        .get_settings()
+        .await
+        .unwrap()
+        .auth_snapshot()
+        .await
+        .unwrap();
+
+    (
+        instance,
+        delegated_tree,
+        delegated_pubkey,
+        snap1,
+        snap2,
+        main_auth,
+    )
+}
+
+/// The claimed delegated-tree snapshot must not regress below the snapshot the
+/// parent tree committed (the settings-pointer floor). Pinning at the floor (or
+/// ahead of it) resolves; pinning behind it is rejected.
+///
+/// `should_panic` documents the pre-fix flaw: today the regressed snapshot is
+/// accepted, so the `expect_err` below panics. The fix commit removes this
+/// attribute and the assertion holds for real.
+#[tokio::test]
+#[should_panic(expected = "claiming a snapshot behind the committed floor must be rejected")]
+async fn test_delegation_floor_rejects_snapshot_regression() {
+    // Floor committed at snapshot 2 (the newer state).
+    let (instance, delegated_tree, delegated_pubkey, snap1, snap2, main_auth) =
+        setup_delegation_with_floor(false).await;
+
+    // Regression: claim snapshot 1, which is an ancestor of the committed floor.
+    let regress = SigKey::Delegation {
+        path: vec![DelegationStep {
+            tree: delegated_tree.root_id().clone(),
+            tips: snap1,
+        }],
+        hint: KeyHint::from_pubkey(&delegated_pubkey),
+    };
+    let err = AuthValidator::new()
+        .resolve_sig_key(&regress, &main_auth, Some(&instance))
+        .await
+        .expect_err("claiming a snapshot behind the committed floor must be rejected");
+    assert!(
+        err.to_string().contains("Invalid delegation tips"),
+        "expected InvalidDelegationTips, got: {err}"
+    );
+
+    // At the floor: claim snapshot 2 — accepted, and resolves the delegated key.
+    let ok = SigKey::Delegation {
+        path: vec![DelegationStep {
+            tree: delegated_tree.root_id().clone(),
+            tips: snap2,
+        }],
+        hint: KeyHint::from_pubkey(&delegated_pubkey),
+    };
+    let resolved = AuthValidator::new()
+        .resolve_sig_key(&ok, &main_auth, Some(&instance))
+        .await
+        .expect("claiming the committed snapshot must resolve");
+    assert_eq!(resolved.len(), 1);
+    // Admin(5) clamped to the delegation's Write(10) bound.
+    assert_eq!(resolved[0].effective_permission, Permission::Write(10));
+}
+
+/// Tips pin resolution to the observed snapshot: a key that exists only at the
+/// newer snapshot is invisible when the entry pins the older one (floor at S1).
+#[tokio::test]
+async fn test_delegation_resolves_settings_at_claimed_tips() {
+    let (instance, delegated_tree, delegated_pubkey, snap1, _snap2, main_auth) =
+        setup_delegation_with_floor(true).await;
+
+    // Pinning exactly at the floor (snap1) resolves the key present there.
+    let sig = SigKey::Delegation {
+        path: vec![DelegationStep {
+            tree: delegated_tree.root_id().clone(),
+            tips: snap1,
+        }],
+        hint: KeyHint::from_pubkey(&delegated_pubkey),
+    };
+    let resolved = AuthValidator::new()
+        .resolve_sig_key(&sig, &main_auth, Some(&instance))
+        .await
+        .expect("resolution at the pinned snapshot should succeed");
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].key_status, KeyStatus::Active);
+}
+
+/// F5a: a delegation path longer than the cap is rejected before backend work.
+///
+/// `should_panic` documents the pre-fix behaviour: the over-long path is still
+/// rejected today, but only incidentally and *after* walking the chain (it
+/// surfaces as a downstream `Delegation not found` rather than an up-front
+/// bound), so the cap-specific assertion fails. The fix adds the early cap and
+/// removes this attribute. Unlike the foreign-tip / floor / live-head tests,
+/// this is amplification hardening, not an accept-vs-reject auth bypass.
+#[tokio::test]
+#[should_panic(expected = "expected DelegationPathTooLong, got:")]
+async fn test_delegation_path_length_capped() {
+    let (instance, delegated_tree, delegated_pubkey, _s1, snap2, main_auth) =
+        setup_delegation_with_floor(false).await;
+
+    let step = DelegationStep {
+        tree: delegated_tree.root_id().clone(),
+        tips: snap2,
+    };
+    // 11 steps > MAX_DELEGATION_STEPS (10).
+    let sig = SigKey::Delegation {
+        path: vec![step; 11],
+        hint: KeyHint::from_pubkey(&delegated_pubkey),
+    };
+    let err = AuthValidator::new()
+        .resolve_sig_key(&sig, &main_auth, Some(&instance))
+        .await
+        .expect_err("over-long delegation path must be rejected");
+    assert!(
+        err.to_string().contains("Delegation path too long"),
+        "expected DelegationPathTooLong, got: {err}"
+    );
+}
+
+/// F5a: a step claiming more tips than the cap is rejected before backend work.
+///
+/// `should_panic` documents the pre-fix behaviour: the fabricated tips are still
+/// rejected today, but only *after* backend traversal (as `InvalidDelegationTips`
+/// "don't match") rather than by an up-front per-step bound, so the cap-specific
+/// assertion fails. The fix adds the early cap and removes this attribute. Like
+/// the path test, this is amplification hardening, not an auth bypass.
+#[tokio::test]
+#[should_panic(expected = "expected DelegationTipsTooMany, got:")]
+async fn test_delegation_tips_count_capped() {
+    let (instance, delegated_tree, delegated_pubkey, _s1, _s2, main_auth) =
+        setup_delegation_with_floor(false).await;
+
+    // 65 fabricated tips > MAX_DELEGATION_TIPS (64). The cap fires before any
+    // backend traversal, so the tips not existing is irrelevant.
+    let tips: Vec<ID> = (0u16..65)
+        .map(|i| ID::from_bytes(i.to_le_bytes()))
+        .collect();
+    let sig = SigKey::Delegation {
+        path: vec![DelegationStep {
+            tree: delegated_tree.root_id().clone(),
+            tips,
+        }],
+        hint: KeyHint::from_pubkey(&delegated_pubkey),
+    };
+    let err = AuthValidator::new()
+        .resolve_sig_key(&sig, &main_auth, Some(&instance))
+        .await
+        .expect_err("over-large tip set must be rejected");
+    assert!(
+        err.to_string().contains("too many tips"),
+        "expected DelegationTipsTooMany, got: {err}"
+    );
+}
+
+/// F5b-1: a claimed tip that is a real entry of *another* tree is rejected.
+/// The prior `backend.get().is_ok()` check accepted any entry that existed
+/// anywhere in the backend; the tree-scoped check rejects it.
+///
+/// `should_panic` documents the pre-fix flaw: the foreign tip is accepted today,
+/// so the `expect_err` panics. The fix commit removes this attribute.
+#[tokio::test]
+#[should_panic(expected = "a tip from another tree must be rejected")]
+async fn test_delegation_rejects_foreign_tip() {
+    let (instance, delegated_tree, delegated_pubkey, _s1, _s2, main_auth) =
+        setup_delegation_with_floor(false).await;
+
+    // A separate, real tree. Its root is a genuine backend entry (so the old
+    // existence-only check would have passed) but it does not belong to the
+    // delegated tree.
+    let other_tree = Database::create(
+        &instance,
+        instance.signing_key().unwrap().clone(),
+        Doc::new(),
+    )
+    .await
+    .unwrap();
+    let foreign_tip = other_tree.root_id().clone();
+
+    let sig = SigKey::Delegation {
+        path: vec![DelegationStep {
+            tree: delegated_tree.root_id().clone(),
+            tips: vec![foreign_tip],
+        }],
+        hint: KeyHint::from_pubkey(&delegated_pubkey),
+    };
+    let err = AuthValidator::new()
+        .resolve_sig_key(&sig, &main_auth, Some(&instance))
+        .await
+        .expect_err("a tip from another tree must be rejected");
+    assert!(
+        err.to_string().contains("Invalid delegation tips"),
+        "expected InvalidDelegationTips, got: {err}"
+    );
+}
+
+/// Tips pin the *auth state*, not merely tip identity: when the delegated key is
+/// downgraded at a newer snapshot, an entry pinning the older snapshot must still
+/// resolve with the older (higher) permission. This is the regression test for
+/// "claimed tips were ignored" -- pre-fix, resolution read the delegated tree's
+/// live head and saw the downgrade regardless of which tips the signer claimed.
+///
+/// `should_panic` documents the pre-fix flaw: resolution reads the live-head
+/// Read downgrade instead of the pinned Admin(5), so the assertion panics. The
+/// fix commit removes this attribute.
+#[tokio::test]
+#[should_panic(expected = "pinned tips must resolve the Admin(5) state")]
+async fn test_delegation_reads_auth_state_at_pinned_tips_not_live_head() {
+    use crate::{
+        Instance,
+        auth::types::{DelegatedTreeRef, PermissionBounds, TreeReference},
+        backend::database::InMemory,
+    };
+
+    let backend = Box::new(InMemory::new());
+    let (instance, _admin) =
+        Instance::create_backend(backend, crate::NewUser::passwordless("admin"))
+            .await
+            .unwrap();
+
+    let (_, delegated_pubkey) = generate_keypair();
+
+    let delegated_tree = Database::create(
+        &instance,
+        instance.signing_key().unwrap().clone(),
+        Doc::new(),
+    )
+    .await
+    .unwrap();
+
+    // Snapshot 1: the delegated key is Admin(5).
+    let txn = delegated_tree.new_transaction().await.unwrap();
+    txn.get_settings()
+        .unwrap()
+        .set_auth_key(
+            &delegated_pubkey,
+            AuthKey::active(Some("delegated_user"), Permission::Admin(5)),
+        )
+        .await
+        .unwrap();
+    txn.commit().await.unwrap();
+    let snap1 = delegated_tree.snapshot().await.unwrap().into_tips();
+
+    // Snapshot 2: the SAME key is downgraded to Read on the live head.
+    let txn = delegated_tree.new_transaction().await.unwrap();
+    txn.get_settings()
+        .unwrap()
+        .set_auth_key(
+            &delegated_pubkey,
+            AuthKey::active(Some("delegated_user"), Permission::Read),
+        )
+        .await
+        .unwrap();
+    txn.commit().await.unwrap();
+    let snap2 = delegated_tree.snapshot().await.unwrap().into_tips();
+    assert_ne!(snap1, snap2, "the downgrade commit must advance the tips");
+
+    // Floor committed at snapshot 1, so pinning snapshot 1 sits exactly at the
+    // floor (allowed by the monotonicity check) while still being behind the
+    // live head.
+    let main_tree = Database::create(
+        &instance,
+        instance.signing_key().unwrap().clone(),
+        Doc::new(),
+    )
+    .await
+    .unwrap();
+    let txn = main_tree.new_transaction().await.unwrap();
+    txn.get_settings()
+        .unwrap()
+        .add_delegated_tree(DelegatedTreeRef {
+            permission_bounds: PermissionBounds {
+                max: Permission::Write(10),
+                min: Some(Permission::Read),
+            },
+            tree: TreeReference {
+                root: delegated_tree.root_id().clone(),
+                tips: snap1.clone(),
+            },
+        })
+        .await
+        .unwrap();
+    txn.commit().await.unwrap();
+    let main_auth = main_tree
+        .get_settings()
+        .await
+        .unwrap()
+        .auth_snapshot()
+        .await
+        .unwrap();
+
+    // Pin snapshot 1, where the key is Admin(5). Resolution must read auth state
+    // AS OF the pinned tips: Admin(5) clamped to the Write(10) bound -- NOT the
+    // live-head Read downgrade.
+    let sig = SigKey::Delegation {
+        path: vec![DelegationStep {
+            tree: delegated_tree.root_id().clone(),
+            tips: snap1,
+        }],
+        hint: KeyHint::from_pubkey(&delegated_pubkey),
+    };
+    let resolved = AuthValidator::new()
+        .resolve_sig_key(&sig, &main_auth, Some(&instance))
+        .await
+        .expect("resolution at the pinned snapshot should succeed");
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(
+        resolved[0].effective_permission,
+        Permission::Write(10),
+        "pinned tips must resolve the Admin(5) state at snapshot 1, not the live-head Read downgrade"
+    );
+}
