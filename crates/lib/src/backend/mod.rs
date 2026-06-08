@@ -440,6 +440,76 @@ pub trait BackendImpl: Send + Sync + Any {
     /// - `EntryNotInTree` if any tip belongs to a different tree
     async fn get_tree_from_tips(&self, tree: &ID, tips: &[ID]) -> Result<Vec<Entry>>;
 
+    /// Within `tree`, report whether every entry in `targets` is reachable by
+    /// walking parent pointers back from `from` — i.e. each target is an
+    /// ancestor-or-equal of at least one `from` entry.
+    ///
+    /// This is the cheap, boolean counterpart to
+    /// [`get_tree_from_tips`](Self::get_tree_from_tips): the walk is **bounded**,
+    /// stopping the moment every target has been seen, so the cost tracks the
+    /// distance from `from` back to the targets rather than the size of the tree.
+    /// Prefer it whenever a reachability answer is all that's needed — e.g. an
+    /// "is this snapshot at-or-ahead-of that one" check — instead of
+    /// materialising the entire ancestor set.
+    ///
+    /// `from` entries count as reachable (a target equal to a `from` entry is
+    /// reached), and an empty `targets` is vacuously reachable. Each `from` entry
+    /// is validated to be a real entry of `tree`; ancestors encountered during
+    /// the walk that are missing locally or belong to another tree are skipped
+    /// rather than erroring (a partially-synced history simply yields the tips it
+    /// can reach).
+    ///
+    /// # Errors
+    /// - `EntryNotFound` if any `from` entry doesn't exist locally
+    /// - `EntryNotInTree` if any `from` entry belongs to a different tree
+    ///
+    /// The default implementation performs the walk via [`get`](Self::get); a
+    /// backend may override it with a single-query traversal.
+    async fn targets_reachable_from(&self, tree: &ID, from: &[ID], targets: &[ID]) -> Result<bool> {
+        use std::collections::HashSet;
+
+        let mut unmet: HashSet<ID> = targets.iter().cloned().collect();
+        let mut visited: HashSet<ID> = HashSet::with_capacity(from.len());
+        let mut stack: Vec<ID> = Vec::new();
+
+        // Seed with `from`, validating tree membership on each.
+        for tip in from {
+            let entry = self.get(tip).await?;
+            if !entry.in_tree(tree) {
+                return Err(BackendError::EntryNotInTree {
+                    entry_id: tip.clone(),
+                    tree_id: tree.clone(),
+                }
+                .into());
+            }
+            if visited.insert(tip.clone()) {
+                unmet.remove(tip);
+                stack.extend(entry.parents().unwrap_or_default());
+            }
+        }
+
+        // Walk ancestors until every target is reached, or the history is
+        // exhausted (a target that is never seen is not an ancestor → false).
+        while !unmet.is_empty() {
+            let Some(current) = stack.pop() else {
+                return Ok(false);
+            };
+            if !visited.insert(current.clone()) {
+                continue;
+            }
+            let Ok(entry) = self.get(&current).await else {
+                continue;
+            };
+            if !entry.in_tree(tree) {
+                continue;
+            }
+            unmet.remove(&current);
+            stack.extend(entry.parents().unwrap_or_default());
+        }
+
+        Ok(true)
+    }
+
     /// Retrieves all entries belonging to a specific store at the given snapshot, sorted topologically.
     ///
     /// Returns entries that are ancestors of the provided store snapshot's tips.

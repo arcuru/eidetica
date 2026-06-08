@@ -200,6 +200,118 @@ async fn test_backend_get_tree_from_tips() {
 }
 
 #[tokio::test]
+async fn test_backend_targets_reachable_from() {
+    let backend = test_backend().await;
+    let root_id = ID::from_bytes("tree_root");
+
+    // Same DAG as above: root -> e1 -> {e2a, e2b}
+    let root_entry = Entry::builder(root_id.clone())
+        .add_parent(root_id.clone())
+        .set_height(0)
+        .build()
+        .expect("root builds");
+    let root_entry_id = root_entry.id();
+    backend.put_verified(root_entry).await.unwrap();
+
+    let e1_entry = Entry::builder(root_id.clone())
+        .add_parent(root_entry_id.clone())
+        .set_height(1)
+        .build()
+        .expect("e1 builds");
+    let e1_id = e1_entry.id();
+    backend.put_verified(e1_entry).await.unwrap();
+
+    let e2a_entry = Entry::builder(root_id.clone())
+        .add_parent(e1_id.clone())
+        .set_subtree_data("branch", b"a")
+        .set_height(2)
+        .build()
+        .expect("e2a builds");
+    let e2a_id = e2a_entry.id();
+    backend.put_verified(e2a_entry).await.unwrap();
+
+    let e2b_entry = Entry::builder(root_id.clone())
+        .add_parent(e1_id.clone())
+        .set_subtree_data("branch", b"b")
+        .set_height(2)
+        .build()
+        .expect("e2b builds");
+    let e2b_id = e2b_entry.id();
+    backend.put_verified(e2b_entry).await.unwrap();
+
+    let reachable = |from: Vec<ID>, targets: Vec<ID>| {
+        let backend = &backend;
+        let root_id = root_id.clone();
+        async move {
+            backend
+                .targets_reachable_from(&root_id, &from, &targets)
+                .await
+        }
+    };
+
+    // Ancestors are reachable from a tip.
+    assert!(
+        reachable(vec![e2a_id.clone()], vec![root_entry_id.clone()])
+            .await
+            .unwrap()
+    );
+    assert!(
+        reachable(
+            vec![e2a_id.clone()],
+            vec![e1_id.clone(), root_entry_id.clone()]
+        )
+        .await
+        .unwrap(),
+        "all of {{e1, root}} are ancestors of e2a"
+    );
+    // A tip reaches itself (ancestor-or-equal).
+    assert!(
+        reachable(vec![e2a_id.clone()], vec![e2a_id.clone()])
+            .await
+            .unwrap()
+    );
+    // An empty target set is vacuously reachable.
+    assert!(reachable(vec![e2a_id.clone()], vec![]).await.unwrap());
+
+    // A sibling is NOT an ancestor: e2b is unreachable from e2a alone...
+    assert!(
+        !reachable(vec![e2a_id.clone()], vec![e2b_id.clone()])
+            .await
+            .unwrap(),
+        "e2b is concurrent with e2a, not an ancestor"
+    );
+    // ...but reachable once both tips are in the `from` set.
+    assert!(
+        reachable(
+            vec![e2a_id.clone(), e2b_id.clone()],
+            vec![e2b_id.clone(), e1_id.clone()]
+        )
+        .await
+        .unwrap()
+    );
+
+    // A `from` tip that doesn't exist errors (EntryNotFound).
+    let err = reachable(vec![ID::from_bytes("nope")], vec![root_entry_id.clone()])
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::Backend(ref e) if matches!(**e, BackendError::EntryNotFound { .. })),
+        "expected EntryNotFound, got: {err:?}"
+    );
+
+    // A `from` tip from another tree errors (EntryNotInTree).
+    let bad_root: ID = ID::from_bytes("bad_root");
+    let err = backend
+        .targets_reachable_from(&bad_root, std::slice::from_ref(&e1_id), &[])
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::Backend(ref e) if matches!(**e, BackendError::EntryNotInTree { .. })),
+        "expected EntryNotInTree, got: {err:?}"
+    );
+}
+
+#[tokio::test]
 async fn test_snapshot() {
     let backend = test_backend().await;
 
