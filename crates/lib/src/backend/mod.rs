@@ -217,6 +217,41 @@ impl VerificationStatus {
 /// the entry has been authenticated by the higher-level authentication system.
 /// The backend itself does not perform verification - it only stores the status
 /// set by the calling code (typically Database/Transaction implementations).
+///
+/// ## Blob storage
+///
+/// Beyond entries, the backend is a content-addressed store for opaque blobs
+/// (raw-codec `0x55` CIDs) that live out-of-band from the entry DAG; see the
+/// `put_blob`/`get_blob`/`has_blob` methods and [`DEFAULT_MAX_BLOB_BYTES`].
+/// Default maximum size, in bytes, for a single blob in Phase 1.
+///
+/// Phase 1 buffers whole blobs in memory and transfers them in one wire
+/// message, so an unbounded payload is a memory-DoS vector (a content address
+/// does not bound the size of its bytes). This cap keeps Phase 1 scoped to
+/// small/bounded blobs; GB-scale payloads are a later verified-streaming
+/// capability. Treated as a throwaway internal default per the design's
+/// stable-API/disposable-internals contract.
+pub const DEFAULT_MAX_BLOB_BYTES: usize = 64 * 1024 * 1024;
+
+/// Enforce the self-verifying blob invariant: `data` must hash to `cid`.
+///
+/// Backends call this on the write path so that bytes returned by `get_blob`
+/// are always guaranteed to hash to the requested CID. Because
+/// [`ID::from_bytes`] always yields a raw-codec (`0x55`) CID, a non-raw `cid`
+/// (e.g. a DAG-CBOR `0x71` entry/manifest address) can never match and is
+/// reported as a mismatch.
+pub(crate) fn verify_blob_cid(cid: &ID, data: &[u8]) -> Result<()> {
+    let computed = ID::from_bytes(data);
+    if &computed != cid {
+        return Err(crate::backend::errors::BackendError::BlobHashMismatch {
+            claimed: cid.clone(),
+            computed,
+        }
+        .into());
+    }
+    Ok(())
+}
+
 #[async_trait]
 pub trait BackendImpl: Send + Sync + Any {
     /// Retrieves an entry by its unique content-addressable ID.
@@ -506,6 +541,45 @@ pub trait BackendImpl: Send + Sync + Any {
     /// # Returns
     /// A `Result` indicating success or an error during the clear operation.
     async fn clear_crdt_cache(&self) -> Result<()>;
+
+    // === Blob Storage Methods ===
+    //
+    // Content-addressed storage for opaque binary blobs that live *out-of-band*
+    // from the entry DAG. A blob is addressed by the raw-codec (`0x55`) BLAKE3
+    // CID of its bytes ([`ID::from_bytes`]); an entry references a blob simply
+    // by embedding that CID string in ordinary store data — no new store type.
+    //
+    // Unlike the CRDT cache (which is recomputable and LRU-evictable), blobs
+    // are **durable owned content**: they cannot be regenerated, so they are
+    // never evicted. Phase 1 is whole-blob, append-only, deduped (the
+    // content-addressed key gives dedup for free), with no GC/pinning yet.
+    //
+    // These methods are deliberately codec-blind at the trait level — callers
+    // pass a `0x55` CID — but the *semantics* are raw bytes only; structured
+    // (`0x71`) objects are entries and use `get`/`put`. See `ID::codec`.
+
+    /// Store an opaque blob under its content address (the raw-codec CID of
+    /// `data`).
+    ///
+    /// Idempotent: storing the same bytes twice is a no-op (content-addressed
+    /// dedup keyed on `cid`). Implementations MUST reject bytes whose hash does
+    /// not match `cid` ([`BackendError::BlobHashMismatch`]) so the
+    /// self-verifying guarantee of [`get_blob`](Self::get_blob) holds.
+    ///
+    /// # Arguments
+    /// * `cid` - The content address; must equal `ID::from_bytes(&data)`.
+    /// * `data` - The opaque blob bytes.
+    async fn put_blob(&self, cid: &ID, data: Vec<u8>) -> Result<()>;
+
+    /// Fetch a blob by content address from local storage.
+    ///
+    /// Returns `Ok(None)` if the blob is not held locally. Bytes returned are
+    /// guaranteed to hash to `cid` (enforced on write by
+    /// [`put_blob`](Self::put_blob)).
+    async fn get_blob(&self, cid: &ID) -> Result<Option<Vec<u8>>>;
+
+    /// Cheap existence check for a blob, without materializing its bytes.
+    async fn has_blob(&self, cid: &ID) -> Result<bool>;
 
     /// Get the store parent IDs for a specific entry and store, sorted by height then ID.
     ///

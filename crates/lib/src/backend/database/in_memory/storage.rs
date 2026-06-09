@@ -366,3 +366,22 @@ pub(crate) fn store_at(
 
     Ok(result)
 }
+
+// === Blob Storage (content-addressed, durable) ===
+
+/// Store a blob under its content address. Idempotent: re-inserting identical
+/// bytes is a harmless overwrite (content addressing guarantees equality). CID
+/// verification happens in the trait impl before this is called.
+pub(crate) fn put_blob(inner: &mut InMemoryInner, cid: &ID, data: Vec<u8>) {
+    inner.blobs.insert(cid.clone(), data);
+}
+
+/// Fetch a blob's bytes by content address, or `None` if not held.
+pub(crate) fn get_blob(inner: &InMemoryInner, cid: &ID) -> Option<Vec<u8>> {
+    inner.blobs.get(cid).cloned()
+}
+
+/// Cheap existence check for a blob.
+pub(crate) fn has_blob(inner: &InMemoryInner, cid: &ID) -> bool {
+    inner.blobs.contains_key(cid)
+}

@@ -155,6 +155,44 @@ pub enum BackendError {
         reason: String,
     },
 
+    /// A blob's bytes did not hash to the content address they were stored under.
+    ///
+    /// Content addressing is self-verifying: a blob's address is the BLAKE3 CID
+    /// of its bytes. This is raised when `cid != ID::from_bytes(&data)`, which
+    /// means either a programming error (wrong CID passed to `put_blob`) or
+    /// corrupted/tampered bytes.
+    #[error("Blob content address mismatch: stored under {claimed} but bytes hash to {computed}")]
+    BlobHashMismatch {
+        /// The content address the blob was claimed to have.
+        claimed: ID,
+        /// The content address actually computed from the bytes.
+        computed: ID,
+    },
+
+    /// A blob exceeded the configured maximum size.
+    ///
+    /// Phase 1 handles small/bounded blobs only; a hard cap guards against
+    /// memory-DoS from an address that does not bound its payload. GB-scale
+    /// payloads are a later (verified-streaming) capability.
+    #[error("Blob size {size} bytes exceeds maximum {max} bytes")]
+    BlobTooLarge {
+        /// The size of the offending blob in bytes.
+        size: usize,
+        /// The configured maximum blob size in bytes.
+        max: usize,
+    },
+
+    /// A blob address used a codec this backend does not store as a raw blob.
+    ///
+    /// Phase 1 stores only raw-codec (`0x55`) whole blobs. A DAG-CBOR (`0x71`)
+    /// address — an `Entry` or a future blob manifest — is not a raw blob and
+    /// is rejected here rather than silently missing.
+    #[error("Not a raw-codec blob address: {cid}")]
+    BlobInvalidCodec {
+        /// The non-raw address that was supplied.
+        cid: ID,
+    },
+
     /// SQL database error (sqlx).
     #[cfg(any(feature = "sqlite", feature = "postgres"))]
     #[error("SQL error: {reason}")]

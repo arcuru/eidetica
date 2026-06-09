@@ -656,3 +656,58 @@ pub async fn clear_crdt_cache(backend: &SqlxBackend) -> Result<()> {
 
     Ok(())
 }
+
+// === Blob Storage (content-addressed, durable) ===
+
+/// Store a blob under its content address. Idempotent: a row already present
+/// for `cid` is left untouched (the bytes are identical by content addressing),
+/// so re-storing is a cheap no-op. Phase 1 always stores inline (`location =
+/// 0`). The caller ([`super::SqlxBackend::put_blob`]) verifies `cid` matches
+/// the bytes before this runs.
+pub async fn put_blob(backend: &SqlxBackend, cid: &ID, data: Vec<u8>) -> Result<()> {
+    let pool = backend.pool();
+    let size = data.len() as i64;
+
+    let sql = if backend.is_sqlite() {
+        "INSERT OR IGNORE INTO blobs (cid, size, location, data) VALUES ($1, $2, 0, $3)"
+    } else {
+        "INSERT INTO blobs (cid, size, location, data) VALUES ($1, $2, 0, $3)
+         ON CONFLICT (cid) DO NOTHING"
+    };
+
+    sqlx::query(sql)
+        .bind(cid.to_string())
+        .bind(size)
+        .bind(&data)
+        .execute(pool)
+        .await
+        .sql_context("Failed to store blob")?;
+
+    Ok(())
+}
+
+/// Fetch a blob's bytes by content address, or `None` if not held locally.
+pub async fn get_blob(backend: &SqlxBackend, cid: &ID) -> Result<Option<Vec<u8>>> {
+    let pool = backend.pool();
+
+    let row: Option<(Vec<u8>,)> = sqlx::query_as("SELECT data FROM blobs WHERE cid = $1")
+        .bind(cid.to_string())
+        .fetch_optional(pool)
+        .await
+        .sql_context("Failed to get blob")?;
+
+    Ok(row.map(|(data,)| data))
+}
+
+/// Cheap existence check for a blob, without materializing its bytes.
+pub async fn has_blob(backend: &SqlxBackend, cid: &ID) -> Result<bool> {
+    let pool = backend.pool();
+
+    let row: Option<(i64,)> = sqlx::query_as("SELECT 1 FROM blobs WHERE cid = $1")
+        .bind(cid.to_string())
+        .fetch_optional(pool)
+        .await
+        .sql_context("Failed to check blob existence")?;
+
+    Ok(row.is_some())
+}

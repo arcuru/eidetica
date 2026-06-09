@@ -225,3 +225,32 @@ async fn test_load_missing_version_defaults_to_v0() {
 
 // Test-only: store-and-promote helper (production `put` is Unverified-only).
 use crate::helpers::TestVerify;
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // file I/O not available with Miri isolation enabled
+async fn test_in_memory_blobs_survive_save_and_load() {
+    use eidetica::entry::ID;
+
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("test_backend_blobs.json");
+
+    let data = b"durable blob bytes that must persist".to_vec();
+    let cid = ID::from_bytes(&data);
+
+    // Store a blob, then snapshot the backend to disk.
+    {
+        let backend = Arc::new(InMemory::new());
+        backend.put_blob(&cid, data.clone()).await.unwrap();
+        save_backend(&backend, &file_path).unwrap();
+    }
+
+    // Reload: blobs are durable owned content, so they must round-trip
+    // (unlike the recomputable CRDT cache, which is intentionally dropped).
+    let loaded = load_backend(&file_path).await.unwrap();
+    assert!(loaded.has_blob(&cid).await.unwrap(), "blob should persist");
+    assert_eq!(
+        loaded.get_blob(&cid).await.unwrap(),
+        Some(data),
+        "persisted blob bytes should match"
+    );
+}

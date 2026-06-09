@@ -70,6 +70,10 @@ struct SerializableDatabase {
     /// Cached tips grouped by tree
     #[serde(default)]
     tips: HashMap<ID, TreeTipsCache>,
+    /// Content-addressed blobs. Durable owned content (unlike the CRDT cache),
+    /// so it IS persisted. `#[serde(default)]` keeps pre-blob snapshots loading.
+    #[serde(default)]
+    blobs: HashMap<ID, Vec<u8>>,
 }
 
 impl Serialize for InMemory {
@@ -90,6 +94,7 @@ impl Serialize for InMemory {
                 instance_secrets: inner.instance_secrets.clone(),
                 cache: None,
                 tips: inner.tips.clone(),
+                blobs: inner.blobs.clone(),
             }
         };
 
@@ -112,6 +117,7 @@ impl<'de> Deserialize<'de> for InMemory {
                 instance_metadata: serializable.instance_metadata,
                 instance_secrets: serializable.instance_secrets,
                 tips: serializable.tips,
+                blobs: serializable.blobs,
             }),
             // Cache rebuilds lazily as reads materialize state — see the
             // `cache` field's doc on SerializableDatabase.
@@ -148,6 +154,7 @@ pub(crate) fn save_to_file<P: AsRef<Path>>(backend: &InMemory, path: P) -> Resul
             instance_secrets: inner.instance_secrets.clone(),
             cache: None,
             tips: inner.tips.clone(),
+            blobs: inner.blobs.clone(),
         }
     };
 

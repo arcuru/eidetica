@@ -1,4 +1,5 @@
 mod basic_operations;
+mod blob_storage;
 mod concurrent_writes;
 mod height_calculations;
 mod helpers;

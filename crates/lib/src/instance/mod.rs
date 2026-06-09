@@ -1097,6 +1097,63 @@ impl Instance {
         }
     }
 
+    // === Blob Storage (content-addressed, out-of-band from the entry DAG) ===
+
+    /// Store bytes in the local blob tier and return their content address.
+    ///
+    /// The returned [`ID`] is the raw-codec (`0x55`) BLAKE3 CID of the bytes;
+    /// embed it (as a string, or inside a typed reference) in any store value
+    /// to "attach" the blob. Idempotent — the same bytes always yield the same
+    /// CID and a re-store is a no-op (content-addressed dedup). This does NOT
+    /// commit anything to the DAG: the caller embeds the returned CID in a
+    /// store value and commits that entry normally.
+    ///
+    /// Rejects blobs larger than [`DEFAULT_MAX_BLOB_BYTES`](crate::backend::DEFAULT_MAX_BLOB_BYTES)
+    /// ([`BackendError::BlobTooLarge`](crate::backend::errors::BackendError::BlobTooLarge));
+    /// Phase 1 is scoped to small/bounded blobs.
+    ///
+    /// Only available on a local instance — a concrete storage engine is
+    /// required, so a remote instance returns
+    /// [`OperationNotSupported`](InstanceError::OperationNotSupported).
+    pub async fn put_blob(&self, data: impl Into<Vec<u8>>) -> Result<ID> {
+        let data = data.into();
+        if data.len() > crate::backend::DEFAULT_MAX_BLOB_BYTES {
+            return Err(crate::backend::errors::BackendError::BlobTooLarge {
+                size: data.len(),
+                max: crate::backend::DEFAULT_MAX_BLOB_BYTES,
+            }
+            .into());
+        }
+        let cid = ID::from_bytes(&data);
+        self.require_local_engine()?.put_blob(&cid, data).await?;
+        Ok(cid)
+    }
+
+    /// Resolve a blob's bytes by content address.
+    ///
+    /// Phase 1 resolves from local storage only; the frozen signature reserves
+    /// lazy peer-fetch (ask authorized peers → verify hash → persist → return)
+    /// for a follow-up, behind this same surface. Returns `Ok(None)` if the
+    /// blob is not held locally. Returned bytes are guaranteed to hash to
+    /// `cid`. Errors with
+    /// [`BlobInvalidCodec`](crate::backend::errors::BackendError::BlobInvalidCodec)
+    /// if `cid` is not a raw-codec blob address (e.g. an entry or a future
+    /// manifest CID).
+    pub async fn get_blob(&self, cid: &ID) -> Result<Option<Vec<u8>>> {
+        self.get_blob_local(cid).await
+    }
+
+    /// Local-only blob lookup; never hits the network.
+    pub async fn get_blob_local(&self, cid: &ID) -> Result<Option<Vec<u8>>> {
+        if !cid.is_raw() {
+            return Err(crate::backend::errors::BackendError::BlobInvalidCodec {
+                cid: cid.clone(),
+            }
+            .into());
+        }
+        self.require_local_engine()?.get_blob(cid).await
+    }
+
     /// Get a reference to the clock.
     ///
     /// The clock is used for timestamps in height calculations and peer tracking.

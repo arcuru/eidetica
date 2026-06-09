@@ -5,6 +5,7 @@
 //! for better maintainability.
 
 mod basic_operations;
+mod blob_storage;
 mod database_management;
 mod database_operations;
 mod helpers;

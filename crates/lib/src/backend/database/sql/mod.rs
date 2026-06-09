@@ -484,6 +484,19 @@ impl BackendImpl for SqlxBackend {
         storage::clear_crdt_cache(self).await
     }
 
+    async fn put_blob(&self, cid: &ID, data: Vec<u8>) -> Result<()> {
+        crate::backend::verify_blob_cid(cid, &data)?;
+        storage::put_blob(self, cid, data).await
+    }
+
+    async fn get_blob(&self, cid: &ID) -> Result<Option<Vec<u8>>> {
+        storage::get_blob(self, cid).await
+    }
+
+    async fn has_blob(&self, cid: &ID) -> Result<bool> {
+        storage::has_blob(self, cid).await
+    }
+
     async fn get_sorted_store_parents(
         &self,
         tree_id: &ID,

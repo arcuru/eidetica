@@ -60,6 +60,12 @@ pub(crate) struct InMemoryInner {
     pub(crate) instance_secrets: Option<InstanceSecrets>,
     /// Cached tips grouped by tree: tree_id -> (tree_tips, subtree_name -> subtree_tips)
     pub(crate) tips: HashMap<ID, TreeTipsCache>,
+    /// Content-addressed blob storage, keyed by raw-codec (`0x55`) BLAKE3 CID.
+    ///
+    /// Durable owned content stored out-of-band from the entry DAG (see the
+    /// `put_blob`/`get_blob`/`has_blob` backend methods). Unlike the CRDT
+    /// cache, blobs are never evicted and ARE persisted by the snapshot path.
+    pub(crate) blobs: HashMap<ID, Vec<u8>>,
 }
 
 /// A simple in-memory database implementation using a `HashMap` for storage.
@@ -97,6 +103,7 @@ impl InMemory {
                 instance_metadata: None,
                 instance_secrets: None,
                 tips: HashMap::new(),
+                blobs: HashMap::new(),
             }),
             crdt_cache: Mutex::new(InMemoryCrdtCache::new()),
         }
@@ -427,6 +434,23 @@ impl BackendImpl for InMemory {
 
     async fn clear_crdt_cache(&self) -> Result<()> {
         cache::clear_crdt_cache(self)
+    }
+
+    async fn put_blob(&self, cid: &ID, data: Vec<u8>) -> Result<()> {
+        crate::backend::verify_blob_cid(cid, &data)?;
+        let mut inner = self.inner.write().unwrap();
+        storage::put_blob(&mut inner, cid, data);
+        Ok(())
+    }
+
+    async fn get_blob(&self, cid: &ID) -> Result<Option<Vec<u8>>> {
+        let inner = self.inner.read().unwrap();
+        Ok(storage::get_blob(&inner, cid))
+    }
+
+    async fn has_blob(&self, cid: &ID) -> Result<bool> {
+        let inner = self.inner.read().unwrap();
+        Ok(storage::has_blob(&inner, cid))
     }
 
     async fn get_sorted_store_parents(
