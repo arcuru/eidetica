@@ -42,8 +42,9 @@ async fn test_instance_put_blob_idempotent() {
 async fn test_instance_get_blob_absent_is_none() {
     let instance = test_local_instance().await;
 
-    // A well-formed raw CID we never stored resolves to None (Phase 1 has no
-    // peer fetch, so an unknown local blob is simply absent).
+    // A well-formed raw CID we never stored resolves to None. This instance has
+    // no sync enabled, so there are no peers to fetch from — the blob is simply
+    // absent.
     let cid = ID::from_bytes(b"never stored");
     assert!(instance.get_blob(&cid).await.unwrap().is_none());
     assert!(instance.get_blob_local(&cid).await.unwrap().is_none());
@@ -61,6 +62,68 @@ async fn test_instance_get_blob_rejects_non_raw_codec() {
 
     let err = instance
         .get_blob(&entry_like)
+        .await
+        .expect_err("non-raw codec must be rejected");
+    match err {
+        eidetica::Error::Backend(b) => assert!(
+            matches!(*b, BackendError::BlobInvalidCodec { .. }),
+            "expected BlobInvalidCodec, got {b:?}"
+        ),
+        other => panic!("expected Backend error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_instance_get_blob_range() {
+    let instance = test_local_instance().await;
+
+    let data = b"0123456789".to_vec();
+    let cid = instance.put_blob(data.clone()).await.unwrap();
+
+    // A middle slice.
+    assert_eq!(
+        instance.get_blob_range(&cid, 2..5).await.unwrap(),
+        Some(b"234".to_vec())
+    );
+    // The full range.
+    assert_eq!(
+        instance.get_blob_range(&cid, 0..10).await.unwrap(),
+        Some(data.clone())
+    );
+    // An over-long end clamps to the available tail.
+    assert_eq!(
+        instance.get_blob_range(&cid, 7..100).await.unwrap(),
+        Some(b"789".to_vec())
+    );
+    // A start at/after the end yields an empty slice (the blob exists).
+    assert_eq!(
+        instance.get_blob_range(&cid, 10..20).await.unwrap(),
+        Some(Vec::new())
+    );
+    // A degenerate (start > end) range is empty, not a panic. Built from
+    // values so it isn't flagged as a const reversed-empty range.
+    let (lo, hi) = (5u64, 3u64);
+    assert_eq!(
+        instance.get_blob_range(&cid, lo..hi).await.unwrap(),
+        Some(Vec::new())
+    );
+}
+
+#[tokio::test]
+async fn test_instance_get_blob_range_absent_is_none() {
+    let instance = test_local_instance().await;
+
+    let cid = ID::from_bytes(b"never stored");
+    assert!(instance.get_blob_range(&cid, 0..4).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn test_instance_get_blob_range_rejects_non_raw_codec() {
+    let instance = test_local_instance().await;
+
+    let entry_like = ID::from_dagcbor_bytes(b"some dag-cbor content");
+    let err = instance
+        .get_blob_range(&entry_like, 0..4)
         .await
         .expect_err("non-raw codec must be rejected");
     match err {

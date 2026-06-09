@@ -1184,6 +1184,35 @@ impl Instance {
         self.inner.backend.get_blob(cid).await
     }
 
+    /// Resolve a byte range of a blob by content address.
+    ///
+    /// `range` is a half-open byte range into the blob, clamped to the blob's
+    /// length: an over-long `end` yields the available tail, and a `start` at or
+    /// past the end yields an empty slice. Resolution and verification are
+    /// exactly those of [`get_blob`](Self::get_blob) — local store, then lazy
+    /// peer-fetch if sync is enabled — and `Ok(None)` means the blob is
+    /// unavailable. Errors with
+    /// [`BlobInvalidCodec`](crate::backend::errors::BackendError::BlobInvalidCodec)
+    /// for a non-raw `cid`.
+    ///
+    /// This is the frozen partial-read surface. Today it resolves the whole blob
+    /// and slices it; verified *streaming* of only the requested range (fetching
+    /// just those bytes from a peer with bounded memory, via bao) lands behind
+    /// this same signature.
+    pub async fn get_blob_range(
+        &self,
+        cid: &ID,
+        range: std::ops::Range<u64>,
+    ) -> Result<Option<Vec<u8>>> {
+        let Some(bytes) = self.get_blob(cid).await? else {
+            return Ok(None);
+        };
+        let len = bytes.len() as u64;
+        let start = range.start.min(len);
+        let end = range.end.clamp(start, len);
+        Ok(Some(bytes[start as usize..end as usize].to_vec()))
+    }
+
     /// Get a reference to the clock.
     ///
     /// The clock is used for timestamps in height calculations and peer tracking.
