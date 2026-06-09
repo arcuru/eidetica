@@ -535,6 +535,54 @@ impl Sync {
             .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))?
     }
 
+    /// Fetch a content-addressed blob by CID from known sync peers.
+    ///
+    /// Blobs are global and unscoped (the CID is the capability; design §10.1),
+    /// so we ask every known peer — not a tree's peer set — stopping at the
+    /// first that returns bytes which hash to `cid`. The address *is* the hash,
+    /// so resolution is self-verifying: bytes that don't recompute to `cid` are
+    /// rejected (never trust a peer) and the next peer is tried. A peer that
+    /// errors or lacks the blob is skipped. Returns `Ok(None)` if no peer has
+    /// it. Verification only — persistence is the caller's job
+    /// ([`Instance::get_blob`](crate::Instance::get_blob)).
+    pub async fn fetch_blob(&self, cid: &ID) -> Result<Option<Vec<u8>>> {
+        // Only raw-codec CIDs address blobs; nothing else is fetchable this way.
+        if !cid.is_raw() {
+            return Ok(None);
+        }
+
+        let peers = self.list_peers().await?;
+        for peer in peers {
+            let Some(address) = peer.addresses.first() else {
+                continue;
+            };
+            let request = SyncRequest::FetchBlobs {
+                cids: vec![cid.clone()],
+            };
+            let response = match self.send_request(&request, address).await {
+                Ok(r) => r,
+                Err(e) => {
+                    debug!(address = %address.address, error = %e, "Blob fetch to peer failed; trying next");
+                    continue;
+                }
+            };
+            if let SyncResponse::Blobs(blobs) = response {
+                for (got_cid, bytes) in blobs {
+                    if &got_cid != cid {
+                        continue;
+                    }
+                    // Self-verify against the requested address before trusting.
+                    if ID::from_bytes(&bytes) != *cid {
+                        warn!(address = %address.address, cid = %cid, "Peer returned blob bytes that do not match the requested CID; rejecting");
+                        continue;
+                    }
+                    return Ok(Some(bytes));
+                }
+            }
+        }
+        Ok(None)
+    }
+
     /// Discover available trees from a peer (simplified API).
     ///
     /// This method connects to a peer and retrieves the list of trees they're willing to sync.

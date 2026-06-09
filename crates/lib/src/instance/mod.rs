@@ -1132,16 +1132,41 @@ impl Instance {
 
     /// Resolve a blob's bytes by content address.
     ///
-    /// Resolves from local storage — the seam: the in-process engine, or the
-    /// daemon for a remote instance. The frozen signature reserves lazy
-    /// peer-fetch (ask known peers → verify hash → persist → return) for a
-    /// follow-up, behind this same surface. Returns `Ok(None)` if the blob is
-    /// not held locally. Returned bytes are guaranteed to hash to `cid`. Errors
-    /// with [`BlobInvalidCodec`](crate::backend::errors::BackendError::BlobInvalidCodec)
+    /// Resolves from local storage first — the seam: the in-process engine, or
+    /// the daemon for a remote instance. On a local miss, if this instance has
+    /// sync enabled, it falls back to lazy peer-fetch: ask known peers for the
+    /// CID, verify the returned bytes hash to `cid`, persist locally, and
+    /// return. Returns `Ok(None)` if the blob is neither held locally nor
+    /// served by any peer. Returned bytes are guaranteed to hash to `cid`.
+    /// Errors with
+    /// [`BlobInvalidCodec`](crate::backend::errors::BackendError::BlobInvalidCodec)
     /// if `cid` is not a raw-codec blob address (e.g. an entry or a future
     /// manifest CID).
     pub async fn get_blob(&self, cid: &ID) -> Result<Option<Vec<u8>>> {
-        self.get_blob_local(cid).await
+        if let Some(bytes) = self.get_blob_local(cid).await? {
+            return Ok(Some(bytes));
+        }
+        self.fetch_blob_from_peers(cid).await
+    }
+
+    /// Lazy peer-fetch leg of [`get_blob`](Self::get_blob).
+    ///
+    /// No-op (`Ok(None)`) when sync is not enabled — a thin remote client with
+    /// no transport has no peers to ask; its daemon is the one that resolves
+    /// from peers. When sync is enabled, [`Sync::fetch_blob`] tries known peers
+    /// and self-verifies; on a hit the bytes are persisted through the seam so
+    /// subsequent reads are local, then returned.
+    async fn fetch_blob_from_peers(&self, cid: &ID) -> Result<Option<Vec<u8>>> {
+        let Some(sync) = self.sync() else {
+            return Ok(None);
+        };
+        match sync.fetch_blob(cid).await? {
+            Some(bytes) => {
+                self.inner.backend.put_blob(cid, bytes.clone()).await?;
+                Ok(Some(bytes))
+            }
+            None => Ok(None),
+        }
     }
 
     /// Local-only blob lookup; never consults sync peers.

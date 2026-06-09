@@ -204,11 +204,51 @@ impl SyncHandler for SyncHandlerImpl {
                     SyncResponse::Count(stored_count)
                 }
             }
+            SyncRequest::FetchBlobs { cids } => self.handle_fetch_blobs(cids, context).await,
         }
     }
 }
 
 impl SyncHandlerImpl {
+    /// Serve content-addressed blobs by CID to a requesting peer.
+    ///
+    /// Blobs are global and unscoped: **the CID is the capability** (design
+    /// §10.1). A peer that names a CID gets the bytes, with no per-tree
+    /// authorization and no reverse index — this is the model that lets blobs be
+    /// shared across users *and* peers. The security rests on two things, both
+    /// upheld here: the CID is an unguessable 256-bit content hash you only
+    /// obtain from data you can already read, and there is **no enumeration** —
+    /// only the explicitly-requested CIDs are answered, CIDs we lack are
+    /// silently omitted (no presence oracle beyond what was asked), and there is
+    /// no "list what you hold" form. There is no peer-pubkey gate: the sync
+    /// transport is not request-authenticated (tree ops gate on tree auth
+    /// settings, not the connection), and gating blobs on a claimed, unverified
+    /// peer identity would add no real boundary while breaking cross-peer
+    /// sharing. Resolution is **local-only** (`get_blob_local`): a fetch handler
+    /// must never recurse into peer-fetch, which would amplify and could loop.
+    async fn handle_fetch_blobs(&self, cids: &[ID], _context: &RequestContext) -> SyncResponse {
+        let instance = match self.instance() {
+            Ok(i) => i,
+            Err(e) => return SyncResponse::Error(format!("Instance dropped: {e}")),
+        };
+
+        let mut blobs = Vec::new();
+        for cid in cids {
+            // Non-raw CIDs aren't blobs; skip rather than erroring the batch.
+            if !cid.is_raw() {
+                continue;
+            }
+            match instance.get_blob_local(cid).await {
+                Ok(Some(bytes)) => blobs.push((cid.clone(), bytes)),
+                Ok(None) => {} // omit: we don't hold it
+                Err(e) => {
+                    warn!(cid = %cid, error = %e, "Failed to read blob for fetch request");
+                }
+            }
+        }
+        SyncResponse::Blobs(blobs)
+    }
+
     /// Get the highest permission level a key has in the database's auth settings.
     ///
     /// This looks up all permissions the key has (direct + global wildcard) and returns

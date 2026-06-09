@@ -118,6 +118,15 @@ pub enum SyncRequest {
     SyncTree(SyncTreeRequest),
     /// Send entries for synchronization (backward compatibility)
     SendEntries(Vec<Entry>),
+    /// Fetch content-addressed blobs by CID.
+    ///
+    /// Blobs are global and unscoped — **the CID is the capability** (design
+    /// §10.1): served to any peer that names the CID, with no per-database
+    /// authorization and no reverse index, which is what lets blobs be shared
+    /// across users and peers. The request carries explicit CIDs only — there
+    /// is no "list what you hold" form (the frozen no-enumeration invariant) —
+    /// and CIDs the peer lacks are simply omitted from the response.
+    FetchBlobs { cids: Vec<ID> },
 }
 
 /// Response messages returned from a sync peer.
@@ -141,6 +150,10 @@ pub enum SyncResponse {
     Ack,
     /// Number of entries received (for multiple entries)
     Count(usize),
+    /// Blobs the peer holds for the requested CIDs (response to
+    /// [`SyncRequest::FetchBlobs`]). Each pair's bytes hash to its CID; CIDs the
+    /// peer lacks are omitted (no presence is revealed beyond what was asked).
+    Blobs(Vec<(ID, Vec<u8>)>),
     /// Error response
     Error(String),
 }

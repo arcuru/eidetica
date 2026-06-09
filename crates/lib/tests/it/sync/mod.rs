@@ -8,6 +8,7 @@ mod auto_sync_e2e_test;
 mod auto_sync_tests;
 mod basic_operations;
 mod bidirectional_sync_test;
+mod blob_fetch_tests;
 mod bootstrap_concurrency_tests;
 mod bootstrap_failure_tests;
 mod bootstrap_sync_tests;
