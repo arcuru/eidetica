@@ -118,6 +118,14 @@ impl Backend for LocalBackend {
         Ok(())
     }
 
+    async fn put_blob(&self, cid: &ID, data: Vec<u8>) -> Result<()> {
+        self.0.put_blob(cid, data).await
+    }
+
+    async fn get_blob(&self, cid: &ID) -> Result<Option<Vec<u8>>> {
+        self.0.get_blob(cid).await
+    }
+
     async fn get_instance_metadata(&self) -> Result<Option<InstanceMetadata>> {
         self.0.get_instance_metadata().await
     }

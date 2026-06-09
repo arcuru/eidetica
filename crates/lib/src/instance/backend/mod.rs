@@ -110,6 +110,22 @@ pub trait Backend: Send + Sync + std::fmt::Debug {
         source: WriteSource,
     ) -> Result<()>;
 
+    /// Store raw blob bytes under their content address `cid`.
+    ///
+    /// Content-addressed and **global/unscoped** — blobs carry no tree or tenant
+    /// scope (the CID *is* the capability; see the blob-storage design §10.1).
+    /// Local stores the bytes directly, re-verifying `cid == hash(data)`; remote
+    /// submits over the service wire, where the daemon re-verifies. Idempotent.
+    async fn put_blob(&self, cid: &ID, data: Vec<u8>) -> Result<()>;
+
+    /// Resolve raw blob bytes by content address from *this backend's* store
+    /// (the in-process engine, or the daemon for a remote backend).
+    ///
+    /// `Ok(None)` if absent. Does **not** consult sync peers — that lazy
+    /// fallback lives in [`Instance::get_blob`](crate::Instance::get_blob),
+    /// above the seam. Returned bytes are guaranteed to hash to `cid`.
+    async fn get_blob(&self, cid: &ID) -> Result<Option<Vec<u8>>>;
+
     /// Public instance metadata (device identity, system database IDs).
     async fn get_instance_metadata(&self) -> Result<Option<InstanceMetadata>>;
 

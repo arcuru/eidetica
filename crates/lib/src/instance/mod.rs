@@ -1112,9 +1112,10 @@ impl Instance {
     /// ([`BackendError::BlobTooLarge`](crate::backend::errors::BackendError::BlobTooLarge));
     /// Phase 1 is scoped to small/bounded blobs.
     ///
-    /// Only available on a local instance — a concrete storage engine is
-    /// required, so a remote instance returns
-    /// [`OperationNotSupported`](InstanceError::OperationNotSupported).
+    /// Routes through the backend seam, so it works on both local and remote
+    /// (daemon-backed) instances. On a remote instance the bytes are submitted
+    /// over the service wire as a global blob (`PutBlob`); the daemon
+    /// re-verifies the content address.
     pub async fn put_blob(&self, data: impl Into<Vec<u8>>) -> Result<ID> {
         let data = data.into();
         if data.len() > crate::backend::DEFAULT_MAX_BLOB_BYTES {
@@ -1125,25 +1126,29 @@ impl Instance {
             .into());
         }
         let cid = ID::from_bytes(&data);
-        self.require_local_engine()?.put_blob(&cid, data).await?;
+        self.inner.backend.put_blob(&cid, data).await?;
         Ok(cid)
     }
 
     /// Resolve a blob's bytes by content address.
     ///
-    /// Phase 1 resolves from local storage only; the frozen signature reserves
-    /// lazy peer-fetch (ask authorized peers → verify hash → persist → return)
-    /// for a follow-up, behind this same surface. Returns `Ok(None)` if the
-    /// blob is not held locally. Returned bytes are guaranteed to hash to
-    /// `cid`. Errors with
-    /// [`BlobInvalidCodec`](crate::backend::errors::BackendError::BlobInvalidCodec)
+    /// Resolves from local storage — the seam: the in-process engine, or the
+    /// daemon for a remote instance. The frozen signature reserves lazy
+    /// peer-fetch (ask known peers → verify hash → persist → return) for a
+    /// follow-up, behind this same surface. Returns `Ok(None)` if the blob is
+    /// not held locally. Returned bytes are guaranteed to hash to `cid`. Errors
+    /// with [`BlobInvalidCodec`](crate::backend::errors::BackendError::BlobInvalidCodec)
     /// if `cid` is not a raw-codec blob address (e.g. an entry or a future
     /// manifest CID).
     pub async fn get_blob(&self, cid: &ID) -> Result<Option<Vec<u8>>> {
         self.get_blob_local(cid).await
     }
 
-    /// Local-only blob lookup; never hits the network.
+    /// Local-only blob lookup; never consults sync peers.
+    ///
+    /// Routes through the backend seam: on a local instance this is the
+    /// in-process engine; on a remote instance it is the daemon's own store
+    /// (still not a peer fetch). Returns `Ok(None)` if absent.
     pub async fn get_blob_local(&self, cid: &ID) -> Result<Option<Vec<u8>>> {
         if !cid.is_raw() {
             return Err(crate::backend::errors::BackendError::BlobInvalidCodec {
@@ -1151,7 +1156,7 @@ impl Instance {
             }
             .into());
         }
-        self.require_local_engine()?.get_blob(cid).await
+        self.inner.backend.get_blob(cid).await
     }
 
     /// Get a reference to the clock.

@@ -1395,3 +1395,76 @@ async fn test_cache_encrypted_store_roundtrip() {
         "daemon must store and return ciphertext bytes verbatim — the cache is byte-blind"
     );
 }
+
+// === Content-addressed blob storage over the service wire (design §5.4/§10.1) ===
+
+#[tokio::test]
+async fn test_blob_round_trip_over_service() {
+    // put_blob on a remote (daemon-backed) instance submits over the wire;
+    // get_blob fetches it back. Routing through the backend seam makes the
+    // blob API work transparently on a connected instance.
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    let (client, _root, _identity) = setup_db(&server, &socket_path, "blobuser").await;
+
+    let data = b"blob bytes over the wire".to_vec();
+    let cid = client.put_blob(data.clone()).await.unwrap();
+
+    let got = client.get_blob(&cid).await.unwrap();
+    assert_eq!(got.as_deref(), Some(data.as_slice()));
+
+    // The store is global/unscoped: the daemon holds it under the same CID.
+    let server_side = server.get_blob_local(&cid).await.unwrap();
+    assert_eq!(server_side.as_deref(), Some(data.as_slice()));
+}
+
+#[tokio::test]
+async fn test_blob_absent_over_service_is_none() {
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    let (client, _root, _identity) = setup_db(&server, &socket_path, "blobuser").await;
+
+    let missing = eidetica::entry::ID::from_bytes(b"never stored");
+    assert!(client.get_blob(&missing).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn test_blob_put_locally_then_fetched_over_service() {
+    // The CID is the capability: a blob the daemon holds (put locally) is
+    // fetchable by any authenticated client that names its CID.
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    let (client, _root, _identity) = setup_db(&server, &socket_path, "blobuser").await;
+
+    let data = b"stored on the daemon first".to_vec();
+    let cid = server.put_blob(data.clone()).await.unwrap();
+
+    let got = client.get_blob(&cid).await.unwrap();
+    assert_eq!(got.as_deref(), Some(data.as_slice()));
+}
+
+#[tokio::test]
+async fn test_blob_ops_require_authentication() {
+    // Blob ops are gated by an authenticated connection (no per-tree gate, but
+    // not anonymous). An un-logged-in connection is rejected.
+    let (socket_path, _tx, _server, _dir) = start_test_server().await;
+    let client = Instance::connect(format!("unix://{}", socket_path.display()))
+        .await
+        .unwrap();
+
+    let put_err = client
+        .put_blob(b"x".to_vec())
+        .await
+        .expect_err("unauthenticated put_blob must be rejected");
+    assert!(
+        !put_err.is_not_found(),
+        "expected an auth error, got: {put_err}"
+    );
+
+    let missing = eidetica::entry::ID::from_bytes(b"x");
+    let get_err = client
+        .get_blob(&missing)
+        .await
+        .expect_err("unauthenticated get_blob must be rejected");
+    assert!(
+        !get_err.is_not_found(),
+        "expected an auth error, got: {get_err}"
+    );
+}

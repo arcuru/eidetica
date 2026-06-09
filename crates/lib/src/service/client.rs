@@ -687,6 +687,30 @@ impl RemoteConnection {
             other => Err(unexpected_response("Ok", &other)),
         }
     }
+
+    /// Fetch a global blob by content address from the daemon (`GetBlob`).
+    ///
+    /// Blobs are global/unscoped (§10.1): no `root_id`, no identity hint — the
+    /// authenticated connection is the whole gate. `None` on miss.
+    pub(crate) async fn get_blob_remote(&self, cid: ID) -> crate::Result<Option<Vec<u8>>> {
+        let resp = self.request_ok(ServiceRequest::GetBlob { cid }).await?;
+        match resp {
+            ServiceResponse::Blob(blob) => Ok(blob),
+            other => Err(unexpected_response("Blob", &other)),
+        }
+    }
+
+    /// Store a global blob under its content address on the daemon (`PutBlob`).
+    /// The daemon re-verifies `cid == hash(data)` and the size cap.
+    pub(crate) async fn put_blob_remote(&self, cid: ID, data: Vec<u8>) -> crate::Result<()> {
+        let resp = self
+            .request_ok(ServiceRequest::PutBlob { cid, data })
+            .await?;
+        match resp {
+            ServiceResponse::Ok => Ok(()),
+            other => Err(unexpected_response("Ok", &other)),
+        }
+    }
 }
 
 fn unexpected_response(expected: &str, actual: &ServiceResponse) -> crate::Error {

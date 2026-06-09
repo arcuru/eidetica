@@ -294,6 +294,21 @@ pub enum ServiceRequest {
     /// `AuthenticatedDbRequest` carries `(root_id, identity, op)` and is boxed
     /// to keep the enum's discriminated size compact.
     AuthenticatedDb(Box<AuthenticatedDbRequest>),
+
+    // === Post-auth: global content-addressed blobs ===
+    //
+    // Blobs are **global and unscoped** (the CID is the capability; blob-storage
+    // design §10.1). Unlike every `DatabaseOp`, these carry **no `root_id`** and
+    // **no acting identity** — only an authenticated connection is required, and
+    // there is *no* per-tree permission gate. The CID-by-CID shape is the whole
+    // access model: there is deliberately no list/enumerate/query op (the frozen
+    // no-enumeration invariant), and `has_blob` is intentionally not on the wire.
+    /// Fetch raw blob bytes by content address. `None` on miss; the daemon never
+    /// reveals anything beyond "these exact bytes for this exact CID".
+    GetBlob { cid: ID },
+    /// Store raw blob bytes under their content address. The daemon re-verifies
+    /// `cid == hash(data)` and enforces the size cap; a mismatch is rejected.
+    PutBlob { cid: ID, data: Vec<u8> },
 }
 
 /// Response from server to client.
@@ -321,6 +336,9 @@ pub enum ServiceResponse {
     /// does not synthesize a value, so the client falls back to recomputing
     /// from store entries.
     CachedCrdtState(Option<Vec<u8>>),
+    /// Raw blob bytes by content address (response to `ServiceRequest::GetBlob`).
+    /// `None` on miss. Bytes are guaranteed to hash to the requested CID.
+    Blob(Option<Vec<u8>>),
     /// Error response
     Error(ServiceError),
     /// Challenge bytes returned in response to `TrustedLoginUser`, plus the

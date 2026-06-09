@@ -242,6 +242,17 @@ impl Backend for RemoteBackend {
             .await
     }
 
+    async fn put_blob(&self, cid: &ID, data: Vec<u8>) -> Result<()> {
+        // Blobs are global/unscoped (§10.1): the op carries no `root_id` and
+        // no acting identity, only an authenticated connection. The daemon
+        // re-verifies `cid == hash(data)`.
+        self.conn.put_blob_remote(cid.clone(), data).await
+    }
+
+    async fn get_blob(&self, cid: &ID) -> Result<Option<Vec<u8>>> {
+        self.conn.get_blob_remote(cid.clone()).await
+    }
+
     async fn get_instance_metadata(&self) -> Result<Option<InstanceMetadata>> {
         self.conn.get_instance_metadata().await
     }

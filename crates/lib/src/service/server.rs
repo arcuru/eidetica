@@ -265,6 +265,34 @@ async fn dispatch_inner(
             handle_session_key_register(state, pubkey, &signature)
         }
 
+        // === Post-auth: global content-addressed blobs (design §10.1) ===
+        //
+        // Gate: an authenticated connection, nothing more. Blobs are global and
+        // unscoped — no per-tree permission gate, no acting identity — and
+        // strictly by-CID. The daemon serves any blob whose CID the caller can
+        // name (a bearer capability) and never enumerates what it holds.
+        ServiceRequest::GetBlob { cid } => {
+            require_authenticated(state, "GetBlob")?;
+            // `get_blob_local` codec-gates (raw `0x55` only) and routes through
+            // the seam — on a daemon that is the in-process engine.
+            let blob = instance.get_blob_local(&cid).await?;
+            Ok(ServiceResponse::Blob(blob))
+        }
+        ServiceRequest::PutBlob { cid, data } => {
+            require_authenticated(state, "PutBlob")?;
+            if data.len() > crate::backend::DEFAULT_MAX_BLOB_BYTES {
+                return Err(crate::backend::errors::BackendError::BlobTooLarge {
+                    size: data.len(),
+                    max: crate::backend::DEFAULT_MAX_BLOB_BYTES,
+                }
+                .into());
+            }
+            // `BackendImpl::put_blob` re-verifies `cid == hash(data)`; a client
+            // that lies about the address is rejected here, never trusted.
+            instance.backend().put_blob(&cid, data).await?;
+            Ok(ServiceResponse::Ok)
+        }
+
         // === Authenticated storage operations ===
         //
         // Gate 1: the connection must have completed `TrustedLogin*`. Gate 2:
@@ -386,6 +414,24 @@ async fn dispatch_inner(
             )
             .await
         }
+    }
+}
+
+/// Require an authenticated connection, with no per-tree gate.
+///
+/// The gate for global content-addressed blob ops (§10.1): they carry no
+/// `root_id` and no acting identity, so the only check is that the connection
+/// completed `TrustedLogin*`. `op` names the operation for the error message.
+fn require_authenticated(state: &ConnectionState, op: &str) -> crate::Result<()> {
+    match state {
+        ConnectionState::Authenticated { .. } => Ok(()),
+        _ => Err(crate::Error::Auth(Box::new(
+            AuthError::InvalidAuthConfiguration {
+                reason: format!(
+                    "{op} requires an authenticated connection; complete TrustedLogin* first"
+                ),
+            },
+        ))),
     }
 }
 
