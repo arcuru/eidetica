@@ -121,11 +121,11 @@ pub const CREATE_TABLES: &[&str] = &[
     // A blob is keyed by `cid` (the raw-codec `0x55` BLAKE3 CIDv1 of its
     // bytes), giving global dedup for free. `size` caches the byte length so
     // callers don't have to materialize the blob to learn how big it is.
-    // `location` reserves the eventual hybrid inline/disk split: Phase 1 always
-    // stores inline (`location = 0`, bytes in `data`); a future disk tier will
-    // use `location = 1` with `data` NULL and the bytes at a content-addressed
-    // path. Persisting `size`/`location` now keeps the table shape stable so
-    // the disk tier lands with no migration.
+    // `location` is the hybrid inline/disk split (§5.2): `location = 0` keeps
+    // the bytes inline in `data`; `location = 1` means `data` is NULL and the
+    // bytes live in a content-addressed file under the backend's blob dir (the
+    // tier is enabled per-backend via `with_blob_dir`, for SQLite and Postgres
+    // alike). See `BlobLocation` in `storage.rs` for the encoding.
     //
     // `last_accessed` (epoch ms) drives LRU eviction in `gc_blobs` (§6). It is
     // stamped to *now* on every put and every local read hit. Unlike

@@ -21,6 +21,7 @@
 //!
 //! See [`schema`] module documentation for details on adding migrations.
 
+mod blob_disk;
 mod cache;
 mod storage;
 mod traversal;
@@ -90,6 +91,14 @@ pub enum DbKind {
 pub struct SqlxBackend {
     pool: AnyPool,
     kind: DbKind,
+    /// Directory for the on-disk blob tier (§5.2), or `None` to keep every blob
+    /// inline in the SQL `data` column. Orthogonal to [`kind`](Self::kind): the
+    /// blob storage is local to the owning `Instance` (one backend = its
+    /// database + blob dir + cache), so it applies equally to SQLite and
+    /// Postgres. Set it via [`with_blob_dir`](Self::with_blob_dir);
+    /// [`open_sqlite`](Self::open_sqlite) seeds a sensible default
+    /// (`<db>.blobs`). In-memory SQLite leaves it `None` (nothing is on disk).
+    blob_dir: Option<std::path::PathBuf>,
 }
 
 impl SqlxBackend {
@@ -101,6 +110,32 @@ impl SqlxBackend {
     /// Get the database kind.
     pub fn kind(&self) -> DbKind {
         self.kind
+    }
+
+    /// The on-disk blob-tier directory, if this backend has one. `None` means
+    /// every blob is stored inline in SQL.
+    pub(crate) fn blob_dir(&self) -> Option<&std::path::Path> {
+        self.blob_dir.as_deref()
+    }
+
+    /// Attach an on-disk blob tier (§5.2) rooted at `dir`, regardless of
+    /// database kind. Blobs larger than the inline threshold are then stored as
+    /// content-addressed files under `dir` (read via `pread`), while the
+    /// database keeps the metadata; smaller blobs stay inline. The directory is
+    /// created lazily on first write.
+    ///
+    /// This is the single, kind-agnostic way to configure blob storage — one
+    /// backend (database + blob dir + cache) belongs to exactly one `Instance`,
+    /// and clients reach blobs *through* that instance, so the blob dir is the
+    /// instance's local disk for both SQLite and Postgres.
+    ///
+    /// ```ignore
+    /// let backend = Postgres::connect(url).await?.with_blob_dir("/var/lib/eidetica/blobs");
+    /// let backend = Sqlite::open(path).await?.with_blob_dir("/var/lib/eidetica/blobs");
+    /// ```
+    pub fn with_blob_dir(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
+        self.blob_dir = Some(dir.into());
+        self
     }
 
     /// Check if this backend is using SQLite.
@@ -136,17 +171,34 @@ impl SqlxBackend {
     /// }
     /// ```
     pub async fn open_sqlite<P: AsRef<std::path::Path>>(path: P) -> Result<Self> {
+        let path = path.as_ref();
         // mode=rwc: read-write-create (create file if it doesn't exist)
-        let url = format!("sqlite:{}?mode=rwc", path.as_ref().display());
-        Self::connect_sqlite(&url).await
+        let url = format!("sqlite:{}?mode=rwc", path.display());
+        // The on-disk blob tier lives in a sibling directory named
+        // "<db-file>.blobs", so it shares the DB file's device (atomic renames)
+        // and travels with it. Large blobs go here; small ones stay inline.
+        let blob_dir = std::path::PathBuf::from(format!("{}.blobs", path.display()));
+        Self::connect_sqlite_inner(&url, Some(blob_dir)).await
     }
 
     /// Connect to a SQLite database using a connection URL.
     ///
+    /// Blobs are stored inline in SQL (no on-disk tier); use [`open_sqlite`] for
+    /// a file-based database with the hybrid inline/disk tier (§5.2).
+    ///
     /// # Arguments
     ///
     /// * `url` - SQLite connection URL (e.g., "sqlite:./my.db")
+    ///
+    /// [`open_sqlite`]: Self::open_sqlite
     pub async fn connect_sqlite(url: &str) -> Result<Self> {
+        Self::connect_sqlite_inner(url, None).await
+    }
+
+    /// Connect to SQLite, optionally enabling the on-disk blob tier rooted at
+    /// `blob_dir`. Shared by [`open_sqlite`](Self::open_sqlite) (file-based, with
+    /// a tier) and [`connect_sqlite`](Self::connect_sqlite) (no tier).
+    async fn connect_sqlite_inner(url: &str, blob_dir: Option<std::path::PathBuf>) -> Result<Self> {
         // Install any driver support
         sqlx::any::install_default_drivers();
 
@@ -213,6 +265,7 @@ impl SqlxBackend {
         let backend = Self {
             pool,
             kind: DbKind::Sqlite,
+            blob_dir,
         };
 
         // Initialize schema
@@ -340,6 +393,9 @@ impl SqlxBackend {
         let backend = Self {
             pool,
             kind: DbKind::Postgres,
+            // Attach an on-disk blob tier via `with_blob_dir`; bare connections
+            // keep blobs inline (Postgres TOASTs large BYTEA out of line).
+            blob_dir: None,
         };
 
         // Initialize schema (tables will be created in the current search_path)

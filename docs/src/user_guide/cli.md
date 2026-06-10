@@ -14,13 +14,14 @@ Running `eidetica` with no subcommand is equivalent to `eidetica serve`. This de
 eidetica serve [OPTIONS]
 ```
 
-| Option           | Short | Default     | Env Var                 | Description                                                     |
-| ---------------- | ----- | ----------- | ----------------------- | --------------------------------------------------------------- |
-| `--port`         | `-p`  | `3000`      | `EIDETICA_PORT`         | Port to listen on                                               |
-| `--host`         |       | `0.0.0.0`   | `EIDETICA_HOST`         | Bind address                                                    |
-| `--backend`      | `-b`  | `sqlite`    | `EIDETICA_BACKEND`      | Storage backend (`sqlite`, `postgres`, `inmemory`)              |
-| `--data-dir`     | `-d`  | current dir | `EIDETICA_DATA_DIR`     | Data directory for storage files                                |
-| `--postgres-url` |       | —           | `EIDETICA_POSTGRES_URL` | PostgreSQL connection URL (required when backend is `postgres`) |
+| Option           | Short | Default            | Env Var                 | Description                                                     |
+| ---------------- | ----- | ------------------ | ----------------------- | --------------------------------------------------------------- |
+| `--port`         | `-p`  | `3000`             | `EIDETICA_PORT`         | Port to listen on                                               |
+| `--host`         |       | `0.0.0.0`          | `EIDETICA_HOST`         | Bind address                                                    |
+| `--backend`      | `-b`  | `sqlite`           | `EIDETICA_BACKEND`      | Storage backend (`sqlite`, `postgres`, `inmemory`)              |
+| `--data-dir`     | `-d`  | current dir        | `EIDETICA_DATA_DIR`     | Data directory for storage files                                |
+| `--blob-dir`     |       | `<data-dir>/blobs` | `EIDETICA_BLOB_DIR`     | Directory for the on-disk blob tier (large blobs)               |
+| `--postgres-url` |       | —                  | `EIDETICA_POSTGRES_URL` | PostgreSQL connection URL (required when backend is `postgres`) |
 
 ### `health`
 
@@ -47,11 +48,12 @@ Displays instance information: device ID, storage backend, user count, and datab
 eidetica info [OPTIONS]
 ```
 
-| Option           | Short | Default     | Env Var                 | Description                      |
-| ---------------- | ----- | ----------- | ----------------------- | -------------------------------- |
-| `--backend`      | `-b`  | `sqlite`    | `EIDETICA_BACKEND`      | Storage backend                  |
-| `--data-dir`     | `-d`  | current dir | `EIDETICA_DATA_DIR`     | Data directory for storage files |
-| `--postgres-url` |       | —           | `EIDETICA_POSTGRES_URL` | PostgreSQL connection URL        |
+| Option           | Short | Default            | Env Var                 | Description                         |
+| ---------------- | ----- | ------------------ | ----------------------- | ----------------------------------- |
+| `--backend`      | `-b`  | `sqlite`           | `EIDETICA_BACKEND`      | Storage backend                     |
+| `--data-dir`     | `-d`  | current dir        | `EIDETICA_DATA_DIR`     | Data directory for storage files    |
+| `--blob-dir`     |       | `<data-dir>/blobs` | `EIDETICA_BLOB_DIR`     | Directory for the on-disk blob tier |
+| `--postgres-url` |       | —                  | `EIDETICA_POSTGRES_URL` | PostgreSQL connection URL           |
 
 Example output:
 
@@ -91,7 +93,7 @@ EIDETICA_ADMIN_PASSWORD=… eidetica daemon --data-dir /var/lib/eidetica init --
 eidetica daemon --data-dir ~/.local/share/eidetica init --username me --passwordless
 ```
 
-Backend options (`--backend`, `--data-dir`, `--postgres-url`) go before the `init` subcommand and are shared with `daemon` (see below).
+Backend options (`--backend`, `--data-dir`, `--blob-dir`, `--postgres-url`) go before the `init` subcommand and are shared with `daemon` (see below).
 
 ### `daemon`
 
@@ -101,12 +103,13 @@ Runs the Eidetica service daemon against an already-initialised backend. Fails w
 eidetica daemon [OPTIONS]
 ```
 
-| Option           | Short | Default       | Env Var                 | Description                                                     |
-| ---------------- | ----- | ------------- | ----------------------- | --------------------------------------------------------------- |
-| `--socket`       | `-s`  | auto-detected | `EIDETICA_SOCKET`       | Unix socket path (see [Service Mode](service.md) for defaults)  |
-| `--backend`      | `-b`  | `sqlite`      | `EIDETICA_BACKEND`      | Storage backend (`sqlite`, `postgres`, `inmemory`)              |
-| `--data-dir`     | `-d`  | current dir   | `EIDETICA_DATA_DIR`     | Data directory for storage files                                |
-| `--postgres-url` |       | —             | `EIDETICA_POSTGRES_URL` | PostgreSQL connection URL (required when backend is `postgres`) |
+| Option           | Short | Default            | Env Var                 | Description                                                     |
+| ---------------- | ----- | ------------------ | ----------------------- | --------------------------------------------------------------- |
+| `--socket`       | `-s`  | auto-detected      | `EIDETICA_SOCKET`       | Unix socket path (see [Service Mode](service.md) for defaults)  |
+| `--backend`      | `-b`  | `sqlite`           | `EIDETICA_BACKEND`      | Storage backend (`sqlite`, `postgres`, `inmemory`)              |
+| `--data-dir`     | `-d`  | current dir        | `EIDETICA_DATA_DIR`     | Data directory for storage files                                |
+| `--blob-dir`     |       | `<data-dir>/blobs` | `EIDETICA_BLOB_DIR`     | Directory for the on-disk blob tier (large blobs)               |
+| `--postgres-url` |       | —                  | `EIDETICA_POSTGRES_URL` | PostgreSQL connection URL (required when backend is `postgres`) |
 
 The daemon runs until interrupted with SIGINT or SIGTERM. Clients connect using `Instance::connect("unix://...")`. See [Service (Daemon) Mode](service.md) for full documentation.
 
@@ -118,11 +121,12 @@ Lists all user-created databases with their root IDs and tip counts. System data
 eidetica db list [OPTIONS]
 ```
 
-| Option           | Short | Default     | Env Var                 | Description                      |
-| ---------------- | ----- | ----------- | ----------------------- | -------------------------------- |
-| `--backend`      | `-b`  | `sqlite`    | `EIDETICA_BACKEND`      | Storage backend                  |
-| `--data-dir`     | `-d`  | current dir | `EIDETICA_DATA_DIR`     | Data directory for storage files |
-| `--postgres-url` |       | —           | `EIDETICA_POSTGRES_URL` | PostgreSQL connection URL        |
+| Option           | Short | Default            | Env Var                 | Description                         |
+| ---------------- | ----- | ------------------ | ----------------------- | ----------------------------------- |
+| `--backend`      | `-b`  | `sqlite`           | `EIDETICA_BACKEND`      | Storage backend                     |
+| `--data-dir`     | `-d`  | current dir        | `EIDETICA_DATA_DIR`     | Data directory for storage files    |
+| `--blob-dir`     |       | `<data-dir>/blobs` | `EIDETICA_BLOB_DIR`     | Directory for the on-disk blob tier |
+| `--postgres-url` |       | —                  | `EIDETICA_POSTGRES_URL` | PostgreSQL connection URL           |
 
 Example output:
 
@@ -148,16 +152,24 @@ The `--json` flag works with `info` and `db list`.
 | `postgres` | PostgreSQL database             | Specified by `--postgres-url`     |
 | `inmemory` | In-memory with JSON persistence | `eidetica.json` in data directory |
 
+Large blobs are stored out-of-line as content-addressed files under the blob
+directory (`--blob-dir`, default `<data-dir>/blobs`) for both `sqlite` and
+`postgres`; small blobs stay inline in the database. The blob store is local to
+the instance — clients reach blobs through the running instance, not by
+connecting to the database directly. The `inmemory` backend keeps blobs in
+memory.
+
 ## Environment Variables
 
-| Variable                | Description                                        | Default           |
-| ----------------------- | -------------------------------------------------- | ----------------- |
-| `EIDETICA_SOCKET`       | Unix socket path for daemon mode (`daemon`)        | auto-detected     |
-| `EIDETICA_PORT`         | Port for the HTTP server (`serve`)                 | `3000`            |
-| `EIDETICA_HOST`         | Bind address (`serve`)                             | `0.0.0.0`         |
-| `EIDETICA_BACKEND`      | Storage backend (`sqlite`, `postgres`, `inmemory`) | `sqlite`          |
-| `EIDETICA_DATA_DIR`     | Directory for database and data files              | current directory |
-| `EIDETICA_POSTGRES_URL` | PostgreSQL connection URL                          | —                 |
+| Variable                | Description                                        | Default            |
+| ----------------------- | -------------------------------------------------- | ------------------ |
+| `EIDETICA_SOCKET`       | Unix socket path for daemon mode (`daemon`)        | auto-detected      |
+| `EIDETICA_PORT`         | Port for the HTTP server (`serve`)                 | `3000`             |
+| `EIDETICA_HOST`         | Bind address (`serve`)                             | `0.0.0.0`          |
+| `EIDETICA_BACKEND`      | Storage backend (`sqlite`, `postgres`, `inmemory`) | `sqlite`           |
+| `EIDETICA_DATA_DIR`     | Directory for database and data files              | current directory  |
+| `EIDETICA_BLOB_DIR`     | Directory for the on-disk blob tier (large blobs)  | `<data-dir>/blobs` |
+| `EIDETICA_POSTGRES_URL` | PostgreSQL connection URL                          | —                  |
 
 Command-line flags take precedence over environment variables.
 

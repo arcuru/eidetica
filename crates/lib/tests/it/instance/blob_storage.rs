@@ -71,6 +71,46 @@ async fn test_instance_get_blob_ref_over_cap_rejected_before_fetch() {
     }
 }
 
+/// End-to-end through the public `Instance` API against a file-based SQLite
+/// backend, so a large blob travels the full hybrid disk tier (§5.2): stored on
+/// disk, then whole-read and windowed-read back through `Instance::get_blob` /
+/// `get_blob_range` (which dispatch to the local engine and stamp LRU). The
+/// per-tier mechanics are unit-tested at the backend layer; this proves the
+/// wiring holds from the top.
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn test_instance_blob_round_trip_over_disk_tier() {
+    use eidetica::{NewUser, backend::database::Sqlite};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let backend = Sqlite::open(dir.path().join("inst.db"))
+        .await
+        .expect("open file sqlite");
+    let (instance, _admin) =
+        eidetica::Instance::create_backend(Box::new(backend), NewUser::passwordless("admin"))
+            .await
+            .expect("create instance");
+
+    // A multi-block blob well over the 16 KiB inline threshold → on disk.
+    let data: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
+    let cid = instance.put_blob(data.clone()).await.unwrap();
+
+    // It resolves whole and by window through the public API.
+    assert_eq!(instance.get_blob(&cid).await.unwrap(), Some(data.clone()));
+    assert_eq!(
+        instance.get_blob_range(&cid, 70_000..70_500).await.unwrap(),
+        Some(data[70_000..70_500].to_vec())
+    );
+    // The file is really on disk, not inline.
+    assert!(
+        dir.path()
+            .join("inst.db.blobs")
+            .join(cid.to_string())
+            .exists(),
+        "large blob landed in the on-disk tier"
+    );
+}
+
 #[tokio::test]
 async fn test_instance_put_blob_returns_content_address() {
     let instance = test_local_instance().await;

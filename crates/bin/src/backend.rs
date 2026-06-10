@@ -37,11 +37,25 @@ pub async fn create_backend(
     // Ensure data directory exists
     tokio::fs::create_dir_all(&data_dir).await?;
 
+    // The on-disk blob tier is local to this instance and applies to every
+    // database kind (one backend = its database + blob store + cache). Default
+    // it to `<data_dir>/blobs`; `--blob-dir` overrides.
+    let blob_dir = config
+        .blob_dir
+        .clone()
+        .unwrap_or_else(|| data_dir.join("blobs"));
+
     match config.backend {
         Backend::Sqlite => {
             let db_path = data_dir.join("eidetica.db");
-            tracing::info!("Using SQLite backend at {}", db_path.display());
-            Ok(Box::new(Sqlite::open(&db_path).await?))
+            tracing::info!(
+                "Using SQLite backend at {} (blobs at {})",
+                db_path.display(),
+                blob_dir.display()
+            );
+            Ok(Box::new(
+                Sqlite::open(&db_path).await?.with_blob_dir(blob_dir),
+            ))
         }
         Backend::Postgres => {
             let url = config
@@ -50,12 +64,16 @@ pub async fn create_backend(
                 .ok_or("PostgreSQL backend requires --postgres-url or EIDETICA_POSTGRES_URL")?;
 
             let display_url = redact_postgres_url(url);
-            tracing::info!("Connecting to PostgreSQL backend at {}", display_url);
+            tracing::info!(
+                "Connecting to PostgreSQL backend at {} (blobs at {})",
+                display_url,
+                blob_dir.display()
+            );
 
             match Postgres::connect(url).await {
                 Ok(backend) => {
                     tracing::info!("Connected to PostgreSQL successfully");
-                    Ok(Box::new(backend))
+                    Ok(Box::new(backend.with_blob_dir(blob_dir)))
                 }
                 Err(e) => {
                     Err(format!("Failed to connect to PostgreSQL at {}: {}", display_url, e).into())

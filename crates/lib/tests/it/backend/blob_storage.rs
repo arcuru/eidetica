@@ -188,3 +188,154 @@ async fn test_blobs_are_independent_keys() {
     assert_eq!(backend.get_blob(&cid_a).await.unwrap(), Some(a));
     assert_eq!(backend.get_blob(&cid_b).await.unwrap(), Some(b));
 }
+
+/// Hybrid inline/disk tier (§5.2): on a file-based SQLite backend, blobs larger
+/// than the 16 KiB threshold are stored as content-addressed files on disk
+/// (`location = 1`, `data` NULL) while small blobs stay inline — and both tiers
+/// round-trip, range-read, and delete through the same `BackendImpl` surface.
+///
+/// This is the one §4.3 test that reaches *past* the trait to the filesystem,
+/// so it constructs the backend directly (a file DB in a tempdir) instead of
+/// going through `test_backend()`.
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn test_blob_hybrid_disk_tier() {
+    use eidetica::backend::BackendImpl;
+    use eidetica::backend::database::Sqlite;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("test.db");
+    let backend = Sqlite::open(&db_path).await.expect("open file sqlite");
+
+    // The on-disk tier lives in a sibling "<db>.blobs" directory.
+    let blob_dir = dir.path().join("test.db.blobs");
+
+    // --- Large blob (>16 KiB) → on disk ---
+    let big: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
+    let big_cid = ID::from_bytes(&big);
+    backend.put_blob(&big_cid, big.clone()).await.unwrap();
+
+    // The bytes live in a file named for the CID, not inline in SQL.
+    let big_file = blob_dir.join(big_cid.to_string());
+    assert!(
+        big_file.exists(),
+        "a >16 KiB blob is written to the on-disk tier"
+    );
+    assert_eq!(
+        std::fs::metadata(&big_file).unwrap().len(),
+        big.len() as u64,
+        "the on-disk file holds exactly the blob bytes"
+    );
+
+    // Whole-read, windowed read, and header all work against the on-disk tier.
+    assert_eq!(backend.get_blob(&big_cid).await.unwrap(), Some(big.clone()));
+    assert_eq!(
+        backend
+            .get_blob_range(&big_cid, 40_000..40_123)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(&big[40_000..40_123]),
+        "pread window from disk matches"
+    );
+    assert_eq!(
+        backend
+            .get_blob_range(&big_cid, 99_990..1_000_000)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(&big[99_990..]),
+        "over-long end clamps to the file tail"
+    );
+    let (size, outboard) = backend.get_blob_header(&big_cid).await.unwrap().unwrap();
+    assert_eq!(size, big.len() as u64);
+    assert!(
+        !outboard.is_empty(),
+        "outboard persists in SQL for disk blobs"
+    );
+
+    // --- Small blob (≤16 KiB) → inline, no file ---
+    let small = vec![7u8; 4096];
+    let small_cid = ID::from_bytes(&small);
+    backend.put_blob(&small_cid, small.clone()).await.unwrap();
+    assert!(
+        !blob_dir.join(small_cid.to_string()).exists(),
+        "a small blob stays inline and creates no file"
+    );
+    assert_eq!(backend.get_blob(&small_cid).await.unwrap(), Some(small));
+
+    // --- Dedup: re-storing the large blob is a cheap no-op ---
+    backend.put_blob(&big_cid, big.clone()).await.unwrap();
+    assert!(big_file.exists());
+    assert_eq!(backend.get_blob(&big_cid).await.unwrap(), Some(big));
+
+    // --- Delete unlinks the on-disk file ---
+    assert!(backend.delete_blob(&big_cid).await.unwrap());
+    assert!(
+        !big_file.exists(),
+        "deleting an on-disk blob removes its file"
+    );
+    assert!(backend.get_blob(&big_cid).await.unwrap().is_none());
+    assert!(!backend.has_blob(&big_cid).await.unwrap());
+}
+
+/// The same hybrid disk tier on **Postgres**: the storage logic is
+/// db-agnostic (it branches only on `blob_dir()`), so attaching a blob dir via
+/// `with_blob_dir` puts large blobs on the instance's local disk while Postgres
+/// holds the metadata — clients reach blobs through the instance, not Postgres.
+///
+/// Needs a live server, so it self-skips unless `TEST_POSTGRES_URL` is set
+/// (GitHub CI provides one; the local nix gate does not).
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn test_blob_hybrid_disk_tier_postgres() {
+    use eidetica::backend::BackendImpl;
+    use eidetica::backend::database::Postgres;
+
+    let Ok(url) = std::env::var("TEST_POSTGRES_URL") else {
+        eprintln!("skipping: TEST_POSTGRES_URL not set");
+        return;
+    };
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let backend = Postgres::connect_isolated(&url)
+        .await
+        .expect("connect postgres")
+        .with_blob_dir(dir.path());
+
+    // Large blob → on disk (location=1, BYTEA NULL); bytes in a CID-named file.
+    let big: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
+    let big_cid = ID::from_bytes(&big);
+    backend.put_blob(&big_cid, big.clone()).await.unwrap();
+
+    let big_file = dir.path().join(big_cid.to_string());
+    assert!(big_file.exists(), "large blob on disk, not in BYTEA");
+    assert_eq!(backend.get_blob(&big_cid).await.unwrap(), Some(big.clone()));
+    assert_eq!(
+        backend
+            .get_blob_range(&big_cid, 40_000..40_123)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(&big[40_000..40_123]),
+        "pread window from disk matches"
+    );
+    let (size, outboard) = backend.get_blob_header(&big_cid).await.unwrap().unwrap();
+    assert_eq!(size, big.len() as u64);
+    assert!(!outboard.is_empty());
+
+    // Small blob → inline in BYTEA, no file.
+    let small = vec![7u8; 4096];
+    let small_cid = ID::from_bytes(&small);
+    backend.put_blob(&small_cid, small.clone()).await.unwrap();
+    assert!(
+        !dir.path().join(small_cid.to_string()).exists(),
+        "small blob stays inline"
+    );
+    assert_eq!(backend.get_blob(&small_cid).await.unwrap(), Some(small));
+
+    // Delete unlinks the file.
+    assert!(backend.delete_blob(&big_cid).await.unwrap());
+    assert!(!big_file.exists());
+    assert!(backend.get_blob(&big_cid).await.unwrap().is_none());
+}

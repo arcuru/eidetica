@@ -56,8 +56,15 @@ pub struct BackendConfig {
     /// Data directory for storage files.
     /// For SQLite: stores eidetica.db
     /// For InMemory: stores eidetica.json
+    /// Large blobs are stored under `<data_dir>/blobs` unless `--blob-dir` overrides it.
     #[arg(short, long, env = "EIDETICA_DATA_DIR")]
     pub data_dir: Option<PathBuf>,
+
+    /// Directory for the on-disk blob tier (large blobs stored as files).
+    /// Applies to SQLite and PostgreSQL alike — the blob store is local to this
+    /// instance. Defaults to `<data_dir>/blobs`.
+    #[arg(long, env = "EIDETICA_BLOB_DIR")]
+    pub blob_dir: Option<PathBuf>,
 
     /// PostgreSQL connection URL (required when backend=postgres)
     #[arg(long, env = "EIDETICA_POSTGRES_URL")]
