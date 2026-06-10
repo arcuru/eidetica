@@ -36,6 +36,71 @@ async fn test_blob_put_get_roundtrip() {
 }
 
 #[tokio::test]
+async fn test_blob_range_and_header_windowed_read() {
+    let backend = test_backend().await;
+
+    // A multi-block blob (>16 KiB) so windowed reads cross bao block groups and
+    // the persisted outboard is non-trivial.
+    let data: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
+    let cid = ID::from_bytes(&data);
+    backend.put_blob(&cid, data.clone()).await.unwrap();
+
+    // A ranged read returns exactly the clamped slice without whole-loading.
+    assert_eq!(
+        backend
+            .get_blob_range(&cid, 40_000..40_123)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(&data[40_000..40_123])
+    );
+    // Over-long end clamps to the tail; the full range returns everything.
+    assert_eq!(
+        backend
+            .get_blob_range(&cid, 99_990..1_000_000)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(&data[99_990..])
+    );
+    assert_eq!(
+        backend
+            .get_blob_range(&cid, 0..data.len() as u64)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(data.as_slice())
+    );
+    // An empty/past-the-end range on a present blob is empty bytes, not None.
+    assert_eq!(
+        backend
+            .get_blob_range(&cid, 500_000..500_001)
+            .await
+            .unwrap(),
+        Some(Vec::new())
+    );
+
+    // The header reports the true size and a non-empty outboard for serving.
+    let (size, outboard) = backend.get_blob_header(&cid).await.unwrap().unwrap();
+    assert_eq!(size, data.len() as u64);
+    assert!(
+        !outboard.is_empty(),
+        "a multi-block blob has interior nodes"
+    );
+
+    // Both are None for an absent blob.
+    let absent = ID::from_bytes(b"never stored");
+    assert!(
+        backend
+            .get_blob_range(&absent, 0..4)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(backend.get_blob_header(&absent).await.unwrap().is_none());
+}
+
+#[tokio::test]
 async fn test_blob_dedup_idempotent() {
     let backend = test_backend().await;
 

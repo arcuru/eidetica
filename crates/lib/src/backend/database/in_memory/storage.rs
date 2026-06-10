@@ -381,6 +381,33 @@ pub(crate) fn get_blob(inner: &InMemoryInner, cid: &ID) -> Option<Vec<u8>> {
     inner.blobs.get(cid).cloned()
 }
 
+/// Read a clamped byte range of a held blob, or `None` if not held. The bytes
+/// are already in RAM here, so this slices; the method exists to match the
+/// `BackendImpl` surface the SQL backend uses for true windowed reads.
+pub(crate) fn get_blob_range(
+    inner: &InMemoryInner,
+    cid: &ID,
+    range: std::ops::Range<u64>,
+) -> Option<Vec<u8>> {
+    inner.blobs.get(cid).map(|data| {
+        let len = data.len() as u64;
+        let start = range.start.min(len);
+        let end = range.end.clamp(start, len);
+        data[start as usize..end as usize].to_vec()
+    })
+}
+
+/// `(size, pre-order bao outboard)` for a held blob, or `None`. The outboard is
+/// derived on demand from the in-RAM bytes — InMemory holds the whole blob, so
+/// there is no whole-load cost to avoid (unlike the SQL backend, which persists
+/// the outboard so a serve need not re-read the blob).
+pub(crate) fn get_blob_header(inner: &InMemoryInner, cid: &ID) -> Option<(u64, Vec<u8>)> {
+    inner
+        .blobs
+        .get(cid)
+        .map(|data| (data.len() as u64, crate::blob::bao::compute_outboard(data)))
+}
+
 /// Cheap existence check for a blob.
 pub(crate) fn has_blob(inner: &InMemoryInner, cid: &ID) -> bool {
     inner.blobs.contains_key(cid)

@@ -247,14 +247,11 @@ impl SyncHandler for SyncHandlerImpl {
         range: std::ops::Range<u64>,
     ) -> Result<Option<Vec<u8>>> {
         // Local-only (no recursion into peer-fetch, which would amplify and
-        // could loop). `get_blob_local` codec-gates to raw blobs. The outboard
-        // is recomputed from the full bytes on each serve (Phase 2 does not
-        // persist outboards).
+        // could loop). `encode_blob_range_local` codec-gates to raw blobs and
+        // reads only the requested window plus the persisted outboard (§7) — a
+        // range serve of a large blob never whole-loads or re-hashes it.
         let instance = self.instance()?;
-        match instance.get_blob_local(cid).await? {
-            Some(bytes) => Ok(Some(crate::blob::bao::encode_range(&bytes, range))),
-            None => Ok(None),
-        }
+        instance.encode_blob_range_local(cid, range).await
     }
 }
 

@@ -10,6 +10,7 @@
 
 use std::any::Any;
 use std::collections::HashSet;
+use std::ops::Range;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -590,6 +591,23 @@ pub trait BackendImpl: Send + Sync + Any {
     /// guaranteed to hash to `cid` (enforced on write by
     /// [`put_blob`](Self::put_blob)).
     async fn get_blob(&self, cid: &ID) -> Result<Option<Vec<u8>>>;
+
+    /// Read a byte range of a blob's data without materializing the whole blob.
+    ///
+    /// `range` is clamped to the blob's length (an over-long `end` yields the
+    /// available tail; an empty or past-the-end range yields empty bytes).
+    /// Returns `Ok(None)` only when the blob is not held. The bytes are raw blob
+    /// content, not bao-encoded — the trusted local read path and the verified
+    /// serve path both slice through here so a range read of a large blob never
+    /// whole-loads it.
+    async fn get_blob_range(&self, cid: &ID, range: Range<u64>) -> Result<Option<Vec<u8>>>;
+
+    /// Fetch a blob's `(size, pre-order bao outboard)` for verified range
+    /// serving, without materializing its data. Returns `Ok(None)` if absent.
+    /// The outboard lets a range serve encode a verified window after reading
+    /// only that window via [`get_blob_range`](Self::get_blob_range) — no
+    /// whole-blob re-hash (§7).
+    async fn get_blob_header(&self, cid: &ID) -> Result<Option<(u64, Vec<u8>)>>;
 
     /// Cheap existence check for a blob, without materializing its bytes.
     async fn has_blob(&self, cid: &ID) -> Result<bool>;

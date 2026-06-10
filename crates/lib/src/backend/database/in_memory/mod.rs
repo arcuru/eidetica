@@ -459,6 +459,20 @@ impl BackendImpl for InMemory {
         Ok(storage::get_blob(&inner, cid))
     }
 
+    async fn get_blob_range(
+        &self,
+        cid: &ID,
+        range: std::ops::Range<u64>,
+    ) -> Result<Option<Vec<u8>>> {
+        let inner = self.inner.read().unwrap();
+        Ok(storage::get_blob_range(&inner, cid, range))
+    }
+
+    async fn get_blob_header(&self, cid: &ID) -> Result<Option<(u64, Vec<u8>)>> {
+        let inner = self.inner.read().unwrap();
+        Ok(storage::get_blob_header(&inner, cid))
+    }
+
     async fn has_blob(&self, cid: &ID) -> Result<bool> {
         let inner = self.inner.read().unwrap();
         Ok(storage::has_blob(&inner, cid))

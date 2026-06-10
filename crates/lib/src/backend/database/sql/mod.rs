@@ -493,6 +493,18 @@ impl BackendImpl for SqlxBackend {
         storage::get_blob(self, cid).await
     }
 
+    async fn get_blob_range(
+        &self,
+        cid: &ID,
+        range: std::ops::Range<u64>,
+    ) -> Result<Option<Vec<u8>>> {
+        storage::get_blob_range(self, cid, range).await
+    }
+
+    async fn get_blob_header(&self, cid: &ID) -> Result<Option<(u64, Vec<u8>)>> {
+        storage::get_blob_header(self, cid).await
+    }
+
     async fn has_blob(&self, cid: &ID) -> Result<bool> {
         storage::has_blob(self, cid).await
     }

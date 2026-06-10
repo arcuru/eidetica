@@ -1270,18 +1270,36 @@ impl Instance {
     /// [`BlobInvalidCodec`](crate::backend::errors::BackendError::BlobInvalidCodec)
     /// for a non-raw `cid`.
     ///
-    /// Local blobs are held whole, so a local hit slices in memory. On a local
-    /// miss, if sync is enabled, only the requested range is streamed from a peer
-    /// (bao-verified, bounded memory) — the bytes are returned but not persisted
-    /// (a partial range can't be stored under the whole-blob CID; use
-    /// [`get_blob`](Self::get_blob) to fetch and persist the whole blob).
+    /// An in-process engine reads only the requested window from storage (§7) —
+    /// a range read of a large blob never whole-loads it. A thin remote client,
+    /// whose seam offers only whole-blob reads, falls back to fetching the whole
+    /// blob from its daemon and slicing. On a local miss, if sync is enabled,
+    /// only the requested range is streamed from a peer (bao-verified, bounded
+    /// memory) — the bytes are returned but not persisted (a partial range can't
+    /// be stored under the whole-blob CID; use [`get_blob`](Self::get_blob) to
+    /// fetch and persist the whole blob).
     pub async fn get_blob_range(
         &self,
         cid: &ID,
         range: std::ops::Range<u64>,
     ) -> Result<Option<Vec<u8>>> {
-        // Local whole blob present → slice it (codec-gated by get_blob_local).
-        if let Some(bytes) = self.get_blob_local(cid).await? {
+        if !cid.is_raw() {
+            return Err(crate::backend::errors::BackendError::BlobInvalidCodec {
+                cid: cid.clone(),
+            }
+            .into());
+        }
+        // In-process engine → true windowed read (bounded by the range, not the
+        // blob). Stamp last-access on a hit so LRU eviction (§6) reflects reads.
+        if let Some(engine) = self.inner.backend.local_engine() {
+            if let Some(bytes) = engine.get_blob_range(cid, range.clone()).await? {
+                let now = self.inner.clock.now_millis() as i64;
+                engine.touch_blob_accessed(cid, now).await?;
+                return Ok(Some(bytes));
+            }
+        } else if let Some(bytes) = self.get_blob_local(cid).await? {
+            // Thin remote client: the seam only offers whole-blob reads, so
+            // fetch whole (clamped by the daemon) and slice locally.
             let len = bytes.len() as u64;
             let start = range.start.min(len);
             let end = range.end.clamp(start, len);
@@ -1292,6 +1310,49 @@ impl Instance {
             Some(sync) => sync.fetch_blob_range(cid, range).await,
             None => Ok(None),
         }
+    }
+
+    /// Encode a bao verified-streaming range from **local storage only** (no
+    /// peer fetch), reading just the chunk-aligned window bytes plus the
+    /// persisted outboard — never the whole blob (§7). This is the serve half of
+    /// the range path: the sync handler calls it to answer a peer's range
+    /// request. Returns `Ok(None)` if the blob is not held locally. Requires a
+    /// local engine (only a node with storage serves); a non-raw `cid` is
+    /// rejected with
+    /// [`BlobInvalidCodec`](crate::backend::errors::BackendError::BlobInvalidCodec).
+    pub(crate) async fn encode_blob_range_local(
+        &self,
+        cid: &ID,
+        range: std::ops::Range<u64>,
+    ) -> Result<Option<Vec<u8>>> {
+        if !cid.is_raw() {
+            return Err(crate::backend::errors::BackendError::BlobInvalidCodec {
+                cid: cid.clone(),
+            }
+            .into());
+        }
+        let engine = self.local_blob_engine()?;
+        let Some((size, outboard)) = engine.get_blob_header(cid).await? else {
+            return Ok(None);
+        };
+        // Read only the chunk-aligned window the encoder needs, not the blob.
+        let window = crate::blob::bao::serve_window(size, range.clone());
+        let window_bytes = engine
+            .get_blob_range(cid, window.clone())
+            .await?
+            .unwrap_or_default();
+        // A serve is a read — keep LRU recency honest.
+        let now = self.inner.clock.now_millis() as i64;
+        engine.touch_blob_accessed(cid, now).await?;
+        let encoded = crate::blob::bao::encode_range_with_outboard(
+            cid,
+            size,
+            &outboard,
+            window.start,
+            &window_bytes,
+            range,
+        )?;
+        Ok(Some(encoded))
     }
 
     // === Blob pinning / garbage collection (Phase 1.5, §6) ===

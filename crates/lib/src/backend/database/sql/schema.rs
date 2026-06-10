@@ -133,12 +133,20 @@ pub const CREATE_TABLES: &[&str] = &[
     // explicit GC pass, and even then only when it is not pinned (see
     // `blob_pins`). This column is part of the unreleased Phase-1 baseline (no
     // migration; SCHEMA_VERSION stays 0/unstable).
+    //
+    // `outboard` holds the pre-order bao hash tree (§7) — the interior BLAKE3
+    // nodes, ~0.4% of `size` at the 16 KiB block size. Persisting it means a
+    // verified range *serve* reads only the requested window of `data` (via a
+    // ranged read) plus this small sidecar, instead of whole-loading and
+    // re-hashing the blob. The blob's CID is the bao root, so `outboard` needs
+    // no address of its own. Also part of the unreleased baseline (no migration).
     "CREATE TABLE IF NOT EXISTS blobs (
         cid           TEXT PRIMARY KEY,
         size          BIGINT NOT NULL,
         location      BIGINT NOT NULL,
         last_accessed BIGINT NOT NULL DEFAULT 0,
-        data          BLOB
+        data          BLOB,
+        outboard      BLOB NOT NULL
     )",
     // Blob pins (Phase 1.5, §6) — the local GC root set.
     //

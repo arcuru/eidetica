@@ -20,7 +20,7 @@ use bao_tree::{
     io::{
         outboard::PreOrderMemOutboard,
         round_up_to_chunks,
-        sync::{DecodeResponseIter, encode_ranges_validated},
+        sync::{DecodeResponseIter, ReadAt, encode_ranges_validated},
     },
 };
 
@@ -52,23 +52,123 @@ fn cid_to_hash(cid: &ID) -> Result<bao_tree::blake3::Hash> {
     Ok(bao_tree::blake3::Hash::from_bytes(bytes))
 }
 
-/// Encode a verified bao stream covering `range` of `data`.
+/// Compute the pre-order bao outboard (interior hash-tree nodes) for `data`.
 ///
-/// The outboard is recomputed from `data` (cheap; BLAKE3 is fast) — Phase 2
-/// does not persist outboards. Returns the self-describing wire form documented
-/// in the module header. In-memory encoding is infallible.
-pub(crate) fn encode_range(data: &[u8], range: Range<u64>) -> Vec<u8> {
-    let outboard = PreOrderMemOutboard::create(data, BLOCK_SIZE);
-    // Clamp to the blob size so encoder and decoder snap to the same chunks.
-    let len = data.len() as u64;
-    let start = range.start.min(len);
-    let end = range.end.clamp(start, len);
+/// This is the sidecar persisted alongside a blob (§7): ~0.4% of `data` at the
+/// 16 KiB block size, and the input to [`encode_range_with_outboard`] so a range
+/// serve never re-hashes the whole blob. The returned bytes carry no length
+/// prefix — the size is stored separately (the `blobs.size` column).
+pub(crate) fn compute_outboard(data: &[u8]) -> Vec<u8> {
+    PreOrderMemOutboard::create(data, BLOCK_SIZE).data
+}
+
+/// The chunk-group-aligned byte window of `data` that
+/// [`encode_range_with_outboard`] must be given to serve `range`.
+///
+/// bao reads whole [`BLOCK_SIZE`]-aligned leaves, so serving an arbitrary byte
+/// range needs the data snapped out to block boundaries (and clamped to the
+/// blob `size`). The caller reads exactly this window from storage — not the
+/// whole blob — and hands it back in. Returns an empty window for an empty or
+/// past-the-end range.
+pub(crate) fn serve_window(size: u64, range: Range<u64>) -> Range<u64> {
+    let block = BLOCK_SIZE.bytes() as u64;
+    let start = range.start.min(size);
+    let end = range.end.clamp(start, size);
+    let win_start = (start / block) * block;
+    let win_end = end.div_ceil(block).saturating_mul(block).min(size);
+    win_start..win_end
+}
+
+/// A [`ReadAt`] over a single in-memory window of a blob, mapping the blob's
+/// absolute byte offsets onto a buffer that starts at `base`.
+///
+/// bao addresses leaves by absolute offset; we only hold the
+/// [`serve_window`]-sized slice, so reads translate `pos - base` into `buf` and
+/// report EOF for anything past the window. Every leaf bao reads for a request
+/// lies inside the window by construction, so a read outside it signals a
+/// malformed request rather than normal end-of-data.
+struct WindowReader<'a> {
+    base: u64,
+    buf: &'a [u8],
+}
+
+impl ReadAt for WindowReader<'_> {
+    fn read_at(&self, pos: u64, out: &mut [u8]) -> std::io::Result<usize> {
+        if pos < self.base {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "bao read below the served window",
+            ));
+        }
+        let rel = (pos - self.base) as usize;
+        if rel >= self.buf.len() {
+            return Ok(0);
+        }
+        let n = out.len().min(self.buf.len() - rel);
+        out[..n].copy_from_slice(&self.buf[rel..rel + n]);
+        Ok(n)
+    }
+}
+
+/// Encode a verified bao stream covering `range`, using a *persisted* outboard
+/// and only the [`serve_window`] bytes of the blob — never the whole blob.
+///
+/// `size` is the blob's total length, `outboard` its persisted pre-order tree
+/// (from [`compute_outboard`]), and `window_bytes` the slice of the blob at
+/// `[window_start, window_start + window_bytes.len())` (which must be the
+/// [`serve_window`] for `range`). The blob's `cid` supplies the bao root, so the
+/// encoder *validates* the window against the persisted tree as it encodes —
+/// local bit-rot is caught here, not shipped to the peer. Returns the
+/// self-describing wire form documented in the module header.
+pub(crate) fn encode_range_with_outboard(
+    cid: &ID,
+    size: u64,
+    outboard: &[u8],
+    window_start: u64,
+    window_bytes: &[u8],
+    range: Range<u64>,
+) -> Result<Vec<u8>> {
+    let root = cid_to_hash(cid)?;
+    let tree = BaoTree::new(size, BLOCK_SIZE);
+    let outboard = PreOrderMemOutboard {
+        root,
+        tree,
+        data: outboard.to_vec(),
+    };
+
+    let start = range.start.min(size);
+    let end = range.end.clamp(start, size);
     let ranges = byte_chunks(start..end);
 
-    let mut out = (data.len() as u64).to_le_bytes().to_vec();
-    encode_ranges_validated(data, &outboard, &ranges, &mut out)
-        .expect("in-memory bao encode cannot fail");
-    out
+    let reader = WindowReader {
+        base: window_start,
+        buf: window_bytes,
+    };
+    let mut out = size.to_le_bytes().to_vec();
+    encode_ranges_validated(reader, &outboard, &ranges, &mut out)
+        .map_err(|_| BackendError::BlobStreamInvalid { cid: cid.clone() })?;
+    Ok(out)
+}
+
+/// Test-only convenience: outboard + window-encode a range over an in-memory
+/// blob in one call. Mirrors the production serve path (persisted outboard +
+/// windowed read) so the unit tests exercise the same code, just sourcing the
+/// outboard and window from `data` directly.
+#[cfg(test)]
+pub(crate) fn encode_range(data: &[u8], range: Range<u64>) -> Vec<u8> {
+    let cid = ID::from_bytes(data);
+    let outboard = compute_outboard(data);
+    let window = serve_window(data.len() as u64, range.clone());
+    let window_bytes = &data[window.start as usize..window.end as usize];
+    encode_range_with_outboard(
+        &cid,
+        data.len() as u64,
+        &outboard,
+        window.start,
+        window_bytes,
+        range,
+    )
+    .expect("in-memory bao encode cannot fail")
 }
 
 /// Decode and verify a bao stream (as produced by [`encode_range`]) against

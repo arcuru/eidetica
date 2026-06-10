@@ -669,14 +669,18 @@ pub async fn clear_crdt_cache(backend: &SqlxBackend) -> Result<()> {
 pub async fn put_blob(backend: &SqlxBackend, cid: &ID, data: Vec<u8>) -> Result<()> {
     let pool = backend.pool();
     let size = data.len() as i64;
+    // Persist the bao outboard alongside the bytes (§7) so a later range serve
+    // reads only the requested window plus this ~0.4% sidecar instead of
+    // whole-loading and re-hashing. Computed once, here, on the write path.
+    let outboard = crate::blob::bao::compute_outboard(&data);
 
     // `last_accessed` defaults to 0 here; the caller stamps it to *now* via
     // `touch_blob_accessed` (see `Instance::persist_blob`) so LRU/GC see a fresh
     // blob and the grace window protects it.
     let sql = if backend.is_sqlite() {
-        "INSERT OR IGNORE INTO blobs (cid, size, location, data) VALUES ($1, $2, 0, $3)"
+        "INSERT OR IGNORE INTO blobs (cid, size, location, data, outboard) VALUES ($1, $2, 0, $3, $4)"
     } else {
-        "INSERT INTO blobs (cid, size, location, data) VALUES ($1, $2, 0, $3)
+        "INSERT INTO blobs (cid, size, location, data, outboard) VALUES ($1, $2, 0, $3, $4)
          ON CONFLICT (cid) DO NOTHING"
     };
 
@@ -684,11 +688,66 @@ pub async fn put_blob(backend: &SqlxBackend, cid: &ID, data: Vec<u8>) -> Result<
         .bind(cid.to_string())
         .bind(size)
         .bind(&data)
+        .bind(&outboard)
         .execute(pool)
         .await
         .sql_context("Failed to store blob")?;
 
     Ok(())
+}
+
+/// Read a byte range of a blob's `data` without materializing the whole blob,
+/// using the backend's native 1-indexed substring (SQLite `substr(b, from,
+/// for)`, Postgres `substring(b FROM from FOR for)`). `range` is clamped to the
+/// stored bytes: an over-long `end` yields the available tail and an
+/// empty/past-the-end range yields empty bytes. Returns `Ok(None)` only if the
+/// blob is not held.
+///
+/// Offsets are bound as `i32`, the native width of both dialects' substring
+/// arguments — the `DEFAULT_MAX_BLOB_BYTES` cap keeps every offset well inside
+/// 32 bits, so the saturating casts never actually clamp. Raising the cap past
+/// ~2 GiB would require widening this (and moving to a disk tier for the data
+/// anyway, since a >2 GiB SQL BLOB column is its own problem).
+pub async fn get_blob_range(
+    backend: &SqlxBackend,
+    cid: &ID,
+    range: std::ops::Range<u64>,
+) -> Result<Option<Vec<u8>>> {
+    let pool = backend.pool();
+    // 1-indexed start for both dialects; length is the half-open span. Bound as
+    // i32 so each dialect hits its native substring(_, int, int) signature.
+    let start = range.start.saturating_add(1).min(i32::MAX as u64) as i32;
+    let len = range.end.saturating_sub(range.start).min(i32::MAX as u64) as i32;
+
+    let sql = if backend.is_sqlite() {
+        "SELECT substr(data, $2, $3) FROM blobs WHERE cid = $1"
+    } else {
+        "SELECT substring(data FROM $2 FOR $3) FROM blobs WHERE cid = $1"
+    };
+
+    let row: Option<(Vec<u8>,)> = sqlx::query_as(sql)
+        .bind(cid.to_string())
+        .bind(start)
+        .bind(len)
+        .fetch_optional(pool)
+        .await
+        .sql_context("Failed to read blob range")?;
+
+    Ok(row.map(|(bytes,)| bytes))
+}
+
+/// Fetch a blob's `(size, pre-order outboard)` without materializing its data —
+/// the input a verified range serve needs before reading the window (§7).
+/// Returns `Ok(None)` if the blob is not held.
+pub async fn get_blob_header(backend: &SqlxBackend, cid: &ID) -> Result<Option<(u64, Vec<u8>)>> {
+    let pool = backend.pool();
+    let row: Option<(i64, Vec<u8>)> =
+        sqlx::query_as("SELECT size, outboard FROM blobs WHERE cid = $1")
+            .bind(cid.to_string())
+            .fetch_optional(pool)
+            .await
+            .sql_context("Failed to read blob header")?;
+    Ok(row.map(|(size, outboard)| (size.max(0) as u64, outboard)))
 }
 
 /// Fetch a blob's bytes by content address, or `None` if not held locally.
