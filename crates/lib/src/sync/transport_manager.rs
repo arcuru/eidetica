@@ -173,6 +173,22 @@ impl TransportManager {
         transport.send_request(address, request).await
     }
 
+    /// Fetch a verified blob range from a peer using the appropriate transport.
+    pub async fn fetch_blob_range(
+        &self,
+        address: &Address,
+        cid: &crate::entry::ID,
+        range: std::ops::Range<u64>,
+    ) -> Result<Option<Vec<u8>>> {
+        let transport =
+            self.get_for_address(address)
+                .ok_or_else(|| SyncError::NoTransportForAddress {
+                    address: address.clone(),
+                })?;
+
+        transport.fetch_blob_range(address, cid, range).await
+    }
+
     /// Start servers on all transports.
     ///
     /// Each transport is started with the given handler using its pre-configured

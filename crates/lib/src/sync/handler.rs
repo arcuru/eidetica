@@ -50,6 +50,21 @@ pub trait SyncHandler: Send + std::marker::Sync {
     /// The appropriate response for the given request.
     async fn handle_request(&self, request: &SyncRequest, context: &RequestContext)
     -> SyncResponse;
+
+    /// Serve a verified bao stream for a byte range of a blob (design §7).
+    ///
+    /// Returns the self-describing bao encoding for `range` of blob `cid` if held
+    /// locally, or `None` if absent. Blobs are global/unscoped — the CID is the
+    /// capability (§10.1) — and resolution is **local-only** (no recursion into
+    /// peer-fetch). This is the binary `POST /api/v0/blob` path, separate from
+    /// the JSON `handle_request`. The default serves nothing.
+    async fn serve_blob_range(
+        &self,
+        _cid: &ID,
+        _range: std::ops::Range<u64>,
+    ) -> Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
 }
 
 /// Default implementation of SyncHandler with database backend access.
@@ -205,6 +220,21 @@ impl SyncHandler for SyncHandlerImpl {
                 }
             }
             SyncRequest::FetchBlobs { cids } => self.handle_fetch_blobs(cids, context).await,
+        }
+    }
+
+    async fn serve_blob_range(
+        &self,
+        cid: &ID,
+        range: std::ops::Range<u64>,
+    ) -> Result<Option<Vec<u8>>> {
+        // Local-only (no recursion into peer-fetch). `get_blob_local` codec-gates
+        // to raw blobs. The outboard is recomputed from the full bytes on each
+        // serve (Phase 2 does not persist outboards).
+        let instance = self.instance()?;
+        match instance.get_blob_local(cid).await? {
+            Some(bytes) => Ok(Some(crate::blob::bao::encode_range(&bytes, range))),
+            None => Ok(None),
         }
     }
 }

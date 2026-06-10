@@ -19,6 +19,7 @@
 
 pub mod auth;
 pub mod backend;
+pub mod blob;
 pub mod clock;
 pub mod constants;
 pub mod crdt;

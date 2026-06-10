@@ -5,11 +5,14 @@
 
 use std::{net::SocketAddr, sync::Arc};
 
+use std::ops::Range;
+
 use async_trait::async_trait;
 use axum::{
     Router,
     extract::{ConnectInfo, Json as ExtractJson, State},
-    response::Json,
+    http::{StatusCode, header::CONTENT_TYPE},
+    response::{IntoResponse, Json, Response},
     routing::post,
 };
 use serde::{Deserialize, Serialize};
@@ -19,14 +22,22 @@ use super::{SyncTransport, TransportBuilder, TransportConfig, shared::*};
 use crate::{
     Result,
     crdt::Doc,
+    entry::ID,
     store::Registered,
     sync::{
         error::SyncError,
         handler::SyncHandler,
         peer_types::Address,
-        protocol::{RequestContext, SyncRequest, SyncResponse},
+        protocol::{BlobRangeRequest, RequestContext, SyncRequest, SyncResponse},
     },
 };
+
+/// Slack added to the requested range length when bounding the blob-range
+/// response read: the bao stream adds a small size prefix plus parent hashes
+/// (≈0.4% of the range + a per-request path overhead). 1 MiB dwarfs the path
+/// overhead for any realistic blob, so a response larger than this is a
+/// misbehaving peer and is rejected rather than buffered unbounded.
+const BAO_STREAM_SLACK: u64 = 1024 * 1024;
 
 /// Persistable configuration for the HTTP transport.
 ///
@@ -145,6 +156,7 @@ impl HttpTransport {
     fn create_router(handler: Arc<dyn SyncHandler>) -> Router {
         Router::new()
             .route("/api/v0", post(handle_sync_request))
+            .route("/api/v0/blob", post(handle_blob_request))
             .with_state(handler)
     }
 }
@@ -280,6 +292,70 @@ impl SyncTransport for HttpTransport {
         Ok(sync_response)
     }
 
+    async fn fetch_blob_range(
+        &self,
+        address: &Address,
+        cid: &ID,
+        range: Range<u64>,
+    ) -> Result<Option<Vec<u8>>> {
+        let client = reqwest::Client::new();
+        let url = format!("http://{}/api/v0/blob", address.address);
+        let req = BlobRangeRequest {
+            cid: cid.clone(),
+            start: range.start,
+            end: range.end,
+        };
+
+        let mut response =
+            client
+                .post(&url)
+                .json(&req)
+                .send()
+                .await
+                .map_err(|e| SyncError::ConnectionFailed {
+                    address: address.address.clone(),
+                    reason: e.to_string(),
+                })?;
+
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if !response.status().is_success() {
+            return Err(SyncError::Network(format!(
+                "Server returned error: {}",
+                response.status()
+            ))
+            .into());
+        }
+
+        // Bounded read: the verified stream for this range is at most the range
+        // length plus bao overhead. Reading chunk-by-chunk with a budget bounds
+        // memory to the requested range even if the peer misbehaves — this is
+        // what closes the whole-blob memory-DoS of the JSON `FetchBlobs` path.
+        let budget = range
+            .end
+            .saturating_sub(range.start)
+            .saturating_add(BAO_STREAM_SLACK);
+        let mut buf: Vec<u8> = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|e| SyncError::Network(format!("Failed to read blob stream: {e}")))?
+        {
+            if buf.len() as u64 + chunk.len() as u64 > budget {
+                return Err(SyncError::Network(
+                    "blob range response exceeded expected size".to_string(),
+                )
+                .into());
+            }
+            buf.extend_from_slice(&chunk);
+        }
+
+        // Decode + verify against the CID; tampered/wrong bytes are rejected.
+        let bytes = crate::blob::bao::decode_range(cid, range, &buf)?;
+        Ok(Some(bytes))
+    }
+
     fn is_server_running(&self) -> bool {
         self.server_state.is_running()
     }
@@ -314,4 +390,21 @@ async fn handle_sync_request(
     let response = handler.handle_request(&request, &context).await;
 
     Json(response)
+}
+
+/// Handler for `/api/v0/blob` — serves a verified bao stream of a blob range as
+/// `application/octet-stream`. `404` when the blob isn't held; `500` on error.
+/// Blobs are global/unscoped (the CID is the capability, §10.1).
+async fn handle_blob_request(
+    State(handler): State<Arc<dyn SyncHandler>>,
+    ExtractJson(req): ExtractJson<BlobRangeRequest>,
+) -> Response {
+    match handler.serve_blob_range(&req.cid, req.start..req.end).await {
+        Ok(Some(stream)) => ([(CONTENT_TYPE, "application/octet-stream")], stream).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            tracing::warn!(cid = %req.cid, error = %e, "Failed to serve blob range");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
 }

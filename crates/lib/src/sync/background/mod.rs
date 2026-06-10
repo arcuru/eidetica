@@ -86,6 +86,14 @@ pub enum SyncCommand {
         response: oneshot::Sender<Result<SyncResponse>>,
     },
 
+    /// Fetch a verified blob range from a peer (design §7).
+    FetchBlobRange {
+        address: Address,
+        cid: crate::entry::ID,
+        range: std::ops::Range<u64>,
+        response: oneshot::Sender<Result<Option<Vec<u8>>>>,
+    },
+
     /// Flush: process all queued entries and retry queue, then respond.
     Flush {
         response: oneshot::Sender<Result<()>>,
@@ -137,6 +145,17 @@ impl std::fmt::Debug for SyncCommand {
                 .debug_struct("SendRequest")
                 .field("address", address)
                 .field("request", request)
+                .finish(),
+            Self::FetchBlobRange {
+                address,
+                cid,
+                range,
+                ..
+            } => f
+                .debug_struct("FetchBlobRange")
+                .field("address", address)
+                .field("cid", cid)
+                .field("range", range)
                 .finish(),
             Self::Flush { .. } => write!(f, "Flush"),
         }
@@ -402,6 +421,19 @@ impl BackgroundSync {
                 response,
             } => {
                 let result = self.send_sync_request(&address, &request).await;
+                let _ = response.send(result);
+            }
+
+            SyncCommand::FetchBlobRange {
+                address,
+                cid,
+                range,
+                response,
+            } => {
+                let result = self
+                    .transport_manager
+                    .fetch_blob_range(&address, &cid, range)
+                    .await;
                 let _ = response.send(result);
             }
 

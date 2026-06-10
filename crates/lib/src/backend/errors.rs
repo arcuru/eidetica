@@ -193,6 +193,18 @@ pub enum BackendError {
         cid: ID,
     },
 
+    /// A bao verified-streaming blob transfer failed to decode or verify.
+    ///
+    /// Raised when a received range stream is malformed, does not cover the
+    /// requested range, or fails verification against the requested CID (a
+    /// tampered or wrong-blob stream). Resolution is self-verifying, so this is
+    /// how an untrusted peer's bad bytes are rejected.
+    #[error("Blob stream did not verify against {cid}")]
+    BlobStreamInvalid {
+        /// The content address the stream was supposed to deliver.
+        cid: ID,
+    },
+
     /// SQL database error (sqlx).
     #[cfg(any(feature = "sqlite", feature = "postgres"))]
     #[error("SQL error: {reason}")]

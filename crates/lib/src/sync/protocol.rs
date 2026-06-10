@@ -158,6 +158,22 @@ pub enum SyncResponse {
     Error(String),
 }
 
+/// Request body for the binary blob-range endpoint (`POST /api/v0/blob`).
+///
+/// Blob range transfer does **not** go through [`SyncRequest`]/[`SyncResponse`]
+/// (those are JSON): the response is a raw bao stream, so it rides a dedicated
+/// binary endpoint. This small JSON struct carries only the control fields. The
+/// blob is global/unscoped — the CID is the capability (design §10.1).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct BlobRangeRequest {
+    /// Content address of the blob.
+    pub cid: ID,
+    /// Inclusive start byte offset.
+    pub start: u64,
+    /// Exclusive end byte offset (clamped to the blob's real size by the peer).
+    pub end: u64,
+}
+
 /// Current protocol version - 0 indicates unstable
 pub const PROTOCOL_VERSION: u32 = 0;
 

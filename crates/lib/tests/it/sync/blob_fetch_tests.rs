@@ -157,3 +157,77 @@ async fn test_get_blob_absent_on_peer_is_none() -> eidetica::Result<()> {
 
     Ok(())
 }
+
+/// Wire up two sync nodes over HTTP and register the holder as the fetcher's
+/// peer. Returns (holder, fetcher).
+async fn two_synced_nodes() -> (eidetica::Instance, eidetica::Instance) {
+    let holder = test_instance().await;
+    let fetcher = test_instance().await;
+    holder.enable_sync().await.unwrap();
+    fetcher.enable_sync().await.unwrap();
+
+    let holder_sync = holder.sync().expect("holder sync");
+    let fetcher_sync = fetcher.sync().expect("fetcher sync");
+
+    holder_sync
+        .register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
+        .await
+        .unwrap();
+    fetcher_sync
+        .register_transport("http", HttpTransport::builder())
+        .await
+        .unwrap();
+    holder_sync.accept_connections().await.unwrap();
+    let holder_addr = Address::http(holder_sync.get_server_address().await.unwrap());
+    sleep(Duration::from_millis(100)).await;
+
+    let holder_pubkey = holder_sync.get_device_pubkey().unwrap();
+    fetcher_sync
+        .register_peer(&holder_pubkey, Some("holder"))
+        .await
+        .unwrap();
+    fetcher_sync
+        .add_peer_address(&holder_pubkey, holder_addr)
+        .await
+        .unwrap();
+
+    (holder, fetcher)
+}
+
+/// End-to-end: `get_blob_range` streams a verified byte range from a peer (bao),
+/// for a blob the fetcher does not hold locally.
+#[tokio::test]
+async fn test_get_blob_range_streams_from_peer_over_http() -> eidetica::Result<()> {
+    let (holder, fetcher) = two_synced_nodes().await;
+
+    // A blob big enough to span several 16 KiB bao chunk groups.
+    let data: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
+    let cid = holder.put_blob(data.clone()).await?;
+    assert!(fetcher.get_blob_local(&cid).await?.is_none());
+
+    // A sub-range that crosses chunk boundaries.
+    let range = 40_000u64..60_123u64;
+    let got = fetcher.get_blob_range(&cid, range.clone()).await?;
+    assert_eq!(
+        got.as_deref(),
+        Some(&data[range.start as usize..range.end as usize]),
+        "get_blob_range must stream the verified range from the peer"
+    );
+
+    // The whole blob via range also works.
+    let whole = fetcher.get_blob_range(&cid, 0..data.len() as u64).await?;
+    assert_eq!(whole.as_deref(), Some(data.as_slice()));
+
+    Ok(())
+}
+
+/// A range fetch for a blob no peer holds resolves to `None`.
+#[tokio::test]
+async fn test_get_blob_range_absent_on_peer_is_none() -> eidetica::Result<()> {
+    let (_holder, fetcher) = two_synced_nodes().await;
+
+    let missing = ID::from_bytes(b"no peer has this for range fetch");
+    assert!(fetcher.get_blob_range(&missing, 0..16).await?.is_none());
+
+    Ok(())
+}

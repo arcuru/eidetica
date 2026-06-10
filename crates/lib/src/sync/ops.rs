@@ -583,6 +583,62 @@ impl Sync {
         Ok(None)
     }
 
+    /// Fetch a verified byte range of a blob by CID from known sync peers.
+    ///
+    /// The streaming, range counterpart of [`fetch_blob`](Self::fetch_blob): asks
+    /// each known peer for just `range` (blobs are global, not tree-scoped),
+    /// stopping at the first that serves it. The bao stream is verified against
+    /// `cid` while decoding (the address is the hash), so wrong/tampered bytes
+    /// are rejected transport-side and memory is bounded to the requested range —
+    /// no whole-blob buffering. A peer that errors or lacks the blob is skipped.
+    /// Returns `Ok(None)` if no peer has it.
+    pub async fn fetch_blob_range(
+        &self,
+        cid: &ID,
+        range: std::ops::Range<u64>,
+    ) -> Result<Option<Vec<u8>>> {
+        if !cid.is_raw() {
+            return Ok(None);
+        }
+
+        let peers = self.list_peers().await?;
+        for peer in peers {
+            let Some(address) = peer.addresses.first() else {
+                continue;
+            };
+            let (tx, rx) = oneshot::channel();
+            let send = self
+                .background_tx
+                .get()
+                .ok_or(SyncError::NoTransportEnabled)?;
+            if send
+                .send(SyncCommand::FetchBlobRange {
+                    address: address.clone(),
+                    cid: cid.clone(),
+                    range: range.clone(),
+                    response: tx,
+                })
+                .await
+                .is_err()
+            {
+                continue;
+            }
+            match rx.await {
+                Ok(Ok(Some(bytes))) => return Ok(Some(bytes)),
+                Ok(Ok(None)) => continue, // peer doesn't hold it
+                Ok(Err(e)) => {
+                    debug!(address = %address.address, error = %e, "Blob range fetch to peer failed; trying next");
+                    continue;
+                }
+                Err(e) => {
+                    debug!(address = %address.address, error = %e, "Blob range response channel error; trying next");
+                    continue;
+                }
+            }
+        }
+        Ok(None)
+    }
+
     /// Discover available trees from a peer (simplified API).
     ///
     /// This method connects to a peer and retrieves the list of trees they're willing to sync.

@@ -1195,22 +1195,28 @@ impl Instance {
     /// [`BlobInvalidCodec`](crate::backend::errors::BackendError::BlobInvalidCodec)
     /// for a non-raw `cid`.
     ///
-    /// This is the frozen partial-read surface. Today it resolves the whole blob
-    /// and slices it; verified *streaming* of only the requested range (fetching
-    /// just those bytes from a peer with bounded memory, via bao) lands behind
-    /// this same signature.
+    /// Local blobs are held whole, so a local hit slices in memory. On a local
+    /// miss, if sync is enabled, only the requested range is streamed from a peer
+    /// (bao-verified, bounded memory) — the bytes are returned but not persisted
+    /// (a partial range can't be stored under the whole-blob CID; use
+    /// [`get_blob`](Self::get_blob) to fetch and persist the whole blob).
     pub async fn get_blob_range(
         &self,
         cid: &ID,
         range: std::ops::Range<u64>,
     ) -> Result<Option<Vec<u8>>> {
-        let Some(bytes) = self.get_blob(cid).await? else {
-            return Ok(None);
-        };
-        let len = bytes.len() as u64;
-        let start = range.start.min(len);
-        let end = range.end.clamp(start, len);
-        Ok(Some(bytes[start as usize..end as usize].to_vec()))
+        // Local whole blob present → slice it (codec-gated by get_blob_local).
+        if let Some(bytes) = self.get_blob_local(cid).await? {
+            let len = bytes.len() as u64;
+            let start = range.start.min(len);
+            let end = range.end.clamp(start, len);
+            return Ok(Some(bytes[start as usize..end as usize].to_vec()));
+        }
+        // Local miss → stream just the range from a peer, if sync is enabled.
+        match self.sync() {
+            Some(sync) => sync.fetch_blob_range(cid, range).await,
+            None => Ok(None),
+        }
     }
 
     /// Get a reference to the clock.

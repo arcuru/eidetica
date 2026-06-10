@@ -30,6 +30,7 @@ serde_bytes = { workspace = true }
 serde_json = { workspace = true }
 hex = { workspace = true }
 cid = { workspace = true }
+bao-tree = { workspace = true }
 multihash-codetable = { workspace = true }
 serde_ipld_dagcbor = { workspace = true }
 thiserror = { workspace = true }
