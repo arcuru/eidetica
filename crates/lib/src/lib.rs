@@ -42,7 +42,9 @@ pub use clock::{ClockHold, FixedClock};
 pub use database::{Database, DatabaseKey};
 pub use entry::{Entry, ID};
 pub use height::HeightStrategy;
-pub use instance::{Instance, NewUser, WeakInstance, WriteCallback, WriteEvent, WriteSource};
+pub use instance::{
+    GcOptions, GcReport, Instance, NewUser, WeakInstance, WriteCallback, WriteEvent, WriteSource,
+};
 pub use snapshot::Snapshot;
 pub use store::{Registered, Store};
 /// Re-export fundamental types for easier access.

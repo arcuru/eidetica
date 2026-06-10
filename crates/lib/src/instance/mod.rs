@@ -394,6 +394,49 @@ pub struct Instance {
     inner: Arc<InstanceInternal>,
 }
 
+/// Map an optional database association to the `database_id` storage key.
+/// `None` (a pin not tied to a specific database) becomes the empty string,
+/// matching the SQL `database_id` sentinel; database IDs are CIDs and never
+/// empty, so the mapping is unambiguous.
+fn database_pin_key(database: Option<&ID>) -> String {
+    database.map(|d| d.to_string()).unwrap_or_default()
+}
+
+/// Options for [`Instance::gc_blobs`](Instance::gc_blobs) (Phase 1.5, §6).
+#[derive(Debug, Clone)]
+pub struct GcOptions {
+    /// Evict least-recently-used unpinned blobs until total blob bytes are at
+    /// or below this. `None` evicts every collectable unpinned blob.
+    pub max_total_bytes: Option<u64>,
+    /// Grace window (ms): never evict a blob accessed within this many
+    /// milliseconds of now. Protects a just-written-but-not-yet-pinned blob
+    /// from a concurrent sweep (the iroh "temp tag" role). Default 60_000.
+    pub min_age_ms: u64,
+}
+
+impl Default for GcOptions {
+    fn default() -> Self {
+        Self {
+            max_total_bytes: None,
+            min_age_ms: 60_000,
+        }
+    }
+}
+
+/// Outcome of a [`Instance::gc_blobs`](Instance::gc_blobs) pass — aggregate
+/// counts only; the swept CID list is never returned (§10.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GcReport {
+    /// Number of blobs evicted.
+    pub evicted_count: usize,
+    /// Total bytes reclaimed by eviction.
+    pub reclaimed_bytes: u64,
+    /// Total blob bytes still held locally after the pass.
+    pub retained_bytes: u64,
+    /// Bytes belonging to pinned blobs (a subset of `retained_bytes`).
+    pub pinned_bytes: u64,
+}
+
 /// Weak reference to an Instance.
 ///
 /// This is a weak handle that does not prevent the Instance from being dropped.
@@ -1126,7 +1169,7 @@ impl Instance {
             .into());
         }
         let cid = ID::from_bytes(&data);
-        self.inner.backend.put_blob(&cid, data).await?;
+        self.persist_blob(&cid, data).await?;
         Ok(cid)
     }
 
@@ -1169,11 +1212,26 @@ impl Instance {
         let whole = 0..crate::backend::DEFAULT_MAX_BLOB_BYTES as u64;
         match sync.fetch_blob_range(cid, whole).await? {
             Some(bytes) => {
-                self.inner.backend.put_blob(cid, bytes.clone()).await?;
+                self.persist_blob(cid, bytes.clone()).await?;
                 Ok(Some(bytes))
             }
             None => Ok(None),
         }
+    }
+
+    /// The single blob-persist path: write bytes through the seam (which
+    /// re-verifies the content address) and stamp `last_accessed` to *now* so
+    /// LRU/GC (§6) see a fresh blob and the grace window protects it. Used by
+    /// local put, peer-fetch persist, and the daemon `PutBlob` handler. The
+    /// stamp is a no-op on a remote backend (no local engine) — there the
+    /// daemon stamps when it persists.
+    pub(crate) async fn persist_blob(&self, cid: &ID, data: Vec<u8>) -> Result<()> {
+        self.inner.backend.put_blob(cid, data).await?;
+        if let Some(engine) = self.inner.backend.local_engine() {
+            let now = self.inner.clock.now_millis() as i64;
+            engine.touch_blob_accessed(cid, now).await?;
+        }
+        Ok(())
     }
 
     /// Local-only blob lookup; never consults sync peers.
@@ -1188,7 +1246,17 @@ impl Instance {
             }
             .into());
         }
-        self.inner.backend.get_blob(cid).await
+        let blob = self.inner.backend.get_blob(cid).await?;
+        // Stamp last-access on a local hit so LRU eviction (§6) reflects reads.
+        // `get_blob`/`get_blob_range` both route through here, so all reads
+        // count. No-op on a remote backend (the daemon stamps its own reads).
+        if blob.is_some()
+            && let Some(engine) = self.inner.backend.local_engine()
+        {
+            let now = self.inner.clock.now_millis() as i64;
+            engine.touch_blob_accessed(cid, now).await?;
+        }
+        Ok(blob)
     }
 
     /// Resolve a byte range of a blob by content address.
@@ -1224,6 +1292,121 @@ impl Instance {
             Some(sync) => sync.fetch_blob_range(cid, range).await,
             None => Ok(None),
         }
+    }
+
+    // === Blob pinning / garbage collection (Phase 1.5, §6) ===
+
+    /// The local storage engine, or an error if this is a thin remote client.
+    /// Pins and GC are local-engine concerns (the daemon owns its blobs).
+    fn local_blob_engine(&self) -> Result<std::sync::Arc<dyn crate::backend::BackendImpl>> {
+        self.inner
+            .backend
+            .local_engine()
+            .ok_or_else(|| InstanceError::BlobOpRequiresLocalEngine.into())
+    }
+
+    /// Pin a blob so garbage collection ([`gc_blobs`](Self::gc_blobs)) never
+    /// evicts it while the pin exists.
+    ///
+    /// Pins are instance-**local** retention assertions (they do not replicate
+    /// as entries), keyed by `(user_id, database, cid)`. `database` is an
+    /// optional association — `None` records a user-level pin not tied to a
+    /// specific database. Pinning is idempotent. A blob is retained while *any*
+    /// pin names its CID. Errors with
+    /// [`BlobInvalidCodec`](crate::backend::errors::BackendError::BlobInvalidCodec)
+    /// for a non-raw `cid`, and with
+    /// [`BlobOpRequiresLocalEngine`](crate::instance::errors::InstanceError::BlobOpRequiresLocalEngine)
+    /// on a thin remote client.
+    pub async fn pin_blob(&self, user_id: &str, database: Option<&ID>, cid: &ID) -> Result<()> {
+        if !cid.is_raw() {
+            return Err(crate::backend::errors::BackendError::BlobInvalidCodec {
+                cid: cid.clone(),
+            }
+            .into());
+        }
+        let engine = self.local_blob_engine()?;
+        engine
+            .pin_blob(user_id, &database_pin_key(database), cid)
+            .await
+    }
+
+    /// Remove a `(user_id, database, cid)` pin. Returns whether the pin existed.
+    /// Once a blob has no pins it becomes eligible for GC eviction.
+    pub async fn unpin_blob(&self, user_id: &str, database: Option<&ID>, cid: &ID) -> Result<bool> {
+        let engine = self.local_blob_engine()?;
+        engine
+            .unpin_blob(user_id, &database_pin_key(database), cid)
+            .await
+    }
+
+    /// Total bytes of the distinct blobs pinned by `user_id` — data-provenance /
+    /// quota accounting. A blob pinned under several databases for the same user
+    /// is counted once.
+    pub async fn pinned_size_by_user(&self, user_id: &str) -> Result<u64> {
+        let engine = self.local_blob_engine()?;
+        engine.pinned_size_by_user(user_id).await
+    }
+
+    /// Garbage-collect locally-held blobs by evicting unpinned ones.
+    ///
+    /// Pinned blobs (any CID named by a live pin) are never evicted, nor are
+    /// blobs accessed within [`GcOptions::min_age_ms`] (the grace window that
+    /// protects a just-written but not-yet-pinned blob from a concurrent
+    /// sweep). Among the remaining (unpinned, aged-out) blobs, eviction is
+    /// **least-recently-used first**:
+    /// - [`GcOptions::max_total_bytes`] `= Some(n)`: evict LRU blobs until total
+    ///   blob bytes are `≤ n` (a no-op if already under).
+    /// - `= None`: evict every collectable unpinned blob.
+    ///
+    /// Deletion is complete-only (a blob is removed whole). Returns a
+    /// [`GcReport`] of aggregate counts/bytes — never the list of swept CIDs
+    /// (§10.1: no enumeration is exposed). Requires a local engine.
+    pub async fn gc_blobs(&self, opts: GcOptions) -> Result<GcReport> {
+        let engine = self.local_blob_engine()?;
+        let now = self.inner.clock.now_millis() as i64;
+        let min_age = opts.min_age_ms as i64;
+
+        let pinned = engine.pinned_cids().await?;
+        let metas = engine.all_blob_meta().await?;
+
+        let total_bytes: u64 = metas.iter().map(|m| m.size).sum();
+        let pinned_bytes: u64 = metas
+            .iter()
+            .filter(|m| pinned.contains(&m.cid))
+            .map(|m| m.size)
+            .sum();
+
+        // Eviction candidates: unpinned and outside the grace window. Sorted
+        // least-recently-used first.
+        let mut candidates: Vec<crate::backend::BlobMeta> = metas
+            .into_iter()
+            .filter(|m| !pinned.contains(&m.cid) && now.saturating_sub(m.last_accessed) >= min_age)
+            .collect();
+        candidates.sort_by_key(|m| m.last_accessed);
+
+        let mut current_total = total_bytes;
+        let mut reclaimed_bytes = 0u64;
+        let mut evicted_count = 0usize;
+        for m in candidates {
+            // Stop early once we're under the target (size-driven mode).
+            if let Some(max) = opts.max_total_bytes
+                && current_total <= max
+            {
+                break;
+            }
+            if engine.delete_blob(&m.cid).await? {
+                current_total = current_total.saturating_sub(m.size);
+                reclaimed_bytes += m.size;
+                evicted_count += 1;
+            }
+        }
+
+        Ok(GcReport {
+            evicted_count,
+            reclaimed_bytes,
+            retained_bytes: current_total,
+            pinned_bytes,
+        })
     }
 
     /// Get a reference to the clock.

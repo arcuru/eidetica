@@ -497,6 +497,34 @@ impl BackendImpl for SqlxBackend {
         storage::has_blob(self, cid).await
     }
 
+    async fn touch_blob_accessed(&self, cid: &ID, now_ms: i64) -> Result<()> {
+        storage::touch_blob_accessed(self, cid, now_ms).await
+    }
+
+    async fn delete_blob(&self, cid: &ID) -> Result<bool> {
+        storage::delete_blob(self, cid).await
+    }
+
+    async fn all_blob_meta(&self) -> Result<Vec<crate::backend::BlobMeta>> {
+        storage::all_blob_meta(self).await
+    }
+
+    async fn pin_blob(&self, user_id: &str, database_id: &str, blob_cid: &ID) -> Result<()> {
+        storage::pin_blob(self, user_id, database_id, blob_cid).await
+    }
+
+    async fn unpin_blob(&self, user_id: &str, database_id: &str, blob_cid: &ID) -> Result<bool> {
+        storage::unpin_blob(self, user_id, database_id, blob_cid).await
+    }
+
+    async fn pinned_cids(&self) -> Result<std::collections::HashSet<ID>> {
+        storage::pinned_cids(self).await
+    }
+
+    async fn pinned_size_by_user(&self, user_id: &str) -> Result<u64> {
+        storage::pinned_size_by_user(self, user_id).await
+    }
+
     async fn get_sorted_store_parents(
         &self,
         tree_id: &ID,

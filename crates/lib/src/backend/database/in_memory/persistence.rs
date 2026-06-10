@@ -3,7 +3,11 @@
 //! This module handles serialization and file I/O for saving/loading
 //! the in-memory database state to/from JSON files.
 
-use std::{collections::HashMap, path::Path, sync::RwLock};
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+    sync::RwLock,
+};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -74,6 +78,12 @@ struct SerializableDatabase {
     /// so it IS persisted. `#[serde(default)]` keeps pre-blob snapshots loading.
     #[serde(default)]
     blobs: HashMap<ID, Vec<u8>>,
+    /// Per-blob last-access time (epoch ms) for LRU eviction (§6).
+    #[serde(default)]
+    blob_accessed: HashMap<ID, i64>,
+    /// Blob pins (`(user_id, database_id, blob_cid)`): the local GC root set.
+    #[serde(default)]
+    blob_pins: HashSet<(String, String, ID)>,
 }
 
 impl Serialize for InMemory {
@@ -95,6 +105,8 @@ impl Serialize for InMemory {
                 cache: None,
                 tips: inner.tips.clone(),
                 blobs: inner.blobs.clone(),
+                blob_accessed: inner.blob_accessed.clone(),
+                blob_pins: inner.blob_pins.clone(),
             }
         };
 
@@ -118,6 +130,8 @@ impl<'de> Deserialize<'de> for InMemory {
                 instance_secrets: serializable.instance_secrets,
                 tips: serializable.tips,
                 blobs: serializable.blobs,
+                blob_accessed: serializable.blob_accessed,
+                blob_pins: serializable.blob_pins,
             }),
             // Cache rebuilds lazily as reads materialize state — see the
             // `cache` field's doc on SerializableDatabase.
@@ -155,6 +169,8 @@ pub(crate) fn save_to_file<P: AsRef<Path>>(backend: &InMemory, path: P) -> Resul
             cache: None,
             tips: inner.tips.clone(),
             blobs: inner.blobs.clone(),
+            blob_accessed: inner.blob_accessed.clone(),
+            blob_pins: inner.blob_pins.clone(),
         }
     };
 

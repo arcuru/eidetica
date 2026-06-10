@@ -2,9 +2,11 @@
 //!
 //! This module implements the core CRUD operations for entries using sqlx.
 
+use std::collections::HashSet;
+
 use crate::Result;
 use crate::backend::errors::BackendError;
-use crate::backend::{CacheScope, InstanceMetadata, InstanceSecrets, VerificationStatus};
+use crate::backend::{BlobMeta, CacheScope, InstanceMetadata, InstanceSecrets, VerificationStatus};
 use crate::entry::{Entry, ID};
 
 use super::{SqlxBackend, SqlxResultExt};
@@ -668,6 +670,9 @@ pub async fn put_blob(backend: &SqlxBackend, cid: &ID, data: Vec<u8>) -> Result<
     let pool = backend.pool();
     let size = data.len() as i64;
 
+    // `last_accessed` defaults to 0 here; the caller stamps it to *now* via
+    // `touch_blob_accessed` (see `Instance::persist_blob`) so LRU/GC see a fresh
+    // blob and the grace window protects it.
     let sql = if backend.is_sqlite() {
         "INSERT OR IGNORE INTO blobs (cid, size, location, data) VALUES ($1, $2, 0, $3)"
     } else {
@@ -710,4 +715,125 @@ pub async fn has_blob(backend: &SqlxBackend, cid: &ID) -> Result<bool> {
         .sql_context("Failed to check blob existence")?;
 
     Ok(row.is_some())
+}
+
+/// Stamp a blob's `last_accessed` to `now_ms` (epoch ms). No-op if the blob is
+/// not held locally. Called on every put and every local read hit so LRU
+/// eviction (§6) reflects recency.
+pub async fn touch_blob_accessed(backend: &SqlxBackend, cid: &ID, now_ms: i64) -> Result<()> {
+    let pool = backend.pool();
+    sqlx::query("UPDATE blobs SET last_accessed = $1 WHERE cid = $2")
+        .bind(now_ms)
+        .bind(cid.to_string())
+        .execute(pool)
+        .await
+        .sql_context("Failed to touch blob access time")?;
+    Ok(())
+}
+
+/// Delete a blob's bytes and row outright (complete-only deletion, §5.5).
+/// Returns whether a row existed. Used by GC eviction; does not touch
+/// `blob_pins`.
+pub async fn delete_blob(backend: &SqlxBackend, cid: &ID) -> Result<bool> {
+    let pool = backend.pool();
+    let result = sqlx::query("DELETE FROM blobs WHERE cid = $1")
+        .bind(cid.to_string())
+        .execute(pool)
+        .await
+        .sql_context("Failed to delete blob")?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Enumerate every locally-held blob's `(cid, size, last_accessed)` — the GC
+/// sweep input. Engine-internal: NOT exposed as a callable wire/local API
+/// (the §10.1 no-enumeration invariant is about callable surfaces; the
+/// collector derives reachability here, where the design says it should).
+pub async fn all_blob_meta(backend: &SqlxBackend) -> Result<Vec<BlobMeta>> {
+    let pool = backend.pool();
+    let rows: Vec<(String, i64, i64)> =
+        sqlx::query_as("SELECT cid, size, last_accessed FROM blobs")
+            .fetch_all(pool)
+            .await
+            .sql_context("Failed to list blob metadata")?;
+    rows.into_iter()
+        .map(|(cid, size, last_accessed)| {
+            Ok(BlobMeta {
+                cid: ID::parse(&cid)?,
+                size: size.max(0) as u64,
+                last_accessed,
+            })
+        })
+        .collect()
+}
+
+/// Pin a blob for `(user, database)`. Idempotent. A pin keeps the blob from
+/// being GC'd while it exists (§6).
+pub async fn pin_blob(
+    backend: &SqlxBackend,
+    user_id: &str,
+    database_id: &str,
+    blob_cid: &ID,
+) -> Result<()> {
+    let pool = backend.pool();
+    let sql = if backend.is_sqlite() {
+        "INSERT OR IGNORE INTO blob_pins (user_id, database_id, blob_cid) VALUES ($1, $2, $3)"
+    } else {
+        "INSERT INTO blob_pins (user_id, database_id, blob_cid) VALUES ($1, $2, $3)
+         ON CONFLICT (user_id, database_id, blob_cid) DO NOTHING"
+    };
+    sqlx::query(sql)
+        .bind(user_id)
+        .bind(database_id)
+        .bind(blob_cid.to_string())
+        .execute(pool)
+        .await
+        .sql_context("Failed to pin blob")?;
+    Ok(())
+}
+
+/// Remove a `(user, database, blob)` pin. Returns whether a pin existed.
+pub async fn unpin_blob(
+    backend: &SqlxBackend,
+    user_id: &str,
+    database_id: &str,
+    blob_cid: &ID,
+) -> Result<bool> {
+    let pool = backend.pool();
+    let result = sqlx::query(
+        "DELETE FROM blob_pins WHERE user_id = $1 AND database_id = $2 AND blob_cid = $3",
+    )
+    .bind(user_id)
+    .bind(database_id)
+    .bind(blob_cid.to_string())
+    .execute(pool)
+    .await
+    .sql_context("Failed to unpin blob")?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// The GC root set: every distinct blob CID with at least one live pin.
+pub async fn pinned_cids(backend: &SqlxBackend) -> Result<HashSet<ID>> {
+    let pool = backend.pool();
+    let rows: Vec<(String,)> = sqlx::query_as("SELECT DISTINCT blob_cid FROM blob_pins")
+        .fetch_all(pool)
+        .await
+        .sql_context("Failed to list pinned blobs")?;
+    rows.into_iter().map(|(cid,)| ID::parse(&cid)).collect()
+}
+
+/// Total bytes of the distinct blobs pinned by `user_id` (data-provenance /
+/// quota accounting). A blob pinned under several `(user, database)` rows for
+/// the same user counts once.
+pub async fn pinned_size_by_user(backend: &SqlxBackend, user_id: &str) -> Result<u64> {
+    let pool = backend.pool();
+    let row: Option<(Option<i64>,)> = sqlx::query_as(
+        "SELECT COALESCE(SUM(b.size), 0) FROM (
+             SELECT DISTINCT blob_cid FROM blob_pins WHERE user_id = $1
+         ) p JOIN blobs b ON b.cid = p.blob_cid",
+    )
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await
+    .sql_context("Failed to sum pinned size for user")?;
+    Ok(row.and_then(|(s,)| s).unwrap_or(0).max(0) as u64)
 }

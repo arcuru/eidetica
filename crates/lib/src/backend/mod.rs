@@ -9,6 +9,7 @@
 //! Instance wraps BackendImpl in a `Backend` struct that provides a layer for future development.
 
 use std::any::Any;
+use std::collections::HashSet;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -232,6 +233,18 @@ impl VerificationStatus {
 /// capability. Treated as a throwaway internal default per the design's
 /// stable-API/disposable-internals contract.
 pub const DEFAULT_MAX_BLOB_BYTES: usize = 64 * 1024 * 1024;
+
+/// Metadata for one locally-held blob — the per-blob input to GC's LRU sweep
+/// (§6). Carries no bytes; `size`/`last_accessed` are the cached columns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlobMeta {
+    /// The blob's content address (raw-codec `0x55` CID).
+    pub cid: ID,
+    /// Byte length of the blob.
+    pub size: u64,
+    /// Last access time (epoch ms): stamped on put and on every local read hit.
+    pub last_accessed: i64,
+}
 
 /// Enforce the self-verifying blob invariant: `data` must hash to `cid`.
 ///
@@ -580,6 +593,40 @@ pub trait BackendImpl: Send + Sync + Any {
 
     /// Cheap existence check for a blob, without materializing its bytes.
     async fn has_blob(&self, cid: &ID) -> Result<bool>;
+
+    // === Blob pinning / GC (Phase 1.5, §6) ===
+    //
+    // All local-engine concerns: pins are instance-LOCAL retention assertions
+    // (they do not replicate), and GC runs against this engine's own store.
+    // None of these cross the `Backend` seam — a remote/thin client does not
+    // pin or GC; its daemon owns its blobs. `all_blob_meta` is engine-internal
+    // sweep input, never a callable wire/local enumeration API (§10.1).
+
+    /// Stamp a blob's last-access time to `now_ms` (epoch ms). No-op if absent.
+    /// Called on every put and every local read hit to drive LRU eviction.
+    async fn touch_blob_accessed(&self, cid: &ID, now_ms: i64) -> Result<()>;
+
+    /// Delete a blob outright (complete-only deletion). Returns whether it
+    /// existed. Used by GC eviction; does not touch pins.
+    async fn delete_blob(&self, cid: &ID) -> Result<bool>;
+
+    /// Enumerate `(cid, size, last_accessed)` for every locally-held blob — the
+    /// GC sweep input. Engine-internal; not exposed over the wire (§10.1).
+    async fn all_blob_meta(&self) -> Result<Vec<BlobMeta>>;
+
+    /// Pin a blob for `(user_id, database_id)`. Idempotent. `database_id` is the
+    /// empty string for a pin not tied to a specific database. A pinned blob is
+    /// never GC'd.
+    async fn pin_blob(&self, user_id: &str, database_id: &str, blob_cid: &ID) -> Result<()>;
+
+    /// Remove a `(user_id, database_id, blob)` pin. Returns whether it existed.
+    async fn unpin_blob(&self, user_id: &str, database_id: &str, blob_cid: &ID) -> Result<bool>;
+
+    /// The GC root set: every distinct blob CID with at least one live pin.
+    async fn pinned_cids(&self) -> Result<HashSet<ID>>;
+
+    /// Total bytes of the distinct blobs pinned by `user_id` (provenance/quota).
+    async fn pinned_size_by_user(&self, user_id: &str) -> Result<u64>;
 
     /// Get the store parent IDs for a specific entry and store, sorted by height then ID.
     ///

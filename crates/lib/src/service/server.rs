@@ -287,9 +287,10 @@ async fn dispatch_inner(
                 }
                 .into());
             }
-            // `BackendImpl::put_blob` re-verifies `cid == hash(data)`; a client
-            // that lies about the address is rejected here, never trusted.
-            instance.backend().put_blob(&cid, data).await?;
+            // `persist_blob` re-verifies `cid == hash(data)` (a client that lies
+            // about the address is rejected, never trusted) and stamps
+            // `last_accessed` so the daemon's LRU/GC sees a fresh blob.
+            instance.persist_blob(&cid, data).await?;
             Ok(ServiceResponse::Ok)
         }
 

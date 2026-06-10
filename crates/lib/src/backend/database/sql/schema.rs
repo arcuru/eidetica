@@ -125,13 +125,37 @@ pub const CREATE_TABLES: &[&str] = &[
     // stores inline (`location = 0`, bytes in `data`); a future disk tier will
     // use `location = 1` with `data` NULL and the bytes at a content-addressed
     // path. Persisting `size`/`location` now keeps the table shape stable so
-    // the disk tier lands with no migration. Unlike `crdt_cache_v2`, blobs are
-    // durable owned content and are never evicted.
+    // the disk tier lands with no migration.
+    //
+    // `last_accessed` (epoch ms) drives LRU eviction in `gc_blobs` (§6). It is
+    // stamped to *now* on every put and every local read hit. Unlike
+    // `crdt_cache_v2`, a blob is durable owned content and is evicted ONLY by an
+    // explicit GC pass, and even then only when it is not pinned (see
+    // `blob_pins`). This column is part of the unreleased Phase-1 baseline (no
+    // migration; SCHEMA_VERSION stays 0/unstable).
     "CREATE TABLE IF NOT EXISTS blobs (
-        cid       TEXT PRIMARY KEY,
-        size      BIGINT NOT NULL,
-        location  BIGINT NOT NULL,
-        data      BLOB
+        cid           TEXT PRIMARY KEY,
+        size          BIGINT NOT NULL,
+        location      BIGINT NOT NULL,
+        last_accessed BIGINT NOT NULL DEFAULT 0,
+        data          BLOB
+    )",
+    // Blob pins (Phase 1.5, §6) — the local GC root set.
+    //
+    // A pin is an instance-LOCAL retention assertion (it does NOT replicate as
+    // an entry, so it is not a frozen wire surface). Keyed by
+    // `(user_id, database_id, blob_cid)`: a blob is retained while ANY row names
+    // its CID, and the `(user, database)` decomposition lets us un-pin and
+    // attribute pinned size per user (`pinned_size_by_user`, for provenance /
+    // quota). `database_id` uses the empty-string sentinel for "not tied to a
+    // specific database" (PostgreSQL disallows NULL in a PK column; database IDs
+    // are CIDs and never empty, matching the `tips` / `crdt_cache_v2`
+    // convention). GC's root set is `SELECT DISTINCT blob_cid FROM blob_pins`.
+    "CREATE TABLE IF NOT EXISTS blob_pins (
+        user_id      TEXT NOT NULL,
+        database_id  TEXT NOT NULL DEFAULT '',
+        blob_cid     TEXT NOT NULL,
+        PRIMARY KEY (user_id, database_id, blob_cid)
     )",
 ];
 
@@ -152,6 +176,9 @@ pub const CREATE_INDEXES: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_store_parents_child ON store_parents(store_name, child_id)",
     // Tip lookups
     "CREATE INDEX IF NOT EXISTS idx_tips_tree_store ON tips(tree_id, store_name)",
+    // Blob pin reverse lookups (DISTINCT blob_cid for the GC root set; the
+    // PK prefix already covers per-user queries).
+    "CREATE INDEX IF NOT EXISTS idx_blob_pins_cid ON blob_pins(blob_cid)",
 ];
 
 /// Initialize the database schema.

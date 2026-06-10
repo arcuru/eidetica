@@ -63,9 +63,18 @@ pub(crate) struct InMemoryInner {
     /// Content-addressed blob storage, keyed by raw-codec (`0x55`) BLAKE3 CID.
     ///
     /// Durable owned content stored out-of-band from the entry DAG (see the
-    /// `put_blob`/`get_blob`/`has_blob` backend methods). Unlike the CRDT
-    /// cache, blobs are never evicted and ARE persisted by the snapshot path.
+    /// `put_blob`/`get_blob`/`has_blob` backend methods). Evicted only by an
+    /// explicit GC pass (§6), and even then only when unpinned. Persisted by
+    /// the snapshot path.
     pub(crate) blobs: HashMap<ID, Vec<u8>>,
+    /// Last-access time (epoch ms) per blob CID — drives LRU eviction (§6).
+    /// Stamped on put and on every local read hit.
+    pub(crate) blob_accessed: HashMap<ID, i64>,
+    /// Blob pins (Phase 1.5, §6): the local GC root set. Each entry is a
+    /// `(user_id, database_id, blob_cid)` triple; `database_id` is the empty
+    /// string for a pin not tied to a specific database. A blob is retained
+    /// while any pin names its CID.
+    pub(crate) blob_pins: HashSet<(String, String, ID)>,
 }
 
 /// A simple in-memory database implementation using a `HashMap` for storage.
@@ -104,6 +113,8 @@ impl InMemory {
                 instance_secrets: None,
                 tips: HashMap::new(),
                 blobs: HashMap::new(),
+                blob_accessed: HashMap::new(),
+                blob_pins: HashSet::new(),
             }),
             crdt_cache: Mutex::new(InMemoryCrdtCache::new()),
         }
@@ -451,6 +462,48 @@ impl BackendImpl for InMemory {
     async fn has_blob(&self, cid: &ID) -> Result<bool> {
         let inner = self.inner.read().unwrap();
         Ok(storage::has_blob(&inner, cid))
+    }
+
+    async fn touch_blob_accessed(&self, cid: &ID, now_ms: i64) -> Result<()> {
+        let mut inner = self.inner.write().unwrap();
+        storage::touch_blob_accessed(&mut inner, cid, now_ms);
+        Ok(())
+    }
+
+    async fn delete_blob(&self, cid: &ID) -> Result<bool> {
+        let mut inner = self.inner.write().unwrap();
+        Ok(storage::delete_blob(&mut inner, cid))
+    }
+
+    async fn all_blob_meta(&self) -> Result<Vec<crate::backend::BlobMeta>> {
+        let inner = self.inner.read().unwrap();
+        Ok(storage::all_blob_meta(&inner))
+    }
+
+    async fn pin_blob(&self, user_id: &str, database_id: &str, blob_cid: &ID) -> Result<()> {
+        let mut inner = self.inner.write().unwrap();
+        storage::pin_blob(&mut inner, user_id, database_id, blob_cid);
+        Ok(())
+    }
+
+    async fn unpin_blob(&self, user_id: &str, database_id: &str, blob_cid: &ID) -> Result<bool> {
+        let mut inner = self.inner.write().unwrap();
+        Ok(storage::unpin_blob(
+            &mut inner,
+            user_id,
+            database_id,
+            blob_cid,
+        ))
+    }
+
+    async fn pinned_cids(&self) -> Result<HashSet<ID>> {
+        let inner = self.inner.read().unwrap();
+        Ok(storage::pinned_cids(&inner))
+    }
+
+    async fn pinned_size_by_user(&self, user_id: &str) -> Result<u64> {
+        let inner = self.inner.read().unwrap();
+        Ok(storage::pinned_size_by_user(&inner, user_id))
     }
 
     async fn get_sorted_store_parents(

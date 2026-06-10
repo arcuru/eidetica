@@ -385,3 +385,76 @@ pub(crate) fn get_blob(inner: &InMemoryInner, cid: &ID) -> Option<Vec<u8>> {
 pub(crate) fn has_blob(inner: &InMemoryInner, cid: &ID) -> bool {
     inner.blobs.contains_key(cid)
 }
+
+/// Stamp a blob's last-access time (epoch ms). No-op if the blob is absent.
+pub(crate) fn touch_blob_accessed(inner: &mut InMemoryInner, cid: &ID, now_ms: i64) {
+    if inner.blobs.contains_key(cid) {
+        inner.blob_accessed.insert(cid.clone(), now_ms);
+    }
+}
+
+/// Delete a blob outright (complete-only deletion). Returns whether it existed.
+/// Does not touch pins.
+pub(crate) fn delete_blob(inner: &mut InMemoryInner, cid: &ID) -> bool {
+    inner.blob_accessed.remove(cid);
+    inner.blobs.remove(cid).is_some()
+}
+
+/// `(cid, size, last_accessed)` for every held blob — GC sweep input.
+pub(crate) fn all_blob_meta(inner: &InMemoryInner) -> Vec<crate::backend::BlobMeta> {
+    inner
+        .blobs
+        .iter()
+        .map(|(cid, data)| crate::backend::BlobMeta {
+            cid: cid.clone(),
+            size: data.len() as u64,
+            last_accessed: inner.blob_accessed.get(cid).copied().unwrap_or(0),
+        })
+        .collect()
+}
+
+/// Pin a blob for `(user, database)`. Idempotent.
+pub(crate) fn pin_blob(inner: &mut InMemoryInner, user_id: &str, database_id: &str, blob_cid: &ID) {
+    inner.blob_pins.insert((
+        user_id.to_string(),
+        database_id.to_string(),
+        blob_cid.clone(),
+    ));
+}
+
+/// Remove a `(user, database, blob)` pin. Returns whether it existed.
+pub(crate) fn unpin_blob(
+    inner: &mut InMemoryInner,
+    user_id: &str,
+    database_id: &str,
+    blob_cid: &ID,
+) -> bool {
+    inner.blob_pins.remove(&(
+        user_id.to_string(),
+        database_id.to_string(),
+        blob_cid.clone(),
+    ))
+}
+
+/// The GC root set: every distinct blob CID with at least one live pin.
+pub(crate) fn pinned_cids(inner: &InMemoryInner) -> std::collections::HashSet<ID> {
+    inner
+        .blob_pins
+        .iter()
+        .map(|(_, _, cid)| cid.clone())
+        .collect()
+}
+
+/// Total bytes of the distinct blobs pinned by `user_id` (a blob counts once
+/// even if pinned under several databases for that user).
+pub(crate) fn pinned_size_by_user(inner: &InMemoryInner, user_id: &str) -> u64 {
+    inner
+        .blob_pins
+        .iter()
+        .filter(|(u, _, _)| u == user_id)
+        .map(|(_, _, cid)| cid.clone())
+        .collect::<std::collections::HashSet<_>>()
+        .iter()
+        .filter_map(|cid| inner.blobs.get(cid).map(|d| d.len() as u64))
+        .sum()
+}
