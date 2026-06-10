@@ -6,9 +6,70 @@
 //! against a process-local instance because blob storage requires a concrete
 //! local engine.
 
-use eidetica::{backend::errors::BackendError, entry::ID};
+use eidetica::{BlobRef, backend::errors::BackendError, entry::ID};
 
 use crate::helpers::test_local_instance;
+
+#[tokio::test]
+async fn test_instance_put_blob_ref_round_trip() {
+    let instance = test_local_instance().await;
+
+    let data = b"reference me with a size".to_vec();
+    let blob_ref = instance.put_blob_ref(data.clone()).await.unwrap();
+
+    // The typed reference carries the content address and the declared size.
+    assert_eq!(blob_ref.cid(), &ID::from_bytes(&data));
+    assert_eq!(blob_ref.size(), data.len() as u64);
+
+    // ...and resolves back to the same bytes via the reference.
+    assert_eq!(instance.get_blob_ref(&blob_ref).await.unwrap(), Some(data));
+}
+
+#[tokio::test]
+async fn test_instance_get_blob_ref_size_mismatch_rejected() {
+    let instance = test_local_instance().await;
+
+    let data = b"declared size will be wrong".to_vec();
+    let cid = instance.put_blob(data.clone()).await.unwrap();
+
+    // A reference whose declared size disagrees with the stored bytes is
+    // rejected — the CID pins identity, but length is checked separately.
+    let lying = BlobRef::new(cid, (data.len() + 1) as u64);
+    let err = instance
+        .get_blob_ref(&lying)
+        .await
+        .expect_err("declared-size mismatch must be rejected");
+    match err {
+        eidetica::Error::Backend(b) => assert!(
+            matches!(*b, BackendError::BlobSizeMismatch { .. }),
+            "expected BlobSizeMismatch, got {b:?}"
+        ),
+        other => panic!("expected Backend error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_instance_get_blob_ref_over_cap_rejected_before_fetch() {
+    let instance = test_local_instance().await;
+
+    // An over-cap declared size is refused up front (size-before-fetch): the
+    // blob is not even stored, so this can only short-circuit on the size.
+    let huge = BlobRef::new(
+        ID::from_bytes(b"never stored"),
+        eidetica::backend::DEFAULT_MAX_BLOB_BYTES as u64 + 1,
+    );
+    let err = instance
+        .get_blob_ref(&huge)
+        .await
+        .expect_err("over-cap reference must be rejected before fetch");
+    match err {
+        eidetica::Error::Backend(b) => assert!(
+            matches!(*b, BackendError::BlobTooLarge { .. }),
+            "expected BlobTooLarge, got {b:?}"
+        ),
+        other => panic!("expected Backend error, got {other:?}"),
+    }
+}
 
 #[tokio::test]
 async fn test_instance_put_blob_returns_content_address() {

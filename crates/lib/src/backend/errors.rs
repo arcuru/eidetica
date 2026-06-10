@@ -205,6 +205,24 @@ pub enum BackendError {
         cid: ID,
     },
 
+    /// A blob's delivered length did not match the size declared by a
+    /// [`BlobRef`](crate::blob::BlobRef).
+    ///
+    /// A content address pins a blob's *identity* (its bytes hash to the CID)
+    /// but not its declared length; a reference may carry a `size` that lets a
+    /// reader budget the transfer and decide fetch-or-not before the bytes
+    /// arrive (§5.4). Resolving such a reference checks the delivered length
+    /// against the declared one and rejects a mismatch here.
+    #[error("Blob {cid} length {actual} bytes does not match declared size {declared} bytes")]
+    BlobSizeMismatch {
+        /// The content address of the blob.
+        cid: ID,
+        /// The size declared by the reference.
+        declared: u64,
+        /// The actual byte length resolved.
+        actual: u64,
+    },
+
     /// SQL database error (sqlx).
     #[cfg(any(feature = "sqlite", feature = "postgres"))]
     #[error("SQL error: {reason}")]

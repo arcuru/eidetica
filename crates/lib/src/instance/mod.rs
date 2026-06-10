@@ -1173,6 +1173,21 @@ impl Instance {
         Ok(cid)
     }
 
+    /// Store bytes and return a typed [`BlobRef`](crate::blob::BlobRef) carrying
+    /// both the content address and the size.
+    ///
+    /// Identical to [`put_blob`](Self::put_blob) except for the return type: the
+    /// reference is ready to embed in a store value where a reader will want
+    /// size-before-fetch (the transfer cap and partial-replica decisions both
+    /// need the size before the bytes arrive). Resolve it with
+    /// [`get_blob_ref`](Self::get_blob_ref).
+    pub async fn put_blob_ref(&self, data: impl Into<Vec<u8>>) -> Result<crate::blob::BlobRef> {
+        let data = data.into();
+        let size = data.len() as u64;
+        let cid = self.put_blob(data).await?;
+        Ok(crate::blob::BlobRef::new(cid, size))
+    }
+
     /// Resolve a blob's bytes by content address.
     ///
     /// Resolves from local storage first — the seam: the in-process engine, or
@@ -1190,6 +1205,40 @@ impl Instance {
             return Ok(Some(bytes));
         }
         self.fetch_blob_from_peers(cid).await
+    }
+
+    /// Resolve a blob named by a [`BlobRef`](crate::blob::BlobRef), using the
+    /// declared size as both an up-front guard and a post-fetch integrity check.
+    ///
+    /// The declared `size` is enforced *before* any fetch: a reference larger
+    /// than [`DEFAULT_MAX_BLOB_BYTES`](crate::backend::DEFAULT_MAX_BLOB_BYTES) is
+    /// rejected with
+    /// [`BlobTooLarge`](crate::backend::errors::BackendError::BlobTooLarge)
+    /// without touching the network (size-before-fetch, §5.4). Resolution then
+    /// proceeds exactly as [`get_blob`](Self::get_blob), and the delivered bytes
+    /// must be exactly `size` long — a content address pins identity but not
+    /// declared length, so a mismatch is rejected with
+    /// [`BlobSizeMismatch`](crate::backend::errors::BackendError::BlobSizeMismatch).
+    /// `Ok(None)` if the blob is neither held locally nor served by any peer.
+    pub async fn get_blob_ref(&self, blob_ref: &crate::blob::BlobRef) -> Result<Option<Vec<u8>>> {
+        if blob_ref.size > crate::backend::DEFAULT_MAX_BLOB_BYTES as u64 {
+            return Err(crate::backend::errors::BackendError::BlobTooLarge {
+                size: blob_ref.size as usize,
+                max: crate::backend::DEFAULT_MAX_BLOB_BYTES,
+            }
+            .into());
+        }
+        match self.get_blob(&blob_ref.cid).await? {
+            Some(bytes) if bytes.len() as u64 != blob_ref.size => {
+                Err(crate::backend::errors::BackendError::BlobSizeMismatch {
+                    cid: blob_ref.cid.clone(),
+                    declared: blob_ref.size,
+                    actual: bytes.len() as u64,
+                }
+                .into())
+            }
+            other => Ok(other),
+        }
     }
 
     /// Lazy peer-fetch leg of [`get_blob`](Self::get_blob).
