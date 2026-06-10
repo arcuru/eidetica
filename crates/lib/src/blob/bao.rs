@@ -191,6 +191,13 @@ pub(crate) fn decode_range(cid: &ID, range: Range<u64>, encoded: &[u8]) -> Resul
     // Clamp the request to the real blob size before snapping to chunks.
     let start = range.start.min(size);
     let end = range.end.clamp(start, size);
+    // An empty or past-EOF request covers no leaves, so the stream carries
+    // nothing to verify; return empty bytes to match the local-slice paths
+    // (`Instance::get_blob_range`, the SQL/disk readers) rather than tripping the
+    // "did not cover the requested range" guard below.
+    if start >= end {
+        return Ok(Vec::new());
+    }
     let ranges = byte_chunks(start..end);
 
     let iter = DecodeResponseIter::new(root, tree, std::io::Cursor::new(body), &ranges);
@@ -280,6 +287,31 @@ mod tests {
         let last = encoded.len() - 1;
         encoded[last] ^= 0xff;
         assert!(decode_range(&cid, 0..data.len() as u64, &encoded).is_err());
+    }
+
+    #[test]
+    fn empty_and_past_eof_ranges_decode_to_empty() {
+        let data = blob(100_000);
+        let cid = ID::from_bytes(&data);
+        let encoded = encode_range(&data, 0..data.len() as u64);
+        let n = data.len() as u64;
+
+        // Empty interior range (start == end > 0) previously tripped the
+        // "stream did not cover the requested range" guard; it now returns empty
+        // bytes, matching the local-slice readers.
+        assert_eq!(
+            decode_range(&cid, 10..10, &encoded).unwrap(),
+            Vec::<u8>::new()
+        );
+        // A range at or past EOF clamps to empty rather than erroring.
+        assert_eq!(
+            decode_range(&cid, n..n, &encoded).unwrap(),
+            Vec::<u8>::new()
+        );
+        assert_eq!(
+            decode_range(&cid, n + 100..n + 200, &encoded).unwrap(),
+            Vec::<u8>::new()
+        );
     }
 
     #[test]
