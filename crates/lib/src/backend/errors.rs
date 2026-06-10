@@ -193,6 +193,20 @@ pub enum BackendError {
         cid: ID,
     },
 
+    /// A blob's SQL row records it on disk (`location = 1`) but the
+    /// content-addressed file is absent.
+    ///
+    /// The metadata row claims the backend holds these bytes, so a missing file
+    /// is a storage inconsistency — a lost rename after a crash, an external
+    /// deletion, or bit-rot — not the same as "blob not held locally". It is
+    /// surfaced as an error rather than reported as absent so a vanished
+    /// (possibly pinned) blob cannot masquerade as one that was never stored.
+    #[error("Blob {cid} is recorded on disk but its backing file is missing")]
+    BlobFileMissing {
+        /// The content address whose backing file is absent.
+        cid: ID,
+    },
+
     /// A bao verified-streaming blob transfer failed to decode or verify.
     ///
     /// Raised when a received range stream is malformed, does not cover the
@@ -255,6 +269,7 @@ impl BackendError {
                 | BackendError::HeightCalculationCorruption { .. }
                 | BackendError::TreeIntegrityViolation { .. }
                 | BackendError::StateInconsistency { .. }
+                | BackendError::BlobFileMissing { .. }
         )
     }
 

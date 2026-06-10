@@ -279,6 +279,51 @@ async fn test_blob_hybrid_disk_tier() {
     assert!(!backend.has_blob(&big_cid).await.unwrap());
 }
 
+/// Regression: a blob recorded on the disk tier (`location = 1`) whose backing
+/// file has vanished — a lost rename after a crash, an external deletion, or
+/// bit-rot — must surface as an error, not read back as `None`/absent. The row
+/// still claims the backend holds the bytes, so reporting "not held" would let a
+/// vanished (possibly pinned) blob masquerade as one that was never stored.
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn test_disk_blob_missing_file_is_error_not_none() {
+    use eidetica::backend::BackendImpl;
+    use eidetica::backend::database::Sqlite;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("test.db");
+    let backend = Sqlite::open(&db_path).await.expect("open file sqlite");
+    let blob_dir = dir.path().join("test.db.blobs");
+
+    // A >16 KiB blob lands on disk (location = 1); the row records it.
+    let big: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
+    let cid = ID::from_bytes(&big);
+    backend.put_blob(&cid, big).await.unwrap();
+    let file = blob_dir.join(cid.to_string());
+    assert!(file.exists());
+
+    // Remove the file behind the backend's back; the SQL row is untouched.
+    std::fs::remove_file(&file).unwrap();
+
+    // Both the whole-read and the windowed read surface the inconsistency
+    // instead of silently reporting the blob as absent.
+    let err = backend
+        .get_blob(&cid)
+        .await
+        .expect_err("a recorded-but-missing disk blob must error, not return None");
+    match err {
+        eidetica::Error::Backend(b) => assert!(
+            matches!(*b, BackendError::BlobFileMissing { .. }),
+            "expected BlobFileMissing, got {b:?}"
+        ),
+        other => panic!("expected Backend error, got {other:?}"),
+    }
+    assert!(
+        backend.get_blob_range(&cid, 0..10).await.is_err(),
+        "a windowed read of a missing disk file must also error"
+    );
+}
+
 /// The same hybrid disk tier on **Postgres**: the storage logic is
 /// db-agnostic (it branches only on `blob_dir()`), so attaching a blob dir via
 /// `with_blob_dir` puts large blobs on the instance's local disk while Postgres

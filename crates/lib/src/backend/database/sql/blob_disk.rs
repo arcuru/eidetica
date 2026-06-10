@@ -13,9 +13,11 @@
 //!
 //! Reads are `pread`-style — a range read opens the file, seeks to the window,
 //! and reads only those bytes — so a verified range serve of a large on-disk
-//! blob never materializes the whole file. Writes are atomic: a temp file on
-//! the same directory (hence same device) is written, fsync'd, then renamed
-//! into place, so a crash mid-write never leaves a torn blob under its CID.
+//! blob never materializes the whole file. Writes are atomic *and* durable: a
+//! temp file on the same directory (hence same device) is written and fsync'd,
+//! renamed into place, then the directory itself is fsync'd so the publish
+//! survives a crash. A crash mid-write never leaves a torn blob under its CID,
+//! and a completed write is not silently lost on power failure.
 
 use std::path::{Path, PathBuf};
 
@@ -70,14 +72,21 @@ pub async fn write_atomic(dir: &Path, cid: &ID, data: &[u8]) -> Result<()> {
     // Atomic publish. If a concurrent writer beat us to it, the rename still
     // yields the correct content (identical bytes), so we don't treat an
     // already-present final path as an error.
-    match tokio::fs::rename(&tmp_path, &final_path).await {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            // Best-effort cleanup of our temp file; ignore failure.
-            let _ = tokio::fs::remove_file(&tmp_path).await;
-            Err(io_err(e))
-        }
+    if let Err(e) = tokio::fs::rename(&tmp_path, &final_path).await {
+        // Best-effort cleanup of our temp file; ignore failure.
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+        return Err(io_err(e));
     }
+
+    // Durably persist the rename itself: POSIX does not guarantee a rename (or
+    // create) survives a crash until the *containing directory* is fsync'd.
+    // Without this, `sync_all` above makes the bytes durable but the publish can
+    // still be lost on power failure, leaving a `location = 1` row pointing at a
+    // file that never appeared. fsync the directory so the row and the file stay
+    // consistent across a crash.
+    let dir_handle = tokio::fs::File::open(dir).await.map_err(io_err)?;
+    dir_handle.sync_all().await.map_err(io_err)?;
+    Ok(())
 }
 
 /// Read a blob's whole bytes from disk, or `None` if the file is absent.

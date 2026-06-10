@@ -805,7 +805,14 @@ pub async fn get_blob_range(
             // On-disk tier: read only the requested window from the file.
             BlobLocation::OnDisk => {
                 let dir = backend.blob_dir().ok_or_else(disk_tier_unavailable)?;
-                super::blob_disk::read_range(dir, cid, range).await
+                // As in `get_blob`: a row recorded on disk with no file is an
+                // inconsistency. (An empty/past-EOF range over a present file
+                // still reads back as `Some(empty)`, so only a truly absent file
+                // reaches this arm.)
+                match super::blob_disk::read_range(dir, cid, range).await? {
+                    Some(bytes) => Ok(Some(bytes)),
+                    None => Err(blob_file_missing(cid)),
+                }
             }
         },
     }
@@ -822,6 +829,14 @@ fn disk_tier_unavailable() -> crate::Error {
             .to_string(),
     }
     .into()
+}
+
+/// Error for an on-disk blob (`location = 1`) whose backing file is gone — the
+/// metadata row says we hold it but the bytes are absent (a lost rename after a
+/// crash, an external deletion, or bit-rot). Distinct from "blob not held" so a
+/// vanished blob does not read back as if it were never stored.
+fn blob_file_missing(cid: &ID) -> crate::Error {
+    BackendError::BlobFileMissing { cid: cid.clone() }.into()
 }
 
 /// Fetch a blob's `(size, pre-order outboard)` without materializing its data —
@@ -857,7 +872,13 @@ pub async fn get_blob(backend: &SqlxBackend, cid: &ID) -> Result<Option<Vec<u8>>
             BlobLocation::Inline => Ok(Some(data.unwrap_or_default())),
             BlobLocation::OnDisk => {
                 let dir = backend.blob_dir().ok_or_else(disk_tier_unavailable)?;
-                super::blob_disk::read_whole(dir, cid).await
+                // The row says we hold these bytes on disk, so an absent file is
+                // an inconsistency, not "not held" — surface it rather than
+                // letting a vanished (possibly pinned) blob read back as None.
+                match super::blob_disk::read_whole(dir, cid).await? {
+                    Some(bytes) => Ok(Some(bytes)),
+                    None => Err(blob_file_missing(cid)),
+                }
             }
         },
     }
@@ -893,8 +914,12 @@ pub async fn touch_blob_accessed(backend: &SqlxBackend, cid: &ID, now_ms: i64) -
 /// Delete a blob's bytes and row outright (complete-only deletion, §5.5).
 /// Returns whether a row existed. Used by GC eviction; does not touch
 /// `blob_pins`. For an on-disk blob, the file is unlinked after the row is
-/// removed (row first: a dangling row is worse than an orphan file, which GC
-/// reclaims).
+/// removed (row first: a dangling row — a `location = 1` entry whose bytes were
+/// already unlinked — would read back as a hard error via `get_blob`, whereas
+/// an orphan file is inert). Note an orphan file is *not* currently reclaimed by
+/// GC, which sweeps rows only (`all_blob_meta`); a crash between the row delete
+/// and the unlink leaks the file. Acceptable for now (rare, bounded by the
+/// content-addressed name so it cannot duplicate), tracked as a GC follow-up.
 pub async fn delete_blob(backend: &SqlxBackend, cid: &ID) -> Result<bool> {
     let pool = backend.pool();
     // Learn the tier before deleting so we know whether a file backs this blob.
