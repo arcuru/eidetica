@@ -330,8 +330,11 @@ impl SyncTransport for HttpTransport {
 
         // Bounded read: the verified stream for this range is at most the range
         // length plus bao overhead. Reading chunk-by-chunk with a budget bounds
-        // memory to the requested range even if the peer misbehaves — this is
-        // what closes the whole-blob memory-DoS of the JSON `FetchBlobs` path.
+        // memory to the requested range even if the peer misbehaves. This is the
+        // *only* peer blob-fetch path — whole-blob fetches ride it with a
+        // `0..cap` range — so the receive is always bounded (no unbounded
+        // whole-blob buffering, the memory-DoS that the removed JSON blob path
+        // had).
         let budget = range
             .end
             .saturating_sub(range.start)

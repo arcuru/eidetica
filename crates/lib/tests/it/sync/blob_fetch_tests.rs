@@ -1,8 +1,8 @@
 //! Tests for content-addressed blob fetch over sync (design §5.4 / §10.1).
 //!
-//! Two layers: the server-side `FetchBlobs` handler (deterministic, no
-//! transport), and the end-to-end `Instance::get_blob` peer-fetch leg over a
-//! real HTTP transport.
+//! All peer blob fetches — whole-blob and partial-range alike — ride the bao
+//! verified-streaming path; these exercise the end-to-end `Instance::get_blob`
+//! and `Instance::get_blob_range` peer-fetch legs over a real HTTP transport.
 
 use std::time::Duration;
 
@@ -10,55 +10,7 @@ use eidetica::entry::ID;
 use eidetica::sync::{peer_types::Address, transports::http::HttpTransport};
 use tokio::time::sleep;
 
-use super::helpers::{handle_request, setup};
 use crate::helpers::test_local_instance as test_instance;
-
-/// The `FetchBlobs` handler serves only the CIDs it holds, omits the rest, and
-/// skips non-blob (non-raw) CIDs — the by-CID, no-enumeration contract.
-#[tokio::test]
-async fn test_fetch_blobs_handler_serves_only_requested_held_blobs() {
-    let (instance, sync) = setup().await;
-
-    let present = instance.put_blob(b"held bytes".to_vec()).await.unwrap();
-    let absent = ID::from_bytes(b"never stored");
-    // A dag-cbor (entry-shaped) CID is not a blob address; it must be skipped.
-    let non_raw = ID::from_dagcbor_bytes(b"not a blob");
-
-    let request = eidetica::sync::protocol::SyncRequest::FetchBlobs {
-        cids: vec![present.clone(), absent.clone(), non_raw.clone()],
-    };
-
-    let response = handle_request(&sync, &request).await;
-
-    let blobs = match response {
-        eidetica::sync::protocol::SyncResponse::Blobs(b) => b,
-        other => panic!("expected Blobs response, got {other:?}"),
-    };
-
-    // Only the held raw blob comes back; absent + non-raw are omitted.
-    assert_eq!(blobs.len(), 1, "only the held blob should be served");
-    assert_eq!(blobs[0].0, present);
-    assert_eq!(blobs[0].1, b"held bytes");
-    // Self-verifying: the served bytes hash to the requested CID.
-    assert_eq!(ID::from_bytes(&blobs[0].1), present);
-}
-
-/// An empty CID list yields an empty response — no enumeration, no leakage.
-#[tokio::test]
-async fn test_fetch_blobs_handler_empty_request() {
-    let (instance, sync) = setup().await;
-    let _ = instance.put_blob(b"something held".to_vec()).await.unwrap();
-
-    let request = eidetica::sync::protocol::SyncRequest::FetchBlobs { cids: vec![] };
-    let response = handle_request(&sync, &request).await;
-
-    match response {
-        eidetica::sync::protocol::SyncResponse::Blobs(b) => {
-            assert!(b.is_empty(), "empty request must not reveal held blobs");
-        }
-        other => panic!("expected Blobs response, got {other:?}"),
-    }
-}
 
 /// End-to-end: a blob held only by a peer is resolved by `Instance::get_blob`
 /// (local miss → ask known peers → verify → persist), then served locally.

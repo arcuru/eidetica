@@ -1153,14 +1153,21 @@ impl Instance {
     ///
     /// No-op (`Ok(None)`) when sync is not enabled — a thin remote client with
     /// no transport has no peers to ask; its daemon is the one that resolves
-    /// from peers. When sync is enabled, [`Sync::fetch_blob`] tries known peers
-    /// and self-verifies; on a hit the bytes are persisted through the seam so
-    /// subsequent reads are local, then returned.
+    /// from peers. When sync is enabled, the whole blob is streamed from a peer
+    /// over the bao verified-streaming path — a full fetch is a range fetch over
+    /// `0..DEFAULT_MAX_BLOB_BYTES`, and the encoder clamps to the blob's real
+    /// length, so this returns exactly the blob's bytes. Every chunk is verified
+    /// against `cid` while decoding and the receive is bounded to the size cap,
+    /// so there is no unbounded whole-blob buffering (the JSON `FetchBlobs` path
+    /// this replaced had no such bound). On a hit the bytes are persisted through
+    /// the seam (which re-verifies the content address) so subsequent reads are
+    /// local.
     async fn fetch_blob_from_peers(&self, cid: &ID) -> Result<Option<Vec<u8>>> {
         let Some(sync) = self.sync() else {
             return Ok(None);
         };
-        match sync.fetch_blob(cid).await? {
+        let whole = 0..crate::backend::DEFAULT_MAX_BLOB_BYTES as u64;
+        match sync.fetch_blob_range(cid, whole).await? {
             Some(bytes) => {
                 self.inner.backend.put_blob(cid, bytes.clone()).await?;
                 Ok(Some(bytes))
