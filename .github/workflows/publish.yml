@@ -98,12 +98,13 @@ jobs:
       # pushed to the cache.
       - name: Build and push release artifacts
         env:
-          PUSH_ARGS: ${{ steps.nix.outputs.push-args }}
           SYSTEM: ${{ matrix.system }}
         run: |
-          # shellcheck disable=SC2086 # PUSH_ARGS expands into multiple flags
+          # push-args is a first-party action output carrying pre-quoted store
+          # flags; it must expand inline (quotes are not re-parsed from an env
+          # var, which corrupts the s3:// store URL).
           nix-fast-build --skip-cached --no-nom --no-link \
-            $PUSH_ARGS \
+            ${{ steps.nix.outputs.push-args }} \
             --option substituters 'https://cache.nixos.org' \
             -f ".#legacyPackages.${SYSTEM}.eidetica.release"
 
@@ -112,11 +113,9 @@ jobs:
       # release runs only build the release artifacts.
       - name: Warm CI cache
         if: github.event_name == 'workflow_run'
-        env:
-          PUSH_ARGS: ${{ steps.nix.outputs.push-args }}
         run: |
-          # shellcheck disable=SC2086 # PUSH_ARGS expands into multiple flags
-          nix-fast-build --skip-cached --no-nom --no-link $PUSH_ARGS
+          nix-fast-build --skip-cached --no-nom --no-link \
+            ${{ steps.nix.outputs.push-args }}
 
       - name: Install Bencher CLI
         if: github.event_name == 'workflow_run'
