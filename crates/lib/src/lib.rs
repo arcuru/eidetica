@@ -31,6 +31,8 @@ pub mod service;
 pub mod snapshot;
 pub mod store;
 pub mod sync;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 pub mod transaction;
 pub mod user;
 
@@ -44,6 +46,8 @@ pub use height::HeightStrategy;
 pub use instance::{Instance, NewUser, WeakInstance, WriteCallback, WriteEvent, WriteSource};
 pub use snapshot::Snapshot;
 pub use store::{Registered, Store};
+#[cfg(any(test, feature = "testing"))]
+pub use testing::{Cluster, Peer};
 /// Re-export fundamental types for easier access.
 pub use transaction::Transaction;
 
