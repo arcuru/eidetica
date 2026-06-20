@@ -1,27 +1,24 @@
 //! Test for bidirectional sync scenarios.
 //!
-//! Verifies that two devices can sync changes back and forth:
-//! 1. Device 1 creates room and adds message A
-//! 2. Device 1 syncs to Device 2 (bootstrap)
-//! 3. Device 2 adds message B
-//! 4. Device 2 syncs back to Device 1
-//! 5. Device 1 adds message C (CRDT merge handles concurrent changes)
+//! Verifies that two peers can sync changes back and forth:
+//! 1. Peer 0 creates a room and adds message A
+//! 2. Peer 1 bootstraps the room from peer 0 (carries message A)
+//! 3. Peer 1 adds message B
+//! 4. Peer 1 syncs back to peer 0
+//! 5. Peer 0 adds message C — CRDT merge handles the concurrent change, no
+//!    "no common ancestor" error
+//!
+//! Built on [`Cluster`], the multi-peer harness: it owns the instance / user /
+//! key / transport / bootstrap wiring so this test is just the scenario.
 
 use eidetica::{
     Result,
     auth::{Permission, types::AuthKey},
     crdt::Doc,
     store::Table,
-    sync::{Address, transports::http::HttpTransport},
-    user::types::SyncSettings,
+    testing::{Cluster, add_auth_keys, set_global_auth_key},
 };
 use serde::{Deserialize, Serialize};
-
-use super::helpers::enable_sync_for_instance_database;
-use crate::helpers::{
-    LocalBackendTestExt, add_auth_keys, set_global_auth_key,
-    test_local_instance_with_user_and_key as test_instance_with_user_and_key,
-};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ChatMessage {
@@ -31,10 +28,10 @@ struct ChatMessage {
 }
 
 impl ChatMessage {
-    fn new(author: String, content: String) -> Self {
+    fn new(author: &str, content: &str) -> Self {
         Self {
-            author,
-            content,
+            author: author.to_string(),
+            content: content.to_string(),
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -44,354 +41,121 @@ impl ChatMessage {
     }
 }
 
-const CHAT_APP_KEY: &str = "CHAT_APP_USER";
+/// Insert one chat message into the database's `messages` table.
+async fn add_message(db: &eidetica::Database, msg: ChatMessage) -> Result<()> {
+    let txn = db.new_transaction().await?;
+    txn.get_store::<Table<ChatMessage>>("messages")
+        .await?
+        .insert(msg)
+        .await?;
+    txn.commit().await?;
+    Ok(())
+}
 
-/// Test bidirectional sync between two devices.
+/// All messages currently in the database's `messages` table.
+async fn all_messages(db: &eidetica::Database) -> Result<Vec<ChatMessage>> {
+    let txn = db.new_transaction().await?;
+    let store = txn.get_store::<Table<ChatMessage>>("messages").await?;
+    let messages: Vec<(String, ChatMessage)> = store.search(|_| true).await?;
+    Ok(messages.into_iter().map(|(_, m)| m).collect())
+}
+
+/// Test bidirectional sync between two peers.
 ///
 /// Verifies the scenario:
-/// 1. Device 1 creates room and adds message A
-/// 2. Device 1 syncs to Device 2 (bootstrap)
-/// 3. Device 2 adds message B
-/// 4. Device 2 syncs back to Device 1
-/// 5. Device 1 adds message C (should succeed with proper CRDT merge)
+/// 1. Peer 0 creates room and adds message A
+/// 2. Peer 1 bootstraps from peer 0
+/// 3. Peer 1 adds message B
+/// 4. Peer 1 syncs back to peer 0
+/// 5. Peer 0 adds message C (should succeed with proper CRDT merge)
 #[tokio::test]
 async fn test_bidirectional_sync_no_common_ancestor_issue() -> Result<()> {
-    println!("\n🧪 TEST: Bidirectional sync test");
+    let mut net = Cluster::builder().peers(2).build().await?;
 
-    // === STEP 1: Device 1 creates room and adds message A ===
-    println!("📱 STEP 1: Device 1 creates room and adds message A");
+    // === STEP 1: Peer 0 creates the room and adds message A ===
+    let key0 = net.peer(0).key_id().clone();
+    let device0 = net.peer(0).instance().id();
 
-    let (device1_instance, mut device1_user, device1_key_id) =
-        test_instance_with_user_and_key("device1_user", Some(CHAT_APP_KEY)).await;
-
-    device1_instance
-        .enable_sync()
-        .await
-        .expect("Failed to initialize sync on device1");
-
-    // Create database with simple settings like the chat app
     let mut settings = Doc::new();
     settings.set("name", "Bidirectional Test Room");
+    let db0 = net
+        .peer_mut(0)
+        .user_mut()
+        .create_database(settings, &key0)
+        .await?;
+    let room_id = db0.root_id().clone();
 
-    // Get device key for auth settings
-    let device1_device_pubkey = device1_instance.id();
-
-    let device1_database = device1_user
-        .create_database(settings, &device1_key_id)
-        .await
-        .expect("Failed to create database on device1");
-
-    // Add auth keys: user's key and device key for sync handler
+    // Auth: the user's key and the device key as admins, plus a global wildcard
+    // so the bootstrapping peer can join and write.
     add_auth_keys(
-        &device1_database,
+        &db0,
         &[
+            (&key0, AuthKey::active(Some("admin"), Permission::Admin(10))),
             (
-                &device1_key_id,
-                AuthKey::active(Some("admin"), Permission::Admin(10)),
-            ),
-            (
-                &device1_device_pubkey,
+                &device0,
                 AuthKey::active(Some("device"), Permission::Admin(10)),
             ),
         ],
     )
-    .await;
+    .await?;
+    set_global_auth_key(&db0, AuthKey::active(None, Permission::Admin(10))).await?;
 
-    // Add global wildcard permission
-    set_global_auth_key(
-        &device1_database,
-        AuthKey::active(None, Permission::Admin(10)),
+    net.peer_mut(0).serve(&room_id).await?;
+    add_message(
+        &db0,
+        ChatMessage::new("alice", "Hello from Device 1 (Message A)"),
     )
-    .await;
+    .await?;
 
-    let room_id = device1_database.root_id().clone();
+    // === STEP 2: Peer 1 bootstraps from peer 0 and sees message A ===
+    // bootstrap(from, to, ..): peer 1 is the joiner, peer 0 the source.
+    net.bootstrap(0, 1, &room_id, Permission::Write(10)).await?;
 
-    // Enable sync for this database
-    let device1_sync = device1_instance.sync().expect("Device1 should have sync");
-    enable_sync_for_instance_database(&device1_sync, &room_id)
-        .await
-        .expect("Failed to enable sync for database");
+    let db1 = net.peer_mut(1).user_mut().open_database(&room_id).await?;
 
-    // Add message A on device 1
-    let message_a = ChatMessage::new(
-        "alice".to_string(),
-        "Hello from Device 1 (Message A)".to_string(),
+    let messages = all_messages(&db1).await?;
+    assert_eq!(
+        messages.len(),
+        1,
+        "Peer 1 should have 1 message after bootstrap"
     );
-    println!("💬 Device 1 adding: {}", message_a.content);
+    assert_eq!(messages[0].content, "Hello from Device 1 (Message A)");
 
-    {
-        let txn = device1_database.new_transaction().await?;
-        let messages_store = txn.get_store::<Table<ChatMessage>>("messages").await?;
-        messages_store.insert(message_a.clone()).await?;
-        txn.commit().await?;
-    }
+    // === STEP 3: Peer 1 adds message B ===
+    add_message(
+        &db1,
+        ChatMessage::new("bob", "Hello from Device 2 (Message B)"),
+    )
+    .await?;
 
-    // Start server on device 1
-    let device1_server_addr = {
-        device1_sync
-            .register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
-            .await
-            .expect("Failed to register HTTP transport");
-        device1_sync
-            .accept_connections()
-            .await
-            .expect("Failed to start server");
-        let addr = device1_sync
-            .get_server_address()
-            .await
-            .expect("Failed to get server address");
-        Address::http(addr)
-    };
+    // === STEP 4: Peer 1 syncs back to peer 0 ===
+    net.exchange(1, 0, &room_id).await?;
 
-    println!("🌐 Device 1 server started at: {device1_server_addr:?}");
-
-    // === STEP 2: Device 2 bootstraps and syncs from Device 1 ===
-    println!("\n📱 STEP 2: Device 2 bootstraps and syncs from Device 1");
-
-    let (device2_instance, mut device2_user, device2_key_id) =
-        test_instance_with_user_and_key("device2_user", Some(CHAT_APP_KEY)).await;
-
-    device2_instance
-        .enable_sync()
-        .await
-        .expect("Failed to initialize sync on device2");
-
-    // Bootstrap sync from device 1 to device 2
-    let bootstrap_result = {
-        let device2_sync = device2_instance.sync().expect("Device2 should have sync");
-        device2_sync
-            .register_transport("http", HttpTransport::builder())
-            .await
-            .expect("Failed to register HTTP transport");
-
-        device2_sync
-            .sync_with_peer_for_bootstrap_with_key(
-                &device1_server_addr,
-                &room_id,
-                &device2_key_id,
-                CHAT_APP_KEY,
-                Permission::Write(10),
-            )
-            .await
-    };
-
-    println!("🔄 Bootstrap result: {bootstrap_result:?}");
-    assert!(bootstrap_result.is_ok(), "Bootstrap should succeed");
-
-    // Flush any pending sync work
-    device2_instance
-        .sync()
-        .expect("Device2 should have sync")
-        .flush()
-        .await
-        .ok();
-
-    // Verify device 2 has the database and message A
-    // Track and open database using User API
-    device2_user
-        .track_database(room_id.clone(), &device2_key_id, SyncSettings::disabled())
-        .await
-        .expect("Failed to track database on device2");
-    let device2_database = device2_user
-        .open_database(&room_id)
-        .await
-        .expect("Failed to open database on device2");
-
-    // Check device 2 has message A
-    {
-        let txn = device2_database.new_transaction().await?;
-        let messages_store = txn.get_store::<Table<ChatMessage>>("messages").await?;
-        let messages: Vec<(String, ChatMessage)> = messages_store.search(|_| true).await?;
-        let messages: Vec<ChatMessage> = messages.into_iter().map(|(_, msg)| msg).collect();
-        println!(
-            "📋 Device 2 messages after bootstrap: {} messages",
-            messages.len()
-        );
-        for msg in &messages {
-            println!("   - {}: {}", msg.author, msg.content);
-        }
-        assert_eq!(
-            messages.len(),
-            1,
-            "Device 2 should have 1 message after bootstrap"
-        );
-        assert_eq!(messages[0].content, "Hello from Device 1 (Message A)");
-    }
-
-    // === STEP 3: Device 2 adds message B ===
-    println!("\n📱 STEP 3: Device 2 adds message B");
-
-    let message_b = ChatMessage::new(
-        "bob".to_string(),
-        "Hello from Device 2 (Message B)".to_string(),
+    let messages = all_messages(&db0).await?;
+    assert_eq!(
+        messages.len(),
+        2,
+        "Peer 0 should have 2 messages after sync back"
     );
-    println!("💬 Device 2 adding: {}", message_b.content);
 
-    {
-        let txn = device2_database.new_transaction().await?;
-        let messages_store = txn.get_store::<Table<ChatMessage>>("messages").await?;
-        messages_store.insert(message_b.clone()).await?;
-        txn.commit().await?;
-    }
+    // === STEP 5: Peer 0 adds message C — the concurrent change CRDT must merge ===
+    // This is where a "no common ancestor" regression would surface.
+    add_message(
+        &db0,
+        ChatMessage::new("alice", "Hello again from Device 1 (Message C)"),
+    )
+    .await?;
 
-    // === STEP 4: Device 2 syncs back to Device 1 ===
-    println!("\n🔄 STEP 4: Device 2 syncs back to Device 1");
-
-    let sync_back_result = {
-        let device2_sync = device2_instance.sync().expect("Device2 should have sync");
-        device2_sync
-            .sync_with_peer(&device1_server_addr, Some(&room_id))
-            .await
-    };
-    println!("🔄 Sync back result: {sync_back_result:?}");
-    assert!(sync_back_result.is_ok(), "Sync back should succeed");
-
-    // Flush any pending sync work
-    device2_instance
-        .sync()
-        .expect("Device2 should have sync")
-        .flush()
-        .await
-        .ok();
-
-    // Verify device 1 now has both messages
-    {
-        let txn = device1_database.new_transaction().await?;
-        let messages_store = txn.get_store::<Table<ChatMessage>>("messages").await?;
-        let messages: Vec<(String, ChatMessage)> = messages_store.search(|_| true).await?;
-        let messages: Vec<ChatMessage> = messages.into_iter().map(|(_, msg)| msg).collect();
-        println!(
-            "📋 Device 1 messages after sync back: {} messages",
-            messages.len()
-        );
-        for msg in &messages {
-            println!("   - {}: {}", msg.author, msg.content);
-        }
-        assert_eq!(
-            messages.len(),
-            2,
-            "Device 1 should have 2 messages after sync back"
-        );
-    }
-
-    // === STEP 5: Device 1 tries to add message C (trigger "no common ancestor" error) ===
-    println!("\n📱 STEP 5: Device 1 tries to add message C (this should trigger the error)");
-
-    // Debug: Check current tips before adding message C
-    let current_tips = device1_database
-        .backend()
-        .expect("Failed to get backend")
-        .snapshot(&room_id)
-        .await
-        .expect("Failed to get tips");
-    println!("🔍 Device 1 current tree tips before adding C: {current_tips:?}");
-    let current_subtree_tips = device1_database
-        .backend()
-        .expect("Failed to get backend")
-        .store_snapshot(&room_id, "messages")
-        .await
-        .expect("Failed to get store tips");
-    println!("🔍 Device 1 current messages store tips before adding C: {current_subtree_tips:?}");
-
-    // Debug: Show all entries in the tree to understand the DAG structure
-    println!("🔍 All entries in Device 1's tree:");
-    let all_entries = device1_database
-        .backend()
-        .expect("Failed to get backend")
-        .get_tree(&room_id)
-        .await
-        .expect("Failed to get tree entries");
-    for (i, entry) in all_entries.iter().enumerate() {
-        let parents = entry.parents().unwrap_or_default();
-        let subtrees = entry.subtrees();
-        println!(
-            "   {}. Entry {}: parents={:?}, subtrees={:?}",
-            i + 1,
-            entry.id(),
-            parents,
-            subtrees
-        );
-
-        // Show subtree parents for the messages store
-        if subtrees.contains(&"messages".to_string())
-            && let Ok(subtree_parents) = entry.subtree_parents("messages")
-        {
-            println!("      └─ messages subtree parents: {subtree_parents:?}");
-        }
-    }
-
-    let message_c = ChatMessage::new(
-        "alice".to_string(),
-        "Hello again from Device 1 (Message C)".to_string(),
+    let messages = all_messages(&db0).await?;
+    assert_eq!(
+        messages.len(),
+        3,
+        "Peer 0 should have 3 messages after adding C"
     );
-    println!("💬 Device 1 attempting to add: {}", message_c.content);
-
-    // This is where the "no common ancestor" error should occur
-    let add_result = {
-        let txn = device1_database.new_transaction().await?;
-        let messages_store = txn.get_store::<Table<ChatMessage>>("messages").await?;
-        let insert_result = messages_store.insert(message_c.clone()).await;
-        match insert_result {
-            Ok(_primary_key) => match txn.commit().await {
-                Ok(_commit_id) => {
-                    println!("✅ Message C added successfully (no error occurred)");
-                    Ok(())
-                }
-                Err(e) => {
-                    println!("❌ Error during commit: {e:?}");
-                    Err(e)
-                }
-            },
-            Err(e) => {
-                println!("❌ Error during insert: {e:?}");
-                Err(e)
-            }
-        }
-    };
-
-    match add_result {
-        Ok(()) => {
-            println!("🎉 SUCCESS: No common ancestor error did not occur - BUG IS FIXED!");
-
-            // Check final message count
-            let txn = device1_database.new_transaction().await?;
-            let messages_store = txn.get_store::<Table<ChatMessage>>("messages").await?;
-            let messages: Vec<(String, ChatMessage)> = messages_store.search(|_| true).await?;
-            let messages: Vec<ChatMessage> = messages.into_iter().map(|(_, msg)| msg).collect();
-            println!("📋 Device 1 final messages: {} messages", messages.len());
-            for msg in &messages {
-                println!("   - {}: {}", msg.author, msg.content);
-            }
-
-            // Verify we have all 3 messages
-            assert_eq!(
-                messages.len(),
-                3,
-                "Device 1 should have 3 messages after adding C"
-            );
-            let contents: Vec<&str> = messages.iter().map(|m| m.content.as_str()).collect();
-            assert!(contents.contains(&"Hello from Device 1 (Message A)"));
-            assert!(contents.contains(&"Hello from Device 2 (Message B)"));
-            assert!(contents.contains(&"Hello again from Device 1 (Message C)"));
-        }
-        Err(e) => {
-            println!("🎯 ERROR STILL REPRODUCED: {e:?}");
-            let error_str = e.to_string();
-
-            if error_str.to_lowercase().contains("ancestor") {
-                panic!(
-                    "SYNC BUG: 'no common ancestor' error still occurs during bidirectional sync - this needs to be fixed: {e}"
-                );
-            } else {
-                panic!("SYNC BUG: Unexpected error during bidirectional sync: {e}");
-            }
-        }
-    }
-
-    // Cleanup
-    device1_sync.stop_server().await.unwrap();
-
-    println!("🧹 Test completed successfully");
+    let contents: Vec<&str> = messages.iter().map(|m| m.content.as_str()).collect();
+    assert!(contents.contains(&"Hello from Device 1 (Message A)"));
+    assert!(contents.contains(&"Hello from Device 2 (Message B)"));
+    assert!(contents.contains(&"Hello again from Device 1 (Message C)"));
 
     Ok(())
 }
