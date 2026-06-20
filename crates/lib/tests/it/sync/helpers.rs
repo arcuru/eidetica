@@ -7,7 +7,7 @@ use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use eidetica::{
-    Database, Entry, Error, Instance, Result,
+    Cluster, Database, Entry, Error, Instance, Result,
     auth::{AuthKey, Permission as AuthPermission, crypto::PublicKey},
     crdt::Doc,
     entry::ID,
@@ -800,6 +800,97 @@ pub async fn enable_sync_for_instance_database(sync: &Sync, database_id: &ID) ->
     tx.commit().await?;
 
     Ok(())
+}
+
+// ===== CLUSTER (multi-peer harness) HELPERS =====
+
+/// Build a database shared across an entire [`Cluster`].
+///
+/// Peer 0 creates the database with a global-wildcard admin policy and serves
+/// it; every other peer in the cluster bootstraps and serves it; each peer opens
+/// its own handle. Returns the room id and one open [`Database`] per peer,
+/// indexed by peer number.
+///
+/// The shared starting point for multi-peer convergence tests: after this, any
+/// peer can write to its handle and the cluster can be driven to convergence via
+/// [`Cluster::converge`] (or a subset via [`Cluster::exchange`]).
+///
+/// Auth is the test layer's choice here (admin keys for peer 0 + a global
+/// wildcard so every joiner can write); the harness itself stays auth-neutral.
+#[allow(dead_code)]
+pub async fn cluster_shared_database(
+    net: &mut Cluster,
+    db_name: &str,
+) -> Result<(ID, Vec<Database>)> {
+    let key0 = net.peer(0).key_id().clone();
+    let device0 = net.peer(0).instance().id();
+
+    let mut settings = Doc::new();
+    settings.set("name", db_name);
+    let db0 = net
+        .peer_mut(0)
+        .user_mut()
+        .create_database(settings, &key0)
+        .await?;
+    let room = db0.root_id().clone();
+
+    eidetica::testing::add_auth_keys(
+        &db0,
+        &[
+            (
+                &key0,
+                AuthKey::active(Some("admin"), AuthPermission::Admin(10)),
+            ),
+            (
+                &device0,
+                AuthKey::active(Some("device"), AuthPermission::Admin(10)),
+            ),
+        ],
+    )
+    .await?;
+    eidetica::testing::set_global_auth_key(&db0, AuthKey::active(None, AuthPermission::Admin(10)))
+        .await?;
+
+    // Seed the `data` store before anyone bootstraps, so every peer's later
+    // writes to it descend from a common ancestor. Without this, each peer's
+    // first write would root an independent `data` subtree and merging the
+    // concurrent histories fails with NoCommonAncestor.
+    cluster_put(&db0, "seed", "seed").await?;
+
+    net.peer_mut(0).serve(&room).await?;
+
+    let mut dbs = vec![db0];
+    for j in 1..net.len() {
+        net.bootstrap(0, j, &room, AuthPermission::Write(10))
+            .await?;
+        net.peer_mut(j).serve(&room).await?;
+        let db = net.peer_mut(j).user_mut().open_database(&room).await?;
+        dbs.push(db);
+    }
+    Ok((room, dbs))
+}
+
+/// Write `value` at `key` in the database's `data` [`DocStore`] — the write side
+/// of the cluster convergence tests.
+#[allow(dead_code)]
+pub async fn cluster_put(db: &Database, key: &str, value: &str) -> Result<()> {
+    let tx = db.new_transaction().await?;
+    tx.get_store::<DocStore>("data")
+        .await?
+        .set_string(key, value)
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Read the string at `key` from the database's `data` [`DocStore`].
+#[allow(dead_code)]
+pub async fn cluster_get(db: &Database, key: &str) -> Result<String> {
+    let tx = db.new_transaction().await?;
+    tx.get_store::<DocStore>("data")
+        .await?
+        .get_string(key)
+        .await
 }
 
 /// Creates a public (unauthenticated) sync-enabled database with global permission.
