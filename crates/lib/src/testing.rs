@@ -77,7 +77,7 @@ use async_trait::async_trait;
 
 use crate::{
     Database, Instance, NewUser, Result,
-    auth::{crypto::PublicKey, types::AuthKey},
+    auth::{Permission, crypto::PublicKey, types::AuthKey},
     backend::database::InMemory,
     clock::{Clock, FixedClock},
     entry::ID,
@@ -217,6 +217,38 @@ impl Cluster {
         &mut self.peers[i]
     }
 
+    /// Have peer `to` bootstrap `tree` from peer `from`: request the tree with
+    /// `to`'s own key (asking for `permission`), flush, and track it locally
+    /// (sync disabled — the test turns on [`serve`]/[`auto_sync`] if it wants
+    /// more). The joining-peer dance as one call.
+    ///
+    /// `permission` is the access level `to` requests; the harness does not pick
+    /// it — auth posture stays the test's. `from` must already be serving `tree`
+    /// (see [`Peer::serve`]) with a policy that admits this request.
+    ///
+    /// [`serve`]: Peer::serve
+    /// [`auto_sync`]: Cluster::auto_sync
+    pub async fn bootstrap(
+        &mut self,
+        from: usize,
+        to: usize,
+        tree: &ID,
+        permission: Permission,
+    ) -> Result<()> {
+        let from_addr = self.peers[from].address.clone();
+        let to_key = self.peers[to].key_id.clone();
+        self.peers[to]
+            .sync
+            .sync_with_peer_for_bootstrap_with_key(&from_addr, tree, &to_key, KEY_NAME, permission)
+            .await?;
+        self.peers[to].sync.flush().await?;
+        self.peers[to]
+            .user
+            .track_database(tree.clone(), &to_key, SyncSettings::disabled())
+            .await?;
+        Ok(())
+    }
+
     /// Drive a sync exchange for `tree`, initiated by peer `from` against peer
     /// `to`. eidetica's `sync_with_peer` exchanges in *both* directions, so after
     /// this both peers hold each other's entries for the tree. Both sync queues
@@ -309,6 +341,45 @@ impl Cluster {
             }
         }
         Ok(true)
+    }
+
+    /// Whether *every* peer agrees on `tree`'s tip set — the common convergence
+    /// check. Shorthand for [`converged`] over all peers; the explicit
+    /// `&[peers]` form stays for partition tests that expect only a subset to
+    /// agree.
+    ///
+    /// [`converged`]: Cluster::converged
+    pub async fn converged_all(&self, tree: &ID) -> Result<bool> {
+        let all: Vec<usize> = (0..self.peers.len()).collect();
+        self.converged(&all, tree).await
+    }
+
+    /// Drive bidirectional [`exchange`] across every peer pair, round after
+    /// round, until the whole cluster holds an identical tip set for `tree` —
+    /// then return `true`. Bounded to `peers` rounds (a complete graph converges
+    /// in one, the budget is slack for safety); returns the final convergence
+    /// status if the budget is spent without settling.
+    ///
+    /// Quiescent only: there must be no concurrent writes while this runs (it
+    /// has no way to observe them). Every peer must already hold and serve
+    /// `tree` so it can answer an exchange — `bootstrap` then [`Peer::serve`] on
+    /// each joiner. The fixpoint barrier the N-peer / partition-heal tests
+    /// assert against.
+    ///
+    /// [`exchange`]: Cluster::exchange
+    pub async fn converge(&self, tree: &ID) -> Result<bool> {
+        let n = self.peers.len();
+        for _ in 0..n.max(1) {
+            if self.converged_all(tree).await? {
+                return Ok(true);
+            }
+            for i in 0..n {
+                for j in (i + 1)..n {
+                    self.exchange(i, j, tree).await?;
+                }
+            }
+        }
+        self.converged_all(tree).await
     }
 }
 
@@ -415,7 +486,7 @@ pub async fn set_global_auth_key(db: &Database, key: AuthKey) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{auth::Permission, crdt::Doc, store::DocStore};
+    use crate::{crdt::Doc, store::DocStore};
 
     async fn write(db: &Database, key: &str, value: &str) -> Result<()> {
         let tx = db.new_transaction().await?;
@@ -465,24 +536,7 @@ mod tests {
         net.peer_mut(0).serve(&room).await?;
         write(&db0, "a", "from-peer-0").await?;
 
-        let key1 = net.peer(1).key_id().clone();
-        let name1 = net.peer(1).key_name().to_string();
-        let addr0 = net.peer(0).address().clone();
-        net.peer(1)
-            .sync()
-            .sync_with_peer_for_bootstrap_with_key(
-                &addr0,
-                &room,
-                &key1,
-                &name1,
-                Permission::Write(10),
-            )
-            .await?;
-        net.peer(1).sync().flush().await?;
-        net.peer_mut(1)
-            .user_mut()
-            .track_database(room.clone(), &key1, SyncSettings::disabled())
-            .await?;
+        net.bootstrap(0, 1, &room, Permission::Write(10)).await?;
         let db1 = net.peer_mut(1).user_mut().open_database(&room).await?;
         assert_eq!(
             read(&db1, "a").await?,
