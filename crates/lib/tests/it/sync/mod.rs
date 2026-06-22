@@ -22,6 +22,7 @@ mod device_id_tests;
 pub mod helpers;
 mod http_transport_tests;
 mod integration_tests;
+mod invariant_assertions_tests;
 mod iroh_e2e_test;
 mod iroh_transport_tests;
 mod manual_approval_test;
