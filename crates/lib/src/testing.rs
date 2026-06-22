@@ -80,8 +80,15 @@ use crate::{
     auth::{Permission, crypto::PublicKey, types::AuthKey},
     backend::{BackendImpl, VerificationStatus, database::InMemory},
     clock::{Clock, FixedClock},
+    crdt::Doc,
     entry::ID,
-    sync::{Address, Sync, transports::http::HttpTransport},
+    sync::{
+        Address, Sync,
+        error::SyncError,
+        handler::SyncHandler,
+        protocol::{RequestContext, SyncRequest, SyncResponse},
+        transports::{SyncTransport, TransportBuilder, http::HttpTransport},
+    },
     user::{User, types::SyncSettings},
 };
 
@@ -628,6 +635,247 @@ pub async fn set_global_auth_key(db: &Database, key: AuthKey) -> Result<()> {
     Ok(())
 }
 
+// ===== SimTransport: in-memory, controllable transport (Tier 1 seam) =====
+//
+// `HttpLoopback` is real HTTP over loopback: it delivers in wired order, so
+// "convergence is order-independent" is unprovable and a partition can only be
+// modelled coarsely (don't call `exchange`). `SimTransport` swaps the one seam
+// the harness left open — [`TestTransport`] — for an in-process fabric that
+// routes a [`SyncRequest`] straight to the target peer's [`SyncHandler`]: no
+// sockets, no ports, deterministic, and *controllable*. A test holds a
+// [`SimNetwork`] handle and partitions links mid-run.
+//
+// This is Tier 1 of the harness. It does not replace Tier 0 — it plugs into it:
+// `Cluster::builder().transport(Arc::new(SimLoopback::new(net.clone())))`.
+
+/// In-memory message fabric shared by every [`SimTransport`] in a cluster, and
+/// the control handle a test uses to inject faults. A drop-in for
+/// [`HttpLoopback`] via [`ClusterBuilder::transport`] that additionally lets a
+/// test [`partition`] links and [`heal`] them.
+///
+/// `Clone` is a shared handle (an `Arc` inside): the copy a test keeps and the
+/// copies inside each peer's transport all see the same fabric.
+///
+/// [`partition`]: SimNetwork::partition
+/// [`heal`]: SimNetwork::heal
+#[derive(Clone, Default)]
+pub struct SimNetwork {
+    inner: Arc<std::sync::Mutex<SimState>>,
+}
+
+#[derive(Default)]
+struct SimState {
+    /// Peer address -> that peer's serving handler, populated when it serves.
+    handlers: std::collections::HashMap<String, Arc<dyn SyncHandler>>,
+    /// Directed links currently dropping traffic: `(from_addr, to_addr)`.
+    blocked: std::collections::HashSet<(String, String)>,
+    /// Monotonic id source for peer addresses.
+    next_id: usize,
+}
+
+impl SimNetwork {
+    /// A fresh, empty fabric.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, SimState> {
+        self.inner.lock().expect("SimNetwork mutex poisoned")
+    }
+
+    /// Hand out the next unique peer address (`sim-peer-N`, in serve order).
+    fn alloc_address(&self) -> String {
+        let mut s = self.lock();
+        let id = s.next_id;
+        s.next_id += 1;
+        format!("sim-peer-{id}")
+    }
+
+    fn register(&self, address: &str, handler: Arc<dyn SyncHandler>) {
+        self.lock().handlers.insert(address.to_string(), handler);
+    }
+
+    fn unregister(&self, address: &str) {
+        self.lock().handlers.remove(address);
+    }
+
+    /// Clone out the handler for `address` (drops the lock before any await).
+    fn handler_for(&self, address: &str) -> Option<Arc<dyn SyncHandler>> {
+        self.lock().handlers.get(address).cloned()
+    }
+
+    fn is_blocked(&self, from: &str, to: &str) -> bool {
+        self.lock()
+            .blocked
+            .contains(&(from.to_string(), to.to_string()))
+    }
+
+    /// Drop all traffic between `a` and `b` in *both* directions until [`heal`].
+    /// A send across a blocked link fails as a connection error, so an
+    /// auto-sync peer's queued entries stay pending and redeliver after heal —
+    /// a message-level partition, finer than withholding `exchange` calls.
+    ///
+    /// [`heal`]: SimNetwork::heal
+    pub fn partition(&self, a: &Address, b: &Address) {
+        let mut s = self.lock();
+        s.blocked.insert((a.address.clone(), b.address.clone()));
+        s.blocked.insert((b.address.clone(), a.address.clone()));
+    }
+
+    /// Restore traffic between `a` and `b` (both directions).
+    pub fn heal(&self, a: &Address, b: &Address) {
+        let mut s = self.lock();
+        s.blocked.remove(&(a.address.clone(), b.address.clone()));
+        s.blocked.remove(&(b.address.clone(), a.address.clone()));
+    }
+
+    /// Restore every link in the fabric.
+    pub fn heal_all(&self) {
+        self.lock().blocked.clear();
+    }
+}
+
+/// [`TestTransport`] backed by a [`SimNetwork`]: an in-memory drop-in for
+/// [`HttpLoopback`]. Build a cluster over it with
+/// `Cluster::builder().transport(Arc::new(SimLoopback::new(net.clone())))` and
+/// keep `net` to drive partitions.
+pub struct SimLoopback {
+    network: SimNetwork,
+}
+
+impl SimLoopback {
+    /// Wrap a [`SimNetwork`]. Share one network across the cluster (clone the
+    /// handle) so the test and every peer route through the same fabric.
+    pub fn new(network: SimNetwork) -> Self {
+        Self { network }
+    }
+}
+
+#[async_trait]
+impl TestTransport for SimLoopback {
+    async fn serve(&self, sync: &Sync) -> Result<Address> {
+        let address = self.network.alloc_address();
+        sync.register_transport(
+            "sim",
+            SimTransportBuilder {
+                address: address.clone(),
+                network: self.network.clone(),
+            },
+        )
+        .await?;
+        // accept_connections awaits StartServer, which calls start_server and
+        // registers our handler before returning — no post-serve race.
+        sync.accept_connections().await?;
+        Ok(Address::new(SimTransport::TRANSPORT_TYPE, address))
+    }
+}
+
+/// Builder that hands the peer's address + shared fabric to its [`SimTransport`].
+struct SimTransportBuilder {
+    address: String,
+    network: SimNetwork,
+}
+
+#[async_trait]
+impl TransportBuilder for SimTransportBuilder {
+    type Transport = SimTransport;
+
+    async fn build(self, _persisted: Doc) -> Result<(Self::Transport, Option<Doc>)> {
+        Ok((
+            SimTransport {
+                address: self.address,
+                network: self.network,
+                running: false,
+            },
+            None,
+        ))
+    }
+}
+
+/// In-memory [`SyncTransport`]. Routes a [`SyncRequest`] straight to the target
+/// peer's [`SyncHandler`] through the shared [`SimNetwork`] — no sockets, no
+/// serialization — and honors the network's partition state.
+pub struct SimTransport {
+    /// This peer's own sim address (the key its handler is registered under).
+    address: String,
+    network: SimNetwork,
+    running: bool,
+}
+
+impl SimTransport {
+    const TRANSPORT_TYPE: &'static str = "sim";
+}
+
+#[async_trait]
+impl SyncTransport for SimTransport {
+    fn transport_type(&self) -> &'static str {
+        Self::TRANSPORT_TYPE
+    }
+
+    fn can_handle_address(&self, address: &Address) -> bool {
+        address.transport_type == Self::TRANSPORT_TYPE
+    }
+
+    async fn start_server(&mut self, handler: Arc<dyn SyncHandler>) -> Result<()> {
+        self.network.register(&self.address, handler);
+        self.running = true;
+        Ok(())
+    }
+
+    async fn stop_server(&mut self) -> Result<()> {
+        self.network.unregister(&self.address);
+        self.running = false;
+        Ok(())
+    }
+
+    async fn send_request(&self, address: &Address, request: &SyncRequest) -> Result<SyncResponse> {
+        if !self.can_handle_address(address) {
+            return Err(SyncError::UnsupportedTransport {
+                transport_type: address.transport_type.clone(),
+            }
+            .into());
+        }
+        // A partitioned link looks like a connection failure to the sender; the
+        // background sync layer keeps the entries queued for a later flush.
+        if self.network.is_blocked(&self.address, &address.address) {
+            return Err(SyncError::ConnectionFailed {
+                address: address.address.clone(),
+                reason: "sim link partitioned".to_string(),
+            }
+            .into());
+        }
+        let handler = self.network.handler_for(&address.address).ok_or_else(|| {
+            SyncError::ConnectionFailed {
+                address: address.address.clone(),
+                reason: "no sim peer serving this address".to_string(),
+            }
+        })?;
+
+        // Mirror the HTTP transport's context: only SyncTree carries a pubkey.
+        let peer_pubkey = match request {
+            SyncRequest::SyncTree(r) => r.peer_pubkey.clone(),
+            _ => None,
+        };
+        let context = RequestContext {
+            remote_address: Some(Address::new(Self::TRANSPORT_TYPE, self.address.clone())),
+            peer_pubkey,
+        };
+        Ok(handler.handle_request(request, &context).await)
+    }
+
+    fn is_server_running(&self) -> bool {
+        self.running
+    }
+
+    fn get_server_address(&self) -> Result<String> {
+        if self.running {
+            Ok(self.address.clone())
+        } else {
+            Err(SyncError::ServerNotRunning.into())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -726,6 +974,69 @@ mod tests {
         net.flush(1).await?;
         assert_eq!(read(&db0, "d").await?, "auto-from-1");
 
+        assert!(net.converged(&[0, 1], &room).await?);
+        Ok(())
+    }
+
+    /// [`SimTransport`] is a drop-in for [`HttpLoopback`]: the same bootstrap +
+    /// `exchange` flow converges over the in-memory fabric, no sockets involved.
+    #[tokio::test]
+    async fn sim_transport_is_a_drop_in() -> Result<()> {
+        let mut net = Cluster::builder()
+            .peers(2)
+            .transport(Arc::new(SimLoopback::new(SimNetwork::new())))
+            .build()
+            .await?;
+        let (room, db0, db1) = shared_room(&mut net).await?;
+
+        write(&db1, "b", "from-peer-1").await?;
+        net.exchange(1, 0, &room).await?;
+
+        assert_eq!(read(&db0, "a").await?, "from-peer-0");
+        assert_eq!(read(&db0, "b").await?, "from-peer-1");
+        assert!(net.converged(&[0, 1], &room).await?);
+        Ok(())
+    }
+
+    /// A partition drops traffic at the message level: with `auto_sync` wired,
+    /// a commit on peer 0 cannot reach peer 1 while the link is cut, then
+    /// redelivers from the still-pending queue once the link heals. This is what
+    /// `HttpLoopback` can't do — there, withholding `exchange` is the only
+    /// partition, and it can't model "wired but not delivering".
+    #[tokio::test]
+    async fn sim_partition_blocks_then_heal_delivers() -> Result<()> {
+        let fabric = SimNetwork::new();
+        let mut net = Cluster::builder()
+            .peers(2)
+            .transport(Arc::new(SimLoopback::new(fabric.clone())))
+            .build()
+            .await?;
+        let (room, db0, db1) = shared_room(&mut net).await?;
+        let addr0 = net.peer(0).address().clone();
+        let addr1 = net.peer(1).address().clone();
+
+        net.auto_sync(0, 1, &room).await?;
+
+        // Cut the link, then commit on peer 0. The flush attempt cannot reach
+        // peer 1 (a connection error to the sender), so the entry stays queued.
+        fabric.partition(&addr0, &addr1);
+        write(&db0, "c", "during-partition").await?;
+        let _ = net.flush(0).await; // send fails across the cut; entry remains queued
+
+        assert!(
+            read(&db1, "c").await.is_err(),
+            "peer 1 must not see the write while partitioned"
+        );
+        assert!(
+            !net.converged(&[0, 1], &room).await?,
+            "peers must diverge under partition"
+        );
+
+        // Heal and flush again: the queued entry now reaches peer 1.
+        fabric.heal(&addr0, &addr1);
+        net.flush(0).await?;
+
+        assert_eq!(read(&db1, "c").await?, "during-partition");
         assert!(net.converged(&[0, 1], &room).await?);
         Ok(())
     }
