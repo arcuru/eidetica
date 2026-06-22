@@ -14,6 +14,7 @@ mod bootstrap_failure_tests;
 mod bootstrap_sync_tests;
 mod bootstrap_with_key_tests;
 mod chat_simulation_test;
+mod concurrent_store_creation_tests;
 mod concurrent_writer_determinism_tests;
 mod dag_sync_tests;
 mod declarative_api_tests;
