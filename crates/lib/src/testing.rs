@@ -76,9 +76,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::{
-    Database, Instance, NewUser, Result,
+    Database, Entry, Instance, NewUser, Result,
     auth::{Permission, crypto::PublicKey, types::AuthKey},
-    backend::database::InMemory,
+    backend::{BackendImpl, VerificationStatus, database::InMemory},
     clock::{Clock, FixedClock},
     entry::ID,
     sync::{Address, Sync, transports::http::HttpTransport},
@@ -380,6 +380,151 @@ impl Cluster {
             }
         }
         self.converged_all(tree).await
+    }
+
+    // ===== invariant assertions =====
+    //
+    // Tip-set equality ([`converged`]) proves two peers *agree*, but it is a weak
+    // invariant: it says nothing about *what* they agreed on. Two peers can share
+    // a tip set yet differ below it, or converge onto a state that quietly dropped
+    // a signed entry, or store a received entry as `Failed`. These walk the full
+    // entry set behind the tips and assert the properties tip equality misses.
+    // They panic (not return `false`) with a diagnostic — invariant violation is a
+    // test failure, and the message should name the offending peer and entry.
+
+    /// The concrete local backend engine for peer `peer`. `Cluster` peers always
+    /// run on an in-memory backend, so the off-seam raw reads the invariant checks
+    /// need — the full entry dump ([`BackendImpl::get_tree`]) and per-entry
+    /// verification status — are always reachable through it.
+    fn local_engine(&self, peer: usize) -> Arc<dyn BackendImpl> {
+        self.peers[peer]
+            .instance
+            .backend()
+            .local_engine()
+            .expect("Cluster peers run on a local in-memory backend")
+    }
+
+    /// Every entry peer `peer` holds for `tree`, in id order. The full DAG of the
+    /// tree — settings, auth, and every store — not just the tips.
+    pub async fn entries(&self, peer: usize, tree: &ID) -> Result<Vec<Entry>> {
+        let mut entries = self.local_engine(peer).get_tree(tree).await?;
+        entries.sort_by_key(|e| e.id());
+        Ok(entries)
+    }
+
+    /// The id of every entry peer `peer` holds for `tree`, sorted.
+    pub async fn entry_ids(&self, peer: usize, tree: &ID) -> Result<Vec<ID>> {
+        Ok(self
+            .entries(peer, tree)
+            .await?
+            .into_iter()
+            .map(|e| e.id())
+            .collect())
+    }
+
+    /// Assert no peer in `peers` is missing an entry another holds for `tree` —
+    /// the merge converged onto the *union* of histories, never silently dropping
+    /// one peer's signed entry. Stronger than [`converged`], which only compares
+    /// tips.
+    ///
+    /// Limitation: if *every* peer dropped the same entry the union is also short
+    /// it, so this can't see that loss — use [`assert_all_present`] with an
+    /// externally-known id set for the absolute form.
+    ///
+    /// [`converged`]: Cluster::converged
+    /// [`assert_all_present`]: Cluster::assert_all_present
+    pub async fn assert_no_lost_entries(&self, peers: &[usize], tree: &ID) -> Result<()> {
+        use std::collections::BTreeSet;
+        let mut union: BTreeSet<ID> = BTreeSet::new();
+        let mut per_peer: Vec<(usize, BTreeSet<ID>)> = Vec::with_capacity(peers.len());
+        for &p in peers {
+            let ids: BTreeSet<ID> = self.entry_ids(p, tree).await?.into_iter().collect();
+            union.extend(ids.iter().cloned());
+            per_peer.push((p, ids));
+        }
+        for (p, ids) in &per_peer {
+            let missing: Vec<&ID> = union.difference(ids).collect();
+            assert!(
+                missing.is_empty(),
+                "peer {p} lost {} entr{} other peers hold for the tree: {missing:?}",
+                missing.len(),
+                if missing.len() == 1 { "y" } else { "ies" },
+            );
+        }
+        Ok(())
+    }
+
+    /// Assert every id in `expected` is present on every peer in `peers`. The
+    /// absolute form of [`assert_no_lost_entries`]: the test names entries it knows
+    /// were committed (e.g. ids captured from its own writes) and demands they
+    /// survive the merge everywhere.
+    ///
+    /// [`assert_no_lost_entries`]: Cluster::assert_no_lost_entries
+    pub async fn assert_all_present(
+        &self,
+        peers: &[usize],
+        tree: &ID,
+        expected: &[ID],
+    ) -> Result<()> {
+        for &p in peers {
+            let ids: std::collections::BTreeSet<ID> =
+                self.entry_ids(p, tree).await?.into_iter().collect();
+            let missing: Vec<&ID> = expected.iter().filter(|id| !ids.contains(id)).collect();
+            assert!(
+                missing.is_empty(),
+                "peer {p} is missing expected entries: {missing:?}",
+            );
+        }
+        Ok(())
+    }
+
+    /// Assert every entry peer `peer` holds for `tree` carries a well-formed
+    /// signature. A synced CRDT under global auth must never store an unsigned or
+    /// malformed-signature entry; this catches one that slipped through.
+    pub async fn assert_all_signed(&self, peer: usize, tree: &ID) -> Result<()> {
+        for e in self.entries(peer, tree).await? {
+            assert!(
+                !e.sig.is_unsigned(),
+                "peer {peer} holds an unsigned entry: {}",
+                e.id(),
+            );
+            if let Some(reason) = e.sig.malformed_reason() {
+                panic!(
+                    "peer {peer} holds a malformed-signature entry {}: {reason}",
+                    e.id(),
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Assert no entry peer `peer` holds for `tree` is in the `Failed` verification
+    /// state — every entry, including those received over sync, verified against
+    /// the tree's auth. Stronger than tip equality: a peer can converge on the
+    /// right tips while having stored a received entry that does not verify.
+    ///
+    /// This is only a meaningful convergence invariant once sync runs a per-entry
+    /// verification pass that promotes received entries after their signing
+    /// context arrives. On a build where sync ingestion records a placeholder
+    /// status instead of a real signature check (see the TODO on
+    /// [`VerificationStatus`] and `docs/src/design/verification.md`), the stored
+    /// status does not reflect verification and this assertion should not be used
+    /// — a bootstrapped peer legitimately holds entries marked `Failed` that no
+    /// pass has yet promoted. Provided for the harness's forward path: exercise it
+    /// once verification-on-ingest is in place.
+    ///
+    /// [`VerificationStatus`]: crate::backend::VerificationStatus
+    pub async fn assert_all_verified(&self, peer: usize, tree: &ID) -> Result<()> {
+        let engine = self.local_engine(peer);
+        for e in self.entries(peer, tree).await? {
+            let status = engine.get_verification_status(&e.id()).await?;
+            assert!(
+                matches!(status, VerificationStatus::Verified),
+                "peer {peer} stored entry {} as {status:?}, expected Verified",
+                e.id(),
+            );
+        }
+        Ok(())
     }
 }
 
