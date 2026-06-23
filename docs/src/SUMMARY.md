@@ -37,6 +37,7 @@
 - [Service (Daemon)](internal/service.md)
 - [Bootstrap](internal/bootstrap.md)
 - [Testing](internal/testing.md)
+  - [Multi-Instance Test Harness](internal/test_harness.md)
 - [Performance](internal/performance.md)
 - [Errors](internal/errors.md)
 
