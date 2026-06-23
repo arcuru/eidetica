@@ -801,6 +801,13 @@ impl SimNetwork {
     /// (bootstrap / `auto_sync`) so only the entry pushes a test cares about get
     /// captured. Turning it back off does not flush the queue — already-captured
     /// messages still need an explicit deliver.
+    ///
+    /// The two fault families compose with **partition taking precedence**: a
+    /// send across a [`partition`](Self::partition)ed link fails as a connection
+    /// error *before* capture is considered, so it parks in the retry queue rather
+    /// than the in-flight queue. Manual delivery only ever captures pushes on
+    /// links that are up. Tests generally use one family or the other, not both at
+    /// once.
     pub fn set_manual_delivery(&self, manual: bool) {
         self.lock().manual_delivery = manual;
     }
