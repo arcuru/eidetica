@@ -671,6 +671,31 @@ struct SimState {
     blocked: std::collections::HashSet<(String, String)>,
     /// Monotonic id source for peer addresses.
     next_id: usize,
+    /// When set, `SendEntries` pushes are captured in `queue` instead of being
+    /// delivered to the receiver's handler inline. Request/response traffic
+    /// (handshake, tree-sync) always delivers inline regardless.
+    manual_delivery: bool,
+    /// Captured, not-yet-delivered messages, in send order. Only populated in
+    /// manual-delivery mode.
+    queue: Vec<InFlight>,
+    /// Monotonic id source for captured messages (delivery handles).
+    next_seq: usize,
+}
+
+/// A `SendEntries` push captured in manual-delivery mode, awaiting an explicit
+/// [`SimNetwork::deliver_one`] / [`deliver`](SimNetwork::deliver) / etc. The
+/// sender already received an optimistic `Ack`, so this models a message
+/// in-flight on the wire: the network decides when, in what order, and how many
+/// times the receiver actually sees it.
+struct InFlight {
+    /// Stable delivery handle, unique for the life of the fabric.
+    seq: usize,
+    /// Sender's sim address (becomes the receiver's `remote_address`).
+    from: String,
+    /// Receiver's sim address (whose handler will process the request).
+    to: String,
+    /// The captured request — always a `SyncRequest::SendEntries`.
+    request: SyncRequest,
 }
 
 impl SimNetwork {
@@ -710,6 +735,26 @@ impl SimNetwork {
             .contains(&(from.to_string(), to.to_string()))
     }
 
+    /// If manual-delivery is on, capture `request` as an in-flight message from
+    /// `from` to `to` and return `true` (the caller answers the sender with an
+    /// optimistic `Ack`). Otherwise return `false` and let the caller deliver
+    /// inline. Called only for `SendEntries`.
+    fn capture(&self, from: &str, to: &Address, request: &SyncRequest) -> bool {
+        let mut s = self.lock();
+        if !s.manual_delivery {
+            return false;
+        }
+        let seq = s.next_seq;
+        s.next_seq += 1;
+        s.queue.push(InFlight {
+            seq,
+            from: from.to_string(),
+            to: to.address.clone(),
+            request: request.clone(),
+        });
+        true
+    }
+
     /// Drop all traffic between `a` and `b` in *both* directions until [`heal`].
     /// A send across a blocked link fails as a connection error, so an
     /// auto-sync peer's queued entries stay pending and redeliver after heal —
@@ -732,6 +777,131 @@ impl SimNetwork {
     /// Restore every link in the fabric.
     pub fn heal_all(&self) {
         self.lock().blocked.clear();
+    }
+
+    // ----- store-and-forward delivery control -----
+    //
+    // By default the fabric delivers every request inline (synchronous, in wired
+    // order) — same as `HttpLoopback`, just without sockets. Turn on
+    // *manual delivery* and `SendEntries` pushes are instead captured as
+    // [`InFlight`] messages, and the test decides when each one reaches its
+    // receiver. The sender still gets an immediate `Ack`, so an undelivered
+    // message looks delivered-from-the-sender's-side — a message that's left the
+    // sender but not yet arrived. This is what makes reorder, duplicate, and
+    // selective drop expressible; a real socket transport can't hold a message
+    // mid-flight under test control.
+    //
+    // Handshake and tree-sync are request/response and carry data the caller
+    // needs back, so they always deliver inline — only the fire-and-forget
+    // `SendEntries` push is deferrable. Bootstrap and `exchange` therefore work
+    // unchanged in manual mode; only auto-sync's entry pushes get captured.
+
+    /// Capture `SendEntries` pushes instead of delivering them inline (`true`),
+    /// or return to inline delivery (`false`). Flip this *after* setup
+    /// (bootstrap / `auto_sync`) so only the entry pushes a test cares about get
+    /// captured. Turning it back off does not flush the queue — already-captured
+    /// messages still need an explicit deliver.
+    pub fn set_manual_delivery(&self, manual: bool) {
+        self.lock().manual_delivery = manual;
+    }
+
+    /// The delivery handles of every captured-but-undelivered message, in the
+    /// order they were sent. Pass these to [`deliver`](Self::deliver),
+    /// [`duplicate`](Self::duplicate) or [`drop_message`](Self::drop_message) to
+    /// drive an out-of-order, duplicated, or lossy schedule.
+    pub fn pending(&self) -> Vec<usize> {
+        self.lock().queue.iter().map(|m| m.seq).collect()
+    }
+
+    /// Pop the captured message with handle `seq` (its request, sender, and
+    /// receiver). Returns `None` if no such message is queued.
+    fn take(&self, seq: usize) -> Option<InFlight> {
+        let mut s = self.lock();
+        let idx = s.queue.iter().position(|m| m.seq == seq)?;
+        Some(s.queue.remove(idx))
+    }
+
+    /// Deliver one captured message to its receiver: look up the receiver's
+    /// handler and run the request through it, exactly as an inline send would.
+    /// The response is discarded — the sender already got its optimistic `Ack`.
+    /// Returns `false` if the receiver is no longer serving (the message is
+    /// effectively lost).
+    async fn deliver_inflight(&self, msg: InFlight) -> bool {
+        let Some(handler) = self.handler_for(&msg.to) else {
+            return false;
+        };
+        let context = RequestContext {
+            remote_address: Some(Address::new(SimTransport::TRANSPORT_TYPE, msg.from)),
+            // Only tree-sync carries a pubkey, and that never enters the queue.
+            peer_pubkey: None,
+        };
+        handler.handle_request(&msg.request, &context).await;
+        true
+    }
+
+    /// Deliver the captured message `seq` to its receiver and remove it from the
+    /// queue. Delivering in an order other than [`pending`](Self::pending)
+    /// returned is how a test reorders the wire. Returns `false` if no such
+    /// message is queued (or its receiver has stopped).
+    pub async fn deliver(&self, seq: usize) -> bool {
+        match self.take(seq) {
+            Some(msg) => self.deliver_inflight(msg).await,
+            None => false,
+        }
+    }
+
+    /// Deliver the oldest captured message. Returns `false` when the queue is
+    /// empty.
+    pub async fn deliver_one(&self) -> bool {
+        let seq = match self.lock().queue.first() {
+            Some(m) => m.seq,
+            None => return false,
+        };
+        self.deliver(seq).await
+    }
+
+    /// Deliver every captured message in send order, draining the queue. Returns
+    /// the number delivered. (Delivery never enqueues more — the receiver's
+    /// handler processes entries, it doesn't push back through this fabric.)
+    pub async fn deliver_all(&self) -> usize {
+        let mut n = 0;
+        while self.deliver_one().await {
+            n += 1;
+        }
+        n
+    }
+
+    /// Clone captured message `seq` so it will be delivered a second time,
+    /// modelling a duplicate on the wire. The copy gets a fresh handle and lands
+    /// at the back of the queue; the original stays put. Returns the new handle,
+    /// or `None` if `seq` isn't queued. Idempotent sync must converge regardless.
+    pub fn duplicate(&self, seq: usize) -> Option<usize> {
+        let mut s = self.lock();
+        let original = s.queue.iter().find(|m| m.seq == seq)?;
+        let copy = InFlight {
+            seq: s.next_seq,
+            from: original.from.clone(),
+            to: original.to.clone(),
+            request: original.request.clone(),
+        };
+        let new_seq = copy.seq;
+        s.next_seq += 1;
+        s.queue.push(copy);
+        Some(new_seq)
+    }
+
+    /// Drop captured message `seq` without delivering it — a lost packet.
+    /// Returns `true` if a message was removed.
+    pub fn drop_message(&self, seq: usize) -> bool {
+        self.take(seq).is_some()
+    }
+
+    /// Drop every captured message without delivering. Returns the number lost.
+    pub fn drop_all(&self) -> usize {
+        let mut s = self.lock();
+        let n = s.queue.len();
+        s.queue.clear();
+        n
     }
 }
 
@@ -844,6 +1014,16 @@ impl SyncTransport for SimTransport {
             }
             .into());
         }
+        // In manual-delivery mode, capture entry pushes as in-flight messages
+        // and report success to the sender (an optimistic Ack — see
+        // `SimNetwork::set_manual_delivery`). Request/response traffic falls
+        // through to inline delivery so its result reaches the caller.
+        if matches!(request, SyncRequest::SendEntries(_))
+            && self.network.capture(&self.address, address, request)
+        {
+            return Ok(SyncResponse::Ack);
+        }
+
         let handler = self.network.handler_for(&address.address).ok_or_else(|| {
             SyncError::ConnectionFailed {
                 address: address.address.clone(),
@@ -1037,6 +1217,144 @@ mod tests {
         net.flush(0).await?;
 
         assert_eq!(read(&db1, "c").await?, "during-partition");
+        assert!(net.converged(&[0, 1], &room).await?);
+        Ok(())
+    }
+
+    /// Manual delivery captures a flushed push instead of delivering it: after
+    /// `flush` the sender believes it sent (optimistic Ack), but the receiver
+    /// sees nothing until the test releases the message. `deliver_all` then
+    /// drains the wire and the peers converge.
+    #[tokio::test]
+    async fn sim_manual_delivery_holds_then_releases() -> Result<()> {
+        let fabric = SimNetwork::new();
+        let mut net = Cluster::builder()
+            .peers(2)
+            .transport(Arc::new(SimLoopback::new(fabric.clone())))
+            .build()
+            .await?;
+        let (room, db0, db1) = shared_room(&mut net).await?;
+        net.auto_sync(0, 1, &room).await?;
+
+        // Capture pushes from here on, then commit + flush: the entry leaves the
+        // sender but is held on the wire.
+        fabric.set_manual_delivery(true);
+        write(&db0, "c", "held").await?;
+        net.flush(0).await?;
+
+        assert_eq!(fabric.pending().len(), 1, "the push is captured, not lost");
+        assert!(
+            read(&db1, "c").await.is_err(),
+            "receiver sees nothing until the message is delivered"
+        );
+
+        // Release the wire: the held push reaches peer 1 and they converge.
+        assert_eq!(fabric.deliver_all().await, 1);
+        assert_eq!(read(&db1, "c").await?, "held");
+        assert!(net.converged(&[0, 1], &room).await?);
+        Ok(())
+    }
+
+    /// Two causally-ordered pushes delivered *back to front*. A receiver that
+    /// gets a child before its parent must still converge once both arrive —
+    /// this is the order-independence that an in-wired transport can't probe.
+    #[tokio::test]
+    async fn sim_reordered_delivery_still_converges() -> Result<()> {
+        let fabric = SimNetwork::new();
+        let mut net = Cluster::builder()
+            .peers(2)
+            .transport(Arc::new(SimLoopback::new(fabric.clone())))
+            .build()
+            .await?;
+        let (room, db0, db1) = shared_room(&mut net).await?;
+        net.auto_sync(0, 1, &room).await?;
+        fabric.set_manual_delivery(true);
+
+        // Two separate flushes => two distinct in-flight messages; the second
+        // entry's parent is the first, so they're causally ordered.
+        write(&db0, "first", "1").await?;
+        net.flush(0).await?;
+        write(&db0, "second", "2").await?;
+        net.flush(0).await?;
+
+        let pending = fabric.pending();
+        assert_eq!(pending.len(), 2, "two independent pushes on the wire");
+
+        // Deliver child-before-parent: reverse send order.
+        for &seq in pending.iter().rev() {
+            assert!(fabric.deliver(seq).await, "message {seq} should deliver");
+        }
+
+        assert_eq!(read(&db1, "first").await?, "1");
+        assert_eq!(read(&db1, "second").await?, "2");
+        assert!(net.converged(&[0, 1], &room).await?);
+        Ok(())
+    }
+
+    /// A duplicated push: the same message delivered twice. Sync must be
+    /// idempotent — the second copy is a no-op, not a corruption or a crash.
+    #[tokio::test]
+    async fn sim_duplicate_delivery_is_idempotent() -> Result<()> {
+        let fabric = SimNetwork::new();
+        let mut net = Cluster::builder()
+            .peers(2)
+            .transport(Arc::new(SimLoopback::new(fabric.clone())))
+            .build()
+            .await?;
+        let (room, db0, db1) = shared_room(&mut net).await?;
+        net.auto_sync(0, 1, &room).await?;
+        fabric.set_manual_delivery(true);
+
+        write(&db0, "c", "once").await?;
+        net.flush(0).await?;
+
+        let seq = fabric.pending()[0];
+        fabric.duplicate(seq).expect("message is queued");
+        assert_eq!(fabric.pending().len(), 2, "original plus its duplicate");
+
+        // Both copies delivered; the second is a redelivery of the same entries.
+        assert_eq!(fabric.deliver_all().await, 2);
+
+        assert_eq!(read(&db1, "c").await?, "once");
+        assert!(net.converged(&[0, 1], &room).await?);
+        Ok(())
+    }
+
+    /// A dropped push is a genuine loss — the sender got its Ack and won't
+    /// retry, so the receiver stays behind. A later reconciling `exchange`
+    /// (tree-sync, which delivers inline) repairs the divergence: lossy delivery
+    /// doesn't strand the cluster as long as some full sync eventually runs.
+    #[tokio::test]
+    async fn sim_dropped_push_is_recovered_by_resync() -> Result<()> {
+        let fabric = SimNetwork::new();
+        let mut net = Cluster::builder()
+            .peers(2)
+            .transport(Arc::new(SimLoopback::new(fabric.clone())))
+            .build()
+            .await?;
+        let (room, db0, db1) = shared_room(&mut net).await?;
+        net.auto_sync(0, 1, &room).await?;
+        fabric.set_manual_delivery(true);
+
+        write(&db0, "c", "dropped").await?;
+        net.flush(0).await?;
+
+        let seq = fabric.pending()[0];
+        assert!(fabric.drop_message(seq), "the push is dropped on the wire");
+        assert!(
+            read(&db1, "c").await.is_err(),
+            "a dropped push never reaches the receiver"
+        );
+        assert!(
+            !net.converged(&[0, 1], &room).await?,
+            "the cluster diverges after a drop"
+        );
+
+        // A reconciling tree-sync pulls what the dropped push lost.
+        fabric.set_manual_delivery(false);
+        net.exchange(1, 0, &room).await?;
+
+        assert_eq!(read(&db1, "c").await?, "dropped");
         assert!(net.converged(&[0, 1], &room).await?);
         Ok(())
     }
