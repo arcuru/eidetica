@@ -8,6 +8,23 @@
 //! it delivers in wired order — so this property is only testable because the
 //! fabric lets the test own the schedule.
 //!
+//! Two properties live here:
+//! - **Reordering alone always converges** — a lossless but arbitrarily-ordered
+//!   wire still lands every peer on the same complete state.
+//! - **Duplication is idempotent under fuzzing** — reorder *and* redeliver
+//!   messages at random, and convergence still holds with no repair. This is the
+//!   chaz gateway-redelivery bug class, fuzzed.
+//!
+//! Not modelled here: a *permanent* in-band drop. This fabric reports an
+//! optimistic `Ack` the moment it captures a push, so a dropped message is lost
+//! with no resend — but real eidetica auto-sync retries failed sends from its
+//! retry queue, so a genuine network drop is redelivered, never permanently
+//! lost. Modelling drop as permanent loss would let a peer hold a child without
+//! its parent (an orphan tip that tip-based anti-entropy won't backfill) — a
+//! state the retry path prevents, not an engine bug. Transient loss-then-resend
+//! is already covered by reordering (a delayed message is just a late delivery)
+//! and, at the link level, by the partition/heal test.
+//!
 //! Determinism matters: the PRNG is seeded, so a failing seed reproduces its
 //! exact schedule for debugging. Nothing here reads the clock or a real RNG.
 
@@ -110,6 +127,59 @@ async fn run_schedule(
     written
 }
 
+/// Like [`run_schedule`], but a random pending message may be *duplicated*
+/// (queued to be delivered a second time) before delivery. Duplicates are
+/// budget-capped so the queue still drains and the loop terminates. Every
+/// message is still eventually delivered — possibly more than once — so the
+/// cluster converges with no repair. Returns the committed entry ids and how
+/// many duplicates fired (so the test can confirm it exercised the path).
+async fn run_duplicating_schedule(
+    net: &mut Cluster,
+    fabric: &SimNetwork,
+    room: &ID,
+    dbs: &[Database],
+    writes: &[(usize, &str, &str)],
+    seed: u64,
+) -> (Vec<ID>, usize) {
+    let mut rng = Rng::new(seed);
+    let mut written: Vec<ID> = Vec::new();
+    let mut next = 0;
+    let mut duplicated = 0;
+    // Bound duplication so the queue is guaranteed to drain.
+    let mut dup_budget = writes.len();
+
+    loop {
+        let pending = fabric.pending();
+        let more_writes = next < writes.len();
+        if !more_writes && pending.is_empty() {
+            break;
+        }
+
+        if more_writes && (pending.is_empty() || rng.coin()) {
+            let (peer, key, value) = writes[next];
+            cluster_put(&dbs[peer], key, value).await.unwrap();
+            net.flush(peer).await.unwrap();
+            written.extend(net.tips(peer, room).await.unwrap());
+            next += 1;
+            continue;
+        }
+
+        let seq = pending[rng.below(pending.len())];
+        // 1-in-4 duplicate (budget permitting), else deliver. Duplicate queues a
+        // copy without removing the original, so both get delivered later —
+        // every arm still drives toward an empty queue.
+        if dup_budget > 0 && rng.below(4) == 0 {
+            fabric.duplicate(seq).expect("seq came from pending()");
+            dup_budget -= 1;
+            duplicated += 1;
+        } else {
+            fabric.deliver(seq).await;
+        }
+    }
+
+    (written, duplicated)
+}
+
 /// Across a spread of seeds: three peers each write two distinct keys in an
 /// interleaved order, the network delivers under a random per-seed schedule, and
 /// every run must converge onto the same complete, signed state — every key
@@ -159,4 +229,64 @@ async fn test_randomized_delivery_schedules_all_converge() {
             }
         }
     }
+}
+
+/// The same fan-out, but the random schedule also *duplicates* messages in
+/// flight — some entries arrive twice, in a seed-determined order. Sync must be
+/// idempotent: the redeliveries are no-ops and the cluster still converges onto
+/// the same complete, signed state with no repair. The duplicate count is
+/// tallied across seeds and asserted non-zero, so the test can't pass by never
+/// injecting one.
+#[tokio::test]
+async fn test_randomized_duplicate_delivery_is_idempotent() {
+    let writes = [
+        (0, "a", "0a"),
+        (1, "b", "1b"),
+        (2, "c", "2c"),
+        (0, "d", "0d"),
+        (1, "e", "1e"),
+        (2, "f", "2f"),
+    ];
+    let n = 3;
+    let mut total_duplicated = 0;
+
+    for seed in 0..16u64 {
+        let fabric = SimNetwork::new();
+        let mut net = Cluster::builder()
+            .peers(n)
+            .transport(Arc::new(SimLoopback::new(fabric.clone())))
+            .build()
+            .await
+            .unwrap();
+        let (room, dbs) = cluster_shared_database(&mut net, "dup").await.unwrap();
+        full_mesh_manual(&mut net, &fabric, &room, n).await;
+
+        let (written, duplicated) =
+            run_duplicating_schedule(&mut net, &fabric, &room, &dbs, &writes, seed).await;
+        total_duplicated += duplicated;
+
+        let all: Vec<usize> = (0..n).collect();
+        assert!(
+            net.converged_all(&room).await.unwrap(),
+            "seed {seed}: cluster must converge despite duplicate delivery"
+        );
+        net.assert_no_lost_entries(&all, &room).await.unwrap();
+        net.assert_all_present(&all, &room, &written).await.unwrap();
+        for (peer, db) in dbs.iter().enumerate() {
+            net.assert_all_signed(peer, &room).await.unwrap();
+            for (_, key, value) in &writes {
+                assert_eq!(
+                    cluster_get(db, key).await.unwrap(),
+                    *value,
+                    "seed {seed}: peer {peer} should read {key}={value}"
+                );
+            }
+        }
+    }
+
+    // Guard against a vacuous pass: the schedule must have actually duplicated.
+    assert!(
+        total_duplicated > 0,
+        "fuzzer never duplicated a message across any seed"
+    );
 }
