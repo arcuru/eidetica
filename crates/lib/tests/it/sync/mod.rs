@@ -30,6 +30,7 @@ mod multi_transport_tests;
 mod n_peer_convergence_tests;
 mod partition_heal_tests;
 mod peer_management_tests;
+mod sim_delivery_control_tests;
 mod sync_enabled_security_tests;
 mod sync_iroh_integration;
 mod test_transport_peer_tracking;
