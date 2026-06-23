@@ -27,6 +27,15 @@
 //! Partitions are kept short relative to flush frequency so no entry exhausts the
 //! engine's 10-attempt retry budget mid-chaos; the final heal-and-drain always
 //! sends on attempt < 10. The PRNG is seeded, so a failing seed replays exactly.
+//!
+//! Note the give-up is *silent*: on the 10th failure the engine drops the entry
+//! from the retry queue (a `tracing::error!`, not a re-queue), so an exhausted
+//! entry does **not** make a later `flush` return `Err` — it makes the entry
+//! permanently absent. A give-up therefore surfaces as an
+//! `assert_no_lost_entries` / read-back failure after the drain, not as a flush
+//! error. That is why the final drain *does* unwrap its flushes (with every link
+//! up, a flush failure is a genuine bug) while the chaos phase swallows them (a
+//! send across a cut link is the expected, parked-for-retry path).
 
 use std::sync::Arc;
 
@@ -139,10 +148,15 @@ async fn run_fault_schedule(
     // the assertion that auto-sync's own retry path repairs a flapping network.
     // `n + 1` rounds is slack — one full round drains a full mesh, since every
     // entry was originally addressed directly to every peer.
+    //
+    // Unlike the chaos phase, these flushes are unwrapped: every link is up, so a
+    // flush failure here is a real bug, not the expected across-a-cut send error.
+    // (A retry give-up during chaos is invisible to this — it dropped the entry,
+    // so it shows up as a lost-entries failure below, never a flush error.)
     fabric.heal_all();
     for _ in 0..(n + 1) {
         for p in 0..n {
-            let _ = net.flush(p).await;
+            net.flush(p).await.unwrap();
         }
     }
 

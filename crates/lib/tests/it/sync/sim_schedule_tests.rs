@@ -86,7 +86,10 @@ async fn run_schedule(
             let (peer, key, value) = writes[next];
             cluster_put(&dbs[peer], key, value).await.unwrap();
             net.flush(peer).await.unwrap();
-            // A single commit leaves exactly one new tip on the writer.
+            // Capture the writer's current tips. Usually that's just the entry it
+            // committed, but if deliveries have already landed others' writes here
+            // the tip is a merge — still a real entry that must survive everywhere,
+            // so it belongs in the presence set either way.
             written.extend(net.tips(peer, room).await.unwrap());
             next += 1;
         } else {

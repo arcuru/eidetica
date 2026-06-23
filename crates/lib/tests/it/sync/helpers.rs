@@ -817,7 +817,6 @@ pub async fn enable_sync_for_instance_database(sync: &Sync, database_id: &ID) ->
 ///
 /// Auth is the test layer's choice here (admin keys for peer 0 + a global
 /// wildcard so every joiner can write); the harness itself stays auth-neutral.
-#[allow(dead_code)]
 pub async fn cluster_shared_database(
     net: &mut Cluster,
     db_name: &str,
@@ -872,7 +871,6 @@ pub async fn cluster_shared_database(
 
 /// Write `value` at `key` in the database's `data` [`DocStore`] — the write side
 /// of the cluster convergence tests.
-#[allow(dead_code)]
 pub async fn cluster_put(db: &Database, key: &str, value: &str) -> Result<()> {
     let tx = db.new_transaction().await?;
     tx.get_store::<DocStore>("data")
@@ -884,7 +882,6 @@ pub async fn cluster_put(db: &Database, key: &str, value: &str) -> Result<()> {
 }
 
 /// Read the string at `key` from the database's `data` [`DocStore`].
-#[allow(dead_code)]
 pub async fn cluster_get(db: &Database, key: &str) -> Result<String> {
     let tx = db.new_transaction().await?;
     tx.get_store::<DocStore>("data")
@@ -899,10 +896,8 @@ pub async fn cluster_get(db: &Database, key: &str) -> Result<String> {
 /// [`super::sim_fault_tests`]) drive their randomized schedules from. Seeded so
 /// a failing run replays its exact interleaving, and clock-free so nothing here
 /// reads wall time or a real RNG.
-#[allow(dead_code)]
 pub struct Rng(u64);
 
-#[allow(dead_code)]
 impl Rng {
     pub fn new(seed: u64) -> Self {
         // Spread the seed and force a non-zero state (xorshift fixes on zero).
