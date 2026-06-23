@@ -105,7 +105,8 @@ let mut net = Cluster::builder()
 
 - **Partition** — `partition(a, b)` / `heal(a, b)` / `heal_all()` cut and restore
   links. A send across a cut link fails like a connection error, so an auto-sync
-  peer's entries stay queued and redeliver on heal.
+  peer's entries stay queued in the retry queue and redeliver on heal — the
+  faithful model of a dropped message (no false Ack, so nothing is lost).
 - **Store-and-forward delivery** — `set_manual_delivery(true)` captures
   `SendEntries` pushes instead of delivering them inline; the sender gets an
   optimistic `Ack` (it believes it sent; the receiver sees nothing yet) and the
@@ -122,8 +123,10 @@ converges onto the same complete, signed state.
 ### Where the consumer tests live
 
 `tests/it/sync/`: `n_peer_convergence_tests`, `partition_heal_tests`,
-`invariant_assertions_tests`, `sim_delivery_control_tests` (reorder + the delivery
-controls), and `sim_schedule_tests` (seeded random-schedule fuzzers for
-order-independence and duplicate-idempotency). Shared setup is in
-`tests/it/sync/helpers.rs` (`cluster_shared_database`, `cluster_put`,
-`cluster_get`).
+`invariant_assertions_tests`, `sim_delivery_control_tests` (reorder + the
+delivery controls), `sim_schedule_tests` (seeded random-schedule fuzzers for
+order-independence and duplicate-idempotency over captured pushes), and
+`sim_fault_tests` (a seeded fuzzer that flaps links with random partition/heal
+and asserts the cluster reconverges through retry-queue redelivery alone).
+Shared setup is in `tests/it/sync/helpers.rs` (`cluster_shared_database`,
+`cluster_put`, `cluster_get`, and the seeded `Rng`).
