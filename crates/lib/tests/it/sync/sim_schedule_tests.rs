@@ -36,36 +36,7 @@ use eidetica::{
     testing::{SimLoopback, SimNetwork},
 };
 
-use super::helpers::{cluster_get, cluster_put, cluster_shared_database};
-
-/// Deterministic xorshift64* — a self-contained, dependency-free PRNG so a seed
-/// reproduces a schedule exactly. Not cryptographic; just a stable bit source.
-struct Rng(u64);
-
-impl Rng {
-    fn new(seed: u64) -> Self {
-        // Spread the seed and force a non-zero state (xorshift fixes on zero).
-        Self(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1)
-    }
-
-    fn next_u64(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x >> 12;
-        x ^= x << 25;
-        x ^= x >> 27;
-        self.0 = x;
-        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
-    }
-
-    /// A value in `0..n` (caller guarantees `n > 0`).
-    fn below(&mut self, n: usize) -> usize {
-        (self.next_u64() % n as u64) as usize
-    }
-
-    fn coin(&mut self) -> bool {
-        self.next_u64() & 1 == 0
-    }
-}
+use super::helpers::{Rng, cluster_get, cluster_put, cluster_shared_database};
 
 /// Wire every peer to every other for `tree` (so each write fans out to all),
 /// drain the setup pushes inline, then switch to manual delivery with an empty
