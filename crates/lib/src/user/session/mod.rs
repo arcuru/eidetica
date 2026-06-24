@@ -995,8 +995,7 @@ impl User {
     /// When approval is still pending the request returns
     /// [`SyncError::BootstrapPending`] but a provisional mapping is recorded;
     /// opening the database before approval then fails with
-    /// [`UserError::DatabaseAccessPending`](crate::user::UserError::DatabaseAccessPending)
-    /// rather than a cryptic backend error.
+    /// [`UserError::DatabaseAccessPending`] rather than a cryptic backend error.
     ///
     /// # Arguments
     /// * `sync` - Reference to the Instance's Sync object
