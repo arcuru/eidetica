@@ -757,6 +757,7 @@ impl BackgroundSync {
                 requesting_key: None, // TODO: Add auth support for background sync
                 requesting_key_name: None,
                 requested_permission: None,
+                metadata: None,
             });
 
             let response = self.transport_manager.send_request(address, &request).await?;

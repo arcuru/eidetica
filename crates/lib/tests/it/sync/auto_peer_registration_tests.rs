@@ -238,6 +238,7 @@ async fn test_bootstrap_sync_tracks_tree_peer_relationship() {
         requesting_key: Some(peer_verifying_key.clone()),
         requesting_key_name: Some("peer_key".to_string()),
         requested_permission: None,
+        metadata: None,
     };
 
     let context = RequestContext {
@@ -319,6 +320,7 @@ async fn test_incremental_sync_tracks_tree_peer_relationship() {
         requesting_key: Some(peer_verifying_key.clone()),
         requesting_key_name: Some("peer_key".to_string()),
         requested_permission: None,
+        metadata: None,
     };
 
     let context = RequestContext {
@@ -379,6 +381,7 @@ async fn test_relationship_tracking_skipped_without_peer_pubkey() {
         requesting_key: Some(peer_verifying_key.clone()),
         requesting_key_name: Some("peer_key".to_string()),
         requested_permission: None,
+        metadata: None,
     };
 
     // Context without peer_pubkey - tracking should be skipped
@@ -469,6 +472,7 @@ async fn test_multiple_trees_tracked_with_same_peer() {
         requesting_key: Some(peer_verifying_key.clone()),
         requesting_key_name: Some("peer_key".to_string()),
         requested_permission: None,
+        metadata: None,
     });
     let _response1 = handler.handle_request(&request1, &context).await;
 
@@ -480,6 +484,7 @@ async fn test_multiple_trees_tracked_with_same_peer() {
         requesting_key: Some(peer_verifying_key.clone()),
         requesting_key_name: Some("peer_key".to_string()),
         requested_permission: None,
+        metadata: None,
     });
     let _response2 = handler.handle_request(&request2, &context).await;
 
@@ -587,6 +592,7 @@ async fn test_sync_without_peer_identifier_works() {
         requesting_key: None,
         requesting_key_name: None,
         requested_permission: None,
+        metadata: None,
     };
 
     // Context also without peer_pubkey
@@ -639,6 +645,7 @@ async fn test_bootstrap_auto_detects_permission_for_authorized_key() {
         requesting_key: Some(key_id.clone()),
         requesting_key_name: Some(key_id.to_string()),
         requested_permission: None, // Should auto-detect from auth settings
+        metadata: None,
     };
 
     let context = RequestContext {
@@ -706,6 +713,7 @@ async fn test_bootstrap_rejects_unauthorized_key_when_permission_not_specified()
         requesting_key: Some(unauthorized_verifying_key.clone()),
         requesting_key_name: Some("unauthorized_key".to_string()),
         requested_permission: None,
+        metadata: None,
     };
 
     let context = RequestContext {
@@ -780,6 +788,7 @@ async fn test_bootstrap_auto_detects_global_wildcard_permission() {
         requesting_key: Some(random_verifying_key.clone()),
         requesting_key_name: Some("random_key".to_string()),
         requested_permission: None, // Should auto-detect global '*' permission
+        metadata: None,
     };
 
     let context = RequestContext {
@@ -866,6 +875,7 @@ async fn test_bootstrap_uses_highest_permission_when_key_has_multiple() {
         requesting_key: Some(special_verifying_key.clone()),
         requesting_key_name: Some("special_key".to_string()),
         requested_permission: None, // Should auto-detect highest (Write(5))
+        metadata: None,
     };
 
     let context = RequestContext {

@@ -25,6 +25,7 @@ use crate::{
         KeyStatus, Permission,
         crypto::{PublicKey, create_challenge_response, generate_challenge},
     },
+    crdt::Doc,
     entry::ID,
     store::SettingsStore,
     sync::error::SyncError,
@@ -107,6 +108,7 @@ impl SyncHandlerImpl {
         requesting_key: &PublicKey,
         requesting_key_name: &str,
         requested_permission: &Permission,
+        metadata: Option<Doc>,
     ) -> Result<String> {
         let sync_tree = self.get_sync_tree().await?;
         let txn = sync_tree.new_transaction().await?;
@@ -125,6 +127,7 @@ impl SyncHandlerImpl {
                 transport_type: "unknown".to_string(),
                 address: "unknown".to_string(),
             },
+            metadata,
         };
 
         let request_id = manager.store_request(request).await?;
@@ -590,7 +593,8 @@ impl SyncHandlerImpl {
                 return self.handle_bootstrap_request(&request.tree_id,
                                                   request.requesting_key.as_ref(),
                                                   request.requesting_key_name.as_deref(),
-                                                  request.requested_permission).await;
+                                                  request.requested_permission,
+                                                  request.metadata.clone()).await;
             }
 
             // Handle incremental sync (peer has existing data, needs updates)
@@ -662,6 +666,7 @@ impl SyncHandlerImpl {
         requesting_key: Option<&PublicKey>,
         requesting_key_name: Option<&str>,
         requested_permission: Option<Permission>,
+        metadata: Option<Doc>,
     ) -> SyncResponse {
         // SECURITY: Check if database has sync enabled (FIRST CHECK - before anything else)
         // This prevents information leakage about database existence: the gate
@@ -759,7 +764,7 @@ impl SyncHandlerImpl {
 
                         // Store the bootstrap request in sync database for manual approval
                         match self
-                            .store_bootstrap_request(tree_id, key, key_name, &permission)
+                            .store_bootstrap_request(tree_id, key, key_name, &permission, metadata)
                             .await
                         {
                             Ok(request_id) => {

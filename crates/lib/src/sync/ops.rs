@@ -15,7 +15,8 @@ use super::{
     user_sync_manager::UserSyncManager,
 };
 use crate::{
-    Database, Entry, Result, auth::Permission, auth::crypto::PublicKey, entry::ID, store::DocStore,
+    Database, Entry, Result, auth::Permission, auth::crypto::PublicKey, crdt::Doc, entry::ID,
+    store::DocStore,
 };
 
 use super::utils::collect_ancestors_to_send;
@@ -65,6 +66,7 @@ impl Sync {
             requesting_key: None, // TODO: Add auth support for direct sync
             requesting_key_name: None,
             requested_permission: None,
+            metadata: None,
         });
 
         // Send request via background sync command
@@ -637,6 +639,7 @@ impl Sync {
         requesting_key: Option<&PublicKey>,
         requesting_key_name: Option<&str>,
         requested_permission: Option<Permission>,
+        metadata: Option<Doc>,
     ) -> Result<()> {
         // Get peer information and address
         let peer_info = self
@@ -667,6 +670,7 @@ impl Sync {
             requesting_key: requesting_key.cloned(),
             requesting_key_name: requesting_key_name.map(|k| k.to_string()),
             requested_permission,
+            metadata,
         });
 
         // Send request via background sync command

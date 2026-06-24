@@ -319,7 +319,13 @@ async fn test_bootstrap_with_ticket_authenticated() {
 
     // Use User API to request access via ticket
     client_user
-        .request_database_access(&client_sync, &ticket, &client_key_id, Permission::Write(5))
+        .request_database_access(
+            &client_sync,
+            &ticket,
+            &client_key_id,
+            Permission::Write(5),
+            None,
+        )
         .await
         .expect("request_database_access should succeed");
 

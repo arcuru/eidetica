@@ -226,6 +226,7 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
         requesting_key: None,
         requesting_key_name: None,
         requested_permission: None,
+        metadata: None,
     });
 
     let context = RequestContext::default();

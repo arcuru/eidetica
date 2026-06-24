@@ -188,7 +188,7 @@ impl App {
             info!("Starting bootstrap sync for room {room_id}");
 
             self.user
-                .request_database_access(&sync, &ticket, &key_id, PermissionType::Write(5))
+                .request_database_access(&sync, &ticket, &key_id, PermissionType::Write(5), None)
                 .await?;
 
             // Register the database with the User so it knows which key to use
