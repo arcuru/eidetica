@@ -10,6 +10,7 @@ use super::peer_types::Address;
 use crate::{
     Error, Result, Transaction,
     auth::{Permission, crypto::PublicKey},
+    crdt::Doc,
     entry::ID,
     store::{StoreError, Table},
 };
@@ -42,6 +43,10 @@ pub struct BootstrapRequest {
     pub status: RequestStatus,
     /// Address of the requesting peer (for future notifications)
     pub peer_address: Address,
+    /// Free-form context supplied by the requester for the approver to inspect
+    /// when deciding whether to grant access. Carried verbatim from the request.
+    #[serde(default)]
+    pub metadata: Option<Doc>,
 }
 
 /// Status of a bootstrap request
@@ -242,6 +247,7 @@ mod tests {
                 transport_type: "http".to_string(),
                 address: "127.0.0.1:8080".to_string(),
             },
+            metadata: None,
         }
     }
 

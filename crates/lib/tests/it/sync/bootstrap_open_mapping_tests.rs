@@ -46,7 +46,13 @@ async fn request_access_makes_database_openable_without_manual_track() {
         .unwrap();
 
     client_user
-        .request_database_access(&client_sync, &ticket, &client_key_id, Permission::Write(5))
+        .request_database_access(
+            &client_sync,
+            &ticket,
+            &client_key_id,
+            Permission::Write(5),
+            None,
+        )
         .await
         .expect("request_database_access should succeed");
 
@@ -90,7 +96,13 @@ async fn pending_access_reports_clear_error_then_opens_after_approval() {
     // The request is stored pending and returns an error, but the provisional
     // key mapping is still recorded.
     let result = client_user
-        .request_database_access(&client_sync, &ticket, &client_key_id, Permission::Write(5))
+        .request_database_access(
+            &client_sync,
+            &ticket,
+            &client_key_id,
+            Permission::Write(5),
+            None,
+        )
         .await;
     assert!(
         result.is_err(),
@@ -123,7 +135,13 @@ async fn pending_access_reports_clear_error_then_opens_after_approval() {
     // "already authorized" path: entries sync and the real SigKey is discovered
     // and recorded.
     client_user
-        .request_database_access(&client_sync, &ticket, &client_key_id, Permission::Write(5))
+        .request_database_access(
+            &client_sync,
+            &ticket,
+            &client_key_id,
+            Permission::Write(5),
+            None,
+        )
         .await
         .expect("access should be granted after approval");
     client_sync.flush().await.ok();

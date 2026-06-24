@@ -9,6 +9,7 @@ use super::{
 use crate::{
     Database, Result,
     auth::{Permission, crypto::PublicKey, types::AuthKey},
+    crdt::Doc,
     database::DatabaseKey,
     entry::ID,
 };
@@ -49,6 +50,7 @@ impl Sync {
         requesting_public_key: &PublicKey,
         requesting_key_name: &str,
         requested_permission: Permission,
+        metadata: Option<Doc>,
     ) -> Result<()> {
         // Validate key name is not empty
         if requesting_key_name.is_empty() {
@@ -71,6 +73,7 @@ impl Sync {
             Some(requesting_public_key),
             Some(requesting_key_name),
             Some(requested_permission),
+            metadata,
         )
         .await?;
 
@@ -115,13 +118,15 @@ impl Sync {
         requesting_key_name: &str,
         requested_permission: Permission,
     ) -> Result<()> {
-        // Delegate to internal method
+        // Delegate to internal method. This lower-level entry point carries no
+        // approver metadata; use `bootstrap_with_ticket` to attach it.
         self.sync_with_peer_for_bootstrap_internal(
             address,
             tree_id,
             requesting_public_key,
             requesting_key_name,
             requested_permission,
+            None,
         )
         .await
     }
@@ -137,6 +142,8 @@ impl Sync {
     /// * `requesting_public_key` - The formatted public key string for authentication.
     /// * `requesting_key_name` - The name/ID of the requesting key.
     /// * `requested_permission` - The permission level being requested.
+    /// * `metadata` - Optional free-form context the requester attaches for the
+    ///   approver to inspect, surfaced verbatim on the stored [`BootstrapRequest`].
     ///
     /// # Errors
     /// Returns [`SyncError::InvalidAddress`] if the ticket has no address hints.
@@ -147,6 +154,7 @@ impl Sync {
         requesting_public_key: &PublicKey,
         requesting_key_name: &str,
         requested_permission: Permission,
+        metadata: Option<Doc>,
     ) -> Result<()> {
         let database_id = ticket.database_id().clone();
         let pubkey = requesting_public_key.clone();
@@ -155,6 +163,7 @@ impl Sync {
             let db_id = database_id.clone();
             let pubkey = pubkey.clone();
             let key_name = key_name.clone();
+            let metadata = metadata.clone();
             async move {
                 sync.sync_with_peer_for_bootstrap_internal(
                     &addr,
@@ -162,6 +171,7 @@ impl Sync {
                     &pubkey,
                     &key_name,
                     requested_permission,
+                    metadata,
                 )
                 .await
             }

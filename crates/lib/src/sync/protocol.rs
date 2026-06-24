@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use super::peer_types::Address;
 use crate::{
     auth::{Permission, crypto::PublicKey},
+    crdt::Doc,
     entry::{Entry, ID},
     snapshot::Snapshot,
 };
@@ -81,6 +82,11 @@ pub struct SyncTreeRequest {
     pub requesting_key_name: Option<String>,
     /// Desired permission level for bootstrap
     pub requested_permission: Option<Permission>,
+    /// Free-form context the requester attaches for the approver to inspect
+    /// when deciding whether to grant access. Carried verbatim onto the stored
+    /// `BootstrapRequest`.
+    #[serde(default)]
+    pub metadata: Option<Doc>,
 }
 
 /// Bootstrap response containing complete tree state

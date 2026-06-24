@@ -378,6 +378,7 @@ pub fn create_bootstrap_request(
         requesting_key: Some(PublicKey::from_prefixed_string(requesting_key).unwrap()),
         requesting_key_name: Some(key_name.to_string()),
         requested_permission: Some(permission),
+        metadata: None,
     })
 }
 
@@ -577,7 +578,7 @@ pub async fn request_and_map_database_access(
             .await?;
 
         let ticket = DatabaseTicket::with_addresses(tree_id.clone(), vec![server_addr.clone()]);
-        user.request_database_access(&client_sync, &ticket, key_id, permission)
+        user.request_database_access(&client_sync, &ticket, key_id, permission, None)
             .await?;
     } // Drop Arc before sleep
 

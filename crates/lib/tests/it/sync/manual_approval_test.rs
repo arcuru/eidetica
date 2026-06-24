@@ -188,6 +188,7 @@ async fn test_reject_bootstrap_request() {
         requesting_key: Some(test_key.clone()),
         requesting_key_name: Some("laptop_key".to_string()),
         requested_permission: Some(AuthPermission::Write(5)),
+        metadata: None,
     });
 
     // Handle the request to store it as pending
@@ -272,6 +273,7 @@ async fn test_list_bootstrap_requests_by_status() {
         requesting_key: Some(test_key.clone()),
         requesting_key_name: Some("test_key".to_string()),
         requested_permission: Some(AuthPermission::Write(5)),
+        metadata: None,
     });
 
     let context = RequestContext::default();
@@ -332,6 +334,7 @@ async fn test_duplicate_bootstrap_requests_same_client() {
         requesting_key: Some(test_key.clone()),
         requesting_key_name: Some("laptop_key".to_string()),
         requested_permission: Some(AuthPermission::Write(5)),
+        metadata: None,
     });
 
     // Handle first request
@@ -350,6 +353,7 @@ async fn test_duplicate_bootstrap_requests_same_client() {
         requesting_key: Some(test_key.clone()),
         requesting_key_name: Some("laptop_key".to_string()),
         requested_permission: Some(AuthPermission::Write(5)),
+        metadata: None,
     });
 
     // Handle second identical request
@@ -467,6 +471,7 @@ async fn test_malformed_permission_requests() {
             requesting_key: Some(test_key.clone()),
             requesting_key_name: Some(format!("key_for_{}", description.replace(" ", "_"))),
             requested_permission: Some(*permission),
+            metadata: None,
         });
 
         let context = RequestContext::default();

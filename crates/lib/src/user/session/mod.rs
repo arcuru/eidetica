@@ -1003,6 +1003,8 @@ impl User {
     /// * `ticket` - A ticket containing the database ID and address hints
     /// * `key_id` - The ID of this user's key to use for the request
     /// * `requested_permission` - The permission level being requested
+    /// * `metadata` - Optional free-form context for the approver to inspect on
+    ///   the stored bootstrap request when deciding whether to grant access
     ///
     /// # Returns
     /// Result indicating success or failure of the bootstrap request
@@ -1033,6 +1035,7 @@ impl User {
         ticket: &DatabaseTicket,
         key_id: &PublicKey,
         requested_permission: Permission,
+        metadata: Option<Doc>,
     ) -> Result<()> {
         if self.key_manager.get_signing_key(key_id).is_none() {
             return Err(super::errors::UserError::KeyNotFound {
@@ -1045,7 +1048,7 @@ impl User {
         let database_id = ticket.database_id().clone();
 
         let result = sync
-            .bootstrap_with_ticket(ticket, key_id, &key_name, requested_permission)
+            .bootstrap_with_ticket(ticket, key_id, &key_name, requested_permission, metadata)
             .await;
 
         // Bootstrap grants access at the sync layer (auth + entries) but does not
