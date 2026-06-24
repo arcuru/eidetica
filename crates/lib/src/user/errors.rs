@@ -61,6 +61,12 @@ pub enum UserError {
     #[error("No SigKey found for key {key_id} in database {database_id}")]
     NoSigKeyFound { key_id: String, database_id: ID },
 
+    #[error(
+        "Database access pending for {database_id}: a key mapping exists but the database has no local data yet \
+         (the bootstrap request may be awaiting approval, or the database has not synced)"
+    )]
+    DatabaseAccessPending { database_id: ID },
+
     #[error("Password required for operation: {operation}")]
     PasswordRequired { operation: String },
 

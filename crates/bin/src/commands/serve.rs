@@ -541,7 +541,9 @@ async fn handle_track_database(
     };
 
     let bootstrap_result = {
-        let user = user_lock.read().await;
+        // request_database_access records the User-layer SigKey mapping, so it
+        // needs a write lock.
+        let mut user = user_lock.write().await;
         user.request_database_access(&sync, &ticket, &key_id, permission)
             .await
     };

@@ -11,6 +11,7 @@ mod basic_operations;
 mod bidirectional_sync_test;
 mod bootstrap_concurrency_tests;
 mod bootstrap_failure_tests;
+mod bootstrap_open_mapping_tests;
 mod bootstrap_sync_tests;
 mod bootstrap_with_key_tests;
 mod chat_simulation_test;
