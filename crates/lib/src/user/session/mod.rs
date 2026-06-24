@@ -473,14 +473,33 @@ impl User {
         // the daemon so the identity sits in the connection's session
         // keyset.
         let key = DatabaseKey::with_identity(signing_key.clone(), sigkey.clone());
+        // A SigKey mapping exists (resolved above), so the database is one this
+        // user has requested access to. If its root entry isn't present, the
+        // access is still pending — the bootstrap request hasn't been approved or
+        // the database hasn't synced yet. Surface that explicitly instead of a
+        // bare backend "not found", on both the remote and local open paths.
         #[cfg(all(unix, feature = "service"))]
         if let Some(conn) = self.instance.remote_connection() {
             conn.register_session_key(signing_key).await?;
-            return Ok(Database::open_remote(&self.instance, conn, root_id, sigkey)
-                .await?
-                .with_key(key));
+            return match Database::open_remote(&self.instance, conn, root_id, sigkey).await {
+                Ok(database) => Ok(database.with_key(key)),
+                Err(e) if e.is_not_found() => {
+                    Err(super::errors::UserError::DatabaseAccessPending {
+                        database_id: root_id.clone(),
+                    }
+                    .into())
+                }
+                Err(e) => Err(e),
+            };
         }
-        Ok(Database::open(&self.instance, root_id).await?.with_key(key))
+        match Database::open(&self.instance, root_id).await {
+            Ok(database) => Ok(database.with_key(key)),
+            Err(e) if e.is_not_found() => Err(super::errors::UserError::DatabaseAccessPending {
+                database_id: root_id.clone(),
+            }
+            .into()),
+            Err(e) => Err(e),
+        }
     }
 
     /// Find databases by name among the user's tracked databases.
@@ -964,6 +983,21 @@ impl User {
     /// existing database from a new device, or when requesting access to a database
     /// shared by another user.
     ///
+    /// On a successful (already-authorized) request the database is synced and its
+    /// SigKey mapping is recorded, so [`open_database`](Self::open_database) works
+    /// immediately — no separate [`track_database`](Self::track_database) call is
+    /// needed just to open it. Note the database is tracked with sync **disabled**
+    /// by default; to keep it syncing in the background, call
+    /// [`track_database`](Self::track_database) (or [`enable_sync`](Self::enable_sync))
+    /// with your desired settings. Any settings already configured for the
+    /// database are preserved across a repeat request.
+    ///
+    /// When approval is still pending the request returns
+    /// [`SyncError::BootstrapPending`] but a provisional mapping is recorded;
+    /// opening the database before approval then fails with
+    /// [`UserError::DatabaseAccessPending`](crate::user::UserError::DatabaseAccessPending)
+    /// rather than a cryptic backend error.
+    ///
     /// # Arguments
     /// * `sync` - Reference to the Instance's Sync object
     /// * `ticket` - A ticket containing the database ID and address hints
@@ -994,7 +1028,7 @@ impl User {
     /// let database = user.open_database(ticket.database_id())?;
     /// ```
     pub async fn request_database_access(
-        &self,
+        &mut self,
         sync: &Sync,
         ticket: &DatabaseTicket,
         key_id: &PublicKey,
@@ -1008,9 +1042,51 @@ impl User {
         }
 
         let key_name = key_id.to_string();
+        let database_id = ticket.database_id().clone();
 
-        sync.bootstrap_with_ticket(ticket, key_id, &key_name, requested_permission)
-            .await
+        let result = sync
+            .bootstrap_with_ticket(ticket, key_id, &key_name, requested_permission)
+            .await;
+
+        // Bootstrap grants access at the sync layer (auth + entries) but does not
+        // establish the User-layer SigKey mapping that `open_database`/`find_key`
+        // rely on. Establish it here so a successful request leaves the database
+        // openable — previously the caller had to call `track_database` manually,
+        // and omitting it left the database unopenable ("No key found").
+        match result {
+            Ok(()) => {
+                // Access was already authorized and the database is now synced, so
+                // its auth settings are local: discover the real SigKey (which may
+                // be a direct, global-wildcard, or delegated key) and record it.
+                // Preserve any sync settings the caller already configured for this
+                // database — a repeat request must not silently disable sync — and
+                // fall back to the default only for a freshly-tracked database.
+                let sync_settings = self
+                    .database(&database_id)
+                    .await
+                    .map(|tracked| tracked.sync_settings)
+                    .unwrap_or_default();
+                self.track_database(database_id, key_id, sync_settings)
+                    .await?;
+                Ok(())
+            }
+            Err(e) => {
+                // Awaiting manual approval: the database isn't synced yet, so the
+                // SigKey can't be discovered. On approval the key is added by
+                // pubkey (see `Sync::approve_bootstrap_request_with_key`), so its
+                // SigKey will be the default pubkey identity — record that mapping
+                // provisionally. Until the database syncs, opening it surfaces
+                // `UserError::DatabaseAccessPending`. The pending error is
+                // re-raised unchanged so callers can react to it.
+                if let Error::Sync(sync_err) = &e
+                    && matches!(sync_err.as_ref(), SyncError::BootstrapPending { .. })
+                {
+                    self.map_key(key_id, &database_id, SigKey::from_pubkey(key_id))
+                        .await?;
+                }
+                Err(e)
+            }
+        }
     }
 
     // === Tracked Databases ===

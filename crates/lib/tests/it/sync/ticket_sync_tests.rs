@@ -309,7 +309,7 @@ async fn test_bootstrap_with_ticket_authenticated() {
         .expect("create_ticket should succeed");
 
     // Setup client
-    let (_client_instance, client_user, client_key_id, client_sync) =
+    let (_client_instance, mut client_user, client_key_id, client_sync) =
         setup_sync_enabled_client("client_user", "client_key").await;
 
     client_sync
