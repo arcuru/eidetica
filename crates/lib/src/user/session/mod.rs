@@ -1050,12 +1050,36 @@ impl User {
             .bootstrap_with_ticket(ticket, key_id, &key_name, requested_permission, metadata)
             .await;
 
+        self.record_database_access(&database_id, key_id, result)
+            .await
+    }
+
+    /// Record the User-layer SigKey mapping for a bootstrap whose network phase
+    /// has already completed, given the [`Result`] returned by
+    /// [`Sync::bootstrap_with_ticket`](crate::sync::Sync::bootstrap_with_ticket).
+    ///
+    /// [`request_database_access`](Self::request_database_access) is the usual
+    /// entry point and performs the network bootstrap for you. This split-out
+    /// method exists for callers that hold a coarse lock around the `User` (e.g.
+    /// a daemon's per-session lock): they can run the network round-trip without
+    /// the lock held and re-acquire it only for this cheap, local mapping write,
+    /// so a slow or hung peer never blocks the rest of the session. The mapping
+    /// semantics are identical to `request_database_access`.
+    ///
+    /// The `bootstrap_result` is consumed and its outcome re-raised unchanged so
+    /// callers can react to [`SyncError::BootstrapPending`] et al.
+    pub async fn record_database_access(
+        &mut self,
+        database_id: &ID,
+        key_id: &PublicKey,
+        bootstrap_result: Result<()>,
+    ) -> Result<()> {
         // Bootstrap grants access at the sync layer (auth + entries) but does not
         // establish the User-layer SigKey mapping that `open_database`/`find_key`
         // rely on. Establish it here so a successful request leaves the database
         // openable — previously the caller had to call `track_database` manually,
         // and omitting it left the database unopenable ("No key found").
-        match result {
+        match bootstrap_result {
             Ok(()) => {
                 // Access was already authorized and the database is now synced, so
                 // its auth settings are local: discover the real SigKey (which may
@@ -1064,11 +1088,11 @@ impl User {
                 // database — a repeat request must not silently disable sync — and
                 // fall back to the default only for a freshly-tracked database.
                 let sync_settings = self
-                    .database(&database_id)
+                    .database(database_id)
                     .await
                     .map(|tracked| tracked.sync_settings)
                     .unwrap_or_default();
-                self.track_database(database_id, key_id, sync_settings)
+                self.track_database(database_id.clone(), key_id, sync_settings)
                     .await?;
                 Ok(())
             }
@@ -1083,7 +1107,7 @@ impl User {
                 if let Error::Sync(sync_err) = &e
                     && matches!(sync_err.as_ref(), SyncError::BootstrapPending { .. })
                 {
-                    self.map_key(key_id, &database_id, SigKey::from_pubkey(key_id))
+                    self.map_key(key_id, database_id, SigKey::from_pubkey(key_id))
                         .await?;
                 }
                 Err(e)

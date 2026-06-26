@@ -540,11 +540,17 @@ async fn handle_track_database(
         }
     };
 
+    // Run the network bootstrap WITHOUT holding the per-session user lock — a
+    // slow or hung peer must not freeze the rest of this session's requests.
+    let key_name = key_id.to_string();
+    let network_result = sync
+        .bootstrap_with_ticket(&ticket, &key_id, &key_name, permission, None)
+        .await;
+
+    // Re-acquire only for the cheap, local SigKey-mapping write.
     let bootstrap_result = {
-        // request_database_access records the User-layer SigKey mapping, so it
-        // needs a write lock.
         let mut user = user_lock.write().await;
-        user.request_database_access(&sync, &ticket, &key_id, permission, None)
+        user.record_database_access(ticket.database_id(), &key_id, network_result)
             .await
     };
 
@@ -552,6 +558,10 @@ async fn handle_track_database(
         Ok(_) => {
             let mut user = user_lock.write().await;
 
+            // `record_database_access` already recorded the SigKey mapping (with
+            // sync left disabled). Re-track here only to apply this daemon's sync
+            // policy; the key is unchanged so this skips re-validation and just
+            // updates settings.
             match user
                 .track_database(
                     ticket.database_id().clone(),
