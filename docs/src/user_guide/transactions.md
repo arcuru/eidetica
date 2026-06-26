@@ -406,8 +406,8 @@ UI," or any other change-driven workflow.
 # async fn example(database: &Database) -> Result<()> {
 let cb = database.on_write(|event, db| {
     let source = event.source();
-    let prev = event.previous_tips().to_vec();
-    let post = event.post_tips().to_vec();
+    let prev = event.previous_tips().clone();
+    let post = event.post_tips().clone();
     let db = db.clone();
     async move {
         // Expand the cursor advance into the concrete set of new entry IDs.

@@ -1464,8 +1464,8 @@ async fn test_on_write_fires_for_local_commit_on_connected_instance() {
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<usize>();
     let _cb = db
         .on_write(move |event, db| {
-            let prev = event.previous_tips().to_vec();
-            let post = event.post_tips().to_vec();
+            let prev = event.previous_tips().clone();
+            let post = event.post_tips().clone();
             let db = db.clone();
             let tx = event_tx.clone();
             async move {
@@ -1564,14 +1564,12 @@ async fn test_on_write_previous_tips_populated_on_connected_instance() {
     let db = user.create_database(settings, &pubkey).await.unwrap();
 
     // Single fire per commit under fire-on-Verified — no filter needed.
-    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<(
-        Vec<eidetica::entry::ID>,
-        Vec<eidetica::entry::ID>,
-    )>();
+    let (event_tx, mut event_rx) =
+        tokio::sync::mpsc::unbounded_channel::<(Vec<eidetica::entry::ID>, eidetica::Snapshot)>();
     let _cb = db
         .on_write(move |event, db| {
-            let prev_tips = event.previous_tips().to_vec();
-            let post_tips = event.post_tips().to_vec();
+            let prev_tips = event.previous_tips().clone();
+            let post_tips = event.post_tips().clone();
             let db = db.clone();
             let tx = event_tx.clone();
             async move {
@@ -1610,7 +1608,7 @@ async fn test_on_write_previous_tips_populated_on_connected_instance() {
         "second callback's previous_tips must be populated (got empty — daemon push not delivering canonical tips)"
     );
     assert!(
-        prev_2.contains(&entries_1[0]),
+        prev_2.tips().contains(&entries_1[0]),
         "second callback's previous_tips must include the first commit's entry id; got prev={prev_2:?}, first_entry={:?}",
         entries_1[0]
     );

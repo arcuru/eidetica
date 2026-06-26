@@ -870,7 +870,7 @@ impl RemoteConnection {
         &self,
         tree_id: ID,
         identity: SigKey,
-        tips: Vec<ID>,
+        tips: Snapshot,
     ) -> crate::Result<()> {
         // Per-tree subscription fence. Held across the entire state
         // decision + (leader path's) wire round-trip so a concurrent

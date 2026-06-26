@@ -803,11 +803,7 @@ async fn dispatch_database_op(
             // give me events from now" posture documented on the wire
             // variant). The cursor advances per fire as usual.
             let initial_tips = if tips.is_empty() {
-                instance
-                    .snapshot(&root_id)
-                    .await
-                    .map(|s| s.into_tips())
-                    .unwrap_or_default()
+                instance.snapshot(&root_id).await.unwrap_or_default()
             } else {
                 tips
             };
@@ -831,8 +827,8 @@ async fn dispatch_database_op(
                     // observe a clean promote-only stream.
                     let frame = ServerFrame::Notification(Notification::DatabaseWrite {
                         root_id: db.root_id().clone(),
-                        previous_tips: event.previous_tips().to_vec(),
-                        post_tips: event.post_tips().to_vec(),
+                        previous_tips: event.previous_tips().clone(),
+                        post_tips: event.post_tips().clone(),
                         source: event.source(),
                     });
                     let _ = tx.send(frame);
