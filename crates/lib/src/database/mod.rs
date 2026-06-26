@@ -741,13 +741,12 @@ impl Database {
     /// promotion to `Verified` happens, and a Verified fire follows
     /// from there once that pass runs.
     ///
-    /// **Known v1 gap**: sync-ingested entries do not fire until
-    /// something triggers a verification pass on their tree (today:
-    /// the access-time auto-verify hook in `get_tips`). Subscribers
-    /// that only listen and never read may observe latency in seeing
-    /// sync-arrived content. Closed in step 2 of the cursor refactor
-    /// where `put_remote_entries` will call `verify()` inline after
-    /// the batch.
+    /// Both ingest paths run that pass inline: `put_remote_entries`
+    /// (sync) and the service `SubmitSignedEntry` handler each call
+    /// `verify()` immediately after storing the batch, so a promoted
+    /// entry fires its `Verified` event without waiting for a reader to
+    /// trigger the access-time auto-verify hook. A listen-only
+    /// subscriber therefore sees sync-arrived content promptly.
     ///
     /// On a connected instance the first `on_write` registration for a
     /// given tree lazily sends a `SubscribeWrites` op to the daemon;
@@ -1996,11 +1995,32 @@ impl Database {
         // is the correct frontier — subscribers see the same
         // `previous_tips` they'd see for any subsequent fire until
         // something else writes to the tree.
-        if any_promoted {
+        let joins = if any_promoted {
             let instance = self.instance()?;
-            instance
-                .fire_write_callbacks(self.root_id(), &fire_tips, &fire_tips, WriteSource::Remote)
-                .await;
+            Some(
+                instance
+                    .spawn_write_callbacks(
+                        self.root_id(),
+                        &fire_tips,
+                        &fire_tips,
+                        WriteSource::Remote,
+                    )
+                    .await,
+            )
+        } else {
+            None
+        };
+
+        // Release the per-tree lock before awaiting the user callbacks. The
+        // cursor advances were already committed under the lock by
+        // `spawn_write_callbacks` (which is what preserves event ordering);
+        // the closures must run lock-free, because a callback that reads
+        // tips can trip the access-time auto-verify hook → `verify()` →
+        // `tree_lock` and would deadlock against a still-held `_guard`.
+        drop(_guard);
+
+        if let Some(mut joins) = joins {
+            while joins.join_next().await.is_some() {}
         }
 
         Ok(report)

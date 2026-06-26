@@ -562,6 +562,96 @@ async fn test_remote_callback_catches_up_promoted_entries_via_ids_added() {
     );
 }
 
+// Regression: a write callback may re-enter its tree's lock without
+// deadlocking. The dispatch path holds `tree_lock(root_id)` only across
+// the synchronous cursor-advance + spawn phase; the user closures are
+// awaited *after* the guard is dropped. Before that split, `put_entry`
+// (and `verify`) awaited the callback while still holding the lock, so a
+// callback that re-entered `tree_lock` blocked forever against the
+// dispatcher that was waiting on it.
+//
+// The re-entry is driven by an explicit `db.verify().await` inside the
+// callback. `verify()` unconditionally acquires `tree_lock`, so this is
+// the cleanest deterministic trigger for the exact lock re-acquire that a
+// tip read (`Database::snapshot`) reaches transitively via the
+// access-time auto-verify hook — no special DAG shape required. On the
+// pre-fix code the commit hangs and the timeout fires.
+//
+// Multi-thread runtime so the spawned callback task can run on a
+// different worker than the firing path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_callback_reentrant_tree_lock_local_commit_no_deadlock() {
+    let (_instance, db) = setup_callback_test().await;
+
+    let _cb = db
+        .on_write(move |_event, db| {
+            let db = db.clone();
+            async move {
+                // Re-enters tree_lock(root_id). Must not deadlock against
+                // the `put_entry` that fired us.
+                let _ = db.verify().await;
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+
+    let db_for_commit = db.clone();
+    let commit = async move {
+        let txn = db_for_commit.new_transaction().await.unwrap();
+        let store = txn.get_store::<DocStore>("data").await.unwrap();
+        store.set("k", "v").await.unwrap();
+        txn.commit().await.unwrap();
+    };
+
+    tokio::time::timeout(std::time::Duration::from_secs(10), commit)
+        .await
+        .expect("local commit + re-entrant callback must not deadlock");
+}
+
+// Companion to the above for the verify-promotion fire path: when
+// `put_remote_entries` runs the verify pass, it promotes the ingested
+// entry and fires the callback *while holding tree_lock*. A callback that
+// re-enters the lock (here, again via `verify()`) must not deadlock.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_callback_reentrant_tree_lock_verify_promote_no_deadlock() {
+    use crate::backend::VerificationStatus;
+    let (instance, db) = setup_callback_test().await;
+
+    // One committed entry, demoted to Unverified to mimic raw sync ingest.
+    let txn = db.new_transaction().await.unwrap();
+    let store = txn.get_store::<DocStore>("data").await.unwrap();
+    store.set("k", "v").await.unwrap();
+    let id1 = txn.commit().await.unwrap();
+    let backend = instance.require_local_engine().unwrap();
+    backend
+        .update_verification_status(&id1, VerificationStatus::Unverified)
+        .await
+        .unwrap();
+
+    let root_id = db.root_id().clone();
+    let _cb = db
+        .on_write_at_tips(vec![root_id.clone()], move |_event, db| {
+            let db = db.clone();
+            async move {
+                let _ = db.verify().await;
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+
+    // verify() promotes id1 and fires the callback under tree_lock; the
+    // callback's own verify() re-acquires that lock.
+    let entry1 = instance.get(&id1).await.unwrap();
+    let fire = instance.put_remote_entries(&root_id, vec![entry1]);
+
+    tokio::time::timeout(std::time::Duration::from_secs(10), fire)
+        .await
+        .expect("verify-promotion fire + re-entrant callback must not deadlock")
+        .unwrap();
+}
+
 #[tokio::test]
 async fn test_detached_write_callback_outlives_handle() {
     let (_instance, db) = setup_callback_test().await;
