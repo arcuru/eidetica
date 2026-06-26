@@ -41,16 +41,10 @@ use super::helpers::{Prng, cluster_get, cluster_put, cluster_shared_database};
 /// Wire every peer to every other for `tree` (so each write fans out to all),
 /// drain the setup pushes inline, then switch to manual delivery with an empty
 /// queue — the clean slate the schedule runs against.
-async fn full_mesh_manual(net: &mut Cluster, fabric: &SimNetwork, room: &ID, n: usize) {
-    for i in 0..n {
-        for j in (i + 1)..n {
-            net.auto_sync(i, j, room).await.unwrap();
-        }
-    }
+async fn full_mesh_manual(net: &mut Cluster, fabric: &SimNetwork, room: &ID) {
+    net.auto_sync_all(room).await.unwrap();
     // Any push auto-sync setup produced delivers inline here; then capture.
-    for p in 0..n {
-        net.flush(p).await.unwrap();
-    }
+    net.flush_all().await.unwrap();
     fabric.set_manual_delivery(true);
     fabric.drop_all();
 }
@@ -168,22 +162,21 @@ async fn test_randomized_delivery_schedules_all_converge() {
         (1, "e", "1e"),
         (2, "f", "2f"),
     ];
-    let n = 3;
 
     for seed in 0..16u64 {
         let fabric = SimNetwork::new();
         let mut net = Cluster::builder()
-            .peers(n)
+            .peers(3)
             .transport(Arc::new(SimLoopback::new(fabric.clone())))
             .build()
             .await
             .unwrap();
         let (room, dbs) = cluster_shared_database(&mut net, "fuzz").await.unwrap();
-        full_mesh_manual(&mut net, &fabric, &room, n).await;
+        full_mesh_manual(&mut net, &fabric, &room).await;
 
         let written = run_schedule(&mut net, &fabric, &room, &dbs, &writes, seed).await;
 
-        let all: Vec<usize> = (0..n).collect();
+        let all: Vec<usize> = (0..net.len()).collect();
         assert!(
             net.converged_all(&room).await.unwrap(),
             "seed {seed}: cluster must converge after the schedule drains"
@@ -221,25 +214,24 @@ async fn test_randomized_duplicate_delivery_is_idempotent() {
         (1, "e", "1e"),
         (2, "f", "2f"),
     ];
-    let n = 3;
     let mut total_duplicated = 0;
 
     for seed in 0..16u64 {
         let fabric = SimNetwork::new();
         let mut net = Cluster::builder()
-            .peers(n)
+            .peers(3)
             .transport(Arc::new(SimLoopback::new(fabric.clone())))
             .build()
             .await
             .unwrap();
         let (room, dbs) = cluster_shared_database(&mut net, "dup").await.unwrap();
-        full_mesh_manual(&mut net, &fabric, &room, n).await;
+        full_mesh_manual(&mut net, &fabric, &room).await;
 
         let (written, duplicated) =
             run_duplicating_schedule(&mut net, &fabric, &room, &dbs, &writes, seed).await;
         total_duplicated += duplicated;
 
-        let all: Vec<usize> = (0..n).collect();
+        let all: Vec<usize> = (0..net.len()).collect();
         assert!(
             net.converged_all(&room).await.unwrap(),
             "seed {seed}: cluster must converge despite duplicate delivery"
