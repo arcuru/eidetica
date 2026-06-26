@@ -146,6 +146,13 @@ pub async fn find_merge_base(
     loop {
         // Check if all frontiers are exhausted (reached roots without finding common ancestor)
         if frontiers.iter().all(|f| f.is_empty()) {
+            // TODO(concurrent-store-creation): two subtree roots created
+            // independently (the store didn't exist at fork, so neither first
+            // write shares a subtree_parent) have no common ancestor and fail
+            // here. The main-tree merge tolerates this — disjoint roots merge
+            // from an empty base — and this subtree path should do the same
+            // instead of erroring. Tripwire:
+            // tests/it/sync/concurrent_store_creation_tests.rs.
             return Err(BackendError::NoCommonAncestor {
                 entry_ids: entry_ids.to_vec(),
             }
