@@ -333,6 +333,12 @@ pub(crate) fn find_merge_base(
 
     if common_ancestors.is_empty() {
         tracing::debug!(subtree = subtree, "No common ancestors found");
+        // TODO(concurrent-store-creation): two subtree roots created
+        // independently (the store didn't exist at fork, so neither first write
+        // shares a subtree_parent) have no common ancestor and fail here. The
+        // main-tree merge tolerates this — disjoint roots merge from an empty
+        // base — and this subtree path should do the same instead of erroring.
+        // Tripwire: tests/it/sync/concurrent_store_creation_tests.rs.
         return Err(BackendError::NoCommonAncestor {
             entry_ids: entry_ids.to_vec(),
         }
