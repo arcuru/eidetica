@@ -193,8 +193,7 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
         .backend()
         .snapshot(client_db.root_id())
         .await
-        .unwrap()
-        .into_tips();
+        .unwrap();
 
     // NOW disable sync on the server
     server_user

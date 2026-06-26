@@ -109,7 +109,7 @@ async fn create_pending_request(
 
     let request = SyncRequest::SyncTree(SyncTreeRequest {
         tree_id: tree_id.clone(),
-        our_tips: vec![], // Empty tips = bootstrap needed
+        our_tips: Vec::new().into(), // Empty tips = bootstrap needed
         peer_pubkey: None,
         requesting_key: Some(client_pubkey.clone()),
         requesting_key_name: Some("laptop_key".to_string()),

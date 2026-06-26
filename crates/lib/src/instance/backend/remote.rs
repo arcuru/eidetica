@@ -69,7 +69,7 @@ impl Backend for RemoteBackend {
             .get_verified_tips(tree.clone(), self.identity())
             .await
         {
-            Ok(tips) => Ok(Snapshot::new(tips)),
+            Ok(snapshot) => Ok(snapshot),
             Err(e) if e.is_not_found() => Ok(Snapshot::EMPTY),
             Err(e) => Err(e),
         }
@@ -90,10 +90,15 @@ impl Backend for RemoteBackend {
         }
         match self
             .conn
-            .store_snapshot_at(tree.clone(), self.identity(), store.to_string(), tree_tips)
+            .store_snapshot_at(
+                tree.clone(),
+                self.identity(),
+                store.to_string(),
+                tree_tips.into_tips(),
+            )
             .await
         {
-            Ok(tips) => Ok(Snapshot::new(tips)),
+            Ok(snapshot) => Ok(snapshot),
             Err(e) if e.is_not_found() => Ok(Snapshot::EMPTY),
             Err(e) => Err(e),
         }
@@ -115,7 +120,7 @@ impl Backend for RemoteBackend {
             )
             .await
         {
-            Ok(tips) => Ok(Snapshot::new(tips)),
+            Ok(snapshot) => Ok(snapshot),
             Err(e) if e.is_not_found() => Ok(Snapshot::EMPTY),
             Err(e) => Err(e),
         }

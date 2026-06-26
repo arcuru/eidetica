@@ -507,7 +507,7 @@ async fn test_database_get_store_entries() {
             root_id,
             identity,
             "entries".to_string(),
-            tips,
+            tips.into_tips(),
             ReadScope::Verified,
         )
         .await
@@ -623,7 +623,7 @@ async fn test_database_encrypted_store_roundtrip() {
             root_id.clone(),
             identity.clone(),
             "secrets".to_string(),
-            tips,
+            tips.into_tips(),
             ReadScope::Verified,
         )
         .await
@@ -873,7 +873,7 @@ async fn test_remote_database_ops_e2e() {
             root_id.clone(),
             identity,
             "entries".to_string(),
-            verified_tips,
+            verified_tips.into_tips(),
             ReadScope::Verified,
         )
         .await
