@@ -626,10 +626,12 @@ impl Database {
                 }
 
                 // Get current tips for the delegated tree
-                let tips = match instance.backend().snapshot(delegated_root_id).await {
-                    Ok(snap) => snap.into_tips(),
+                let delegated_snapshot = match instance.backend().snapshot(delegated_root_id).await
+                {
+                    Ok(snap) => snap,
                     Err(_) => continue,
                 };
+                let tips = delegated_snapshot.tips();
 
                 // For each matching key in the delegated tree, construct a delegation SigKey
                 for (delegated_sk, delegated_perm) in delegated_sigkeys {
@@ -641,7 +643,7 @@ impl Database {
                     let delegation_sigkey = SigKey::Delegation {
                         path: vec![DelegationStep {
                             tree: delegated_root_id.clone(),
-                            tips: tips.clone(),
+                            tips: tips.to_vec(),
                         }],
                         hint: delegated_sk.hint().clone(),
                     };
