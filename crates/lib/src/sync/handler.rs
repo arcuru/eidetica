@@ -127,6 +127,13 @@ impl SyncHandlerImpl {
                 transport_type: "unknown".to_string(),
                 address: "unknown".to_string(),
             },
+            // TODO(bootstrap-metadata-bound): `metadata` is unbounded, remote-supplied
+            // data persisted to the system sync tree before any approval decision. A
+            // hostile peer can spam large/many pending requests (storage/DoS on the
+            // multi-tenant boundary). Bound the metadata size here, and cap pending
+            // requests per peer, before this is exposed to untrusted peers. Note the
+            // `Doc` is already deserialized at the protocol layer ahead of the
+            // sync-enabled gate, so the size cap ideally belongs there too.
             metadata,
         };
 
