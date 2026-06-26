@@ -45,7 +45,7 @@ use eidetica::{
     testing::{SimLoopback, SimNetwork},
 };
 
-use super::helpers::{Rng, cluster_get, cluster_put, cluster_shared_database};
+use super::helpers::{Prng, cluster_get, cluster_put, cluster_shared_database};
 
 /// Wire every peer to every other for `room` (full mesh, so each write fans out
 /// directly to all peers — no relaying), then flush once with every link up to
@@ -106,7 +106,7 @@ async fn run_fault_schedule(
     seed: u64,
 ) -> (Vec<ID>, usize) {
     let n = dbs.len();
-    let mut rng = Rng::new(seed);
+    let mut prng = Prng::new(seed);
     let mut links = Links::new(n);
     let mut written: Vec<ID> = Vec::new();
     let mut next = 0;
@@ -115,10 +115,10 @@ async fn run_fault_schedule(
     // Interleave writes with link toggles. ~1 in 3 steps toggles a random link;
     // the rest make progress on the write list so the loop always terminates.
     while next < writes.len() {
-        if rng.below(3) == 0 {
+        if prng.below(3) == 0 {
             // Toggle a random distinct pair (i < j).
-            let i = rng.below(n);
-            let mut j = rng.below(n);
+            let i = prng.below(n);
+            let mut j = prng.below(n);
             if i == j {
                 j = (j + 1) % n;
             }
