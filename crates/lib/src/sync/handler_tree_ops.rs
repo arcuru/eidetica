@@ -60,7 +60,7 @@ impl SyncHandlerImpl {
 
         // Get tips to start traversal
         let snapshot = self.instance()?.backend().snapshot(tree_id).await?;
-        to_visit.extend(snapshot.into_tips());
+        to_visit.extend(snapshot.tips().iter().cloned());
 
         // Traverse the DAG depth-first
         while let Some(entry_id) = to_visit.pop_front() {
@@ -105,7 +105,7 @@ impl SyncHandlerImpl {
 
         // Get tips to start traversal
         let snapshot = self.instance()?.backend().snapshot(tree_id).await?;
-        to_visit.extend(snapshot.into_tips());
+        to_visit.extend(snapshot.tips().iter().cloned());
 
         // Traverse the DAG depth-first, INCLUDING the root
         while let Some(entry_id) = to_visit.pop_front() {
@@ -178,7 +178,7 @@ impl SyncHandlerImpl {
 
         // Get tips to start traversal
         let snapshot = self.instance()?.backend().snapshot(tree_id).await?;
-        to_visit.extend(snapshot.into_tips());
+        to_visit.extend(snapshot.tips().iter().cloned());
 
         // Count all entries
         while let Some(entry_id) = to_visit.pop_front() {
