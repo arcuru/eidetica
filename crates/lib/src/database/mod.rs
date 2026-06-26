@@ -768,8 +768,8 @@ impl Database {
     ///
     /// let cb = database.on_write(|event, db| {
     ///     let source = event.source();
-    ///     let prev = event.previous_tips().to_vec();
-    ///     let post = event.post_tips().to_vec();
+    ///     let prev = event.previous_tips().clone();
+    ///     let post = event.post_tips().clone();
     ///     let db = db.clone();
     ///     async move {
     ///         let new_ids = db.ids_added(&prev, &post).await?;
@@ -807,11 +807,7 @@ impl Database {
         // Use [`Self::on_write_at_tips`] to close that window: pass
         // exactly the tips your initial-state read used, and the first
         // fire's `previous_tips` will match.
-        let tips = self
-            .snapshot()
-            .await
-            .map(|s| s.into_tips())
-            .unwrap_or_default();
+        let tips = self.snapshot().await.unwrap_or_default();
         self.on_write_at_tips(tips, callback).await
     }
 
@@ -830,7 +826,7 @@ impl Database {
     /// ```rust,no_run
     /// # use eidetica::*;
     /// # async fn doit(db: Database) -> Result<()> {
-    /// let tips = db.snapshot().await?.into_tips();
+    /// let tips = db.snapshot().await?;
     /// // ... read initial state at `tips` ...
     /// let _cb = db.on_write_at_tips(tips, |_event, _db| async move { Ok(()) }).await?;
     /// // First callback fire's previous_tips will exactly equal the
@@ -841,7 +837,7 @@ impl Database {
     /// ```
     pub async fn on_write_at_tips<F, Fut>(
         &self,
-        tips: Vec<ID>,
+        tips: Snapshot,
         callback: F,
     ) -> Result<WriteCallback>
     where
@@ -851,9 +847,9 @@ impl Database {
         let instance = self.instance()?;
         let tree_id = self.root_id().clone();
         // Local registry uses `tips` as the per-callback cursor; the
-        // wire path (if any) also needs them so the daemon-side
+        // wire path (if any) also needs it so the daemon-side
         // subscription cursor is pinned at the same value. Clone once
-        // here; both are tiny `Vec<ID>`s.
+        // here; a `Snapshot` is a tiny tip-set.
         let id = instance.register_write_callback(tree_id.clone(), tips.clone(), callback);
         let cb = WriteCallback::new_per_database(instance.downgrade(), tree_id.clone(), id);
 
@@ -1710,9 +1706,16 @@ impl Database {
     ///   skipped — they're treated as outside the "excluded" boundary,
     ///   which is the conservative direction (we may over-report rather
     ///   than under-report).
-    pub async fn ids_added(&self, previous_tips: &[ID], post_tips: &[ID]) -> Result<Vec<ID>> {
+    pub async fn ids_added(
+        &self,
+        previous_tips: &Snapshot,
+        post_tips: &Snapshot,
+    ) -> Result<Vec<ID>> {
         use std::collections::{HashMap, HashSet, VecDeque};
 
+        // Set-equality on the canonical tip-sets: order- and
+        // duplication-insensitive, so a cursor that hasn't advanced
+        // short-circuits regardless of how its tips were ordered.
         if previous_tips == post_tips {
             return Ok(Vec::new());
         }
@@ -1731,7 +1734,7 @@ impl Database {
         //    entries (partial sync) are skipped silently; their absence
         //    can only cause us to over-report, never to miss new IDs.
         let mut excluded: HashSet<ID> = HashSet::new();
-        let mut queue: VecDeque<ID> = previous_tips.iter().cloned().collect();
+        let mut queue: VecDeque<ID> = previous_tips.tips().iter().cloned().collect();
         while let Some(id) = queue.pop_front() {
             if !excluded.insert(id.clone()) {
                 continue;
@@ -1751,7 +1754,7 @@ impl Database {
         //    hard error — the caller's cursor references unknown state.
         let mut added: HashMap<ID, Entry> = HashMap::new();
         let mut visited: HashSet<ID> = HashSet::new();
-        let mut queue: VecDeque<ID> = post_tips.iter().cloned().collect();
+        let mut queue: VecDeque<ID> = post_tips.tips().iter().cloned().collect();
         while let Some(id) = queue.pop_front() {
             if !visited.insert(id.clone()) {
                 continue;
@@ -1851,7 +1854,7 @@ impl Database {
                 // 1. Outer boundary of the Unverified region: raw DAG
                 //    tips. (Failed/Verified tips both terminate the walk
                 //    below; no pre-filter needed.)
-                let raw_tips = backend.snapshot(self.root_id()).await?.into_tips();
+                let raw_tips = backend.snapshot(self.root_id()).await?;
 
                 // 2. Walk parents from those tips, collecting the
                 //    Unverified region. `Verified` and `Failed` entries
@@ -1863,7 +1866,7 @@ impl Database {
                 //    a Verified entry.
                 let mut unverified: HashMap<ID, Entry> = HashMap::new();
                 let mut visited: HashSet<ID> = HashSet::new();
-                let mut queue: VecDeque<ID> = raw_tips.iter().cloned().collect();
+                let mut queue: VecDeque<ID> = raw_tips.tips().iter().cloned().collect();
                 while let Some(id) = queue.pop_front() {
                     if !visited.insert(id.clone()) {
                         continue;

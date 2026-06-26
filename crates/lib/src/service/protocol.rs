@@ -227,7 +227,7 @@ pub enum DatabaseOp {
     /// the cursor stays at whatever it was). Gate Read on `root_id`.
     /// Subscriptions are cleared automatically when the connection
     /// drops.
-    SubscribeWrites { tips: Vec<ID> },
+    SubscribeWrites { tips: Snapshot },
 
     /// Stop pushing write notifications for the request's `root_id` to this
     /// connection. Idempotent: unsubscribing a tree that wasn't subscribed
@@ -379,8 +379,8 @@ pub enum Notification {
     ///   to branch.
     DatabaseWrite {
         root_id: ID,
-        previous_tips: Vec<ID>,
-        post_tips: Vec<ID>,
+        previous_tips: Snapshot,
+        post_tips: Snapshot,
         source: WriteSource,
     },
 }
@@ -704,7 +704,7 @@ mod tests {
     #[test]
     fn test_database_op_subscribe_writes_serde() {
         let req = wrap(DatabaseOp::SubscribeWrites {
-            tips: vec![ID::from_bytes("t1"), ID::from_bytes("t2")],
+            tips: Snapshot::new(vec![ID::from_bytes("t1"), ID::from_bytes("t2")]),
         });
         let json = serde_json::to_string(&req).unwrap();
         let req2: ServiceRequest = serde_json::from_str(&json).unwrap();
@@ -716,7 +716,9 @@ mod tests {
 
     #[test]
     fn test_database_op_subscribe_writes_empty_tips_serde() {
-        let req = wrap(DatabaseOp::SubscribeWrites { tips: vec![] });
+        let req = wrap(DatabaseOp::SubscribeWrites {
+            tips: Snapshot::EMPTY,
+        });
         let json = serde_json::to_string(&req).unwrap();
         let req2: ServiceRequest = serde_json::from_str(&json).unwrap();
         match unwrap_op(req2) {
@@ -736,7 +738,10 @@ mod tests {
     #[test]
     fn test_subscribe_ops_gate_read() {
         assert_eq!(
-            DatabaseOp::SubscribeWrites { tips: vec![] }.required_permission(),
+            DatabaseOp::SubscribeWrites {
+                tips: Snapshot::EMPTY
+            }
+            .required_permission(),
             Permission::Read
         );
         assert_eq!(
@@ -763,8 +768,8 @@ mod tests {
     fn test_server_frame_notification_serde() {
         let notif = Notification::DatabaseWrite {
             root_id: test_id(),
-            previous_tips: vec![ID::from_bytes("tip-1"), ID::from_bytes("tip-2")],
-            post_tips: vec![ID::from_bytes("post-1")],
+            previous_tips: Snapshot::new(vec![ID::from_bytes("tip-1"), ID::from_bytes("tip-2")]),
+            post_tips: Snapshot::new(vec![ID::from_bytes("post-1")]),
             source: WriteSource::Remote,
         };
         let frame = ServerFrame::Notification(notif);
@@ -779,7 +784,7 @@ mod tests {
             }) => {
                 assert_eq!(root_id, test_id());
                 assert_eq!(previous_tips.len(), 2);
-                assert_eq!(post_tips, vec![ID::from_bytes("post-1")]);
+                assert_eq!(post_tips, Snapshot::new(vec![ID::from_bytes("post-1")]));
                 assert_eq!(source, WriteSource::Remote);
             }
             other => panic!("expected ServerFrame::Notification(DatabaseWrite), got {other:?}"),

@@ -95,34 +95,35 @@ pub enum WriteSource {
 /// rustdoc for the verification contract.
 #[derive(Debug, Clone)]
 pub struct WriteEvent {
-    /// The DAG tips this callback was last delivered at — its cursor
-    /// before this fire. Subsequent fires for the same callback will have
-    /// `previous_tips = this fire's post_tips`.
-    previous_tips: Vec<ID>,
-    /// The DAG tips after this write. Equal to this callback's cursor
-    /// *after* the fire. Useful for "what's the frontier I'm now caught
-    /// up to" without an extra `get_tips` call.
-    post_tips: Vec<ID>,
+    /// The database state this callback was last delivered at — its
+    /// cursor before this fire, as a canonical [`Snapshot`]. Subsequent
+    /// fires for the same callback will have `previous_tips = this fire's
+    /// post_tips`.
+    previous_tips: Snapshot,
+    /// The database state after this write, as a canonical [`Snapshot`].
+    /// Equal to this callback's cursor *after* the fire. Useful for
+    /// "what's the frontier I'm now caught up to" without an extra read.
+    post_tips: Snapshot,
     /// Whether this write originated locally or from a remote sync.
     source: WriteSource,
 }
 
 impl WriteEvent {
-    /// Get the DAG tips at this callback's cursor *before* this fire.
+    /// Get the database state at this callback's cursor *before* this fire.
     ///
     /// The first fire on a freshly-registered callback returns the
-    /// initial tips passed at registration time. Subsequent fires
+    /// initial snapshot passed at registration time. Subsequent fires
     /// return the previous fire's `post_tips`.
-    pub fn previous_tips(&self) -> &[ID] {
+    pub fn previous_tips(&self) -> &Snapshot {
         &self.previous_tips
     }
 
-    /// Get the DAG tips at this callback's cursor *after* this fire.
+    /// Get the database state at this callback's cursor *after* this fire.
     ///
     /// The cursor advances to this value before the callback is awaited,
     /// so the next fire on the same callback will have
     /// `previous_tips() == this fire's post_tips()`.
-    pub fn post_tips(&self) -> &[ID] {
+    pub fn post_tips(&self) -> &Snapshot {
         &self.post_tips
     }
 
@@ -161,10 +162,10 @@ pub(crate) struct CallbackId(u64);
 /// and run the dispatches outside it.
 pub(crate) struct PerDbCallbackEntry {
     pub(crate) id: CallbackId,
-    /// Cursor — the post-write tips of the most recent event this
-    /// callback has been delivered, or the user-provided initial tips
+    /// Cursor — the post-write [`Snapshot`] of the most recent event this
+    /// callback has been delivered, or the user-provided initial snapshot
     /// from the registration call before any event has fired.
-    pub(crate) last_tips: std::sync::Mutex<Vec<ID>>,
+    pub(crate) last_tips: std::sync::Mutex<Snapshot>,
     pub(crate) callback: AsyncWriteCallbackFn,
 }
 
@@ -1531,12 +1532,12 @@ impl Instance {
     /// `initial_tips` seeds the callback's cursor — the first
     /// [`WriteEvent`] this callback receives will have `previous_tips`
     /// equal to `initial_tips`, and the cursor advances on each
-    /// subsequent fire to that fire's post-write tips. Callers that
+    /// subsequent fire to that fire's post-write snapshot. Callers that
     /// want "tell me about everything after the point I just read at"
-    /// pass the tips they just read; callers that want "tell me about
-    /// everything from this empty cursor forward" can pass `vec![]`
-    /// (the first fire's `previous_tips` will be empty, and the
-    /// subscriber walks the DAG to discover the gap).
+    /// pass the snapshot they just read; callers that want "tell me about
+    /// everything from this empty cursor forward" can pass
+    /// [`Snapshot::EMPTY`] (the first fire's `previous_tips` will be
+    /// empty, and the subscriber walks the DAG to discover the gap).
     ///
     /// Returns the [`CallbackId`] of the registration. Callers wrap
     /// this in a [`WriteCallback`] handle (see
@@ -1544,7 +1545,7 @@ impl Instance {
     pub(crate) fn register_write_callback<F, Fut>(
         &self,
         tree_id: ID,
-        initial_tips: Vec<ID>,
+        initial_tips: Snapshot,
         callback: F,
     ) -> CallbackId
     where
@@ -1737,14 +1738,10 @@ impl Instance {
         // accumulated state can only ever rest on entries that have
         // passed local validation.
         let joins = if !is_connected && verification == VerificationStatus::Verified {
-            // Compute post-write tips for cursor advance. Cheap: just
-            // re-read the backend snapshot post-put. Each per-callback
+            // Compute the post-write snapshot for cursor advance. Cheap:
+            // just re-read the backend snapshot post-put. Each per-callback
             // cursor advances to this value.
-            let post_tips = self
-                .snapshot(tree_id)
-                .await
-                .map(|s| s.into_tips())
-                .unwrap_or_default();
+            let post_tips = self.snapshot(tree_id).await.unwrap_or_default();
             // Commit cursor advances + spawn under the tree lock (ordering),
             // but drain after dropping the guard (below) — a callback that
             // reads tips can re-enter `verify()` → `tree_lock` and would
@@ -1954,8 +1951,8 @@ impl Instance {
     pub(crate) async fn fire_write_callbacks(
         &self,
         tree_id: &ID,
-        previous_tips: &[ID],
-        post_tips: &[ID],
+        previous_tips: &Snapshot,
+        post_tips: &Snapshot,
         source: WriteSource,
     ) {
         let mut joins = self
@@ -1989,8 +1986,8 @@ impl Instance {
     pub(crate) async fn spawn_write_callbacks(
         &self,
         tree_id: &ID,
-        previous_tips: &[ID],
-        post_tips: &[ID],
+        previous_tips: &Snapshot,
+        post_tips: &Snapshot,
         source: WriteSource,
     ) -> tokio::task::JoinSet<()> {
         let per_db_callbacks = self
@@ -2038,11 +2035,11 @@ impl Instance {
                         .last_tips
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    std::mem::replace(&mut *guard, post_tips.to_vec())
+                    std::mem::replace(&mut *guard, post_tips.clone())
                 };
                 let event = WriteEvent {
                     previous_tips: cb_previous,
-                    post_tips: post_tips.to_vec(),
+                    post_tips: post_tips.clone(),
                     source,
                 };
                 let cb = entry.callback.clone();
@@ -2065,12 +2062,12 @@ impl Instance {
         // Globals: every subscriber gets its own owned clone of the
         // shared pre-write-tips event so their closures can run
         // concurrently with each other and with the per-db callbacks
-        // above. A WriteEvent is two `Vec<ID>` + a Copy enum; cloning
+        // above. A WriteEvent is two `Snapshot`s + a Copy enum; cloning
         // it per global is cheap relative to the spawn cost.
         for (id, callback) in global_callbacks {
             let event = WriteEvent {
-                previous_tips: previous_tips.to_vec(),
-                post_tips: post_tips.to_vec(),
+                previous_tips: previous_tips.clone(),
+                post_tips: post_tips.clone(),
                 source,
             };
             let database_for_cb = database.clone();

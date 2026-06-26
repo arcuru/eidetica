@@ -148,7 +148,7 @@ async fn test_local_write_callback_fires() {
 
     let _cb = db
         .on_write(move |event, _db| {
-            let prev_tips = event.previous_tips().to_vec();
+            let prev_tips = event.previous_tips().tips().to_vec();
             let source = event.source();
             events_clone.lock().unwrap().push((prev_tips, source));
             async { Ok(()) }
@@ -188,8 +188,8 @@ async fn test_local_write_event_brackets_one_entry() {
 
     let _cb = db
         .on_write(move |event, db| {
-            let prev = event.previous_tips().to_vec();
-            let post = event.post_tips().to_vec();
+            let prev = event.previous_tips().clone();
+            let post = event.post_tips().clone();
             let db = db.clone();
             let counts = counts_clone.clone();
             async move {
@@ -303,7 +303,7 @@ async fn test_remote_write_previous_tips() {
     let _cb = db
         .on_write(move |event, _db| {
             let source = event.source();
-            let prev = event.previous_tips().to_vec();
+            let prev = event.previous_tips().tips().to_vec();
             let log = log_clone.clone();
             async move {
                 if source == WriteSource::Remote {
@@ -527,9 +527,9 @@ async fn test_remote_callback_catches_up_promoted_entries_via_ids_added() {
     let captured: Arc<Mutex<Vec<crate::entry::ID>>> = Arc::new(Mutex::new(Vec::new()));
     let captured_clone = captured.clone();
 
-    db.on_write_at_tips(vec![root_id.clone()], move |event, db| {
-        let prev = event.previous_tips().to_vec();
-        let post = event.post_tips().to_vec();
+    db.on_write_at_tips(Snapshot::new(vec![root_id.clone()]), move |event, db| {
+        let prev = event.previous_tips().clone();
+        let post = event.post_tips().clone();
         let source = event.source();
         let db = db.clone();
         let captured = captured_clone.clone();
@@ -631,7 +631,7 @@ async fn test_callback_reentrant_tree_lock_verify_promote_no_deadlock() {
 
     let root_id = db.root_id().clone();
     let _cb = db
-        .on_write_at_tips(vec![root_id.clone()], move |_event, db| {
+        .on_write_at_tips(Snapshot::new(vec![root_id.clone()]), move |_event, db| {
             let db = db.clone();
             async move {
                 let _ = db.verify().await;
@@ -694,14 +694,14 @@ async fn test_concurrent_writes_serialize_previous_tips() {
     for iter in 0..ITERATIONS {
         let (_instance, db) = setup_callback_test().await;
 
-        type EventRecord = (Vec<crate::entry::ID>, Vec<crate::entry::ID>);
+        type EventRecord = (Snapshot, Vec<crate::entry::ID>);
         let events: Arc<Mutex<Vec<EventRecord>>> = Arc::new(Mutex::new(Vec::new()));
         let events_clone = events.clone();
 
         let _cb = db
             .on_write(move |event, db| {
-                let prev = event.previous_tips().to_vec();
-                let post = event.post_tips().to_vec();
+                let prev = event.previous_tips().clone();
+                let post = event.post_tips().clone();
                 let db = db.clone();
                 let evs = events_clone.clone();
                 async move {
@@ -739,7 +739,7 @@ async fn test_concurrent_writes_serialize_previous_tips() {
 
         let serialized = recorded
             .iter()
-            .any(|(prev, _)| prev.contains(&id1) || prev.contains(&id2));
+            .any(|(prev, _)| prev.tips().contains(&id1) || prev.tips().contains(&id2));
         assert!(
             serialized,
             "iter {iter}: concurrent writes must produce a serial previous_tips chain; got events: {:?}",
@@ -758,16 +758,16 @@ async fn test_per_callback_cursor_independent_previous_tips() {
     let (_instance, db) = setup_callback_test().await;
 
     // Tips at T0 (before any commit).
-    let tips_t0 = db.snapshot().await.unwrap().into_tips();
+    let tips_t0 = db.snapshot().await.unwrap();
 
     // First commit. cb1 will be registered at T0 *before* this commit
     // exists, so cb1's cursor stays at T0; cb2 is registered after,
     // anchored at T1.
-    let cb1_events: Arc<Mutex<Vec<Vec<crate::entry::ID>>>> = Arc::new(Mutex::new(Vec::new()));
+    let cb1_events: Arc<Mutex<Vec<Snapshot>>> = Arc::new(Mutex::new(Vec::new()));
     let cb1_events_clone = cb1_events.clone();
     let _cb1 = db
         .on_write_at_tips(tips_t0.clone(), move |event, _db| {
-            let prev = event.previous_tips().to_vec();
+            let prev = event.previous_tips().clone();
             let evs = cb1_events_clone.clone();
             async move {
                 evs.lock().unwrap().push(prev);
@@ -782,18 +782,18 @@ async fn test_per_callback_cursor_independent_previous_tips() {
     store.set("k", "v1").await.unwrap();
     let id1 = txn.commit().await.unwrap();
 
-    let tips_t1 = db.snapshot().await.unwrap().into_tips();
+    let tips_t1 = db.snapshot().await.unwrap();
     assert!(
-        tips_t1.contains(&id1),
+        tips_t1.tips().contains(&id1),
         "tips_t1 must include the just-committed entry"
     );
 
     // Register cb2 at T1 — its cursor anchors here, distinct from cb1's.
-    let cb2_events: Arc<Mutex<Vec<Vec<crate::entry::ID>>>> = Arc::new(Mutex::new(Vec::new()));
+    let cb2_events: Arc<Mutex<Vec<Snapshot>>> = Arc::new(Mutex::new(Vec::new()));
     let cb2_events_clone = cb2_events.clone();
     let _cb2 = db
         .on_write_at_tips(tips_t1.clone(), move |event, _db| {
-            let prev = event.previous_tips().to_vec();
+            let prev = event.previous_tips().clone();
             let evs = cb2_events_clone.clone();
             async move {
                 evs.lock().unwrap().push(prev);
@@ -824,7 +824,7 @@ async fn test_per_callback_cursor_independent_previous_tips() {
         "cb1's first fire's prev should equal its initial cursor (T0)"
     );
     assert!(
-        cb1_recorded[1].contains(&id1),
+        cb1_recorded[1].tips().contains(&id1),
         "cb1's second fire's prev should reflect the post-commit-1 cursor; got {:?}",
         cb1_recorded[1]
     );
@@ -837,12 +837,12 @@ async fn test_per_callback_cursor_independent_previous_tips() {
         "cb2 should fire once (post-register)"
     );
     assert!(
-        cb2_recorded[0].contains(&id1),
+        cb2_recorded[0].tips().contains(&id1),
         "cb2's first fire's prev should equal its initial cursor (T1, which contains id1); got {:?}",
         cb2_recorded[0]
     );
     assert!(
-        !cb2_recorded[0].contains(&id2),
+        !cb2_recorded[0].tips().contains(&id2),
         "cb2's first fire's prev must NOT yet contain id2 (the entry it is being notified about)"
     );
 }
@@ -852,7 +852,7 @@ async fn test_per_callback_cursor_independent_previous_tips() {
 #[tokio::test]
 async fn test_ids_added_empty_when_cursors_equal() {
     let (_instance, db) = setup_callback_test().await;
-    let tips = db.snapshot().await.unwrap().into_tips();
+    let tips = db.snapshot().await.unwrap();
     let added = db.ids_added(&tips, &tips).await.unwrap();
     assert!(added.is_empty(), "equal cursors should yield empty diff");
 }
@@ -860,14 +860,14 @@ async fn test_ids_added_empty_when_cursors_equal() {
 #[tokio::test]
 async fn test_ids_added_single_commit() {
     let (_instance, db) = setup_callback_test().await;
-    let prev = db.snapshot().await.unwrap().into_tips();
+    let prev = db.snapshot().await.unwrap();
 
     let txn = db.new_transaction().await.unwrap();
     let store = txn.get_store::<DocStore>("data").await.unwrap();
     store.set("k", "v1").await.unwrap();
     let id1 = txn.commit().await.unwrap();
 
-    let post = db.snapshot().await.unwrap().into_tips();
+    let post = db.snapshot().await.unwrap();
     let added = db.ids_added(&prev, &post).await.unwrap();
 
     assert_eq!(
@@ -880,7 +880,7 @@ async fn test_ids_added_single_commit() {
 #[tokio::test]
 async fn test_ids_added_multi_commit_topo_order() {
     let (_instance, db) = setup_callback_test().await;
-    let prev = db.snapshot().await.unwrap().into_tips();
+    let prev = db.snapshot().await.unwrap();
 
     let txn = db.new_transaction().await.unwrap();
     let store = txn.get_store::<DocStore>("data").await.unwrap();
@@ -897,7 +897,7 @@ async fn test_ids_added_multi_commit_topo_order() {
     store.set("k", "v3").await.unwrap();
     let id3 = txn.commit().await.unwrap();
 
-    let post = db.snapshot().await.unwrap().into_tips();
+    let post = db.snapshot().await.unwrap();
     let added = db.ids_added(&prev, &post).await.unwrap();
 
     assert_eq!(added.len(), 3, "three commits should add three entries");
@@ -923,7 +923,7 @@ async fn test_ids_added_skips_entries_before_cursor() {
     let store = txn.get_store::<DocStore>("data").await.unwrap();
     store.set("k", "v1").await.unwrap();
     let id1 = txn.commit().await.unwrap();
-    let after_first = db.snapshot().await.unwrap().into_tips();
+    let after_first = db.snapshot().await.unwrap();
 
     // Two more commits past that cursor.
     let txn = db.new_transaction().await.unwrap();
@@ -936,7 +936,7 @@ async fn test_ids_added_skips_entries_before_cursor() {
     store.set("k", "v3").await.unwrap();
     let id3 = txn.commit().await.unwrap();
 
-    let post = db.snapshot().await.unwrap().into_tips();
+    let post = db.snapshot().await.unwrap();
     let added = db.ids_added(&after_first, &post).await.unwrap();
 
     assert!(!added.contains(&id1), "entry at cursor must be excluded");
@@ -960,8 +960,8 @@ async fn test_ids_added_empty_previous_returns_full_closure() {
     store.set("k", "v1").await.unwrap();
     let id1 = txn.commit().await.unwrap();
 
-    let post = db.snapshot().await.unwrap().into_tips();
-    let added = db.ids_added(&[], &post).await.unwrap();
+    let post = db.snapshot().await.unwrap();
+    let added = db.ids_added(&Snapshot::EMPTY, &post).await.unwrap();
 
     // With empty cursor, every ancestor reachable from post_tips is "added",
     // which for a fresh database is the root + every committed entry.
