@@ -46,7 +46,7 @@ async fn test_reordered_delivery_converges_with_invariants() {
     for (k, v) in [("first", "1"), ("second", "2")] {
         cluster_put(&dbs[0], k, v).await.unwrap();
         net.flush(0).await.unwrap();
-        written.extend(net.tips(0, &room).await.unwrap());
+        written.extend(net.snapshot(0, &room).await.unwrap().into_tips());
     }
 
     // Two writes × two destinations = four messages still in flight.

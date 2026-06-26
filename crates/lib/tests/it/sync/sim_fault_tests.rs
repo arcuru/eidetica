@@ -133,7 +133,7 @@ async fn run_fault_schedule(
             // Best-effort: a push across a cut link fails and parks in the retry
             // queue (that is the behaviour under test), so the error is expected.
             let _ = net.flush(peer).await;
-            written.extend(net.tips(peer, room).await.unwrap());
+            written.extend(net.snapshot(peer, room).await.unwrap().into_tips());
             next += 1;
         }
     }

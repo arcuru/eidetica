@@ -76,7 +76,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::{
-    Database, Entry, Instance, NewUser, Result,
+    Database, Entry, Instance, NewUser, Result, Snapshot,
     auth::{Permission, crypto::PublicKey, types::AuthKey},
     backend::{BackendImpl, VerificationStatus, database::InMemory},
     clock::{Clock, FixedClock},
@@ -361,29 +361,24 @@ impl Cluster {
         Ok(())
     }
 
-    /// The tip set peer `peer` currently holds for `tree` (sorted). Empty if the
-    /// peer has never seen the tree.
-    pub async fn tips(&self, peer: usize, tree: &ID) -> Result<Vec<ID>> {
-        let mut tips = self.peers[peer]
-            .instance
-            .backend()
-            .snapshot(tree)
-            .await?
-            .into_tips();
-        tips.sort();
-        Ok(tips)
+    /// The [`Snapshot`] peer `peer` currently holds for `tree` — the canonical
+    /// (sorted, deduplicated) tip set identifying its state. [`Snapshot::EMPTY`]
+    /// if the peer has never seen the tree.
+    pub async fn snapshot(&self, peer: usize, tree: &ID) -> Result<Snapshot> {
+        self.peers[peer].instance.backend().snapshot(tree).await
     }
 
-    /// True if the named `peers` all agree on `tree`'s tip set — the convergence
-    /// invariant. The caller names which peers should have converged; a peer that
-    /// never received the tree has empty tips and will not match.
+    /// True if the named `peers` all agree on `tree`'s [`Snapshot`] — the
+    /// convergence invariant. The caller names which peers should have converged;
+    /// a peer that never received the tree has an empty snapshot and will not
+    /// match. Comparison is `Snapshot` set-equality, so tip order never matters.
     pub async fn converged(&self, peers: &[usize], tree: &ID) -> Result<bool> {
-        let mut reference: Option<Vec<ID>> = None;
+        let mut reference: Option<Snapshot> = None;
         for &i in peers {
-            let tips = self.tips(i, tree).await?;
+            let snapshot = self.snapshot(i, tree).await?;
             match &reference {
-                None => reference = Some(tips),
-                Some(r) if *r != tips => return Ok(false),
+                None => reference = Some(snapshot),
+                Some(r) if *r != snapshot => return Ok(false),
                 Some(_) => {}
             }
         }
