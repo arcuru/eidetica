@@ -36,7 +36,7 @@ use eidetica::{
     testing::{SimLoopback, SimNetwork},
 };
 
-use super::helpers::{Rng, cluster_get, cluster_put, cluster_shared_database};
+use super::helpers::{Prng, cluster_get, cluster_put, cluster_shared_database};
 
 /// Wire every peer to every other for `tree` (so each write fans out to all),
 /// drain the setup pushes inline, then switch to manual delivery with an empty
@@ -68,7 +68,7 @@ async fn run_schedule(
     writes: &[(usize, &str, &str)],
     seed: u64,
 ) -> Vec<ID> {
-    let mut rng = Rng::new(seed);
+    let mut prng = Prng::new(seed);
     let mut written: Vec<ID> = Vec::new();
     let mut next = 0;
 
@@ -82,7 +82,7 @@ async fn run_schedule(
         // Write when there's one to do and either nothing is in flight or the
         // coin says so — this keeps both writes and deliveries interleaving
         // rather than draining one phase fully before the other.
-        if more_writes && (pending.is_empty() || rng.coin()) {
+        if more_writes && (pending.is_empty() || prng.coin()) {
             let (peer, key, value) = writes[next];
             cluster_put(&dbs[peer], key, value).await.unwrap();
             net.flush(peer).await.unwrap();
@@ -93,7 +93,7 @@ async fn run_schedule(
             written.extend(net.tips(peer, room).await.unwrap());
             next += 1;
         } else {
-            let seq = pending[rng.below(pending.len())];
+            let seq = pending[prng.below(pending.len())];
             fabric.deliver(seq).await;
         }
     }
@@ -115,7 +115,7 @@ async fn run_duplicating_schedule(
     writes: &[(usize, &str, &str)],
     seed: u64,
 ) -> (Vec<ID>, usize) {
-    let mut rng = Rng::new(seed);
+    let mut prng = Prng::new(seed);
     let mut written: Vec<ID> = Vec::new();
     let mut next = 0;
     let mut duplicated = 0;
@@ -129,7 +129,7 @@ async fn run_duplicating_schedule(
             break;
         }
 
-        if more_writes && (pending.is_empty() || rng.coin()) {
+        if more_writes && (pending.is_empty() || prng.coin()) {
             let (peer, key, value) = writes[next];
             cluster_put(&dbs[peer], key, value).await.unwrap();
             net.flush(peer).await.unwrap();
@@ -138,11 +138,11 @@ async fn run_duplicating_schedule(
             continue;
         }
 
-        let seq = pending[rng.below(pending.len())];
+        let seq = pending[prng.below(pending.len())];
         // 1-in-4 duplicate (budget permitting), else deliver. Duplicate queues a
         // copy without removing the original, so both get delivered later —
         // every arm still drives toward an empty queue.
-        if dup_budget > 0 && rng.below(4) == 0 {
+        if dup_budget > 0 && prng.below(4) == 0 {
             fabric.duplicate(seq).expect("seq came from pending()");
             dup_budget -= 1;
             duplicated += 1;

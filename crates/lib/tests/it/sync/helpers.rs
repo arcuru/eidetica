@@ -896,15 +896,17 @@ pub async fn cluster_get(db: &Database, key: &str) -> Result<String> {
 /// [`super::sim_fault_tests`]) drive their randomized schedules from. Seeded so
 /// a failing run replays its exact interleaving, and clock-free so nothing here
 /// reads wall time or a real RNG.
-pub struct Rng(u64);
+pub struct Prng(u64);
 
-impl Rng {
+impl Prng {
+    /// Creates a PRNG from `seed`, spreading it to a non-zero internal state.
     pub fn new(seed: u64) -> Self {
         // Spread the seed and force a non-zero state (xorshift fixes on zero).
         Self(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1)
     }
 
-    pub fn next_u64(&mut self) -> u64 {
+    /// Advances the state and returns the next 64-bit value.
+    pub fn next(&mut self) -> u64 {
         let mut x = self.0;
         x ^= x >> 12;
         x ^= x << 25;
@@ -913,13 +915,14 @@ impl Rng {
         x.wrapping_mul(0x2545_F491_4F6C_DD1D)
     }
 
-    /// A value in `0..n` (caller guarantees `n > 0`).
+    /// Returns a value in `0..n` (caller guarantees `n > 0`).
     pub fn below(&mut self, n: usize) -> usize {
-        (self.next_u64() % n as u64) as usize
+        (self.next() % n as u64) as usize
     }
 
+    /// Returns a fair coin flip — `true` or `false` with equal probability.
     pub fn coin(&mut self) -> bool {
-        self.next_u64() & 1 == 0
+        self.next() & 1 == 0
     }
 }
 
