@@ -38,7 +38,7 @@ async fn test_convergence_preserves_all_signed_entries() {
             .await
             .unwrap();
         // The write is now this peer's tip.
-        written.extend(net.tips(i, &room).await.unwrap());
+        written.extend(net.snapshot(i, &room).await.unwrap().into_tips());
     }
 
     assert!(

@@ -84,7 +84,7 @@ async fn run_schedule(
             // committed, but if deliveries have already landed others' writes here
             // the tip is a merge — still a real entry that must survive everywhere,
             // so it belongs in the presence set either way.
-            written.extend(net.tips(peer, room).await.unwrap());
+            written.extend(net.snapshot(peer, room).await.unwrap().into_tips());
             next += 1;
         } else {
             let seq = pending[prng.below(pending.len())];
@@ -127,7 +127,7 @@ async fn run_duplicating_schedule(
             let (peer, key, value) = writes[next];
             cluster_put(&dbs[peer], key, value).await.unwrap();
             net.flush(peer).await.unwrap();
-            written.extend(net.tips(peer, room).await.unwrap());
+            written.extend(net.snapshot(peer, room).await.unwrap().into_tips());
             next += 1;
             continue;
         }
