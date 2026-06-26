@@ -51,15 +51,9 @@ use super::helpers::{Prng, cluster_get, cluster_put, cluster_shared_database};
 /// directly to all peers — no relaying), then flush once with every link up to
 /// drain the setup pushes inline. Leaves the fabric in plain inline-delivery mode
 /// (no manual capture): real delivery, steered only by partitions.
-async fn full_mesh_auto(net: &mut Cluster, room: &ID, n: usize) {
-    for i in 0..n {
-        for j in (i + 1)..n {
-            net.auto_sync(i, j, room).await.unwrap();
-        }
-    }
-    for p in 0..n {
-        net.flush(p).await.unwrap();
-    }
+async fn full_mesh_auto(net: &mut Cluster, room: &ID) {
+    net.auto_sync_all(room).await.unwrap();
+    net.flush_all().await.unwrap();
 }
 
 /// Symmetric link-state matrix over `n` peers, all links initially up. Tracks
@@ -105,7 +99,7 @@ async fn run_fault_schedule(
     writes: &[(usize, &str, &str)],
     seed: u64,
 ) -> (Vec<ID>, usize) {
-    let n = dbs.len();
+    let n = net.len();
     let mut prng = Prng::new(seed);
     let mut links = Links::new(n);
     let mut written: Vec<ID> = Vec::new();
@@ -155,9 +149,7 @@ async fn run_fault_schedule(
     // so it shows up as a lost-entries failure below, never a flush error.)
     fabric.heal_all();
     for _ in 0..(n + 1) {
-        for p in 0..n {
-            net.flush(p).await.unwrap();
-        }
+        net.flush_all().await.unwrap();
     }
 
     (written, writes_under_fault)
@@ -178,26 +170,27 @@ async fn test_randomized_link_faults_recover_via_retry() {
         (1, "e", "1e"),
         (2, "f", "2f"),
     ];
-    let n = 3;
     let mut total_under_fault = 0;
 
     for seed in 0..16u64 {
         let fabric = SimNetwork::new();
         let mut net = Cluster::builder()
-            .peers(n)
+            .peers(3)
             .transport(Arc::new(SimLoopback::new(fabric.clone())))
             .build()
             .await
             .unwrap();
         let (room, dbs) = cluster_shared_database(&mut net, "faults").await.unwrap();
-        let addrs: Vec<_> = (0..n).map(|i| net.peer(i).address().clone()).collect();
-        full_mesh_auto(&mut net, &room, n).await;
+        let addrs: Vec<_> = (0..net.len())
+            .map(|i| net.peer(i).address().clone())
+            .collect();
+        full_mesh_auto(&mut net, &room).await;
 
         let (written, under_fault) =
             run_fault_schedule(&mut net, &fabric, &addrs, &room, &dbs, &writes, seed).await;
         total_under_fault += under_fault;
 
-        let all: Vec<usize> = (0..n).collect();
+        let all: Vec<usize> = (0..net.len()).collect();
         assert!(
             net.converged_all(&room).await.unwrap(),
             "seed {seed}: cluster must converge after links heal and queues drain"
