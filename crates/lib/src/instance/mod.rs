@@ -1736,7 +1736,7 @@ impl Instance {
         // Failed-in-`previous_tips` semantic hole: a subscriber's
         // accumulated state can only ever rest on entries that have
         // passed local validation.
-        if !is_connected && verification == VerificationStatus::Verified {
+        let joins = if !is_connected && verification == VerificationStatus::Verified {
             // Compute post-write tips for cursor advance. Cheap: just
             // re-read the backend snapshot post-put. Each per-callback
             // cursor advances to this value.
@@ -1745,8 +1745,24 @@ impl Instance {
                 .await
                 .map(|s| s.into_tips())
                 .unwrap_or_default();
-            self.fire_write_callbacks(tree_id, &previous_tips, &post_tips, source)
-                .await;
+            // Commit cursor advances + spawn under the tree lock (ordering),
+            // but drain after dropping the guard (below) — a callback that
+            // reads tips can re-enter `verify()` → `tree_lock` and would
+            // deadlock against a still-held `_guard`. See
+            // `Instance::spawn_write_callbacks`.
+            Some(
+                self.spawn_write_callbacks(tree_id, &previous_tips, &post_tips, source)
+                    .await,
+            )
+        } else {
+            None
+        };
+
+        // Release the per-tree lock before awaiting user callbacks.
+        drop(_guard);
+
+        if let Some(mut joins) = joins {
+            while joins.join_next().await.is_some() {}
         }
 
         Ok(())
@@ -1928,6 +1944,13 @@ impl Instance {
     /// directly when a `Notification::DatabaseWrite` arrives from the
     /// daemon — that path is the *sole* publisher on a connected
     /// instance.
+    ///
+    /// Convenience wrapper over [`Self::spawn_write_callbacks`]: spawns the
+    /// dispatches and awaits them all. Use this from callers that do **not**
+    /// hold a [`tree_lock`](Self::tree_lock) across the fire. Callers that
+    /// hold the lock (the local `put_entry` path, `Database::verify`) must
+    /// instead call `spawn_write_callbacks` under the lock, drop the guard,
+    /// then drain the returned `JoinSet` — see that method's contract.
     pub(crate) async fn fire_write_callbacks(
         &self,
         tree_id: &ID,
@@ -1935,6 +1958,41 @@ impl Instance {
         post_tips: &[ID],
         source: WriteSource,
     ) {
+        let mut joins = self
+            .spawn_write_callbacks(tree_id, previous_tips, post_tips, source)
+            .await;
+        while joins.join_next().await.is_some() {}
+    }
+
+    /// Phase 1 of callback dispatch: advance every callback's cursor and
+    /// spawn its closure, returning the in-flight [`JoinSet`] **without
+    /// awaiting it**.
+    ///
+    /// Splitting the dispatch in two lets a caller that holds a
+    /// [`tree_lock`](Self::tree_lock) commit the cursor advances *under*
+    /// the lock — which is what preserves event ordering against a
+    /// concurrent writer — and then release the lock *before* awaiting the
+    /// user closures.
+    ///
+    /// **Why the lock must be dropped before draining.** Awaiting a user
+    /// callback while holding `tree_id`'s lock risks a reentrant deadlock: a
+    /// callback that reads tips (`Database::snapshot` and friends) can trip
+    /// the access-time auto-verify hook, which calls `Database::verify`,
+    /// which acquires the very same `tree_lock`. The awaiting caller still
+    /// holds it, and `verify` is waiting on the callback it spawned →
+    /// circular wait. Everything this method does up to the `spawn` is
+    /// synchronous (the cursor read/advance is under each callback's own
+    /// `std::Mutex`, never across an await), so the spawn phase is safe to
+    /// run under the lock; only the await must be lock-free.
+    ///
+    /// [`JoinSet`]: tokio::task::JoinSet
+    pub(crate) async fn spawn_write_callbacks(
+        &self,
+        tree_id: &ID,
+        previous_tips: &[ID],
+        post_tips: &[ID],
+        source: WriteSource,
+    ) -> tokio::task::JoinSet<()> {
         let per_db_callbacks = self
             .inner
             .write_callbacks
@@ -1952,24 +2010,25 @@ impl Instance {
 
         let has_callbacks = per_db_callbacks.is_some() || !global_callbacks.is_empty();
         if !has_callbacks {
-            return;
+            return tokio::task::JoinSet::new();
         }
 
-        // Create a Database handle for the callbacks
+        // Create a Database handle for the callbacks. `Database::open` does
+        // not read tips / trip the auto-verify hook, so it is safe to await
+        // here even when the caller holds this tree's lock.
         let database = match Database::open(self, tree_id).await {
             Ok(db) => db,
             Err(e) => {
                 tracing::error!(tree_id = %tree_id, "Failed to open database for callbacks: {}", e);
-                return;
+                return tokio::task::JoinSet::new();
             }
         };
 
-        // Single JoinSet across per-db + global callbacks: phase 1
-        // (cursor read+advance under each callback's own std::Mutex)
-        // happens synchronously in arrival order before any task is
-        // spawned, so cursors commit deterministically; phase 2 runs
-        // every closure concurrently and the dispatcher awaits the
-        // whole set before returning.
+        // Single JoinSet across per-db + global callbacks: the cursor
+        // read+advance under each callback's own std::Mutex happens
+        // synchronously in arrival order before any task is spawned, so
+        // cursors commit deterministically; the returned set runs every
+        // closure concurrently and the caller awaits it (lock-free).
         let mut joins = tokio::task::JoinSet::new();
 
         if let Some(callbacks) = per_db_callbacks {
@@ -2028,7 +2087,7 @@ impl Instance {
             });
         }
 
-        while joins.join_next().await.is_some() {}
+        joins
     }
 
     /// Downgrade to a weak reference.
