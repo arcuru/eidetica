@@ -314,11 +314,39 @@ impl Cluster {
         Ok(())
     }
 
+    /// [`auto_sync`] every peer pair in the cluster — a full mesh, so a commit on
+    /// any peer fans out to all the others. Both peers of every pair must already
+    /// hold `tree`. Does not flush; call [`flush_all`] to drain the setup pushes.
+    ///
+    /// [`auto_sync`]: Cluster::auto_sync
+    /// [`flush_all`]: Cluster::flush_all
+    pub async fn auto_sync_all(&mut self, tree: &ID) -> Result<()> {
+        let n = self.len();
+        for a in 0..n {
+            for b in (a + 1)..n {
+                self.auto_sync(a, b, tree).await?;
+            }
+        }
+        Ok(())
+    }
+
     /// Push peer `peer`'s pending auto-sync queue to its targets now, instead of
     /// waiting for the background interval. The deterministic barrier for
     /// auto-sync tests: commit, `flush`, assert.
     pub async fn flush(&self, peer: usize) -> Result<()> {
         self.peers[peer].sync.flush().await
+    }
+
+    /// [`flush`] every peer in the cluster, in index order. The whole-cluster
+    /// barrier: drain all pending auto-sync queues so any in-flight push is
+    /// delivered before the next assertion.
+    ///
+    /// [`flush`]: Cluster::flush
+    pub async fn flush_all(&self) -> Result<()> {
+        for peer in 0..self.len() {
+            self.flush(peer).await?;
+        }
+        Ok(())
     }
 
     /// The tip set peer `peer` currently holds for `tree` (sorted). Empty if the
