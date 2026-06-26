@@ -337,14 +337,26 @@ impl Cluster {
         self.peers[peer].sync.flush().await
     }
 
-    /// [`flush`] every peer in the cluster, in index order. The whole-cluster
-    /// barrier: drain all pending auto-sync queues so any in-flight push is
-    /// delivered before the next assertion.
+    /// Drain the whole cluster: repeatedly [`flush`] every peer until all pending
+    /// auto-sync work has propagated everywhere, then settle.
+    ///
+    /// A single pass over the peers is **not** enough in general. `flush` visits
+    /// each peer once, in index order, so a pass advances an in-flight entry at
+    /// most one hop along its sync path (and only in the index direction — an
+    /// entry that must travel "backwards", from a higher-indexed peer to a lower
+    /// one, waits for the next pass). One pass suffices only when every peer
+    /// pushes directly to every other (a full mesh); a sparser topology — a relay
+    /// chain — needs up to one pass per hop. `len() + 1` passes covers the worst
+    /// case, since no propagation path through `len()` peers is longer than
+    /// `len() - 1` hops. This is the whole-cluster barrier: after it, every
+    /// deliverable entry has reached every peer.
     ///
     /// [`flush`]: Cluster::flush
     pub async fn flush_all(&self) -> Result<()> {
-        for peer in 0..self.len() {
-            self.flush(peer).await?;
+        for _ in 0..(self.len() + 1) {
+            for peer in 0..self.len() {
+                self.flush(peer).await?;
+            }
         }
         Ok(())
     }

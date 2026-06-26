@@ -140,17 +140,15 @@ async fn run_fault_schedule(
 
     // Heal everything and let the retry queues redeliver. No `exchange`: this is
     // the assertion that auto-sync's own retry path repairs a flapping network.
-    // `n + 1` rounds is slack — one full round drains a full mesh, since every
-    // entry was originally addressed directly to every peer.
+    // `flush_all` drains to quiescence — it repeats passes to cover relay hops —
+    // so a single call is the full barrier.
     //
-    // Unlike the chaos phase, these flushes are unwrapped: every link is up, so a
+    // Unlike the chaos phase, this flush is unwrapped: every link is up, so a
     // flush failure here is a real bug, not the expected across-a-cut send error.
     // (A retry give-up during chaos is invisible to this — it dropped the entry,
     // so it shows up as a lost-entries failure below, never a flush error.)
     fabric.heal_all();
-    for _ in 0..(n + 1) {
-        net.flush_all().await.unwrap();
-    }
+    net.flush_all().await.unwrap();
 
     (written, writes_under_fault)
 }
