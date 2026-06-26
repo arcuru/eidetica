@@ -448,7 +448,7 @@ async fn dispatch_database_op(
             // remote-detection heuristic.
             let db = Database::open(instance, &root_id).await?;
             let snapshot = db.snapshot().await?;
-            Ok(ServiceResponse::Ids(snapshot.into_tips()))
+            Ok(ServiceResponse::Ids(snapshot))
         }
 
         DatabaseOp::SubmitSignedEntry { entry } => {
@@ -505,7 +505,7 @@ async fn dispatch_database_op(
                 .ops()
                 .store_snapshot_at(&root_id, &store, &boundary)
                 .await?;
-            Ok(ServiceResponse::Ids(snapshot.into_tips()))
+            Ok(ServiceResponse::Ids(snapshot))
         }
 
         DatabaseOp::ComputeMergeState { store, entry_ids } => {

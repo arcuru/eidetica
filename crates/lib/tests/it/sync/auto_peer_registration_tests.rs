@@ -233,7 +233,7 @@ async fn test_bootstrap_sync_tracks_tree_peer_relationship() {
     // Create bootstrap request (empty tips)
     let sync_request = SyncTreeRequest {
         tree_id: tree_id.clone(),
-        our_tips: vec![], // Empty tips = bootstrap
+        our_tips: Vec::new().into(), // Empty tips = bootstrap
         peer_pubkey: None,
         requesting_key: Some(peer_verifying_key.clone()),
         requesting_key_name: Some("peer_key".to_string()),
@@ -309,12 +309,7 @@ async fn test_incremental_sync_tracks_tree_peer_relationship() {
         .unwrap();
 
     // Get current tips for incremental sync
-    let tips = instance
-        .backend()
-        .snapshot(&tree_id)
-        .await
-        .unwrap()
-        .into_tips();
+    let tips = instance.backend().snapshot(&tree_id).await.unwrap();
 
     // Create incremental sync request (non-empty tips)
     let sync_request = SyncTreeRequest {
@@ -379,7 +374,7 @@ async fn test_relationship_tracking_skipped_without_peer_pubkey() {
 
     let sync_request = SyncTreeRequest {
         tree_id: tree_id.clone(),
-        our_tips: vec![],
+        our_tips: Vec::new().into(),
         peer_pubkey: None,
         requesting_key: Some(peer_verifying_key.clone()),
         requesting_key_name: Some("peer_key".to_string()),
@@ -469,7 +464,7 @@ async fn test_multiple_trees_tracked_with_same_peer() {
     // Request first tree
     let request1 = SyncRequest::SyncTree(SyncTreeRequest {
         tree_id: tree_id1.clone(),
-        our_tips: vec![],
+        our_tips: Vec::new().into(),
         peer_pubkey: None,
         requesting_key: Some(peer_verifying_key.clone()),
         requesting_key_name: Some("peer_key".to_string()),
@@ -480,7 +475,7 @@ async fn test_multiple_trees_tracked_with_same_peer() {
     // Request second tree
     let request2 = SyncRequest::SyncTree(SyncTreeRequest {
         tree_id: tree_id2.clone(),
-        our_tips: vec![],
+        our_tips: Vec::new().into(),
         peer_pubkey: None,
         requesting_key: Some(peer_verifying_key.clone()),
         requesting_key_name: Some("peer_key".to_string()),
@@ -587,7 +582,7 @@ async fn test_sync_without_peer_identifier_works() {
     // Sync request without any peer identifier
     let sync_request = SyncTreeRequest {
         tree_id: tree_id.clone(),
-        our_tips: vec![],
+        our_tips: Vec::new().into(),
         peer_pubkey: None,
         requesting_key: None,
         requesting_key_name: None,
@@ -639,7 +634,7 @@ async fn test_bootstrap_auto_detects_permission_for_authorized_key() {
     // Bootstrap request with authorized key but no requested_permission
     let sync_request = SyncTreeRequest {
         tree_id: tree_id.clone(),
-        our_tips: vec![],
+        our_tips: Vec::new().into(),
         peer_pubkey: None,
         requesting_key: Some(key_id.clone()),
         requesting_key_name: Some(key_id.to_string()),
@@ -706,7 +701,7 @@ async fn test_bootstrap_rejects_unauthorized_key_when_permission_not_specified()
     // Bootstrap request with unauthorized key and no requested_permission
     let sync_request = SyncTreeRequest {
         tree_id: tree_id.clone(),
-        our_tips: vec![],
+        our_tips: Vec::new().into(),
         peer_pubkey: None,
         requesting_key: Some(unauthorized_verifying_key.clone()),
         requesting_key_name: Some("unauthorized_key".to_string()),
@@ -780,7 +775,7 @@ async fn test_bootstrap_auto_detects_global_wildcard_permission() {
     // Bootstrap request with random key and no requested_permission
     let sync_request = SyncTreeRequest {
         tree_id: tree_id.clone(),
-        our_tips: vec![],
+        our_tips: Vec::new().into(),
         peer_pubkey: None,
         requesting_key: Some(random_verifying_key.clone()),
         requesting_key_name: Some("random_key".to_string()),
@@ -866,7 +861,7 @@ async fn test_bootstrap_uses_highest_permission_when_key_has_multiple() {
     // Bootstrap with the special key (has both Write(5) and Read via global)
     let sync_request = SyncTreeRequest {
         tree_id: tree_id.clone(),
-        our_tips: vec![],
+        our_tips: Vec::new().into(),
         peer_pubkey: None,
         requesting_key: Some(special_verifying_key.clone()),
         requesting_key_name: Some("special_key".to_string()),

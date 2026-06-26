@@ -373,7 +373,7 @@ pub fn create_bootstrap_request(
 ) -> SyncRequest {
     SyncRequest::SyncTree(SyncTreeRequest {
         tree_id: tree_id.clone(),
-        our_tips: vec![], // Empty tips = bootstrap needed
+        our_tips: Vec::new().into(), // Empty tips = bootstrap needed
         peer_pubkey: None,
         requesting_key: Some(PublicKey::from_prefixed_string(requesting_key).unwrap()),
         requesting_key_name: Some(key_name.to_string()),

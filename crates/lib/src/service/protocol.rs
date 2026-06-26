@@ -39,6 +39,7 @@ use crate::auth::types::{Permission, SigKey};
 use crate::backend::InstanceMetadata;
 use crate::entry::{Entry, ID};
 use crate::service::error::ServiceError;
+use crate::snapshot::Snapshot;
 use crate::user::UserInfo;
 
 /// Protocol version. Version 0 indicates an unstable protocol that may change
@@ -304,7 +305,7 @@ pub enum ServiceResponse {
     /// Multiple entries
     Entries(Vec<Entry>),
     /// Multiple IDs
-    Ids(Vec<ID>),
+    Ids(Snapshot),
     /// Success with no data
     Ok,
     /// Transaction-build context (response to `DatabaseOp::BeginTransaction`).
@@ -495,13 +496,14 @@ mod tests {
 
     #[test]
     fn test_response_ids_serde() {
-        let resp = ServiceResponse::Ids(vec![test_id(), ID::from_bytes("other")]);
+        let resp = ServiceResponse::Ids(Snapshot::new(vec![test_id(), ID::from_bytes("other")]));
         let json = serde_json::to_string(&resp).unwrap();
         let resp2: ServiceResponse = serde_json::from_str(&json).unwrap();
         match resp2 {
             ServiceResponse::Ids(ids) => {
                 assert_eq!(ids.len(), 2);
-                assert_eq!(ids[0], test_id());
+                assert!(ids.contains(&test_id()));
+                assert!(ids.contains(&ID::from_bytes("other")));
             }
             _ => panic!("wrong variant"),
         }

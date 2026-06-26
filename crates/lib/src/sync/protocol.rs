@@ -9,6 +9,7 @@ use super::peer_types::Address;
 use crate::{
     auth::{Permission, crypto::PublicKey},
     entry::{Entry, ID},
+    snapshot::Snapshot,
 };
 
 /// Handshake request sent when establishing a peer connection.
@@ -68,8 +69,8 @@ pub struct HandshakeResponse {
 pub struct SyncTreeRequest {
     /// Database ID to sync
     pub tree_id: ID,
-    /// Our current tips (empty vec signals bootstrap needed)
-    pub our_tips: Vec<ID>,
+    /// Our current tips (empty set signals bootstrap needed)
+    pub our_tips: Snapshot,
     /// Device public key of the requesting peer (used for automatic tree/peer relationship tracking)
     pub peer_pubkey: Option<PublicKey>,
     // Note: requesting_key is unverified but this is safe - see handler.rs

@@ -33,6 +33,7 @@ use crate::service::protocol::{
     ReadScope, ServiceRequest, ServiceResponse, TransactionContext, WireCrdtValue, read_frame,
     write_frame,
 };
+use crate::snapshot::Snapshot;
 use crate::user::UserError;
 use crate::user::crypto::{decrypt_private_key, derive_encryption_key};
 use crate::user::types::{KeyStorage, UserInfo};
@@ -543,7 +544,11 @@ impl RemoteConnection {
     }
 
     /// Fetch the database's Verified-frontier tips.
-    pub async fn get_verified_tips(&self, root_id: ID, identity: SigKey) -> crate::Result<Vec<ID>> {
+    pub async fn get_verified_tips(
+        &self,
+        root_id: ID,
+        identity: SigKey,
+    ) -> crate::Result<Snapshot> {
         let resp = self
             .db_request(root_id, identity, DatabaseOp::GetVerifiedTips)
             .await?;
@@ -605,7 +610,7 @@ impl RemoteConnection {
         identity: SigKey,
         store: String,
         up_to: Vec<ID>,
-    ) -> crate::Result<Vec<ID>> {
+    ) -> crate::Result<Snapshot> {
         let resp = self
             .db_request(
                 root_id,

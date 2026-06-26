@@ -183,7 +183,7 @@ async fn test_reject_bootstrap_request() {
     let test_key = PublicKey::random();
     let sync_request = SyncRequest::SyncTree(SyncTreeRequest {
         tree_id: tree_id.clone(),
-        our_tips: vec![], // Empty tips = bootstrap needed
+        our_tips: Vec::new().into(), // Empty tips = bootstrap needed
         peer_pubkey: None,
         requesting_key: Some(test_key.clone()),
         requesting_key_name: Some("laptop_key".to_string()),
@@ -267,7 +267,7 @@ async fn test_list_bootstrap_requests_by_status() {
     let test_key = PublicKey::random();
     let sync_request = SyncRequest::SyncTree(SyncTreeRequest {
         tree_id: tree_id.clone(),
-        our_tips: vec![],
+        our_tips: Vec::new().into(),
         peer_pubkey: None,
         requesting_key: Some(test_key.clone()),
         requesting_key_name: Some("test_key".to_string()),
@@ -327,7 +327,7 @@ async fn test_duplicate_bootstrap_requests_same_client() {
     let test_key = PublicKey::random();
     let sync_request1 = SyncRequest::SyncTree(SyncTreeRequest {
         tree_id: tree_id.clone(),
-        our_tips: vec![], // Empty tips = bootstrap needed
+        our_tips: Vec::new().into(), // Empty tips = bootstrap needed
         peer_pubkey: None,
         requesting_key: Some(test_key.clone()),
         requesting_key_name: Some("laptop_key".to_string()),
@@ -345,7 +345,7 @@ async fn test_duplicate_bootstrap_requests_same_client() {
     // Create identical second bootstrap request
     let sync_request2 = SyncRequest::SyncTree(SyncTreeRequest {
         tree_id: tree_id.clone(),
-        our_tips: vec![], // Empty tips = bootstrap needed
+        our_tips: Vec::new().into(), // Empty tips = bootstrap needed
         peer_pubkey: None,
         requesting_key: Some(test_key.clone()),
         requesting_key_name: Some("laptop_key".to_string()),
@@ -462,7 +462,7 @@ async fn test_malformed_permission_requests() {
     for (permission, description) in &permission_tests {
         let sync_request = SyncRequest::SyncTree(SyncTreeRequest {
             tree_id: tree_id.clone(),
-            our_tips: vec![],
+            our_tips: Vec::new().into(),
             peer_pubkey: None,
             requesting_key: Some(test_key.clone()),
             requesting_key_name: Some(format!("key_for_{}", description.replace(" ", "_"))),

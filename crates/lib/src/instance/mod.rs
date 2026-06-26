@@ -22,6 +22,7 @@ use crate::{
     auth::crypto::{PrivateKey, PublicKey},
     backend::{BackendImpl, InstanceMetadata, InstanceSecrets},
     entry::ID,
+    snapshot::Snapshot,
     sync::Sync,
     user::User,
 };
@@ -98,7 +99,7 @@ pub struct WriteEvent {
     entries: Vec<Entry>,
     /// The DAG tips of the database immediately before this write.
     /// Consumers can diff current tips against these to determine what changed.
-    previous_tips: Vec<ID>,
+    previous_tips: Snapshot,
     /// Whether this write originated locally or from a remote sync.
     source: WriteSource,
 }
@@ -117,7 +118,7 @@ impl WriteEvent {
     /// Use these to determine what changed: walk from the database's current tips
     /// back to these previous tips to find all new entries.
     pub fn previous_tips(&self) -> &[ID] {
-        &self.previous_tips
+        self.previous_tips.tips()
     }
 
     /// The source of this write (local commit or remote sync).
@@ -1565,12 +1566,12 @@ impl Instance {
         // Instance, lifted when the server-push notification path lands.
         #[cfg(all(unix, feature = "service"))]
         let previous_tips = if self.remote_connection().is_some() {
-            Vec::new()
+            Snapshot::EMPTY
         } else {
-            self.snapshot(tree_id).await?.into_tips()
+            self.snapshot(tree_id).await?
         };
         #[cfg(not(all(unix, feature = "service")))]
-        let previous_tips = self.snapshot(tree_id).await?.into_tips();
+        let previous_tips = self.snapshot(tree_id).await?;
 
         // 2. Persist to backend storage (and notify server for remote backends)
         self.backend()
@@ -1627,7 +1628,7 @@ impl Instance {
         let _guard = lock.lock().await;
 
         // 1. Capture tips before any writes
-        let previous_tips = self.snapshot(tree_id).await?.into_tips();
+        let previous_tips = self.snapshot(tree_id).await?;
 
         // 2. Store all entries
         let mut stored_entries = Vec::with_capacity(entries.len());

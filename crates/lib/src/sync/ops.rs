@@ -49,11 +49,10 @@ impl Sync {
 
         // Get our current tips for this tree (empty if tree doesn't exist)
         let backend = self.backend()?;
-        let our_tips: Vec<ID> = backend
+        let our_tips = backend
             .snapshot(tree_id)
             .await
-            .map_err(|e| SyncError::BackendError(format!("Failed to get local tips: {e}")))?
-            .into_tips();
+            .map_err(|e| SyncError::BackendError(format!("Failed to get local tips: {e}")))?;
 
         // Get our device public key for automatic peer tracking
         let our_device_pubkey = self.get_device_pubkey().ok();
@@ -652,11 +651,10 @@ impl Sync {
 
         // Get our current tips for this tree (empty if tree doesn't exist)
         let backend = self.backend()?;
-        let our_tips: Vec<ID> = backend
+        let our_tips = backend
             .snapshot(tree_id)
             .await
-            .map_err(|e| SyncError::BackendError(format!("Failed to get local tips: {e}")))?
-            .into_tips();
+            .map_err(|e| SyncError::BackendError(format!("Failed to get local tips: {e}")))?;
 
         // Get our device public key for automatic peer tracking
         let our_device_pubkey = self.get_device_pubkey().ok();
