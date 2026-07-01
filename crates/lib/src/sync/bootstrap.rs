@@ -1,10 +1,11 @@
 //! Bootstrap sync operations and request management.
 
-use tracing::info;
+use tracing::{info, warn};
 
 use super::{
     Address, BootstrapRequest, DatabaseTicket, RequestStatus, Sync, SyncError,
     bootstrap_request_manager::BootstrapRequestManager,
+    peer_manager::PeerManager,
 };
 use crate::{
     Database, Result,
@@ -308,7 +309,7 @@ impl Sync {
 
         // Commit will validate that the user's key has Admin permission
         // If this fails, it means the user lacks the necessary permission
-        tx.commit().await?;
+        let approval_entry_id = tx.commit().await?;
 
         // Update request status to approved
         let approver_id = key.identity().display_id();
@@ -335,6 +336,40 @@ impl Sync {
             approved_by = %approver_id,
             "Bootstrap request approved and key added to database using user-provided key"
         );
+
+        // Broadcast the approval entry to all of the database's peers,
+        // regardless of its sync_on_commit setting. Broadcasting to every peer
+        // (not just the requester) is intentional: the auth change is relevant
+        // to every replica, and reusing the general send path keeps the
+        // mechanism uniform. The requesting peer is registered as a tree peer
+        // (see `Handler::track_tree_sync_relationship`), so it is included and
+        // learns access was granted as soon as any network path to it succeeds
+        // — improving time-to-visibility under fluctuating network conditions
+        // versus waiting on a fixed poll interval. Delivery reuses the normal
+        // send queue, so an unreachable peer falls through to the existing
+        // retry/backoff. A failure here must not undo the already-committed
+        // approval, so it is best-effort: log and move on.
+        if self.background_tx.get().is_some() {
+            let enqueue = async {
+                let peer_tx = self.sync_tree.new_transaction().await?;
+                let peers = PeerManager::new(&peer_tx)
+                    .get_tree_peers(&request.tree_id)
+                    .await?;
+                drop(peer_tx);
+                for peer_id in &peers {
+                    self.queue_entry_for_sync(peer_id, &approval_entry_id, &request.tree_id)?;
+                }
+                Ok::<_, crate::Error>(())
+            };
+            if let Err(e) = enqueue.await {
+                warn!(
+                    request_id = %request_id,
+                    tree_id = %request.tree_id,
+                    error = %e,
+                    "Bootstrap approved but failed to enqueue approval entry to peers"
+                );
+            }
+        }
 
         Ok(())
     }

@@ -166,6 +166,7 @@ Any logged-in user who has a key with Admin permission for the database can appr
 8. Creates transaction using the user's signing key
 9. Adds requesting key to database's auth settings
 10. Updates request status to Approved in the sync database
+11. Broadcasts the newly committed auth entry to all of the database's peers (see [Broadcast on Approval](#broadcast-on-approval))
 
 ### Permission Validation Strategy
 
@@ -182,9 +183,33 @@ Bootstrap approval and rejection use **explicit permission validation**:
 - Consistent permission checking across both operations
 - Better debugging experience when permission issues occur
 
+### Broadcast on Approval
+
+Approval commits the new auth key as an entry in the target database, then
+**broadcasts that entry to all of the database's peers** through the normal
+outbound send queue. This happens regardless of the database's `sync_on_commit`
+setting — approval always broadcasts.
+
+The requesting peer is registered as a peer of the database during its sync
+request, so it is included in the broadcast. Receiving the approval entry is how
+it learns access was granted, without waiting on a fixed poll interval. In
+fluctuating-network scenarios this meaningfully improves the time-to-visibility
+for the client: as soon as any path to the peer succeeds, the entry arrives.
+
+Broadcasting to *all* peers (not only the requester) is intentional — the auth
+change is relevant to every replica of the database, and reusing the general
+send path keeps the mechanism uniform. Delivery reuses the standard send queue,
+so an unreachable peer falls through to the existing retry/backoff path. The
+broadcast is best-effort: a failure to enqueue is logged and does not undo the
+committed approval.
+
 ### Client Retry After Approval
 
-Once approved, the client retries with normal sync after waiting or polling periodically. If access was granted, the sync succeeds and the client can use the database.
+The broadcast delivers the approval entry to the requesting peer whenever it is
+reachable. Recognizing that entry and automatically re-requesting access is left
+to a future sync-API revision; until then the client completes the flow by
+retrying normal sync after waiting or polling periodically. If access was
+granted, the sync succeeds and the client can use the database.
 
 ### Key Requirements
 
