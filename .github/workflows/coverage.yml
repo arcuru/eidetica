@@ -15,7 +15,7 @@ jobs:
     if: github.repository_owner == 'arcuru'
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Setup Nix
         uses: ./.github/actions/setup-nix
@@ -33,7 +33,7 @@ jobs:
           cp "$(nix build --no-link --print-out-paths '.#legacyPackages.x86_64-linux.coverage.postgres')/lcov.info" coverage/postgres/lcov.info
 
       - name: Upload coverage (sqlite)
-        uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           flags: sqlite
@@ -41,7 +41,7 @@ jobs:
           fail_ci_if_error: false
 
       - name: Upload coverage (inmemory)
-        uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           flags: inmemory
@@ -49,7 +49,7 @@ jobs:
           fail_ci_if_error: false
 
       - name: Upload coverage (postgres)
-        uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           flags: postgres
