@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   audit:
-    uses: arcuru/actions/.github/workflows/security-audit.yml@31c804a9c15602300e5e292e80cac1ad5512a21a # v0.2.0
+    uses: arcuru/actions/.github/workflows/security-audit.yml@c8144123ad5a2c6316b7becab8233b68dfa637d9 # v0.2.1
     with:
       runs-on: ubicloud-standard-2
       enable-magic-cache: "false"
