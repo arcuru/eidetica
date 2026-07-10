@@ -64,6 +64,43 @@ async fn test_revoked_key_validation() {
     assert!(resolved.is_ok());
 }
 
+/// A revoked direct key must not authorize through `resolve_identity_permission`
+/// (the shared wire/local resolver): with no wildcard it is denied, and with a
+/// wildcard it falls through to the '*' grant rather than keeping its own
+/// (higher) permission.
+#[tokio::test]
+async fn test_resolve_identity_permission_revoked_direct_key() {
+    use crate::auth::validation::permissions::resolve_identity_permission;
+
+    let (_, pubkey) = generate_keypair();
+    let identity = SigKey::from_pubkey(&pubkey);
+
+    let mut settings = AuthSettings::new();
+    settings
+        .add_key(
+            &pubkey,
+            AuthKey::new(Some("dev"), Permission::Admin(0), KeyStatus::Revoked),
+        )
+        .unwrap();
+    assert!(
+        resolve_identity_permission(&pubkey, &identity, &settings, None)
+            .await
+            .is_err(),
+        "revoked direct key with no wildcard must be denied"
+    );
+
+    // Wildcard present: the revoked key drops to '*' (Read), not its own Admin.
+    settings.set_global_permission(AuthKey::active(None, Permission::Read));
+    let perm = resolve_identity_permission(&pubkey, &identity, &settings, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        perm,
+        Permission::Read,
+        "revoked key must fall through to the wildcard, not retain its Admin grant"
+    );
+}
+
 #[tokio::test]
 async fn test_permission_levels() {
     let validator = AuthValidator::new();

@@ -369,7 +369,7 @@ impl AuthSettings {
     pub fn can_access(&self, pubkey: &PublicKey, requested_permission: &Permission) -> bool {
         // First check if there's a specific key entry for this pubkey
         if let Ok(auth_key) = self.get_key_by_pubkey(pubkey)
-            && *auth_key.status() == KeyStatus::Active
+            && auth_key.is_active()
             && *auth_key.permissions() >= *requested_permission
         {
             return true;
@@ -390,7 +390,7 @@ impl AuthSettings {
         // returned SigKey as authorization (bootstrap access checks,
         // `open_database`, operation signing), so discovery must not offer it.
         if let Ok(auth_key) = self.get_key_by_pubkey(pubkey)
-            && *auth_key.status() == KeyStatus::Active
+            && auth_key.is_active()
         {
             results.push((SigKey::from_pubkey(pubkey), *auth_key.permissions()));
         }

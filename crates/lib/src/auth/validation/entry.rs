@@ -13,7 +13,7 @@ use crate::{
     auth::{
         crypto::verify_entry_signature,
         settings::AuthSettings,
-        types::{KeyStatus, Operation, ResolvedAuth, SigKey},
+        types::{Operation, ResolvedAuth, SigKey},
     },
     constants::SETTINGS,
 };
@@ -121,8 +121,8 @@ impl AuthValidator {
 
         // Try signature verification + permission check against each candidate
         for resolved_auth in resolved_auths {
-            // Skip keys that are not active
-            if resolved_auth.key_status != KeyStatus::Active {
+            // Skip keys that do not currently grant access
+            if !resolved_auth.grants_access() {
                 debug!("Skipping inactive key: {:?}", resolved_auth.key_status);
                 continue;
             }
