@@ -806,6 +806,118 @@ async fn test_bootstrap_with_existing_global_permission_no_duplicate() {
     );
 }
 
+/// A key whose only authority on the target tree flows through a *delegated*
+/// tree must bootstrap-access it, just like it can already sign entries there.
+///
+/// Topology (mirrors chaz's standalone-bridge split):
+/// - session tree T grants `Write` directly to K1 and delegates to agent tree D
+/// - K2 is `Admin` on D but has **no** direct grant on T
+/// - K2 requests bootstrap access to T presenting only its pubkey
+///
+/// Before the fix the bootstrap check used the delegation-blind
+/// `AuthSettings::can_access`, so K2 was bounced to manual approval and hung.
+/// This test is `#[should_panic]` at the commit that introduces it (documenting
+/// the current bug) and holds for real once the resolver is wired in.
+#[tokio::test]
+#[should_panic(expected = "delegated-only key was bounced to manual approval")]
+async fn test_bootstrap_with_delegated_only_key_auto_approval() {
+    use eidetica::auth::types::{DelegatedTreeRef, PermissionBounds, TreeReference};
+
+    // Server owns both the session tree (T) and the agent tree (D).
+    let (server_instance, mut server_user, server_key_id) =
+        crate::helpers::test_local_instance_with_user_and_key("server_user", Some("server_admin"))
+            .await;
+    server_instance.enable_sync().await.unwrap();
+
+    // Agent tree D: K2 is Admin on it, with no relationship to T except the
+    // delegation T will declare below.
+    let k2 = PublicKey::random();
+    let mut d_settings = Doc::new();
+    d_settings.set("name", "Agent DB (delegated tree)");
+    let agent_db = server_user
+        .create_database(d_settings, &server_key_id)
+        .await
+        .unwrap();
+    crate::helpers::add_auth_key(
+        &agent_db,
+        &k2,
+        AuthKey::active(Some("daemon"), AuthPermission::Admin(5)),
+    )
+    .await;
+
+    // Session tree T: direct Write grant to an unrelated K1, plus a delegation
+    // to D capped at Write (session delegations cap below Admin by design).
+    let k1 = PublicKey::random();
+    let mut t_settings = Doc::new();
+    t_settings.set("name", "Session DB (target tree)");
+    let session_db = server_user
+        .create_database(t_settings, &server_key_id)
+        .await
+        .unwrap();
+    crate::helpers::add_auth_key(
+        &session_db,
+        &k1,
+        AuthKey::active(Some("bridge"), AuthPermission::Write(10)),
+    )
+    .await;
+
+    // Declare the delegation on T, pinned to D's current tips (which now
+    // include K2's key entry).
+    let delegation_ref = DelegatedTreeRef {
+        permission_bounds: PermissionBounds {
+            max: AuthPermission::Write(10),
+            min: None,
+        },
+        tree: TreeReference {
+            root: agent_db.root_id().clone(),
+            tips: agent_db.snapshot().await.unwrap().into_tips(),
+        },
+    };
+    let txn = session_db.new_transaction().await.unwrap();
+    txn.get_settings()
+        .unwrap()
+        .add_delegated_tree(delegation_ref)
+        .await
+        .unwrap();
+    txn.commit().await.unwrap();
+    let tree_id = session_db.root_id().clone();
+
+    // Stand up the sync handler for T.
+    let sync = Sync::new(server_instance.clone()).await.unwrap();
+    enable_sync_for_instance_database(&sync, &tree_id)
+        .await
+        .unwrap();
+    let sync_handler = create_test_sync_handler(&sync);
+
+    // K2 bootstraps T with only its pubkey; its Admin-on-D clamps to Write(10).
+    let sync_request = create_bootstrap_request(
+        &tree_id,
+        &k2.to_string(),
+        "daemon_key",
+        AuthPermission::Write(10),
+    );
+    let context = RequestContext::default();
+    let response = sync_handler.handle_request(&sync_request, &context).await;
+
+    match response {
+        SyncResponse::Bootstrap(bootstrap_response) => {
+            assert!(
+                bootstrap_response.key_approved,
+                "delegated-only key should be auto-approved"
+            );
+            assert_eq!(
+                bootstrap_response.granted_permission,
+                Some(AuthPermission::Write(10)),
+                "granted permission should be the delegated authority, clamped to Write(10)"
+            );
+        }
+        SyncResponse::BootstrapPending { .. } => {
+            panic!("delegated-only key was bounced to manual approval");
+        }
+        other => panic!("Expected Bootstrap response, got: {other:?}"),
+    }
+}
+
 /// Test that demonstrates client-side key discovery issue: clients approved via global
 /// permission need a way to discover which SigKey to use for creating entries.
 ///
