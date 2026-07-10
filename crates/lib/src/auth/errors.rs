@@ -125,6 +125,26 @@ pub enum AuthError {
         max: usize,
     },
 
+    /// A delegated tree referenced by a delegation is not synced locally enough
+    /// to decide the monotonicity floor.
+    ///
+    /// This is a *transient* condition, not a validation failure: the entries in
+    /// `missing` have not arrived yet. The caller should keep the entry
+    /// unverified and re-check after syncing `missing` from the delegated tree's
+    /// peers, rather than rejecting it as a forgery. Deliberately excluded from
+    /// [`AuthError::is_delegation_error`] — it signals sync state, not a
+    /// delegation defect.
+    #[error(
+        "Delegated tree {tree_id} not synced enough to validate delegation: {} entry(ies) missing",
+        missing.len()
+    )]
+    DelegatedTreeUnsynced {
+        /// The delegated tree root ID
+        tree_id: ID,
+        /// Entries that must be synced before validation can proceed.
+        missing: Vec<ID>,
+    },
+
     /// Attempted to revoke an entry that is not a key.
     #[error("Cannot revoke non-key entry: {key_name}")]
     CannotRevokeNonKey {
@@ -276,6 +296,13 @@ impl AuthError {
                 | AuthError::DelegationPathTooLong { .. }
                 | AuthError::DelegationTipsTooMany { .. }
         )
+    }
+
+    /// Check if this error indicates a delegated tree is not yet synced enough
+    /// to validate — a transient, retriable condition, not a delegation defect
+    /// (see [`AuthError::DelegatedTreeUnsynced`]).
+    pub fn is_delegated_tree_unsynced(&self) -> bool {
+        matches!(self, AuthError::DelegatedTreeUnsynced { .. })
     }
 
     /// Get the key name if this error is about a missing key.
