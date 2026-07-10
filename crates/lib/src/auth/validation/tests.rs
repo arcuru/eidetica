@@ -1248,3 +1248,48 @@ async fn test_delegation_reads_auth_state_at_pinned_tips_not_live_head() {
         "pinned tips must resolve the Admin(5) state at snapshot 1, not the live-head Read downgrade"
     );
 }
+
+/// A delegation whose claimed tips are not present locally cannot be decided:
+/// resolution must surface a *retriable* `DelegatedTreeUnsynced` carrying the
+/// missing entries as a want-list — NOT an `InvalidDelegationTips` forgery
+/// rejection. This is the caller-side wiring of `Reachability::Indeterminate`:
+/// the entry stays unverifiable-for-now and is re-checked once `missing` syncs.
+#[tokio::test]
+async fn test_delegation_indeterminate_when_tips_unsynced() {
+    use crate::auth::errors::AuthError;
+
+    let (instance, delegated_tree, delegated_pubkey, _s1, _s2, main_auth) =
+        setup_delegation_with_floor(false).await;
+
+    // A claimed tip that exists nowhere in the local backend.
+    let ghost = ID::from_bytes("unsynced-tip");
+    let sig = SigKey::Delegation {
+        path: vec![DelegationStep {
+            tree: delegated_tree.root_id().clone(),
+            tips: vec![ghost.clone()],
+        }],
+        hint: KeyHint::from_pubkey(&delegated_pubkey),
+    };
+
+    let err = AuthValidator::new()
+        .resolve_sig_key(&sig, &main_auth, Some(&instance))
+        .await
+        .expect_err("unsynced claimed tips must not resolve");
+
+    // Must be the retriable sync-state signal, and must hand back the exact
+    // want-list so a re-verification pass knows what to fetch.
+    match err {
+        Error::Auth(ref boxed) => match &**boxed {
+            AuthError::DelegatedTreeUnsynced { missing, .. } => {
+                assert_eq!(missing, &vec![ghost], "want-list must name the missing tip");
+                assert!(
+                    !boxed.is_delegation_error(),
+                    "unsynced is a transient state, not a delegation defect"
+                );
+                assert!(boxed.is_delegated_tree_unsynced());
+            }
+            other => panic!("expected DelegatedTreeUnsynced, got: {other:?}"),
+        },
+        other => panic!("expected Auth error, got: {other:?}"),
+    }
+}

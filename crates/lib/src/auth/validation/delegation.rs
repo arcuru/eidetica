@@ -11,6 +11,7 @@ use crate::{
         settings::AuthSettings,
         types::{DelegationStep, KeyHint, PermissionBounds, ResolvedAuth},
     },
+    backend::Reachability,
 };
 
 /// Maximum number of steps in a single delegation path.
@@ -114,12 +115,13 @@ impl DelegationResolver {
             // may not regress below the snapshot the parent committed for this
             // delegation (`delegated_tree_ref.tree.tips`, the "floor"): every floor
             // tip must be an ancestor-or-equal of the claimed tips.
-            // `targets_reachable_from` answers exactly that, and in doing so
+            // `check_targets_reachable_from` answers exactly that, and in doing so
             // validates that each claimed tip is a real entry of this delegated
-            // tree (rejecting foreign or fabricated tips). It is bounded — the cost
-            // tracks the floor distance, not the whole tree — which matters because
-            // this runs on every delegated-entry validation (and re-validation).
-            // Membership here is *presence in the tree*, not
+            // tree (rejecting foreign or fabricated tips). It is bounded by the
+            // target floor height, so the cost tracks the floor distance rather
+            // than the whole tree on both the reachable and unreachable paths —
+            // which matters because this runs on every delegated-entry validation
+            // (and re-validation). Membership here is *presence in the tree*, not
             // `VerificationStatus::Verified`: a delegation can legitimately resolve
             // against a delegated tree whose entries are still unverified locally
             // (e.g. just arrived over sync and not yet re-verified).
@@ -129,25 +131,42 @@ impl DelegationResolver {
             // since-revoked key). Advancing the floor is an admin-gated `_settings`
             // write on the parent tree.
             //
+            // A three-state verdict keeps a *proven* regression (Unreachable →
+            // reject) distinct from "the delegated tree hasn't synced far enough
+            // to decide" (Indeterminate → surface a retriable error so the entry
+            // stays unverified and is re-checked once `missing` arrives, instead
+            // of being rejected as a forgery).
+            //
             // FIXME(security): the floor is the only monotonicity guarantee today
             // and is a known partial fix. It enforces neither strict per-entry
             // non-regression (siblings above the floor may still differ) nor a
             // forward-only gate on the committed pointer itself. Both remain to be
             // done.
             let floor = &delegated_tree_ref.tree.tips;
-            let floor_satisfied = current_backend
-                .targets_reachable_from(&root_id, &step.tips, floor)
+            match current_backend
+                .check_targets_reachable_from(&root_id, &step.tips, floor)
                 .await
+                // A foreign (wrong-tree) claimed tip surfaces as a backend
+                // integrity error — treat it as an invalid delegation tip.
                 .map_err(|_| AuthError::InvalidDelegationTips {
                     tree_id: root_id.clone(),
                     claimed_tips: step.tips.clone(),
-                })?;
-            if !floor_satisfied {
-                return Err(AuthError::InvalidDelegationTips {
-                    tree_id: root_id.clone(),
-                    claimed_tips: step.tips.clone(),
+                })? {
+                Reachability::Reachable => {}
+                Reachability::Unreachable => {
+                    return Err(AuthError::InvalidDelegationTips {
+                        tree_id: root_id.clone(),
+                        claimed_tips: step.tips.clone(),
+                    }
+                    .into());
                 }
-                .into());
+                Reachability::Indeterminate { missing } => {
+                    return Err(AuthError::DelegatedTreeUnsynced {
+                        tree_id: root_id.clone(),
+                        missing,
+                    }
+                    .into());
+                }
             }
 
             // Resolve the delegated tree's auth settings AS OF the claimed tips,

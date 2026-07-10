@@ -125,6 +125,34 @@ pub mod errors;
 // Re-export main types for easier access
 pub use errors::BackendError;
 
+/// Verdict of a bounded, tree-scoped reachability query
+/// ([`check_targets_reachable_from`](BackendImpl::check_targets_reachable_from)).
+///
+/// The three states exist so a caller can tell a *proven* negative apart from
+/// "not enough local history to decide" — a distinction that matters for a sync
+/// system, where the latter is transient and self-heals once more of the tree
+/// arrives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reachability {
+    /// Every target is an ancestor-or-equal of some `from` entry, proven
+    /// against fully-present history within the height bound.
+    Reachable,
+    /// Proven negative: the region at or above the target floor was fully
+    /// present locally and at least one target is not an ancestor of `from`
+    /// (e.g. a snapshot regression, or a foreign/fabricated tip).
+    Unreachable,
+    /// Undecidable from local history: a target, a `from` tip, or an ancestor
+    /// needed to reach a target is missing locally. `missing` is the set of
+    /// entries whose absence blocked the decision — the caller should sync
+    /// these and re-check. It is the current blocking *frontier*, not
+    /// necessarily the whole gap: fetching it may reveal a further layer. The
+    /// height bound keeps this set small.
+    Indeterminate {
+        /// Entries that must be synced before the query can be decided.
+        missing: Vec<ID>,
+    },
+}
+
 /// Verification status for entries in the backend.
 ///
 /// This enum tracks whether an entry has been cryptographically verified
@@ -440,74 +468,141 @@ pub trait BackendImpl: Send + Sync + Any {
     /// - `EntryNotInTree` if any tip belongs to a different tree
     async fn get_tree_from_tips(&self, tree: &ID, tips: &[ID]) -> Result<Vec<Entry>>;
 
-    /// Within `tree`, report whether every entry in `targets` is reachable by
-    /// walking parent pointers back from `from` — i.e. each target is an
-    /// ancestor-or-equal of at least one `from` entry.
+    /// Within `tree`, decide whether every entry in `targets` is an
+    /// ancestor-or-equal of some entry in `from` — i.e. whether the `from`
+    /// snapshot is at-or-ahead-of the `targets` snapshot.
     ///
-    /// This is the cheap, boolean counterpart to
-    /// [`get_tree_from_tips`](Self::get_tree_from_tips): the walk is **bounded**,
-    /// stopping the moment every target has been seen, so the cost tracks the
-    /// distance from `from` back to the targets rather than the size of the tree.
-    /// Prefer it whenever a reachability answer is all that's needed — e.g. an
-    /// "is this snapshot at-or-ahead-of that one" check — instead of
-    /// materialising the entire ancestor set.
+    /// Returns a three-state [`Reachability`] rather than a bare bool so a
+    /// *proven* negative is distinguishable from "not enough local history to
+    /// decide" (see [`Reachability::Indeterminate`]). This is the cheap
+    /// counterpart to [`get_tree_from_tips`](Self::get_tree_from_tips) when only
+    /// an at-or-ahead-of answer is needed, not the materialised ancestor set.
     ///
-    /// `from` entries count as reachable (a target equal to a `from` entry is
-    /// reached), and an empty `targets` is vacuously reachable. Each `from` entry
-    /// is validated to be a real entry of `tree`; ancestors encountered during
-    /// the walk that are missing locally or belong to another tree are skipped
-    /// rather than erroring (a partially-synced history simply yields the tips it
-    /// can reach).
+    /// **Bounded by the target floor.** The walk never descends below the
+    /// minimum target height: an entry below every remaining target cannot be
+    /// one, nor reach one through still-lower parents (parent heights strictly
+    /// decrease). Cost therefore tracks the height gap between `from` and
+    /// `targets` on *both* the reachable and unreachable paths, not the size of
+    /// the tree — which matters because this runs on every delegated-entry
+    /// validation (and re-validation).
+    ///
+    /// **Validation is symmetric.** Both `from` and `targets` are checked to be
+    /// real entries of `tree`. An entry that exists but belongs to another tree
+    /// is a `from`/target integrity violation and errors. An entry that is
+    /// *missing locally* is not a negative: it makes the verdict
+    /// [`Indeterminate`](Reachability::Indeterminate) and is reported in
+    /// `missing`, so a partially-synced history is never mistaken for a
+    /// regression. Membership is *presence in the tree*, not
+    /// `VerificationStatus::Verified`.
+    ///
+    /// A target equal to a `from` entry is reached; an empty `targets` is
+    /// vacuously [`Reachable`](Reachability::Reachable).
     ///
     /// # Errors
-    /// - `EntryNotFound` if any `from` entry doesn't exist locally
-    /// - `EntryNotInTree` if any `from` entry belongs to a different tree
+    /// - `EntryNotInTree` if any `from` or `targets` entry exists but belongs to
+    ///   a different tree
     ///
     /// The default implementation performs the walk via [`get`](Self::get); a
     /// backend may override it with a single-query traversal.
-    async fn targets_reachable_from(&self, tree: &ID, from: &[ID], targets: &[ID]) -> Result<bool> {
+    async fn check_targets_reachable_from(
+        &self,
+        tree: &ID,
+        from: &[ID],
+        targets: &[ID],
+    ) -> Result<Reachability> {
         use std::collections::HashSet;
 
-        let mut unmet: HashSet<ID> = targets.iter().cloned().collect();
+        // An empty `from` snapshot dominates nothing: any required target is
+        // definitively unreachable. This is a *proven* negative, not
+        // Indeterminate — no amount of syncing lets an empty claim catch up to a
+        // non-empty floor, so we never load the targets to decide it.
+        if from.is_empty() && !targets.is_empty() {
+            return Ok(Reachability::Unreachable);
+        }
+
+        // Validate targets and take the height floor. A target that EXISTS but
+        // is foreign is an integrity violation; a MISSING target means we can't
+        // establish the floor, so it becomes a want-list item (Indeterminate),
+        // never a silent negative.
+        let mut unmet: HashSet<ID> = HashSet::with_capacity(targets.len());
+        let mut missing: Vec<ID> = Vec::new();
+        let mut floor_height = u64::MAX;
+        for target in targets {
+            match self.get(target).await {
+                Ok(entry) => {
+                    if !entry.in_tree(tree) {
+                        return Err(BackendError::EntryNotInTree {
+                            entry_id: target.clone(),
+                            tree_id: tree.clone(),
+                        }
+                        .into());
+                    }
+                    floor_height = floor_height.min(entry.height());
+                    unmet.insert(target.clone());
+                }
+                Err(_) => {
+                    unmet.insert(target.clone());
+                    missing.push(target.clone());
+                }
+            }
+        }
+
         let mut visited: HashSet<ID> = HashSet::with_capacity(from.len());
         let mut stack: Vec<ID> = Vec::new();
 
-        // Seed with `from`, validating tree membership on each.
+        // Seed with `from`: a foreign tip is a forgery (error); a missing tip is
+        // a want-list item. Only expand parents of entries above the floor.
         for tip in from {
-            let entry = self.get(tip).await?;
-            if !entry.in_tree(tree) {
-                return Err(BackendError::EntryNotInTree {
-                    entry_id: tip.clone(),
-                    tree_id: tree.clone(),
+            match self.get(tip).await {
+                Ok(entry) => {
+                    if !entry.in_tree(tree) {
+                        return Err(BackendError::EntryNotInTree {
+                            entry_id: tip.clone(),
+                            tree_id: tree.clone(),
+                        }
+                        .into());
+                    }
+                    if visited.insert(tip.clone()) {
+                        unmet.remove(tip);
+                        if entry.height() > floor_height {
+                            stack.extend(entry.parents()?);
+                        }
+                    }
                 }
-                .into());
-            }
-            if visited.insert(tip.clone()) {
-                unmet.remove(tip);
-                stack.extend(entry.parents().unwrap_or_default());
+                Err(_) => missing.push(tip.clone()),
             }
         }
 
-        // Walk ancestors until every target is reached, or the history is
-        // exhausted (a target that is never seen is not an ancestor → false).
+        // Bounded ancestor walk. A foreign ancestor is simply not part of this
+        // tree's history (skip); a missing one blocks the decision (want-list).
         while !unmet.is_empty() {
-            let Some(current) = stack.pop() else {
-                return Ok(false);
-            };
+            let Some(current) = stack.pop() else { break };
             if !visited.insert(current.clone()) {
                 continue;
             }
-            let Ok(entry) = self.get(&current).await else {
-                continue;
-            };
-            if !entry.in_tree(tree) {
-                continue;
+            match self.get(&current).await {
+                Ok(entry) => {
+                    if !entry.in_tree(tree) {
+                        continue;
+                    }
+                    unmet.remove(&current);
+                    if entry.height() > floor_height {
+                        stack.extend(entry.parents()?);
+                    }
+                }
+                Err(_) => missing.push(current.clone()),
             }
-            unmet.remove(&current);
-            stack.extend(entry.parents().unwrap_or_default());
         }
 
-        Ok(true)
+        Ok(if unmet.is_empty() {
+            Reachability::Reachable
+        } else if !missing.is_empty() {
+            missing.sort();
+            missing.dedup();
+            Reachability::Indeterminate { missing }
+        } else {
+            Reachability::Unreachable
+        })
     }
 
     /// Retrieves all entries belonging to a specific store at the given snapshot, sorted topologically.
