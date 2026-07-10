@@ -385,8 +385,13 @@ impl AuthSettings {
     pub fn find_all_sigkeys_for_pubkey(&self, pubkey: &PublicKey) -> Vec<(SigKey, Permission)> {
         let mut results = Vec::new();
 
-        // Check if this pubkey has a direct key entry
-        if let Ok(auth_key) = self.get_key_by_pubkey(pubkey) {
+        // Check if this pubkey has an active direct key entry. A revoked or
+        // inactive key is not a usable access method, and callers treat a
+        // returned SigKey as authorization (bootstrap access checks,
+        // `open_database`, operation signing), so discovery must not offer it.
+        if let Ok(auth_key) = self.get_key_by_pubkey(pubkey)
+            && *auth_key.status() == KeyStatus::Active
+        {
             results.push((SigKey::from_pubkey(pubkey), *auth_key.permissions()));
         }
 
@@ -634,6 +639,24 @@ mod tests {
 
         let results = settings.find_all_sigkeys_for_pubkey(&pubkey);
         assert_eq!(results.len(), 2);
+
+        // A revoked direct key is not a usable access method and must not be
+        // discovered — otherwise a revoked (delegated) key could bootstrap.
+        // Checked against fresh settings so no global '*' grant masks the result.
+        let mut revoked_settings = AuthSettings::new();
+        let revoked_pubkey = PublicKey::random();
+        revoked_settings
+            .add_key(
+                &revoked_pubkey,
+                AuthKey::new(Some("revoked"), Permission::Admin(0), KeyStatus::Revoked),
+            )
+            .unwrap();
+        assert!(
+            revoked_settings
+                .find_all_sigkeys_for_pubkey(&revoked_pubkey)
+                .is_empty(),
+            "revoked direct key should not be offered as an access method"
+        );
     }
 
     #[test]

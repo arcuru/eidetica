@@ -254,8 +254,12 @@ impl SyncHandlerImpl {
 
     /// Check if the requesting key already has sufficient permissions through existing auth.
     ///
-    /// This uses the AuthSettings.can_access() method to check if the requesting key
-    /// already has sufficient permissions (including through global '*' permissions).
+    /// Resolves the requester's best available permission through
+    /// [`Database::find_sigkeys`] — the same discovery primitive `open_database`
+    /// and operation signing use. It resolves direct grants, the global `*`
+    /// grant, and — unlike [`AuthSettings::can_access`] — authority that reaches
+    /// this tree only through a *delegated* tree (the sync "nesting doll" model).
+    /// Without it a delegated-only key is bounced to manual approval and hangs.
     ///
     /// # Arguments
     /// * `tree_id` - The database/tree ID to check auth settings for
@@ -271,23 +275,21 @@ impl SyncHandlerImpl {
         requesting_pubkey: &PublicKey,
         requested_permission: &Permission,
     ) -> Result<bool> {
-        let database = Database::open(&self.instance()?, tree_id).await?;
-        let settings_store = database.get_settings().await?;
-
-        let auth_settings = settings_store.auth_snapshot().await?;
-
-        // Use the AuthSettings.can_access() method to check permissions
-        if auth_settings.can_access(requesting_pubkey, requested_permission) {
+        // Results are sorted highest-permission-first and exclude revoked keys,
+        // so the top candidate is the requester's best available authority.
+        let sigkeys = Database::find_sigkeys(&self.instance()?, tree_id, requesting_pubkey).await?;
+        let granted = sigkeys
+            .first()
+            .is_some_and(|(_, permission)| *permission >= *requested_permission);
+        if granted {
             debug!(
                 tree_id = %tree_id,
                 requesting_pubkey = %requesting_pubkey,
                 requested_permission = ?requested_permission,
                 "Key has sufficient permission for bootstrap access"
             );
-            return Ok(true);
         }
-
-        Ok(false)
+        Ok(granted)
     }
 
     /// Check if a database requires authentication for unauthenticated requests.
