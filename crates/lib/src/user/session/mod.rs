@@ -1036,6 +1036,50 @@ impl User {
         requested_permission: Permission,
         metadata: Option<Doc>,
     ) -> Result<()> {
+        let database_id = ticket.database_id().clone();
+
+        let result = self
+            .request_database_access_network(sync, ticket, key_id, requested_permission, metadata)
+            .await;
+
+        self.record_database_access(&database_id, key_id, result)
+            .await
+    }
+
+    /// Run only the network phase of [`request_database_access`](Self::request_database_access).
+    ///
+    /// This performs the sync-layer bootstrap (auth entries + data sync) for the
+    /// ticket but does **not** establish the User-layer SigKey mapping. It is the
+    /// blessed public entry point for the raw sync-layer bootstrap, replacing
+    /// direct use of [`Sync::bootstrap_with_ticket`](crate::sync::Sync::bootstrap_with_ticket)
+    /// (which is crate-private precisely because calling it alone leaves the
+    /// database unopenable).
+    ///
+    /// It takes `&self`, not `&mut self`: it only reads this user's key material.
+    /// That lets callers holding a coarse per-session lock (e.g. a daemon) run the
+    /// network round-trip **without** the write lock held, then re-acquire the
+    /// lock only for the cheap local mapping write via
+    /// [`record_database_access`](Self::record_database_access). A slow or hung
+    /// peer therefore never blocks the rest of the session. Pass the returned
+    /// `Result` straight into `record_database_access`; its outcome is re-raised
+    /// unchanged so callers can react to [`SyncError::BootstrapPending`] et al.
+    ///
+    /// Most callers should use [`request_database_access`](Self::request_database_access),
+    /// which chains both phases for you.
+    ///
+    /// # Errors
+    /// - Returns [`UserError::KeyNotFound`](crate::user::UserError::KeyNotFound)
+    ///   if the user doesn't own the specified key.
+    /// - Returns the sync error if the bootstrap fails or all ticket addresses
+    ///   fail.
+    pub async fn request_database_access_network(
+        &self,
+        sync: &Sync,
+        ticket: &DatabaseTicket,
+        key_id: &PublicKey,
+        requested_permission: Permission,
+        metadata: Option<Doc>,
+    ) -> Result<()> {
         if self.key_manager.get_signing_key(key_id).is_none() {
             return Err(super::errors::UserError::KeyNotFound {
                 key_id: key_id.to_string(),
@@ -1044,19 +1088,14 @@ impl User {
         }
 
         let key_name = key_id.to_string();
-        let database_id = ticket.database_id().clone();
 
-        let result = sync
-            .bootstrap_with_ticket(ticket, key_id, &key_name, requested_permission, metadata)
-            .await;
-
-        self.record_database_access(&database_id, key_id, result)
+        sync.bootstrap_with_ticket(ticket, key_id, &key_name, requested_permission, metadata)
             .await
     }
 
     /// Record the User-layer SigKey mapping for a bootstrap whose network phase
     /// has already completed, given the [`Result`] returned by
-    /// [`Sync::bootstrap_with_ticket`](crate::sync::Sync::bootstrap_with_ticket).
+    /// [`request_database_access_network`](Self::request_database_access_network).
     ///
     /// [`request_database_access`](Self::request_database_access) is the usual
     /// entry point and performs the network bootstrap for you. This split-out

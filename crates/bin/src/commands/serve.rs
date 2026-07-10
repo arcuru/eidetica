@@ -540,12 +540,15 @@ async fn handle_track_database(
         }
     };
 
-    // Run the network bootstrap WITHOUT holding the per-session user lock — a
-    // slow or hung peer must not freeze the rest of this session's requests.
-    let key_name = key_id.to_string();
-    let network_result = sync
-        .bootstrap_with_ticket(&ticket, &key_id, &key_name, permission, None)
-        .await;
+    // Run the network bootstrap WITHOUT holding the per-session user *write*
+    // lock — a slow or hung peer must not freeze the rest of this session's
+    // requests. The network phase only reads key material, so a read lock
+    // suffices; the write lock is taken below solely for the mapping write.
+    let network_result = {
+        let user = user_lock.read().await;
+        user.request_database_access_network(&sync, &ticket, &key_id, permission, None)
+            .await
+    };
 
     // Re-acquire only for the cheap, local SigKey-mapping write.
     let bootstrap_result = {

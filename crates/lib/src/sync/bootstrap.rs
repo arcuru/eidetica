@@ -146,10 +146,22 @@ impl Sync {
     /// * `metadata` - Optional free-form context the requester attaches for the
     ///   approver to inspect, surfaced verbatim on the stored [`BootstrapRequest`].
     ///
+    /// This is the raw sync-layer primitive: it grants sync-layer access (auth
+    /// entries + data sync) but does **not** establish the User-layer SigKey
+    /// mapping that [`User::open_database`](crate::user::User::open_database) and
+    /// `find_key` require. Calling it alone leaves the database unopenable ("No
+    /// key found for database"). It is therefore `pub(crate)`; external callers
+    /// must go through [`User::request_database_access`](crate::user::User::request_database_access),
+    /// which performs both halves. Callers that must run the network round-trip
+    /// without holding a `&mut User` lock use
+    /// [`User::request_database_access_network`](crate::user::User::request_database_access_network)
+    /// followed by
+    /// [`User::record_database_access`](crate::user::User::record_database_access).
+    ///
     /// # Errors
     /// Returns [`SyncError::InvalidAddress`] if the ticket has no address hints.
     /// Returns the last sync error if no address succeeded.
-    pub async fn bootstrap_with_ticket(
+    pub(crate) async fn bootstrap_with_ticket(
         &self,
         ticket: &DatabaseTicket,
         requesting_public_key: &PublicKey,
