@@ -816,10 +816,7 @@ async fn test_bootstrap_with_existing_global_permission_no_duplicate() {
 ///
 /// Before the fix the bootstrap check used the delegation-blind
 /// `AuthSettings::can_access`, so K2 was bounced to manual approval and hung.
-/// This test is `#[should_panic]` at the commit that introduces it (documenting
-/// the current bug) and holds for real once the resolver is wired in.
 #[tokio::test]
-#[should_panic(expected = "delegated-only key was bounced to manual approval")]
 async fn test_bootstrap_with_delegated_only_key_auto_approval() {
     use eidetica::auth::types::{DelegatedTreeRef, PermissionBounds, TreeReference};
 
