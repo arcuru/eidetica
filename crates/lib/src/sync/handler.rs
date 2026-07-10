@@ -22,7 +22,7 @@ use super::{
 use crate::{
     Database, Entry, Error, Instance, Result, WeakInstance,
     auth::{
-        KeyStatus, Permission,
+        Permission,
         crypto::{PublicKey, create_challenge_response, generate_challenge},
     },
     crdt::Doc,
@@ -324,7 +324,7 @@ impl SyncHandlerImpl {
 
         // Auth is configured - check if there's an Active global permission
         if let Ok(global_key) = auth_settings.get_global_key()
-            && *global_key.status() == KeyStatus::Active
+            && global_key.is_active()
         {
             debug!(
                 tree_id = %tree_id,

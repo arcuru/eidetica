@@ -86,6 +86,16 @@ impl AuthKey {
         &self.status
     }
 
+    /// Whether this key currently grants access.
+    ///
+    /// The single definition of "usable key" at the settings layer — mirror of
+    /// [`ResolvedAuth::grants_access`]. Callers deciding access must gate on
+    /// this rather than re-checking `status` inline, so revocation is honoured
+    /// identically on every path.
+    pub fn is_active(&self) -> bool {
+        self.status == KeyStatus::Active
+    }
+
     /// Set the status (e.g., for revocation)
     pub fn set_status(&mut self, status: KeyStatus) {
         self.status = status;
@@ -550,4 +560,16 @@ pub struct ResolvedAuth {
     pub effective_permission: Permission,
     /// Current status of the key
     pub key_status: KeyStatus,
+}
+
+impl ResolvedAuth {
+    /// Whether this resolved key may currently be used to authorize access.
+    ///
+    /// The single definition of "usable key" for every auth path — resolvers
+    /// return candidates regardless of status, so each consumer that turns
+    /// candidates into an access decision must gate on this, not re-check
+    /// `key_status` inline.
+    pub fn grants_access(&self) -> bool {
+        self.key_status == KeyStatus::Active
+    }
 }

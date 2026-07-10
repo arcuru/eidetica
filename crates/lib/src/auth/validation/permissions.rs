@@ -44,67 +44,53 @@ pub async fn resolve_identity_permission(
                     ),
                 })));
             }
-            auth_settings.get_global_permission().ok_or_else(|| {
+            let global = auth_settings.get_global_key().map_err(|_| {
                 Error::Auth(Box::new(AuthError::InvalidAuthConfiguration {
                     reason: "Global '*' permission not configured".to_string(),
                 }))
-            })
+            })?;
+            if !global.is_active() {
+                return Err(Error::Auth(Box::new(AuthError::InvalidAuthConfiguration {
+                    reason: "Global '*' permission is not active".to_string(),
+                })));
+            }
+            Ok(*global.permissions())
         }
-        SigKey::Direct { hint } => match (&hint.pubkey, &hint.name) {
-            (Some(claimed_pubkey), _) => {
-                if *claimed_pubkey != *pubkey {
-                    return Err(Error::Auth(Box::new(AuthError::SigningKeyMismatch {
-                        reason: format!("pubkey '{pubkey}' but identity claims '{claimed_pubkey}'"),
-                    })));
-                }
-                // Direct membership wins; otherwise fall back to the
-                // wildcard ('*') permission slot, which represents the
-                // tree's grant to "any key not otherwise listed". The
-                // caller already proved possession of `pubkey` (the
-                // connection's session keyset check on the wire path,
-                // signature verification on the local path), so accepting
-                // the wildcard level here is the structural intent of a
-                // global grant — no extra trust required.
-                if let Ok(auth_key) = auth_settings.get_key_by_pubkey(pubkey) {
-                    return Ok(*auth_key.permissions());
-                }
-                if let Some(global) = auth_settings.get_global_permission() {
-                    return Ok(global);
-                }
-                Err(Error::Auth(Box::new(AuthError::KeyNotFound {
-                    key_name: pubkey.to_string(),
-                })))
+        SigKey::Direct { hint } => {
+            // Anti-spoof: a pubkey-bearing hint must claim the proven key.
+            if let Some(claimed_pubkey) = &hint.pubkey
+                && *claimed_pubkey != *pubkey
+            {
+                return Err(Error::Auth(Box::new(AuthError::SigningKeyMismatch {
+                    reason: format!("pubkey '{pubkey}' but identity claims '{claimed_pubkey}'"),
+                })));
             }
-            (_, Some(name)) => {
-                let matches = auth_settings.find_keys_by_name(name);
-                if matches.is_empty() {
-                    // Named identity with no direct match falls back to
-                    // the wildcard slot, same as the pubkey-only branch
-                    // — the structural intent matches.
-                    if let Some(global) = auth_settings.get_global_permission() {
-                        return Ok(global);
-                    }
-                    return Err(Error::Auth(Box::new(AuthError::KeyNotFound {
-                        key_name: name.clone(),
-                    })));
-                }
-                let pubkey_str = pubkey.to_string();
-                let (_, auth_key) = matches
-                    .iter()
-                    .find(|(pk, _)| *pk == pubkey_str)
-                    .ok_or_else(|| {
-                        Error::Auth(Box::new(AuthError::SigningKeyMismatch {
-                            reason: format!(
-                                "pubkey '{pubkey}' but no key named '{name}' has that pubkey"
-                            ),
-                        }))
-                    })?;
-                Ok(*auth_key.permissions())
+            if hint.pubkey.is_none() && hint.name.is_none() {
+                return Err(Error::Auth(Box::new(AuthError::InvalidAuthConfiguration {
+                    reason: "identity has empty hint".to_string(),
+                })));
             }
-            _ => Err(Error::Auth(Box::new(AuthError::InvalidAuthConfiguration {
-                reason: "identity has empty hint".to_string(),
-            }))),
-        },
+            // Resolve the hint through the shared resolver, then take the
+            // highest active grant that belongs to the proven pubkey. Direct
+            // membership wins; otherwise fall back to the wildcard ('*') slot —
+            // the tree's grant to "any key not otherwise listed". The caller
+            // already proved possession of `pubkey` (session keyset check on
+            // the wire path, signature verification locally), so accepting the
+            // wildcard level is the structural intent of a global grant.
+            if let Ok(candidates) = auth_settings.resolve_hint(hint)
+                && let Some(permission) = select_effective_permission(&candidates, pubkey)
+            {
+                return Ok(permission);
+            }
+            if let Ok(global) = auth_settings.get_global_key()
+                && global.is_active()
+            {
+                return Ok(*global.permissions());
+            }
+            Err(Error::Auth(Box::new(AuthError::KeyNotFound {
+                key_name: hint.name.clone().unwrap_or_else(|| pubkey.to_string()),
+            })))
+        }
         SigKey::Delegation { .. } => {
             let mut validator = AuthValidator::new();
             let resolved_auths = validator
@@ -116,17 +102,31 @@ pub async fn resolve_identity_permission(
                     }))
                 })?;
 
-            resolved_auths
-                .into_iter()
-                .find(|ra| ra.public_key == *pubkey)
-                .map(|ra| ra.effective_permission)
-                .ok_or_else(|| {
-                    Error::Auth(Box::new(AuthError::SigningKeyMismatch {
-                        reason: format!("no resolved delegation key matches pubkey '{pubkey}'"),
-                    }))
-                })
+            select_effective_permission(&resolved_auths, pubkey).ok_or_else(|| {
+                Error::Auth(Box::new(AuthError::SigningKeyMismatch {
+                    reason: format!("no active resolved delegation key matches pubkey '{pubkey}'"),
+                }))
+            })
         }
     }
+}
+
+/// Highest permission among resolved candidates that belong to `pubkey` and
+/// currently grant access.
+///
+/// The single place auth paths turn resolved candidates into an effective
+/// permission: resolvers return candidates regardless of key status, so this is
+/// where revocation is honoured — identically for direct, wildcard, and
+/// delegated authority. Returns `None` when no active candidate matches.
+pub(crate) fn select_effective_permission(
+    candidates: &[ResolvedAuth],
+    pubkey: &PublicKey,
+) -> Option<Permission> {
+    candidates
+        .iter()
+        .filter(|ra| ra.public_key == *pubkey && ra.grants_access())
+        .map(|ra| ra.effective_permission)
+        .max()
 }
 
 /// Check if a resolved authentication has sufficient permissions for an operation

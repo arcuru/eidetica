@@ -348,6 +348,29 @@ async fn test_delegated_tree_with_revoked_keys() -> Result<()> {
     assert_eq!(resolved_auth_revoked.len(), 1);
     assert_eq!(resolved_auth_revoked[0].key_status, KeyStatus::Revoked);
 
+    // The shared resolver must not grant a delegated key once it is revoked,
+    // resolved at the delegated tree's *current* tips (post-revocation).
+    let revoked_tips = delegated_tree.snapshot().await?.into_tips();
+    let revoked_delegation_id = SigKey::Delegation {
+        path: vec![DelegationStep {
+            tree: delegated_tree_root.clone(),
+            tips: revoked_tips,
+        }],
+        hint: KeyHint::from_pubkey(&delegated_user_key),
+    };
+    let main_auth_now = main_tree.get_settings().await?.auth_snapshot().await?;
+    let denied = eidetica::auth::validation::permissions::resolve_identity_permission(
+        &delegated_user_key,
+        &revoked_delegation_id,
+        &main_auth_now,
+        Some(&db),
+    )
+    .await;
+    assert!(
+        denied.is_err(),
+        "revoked delegated key must not resolve to a permission at current tips"
+    );
+
     Ok(())
 }
 
