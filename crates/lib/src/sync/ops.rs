@@ -383,6 +383,25 @@ impl Sync {
         Ok(())
     }
 
+    /// Request the background engine to complete any pending outgoing bootstrap
+    /// request for `tree_id` (non-blocking).
+    ///
+    /// Called from [`Instance::put_remote_entries`](crate::instance::Instance)
+    /// when a remote write lands: the actual completion (which pulls the tree and
+    /// so re-enters the ingest path) runs on the background engine, decoupled
+    /// from the write that triggered it. A no-op if background sync isn't running
+    /// (the periodic sweep is the backstop). Uses `try_send` so a full command
+    /// channel is dropped rather than blocking ingest.
+    pub(crate) fn notify_remote_write_for_outgoing_bootstrap(&self, tree_id: &ID) {
+        if let Some(tx) = self.background_tx.get()
+            && let Err(e) = tx.try_send(SyncCommand::CompleteOutgoingBootstrap {
+                tree_id: tree_id.clone(),
+            })
+        {
+            debug!(tree_id = %tree_id, error = %e, "Could not enqueue outgoing bootstrap completion; sweep will retry");
+        }
+    }
+
     /// Handle local write events for automatic sync.
     ///
     /// This method is called by the Instance write callback system when entries
@@ -629,9 +648,14 @@ impl Sync {
     /// * `requesting_key` - Optional public key requesting access (for bootstrap)
     /// * `requesting_key_name` - Optional name/ID of the requesting key
     /// * `requested_permission` - Optional permission level being requested
+    /// * `force_bootstrap` - Send empty tips to force a full bootstrap even when
+    ///   we hold (orphan) entries for the tree
     ///
     /// # Returns
     /// A Result indicating success or failure.
+    // The parameters are all independent sync/auth knobs with no natural grouping
+    // into a struct that would read more clearly than the explicit list.
+    #[allow(clippy::too_many_arguments)]
     pub async fn sync_tree_with_peer_auth(
         &self,
         peer_pubkey: &PublicKey,
@@ -640,6 +664,7 @@ impl Sync {
         requesting_key_name: Option<&str>,
         requested_permission: Option<Permission>,
         metadata: Option<Doc>,
+        force_bootstrap: bool,
     ) -> Result<()> {
         // Get peer information and address
         let peer_info = self
@@ -652,12 +677,24 @@ impl Sync {
             .first()
             .ok_or_else(|| SyncError::Network("No addresses found for peer".to_string()))?;
 
-        // Get our current tips for this tree (empty if tree doesn't exist)
+        // Get our current tips for this tree (empty if tree doesn't exist).
+        //
+        // `force_bootstrap` sends empty tips to make the peer serve a full
+        // bootstrap regardless of what we hold locally. This matters when we
+        // hold orphan entries for the tree — e.g. an approval-broadcast entry
+        // that arrived before we ever pulled the tree — but not its root: those
+        // orphans register as tips, so an ordinary tip diff would take the
+        // incremental path and never backfill the missing root. Requesting a
+        // bootstrap instead transfers the full tree.
         let backend = self.backend()?;
-        let our_tips = backend
-            .snapshot(tree_id)
-            .await
-            .map_err(|e| SyncError::BackendError(format!("Failed to get local tips: {e}")))?;
+        let our_tips = if force_bootstrap {
+            crate::Snapshot::default()
+        } else {
+            backend
+                .snapshot(tree_id)
+                .await
+                .map_err(|e| SyncError::BackendError(format!("Failed to get local tips: {e}")))?
+        };
 
         // Get our device public key for automatic peer tracking
         let our_device_pubkey = self.get_device_pubkey().ok();

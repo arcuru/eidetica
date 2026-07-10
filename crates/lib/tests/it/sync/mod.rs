@@ -9,6 +9,7 @@ mod auto_sync_relay_tests;
 mod auto_sync_tests;
 mod basic_operations;
 mod bidirectional_sync_test;
+mod bootstrap_completion_tests;
 mod bootstrap_concurrency_tests;
 mod bootstrap_failure_tests;
 mod bootstrap_metadata_tests;

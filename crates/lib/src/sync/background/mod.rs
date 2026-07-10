@@ -37,6 +37,12 @@ pub enum SyncCommand {
     SendEntries { peer: PeerId, entries: Vec<Entry> },
     /// Trigger immediate sync with a peer
     SyncWithPeer { peer: PeerId },
+    /// Drive completion of any pending outgoing bootstrap request for a tree.
+    ///
+    /// Enqueued by [`Instance::put_remote_entries`](crate::instance::Instance)
+    /// when a remote write lands (e.g. an approval broadcast), so completion runs
+    /// on the background engine rather than re-entering the ingest path.
+    CompleteOutgoingBootstrap { tree_id: ID },
     /// Shutdown the background engine
     Shutdown,
 
@@ -108,6 +114,10 @@ impl std::fmt::Debug for SyncCommand {
             Self::SyncWithPeer { peer } => {
                 f.debug_struct("SyncWithPeer").field("peer", peer).finish()
             }
+            Self::CompleteOutgoingBootstrap { tree_id } => f
+                .debug_struct("CompleteOutgoingBootstrap")
+                .field("tree_id", tree_id)
+                .finish(),
             Self::Shutdown => write!(f, "Shutdown"),
             Self::AddTransport {
                 name, transport, ..
@@ -275,6 +285,7 @@ impl BackgroundSync {
             let mut retry_check = interval(Duration::from_secs(30)); // 30 seconds
             let mut connection_check = interval(Duration::from_secs(60)); // 1 minute
             let mut settings_check = interval(Duration::from_secs(60)); // Check for settings changes every minute
+            let mut bootstrap_sweep = interval(Duration::from_secs(15)); // Complete approved outgoing bootstraps
 
             // Skip initial tick to avoid immediate execution
             periodic_sync.tick().await;
@@ -282,6 +293,7 @@ impl BackgroundSync {
             retry_check.tick().await;
             connection_check.tick().await;
             settings_check.tick().await;
+            bootstrap_sweep.tick().await;
 
             loop {
                 tokio::select! {
@@ -311,6 +323,14 @@ impl BackgroundSync {
                     // Check and reconnect disconnected peers
                     _ = connection_check.tick() => {
                         self.check_peer_connections().await;
+                    }
+
+                    // Complete any outgoing bootstrap requests whose access has
+                    // been granted. Correctness / restart-safety backstop for
+                    // the broadcast-woken reaction (a client that missed the
+                    // approval broadcast, or restarted, still converges here).
+                    _ = bootstrap_sweep.tick() => {
+                        self.sweep_outgoing_bootstraps();
                     }
 
                     // Check if sync interval settings have changed
@@ -352,6 +372,27 @@ impl BackgroundSync {
                 if let Err(e) = self.sync_with_peer(&peer).await {
                     // Log sync failure but don't crash the background engine
                     tracing::error!("Failed to sync with peer {peer}: {e}");
+                }
+            }
+
+            SyncCommand::CompleteOutgoingBootstrap { tree_id } => {
+                // Completion pulls the tree, which sends its own `SendRequest`
+                // commands back to THIS loop. Running it inline would block the
+                // loop and deadlock on that round-trip, so spawn it: the loop
+                // stays free to service the pull's requests. `instance.sync()`
+                // returns a cheap Arc handle that shares this same command
+                // channel.
+                if let Ok(instance) = self.instance()
+                    && let Some(sync) = instance.sync()
+                {
+                    tokio::spawn(async move {
+                        if let Err(e) = sync.on_remote_write_for_outgoing_bootstrap(&tree_id).await
+                        {
+                            tracing::error!(
+                                "Outgoing bootstrap completion for {tree_id} failed: {e}"
+                            );
+                        }
+                    });
                 }
             }
 
@@ -651,6 +692,30 @@ impl BackgroundSync {
                 tracing::error!("Periodic sync failed with {}: {e}", peer_info.id);
             }
         }
+    }
+
+    /// Drive completion of any pending outgoing bootstrap requests.
+    ///
+    /// The completion logic lives on the [`Sync`](super::Sync) frontend (it uses
+    /// the frontend's connect/pull path and the `_sync` managers), so reach it
+    /// via the Instance's attached Sync handle. If sync isn't attached yet there
+    /// is nothing to sweep.
+    fn sweep_outgoing_bootstraps(&self) {
+        let Ok(instance) = self.instance() else {
+            return;
+        };
+        let Some(sync) = instance.sync() else {
+            return;
+        };
+        // Spawn rather than await: the sweep's completion pulls trees, which send
+        // `SendRequest` commands back to this loop. Awaiting inline would block
+        // the loop and deadlock on that round-trip. `instance.sync()` shares this
+        // loop's command channel via the returned Arc handle.
+        tokio::spawn(async move {
+            if let Err(e) = sync.sweep_outgoing_bootstrap_requests().await {
+                tracing::error!("Outgoing bootstrap sweep failed: {e}");
+            }
+        });
     }
 
     /// Sync with a specific peer (bidirectional)

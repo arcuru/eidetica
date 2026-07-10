@@ -1089,8 +1089,27 @@ impl User {
 
         let key_name = key_id.to_string();
 
-        sync.bootstrap_with_ticket(ticket, key_id, &key_name, requested_permission, metadata)
+        // Hand the caller's desired sync settings into the sync layer as plain
+        // data. If the peer defers the request for manual approval, sync records
+        // them alongside the pending outgoing request and applies them itself on
+        // completion — it never reads them back from the User layer. Preserve any
+        // settings already configured for a repeat request (a re-request must not
+        // silently disable sync); fall back to the default for a fresh database.
+        let sync_settings = self
+            .database(ticket.database_id())
             .await
+            .map(|tracked| tracked.sync_settings)
+            .unwrap_or_default();
+
+        sync.bootstrap_with_ticket(
+            ticket,
+            key_id,
+            &key_name,
+            requested_permission,
+            metadata,
+            sync_settings,
+        )
+        .await
     }
 
     /// Record the User-layer SigKey mapping for a bootstrap whose network phase

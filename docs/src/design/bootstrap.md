@@ -196,20 +196,41 @@ it learns access was granted, without waiting on a fixed poll interval. In
 fluctuating-network scenarios this meaningfully improves the time-to-visibility
 for the client: as soon as any path to the peer succeeds, the entry arrives.
 
-Broadcasting to *all* peers (not only the requester) is intentional — the auth
+Broadcasting to _all_ peers (not only the requester) is intentional — the auth
 change is relevant to every replica of the database, and reusing the general
 send path keeps the mechanism uniform. Delivery reuses the standard send queue,
 so an unreachable peer falls through to the existing retry/backoff path. The
 broadcast is best-effort: a failure to enqueue is logged and does not undo the
 committed approval.
 
-### Client Retry After Approval
+### Client-Side Completion
 
-The broadcast delivers the approval entry to the requesting peer whenever it is
-reachable. Recognizing that entry and automatically re-requesting access is left
-to a future sync-API revision; until then the client completes the flow by
-retrying normal sync after waiting or polling periodically. If access was
-granted, the sync succeeds and the client can use the database.
+When a request against a manual-approval peer comes back pending, the client
+records an **outgoing bootstrap request** in its own `_sync` tree (a direct
+mirror of the incoming request store used by approvers). The record captures
+everything needed to finish the join once access is granted: the target tree,
+the addresses to pull from, the requesting key and permission, and the caller's
+desired sync settings. The provisional User-layer key mapping is front-loaded on
+the same pending path, so once the tree syncs the database is immediately
+openable.
+
+Completion is owned entirely by the sync layer — it never calls back into the
+User layer — and is driven by two triggers that share one completion path:
+
+- **Broadcast-woken (low latency):** the approval entry arrives via
+  `put_remote_entries`, which recognizes that the written tree matches a pending
+  outgoing request and drives completion. This fires even before the client
+  holds the tree's root (the approval entry lands as an orphan), so completion
+  requests a full bootstrap rather than a tip diff in that case.
+- **Periodic sweep (correctness / restart-safety):** the background engine
+  periodically re-checks every pending outgoing request, so a client that was
+  offline when the approval was broadcast, or that restarted, still converges.
+
+On completion the client pulls the now-authorized tree (reusing the existing
+`SyncTree` bootstrap path — no new protocol variant), applies the recorded sync
+settings, registers the tree/peer relationship, and marks the request hydrated.
+The caller does not re-invoke `request_database_access`; the database becomes
+openable on its own.
 
 ### Key Requirements
 

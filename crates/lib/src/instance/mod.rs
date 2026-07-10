@@ -1398,6 +1398,11 @@ impl Instance {
             let event = event.clone();
             let database = database.clone();
             async move {
+                // Remote writes drive outgoing-bootstrap completion, but that
+                // wake is fired directly from `Instance::put_remote_entries`
+                // (it only needs the tree id and must run even when the joining
+                // client cannot yet open the tree). Here we only handle the
+                // local sync-on-commit path.
                 if event.source() != WriteSource::Local {
                     return Ok(());
                 }
@@ -1655,6 +1660,23 @@ impl Instance {
                 source: WriteSource::Remote,
             };
             self.fire_write_callbacks(tree_id, &event).await;
+
+            // 4. Poke the outgoing-bootstrap completion for this tree.
+            //
+            // The approval broadcast is a single auth entry for a tree the
+            // joining client does not have the root of yet, so the write
+            // callbacks above are skipped (they need an openable `Database`
+            // handle). Completion only needs the tree id, so notify Sync here —
+            // this is the low-latency wake for the client-side bootstrap
+            // completion; the periodic sweep is the backstop.
+            //
+            // The notify only enqueues a background command (non-blocking) and
+            // returns: the actual completion pulls the tree, which re-enters
+            // this method, so it must run off the ingest path rather than being
+            // awaited here.
+            if let Some(sync) = self.sync() {
+                sync.notify_remote_write_for_outgoing_bootstrap(tree_id);
+            }
         }
 
         Ok(stored_count)

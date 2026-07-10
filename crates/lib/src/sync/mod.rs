@@ -87,7 +87,7 @@
 //! - **Periodic sync**: Configurable interval (default 5 minutes)
 //! - **Retry queue**: Failed sends retried with exponential backoff
 
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::SystemTime;
 use tokio::sync::mpsc;
 
@@ -117,6 +117,7 @@ pub mod utils;
 mod bootstrap;
 mod bootstrap_request_manager;
 mod ops;
+mod outgoing_bootstrap_request_manager;
 mod peer;
 mod queue;
 mod transport;
@@ -263,6 +264,14 @@ pub struct Sync {
     sync_tree: Database,
     /// Queue for entries pending synchronization
     queue: Arc<SyncQueue>,
+    /// Trees whose outgoing bootstrap completion is currently in flight.
+    ///
+    /// Completion pulls the tree via [`put_remote_entries`](crate::instance::Instance),
+    /// which re-fires the remote-write callback for the same tree; this guard
+    /// makes that re-entrant callback a no-op so a single approval doesn't
+    /// recurse into a second overlapping pull. Shared (`Arc`) across `Sync`
+    /// clones so every handle sees the same in-flight set.
+    completing_bootstraps: Arc<Mutex<std::collections::HashSet<ID>>>,
 }
 
 impl Clone for Sync {
@@ -276,6 +285,7 @@ impl Clone for Sync {
             instance: self.instance.clone(),
             sync_tree: self.sync_tree.clone(),
             queue: Arc::clone(&self.queue),
+            completing_bootstraps: Arc::clone(&self.completing_bootstraps),
         }
     }
 }
@@ -303,6 +313,7 @@ impl Sync {
             instance: instance.downgrade(),
             sync_tree,
             queue: Arc::new(SyncQueue::new()),
+            completing_bootstraps: Arc::new(Mutex::new(std::collections::HashSet::new())),
         };
 
         // Initialize combined settings for all tracked users
@@ -331,6 +342,7 @@ impl Sync {
             instance: instance.downgrade(),
             sync_tree,
             queue: Arc::new(SyncQueue::new()),
+            completing_bootstraps: Arc::new(Mutex::new(std::collections::HashSet::new())),
         };
 
         // Initialize combined settings for all tracked users
