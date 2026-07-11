@@ -721,14 +721,19 @@ impl Database {
     /// "callback fired before commit returned" guarantee, use a local
     /// [`Instance`].
     ///
-    /// Callbacks are also serialised on the client: a per-connection
-    /// drain task pulls notifications off the wire and `await`s each
-    /// user callback to completion before processing the next. Two
-    /// notifications for the *same* connection therefore never overlap.
-    /// (Callbacks for *different* trees, registered through the same
-    /// connection, share this single dispatcher — a slow callback will
-    /// hold up other trees' dispatches on the same connection. Spawn
-    /// from inside the callback if you need fanout.)
+    /// Ordering is preserved end-to-end, per tree. On the daemon the
+    /// per-tree write lock is held across the callback fan-out, and each
+    /// subscription's notification is emitted by a *synchronous* channel
+    /// send inside that locked section (see the `SubscribeWrites` handler
+    /// in `service::server`), so two clients writing the same tree
+    /// concurrently cannot interleave their frames. On the client,
+    /// notifications are routed by `root_id` to a per-tree worker that
+    /// `await`s each user callback to completion before pulling the next —
+    /// so two callbacks for the *same* tree never overlap and never
+    /// reorder. Callbacks for *different* trees run on independent workers
+    /// and progress concurrently: a slow callback on one tree does not
+    /// stall another. Spawn from inside the callback if you need fanout
+    /// within a single tree.
     ///
     /// # Settled-state only
     ///

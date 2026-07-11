@@ -822,20 +822,38 @@ async fn dispatch_database_op(
                 root_id.clone(),
                 initial_tips,
                 move |event, db| {
-                    // `mpsc::UnboundedSender::send` is non-blocking and
-                    // takes `&self`, so this fits the
-                    // `Fn(&WriteEvent, &Database)` bound. The returned
-                    // future is a no-op — the work is the synchronous
-                    // push above. Send failure (writer task gone) is
-                    // silently dropped; the connection is about to be
-                    // torn down and the guard's Drop will unregister
-                    // us next.
+                    // ORDERING INVARIANT — DO NOT add an `.await` before the
+                    // `tx.send` below. Per-tree notifications are delivered in
+                    // daemon-canonical order, and that guarantee rests entirely
+                    // on this send running *synchronously*, in the closure's
+                    // pre-future prefix. `Instance::spawn_write_callbacks`
+                    // invokes this closure while the caller holds the tree's
+                    // `tree_lock` (see `put_entry` / `Database::verify`), and it
+                    // advances each subscription's cursor in the same critical
+                    // section. Because the send happens here — before any await,
+                    // still under that lock, in cursor-advance order — two
+                    // connections writing the same tree concurrently cannot
+                    // interleave their frames: writer A's send completes and A
+                    // drops the lock before writer B can acquire it and send.
+                    // The returned future is deliberately a no-op; only that
+                    // (empty) tail is spawned and drained lock-free. Moving the
+                    // send *into* the future — or awaiting anything before it —
+                    // would push it out of the locked section onto the runtime's
+                    // scheduler and let same-tree frames reorder (the bug fixed
+                    // in "preserve write-notification order under concurrent
+                    // writers"). `mpsc::UnboundedSender::send` is non-blocking
+                    // and takes `&self`, which is exactly what makes a
+                    // synchronous send here possible.
                     //
-                    // The closure only fires for settled-state writes
-                    // today (Verified). Unverified writes go through
-                    // `put_entry` without firing `fire_write_callbacks`,
-                    // so no notification ever ships for them — subscribers
-                    // observe a clean promote-only stream.
+                    // Send failure (writer task gone) is silently dropped; the
+                    // connection is about to be torn down and the guard's Drop
+                    // will unregister us next.
+                    //
+                    // The closure only fires for settled-state writes today
+                    // (Verified). Unverified writes go through `put_entry`
+                    // without firing `fire_write_callbacks`, so no notification
+                    // ever ships for them — subscribers observe a clean
+                    // promote-only stream.
                     let frame = ServerFrame::Notification(Notification::DatabaseWrite {
                         root_id: db.root_id().clone(),
                         previous_tips: event.previous_tips().clone(),
