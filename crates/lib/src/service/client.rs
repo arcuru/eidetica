@@ -388,6 +388,17 @@ struct RemoteConnectionInner {
     /// `None`, and workers exit cleanly without prolonging
     /// `inner`'s lifetime.
     tree_workers: std::sync::Mutex<HashMap<ID, mpsc::UnboundedSender<Notification>>>,
+    /// Abort handle for the background reader task, so [`Self::mark_dead`] can
+    /// force the reader out when the connection is torn down against a *wedged*
+    /// daemon — one that neither answers nor closes the socket. Without it the
+    /// reader blocks in `read_frame` forever, holding its own `Arc<inner>` clone
+    /// (leaking the task + socket, since the field docs on [`Self::closed`] note
+    /// dropping the user-facing `RemoteConnection` does not tear down `inner`)
+    /// and re-spawning per-tree workers on the next notification after
+    /// `mark_dead` cleared them. Set once, immediately after the reader is
+    /// spawned in [`RemoteConnection::connect`]; `None` only in the brief window
+    /// before that assignment, and after `mark_dead` has taken it.
+    reader_abort: std::sync::Mutex<Option<tokio::task::AbortHandle>>,
 }
 
 impl RemoteConnectionInner {
@@ -448,13 +459,18 @@ impl RemoteConnectionInner {
     /// hashmap removal in seconds is broken; tear down and let the
     /// caller reconnect).
     ///
-    /// Same three-step sequence as the reader's exit cleanup:
     /// 1. Mark `closed` with `Release` ordering so future `request()`
     ///    calls short-circuit before pushing senders into an orphan
     ///    queue.
     /// 2. Drain `pending` — every awaiting caller sees `RecvError`
     ///    and surfaces `ConnectionAborted`.
     /// 3. Drop every per-tree worker sender so workers exit cleanly.
+    /// 4. Abort the reader task. On the reader's *own* exit path this is a
+    ///    no-op (the task is already returning). When the sweep calls this on a
+    ///    wedged daemon it forces the reader out of its blocking `read_frame`,
+    ///    dropping the reader's `Arc<inner>` clone so `inner` can finally drop,
+    ///    and stopping it from re-spawning the workers step 3 just cleared.
+    ///    The handle is `take`n so a later `mark_dead` is a no-op.
     fn mark_dead(&self) {
         self.closed.store(true, Ordering::Release);
         self.pending_lock().clear();
@@ -462,6 +478,14 @@ impl RemoteConnectionInner {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .clear();
+        if let Some(handle) = self
+            .reader_abort
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+        {
+            handle.abort();
+        }
     }
 }
 
@@ -530,6 +554,7 @@ impl RemoteConnection {
             crdt_cache: std::sync::Mutex::new(ClientCrdtCache::new(CLIENT_CACHE_CAPACITY_BYTES)),
             closed: AtomicBool::new(false),
             tree_workers: std::sync::Mutex::new(HashMap::new()),
+            reader_abort: std::sync::Mutex::new(None),
         });
 
         // Spawn the reader task. It holds an Arc clone of `inner` so the
@@ -542,7 +567,9 @@ impl RemoteConnection {
         // are spawned lazily by the reader on first notification per
         // tree.
         let inner_for_reader = inner.clone();
-        tokio::spawn(run_reader_task(reader, inner_for_reader));
+        let reader_handle = tokio::spawn(run_reader_task(reader, inner_for_reader));
+        *inner.reader_abort.lock().unwrap_or_else(|p| p.into_inner()) =
+            Some(reader_handle.abort_handle());
 
         // Spawn the lazy-unsubscribe sweep. It holds a `Weak<inner>` so
         // it doesn't extend `inner`'s lifetime; exits when `weak.upgrade()`
@@ -890,6 +917,11 @@ impl RemoteConnection {
             let role = {
                 let mut subs = self.subscribed_trees_lock();
                 match subs.get(&tree_id) {
+                    // Already subscribed: a no-op. A new `identity` on this
+                    // re-call is intentionally ignored — the daemon's live
+                    // subscription is keyed off the pubkey the original
+                    // subscribe succeeded with (same rationale as the `Idle`
+                    // arm below).
                     Some(SubState::Subscribed { .. }) => return Ok(()),
                     Some(SubState::Idle {
                         identity: existing_identity,
