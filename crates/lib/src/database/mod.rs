@@ -1701,11 +1701,11 @@ impl Database {
     ///
     /// # Errors
     ///
-    /// - `EntryNotFound` if any tip in `post_tips` is missing locally.
-    ///   Missing entries reachable through `previous_tips` are silently
-    ///   skipped — they're treated as outside the "excluded" boundary,
-    ///   which is the conservative direction (we may over-report rather
-    ///   than under-report).
+    /// - `EntryNotFound` if any entry reachable from `post_tips` *above* the
+    ///   `previous_tips` frontier is missing locally. Entries at or below the
+    ///   frontier are never fetched, so a partial history there is tolerated —
+    ///   the conservative direction (we may over-report rather than
+    ///   under-report).
     pub async fn ids_added(
         &self,
         previous_tips: &Snapshot,
@@ -1720,46 +1720,35 @@ impl Database {
             return Ok(Vec::new());
         }
 
+        // `previous_tips` is the stop-frontier: everything reachable from it has
+        // already been observed. Walk *backward from post_tips* and halt at the
+        // first entry in that frontier, so cost is bounded by the cursor diff —
+        // the entries added between the two cursors — not the full DAG. (Same
+        // shape as `sync::utils::collect_ancestors_to_send`.)
+        //
+        // The callback cursor model always advances `previous_tips` as a
+        // complete frontier (a cut), so halting at its members is exact. A
+        // partial or stale `previous_tips` can only over-report — never
+        // under-report, since any genuinely-new entry is reached before the walk
+        // meets the frontier — which is the conservative direction.
+        let boundary: HashSet<ID> = previous_tips.tips().iter().cloned().collect();
+
         // Routes through `self.ops()` so handles built via
-        // `Database::create` / `Database::open_remote` walk over the
-        // wire with the per-DB identity. On a local instance this is
-        // a clone of the local backend; on a connected instance each
-        // `get(id)` is a permission-checked round-trip to the daemon,
-        // which is the security gate the cursor-only push model relies
-        // on.
+        // `Database::create` / `Database::open_remote` walk over the wire with
+        // the per-DB identity. On a local instance this is a clone of the local
+        // backend; on a connected instance each `get(id)` is a permission-checked
+        // round-trip to the daemon, which is the security gate the cursor-only
+        // push model relies on.
         let ops = self.ops();
 
-        // 1. Walk parents from `previous_tips` to build the excluded set —
-        //    every ID that the caller has already observed. Missing
-        //    entries (partial sync) are skipped silently; their absence
-        //    can only cause us to over-report, never to miss new IDs.
-        let mut excluded: HashSet<ID> = HashSet::new();
-        let mut queue: VecDeque<ID> = previous_tips.tips().iter().cloned().collect();
-        while let Some(id) = queue.pop_front() {
-            if !excluded.insert(id.clone()) {
-                continue;
-            }
-            let entry = match ops.get(&id).await {
-                Ok(e) => e,
-                Err(e) if e.is_not_found() => continue,
-                Err(e) => return Err(e),
-            };
-            for p in entry.parents().unwrap_or_default() {
-                queue.push_back(p);
-            }
-        }
-
-        // 2. Walk parents from `post_tips`, collecting any ID not in the
-        //    excluded set. A `post_tips` ID that's missing locally is a
-        //    hard error — the caller's cursor references unknown state.
+        // Walk parents from `post_tips`, collecting every ID until the boundary.
+        // A non-boundary entry that's missing locally is a hard error — the
+        // cursor references unknown state; boundary entries are never fetched.
         let mut added: HashMap<ID, Entry> = HashMap::new();
         let mut visited: HashSet<ID> = HashSet::new();
         let mut queue: VecDeque<ID> = post_tips.tips().iter().cloned().collect();
         while let Some(id) = queue.pop_front() {
-            if !visited.insert(id.clone()) {
-                continue;
-            }
-            if excluded.contains(&id) {
+            if boundary.contains(&id) || !visited.insert(id.clone()) {
                 continue;
             }
             let entry = ops.get(&id).await?;
