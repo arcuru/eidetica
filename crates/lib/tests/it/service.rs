@@ -2133,6 +2133,131 @@ async fn test_on_write_preserves_daemon_canonical_order_under_burst() {
     }
 }
 
+/// Regression (#2): notifications for a single tree must reach a subscriber
+/// in daemon-canonical order even when **multiple** connections write that
+/// tree concurrently — not just under a single writer's burst.
+///
+/// The daemon serialises the writes themselves under the tree lock, but the
+/// subscription's frame send used to run inside a detached `tokio::spawn`
+/// dispatched *after* the lock dropped. Two concurrent writers' send tasks
+/// could then race, delivering `post_tips` out of order — the client would
+/// observe a `post_tips` that regresses behind the one before it.
+///
+/// Post-fix: the subscription callback's synchronous `frame_tx.send` runs
+/// under the tree lock in cursor-advance order, so the observed `post_tips`
+/// sequence for the subscribed callback is monotonically forward. This test
+/// asserts exactly that invariant via ancestry (`ids_added`), which is
+/// timing-independent once both writers have drained.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_on_write_canonical_order_under_concurrent_writers() {
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    create_user_via_admin(&server, "alice").await;
+
+    // Two independent client connections, same user, same tree — each is a
+    // distinct daemon-side connection, so their writes race at the fan-out.
+    let writer1 = Instance::connect(format!("unix://{}", socket_path.display()))
+        .await
+        .unwrap();
+    let mut user1 = writer1.login_user("alice", None).await.unwrap();
+    let pubkey = user1.get_default_key().unwrap();
+    let mut settings = eidetica::crdt::Doc::new();
+    settings.set("name", "concurrent_writers");
+    let db1 = user1.create_database(settings, &pubkey).await.unwrap();
+    let root_id = db1.root_id().clone();
+
+    let writer2 = Instance::connect(format!("unix://{}", socket_path.display()))
+        .await
+        .unwrap();
+    let user2 = writer2.login_user("alice", None).await.unwrap();
+    let db2 = user2.open_database(&root_id).await.unwrap();
+
+    // Subscriber records each event's post_tips in fire order.
+    let observed: std::sync::Arc<std::sync::Mutex<Vec<eidetica::snapshot::Snapshot>>> =
+        Default::default();
+    let observed_for_cb = observed.clone();
+    let _cb = db1
+        .on_write(move |event, _db| {
+            let post = event.post_tips().clone();
+            let observed = observed_for_cb.clone();
+            async move {
+                observed.lock().unwrap().push(post);
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+
+    // Both connections commit to the tree concurrently, interleaved.
+    let n: usize = 8;
+    let c1 = async {
+        for i in 0..n {
+            db1.with_transaction(move |tx| async move {
+                let store = tx.get_store::<DocStore>("data").await?;
+                store.set("w1", format!("v{i}")).await?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        }
+    };
+    let c2 = async {
+        for i in 0..n {
+            db2.with_transaction(move |tx| async move {
+                let store = tx.get_store::<DocStore>("data").await?;
+                store.set("w2", format!("v{i}")).await?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        }
+    };
+    tokio::join!(c1, c2);
+
+    // Let the notification stream quiesce. We deliberately do NOT assert an
+    // exact fire count: fire-on-Verified batches, so two entries promoted in a
+    // single verify pass surface as one notification whose `post_tips` covers
+    // both. The number of fires for `2n` concurrent commits is therefore
+    // `<= 2n` and load-dependent — not a stable invariant. What IS stable is
+    // the *order* of whatever fires do arrive, which is what this test pins.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let posts = observed.lock().unwrap().clone();
+    assert!(
+        posts.len() >= 2,
+        "concurrent writers should surface several notifications; got {}",
+        posts.len()
+    );
+
+    // Canonical order ⇔ the total number of entries reachable from each observed
+    // `post_tips` strictly increases every fire. Measured via
+    // `ids_added(EMPTY, post)` — the full ancestor closure, a valid ancestry
+    // count in either topology (fork or linear). Each fire advances the daemon's
+    // subscription cursor forward by at least one entry, so a correctly-ordered
+    // stream is strictly increasing; a reordered send delivers an older
+    // `post_tips` after a newer one, which would regress the count. This is
+    // timing-independent: it holds no matter how the two writers interleave, as
+    // long as delivery is in canonical order.
+    //
+    // Note: this pins the invariant but is not a red-before/green-after repro of
+    // the reorder — the race only manifests on a multi-thread runtime and even
+    // then only intermittently, so it can't be relied on to fail pre-fix. The
+    // fix makes ordering hold *by construction* (synchronous send under the tree
+    // lock in cursor order); this guards against a future regression of it.
+    let mut prev_count = 0usize;
+    for post in &posts {
+        let count = db1
+            .ids_added(&eidetica::snapshot::Snapshot::EMPTY, post)
+            .await
+            .unwrap()
+            .len();
+        assert!(
+            count > prev_count,
+            "reachable-entry count must strictly increase each fire (reorder regresses it); \
+             got {count} after {prev_count} for {post:?} in sequence {posts:?}"
+        );
+        prev_count = count;
+    }
+}
+
 /// Regression: a client request issued *after* the reader task has exited
 /// (because the daemon shut down its side) must surface
 /// `ConnectionAborted` promptly instead of hanging forever on a oneshot
