@@ -797,11 +797,22 @@ async fn dispatch_database_op(
                 }
             }
             let tx = ctx.tx.clone();
+            // Capture the initial cursor and register the callback atomically
+            // under the tree lock. The fire path (`put_entry` /
+            // `Database::verify`) holds this same lock while advancing cursors,
+            // so no write can land between the tips snapshot and the
+            // registration: the empty-`tips` cursor is exactly the daemon's
+            // frontier at the instant this subscription begins, with no
+            // lost-update gap. Safe to hold across the `snapshot` await —
+            // `Instance::snapshot` reads the raw backend (no tree lock) and,
+            // unlike the fire path, we spawn/await no user callback under the
+            // guard, so there is no reentrancy.
+            let tree_lock = instance.tree_lock(&root_id);
+            let tree_guard = tree_lock.lock().await;
             // Initial cursor: the client's supplied `tips` if non-empty;
-            // otherwise the daemon's current tips at subscribe-time
-            // (captured here, which is the "I have no initial state;
-            // give me events from now" posture documented on the wire
-            // variant). The cursor advances per fire as usual.
+            // otherwise the daemon's current tips at subscribe-time (the "I have
+            // no initial state; give me events from now" posture documented on
+            // the wire variant). The cursor advances per fire as usual.
             let initial_tips = if tips.is_empty() {
                 instance.snapshot(&root_id).await.unwrap_or_default()
             } else {
@@ -835,6 +846,9 @@ async fn dispatch_database_op(
                     async move { Ok(()) }
                 },
             );
+            // Cursor captured and callback live; release the tree lock before
+            // touching the std subscribed-lock below (never nest the two).
+            drop(tree_guard);
             // Re-acquire the lock to record this connection's subscription.
             // Defensive Entry-API guard: in the current shape (single-
             // threaded per-connection dispatch) the Occupied arm is
