@@ -666,6 +666,35 @@ impl Database {
         Ok(results)
     }
 
+    /// Whether `pubkey` may access the database at `root_id` with at least
+    /// `permission`.
+    ///
+    /// This is the **pubkey-only** access decision — the caller holds a key but
+    /// has not presented a signing identity (bootstrap deciding whether a key
+    /// already qualifies, for example). It resolves the same authority
+    /// [`find_sigkeys`](Self::find_sigkeys) does — direct grants, the global
+    /// `*` grant, and delegated authority — and never counts revoked keys.
+    ///
+    /// Delegated authority is discovered **one hop deep**: only databases this
+    /// one delegates to directly are searched, so a key reachable through a
+    /// chain of delegations answers `false` here. The limit belongs to
+    /// discovery, not to delegation — when an identity *is* presented (signing
+    /// an entry, a service operation), authorization goes through the resolver
+    /// behind [`validate_key`](Self::validate_key), which walks a delegation
+    /// path of any length because the signer names the path rather than making
+    /// the resolver search for it.
+    pub async fn can_access(
+        instance: &Instance,
+        root_id: &ID,
+        pubkey: &PublicKey,
+        permission: &Permission,
+    ) -> Result<bool> {
+        let sigkeys = Self::find_sigkeys(instance, root_id, pubkey).await?;
+        Ok(sigkeys
+            .first()
+            .is_some_and(|(_, granted)| *granted >= *permission))
+    }
+
     /// Get the auth identity for this database's configured key.
     pub fn auth_identity(&self) -> Option<&SigKey> {
         self.key.as_ref().map(|k| &k.identity)

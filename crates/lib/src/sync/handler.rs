@@ -254,12 +254,15 @@ impl SyncHandlerImpl {
 
     /// Check if the requesting key already has sufficient permissions through existing auth.
     ///
-    /// Resolves the requester's best available permission through
-    /// [`Database::find_sigkeys`] — the same discovery primitive `open_database`
-    /// and operation signing use. It resolves direct grants, the global `*`
-    /// grant, and — unlike [`AuthSettings::can_access`] — authority that reaches
-    /// this tree only through a *delegated* tree (the sync "nesting doll" model).
-    /// Without it a delegated-only key is bounced to manual approval and hangs.
+    /// Delegates to [`Database::can_access`], the pubkey-only access decision,
+    /// which resolves direct grants, the global `*` grant, and authority that
+    /// reaches this tree only through a *delegated* tree. Without the delegated
+    /// case a delegated-only key is bounced to manual approval and hangs.
+    ///
+    /// Delegation discovery is **one hop deep**: a key reachable only through a
+    /// chain of delegations still falls through to manual approval. See
+    /// [`Database::can_access`] for why bootstrap searches where entry
+    /// validation walks a named path.
     ///
     /// # Arguments
     /// * `tree_id` - The database/tree ID to check auth settings for
@@ -275,12 +278,13 @@ impl SyncHandlerImpl {
         requesting_pubkey: &PublicKey,
         requested_permission: &Permission,
     ) -> Result<bool> {
-        // Results are sorted highest-permission-first and exclude revoked keys,
-        // so the top candidate is the requester's best available authority.
-        let sigkeys = Database::find_sigkeys(&self.instance()?, tree_id, requesting_pubkey).await?;
-        let granted = sigkeys
-            .first()
-            .is_some_and(|(_, permission)| *permission >= *requested_permission);
+        let granted = Database::can_access(
+            &self.instance()?,
+            tree_id,
+            requesting_pubkey,
+            requested_permission,
+        )
+        .await?;
         if granted {
             debug!(
                 tree_id = %tree_id,

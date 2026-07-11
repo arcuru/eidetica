@@ -814,8 +814,9 @@ async fn test_bootstrap_with_existing_global_permission_no_duplicate() {
 /// - K2 is `Admin` on D but has **no** direct grant on T
 /// - K2 requests bootstrap access to T presenting only its pubkey
 ///
-/// Before the fix the bootstrap check used the delegation-blind
-/// `AuthSettings::can_access`, so K2 was bounced to manual approval and hung.
+/// Before the fix the bootstrap check used a delegation-blind settings-level
+/// access check, so K2 was bounced to manual approval and hung. It now resolves
+/// through `Database::can_access`.
 #[tokio::test]
 async fn test_bootstrap_with_delegated_only_key_auto_approval() {
     use eidetica::auth::types::{DelegatedTreeRef, PermissionBounds, TreeReference};

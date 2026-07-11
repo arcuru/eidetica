@@ -915,7 +915,7 @@ The current system uses entry metadata to reference settings tips. With authenti
    - Add/update/get authentication keys
    - Convert between settings storage and auth types
    - Validate authentication operations
-   - Check permission access with `can_access()` method for both specific and wildcard keys
+   - Resolve keys and permissions for access decisions (direct and wildcard); delegation-aware access resolves through `Database::find_sigkeys`/`Database::can_access`
 
 4. **Permission Module** (`auth/permission.rs`): Permission logic
    - Permission checking for operations

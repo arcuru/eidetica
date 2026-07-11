@@ -354,39 +354,6 @@ impl AuthSettings {
         }
     }
 
-    /// Check if global permission grants sufficient access
-    pub fn global_permission_grants_access(&self, requested_permission: &Permission) -> bool {
-        if let Some(global_perm) = self.get_global_permission() {
-            global_perm >= *requested_permission
-        } else {
-            false
-        }
-    }
-
-    // ==================== Access Control ====================
-
-    /// Check whether a public key has a **direct or global** grant at this
-    /// permission level.
-    ///
-    /// The cheap, synchronous, settings-only access check: it honours key
-    /// status and sees direct key entries and the global `*` grant, but it does
-    /// **not** walk delegated databases — a key whose authority arrives only
-    /// through a delegation reads as `false` here. For a delegation-aware check
-    /// use [`Database::find_sigkeys`](crate::Database::find_sigkeys), which is
-    /// what the bootstrap and signing paths resolve through.
-    pub fn can_access(&self, pubkey: &PublicKey, requested_permission: &Permission) -> bool {
-        // First check if there's a specific key entry for this pubkey
-        if let Ok(auth_key) = self.get_key_by_pubkey(pubkey)
-            && auth_key.is_active()
-            && *auth_key.permissions() >= *requested_permission
-        {
-            return true;
-        }
-
-        // Check global permission
-        self.global_permission_grants_access(requested_permission)
-    }
-
     /// Find all SigKeys that a public key can use to access this database
     ///
     /// Returns (SigKey, Permission) tuples sorted by permission (highest first)
@@ -557,12 +524,6 @@ mod tests {
             settings.get_global_permission(),
             Some(Permission::Write(10))
         );
-
-        // Test permission granting
-        assert!(settings.global_permission_grants_access(&Permission::Read));
-        assert!(settings.global_permission_grants_access(&Permission::Write(10)));
-        assert!(!settings.global_permission_grants_access(&Permission::Write(5)));
-        assert!(!settings.global_permission_grants_access(&Permission::Admin(10)));
     }
 
     #[test]
@@ -689,40 +650,6 @@ mod tests {
         let (sig_key, granted_perm) = settings.resolve_sig_key_for_operation(&pubkey).unwrap();
         assert!(sig_key.has_pubkey_hint(&pubkey));
         assert_eq!(granted_perm, Permission::Write(5));
-    }
-
-    #[test]
-    fn test_can_access() {
-        let mut settings = AuthSettings::new();
-
-        let pubkey = PublicKey::random();
-        let other_pubkey = PublicKey::random();
-
-        // No access without keys
-        assert!(!settings.can_access(&pubkey, &Permission::Read));
-
-        // Add specific key
-        settings
-            .add_key(
-                &pubkey,
-                AuthKey::active(Some("device"), Permission::Write(5)),
-            )
-            .unwrap();
-
-        // Specific key should have access
-        assert!(settings.can_access(&pubkey, &Permission::Read));
-        assert!(settings.can_access(&pubkey, &Permission::Write(5)));
-        assert!(!settings.can_access(&pubkey, &Permission::Admin(1)));
-
-        // Other key should not have access
-        assert!(!settings.can_access(&other_pubkey, &Permission::Read));
-
-        // Set global permission
-        settings.set_global_permission(AuthKey::active(None, Permission::Read));
-
-        // Other key should now have read access via global
-        assert!(settings.can_access(&other_pubkey, &Permission::Read));
-        assert!(!settings.can_access(&other_pubkey, &Permission::Write(10)));
     }
 
     #[test]
