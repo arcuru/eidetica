@@ -365,7 +365,15 @@ impl AuthSettings {
 
     // ==================== Access Control ====================
 
-    /// Check if a public key can access the database with the requested permission
+    /// Check whether a public key has a **direct or global** grant at this
+    /// permission level.
+    ///
+    /// The cheap, synchronous, settings-only access check: it honours key
+    /// status and sees direct key entries and the global `*` grant, but it does
+    /// **not** walk delegated databases — a key whose authority arrives only
+    /// through a delegation reads as `false` here. For a delegation-aware check
+    /// use [`Database::find_sigkeys`](crate::Database::find_sigkeys), which is
+    /// what the bootstrap and signing paths resolve through.
     pub fn can_access(&self, pubkey: &PublicKey, requested_permission: &Permission) -> bool {
         // First check if there's a specific key entry for this pubkey
         if let Ok(auth_key) = self.get_key_by_pubkey(pubkey)
