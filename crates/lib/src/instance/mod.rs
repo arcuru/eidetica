@@ -2068,7 +2068,12 @@ impl Instance {
                     post_tips: post_tips.clone(),
                     source,
                 };
-                // Invoke synchronously in cursor order; spawn only the tail.
+                // Invoke synchronously in cursor order; spawn only the tail. A
+                // callback's ordering-critical side effect must live in this
+                // synchronous prefix (before its future's first await) — that is
+                // what keeps it under the tree lock and in canonical order. See
+                // the `frame_tx.send` invariant in `service::server`'s
+                // `SubscribeWrites` handler.
                 let fut = (entry.callback)(&event, &database);
                 let tree_id_for_cb = tree_id.clone();
                 let cb_id = entry.id;

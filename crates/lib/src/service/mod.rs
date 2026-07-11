@@ -54,10 +54,13 @@
 //! envelope) back to every subscribed connection. A client subscribes to
 //! a tree lazily on the first `Database::on_write` registration via
 //! `DatabaseOp::SubscribeWrites`. Subscriptions live for the connection's
-//! lifetime; disconnecting implicitly unsubscribes everything. This single
-//! ordering means every subscriber — including the originating client —
-//! observes callbacks in the daemon's canonical order, with full
-//! `previous_tips` (no client-side placeholder).
+//! lifetime; disconnecting implicitly unsubscribes everything. Because the
+//! daemon is the sole publisher and fires each tree's subscriptions with a
+//! synchronous channel send held under that tree's write lock, every
+//! subscriber — including the originating client — observes callbacks in
+//! the daemon's canonical order *per tree*, with full `previous_tips` (no
+//! client-side placeholder). See [`Database::on_write`](crate::Database::on_write)
+//! for the full ordering contract.
 //!
 //! ## V1 Limitations
 //!
