@@ -134,13 +134,20 @@ impl WriteEvent {
 }
 
 /// Boxed future returned by the internal async callback dispatcher.
-pub(crate) type AsyncWriteCallbackFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
+/// The future a callback returns is `'static` — it may borrow the `&WriteEvent`
+/// / `&Database` only for the synchronous prefix of the call, never past the
+/// returned future. Both registration paths already require `Fut: 'static`, so
+/// this is not a new constraint on callers; it lets `spawn_write_callbacks`
+/// invoke the callback *synchronously in cursor-advance order* (running any
+/// synchronous side effect — e.g. the service subscription's frame send — in
+/// canonical order under the tree lock) and then spawn only the returned future.
+pub(crate) type AsyncWriteCallbackFuture =
+    Pin<Box<dyn Future<Output = Result<()>> + Send + 'static>>;
 
 /// Internal async callback function type. The user-facing callback contract
 /// is documented on [`Database::on_write`](crate::Database::on_write).
 pub(crate) type AsyncWriteCallbackFn = Arc<
-    dyn for<'a> Fn(&'a WriteEvent, &'a Database) -> AsyncWriteCallbackFuture<'a>
+    dyn for<'a> Fn(&'a WriteEvent, &'a Database) -> AsyncWriteCallbackFuture
         + Send
         + std::marker::Sync,
 >;
@@ -1555,7 +1562,7 @@ impl Instance {
         let id = CallbackId(self.inner.next_callback_id.fetch_add(1, Ordering::Relaxed));
         let cb: AsyncWriteCallbackFn = Arc::new(move |event: &WriteEvent, database: &Database| {
             let fut = callback(event, database);
-            Box::pin(fut) as AsyncWriteCallbackFuture<'_>
+            Box::pin(fut) as AsyncWriteCallbackFuture
         });
         let entry = Arc::new(PerDbCallbackEntry {
             id,
@@ -1603,7 +1610,7 @@ impl Instance {
         let id = CallbackId(self.inner.next_callback_id.fetch_add(1, Ordering::Relaxed));
         let cb: AsyncWriteCallbackFn = Arc::new(move |event: &WriteEvent, database: &Database| {
             let fut = callback(event, database);
-            Box::pin(fut) as AsyncWriteCallbackFuture<'_>
+            Box::pin(fut) as AsyncWriteCallbackFuture
         });
         self.inner
             .global_write_callbacks
@@ -1977,10 +1984,21 @@ impl Instance {
     /// the access-time auto-verify hook, which calls `Database::verify`,
     /// which acquires the very same `tree_lock`. The awaiting caller still
     /// holds it, and `verify` is waiting on the callback it spawned →
-    /// circular wait. Everything this method does up to the `spawn` is
-    /// synchronous (the cursor read/advance is under each callback's own
-    /// `std::Mutex`, never across an await), so the spawn phase is safe to
-    /// run under the lock; only the await must be lock-free.
+    /// circular wait.
+    ///
+    /// Everything this method does up to (and including) the callback
+    /// *invocation* is synchronous — the cursor read/advance under each
+    /// callback's own `std::Mutex`, and calling the callback to obtain its
+    /// `'static` future, which runs only the closure's synchronous prefix (the
+    /// service subscription's non-blocking `frame_tx.send`; for a plain
+    /// `async move { … }` callback the prefix is empty). That prefix must not
+    /// itself block on the tree lock, which no in-tree callback does. Only the
+    /// returned future's `.await` can re-enter the lock, and that is what the
+    /// caller drains lock-free. Running the invocation under the lock — rather
+    /// than deferring it into the spawned task — is deliberate: it makes each
+    /// callback's synchronous side effect commit in canonical cursor order, so
+    /// concurrent same-tree writers can't reorder a subscriber's notification
+    /// stream.
     ///
     /// [`JoinSet`]: tokio::task::JoinSet
     pub(crate) async fn spawn_write_callbacks(
@@ -2021,11 +2039,19 @@ impl Instance {
             }
         };
 
-        // Single JoinSet across per-db + global callbacks: the cursor
-        // read+advance under each callback's own std::Mutex happens
-        // synchronously in arrival order before any task is spawned, so
-        // cursors commit deterministically; the returned set runs every
-        // closure concurrently and the caller awaits it (lock-free).
+        // Single JoinSet across per-db + global callbacks. Two things happen
+        // synchronously, in arrival order, before any task is spawned — both
+        // under the caller's tree lock:
+        //
+        //   1. Each callback's cursor read+advance (under its own std::Mutex),
+        //      so `previous_tips` brackets commit deterministically.
+        //   2. The callback *invocation* itself. A callback returns a `'static`
+        //      future, so calling it runs the closure's synchronous prefix now,
+        //      in canonical order — e.g. the service subscription's
+        //      `frame_tx.send` (a non-blocking push whose future is a no-op).
+        //      Same-tree events therefore reach each subscriber's channel in
+        //      order even under concurrent writers; only the returned future's
+        //      async remainder runs concurrently on the drained set.
         let mut joins = tokio::task::JoinSet::new();
 
         if let Some(callbacks) = per_db_callbacks {
@@ -2042,12 +2068,12 @@ impl Instance {
                     post_tips: post_tips.clone(),
                     source,
                 };
-                let cb = entry.callback.clone();
-                let database_for_cb = database.clone();
+                // Invoke synchronously in cursor order; spawn only the tail.
+                let fut = (entry.callback)(&event, &database);
                 let tree_id_for_cb = tree_id.clone();
                 let cb_id = entry.id;
                 joins.spawn(async move {
-                    if let Err(e) = cb(&event, &database_for_cb).await {
+                    if let Err(e) = fut.await {
                         tracing::error!(
                             tree_id = %tree_id_for_cb,
                             source = ?source,
@@ -2059,21 +2085,19 @@ impl Instance {
             }
         }
 
-        // Globals: every subscriber gets its own owned clone of the
-        // shared pre-write-tips event so their closures can run
-        // concurrently with each other and with the per-db callbacks
-        // above. A WriteEvent is two `Snapshot`s + a Copy enum; cloning
-        // it per global is cheap relative to the spawn cost.
+        // Globals fire with the shared pre-write tips (no per-callback cursor).
+        // Invoked synchronously here too, in registration order, for the same
+        // in-order-side-effect guarantee; only the async remainder is spawned.
         for (id, callback) in global_callbacks {
             let event = WriteEvent {
                 previous_tips: previous_tips.clone(),
                 post_tips: post_tips.clone(),
                 source,
             };
-            let database_for_cb = database.clone();
+            let fut = callback(&event, &database);
             let tree_id_for_cb = tree_id.clone();
             joins.spawn(async move {
-                if let Err(e) = callback(&event, &database_for_cb).await {
+                if let Err(e) = fut.await {
                     tracing::error!(
                         tree_id = %tree_id_for_cb,
                         source = ?source,
