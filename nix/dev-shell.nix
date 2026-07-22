@@ -3,6 +3,7 @@
   pkgs,
   lib,
   rustSrc,
+  rustAnalyzer,
   toolChainNightly,
   devPackages,
 }: let
@@ -31,6 +32,9 @@ in
       [
         # Nightly toolchain wrapper (for udeps, miri, sanitizers, etc.)
         cargo-nightly
+
+        # LSP — not part of the build toolchain, so the devshell adds it directly
+        rustAnalyzer
       ]
       ++ (with pkgs; [
         # CI/CD tools

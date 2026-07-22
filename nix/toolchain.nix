@@ -5,8 +5,18 @@
   pkgs,
 }: let
   # Stable Rust toolchain for main builds (tests, linting, docs)
+  # Only the components builds actually need. `.toolchain` combines ALL stable
+  # components, which drags in rustc-docs, rust-docs, reproducible-artifacts and
+  # llvm-tools — hundreds of MB of unpacked HTML and fixtures that no build uses,
+  # and enough to exhaust the disk on smaller CI runners.
   fenixStable = inputs.fenix.packages.${system}.stable;
-  toolChainStable = fenixStable.toolchain;
+  toolChainStable = fenixStable.withComponents [
+    "cargo"
+    "rustc"
+    "rust-std"
+    "clippy"
+    "rustfmt"
+  ];
   craneLibStable = (inputs.crane.mkLib pkgs).overrideToolchain toolChainStable;
 
   # Nightly Rust toolchain for coverage (llvm-tools-preview) and sanitizers (miri, -Z flags)
@@ -206,6 +216,7 @@ in {
   inherit
     fenixStable
     fenixNightly
+    toolChainStable
     toolChainNightly
     rustSrc
     craneLib
