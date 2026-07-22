@@ -16,20 +16,16 @@
     filter = docsOrCargo;
   };
 
+  # API docs for the deployed site. Every rustdoc artifact this repo produces is
+  # main-branch documentation, so it always carries the dev banner — stable release
+  # docs are published by docs.rs, not built here.
+  # The header is referenced as its own store path rather than pulled in via docSrc,
+  # so editing the book doesn't invalidate rustdoc.
   # TODO: --workspace docs are broken: eidetica-bin's binary is also named "eidetica", so its docs overwrite the library's in the output directory
   doc-api = craneLib.cargoDoc (debugArgs
     // {
       cargoDocExtraArgs = "-p eidetica --all-features --no-deps";
-    });
-
-  # API docs with dev banner for deployed documentation
-  # Uses docSrc to include docs/rustdoc-header.html (filtered out by cleanCargoSource)
-  doc-api-dev = craneLib.cargoDoc (debugArgs
-    // {
-      pname = "doc-api-dev";
-      src = docSrc;
-      cargoDocExtraArgs = "-p eidetica --all-features --no-deps";
-      RUSTDOCFLAGS = "--html-in-header docs/rustdoc-header.html";
+      RUSTDOCFLAGS = "--html-in-header ${../../docs/rustdoc-header.html}";
     });
 
   # Full docs including dependencies (slow, ~20min uncached)
@@ -39,17 +35,14 @@
       cargoDocExtraArgs = "--workspace --all-features";
     });
 
-  # Combined site: mdbook + rustdoc
-  mkSite = api:
-    pkgs.runCommand "doc-site" {} ''
-      cp -r ${doc-book} $out
-      chmod -R u+w $out
-      mkdir -p $out/rustdoc
-      cp -r ${api}/share/doc/* $out/rustdoc/
-    '';
-
-  doc-site = mkSite doc-api;
-  doc-site-dev = mkSite doc-api-dev;
+  # Combined site: mdbook + rustdoc. This is both what the link check runs against
+  # and what Deploy Docs publishes.
+  doc-site = pkgs.runCommand "doc-site" {} ''
+    cp -r ${doc-book} $out
+    chmod -R u+w $out
+    mkdir -p $out/rustdoc
+    cp -r ${doc-api}/share/doc/* $out/rustdoc/
+  '';
 
   # Common lychee args for link checking
   # --exclude-path: skip directories with internal cross-references that break outside their original context
@@ -99,10 +92,8 @@
 in {
   builds = {
     api = doc-api;
-    api-dev = doc-api-dev;
     api-full = doc-api-full;
     site = doc-site;
-    site-dev = doc-site-dev;
     links = doc-links;
     test = doc-test;
     book = doc-book;
