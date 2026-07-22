@@ -73,6 +73,7 @@
           (toolchain)
           fenixStable
           fenixNightly
+          toolChainStable
           toolChainNightly
           rustSrc
           craneLib
@@ -90,7 +91,7 @@
         # Shared helpers for package definitions
         eidLib = import ./nix/lib.nix {
           inherit pkgs lib;
-          defaultToolchain = fenixStable.toolchain;
+          defaultToolchain = toolChainStable;
         };
 
         # Import package groups
@@ -316,6 +317,7 @@
         # Development shell configuration
         devShells.default = import ./nix/dev-shell.nix {
           inherit pkgs lib rustSrc toolChainNightly;
+          rustAnalyzer = fenixStable.rust-analyzer;
           # Pass the full list of packages so the devshell can pickup the dependencies
           devPackages =
             {inherit (mainPkgs) eidetica-bin;}
