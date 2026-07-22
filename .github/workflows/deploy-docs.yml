@@ -1,40 +1,57 @@
+# Deploys the mdbook + rustdoc site to GitHub Pages.
+#
+# Runs after Publish rather than directly on push: Publish warms the Nix binary
+# cache with the full check set, which includes doc.api. Building on push instead
+# means every flake-input bump hits a cold cache and rebuilds the whole toolchain
+# and dependency graph on a standard-2 runner, which runs it out of disk. Waiting
+# for the warm cache leaves only mdbook and the site assembly to build here.
+#
+# workflow_run carries no path filter, so this redeploys on every main push. That
+# is a cache hit plus mdbook — cheap enough not to be worth path-gating.
+
 name: Deploy Docs
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - "docs/**"
-      - "crates/**"
-      - "nix/**"
-      - "flake.nix"
-      - "flake.lock"
-      - ".github/workflows/deploy-docs.yml"
+  workflow_run:
+    workflows: ["Publish"]
+    types: [completed]
+    branches: ["main"]
   workflow_dispatch:
 
 permissions:
   contents: read
 
+# Never cancel in progress: a cancelled run can leave a half-published Pages
+# deployment, and a no-op run (upstream failed, jobs skipped) still claims the
+# group and would cancel a real deploy.
 concurrency:
   group: "pages"
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build:
     runs-on: ubicloud-standard-2
-    if: github.repository_owner == 'arcuru'
+    # Only the CI-triggered Publish warms the cache (its warm step is itself gated
+    # on workflow_run), so a release- or dispatch-triggered Publish would send this
+    # job into a cold build on a small runner. Deploy from the main-push path only.
+    if: |
+      github.repository_owner == 'arcuru' &&
+      (github.event_name != 'workflow_run' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'workflow_run'))
     permissions:
       contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
 
       - name: Setup Nix
         uses: ./.github/actions/setup-nix
 
       - name: Build documentation
-        run: nix build .#doc.site-dev -o site
+        run: nix build .#doc.site -o site
 
       - name: Setup Pages
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
@@ -50,7 +67,7 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubicloud-standard-2
     needs: build
-    if: github.repository_owner == 'arcuru' && (github.event_name == 'push' || github.ref == 'refs/heads/main')
+    if: github.repository_owner == 'arcuru' && github.ref == 'refs/heads/main'
     permissions:
       contents: read
       pages: write
