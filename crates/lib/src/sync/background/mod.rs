@@ -170,6 +170,11 @@ pub struct BackgroundSync {
     command_rx: mpsc::Receiver<SyncCommand>,
 }
 
+/// How many peers a periodic round syncs at once. Bounds concurrent
+/// connections on a large peer set; well above the point where a round stops
+/// being dominated by any single unreachable peer.
+const MAX_CONCURRENT_PEER_SYNCS: usize = 16;
+
 impl BackgroundSync {
     /// Start the background sync engine and return a command sender.
     ///
@@ -642,15 +647,31 @@ impl BackgroundSync {
             }
         };
 
-        // Now sync with peers (transaction is dropped, so no Send issues)
-        for peer_info in peers {
-            if peer_info.status == PeerStatus::Active
-                && let Err(e) = self.sync_with_peer(&peer_info.id).await
-            {
-                // Log individual peer sync failure but continue with others
-                tracing::error!("Periodic sync failed with {}: {e}", peer_info.id);
-            }
-        }
+        // Sync peers concurrently (the transaction is dropped, so no Send
+        // issues). A round is I/O-bound and dominated by peers that are down:
+        // done serially, one unreachable peer delays every peer behind it by a
+        // full connect timeout, so the round degrades with the number of dead
+        // peers rather than with the work there is to do. Concurrently, a round
+        // costs about as long as its slowest peer.
+        //
+        // Bounded so a large peer set can't open an unbounded number of
+        // connections at once. These futures are polled on this task rather
+        // than spawned, so they need no `Send`/`'static` bounds.
+        use futures_util::stream::StreamExt;
+        futures_util::stream::iter(
+            peers
+                .into_iter()
+                .filter(|p| p.status == PeerStatus::Active)
+                .map(|peer_info| async move {
+                    if let Err(e) = self.sync_with_peer(&peer_info.id).await {
+                        // Log individual peer sync failure but continue with others
+                        tracing::error!("Periodic sync failed with {}: {e}", peer_info.id);
+                    }
+                }),
+        )
+        .buffer_unordered(MAX_CONCURRENT_PEER_SYNCS)
+        .collect::<()>()
+        .await;
     }
 
     /// Sync with a specific peer (bidirectional)
@@ -688,11 +709,30 @@ impl BackgroundSync {
 
             info!(peer = %peer_id, tree_count = sync_trees.len(), "Synchronizing trees with peer");
 
-            for tree_id in sync_trees {
-                if let Err(e) = self.sync_tree_with_peer(peer_id, &tree_id, &address).await {
-                    // Log tree sync failure but continue with other trees
-                    tracing::error!("Failed to sync tree {tree_id} with peer {peer_id}: {e}");
+            let tree_count = sync_trees.len();
+            for (synced, tree_id) in sync_trees.into_iter().enumerate() {
+                let Err(e) = self.sync_tree_with_peer(peer_id, &tree_id, &address).await else {
+                    continue;
+                };
+                // A peer we could not connect to for one tree is not going to
+                // answer for the next one, and each attempt costs a full
+                // connect timeout. Walking every tree anyway makes an
+                // unreachable peer cost `timeout * trees` per round — so the
+                // more trees a peer accumulates, the longer it stalls sync for
+                // every *other* peer, since the periodic walk is serial.
+                //
+                // Only bail on genuine unreachability: a peer that answers
+                // "tree not found" is up, and its other trees may sync fine.
+                if matches!(&e, Error::Sync(se) if se.is_peer_unreachable()) {
+                    debug!(
+                        peer = %peer_id,
+                        skipped = tree_count - synced,
+                        "Peer unreachable; skipping its remaining trees this round: {e}"
+                    );
+                    return Err(e);
                 }
+                // Log tree sync failure but continue with other trees
+                tracing::error!("Failed to sync tree {tree_id} with peer {peer_id}: {e}");
             }
 
             info!(peer = %peer_id, "Completed peer synchronization");
@@ -844,5 +884,28 @@ impl BackgroundSync {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Only a failure to connect generalizes from one tree to the whole
+    /// peer. A peer that answers "tree not found" is up, and its other
+    /// trees must still be attempted.
+    #[test]
+    fn only_connection_failures_count_as_unreachable() {
+        let unreachable = SyncError::ConnectionFailed {
+            address: "127.0.0.1:9801".to_string(),
+            reason: "timed out".to_string(),
+        };
+        assert!(unreachable.is_peer_unreachable());
+
+        let answered = SyncError::Network("Peer returned error: Tree not found: baf…".to_string());
+        assert!(!answered.is_peer_unreachable());
+        // ...but it is still a network error, so the broader classifier is
+        // unchanged for existing callers.
+        assert!(answered.is_network_error());
     }
 }

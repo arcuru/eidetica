@@ -213,6 +213,18 @@ impl SyncError {
         )
     }
 
+    /// Check if this error means the peer itself could not be reached, as
+    /// opposed to the peer answering and rejecting the request.
+    ///
+    /// Deliberately narrower than [`Self::is_network_error`]: `Network` also
+    /// carries errors the peer *sent back* (e.g. "Peer returned error: Tree
+    /// not found"), which prove the peer is up. Only a failure to establish
+    /// the connection says anything about the peer's reachability, so only
+    /// that is safe to generalize from one tree to the peer as a whole.
+    pub fn is_peer_unreachable(&self) -> bool {
+        matches!(self, SyncError::ConnectionFailed { .. })
+    }
+
     /// Check if this is a protocol error (unexpected response).
     pub fn is_protocol_error(&self) -> bool {
         matches!(self, SyncError::UnexpectedResponse { .. })

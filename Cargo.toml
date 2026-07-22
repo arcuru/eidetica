@@ -65,6 +65,10 @@ reqwest = { version = "0.12", features = [
     "rustls-tls",
 ], default-features = false }
 async-trait = "0.1"
+# Only for concurrent stream combinators (`buffer_unordered`) in the sync
+# engine. Already in the tree via iroh/axum/reqwest; declared directly so the
+# use is explicit rather than incidental.
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 iroh = { version = "1.0", default-features = false, features = ["tls-ring"] }
 iroh-tickets = "1.0"
 lru = "0.16"
