@@ -10,11 +10,12 @@ on:
   workflow_dispatch:
 
 permissions:
+  contents: read
   pull-requests: write
   checks: write
 
 jobs:
   update-hold:
-    uses: arcuru/actions/.github/workflows/update-hold.yml@c8144123ad5a2c6316b7becab8233b68dfa637d9 # v0.2.1
+    uses: arcuru/actions/.github/workflows/update-hold.yml@45540c9d68eb9d2812bd4c85b43888fa05b22ef8 # main
     with:
       runs-on: ubicloud-standard-2
