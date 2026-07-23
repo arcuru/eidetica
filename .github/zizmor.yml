@@ -1,0 +1,35 @@
+# zizmor configuration — https://docs.zizmor.sh/configuration/
+#
+# Each suppression below is a deliberate, reviewed exception. Everything else is
+# expected to pass; new findings should be fixed, not added here.
+rules:
+  dangerous-triggers:
+    ignore:
+      # publish.yml and deploy-docs.yml are built on workflow_run by design.
+      # zizmor flags the trigger regardless of job guards, but the actual risk —
+      # fork code reaching a privileged job — is closed in-workflow: publish's
+      # `build` job requires `workflow_run.event == 'push'` and
+      # `head_repository.full_name == github.repository`, and deploy-docs
+      # requires the same head_repository match. A fork PR (which runs CI as a
+      # `pull_request` from a fork) therefore cannot reach either job.
+      # Pinned to the trigger line so a NEW dangerous trigger still flags.
+      - publish.yml:22
+      - deploy-docs.yml:14
+  template-injection:
+    ignore:
+      # `steps.nix.outputs.push-args` is a first-party output of our own
+      # setup-nix composite (pre-quoted Nix store paths), not attacker-
+      # controllable input — see the comment at that step in publish.yml.
+      # Pinned by line: update these if publish.yml shifts (the gate fails
+      # loudly rather than masking silently if they drift).
+      - publish.yml:120
+      - publish.yml:131
+  secrets-inherit:
+    ignore:
+      # PAT_TOKEN reaches the reusable workflow through its own
+      # `environment: automation`. A job that calls a reusable workflow cannot
+      # declare an environment itself, so passing the secret explicitly here
+      # would read it outside that environment and hand over an empty value.
+      - actions-update.yml:24
+      - cargo-update.yml:24
+      - flake-update.yml:24

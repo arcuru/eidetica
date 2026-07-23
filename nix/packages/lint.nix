@@ -50,6 +50,16 @@
         || (lib.hasSuffix ".yml" path && lib.hasInfix ".github/workflows" path)
         || (builtins.baseNameOf path == "actionlint.yaml");
     };
+    # zizmor audits workflows and composite action manifests, and reads its
+    # suppression config from .github/zizmor.yml.
+    github-actions-security = lib.cleanSourceWith {
+      src = cleanSrc;
+      filter = path: type:
+        (type == "directory")
+        || ((lib.hasSuffix ".yml" path || lib.hasSuffix ".yaml" path)
+          && (lib.hasInfix ".github/workflows" path || lib.hasInfix ".github/actions" path))
+        || (builtins.baseNameOf path == "zizmor.yml");
+    };
     dockerfile = lib.cleanSourceWith {
       src = cleanSrc;
       filter = path: type:
@@ -151,6 +161,17 @@
       packages = [pkgs.actionlint pkgs.shellcheck pkgs.findutils];
       src = sources.github-actions;
       command = ''find .github/workflows -name "*.yml" -exec actionlint -config-file .github/actionlint.yaml {} +'';
+    };
+
+    zizmor = mkSimpleLinter {
+      name = "zizmor";
+      packages = [pkgs.zizmor];
+      src = sources.github-actions-security;
+      # --offline: the build sandbox has no network. This also skips zizmor's
+      # online audits (known-vulnerable-actions, impostor-commit, ref-confusion);
+      # the pin-audit workflow covers advisory checks against the pinned actions.
+      # Config carries the reviewed suppressions; anything else is expected to pass.
+      command = ''zizmor --offline --config .github/zizmor.yml .github/workflows .github/actions'';
     };
 
     hadolint = mkSimpleLinter {
