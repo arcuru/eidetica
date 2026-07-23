@@ -38,7 +38,8 @@ jobs:
       github.repository_owner == 'arcuru' &&
       (github.event_name != 'workflow_run' ||
        (github.event.workflow_run.conclusion == 'success' &&
-        github.event.workflow_run.event == 'workflow_run'))
+        github.event.workflow_run.event == 'workflow_run' &&
+        github.event.workflow_run.head_repository.full_name == github.repository))
     permissions:
       contents: read
     steps:
@@ -46,6 +47,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+          persist-credentials: false
 
       - name: Setup Nix
         uses: ./.github/actions/setup-nix

@@ -46,9 +46,21 @@ jobs:
     name: Publish (${{ matrix.system }})
     environment: publish
     runs-on: ${{ matrix.runner }}
+    # For workflow_run, restrict to a CI run for this repo's own main. The
+    # `branches` filter and workflow_run.conclusion alone do not: the branches
+    # filter matches the triggering run's head_branch, which a fork PR from a
+    # branch named "main" also satisfies, and CI runs on pull_request. Without
+    # the event/repository checks, fork code would be checked out at
+    # workflow_run.head_sha with this job's publish credentials. Allow both a
+    # push and a manual workflow_dispatch of CI (dispatch requires write access,
+    # so it is trusted-origin); the head_repository check rejects fork PRs.
     if: |
       github.repository_owner == 'arcuru' &&
-      (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
+      (github.event_name != 'workflow_run' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        (github.event.workflow_run.event == 'push' ||
+         github.event.workflow_run.event == 'workflow_dispatch') &&
+        github.event.workflow_run.head_repository.full_name == github.repository))
     strategy:
       matrix:
         include:
@@ -86,6 +98,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ steps.ref.outputs.ref }}
+          persist-credentials: false
 
       - name: Setup Nix
         uses: ./.github/actions/setup-nix
@@ -244,6 +257,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
