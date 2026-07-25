@@ -1,7 +1,9 @@
 # zizmor configuration — https://docs.zizmor.sh/configuration/
 #
-# Each suppression below is a deliberate, reviewed exception. Everything else is
-# expected to pass; new findings should be fixed, not added here.
+# Each suppression below is a deliberate, reviewed exception. At zizmor's
+# default persona, everything else is expected to pass; new findings should be
+# fixed, not added here. `--persona=pedantic` reports roughly 37 further
+# findings that are deliberately out of scope for this gate.
 rules:
   dangerous-triggers:
     ignore:
