@@ -48,6 +48,7 @@ in
         shellcheck # Lint shell scripts
         yamllint # Lint YAML files
         actionlint # Lint GitHub Actions workflows
+        zizmor # Audit GitHub Actions security
         hadolint # Lint Dockerfiles
         markdownlint-cli # Lint Markdown files
         gitleaks # Detect secrets in code

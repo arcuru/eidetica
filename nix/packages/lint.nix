@@ -167,9 +167,13 @@
       name = "zizmor";
       packages = [pkgs.zizmor];
       src = sources.github-actions-security;
-      # --offline: the build sandbox has no network. This also skips zizmor's
-      # online audits (known-vulnerable-actions, impostor-commit, ref-confusion);
-      # the pin-audit workflow covers advisory checks against the pinned actions.
+      # --offline: the build sandbox has no network, here and in CI alike, so
+      # zizmor's online audits never run as part of this gate. The daily
+      # pin-audit workflow covers advisories (~known-vulnerable-actions) and, by
+      # re-resolving each version-commented pin against its upstream tag, tag
+      # integrity (~impostor-commit); ref-confusion is moot for full-SHA pins.
+      # Residual gap: pins commented with a branch (`# main`) are unverifiable
+      # that way. `just lint zizmor` runs without --offline for a local check.
       # Config carries the reviewed suppressions; anything else is expected to pass.
       command = ''zizmor --offline --config .github/zizmor.yml .github/workflows .github/actions'';
     };

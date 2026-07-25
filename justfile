@@ -172,8 +172,8 @@ test *args:
 # Linting (Static Analysis)
 # =============================================================================
 
-# Run linter(s): clippy, audit, typos, statix, deadnix, shellcheck, yamllint, actionlint, hadolint, markdownlint, gitleaks, udeps, min-versions, all
-lint +tools='clippy audit typos statix deadnix shellcheck yamllint actionlint hadolint markdownlint gitleaks':
+# Run linter(s): clippy, audit, typos, statix, deadnix, shellcheck, yamllint, actionlint, zizmor, hadolint, markdownlint, gitleaks, udeps, min-versions, all
+lint +tools='clippy audit typos statix deadnix shellcheck yamllint actionlint zizmor hadolint markdownlint gitleaks':
     #!/usr/bin/env bash
     set -e
     for tool in {{ tools }}; do
@@ -210,6 +210,12 @@ lint +tools='clippy audit typos statix deadnix shellcheck yamllint actionlint ha
                 echo "=== Running actionlint ==="
                 actionlint
                 ;;
+            zizmor)
+                echo "=== Running zizmor ==="
+                # No --offline here (unlike the Nix gate, which builds in a
+                # sandbox): with GH_TOKEN set this also runs the online audits.
+                zizmor --config .github/zizmor.yml .github/workflows .github/actions
+                ;;
             hadolint)
                 echo "=== Running hadolint ==="
                 hadolint Dockerfile
@@ -233,11 +239,11 @@ lint +tools='clippy audit typos statix deadnix shellcheck yamllint actionlint ha
                 cargo nextest run --workspace --all-features --status-level fail
                 ;;
             all)
-                just lint clippy audit typos statix deadnix shellcheck yamllint actionlint hadolint markdownlint gitleaks udeps min-versions
+                just lint clippy audit typos statix deadnix shellcheck yamllint actionlint zizmor hadolint markdownlint gitleaks udeps min-versions
                 ;;
             *)
                 echo "Unknown linter: $tool"
-                echo "Options: clippy, audit, typos, statix, deadnix, shellcheck, yamllint, actionlint, hadolint, markdownlint, gitleaks, udeps, min-versions, all"
+                echo "Options: clippy, audit, typos, statix, deadnix, shellcheck, yamllint, actionlint, zizmor, hadolint, markdownlint, gitleaks, udeps, min-versions, all"
                 exit 1
                 ;;
         esac
