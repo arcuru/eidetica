@@ -1,9 +1,7 @@
 # zizmor configuration — https://docs.zizmor.sh/configuration/
 #
-# Each suppression below is a deliberate, reviewed exception. At zizmor's
-# default persona, everything else is expected to pass; new findings should be
-# fixed, not added here. `--persona=pedantic` reports roughly 37 further
-# findings that are deliberately out of scope for this gate.
+# Each suppression below is a deliberate, reviewed exception. Everything else is
+# expected to pass; new findings should be fixed, not added here.
 rules:
   dangerous-triggers:
     ignore:
@@ -35,3 +33,20 @@ rules:
       - actions-update.yml:24
       - cargo-update.yml:24
       - flake-update.yml:24
+  ref-version-mismatch:
+    ignore:
+      # dtolnay/rust-toolchain publishes no releases — one tag across the whole
+      # repository — and distributes via branches instead, so `# master` names
+      # the branch the pin tracks and there is no version for it to name. The
+      # audit resolves that comment as a ref and reports the pinned SHA as
+      # diverged from the branch tip, which is true and expected of a branch
+      # pin.
+      #
+      # Integrity of these pins is covered by the daily Deps: Actions Audit,
+      # which confirms the pinned commit is still reachable from the branch it
+      # claims to track and reports a critical finding when it is not — the
+      # case that would actually break the pin.
+      #
+      # Pinned by line, as above: a shift reports rather than masks.
+      - release-plz-pr.yml:34
+      - release-plz-release.yml:43
