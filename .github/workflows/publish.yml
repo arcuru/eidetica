@@ -46,14 +46,12 @@ jobs:
     name: Publish (${{ matrix.system }})
     environment: publish
     runs-on: ${{ matrix.runner }}
-    # For workflow_run, restrict to a CI run for this repo's own main. The
-    # `branches` filter and workflow_run.conclusion alone do not: the branches
-    # filter matches the triggering run's head_branch, which a fork PR from a
-    # branch named "main" also satisfies, and CI runs on pull_request. Without
-    # the event/repository checks, fork code would be checked out at
-    # workflow_run.head_sha with this job's publish credentials. Allow both a
-    # push and a manual workflow_dispatch of CI (dispatch requires write access,
-    # so it is trusted-origin); the head_repository check rejects fork PRs.
+    # For workflow_run, restrict to a CI run on this repo's own main: the
+    # `branches` filter matches the triggering run's head_branch, which a fork
+    # PR from a branch named "main" also satisfies, and fork code would then be
+    # checked out at head_sha with this job's publish credentials.
+    # workflow_dispatch is allowed alongside push — dispatching CI already
+    # requires write access.
     if: |
       github.repository_owner == 'arcuru' &&
       (github.event_name != 'workflow_run' ||

@@ -1,29 +1,24 @@
 # zizmor configuration — https://docs.zizmor.sh/configuration/
 #
-# Each suppression below is a deliberate, reviewed exception. Everything else is
-# expected to pass; new findings should be fixed, not added here.
+# Each suppression below is a deliberate, reviewed exception; new findings
+# should be fixed, not added here. The gate runs at zizmor's default persona.
+# Ignores are pinned by line so a shifted target reports rather than masks.
 rules:
   dangerous-triggers:
     ignore:
-      # publish.yml and deploy-docs.yml are built on workflow_run by design.
-      # zizmor flags the trigger regardless of job guards, but the actual risk —
-      # fork code reaching a privileged job — is closed in-workflow: publish's
-      # `build` job requires `workflow_run.event == 'push'` and
-      # `head_repository.full_name == github.repository`, and deploy-docs
-      # requires the same head_repository match. A fork PR (which runs CI as a
-      # `pull_request` from a fork) therefore cannot reach either job.
-      # Pinned to the trigger line so a NEW dangerous trigger still flags.
+      # publish.yml and deploy-docs.yml are workflow_run by design. zizmor flags
+      # the trigger regardless of job guards; both jobs gate on
+      # `head_repository.full_name == github.repository`, so fork code cannot
+      # reach them — see the `if:` comments in those workflows.
       - publish.yml:22
       - deploy-docs.yml:14
   template-injection:
     ignore:
-      # `steps.nix.outputs.push-args` is a first-party output of our own
-      # setup-nix composite (pre-quoted Nix store paths), not attacker-
-      # controllable input — see the comment at that step in publish.yml.
-      # Pinned by line: update these if publish.yml shifts (the gate fails
-      # loudly rather than masking silently if they drift).
-      - publish.yml:120
-      - publish.yml:131
+      # `steps.nix.outputs.push-args` is a first-party output of our setup-nix
+      # composite (pre-quoted Nix store paths), not attacker-controllable input
+      # — see the comment at that step in publish.yml.
+      - publish.yml:118
+      - publish.yml:129
   secrets-inherit:
     ignore:
       # PAT_TOKEN reaches the reusable workflow through its own
@@ -35,18 +30,10 @@ rules:
       - flake-update.yml:24
   ref-version-mismatch:
     ignore:
-      # dtolnay/rust-toolchain publishes no releases — one tag across the whole
-      # repository — and distributes via branches instead, so `# master` names
-      # the branch the pin tracks and there is no version for it to name. The
-      # audit resolves that comment as a ref and reports the pinned SHA as
-      # diverged from the branch tip, which is true and expected of a branch
-      # pin.
-      #
-      # Integrity of these pins is covered by the daily Deps: Actions Audit,
-      # which confirms the pinned commit is still reachable from the branch it
-      # claims to track and reports a critical finding when it is not — the
-      # case that would actually break the pin.
-      #
-      # Pinned by line, as above: a shift reports rather than masks.
+      # dtolnay/rust-toolchain publishes no releases and distributes via
+      # branches, so `# master` names the branch the pin tracks rather than a
+      # version; zizmor resolves it as a ref and reports the expected divergence
+      # from the branch tip. Deps: Actions Audit covers these pins instead,
+      # failing when the pinned commit is no longer reachable from that branch.
       - release-plz-pr.yml:34
       - release-plz-release.yml:43

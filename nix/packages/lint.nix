@@ -50,8 +50,6 @@
         || (lib.hasSuffix ".yml" path && lib.hasInfix ".github/workflows" path)
         || (builtins.baseNameOf path == "actionlint.yaml");
     };
-    # zizmor audits workflows and composite action manifests, and reads its
-    # suppression config from .github/zizmor.yml.
     github-actions-security = lib.cleanSourceWith {
       src = cleanSrc;
       filter = path: type:
@@ -167,13 +165,8 @@
       name = "zizmor";
       packages = [pkgs.zizmor];
       src = sources.github-actions-security;
-      # --offline: the build sandbox has no network, here and in CI alike, so
-      # zizmor's online audits never run as part of this gate. The daily
-      # "Deps: Actions Audit" workflow runs zizmor online against these same
-      # files, so the audits skipped here do execute there; it also re-resolves
-      # each version-commented pin against its upstream tag, which no zizmor
-      # audit does. `just lint zizmor` runs without --offline for a local check.
-      # Config carries the reviewed suppressions; anything else is expected to pass.
+      # The build sandbox has no network; the daily "Deps: Actions Audit"
+      # workflow runs the online audits that --offline skips here.
       command = ''zizmor --offline --config .github/zizmor.yml .github/workflows .github/actions'';
     };
 
