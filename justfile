@@ -212,8 +212,6 @@ lint +tools='clippy audit typos statix deadnix shellcheck yamllint actionlint zi
                 ;;
             zizmor)
                 echo "=== Running zizmor ==="
-                # No --offline here (unlike the Nix gate, which builds in a
-                # sandbox): with GH_TOKEN set this also runs the online audits.
                 zizmor --config .github/zizmor.yml .github/workflows .github/actions
                 ;;
             hadolint)
