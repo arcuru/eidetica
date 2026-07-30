@@ -9,7 +9,7 @@ use tokio::sync::Mutex;
 use async_trait::async_trait;
 use iroh::{
     Endpoint, RelayMode, SecretKey,
-    endpoint::{Connection, RecvStream, SendStream},
+    endpoint::{Connection, RecvStream, SendStream, presets},
 };
 use iroh_tickets::{Ticket, endpoint::EndpointTicket};
 use serde::{Deserialize, Serialize};
@@ -458,7 +458,7 @@ impl IrohTransport {
 
         if endpoint_lock.is_none() {
             // Create a new Iroh endpoint with configured relay mode
-            let mut builder = Endpoint::builder()
+            let mut builder = Endpoint::builder(presets::N0)
                 .alpns(vec![SYNC_ALPN.to_vec()])
                 .relay_mode(self.runtime_config.relay_mode.clone());
 
@@ -632,7 +632,7 @@ impl SyncTransport for IrohTransport {
         // Note: We don't wait for online() - direct addresses are available immediately
         // after bind(), and relay connections happen asynchronously in the background.
         let endpoint_addr = endpoint.addr();
-        let endpoint_addr_str = Ticket::serialize(&EndpointTicket::new(endpoint_addr));
+        let endpoint_addr_str = EndpointTicket::new(endpoint_addr).encode_string();
 
         // Create server coordination channels
         let (ready_tx, ready_rx) = oneshot::channel();
@@ -681,7 +681,7 @@ impl SyncTransport for IrohTransport {
 
         // Deserialize the EndpointTicket address
         let endpoint_ticket =
-            <EndpointTicket as Ticket>::deserialize(&address.address).map_err(|e| {
+            <EndpointTicket as Ticket>::decode_string(&address.address).map_err(|e| {
                 SyncError::SerializationError(format!(
                     "Failed to parse EndpointTicket '{}': {e}",
                     address.address
@@ -755,14 +755,14 @@ mod tests {
         );
 
         // Serialize to EndpointTicket string
-        let ticket_str = Ticket::serialize(&EndpointTicket::new(endpoint_addr.clone()));
+        let ticket_str = EndpointTicket::new(endpoint_addr.clone()).encode_string();
         assert!(
             ticket_str.starts_with("endpoint"),
             "EndpointTicket should start with 'endpoint' prefix: {ticket_str}"
         );
 
         // Deserialize back
-        let ticket = <EndpointTicket as Ticket>::deserialize(&ticket_str).unwrap();
+        let ticket = <EndpointTicket as Ticket>::decode_string(&ticket_str).unwrap();
         let round_tripped = ticket.endpoint_addr();
 
         assert_eq!(endpoint_addr.id, round_tripped.id);

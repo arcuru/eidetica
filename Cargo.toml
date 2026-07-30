@@ -28,7 +28,7 @@ sha2 = "0.10"
 hex = "0.4"
 blake3 = "1.8"
 cid = { version = "0.11", features = ["serde", "std"] }
-multihash-codetable = { version = "0.1", features = ["sha2", "blake3"] }
+multihash-codetable = { version = "0.2", features = ["sha2", "blake3"] }
 serde_ipld_dagcbor = "0.6"
 ipld-core = "0.4"
 thiserror = "2"
@@ -65,8 +65,8 @@ reqwest = { version = "0.12", features = [
     "rustls-tls",
 ], default-features = false }
 async-trait = "0.1"
-iroh = { version = "0.96", default-features = false }
-iroh-tickets = "0.3"
+iroh = { version = "1.0", default-features = false, features = ["tls-ring"] }
+iroh-tickets = "1.0"
 lru = "0.16"
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "postgres", "any"] }
 # CLI dependencies
