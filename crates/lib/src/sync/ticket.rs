@@ -239,7 +239,7 @@ mod tests {
             secret_key.public(),
             vec![TransportAddr::Ip("127.0.0.1:1234".parse().unwrap())],
         );
-        Address::iroh(Ticket::serialize(&EndpointTicket::new(endpoint_addr)))
+        Address::iroh(EndpointTicket::new(endpoint_addr).encode_string())
     }
 
     fn sha256_id() -> ID {
