@@ -47,6 +47,17 @@ pub struct BootstrapRequest {
     /// when deciding whether to grant access. Carried verbatim from the request.
     #[serde(default)]
     pub metadata: Option<Doc>,
+    /// The requester's handshake device key, if the request arrived over an
+    /// authenticated connection.
+    ///
+    /// Recorded so approval can add the requester to the database's tree-peer set
+    /// and reach it with the approval broadcast. Registration deliberately does
+    /// *not* happen when the request is made: that set is the push list, and an
+    /// unapproved peer must not be on it. `None` means the approval broadcast has
+    /// no route to the requester, which is not fatal — the requester's own
+    /// completion sweep still converges.
+    #[serde(default)]
+    pub peer_device_pubkey: Option<PublicKey>,
 }
 
 /// Status of a bootstrap request
@@ -306,6 +317,7 @@ mod tests {
                 address: "127.0.0.1:8080".to_string(),
             },
             metadata: None,
+            peer_device_pubkey: Some(PublicKey::random()),
         }
     }
 

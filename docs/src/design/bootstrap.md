@@ -232,6 +232,28 @@ settings, registers the tree/peer relationship, and marks the request hydrated.
 The caller does not re-invoke `request_database_access`; the database becomes
 openable on its own.
 
+#### Who Is On The Push List
+
+A database's tree-peer set is a **push list**: the `sync_on_commit` fan-out sends
+every committed entry to it, and bootstrap approval broadcasts the new auth entry
+to it. Membership therefore has to mean something.
+
+The rule is **you are on a tree's push list only once we have served you that
+tree**. A peer whose bootstrap came back `Pending`, or was refused outright, is
+not registered — otherwise being told "wait" or "no" would still deliver database
+contents and the auth key list.
+
+That leaves approval needing a route back to the requester. The requester's
+handshake device key is recorded on the stored `BootstrapRequest` instead, and
+approval registers it at the moment access is granted, immediately before
+broadcasting. A request with no recorded device key simply isn't broadcast to;
+the requester's own completion sweep still converges.
+
+Note this is registration-time hygiene, not an authorization filter on the send
+path itself — `queue_entry_for_sync` still trusts its peer list. Closing that
+requires a device-key-to-auth-key association the peer records do not currently
+carry.
+
 #### Retrying Without Amplifying
 
 The sweep re-sends the bootstrap request on every tick until it is answered, so

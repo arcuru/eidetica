@@ -110,6 +110,7 @@ impl SyncHandlerImpl {
         requesting_key_name: &str,
         requested_permission: &Permission,
         metadata: Option<Doc>,
+        peer_device_pubkey: Option<&PublicKey>,
     ) -> Result<BootstrapRequestOutcome> {
         let sync_tree = self.get_sync_tree().await?;
         let txn = sync_tree.new_transaction().await?;
@@ -157,6 +158,11 @@ impl SyncHandlerImpl {
             // `Doc` is already deserialized at the protocol layer ahead of the
             // sync-enabled gate, so the size cap ideally belongs there too.
             metadata,
+            // The requester's handshake device key. Recorded (rather than the peer
+            // being added to the tree's push list up front) so approval can register
+            // it and reach it with the approval broadcast — without an unapproved
+            // peer sitting on that list in the meantime.
+            peer_device_pubkey: peer_device_pubkey.cloned(),
         };
 
         let request_id = manager.store_request(request).await?;
@@ -485,6 +491,26 @@ impl SyncHandlerImpl {
     ///
     /// # Returns
     /// Result indicating success or failure
+    /// Register a peer we just served `tree_id` to, so it receives future
+    /// updates for that tree.
+    ///
+    /// Best-effort and infallible by design: the data has already been served, so
+    /// failing to record the relationship must not fail the response. Callers must
+    /// only invoke this once they have decided to serve the tree — see the push-list
+    /// reasoning in [`handle_sync_tree`](Self::handle_sync_tree).
+    async fn track_served_peer(&self, tree_id: &ID, peer_pubkey: Option<&PublicKey>) {
+        let Some(peer_pubkey) = peer_pubkey else {
+            debug!(tree_id = %tree_id, "No peer pubkey in context, skipping relationship tracking");
+            return;
+        };
+        if let Err(e) = self
+            .track_tree_sync_relationship(tree_id, peer_pubkey)
+            .await
+        {
+            warn!(tree_id = %tree_id, peer_pubkey = %peer_pubkey, error = %e, "Failed to track tree/peer relationship");
+        }
+    }
+
     async fn track_tree_sync_relationship(
         &self,
         tree_id: &ID,
@@ -615,31 +641,47 @@ impl SyncHandlerImpl {
         async move {
             trace!(tree_id = %request.tree_id, "Processing sync tree request");
 
-            // Track tree/peer sync relationship for bidirectional sync
-            // IMPORTANT: Only use context.peer_pubkey (device key from handshake)
-            // Do NOT use request.requesting_key (that's an auth key for database access)
-            if let Some(peer_pubkey) = &context.peer_pubkey {
-                if let Err(e) = self.track_tree_sync_relationship(&request.tree_id, peer_pubkey).await {
-                    // Log the error but don't fail the sync - relationship tracking is best-effort
-                    warn!(tree_id = %request.tree_id, peer_pubkey = %peer_pubkey, error = %e, "Failed to track tree/peer relationship");
-                }
-            } else {
-                debug!(tree_id = %request.tree_id, "No peer pubkey in context, skipping relationship tracking");
-            }
-
             // Check if peer needs bootstrap (empty tips indicates no local data)
             if request.our_tips.is_empty() {
                 debug!(tree_id = %request.tree_id, "Peer needs bootstrap - sending full tree");
-                return self.handle_bootstrap_request(&request.tree_id,
+                let response = self.handle_bootstrap_request(&request.tree_id,
                                                   request.requesting_key.as_ref(),
                                                   request.requesting_key_name.as_deref(),
                                                   request.requested_permission,
-                                                  request.metadata.clone()).await;
+                                                  request.metadata.clone(),
+                                                  context.peer_pubkey.as_ref()).await;
+
+                // Register the tree/peer relationship only if we actually served
+                // the tree. That set is the push list: `sync_on_commit` fans every
+                // committed entry out to it, and bootstrap approval broadcasts the
+                // new auth entry to it. Registering a peer we refused would push
+                // database contents and auth metadata to someone who was told no.
+                //
+                // A Pending or Rejected outcome deliberately registers nothing.
+                // On approval, `Sync::approve_bootstrap_request_with_key` registers
+                // the requester from the device key recorded on the request, so the
+                // approval broadcast still reaches it.
+                if matches!(response, SyncResponse::Bootstrap(_)) {
+                    self.track_served_peer(&request.tree_id, context.peer_pubkey.as_ref()).await;
+                }
+                return response;
             }
 
             // Handle incremental sync (peer has existing data, needs updates)
             debug!(tree_id = %request.tree_id, peer_tips = request.our_tips.len(), "Handling incremental sync");
-            self.handle_incremental_sync(&request.tree_id, &request.our_tips).await
+            let response = self.handle_incremental_sync(&request.tree_id, &request.our_tips).await;
+
+            // Same rule as the bootstrap branch: register only when we served data.
+            //
+            // NOTE: this path does not yet authorize the caller at all — it gates
+            // only on the database being sync-enabled — so "we served it" is a
+            // weaker statement here than above. Authorizing incremental sync is
+            // tracked separately; registration here is downstream of that fix and
+            // is deliberately left as-is rather than half-corrected.
+            if matches!(response, SyncResponse::Incremental(_)) {
+                self.track_served_peer(&request.tree_id, context.peer_pubkey.as_ref()).await;
+            }
+            response
         }
         .instrument(info_span!("handle_sync_tree", tree = %request.tree_id))
         .await
@@ -707,6 +749,7 @@ impl SyncHandlerImpl {
         requesting_key_name: Option<&str>,
         requested_permission: Option<Permission>,
         metadata: Option<Doc>,
+        peer_device_pubkey: Option<&PublicKey>,
     ) -> SyncResponse {
         // SECURITY: Check if database has sync enabled (FIRST CHECK - before anything else)
         // This prevents information leakage about database existence: the gate
@@ -804,7 +847,14 @@ impl SyncHandlerImpl {
 
                         // Store the bootstrap request in sync database for manual approval
                         match self
-                            .store_bootstrap_request(tree_id, key, key_name, &permission, metadata)
+                            .store_bootstrap_request(
+                                tree_id,
+                                key,
+                                key_name,
+                                &permission,
+                                metadata,
+                                peer_device_pubkey,
+                            )
                             .await
                         {
                             Ok(BootstrapRequestOutcome::Pending(request_id)) => {

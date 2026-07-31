@@ -80,4 +80,23 @@ A `Rejected` record answers subsequent requests with `BootstrapRejected`, which
 the requester treats as terminal (its outgoing record is marked `Rejected` and
 leaves the sweep set) rather than as another pending wait.
 
+## Tree-Peer Registration
+
+`handle_sync_tree` registers the caller in the tree's peer set only when it
+returns `Bootstrap` or `Incremental` — i.e. only when data was actually served.
+`Pending`, `Rejected`, and error outcomes register nothing. The peer set is the
+push list (`sync_on_commit` fan-out and the approval broadcast both iterate it),
+so a refused peer must not be on it.
+
+`BootstrapRequest.peer_device_pubkey` carries the requester's handshake device key
+so `approve_bootstrap_request_with_key` can register it at approval time and then
+broadcast. It is `Option` and `#[serde(default)]`: requests stored before this
+field existed, or arriving without an authenticated connection, approve normally
+and rely on the requester's completion sweep.
+
+Two gaps remain here, both tracked outside this flow: the incremental branch
+serves data without authorizing the caller at all (so "we served it" is a weak
+statement on that path), and `queue_entry_for_sync` applies no authorization
+filter of its own.
+
 See `src/sync/bootstrap_request_manager.rs` and `src/sync/handler.rs` for implementation.

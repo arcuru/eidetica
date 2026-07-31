@@ -230,24 +230,57 @@ async fn test_bootstrap_sync_tracks_tree_peer_relationship() {
         .await
         .unwrap();
 
-    // Create bootstrap request (empty tips)
-    let sync_request = SyncTreeRequest {
-        tree_id: tree_id.clone(),
-        our_tips: Vec::new().into(), // Empty tips = bootstrap
-        peer_pubkey: None,
-        requesting_key: Some(peer_verifying_key.clone()),
-        requesting_key_name: Some("peer_key".to_string()),
-        requested_permission: None,
-        metadata: None,
-    };
-
     let context = RequestContext {
         remote_address: Some(Address::http("203.0.113.42:54321")),
         peer_pubkey: Some(peer_verifying_key.clone()),
     };
 
-    let request = SyncRequest::SyncTree(sync_request);
-    let _response = handler.handle_request(&request, &context).await;
+    let bootstrap_request = || {
+        SyncRequest::SyncTree(SyncTreeRequest {
+            tree_id: tree_id.clone(),
+            our_tips: Vec::new().into(), // Empty tips = bootstrap
+            peer_pubkey: None,
+            requesting_key: Some(peer_verifying_key.clone()),
+            requesting_key_name: Some("peer_key".to_string()),
+            requested_permission: None,
+            metadata: None,
+        })
+    };
+
+    // A peer we refuse must NOT be tracked: the tree/peer set is the push list,
+    // so tracking a refused peer would feed it every subsequent commit.
+    let refused = handler.handle_request(&bootstrap_request(), &context).await;
+    assert!(
+        matches!(refused, SyncResponse::Error(_)),
+        "unauthorized key should be refused, got: {refused:?}"
+    );
+    assert!(
+        !sync
+            .is_tree_synced_with_peer(&peer_verifying_key, &tree_id)
+            .await
+            .unwrap(),
+        "a refused peer must not be tracked as a sync target"
+    );
+
+    // Authorize the key, and the same request is served — and now tracked.
+    {
+        let tx = db.new_transaction().await.unwrap();
+        let settings_store = tx.get_settings().unwrap();
+        settings_store
+            .set_auth_key(
+                &peer_verifying_key,
+                AuthKey::active(Some("peer_key"), Permission::Write(5)),
+            )
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    let served = handler.handle_request(&bootstrap_request(), &context).await;
+    assert!(
+        matches!(served, SyncResponse::Bootstrap(_)),
+        "authorized key should be served, got: {served:?}"
+    );
 
     // Verify tree/peer relationship was tracked
     assert!(
@@ -463,6 +496,21 @@ async fn test_multiple_trees_tracked_with_same_peer() {
         remote_address: Some(Address::http("203.0.113.42:54321")),
         peer_pubkey: Some(peer_verifying_key.clone()),
     };
+
+    // Authorize the peer on both databases. Tracking follows being served the
+    // tree, so an unauthorized peer would be refused and correctly not tracked.
+    for db in [&db1, &db2] {
+        let tx = db.new_transaction().await.unwrap();
+        let settings_store = tx.get_settings().unwrap();
+        settings_store
+            .set_auth_key(
+                &peer_verifying_key,
+                AuthKey::active(Some("peer_key"), Permission::Write(5)),
+            )
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
 
     // Request first tree
     let request1 = SyncRequest::SyncTree(SyncTreeRequest {

@@ -489,3 +489,112 @@ async fn rejection_is_terminal_and_stops_the_sweep() {
     server_sync.stop_server().await.unwrap();
     drop(server_instance);
 }
+
+/// An unapproved requester must not be on the database's tree-peer set — that
+/// set is the push list, feeding both the `sync_on_commit` fan-out and the
+/// approval broadcast. Approval is what puts it there.
+///
+/// Regression — registration used to happen unconditionally at the top of
+/// `handle_sync_tree`, before the bootstrap policy ran, so a peer that was told
+/// "pending" (or refused outright) still received every entry subsequently
+/// committed to a database it had no access to.
+#[tokio::test]
+async fn pending_requester_is_not_on_the_push_list_until_approved() {
+    let (server_instance, server_user, server_key_id, _server_database, server_sync, tree_id) =
+        setup_manual_approval_server().await;
+    let server_addr = start_sync_server(&server_sync).await;
+
+    let (_client_instance, mut client_user, client_key_id, client_sync) =
+        setup_sync_enabled_client("client_user", "client_key").await;
+    client_sync
+        .register_transport("http", HttpTransport::builder())
+        .await
+        .unwrap();
+
+    let ticket = DatabaseTicket::with_addresses(tree_id.clone(), vec![server_addr]);
+    let result = client_user
+        .request_database_access(
+            &client_sync,
+            &ticket,
+            &client_key_id,
+            Permission::Write(5),
+            None,
+        )
+        .await;
+    assert!(result.is_err(), "request should be pending");
+
+    // Pending: the requester is not a push target for this tree.
+    let peers_while_pending = server_sync.get_tree_peers(&tree_id).await.unwrap();
+    assert!(
+        peers_while_pending.is_empty(),
+        "an unapproved requester must not be on the tree's push list, found: {peers_while_pending:?}"
+    );
+
+    // Approve, and it becomes one — otherwise the broadcast has nowhere to go.
+    let pending = server_sync.pending_bootstrap_requests().await.unwrap();
+    assert_eq!(pending.len(), 1);
+    let (request_id, record) = &pending[0];
+    assert!(
+        record.peer_device_pubkey.is_some(),
+        "the requester's device key is recorded so approval can reach it"
+    );
+    server_user
+        .approve_bootstrap_request(&server_sync, request_id, &server_key_id)
+        .await
+        .expect("approval should succeed");
+
+    let peers_after_approval = server_sync.get_tree_peers(&tree_id).await.unwrap();
+    assert_eq!(
+        peers_after_approval.len(),
+        1,
+        "approval registers the requester as a push target"
+    );
+
+    server_sync.stop_server().await.unwrap();
+    drop(server_instance);
+}
+
+/// A rejected requester is never added to the push list at all.
+#[tokio::test]
+async fn rejected_requester_never_joins_the_push_list() {
+    let (server_instance, server_user, server_key_id, _server_database, server_sync, tree_id) =
+        setup_manual_approval_server().await;
+    let server_addr = start_sync_server(&server_sync).await;
+
+    let (_client_instance, mut client_user, client_key_id, client_sync) =
+        setup_sync_enabled_client("client_user", "client_key").await;
+    client_sync
+        .register_transport("http", HttpTransport::builder())
+        .await
+        .unwrap();
+
+    let ticket = DatabaseTicket::with_addresses(tree_id.clone(), vec![server_addr]);
+    let _ = client_user
+        .request_database_access(
+            &client_sync,
+            &ticket,
+            &client_key_id,
+            Permission::Write(5),
+            None,
+        )
+        .await;
+
+    let pending = server_sync.pending_bootstrap_requests().await.unwrap();
+    let (request_id, _) = &pending[0];
+    server_user
+        .reject_bootstrap_request(&server_sync, request_id, &server_key_id)
+        .await
+        .expect("rejection should succeed");
+
+    assert!(
+        server_sync
+            .get_tree_peers(&tree_id)
+            .await
+            .unwrap()
+            .is_empty(),
+        "a rejected requester must never become a push target"
+    );
+
+    server_sync.stop_server().await.unwrap();
+    drop(server_instance);
+}

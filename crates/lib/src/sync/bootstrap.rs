@@ -719,6 +719,26 @@ impl Sync {
         // approval, so it is best-effort: log and move on.
         if self.background_tx.get().is_some() {
             let enqueue = async {
+                // Add the requester to the database's tree-peer set now that access
+                // is granted. It is deliberately absent until this point: that set
+                // is the push list, so registering at request time would have fed
+                // database contents and auth metadata to a peer still awaiting a
+                // decision — or already refused one.
+                if let Some(device_pubkey) = &request.peer_device_pubkey {
+                    let reg_tx = self.sync_tree.new_transaction().await?;
+                    PeerManager::new(&reg_tx)
+                        .add_tree_sync(device_pubkey, &request.tree_id)
+                        .await?;
+                    reg_tx.commit().await?;
+                } else {
+                    debug!(
+                        request_id = %request_id,
+                        tree_id = %request.tree_id,
+                        "Approved bootstrap request has no recorded device key; \
+                         skipping broadcast (requester converges via its own sweep)"
+                    );
+                }
+
                 let peer_tx = self.sync_tree.new_transaction().await?;
                 let peers = PeerManager::new(&peer_tx)
                     .get_tree_peers(&request.tree_id)
