@@ -769,6 +769,17 @@ impl Sync {
                 }
                 .into());
             }
+            SyncResponse::BootstrapRejected {
+                request_id,
+                message,
+            } => {
+                info!(peer = %peer_pubkey, tree = %tree_id, request_id = %request_id, "Bootstrap request was rejected");
+                return Err(SyncError::BootstrapRejected {
+                    request_id,
+                    message,
+                }
+                .into());
+            }
             SyncResponse::Error(err) => {
                 return Err(SyncError::Network(format!("Peer returned error: {err}")).into());
             }

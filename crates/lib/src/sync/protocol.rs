@@ -144,6 +144,17 @@ pub enum SyncResponse {
         /// Human-readable message about the pending status
         message: String,
     },
+    /// Bootstrap request was rejected by an administrator.
+    ///
+    /// Terminal: unlike [`Self::BootstrapPending`], retrying the same request
+    /// will not change the outcome. The requester records this and stops
+    /// re-attempting; a new grant requires the approver to act out of band.
+    BootstrapRejected {
+        /// Identifier of the request that was rejected
+        request_id: String,
+        /// Human-readable message about the rejection
+        message: String,
+    },
     /// Acknowledgment that entries were received successfully
     Ack,
     /// Number of entries received (for multiple entries)

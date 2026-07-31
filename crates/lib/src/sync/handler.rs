@@ -101,7 +101,8 @@ impl SyncHandlerImpl {
     /// * `requested_permission` - Permission level being requested
     ///
     /// # Returns
-    /// The generated UUID for the stored request
+    /// The outcome for the requester: the request id it should wait on, or the
+    /// id of the rejection that already answers it.
     async fn store_bootstrap_request(
         &self,
         tree_id: &ID,
@@ -109,10 +110,31 @@ impl SyncHandlerImpl {
         requesting_key_name: &str,
         requested_permission: &Permission,
         metadata: Option<Doc>,
-    ) -> Result<String> {
+    ) -> Result<BootstrapRequestOutcome> {
         let sync_tree = self.get_sync_tree().await?;
         let txn = sync_tree.new_transaction().await?;
         let manager = BootstrapRequestManager::new(&txn);
+
+        // Storage is idempotent per (tree, requesting key). The requester's
+        // outgoing-bootstrap sweep re-sends until access is granted, so inserting
+        // unconditionally would append a row per tick — unbounded growth in the
+        // approver's `_sync` tree and a pending list full of duplicates. Answer
+        // from the existing record instead.
+        if let Some((existing_id, existing)) = manager
+            .find_existing_request(tree_id, requesting_key, requested_permission)
+            .await?
+        {
+            return Ok(match existing.status {
+                RequestStatus::Rejected { .. } => {
+                    debug!(tree_id = %tree_id, request_id = %existing_id, "Re-request for an already-rejected bootstrap; answering rejected");
+                    BootstrapRequestOutcome::Rejected(existing_id)
+                }
+                _ => {
+                    debug!(tree_id = %tree_id, request_id = %existing_id, "Bootstrap request already pending; reusing existing record");
+                    BootstrapRequestOutcome::Pending(existing_id)
+                }
+            });
+        }
 
         let request = BootstrapRequest {
             tree_id: tree_id.clone(),
@@ -140,8 +162,19 @@ impl SyncHandlerImpl {
         let request_id = manager.store_request(request).await?;
         txn.commit().await?;
 
-        Ok(request_id)
+        Ok(BootstrapRequestOutcome::Pending(request_id))
     }
+}
+
+/// What answering a bootstrap key-approval request resolved to.
+///
+/// Distinguishes "queued, wait for an approver" from "an approver already said
+/// no" so the requester can stop retrying on the latter.
+enum BootstrapRequestOutcome {
+    /// The request is queued for manual approval under this id.
+    Pending(String),
+    /// A prior request from the same key for the same tree was rejected.
+    Rejected(String),
 }
 
 #[async_trait]
@@ -774,7 +807,7 @@ impl SyncHandlerImpl {
                             .store_bootstrap_request(tree_id, key, key_name, &permission, metadata)
                             .await
                         {
-                            Ok(request_id) => {
+                            Ok(BootstrapRequestOutcome::Pending(request_id)) => {
                                 info!(
                                     tree_id = %tree_id,
                                     request_id = %request_id,
@@ -783,6 +816,18 @@ impl SyncHandlerImpl {
                                 return SyncResponse::BootstrapPending {
                                     request_id,
                                     message: "Bootstrap request pending manual approval"
+                                        .to_string(),
+                                };
+                            }
+                            Ok(BootstrapRequestOutcome::Rejected(request_id)) => {
+                                info!(
+                                    tree_id = %tree_id,
+                                    request_id = %request_id,
+                                    "Bootstrap request was previously rejected"
+                                );
+                                return SyncResponse::BootstrapRejected {
+                                    request_id,
+                                    message: "Bootstrap request was rejected by an administrator"
                                         .to_string(),
                                 };
                             }

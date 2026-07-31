@@ -19,8 +19,10 @@ sequenceDiagram
 
     alt Global Permission Sufficient
         Handler-->>Client: BootstrapResponse (approved)
+    else Already Rejected
+        Handler-->>Client: BootstrapRejected (request_id)
     else Need Manual Approval
-        Handler->>Handler: Store request
+        Handler->>Handler: Store request (reuses an existing pending record)
         Handler-->>Client: BootstrapPending (request_id)
         Note over Client: Admin reviews
         Handler->>Database: Add key on approval
@@ -67,5 +69,15 @@ an enqueue failure is logged and does not undo the committed approval.
 - **Rejected**: Request denied, no key added
 
 Requests are retained indefinitely for audit trail.
+
+Storage is idempotent per `(tree_id, requesting_pubkey)`: a re-request reuses an
+existing `Pending` or `Rejected` record instead of inserting another, so the
+client's completion sweep cannot append a row per tick. `Approved` records are
+not reused — the store path is only reached when the auth check found no live
+grant, meaning the approval was revoked and a new request is correct.
+
+A `Rejected` record answers subsequent requests with `BootstrapRejected`, which
+the requester treats as terminal (its outgoing record is marked `Rejected` and
+leaves the sweep set) rather than as another pending wait.
 
 See `src/sync/bootstrap_request_manager.rs` and `src/sync/handler.rs` for implementation.

@@ -69,6 +69,10 @@ pub enum OutgoingRequestStatus {
     Pending,
     /// Access was granted, the tree pulled, and the settings applied.
     Hydrated,
+    /// An approver rejected the request. Terminal: the sweep skips these, since
+    /// re-asking cannot change the answer. Kept rather than deleted so the
+    /// outcome is inspectable and a resend does not silently start over.
+    Rejected,
 }
 
 impl<'a> OutgoingBootstrapRequestManager<'a> {
@@ -169,6 +173,21 @@ impl<'a> OutgoingBootstrapRequestManager<'a> {
         requests.set(request_id, request).await?;
 
         debug!(request_id = %request_id, "Marked outgoing bootstrap request hydrated");
+        Ok(())
+    }
+
+    /// Mark an outgoing request as rejected, taking it out of the sweep.
+    pub(super) async fn mark_rejected(&self, request_id: &str) -> Result<()> {
+        let requests = self
+            .txn
+            .get_store::<Table<OutgoingBootstrapRequest>>(OUTGOING_BOOTSTRAP_REQUESTS_SUBTREE)
+            .await?;
+
+        let mut request = requests.get(request_id).await?;
+        request.status = OutgoingRequestStatus::Rejected;
+        requests.set(request_id, request).await?;
+
+        debug!(request_id = %request_id, "Marked outgoing bootstrap request rejected");
         Ok(())
     }
 }

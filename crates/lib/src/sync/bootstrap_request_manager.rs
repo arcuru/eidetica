@@ -169,6 +169,64 @@ impl<'a> BootstrapRequestManager<'a> {
         .await
     }
 
+    /// Find an existing request matching `(tree_id, requesting_pubkey, permission)`
+    /// that is still an answer — i.e. `Pending` or `Rejected`.
+    ///
+    /// Used to make request storage idempotent: a requester that re-sends the
+    /// same request (the outgoing-bootstrap sweep does so on every tick until
+    /// access is granted) must not accumulate a fresh row per attempt.
+    ///
+    /// The permission is part of the key. Asking for `Admin` after a pending
+    /// `Read` is a materially different request, and collapsing the two would
+    /// answer the escalation with the weaker record's id — approving it would
+    /// then grant less than was asked for, silently. A retry always re-sends the
+    /// same permission, so amplification is still collapsed.
+    ///
+    /// An `Approved` record is deliberately ignored: reaching the store path at
+    /// all means the auth check found no live grant, so the approval was since
+    /// revoked and a genuinely new request is the right outcome.
+    ///
+    /// Note this bounds an *honest* retrying client to one record per distinct
+    /// ask; it is not a defence against a hostile peer cycling permission values
+    /// to force new rows. That needs a per-peer cap on pending requests — see the
+    /// `TODO(bootstrap-metadata-bound)` note in `handler.rs`.
+    ///
+    /// # Returns
+    /// The (request_id, request) of the existing record, or `None`.
+    pub(super) async fn find_existing_request(
+        &self,
+        tree_id: &ID,
+        requesting_pubkey: &PublicKey,
+        requested_permission: &Permission,
+    ) -> Result<Option<(String, BootstrapRequest)>> {
+        let requests = self
+            .txn
+            .get_store::<Table<BootstrapRequest>>(BOOTSTRAP_REQUESTS_SUBTREE)
+            .await?;
+
+        let mut matches = requests
+            .search(|request| {
+                &request.tree_id == tree_id
+                    && &request.requesting_pubkey == requesting_pubkey
+                    && &request.requested_permission == requested_permission
+                    && matches!(
+                        request.status,
+                        RequestStatus::Pending | RequestStatus::Rejected { .. }
+                    )
+            })
+            .await?;
+
+        // A rejection is the more decisive answer, so prefer it if both exist
+        // (possible if a request was rejected and a later one is still pending).
+        if let Some(idx) = matches
+            .iter()
+            .position(|(_, r)| matches!(r.status, RequestStatus::Rejected { .. }))
+        {
+            return Ok(Some(matches.swap_remove(idx)));
+        }
+        Ok(matches.into_iter().next())
+    }
+
     /// Update the status of a bootstrap request.
     ///
     /// # Arguments

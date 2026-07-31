@@ -232,6 +232,30 @@ settings, registers the tree/peer relationship, and marks the request hydrated.
 The caller does not re-invoke `request_database_access`; the database becomes
 openable on its own.
 
+#### Retrying Without Amplifying
+
+The sweep re-sends the bootstrap request on every tick until it is answered, so
+the request path must be **idempotent per (tree, requesting key, permission)**.
+An approver holds at most one record per distinct ask: a re-request reuses the
+existing record and returns its id rather than appending a new one. Without this
+an honest client appends a row to the approver's `_sync` tree every sweep
+interval, growing without bound and burying the real request among duplicates.
+
+The permission belongs in the key. A retry always re-sends the same one, so
+amplification still collapses; but asking for `Admin` after a pending `Read` is a
+materially different request, and collapsing those would answer the escalation
+with the weaker record — approving it would silently grant less than was asked
+for. An `Approved` record is likewise not reused: reaching the store path means
+the auth check found no live grant, so the approval was revoked and a genuinely
+new request is correct.
+
+Rejection is **terminal**. A rejected requester receives `BootstrapRejected`
+rather than another `BootstrapPending`, marks its outgoing record `Rejected`, and
+drops it from the sweep set. This matters more once retries exist: an
+indefinitely-retrying client would otherwise re-queue itself on the approver
+forever, effectively undoing the rejection. Getting access after a rejection
+requires the approver to act out of band, not the requester to keep asking.
+
 ### Key Requirements
 
 **For Bootstrap Request:**

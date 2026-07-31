@@ -275,6 +275,15 @@ impl Sync {
         result
     }
 
+    /// Mark an outgoing bootstrap request rejected so the sweep stops retrying it.
+    async fn retire_outgoing_bootstrap(&self, request_id: &str) -> Result<()> {
+        let txn = self.sync_tree.new_transaction().await?;
+        let manager = OutgoingBootstrapRequestManager::new(&txn);
+        manager.mark_rejected(request_id).await?;
+        txn.commit().await?;
+        Ok(())
+    }
+
     /// Persist an [`OutgoingBootstrapRequest`] in the `_sync` tree.
     async fn record_outgoing_bootstrap_request(
         &self,
@@ -398,13 +407,26 @@ impl Sync {
                 }
                 Err(e) => {
                     // Still pending means not yet approved: leave the record
-                    // Pending for the next wake. Any other error is a transient
-                    // pull failure we also retry on the next sweep.
-                    if let crate::Error::Sync(sync_err) = &e
-                        && matches!(sync_err.as_ref(), SyncError::BootstrapPending { .. })
-                    {
-                        debug!(tree_id = %request.tree_id, "Outgoing bootstrap still pending approval");
-                        return Ok(());
+                    // Pending for the next wake. A rejection is terminal — retrying
+                    // cannot change it, so retire the record instead of sweeping it
+                    // forever. Any other error is a transient pull failure we also
+                    // retry on the next sweep.
+                    if let crate::Error::Sync(sync_err) = &e {
+                        match sync_err.as_ref() {
+                            SyncError::BootstrapPending { .. } => {
+                                debug!(tree_id = %request.tree_id, "Outgoing bootstrap still pending approval");
+                                return Ok(());
+                            }
+                            SyncError::BootstrapRejected { .. } => {
+                                info!(
+                                    request_id = %request_id,
+                                    tree_id = %request.tree_id,
+                                    "Outgoing bootstrap was rejected by the peer; retiring request"
+                                );
+                                return self.retire_outgoing_bootstrap(request_id).await;
+                            }
+                            _ => {}
+                        }
                     }
                     last_err = Some(e);
                 }
