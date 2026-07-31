@@ -1746,6 +1746,61 @@ impl Database {
         // push model relies on.
         let ops = self.ops();
 
+        // Guard against a **backward** bracket — `previous_tips` ahead of
+        // `post_tips`. The boundary is then made of *descendants* of the
+        // walk's starting point, so it is never reached and the walk descends
+        // to the root, reporting the whole history as "added". On a connected
+        // instance every step is a permission-checked round-trip, so the cost
+        // is O(history) fetches rather than a merely-wrong answer.
+        //
+        // Detected via entry height, which increases monotonically from parent
+        // to child: every ancestor of a `post_tips` entry has height at most
+        // `max(post heights)`, so if every boundary tip sits strictly above
+        // that, none of them can ever be reached by the walk. Bounded by the
+        // tip counts (both small), and works identically on a local and a
+        // connected instance — unlike the backend-level reachability
+        // primitive, which a remote handle cannot call.
+        //
+        // Nothing was *added* moving backward, so the answer is empty.
+        //
+        // Best-effort: if any tip cannot be resolved we skip the guard and
+        // fall through to the normal walk rather than failing the caller. This
+        // only detects the strictly-backward case; forked/incomparable cursors
+        // still over-report, which is the documented conservative direction.
+        if !boundary.is_empty() {
+            let mut max_post: Option<u64> = None;
+            let mut min_prev: Option<u64> = None;
+            let mut resolved = true;
+            for id in post_tips.tips() {
+                match ops.get(id).await {
+                    Ok(e) => max_post = Some(max_post.map_or(e.height(), |h| h.max(e.height()))),
+                    Err(_) => {
+                        resolved = false;
+                        break;
+                    }
+                }
+            }
+            if resolved {
+                for id in &boundary {
+                    match ops.get(id).await {
+                        Ok(e) => {
+                            min_prev = Some(min_prev.map_or(e.height(), |h| h.min(e.height())))
+                        }
+                        Err(_) => {
+                            resolved = false;
+                            break;
+                        }
+                    }
+                }
+            }
+            if resolved
+                && let (Some(post_h), Some(prev_h)) = (max_post, min_prev)
+                && prev_h > post_h
+            {
+                return Ok(Vec::new());
+            }
+        }
+
         // Walk parents from `post_tips`, collecting every ID until the boundary.
         // A non-boundary entry that's missing locally is a hard error — the
         // cursor references unknown state; boundary entries are never fetched.
