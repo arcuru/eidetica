@@ -974,3 +974,195 @@ async fn test_ids_added_empty_previous_returns_full_closure() {
         "empty cursor should include the root entry"
     );
 }
+
+/// Regression: a **backward** cursor bracket — `previous_tips` strictly newer
+/// than `post_tips` — must not expand into the full ancestor closure.
+///
+/// `ids_added` walks parents from `post_tips` and halts at members of
+/// `previous_tips`. When `previous_tips` is newer, its members are
+/// *descendants* of the walk's starting point, so the walk never reaches the
+/// boundary and runs all the way to the root — reporting the entire history as
+/// "added". The doc comment on `ids_added` claims a stale `previous_tips` "can
+/// only over-report ... the conservative direction"; that reasoning covers a
+/// stale-behind cursor, not one that is ahead of `post_tips`, where the
+/// over-report degenerates to O(full history). On a connected instance every
+/// step is a permission-checked wire round-trip, so this is a fetch storm.
+///
+/// Nothing was *added* going backward, so the correct answer is empty.
+#[tokio::test]
+async fn test_ids_added_backward_bracket_does_not_report_full_history() {
+    let (_instance, db) = setup_callback_test().await;
+
+    let mut committed = Vec::new();
+    let mut early: Option<Snapshot> = None;
+    for i in 0..6 {
+        let txn = db.new_transaction().await.unwrap();
+        let store = txn.get_store::<DocStore>("data").await.unwrap();
+        store.set("k", format!("v{i}")).await.unwrap();
+        committed.push(txn.commit().await.unwrap());
+        if i == 1 {
+            early = Some(db.snapshot().await.unwrap());
+        }
+    }
+    let early = early.unwrap();
+    let late = db.snapshot().await.unwrap();
+    assert_ne!(early, late, "test setup: cursors must differ");
+
+    // Backward bracket: previous = the LATER cursor, post = the EARLIER one.
+    let added = db.ids_added(&late, &early).await.unwrap();
+
+    assert!(
+        added.is_empty(),
+        "backward bracket must report nothing added; got {} ids for a {}-commit tree \
+         (full-history walk: root + every entry)",
+        added.len(),
+        committed.len()
+    );
+}
+
+/// Regression: entries that have **not** passed local validation must not
+/// appear inside an event bracket.
+///
+/// `Instance::put_entry` computes `post_tips` from `Instance::snapshot`, and
+/// `Database::verify` fires from `raw_tips` — both are the **raw** backend
+/// snapshot, whose contract is purely structural (entries with no children in
+/// the tree), with no verification filter. Cursors seeded by `on_write` come
+/// from the same raw snapshot. So a bracket can span a still-`Unverified`
+/// entry, and a subscriber expanding it via `ids_added` enumerates that entry
+/// — and can then fetch its body, since `GetEntry` gates read permission only.
+///
+/// This contradicts the contract stated in `Instance::put_entry`'s own doc
+/// ("a subscriber's accumulated state can only ever rest on entries that have
+/// passed local validation") and on `ids_added` ("callers driven by an event
+/// observe only Verified IDs in practice").
+///
+/// Second-order consequence, not asserted here: the cursor advances *past* the
+/// unverified entry, so when it is later promoted (or fails), that transition
+/// falls inside the boundary and is never reported to the subscriber.
+///
+/// KNOWN-FAILING. The defect is real and reproduced; the fix is deliberately
+/// deferred because it turns on how verified/unverified state should be
+/// represented in cursors at all — filtering brackets to the Verified frontier
+/// changes what every cursor points at (and sync's global hook depends on both
+/// ends being raw tips), whereas filtering at enumeration is narrower but
+/// leaves the cursor model inconsistent. Tracked as its own task. The fix
+/// commit removes this marker.
+#[should_panic = "ids_added enumerated an Unverified entry"]
+#[tokio::test]
+async fn test_ids_added_excludes_unverified_entries() {
+    let (instance, db) = setup_callback_test().await;
+
+    let txn = db.new_transaction().await.unwrap();
+    let store = txn.get_store::<DocStore>("data").await.unwrap();
+    store.set("k", "v1").await.unwrap();
+    let _id1 = txn.commit().await.unwrap();
+
+    // Cursor sits after the first (verified) commit.
+    let cursor = db.snapshot().await.unwrap();
+
+    let txn = db.new_transaction().await.unwrap();
+    let store = txn.get_store::<DocStore>("data").await.unwrap();
+    store.set("k", "v2").await.unwrap();
+    let id2 = txn.commit().await.unwrap();
+
+    // Force id2 back to Unverified: models a sync-ingested entry whose local
+    // validation is still pending (settings not yet available, partial sync).
+    instance
+        .demote_to_unverified(db.root_id(), &id2)
+        .await
+        .unwrap();
+
+    let post = db.snapshot().await.unwrap();
+    let added = db.ids_added(&cursor, &post).await.unwrap();
+
+    assert!(
+        !added.contains(&id2),
+        "ids_added enumerated an Unverified entry ({id2}); the settled-state-only \
+         contract says a subscriber never observes unvalidated entries"
+    );
+}
+
+/// Regression: a `Verified` entry committed on top of an `Unverified` parent
+/// must not permanently hide that parent from every future verify pass.
+///
+/// The targeted-walk `verify()` stops descending at any `Verified` entry,
+/// relying on a prefix-closure invariant ("a `Verified` entry hiding an
+/// `Unverified` descendant cannot occur") that is maintained only by cascading
+/// demote. But `Transaction::commit` stores `Verified` unconditionally — it
+/// validates signature and permissions, not parent status — so anchoring a
+/// commit in the unverified region via `new_transaction_at` breaks the
+/// invariant directly. Once that happens the walk treats the child as a
+/// settled boundary and the unverified ancestors become unreachable: they can
+/// never be promoted, and can never be reported as failed.
+///
+/// The pre-`7e593065ca` full-walk verify retried the whole tree each pass, so
+/// it recovered from this; the targeted walk does not.
+///
+/// IGNORED — this construction does not reach the scenario. `demote_to_unverified`
+/// followed by a tips-reading commit lets the access-time auto-verify hook
+/// re-promote the parent before the child is written, so the precondition
+/// asserts below fail (parent is `Verified` again, not `Unverified`) and the
+/// hazardous shape is never built. A real repro needs an entry that *cannot* be
+/// promoted — i.e. one whose pinned `_settings` are genuinely absent, as after a
+/// partial sync — rather than one that is merely marked down. Until that exists,
+/// this finding is UNPROVEN, not refuted.
+#[ignore = "construction healed by auto-verify; needs a genuinely-unpromotable entry"]
+#[tokio::test]
+async fn test_verify_reaches_unverified_ancestor_behind_verified_child() {
+    let (instance, db) = setup_callback_test().await;
+
+    let txn = db.new_transaction().await.unwrap();
+    let store = txn.get_store::<DocStore>("data").await.unwrap();
+    store.set("k", "v1").await.unwrap();
+    let id1 = txn.commit().await.unwrap();
+
+    // Force id1 Unverified: models an entry whose validation is still pending.
+    instance
+        .demote_to_unverified(db.root_id(), &id1)
+        .await
+        .unwrap();
+
+    // Commit a child anchored on the now-unverified tip.
+    let snapshot = db.snapshot().await.unwrap();
+    let txn = db.new_transaction_at(&snapshot).await.unwrap();
+    let store = txn.get_store::<DocStore>("data").await.unwrap();
+    store.set("k", "v2").await.unwrap();
+    let id2 = txn.commit().await.unwrap();
+
+    // Precondition: the test must actually have built the hazardous shape —
+    // a Verified child whose parent is the Unverified entry. If the commit
+    // path re-anchored elsewhere, or stored the child Unverified, this test
+    // proves nothing about the walk.
+    let engine = instance.require_local_engine().unwrap();
+    let id2_entry = engine.get(&id2).await.unwrap();
+    assert!(
+        id2_entry.parents().unwrap_or_default().contains(&id1),
+        "precondition: child must be anchored on the unverified parent"
+    );
+    assert_eq!(
+        engine.get_verification_status(&id2).await.unwrap(),
+        VerificationStatus::Verified,
+        "precondition: child must be stored Verified atop an Unverified parent"
+    );
+    assert_eq!(
+        engine.get_verification_status(&id1).await.unwrap(),
+        VerificationStatus::Unverified,
+        "precondition: parent must still be Unverified before the verify pass"
+    );
+
+    // A verify pass must still be able to reach and settle id1.
+    db.verify().await.unwrap();
+
+    let status = instance
+        .require_local_engine()
+        .unwrap()
+        .get_verification_status(&id1)
+        .await
+        .unwrap();
+    assert_ne!(
+        status,
+        VerificationStatus::Unverified,
+        "verify() could not reach id1 behind a Verified child; the entry is \
+         permanently stranded in the Unverified region"
+    );
+}
