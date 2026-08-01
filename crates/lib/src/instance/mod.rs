@@ -1748,7 +1748,14 @@ impl Instance {
             // Compute the post-write snapshot for cursor advance. Cheap:
             // just re-read the backend snapshot post-put. Each per-callback
             // cursor advances to this value.
-            let post_tips = self.snapshot(tree_id).await.unwrap_or_default();
+            // Propagate rather than defaulting: `Snapshot::EMPTY` is a
+            // *meaningful* cursor ("no initial state"), not a neutral
+            // fallback. Masking an error here would fire this event with
+            // `post = EMPTY` (so `ids_added` reports nothing and sync's
+            // global hook queues nothing — a silently unsynced commit) and
+            // leave every per-callback cursor at EMPTY, replaying the full
+            // history to every subscriber on the next event.
+            let post_tips = self.snapshot(tree_id).await?;
             // Commit cursor advances + spawn under the tree lock (ordering),
             // but drain after dropping the guard (below) — a callback that
             // reads tips can re-enter `verify()` → `tree_lock` and would
