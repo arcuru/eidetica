@@ -975,6 +975,67 @@ async fn test_ids_added_empty_previous_returns_full_closure() {
     );
 }
 
+/// Regression guard for the per-tree notification ordering invariant.
+///
+/// Ordering rests on `spawn_write_callbacks` invoking each callback
+/// *synchronously* while the caller still holds `tree_lock`, so any
+/// ordering-critical side effect in the closure's pre-future prefix — notably
+/// the service subscription's `frame_tx.send` — commits inside the critical
+/// section, in cursor-advance order. Two concurrent same-tree writers then
+/// cannot interleave, because one drops the lock before the other acquires it.
+///
+/// The existing `test_on_write_canonical_order_under_concurrent_writers` checks
+/// the observable *consequence* (frames arrive ordered), which is a race
+/// outcome: it passes on the broken code too, because the scheduler usually
+/// still delivers in order. This test asserts the invariant itself — a
+/// structural property, so there is nothing to race. Single writer, no timing,
+/// no `multi_thread` requirement.
+///
+/// If anyone moves the invocation into the spawned tail, or adds an `.await`
+/// ahead of the ordering-critical side effect (pushing it past the first
+/// suspension point and out of the locked section), `try_lock()` starts
+/// succeeding and this goes red.
+#[tokio::test]
+async fn test_write_callback_sync_prefix_runs_under_tree_lock() {
+    let (instance, db) = setup_callback_test().await;
+
+    // The exact `Arc` the fire path locks.
+    let probe = instance.tree_lock(db.root_id());
+    let observed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let obs = observed.clone();
+
+    let _id = instance.register_write_callback(
+        db.root_id().clone(),
+        Snapshot::EMPTY,
+        move |_event, _db| {
+            // SYNCHRONOUS PREFIX. `try_lock` must FAIL: the fire path holds
+            // this tree's lock across the cursor advance and this invocation.
+            let lock_held = probe.try_lock().is_err();
+            obs.lock()
+                .unwrap()
+                .push(format!("prefix:lock_held={lock_held}"));
+            let obs_tail = obs.clone();
+            async move {
+                obs_tail.lock().unwrap().push("tail".to_string());
+                Ok(())
+            }
+        },
+    );
+
+    let txn = db.new_transaction().await.unwrap();
+    let store = txn.get_store::<DocStore>("data").await.unwrap();
+    store.set("k", "v").await.unwrap();
+    txn.commit().await.unwrap();
+
+    let seen = observed.lock().unwrap().clone();
+    assert_eq!(
+        seen,
+        vec!["prefix:lock_held=true".to_string(), "tail".to_string()],
+        "the callback's synchronous prefix must run under the tree lock and \
+         before its future is polled; got {seen:?}"
+    );
+}
+
 /// Regression: a **backward** cursor bracket — `previous_tips` strictly newer
 /// than `post_tips` — must not expand into the full ancestor closure.
 ///
