@@ -271,6 +271,13 @@ for. An `Approved` record is likewise not reused: reaching the store path means
 the auth check found no live grant, so the approval was revoked and a genuinely
 new request is correct.
 
+The requester's view of its own requests mirrors the approver's:
+`pending_outgoing_bootstrap_requests()` and
+`rejected_outgoing_bootstrap_requests()` alongside
+`get_outgoing_bootstrap_request(id)`. The rejected query matters — a rejected
+record leaves the pending set, so without it a caller cannot distinguish "an
+approver said no" from "never asked".
+
 Rejection is **terminal**. A rejected requester receives `BootstrapRejected`
 rather than another `BootstrapPending`, marks its outgoing record `Rejected`, and
 drops it from the sweep set. This matters more once retries exist: an

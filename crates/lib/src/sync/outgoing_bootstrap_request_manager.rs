@@ -15,13 +15,11 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
 use super::peer_types::Address;
-#[cfg(test)]
-use crate::{Error, store::StoreError};
 use crate::{
-    Result, Transaction,
+    Error, Result, Transaction,
     auth::{Permission, crypto::PublicKey},
     entry::ID,
-    store::Table,
+    store::{StoreError, Table},
     user::types::SyncSettings,
 };
 
@@ -102,9 +100,7 @@ impl<'a> OutgoingBootstrapRequestManager<'a> {
     /// Get a specific outgoing bootstrap request by ID.
     ///
     /// Part of the manager's read surface, mirroring the incoming
-    /// [`get_request`](super::bootstrap_request_manager::BootstrapRequestManager::get_request);
-    /// currently exercised only by tests, kept for symmetry and direct lookups.
-    #[cfg(test)]
+    /// [`get_request`](super::bootstrap_request_manager::BootstrapRequestManager::get_request).
     pub(super) async fn get_request(
         &self,
         request_id: &str,
@@ -136,6 +132,25 @@ impl<'a> OutgoingBootstrapRequestManager<'a> {
 
         requests
             .search(|request| matches!(request.status, OutgoingRequestStatus::Pending))
+            .await
+    }
+
+    /// Get every outgoing request an approver refused.
+    ///
+    /// Symmetric to [`rejected_requests`](super::bootstrap_request_manager::BootstrapRequestManager::rejected_requests)
+    /// on the incoming side. These are terminal and are skipped by the completion
+    /// sweep; this is how a caller finds out its request was turned down, since
+    /// a rejected record drops out of [`pending_requests`](Self::pending_requests).
+    pub(super) async fn rejected_requests(
+        &self,
+    ) -> Result<Vec<(String, OutgoingBootstrapRequest)>> {
+        let requests = self
+            .txn
+            .get_store::<Table<OutgoingBootstrapRequest>>(OUTGOING_BOOTSTRAP_REQUESTS_SUBTREE)
+            .await?;
+
+        requests
+            .search(|request| matches!(request.status, OutgoingRequestStatus::Rejected))
             .await
     }
 

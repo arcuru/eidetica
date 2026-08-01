@@ -310,6 +310,33 @@ impl Sync {
         manager.pending_requests().await
     }
 
+    /// Get every outgoing bootstrap request this node sent that was rejected.
+    ///
+    /// The counterpart to [`rejected_bootstrap_requests`](Self::rejected_bootstrap_requests).
+    /// A rejection is terminal, so the record leaves
+    /// [`pending_outgoing_bootstrap_requests`](Self::pending_outgoing_bootstrap_requests)
+    /// and the sweep stops retrying it — this is how a caller distinguishes "an
+    /// approver said no" from "never asked", which is otherwise invisible.
+    pub async fn rejected_outgoing_bootstrap_requests(
+        &self,
+    ) -> Result<Vec<(String, OutgoingBootstrapRequest)>> {
+        let txn = self.sync_tree.new_transaction().await?;
+        let manager = OutgoingBootstrapRequestManager::new(&txn);
+        manager.rejected_requests().await
+    }
+
+    /// Get a specific outgoing bootstrap request by id, whatever its status.
+    ///
+    /// The counterpart to [`get_bootstrap_request`](Self::get_bootstrap_request).
+    pub async fn get_outgoing_bootstrap_request(
+        &self,
+        request_id: &str,
+    ) -> Result<Option<OutgoingBootstrapRequest>> {
+        let txn = self.sync_tree.new_transaction().await?;
+        let manager = OutgoingBootstrapRequestManager::new(&txn);
+        manager.get_request(request_id).await
+    }
+
     // === Outgoing Bootstrap Completion (client-side, Sync-owned) ===
 
     /// Complete a single outgoing bootstrap request whose access has (or may

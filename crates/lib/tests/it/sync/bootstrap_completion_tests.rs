@@ -18,7 +18,7 @@ use eidetica::{
     auth::Permission,
     path,
     store::DocStore,
-    sync::{DatabaseTicket, transports::http::HttpTransport},
+    sync::{DatabaseTicket, OutgoingRequestStatus, transports::http::HttpTransport},
     user::types::SyncSettings,
 };
 
@@ -469,6 +469,25 @@ async fn rejection_is_terminal_and_stops_the_sweep() {
             .is_empty(),
         "a rejected request drops out of the pending sweep set"
     );
+
+    // The outcome must be *observable*: dropping out of the pending list is not
+    // enough, or a caller cannot tell "rejected" from "never asked".
+    let rejected = client_sync
+        .rejected_outgoing_bootstrap_requests()
+        .await
+        .expect("listing rejected outgoing requests should succeed");
+    assert_eq!(rejected.len(), 1, "the rejection is visible to the caller");
+    let (rejected_id, rejected_record) = &rejected[0];
+    assert_eq!(rejected_record.tree_id, tree_id);
+    assert_eq!(rejected_record.status, OutgoingRequestStatus::Rejected);
+
+    // And it is retrievable by id whatever its status.
+    let fetched = client_sync
+        .get_outgoing_bootstrap_request(rejected_id)
+        .await
+        .unwrap()
+        .expect("rejected request should still be retrievable by id");
+    assert_eq!(fetched.status, OutgoingRequestStatus::Rejected);
 
     // Further sweeps are no-ops and do not resurrect the request on the approver.
     for _ in 0..3 {

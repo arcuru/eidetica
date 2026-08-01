@@ -129,6 +129,7 @@ mod user_sync_manager;
 use background::SyncCommand;
 pub use bootstrap_request_manager::{BootstrapRequest, RequestStatus};
 pub use error::SyncError;
+pub use outgoing_bootstrap_request_manager::{OutgoingBootstrapRequest, OutgoingRequestStatus};
 pub use peer_types::{Address, ConnectionState, PeerId, PeerInfo, PeerStatus};
 use queue::SyncQueue;
 pub use ticket::DatabaseTicket;
