@@ -814,7 +814,10 @@ async fn dispatch_database_op(
             // no initial state; give me events from now" posture documented on
             // the wire variant). The cursor advances per fire as usual.
             let initial_tips = if tips.is_empty() {
-                instance.snapshot(&root_id).await.unwrap_or_default()
+                // Propagate rather than defaulting: an error here would seed
+                // the daemon-side cursor at `EMPTY`, which is the "replay
+                // from the beginning" value rather than "start from now".
+                instance.snapshot(&root_id).await?
             } else {
                 tips
             };

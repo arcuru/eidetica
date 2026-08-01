@@ -812,7 +812,11 @@ impl Database {
         // Use [`Self::on_write_at_tips`] to close that window: pass
         // exactly the tips your initial-state read used, and the first
         // fire's `previous_tips` will match.
-        let tips = self.snapshot().await.unwrap_or_default();
+        // Propagate rather than defaulting: `Snapshot::EMPTY` is the
+        // documented "I have no initial state; replay from the beginning"
+        // cursor, so masking a transient read error here would silently turn
+        // "subscribe from now" into a full-history replay on the first fire.
+        let tips = self.snapshot().await?;
         self.on_write_at_tips(tips, callback).await
     }
 
