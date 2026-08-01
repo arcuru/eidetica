@@ -16,6 +16,6 @@ permissions:
 
 jobs:
   update-hold:
-    uses: arcuru/actions/.github/workflows/update-hold.yml@45540c9d68eb9d2812bd4c85b43888fa05b22ef8 # main
+    uses: arcuru/actions/.github/workflows/update-hold.yml@c7ea79aaf3a4d0f07da752df4c115239befb996f # main
     with:
       runs-on: ubicloud-standard-2
