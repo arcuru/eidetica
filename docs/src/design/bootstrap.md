@@ -286,13 +286,15 @@ impl Sync {
         rejecting_key_id: &str,
     ) -> Result<()>;
 
-    /// Request bootstrap access (low-level, requires key details)
+    /// Request bootstrap access (low-level, requires key details).
+    /// Signs the request with `requesting_key`, so the peer can tell a key
+    /// holder from a caller naming a key it does not have.
     pub async fn sync_with_peer_for_bootstrap_with_key(
         &self,
         address: &Address,
         tree_id: &ID,
-        public_key: &str,
-        key_id: &str,
+        requesting_key: &PrivateKey,
+        requesting_key_name: &str,
         requested_permission: Permission,
     ) -> Result<()>;
 }
