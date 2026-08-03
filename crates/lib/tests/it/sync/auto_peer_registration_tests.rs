@@ -4,6 +4,7 @@
 //! during handshakes and sync tree requests.
 
 use eidetica::{
+    Clock, FixedClock,
     auth::{
         Permission,
         crypto::{generate_challenge, generate_keypair},
@@ -15,8 +16,8 @@ use eidetica::{
         Address, PeerId,
         handler::{SyncHandler, SyncHandlerImpl},
         protocol::{
-            HandshakeRequest, PROTOCOL_VERSION, RequestContext, SyncRequest, SyncResponse,
-            SyncTreeRequest,
+            HandshakeRequest, PROTOCOL_VERSION, RequestContext, SyncRequest, SyncRequestAuth,
+            SyncResponse, SyncTreeRequest,
         },
         transports::{SyncTransport, http::HttpTransport},
     },
@@ -239,6 +240,7 @@ async fn test_bootstrap_sync_tracks_tree_peer_relationship() {
         requesting_key_name: Some("peer_key".to_string()),
         requested_permission: None,
         metadata: None,
+        auth: None,
     };
 
     let context = RequestContext {
@@ -321,6 +323,7 @@ async fn test_incremental_sync_tracks_tree_peer_relationship() {
         requesting_key_name: Some("peer_key".to_string()),
         requested_permission: None,
         metadata: None,
+        auth: None,
     };
 
     let context = RequestContext {
@@ -365,23 +368,32 @@ async fn test_relationship_tracking_skipped_without_peer_pubkey() {
         .unwrap();
 
     let sync_tree_id = sync.sync_tree_root_id().clone();
+    let server_pubkey = instance.id();
     let handler = SyncHandlerImpl::new(instance, sync_tree_id);
 
-    let (_, peer_verifying_key) = generate_keypair();
+    let (peer_signing_key, peer_verifying_key) = generate_keypair();
 
     // Register the peer first (would normally happen during handshake)
     sync.register_peer(&peer_verifying_key, Some("Test Peer"))
         .await
         .unwrap();
 
+    let our_tips: eidetica::Snapshot = Vec::new().into();
     let sync_request = SyncTreeRequest {
         tree_id: tree_id.clone(),
-        our_tips: Vec::new().into(),
+        our_tips: our_tips.clone(),
         peer_pubkey: None,
         requesting_key: Some(peer_verifying_key.clone()),
         requesting_key_name: Some("peer_key".to_string()),
         requested_permission: None,
         metadata: None,
+        auth: Some(SyncRequestAuth::sign(
+            &peer_signing_key,
+            &server_pubkey,
+            &tree_id,
+            &our_tips,
+            FixedClock::default().now_millis(),
+        )),
     };
 
     // Context without peer_pubkey - tracking should be skipped
@@ -473,6 +485,7 @@ async fn test_multiple_trees_tracked_with_same_peer() {
         requesting_key_name: Some("peer_key".to_string()),
         requested_permission: None,
         metadata: None,
+        auth: None,
     });
     let _response1 = handler.handle_request(&request1, &context).await;
 
@@ -485,6 +498,7 @@ async fn test_multiple_trees_tracked_with_same_peer() {
         requesting_key_name: Some("peer_key".to_string()),
         requested_permission: None,
         metadata: None,
+        auth: None,
     });
     let _response2 = handler.handle_request(&request2, &context).await;
 
@@ -593,6 +607,7 @@ async fn test_sync_without_peer_identifier_works() {
         requesting_key_name: None,
         requested_permission: None,
         metadata: None,
+        auth: None,
     };
 
     // Context also without peer_pubkey
@@ -638,14 +653,22 @@ async fn test_bootstrap_auto_detects_permission_for_authorized_key() {
     let handler = SyncHandlerImpl::new(instance.clone(), sync_tree_id);
 
     // Bootstrap request with authorized key but no requested_permission
+    let our_tips: eidetica::Snapshot = Vec::new().into();
     let sync_request = SyncTreeRequest {
         tree_id: tree_id.clone(),
-        our_tips: Vec::new().into(),
+        our_tips: our_tips.clone(),
         peer_pubkey: None,
         requesting_key: Some(key_id.clone()),
         requesting_key_name: Some(key_id.to_string()),
         requested_permission: None, // Should auto-detect from auth settings
         metadata: None,
+        auth: Some(SyncRequestAuth::sign(
+            &user.get_signing_key(&key_id).unwrap(),
+            &instance.id(),
+            &tree_id,
+            &our_tips,
+            FixedClock::default().now_millis(),
+        )),
     };
 
     let context = RequestContext {
@@ -700,20 +723,29 @@ async fn test_bootstrap_rejects_unauthorized_key_when_permission_not_specified()
         .unwrap();
 
     let sync_tree_id = sync.sync_tree_root_id().clone();
+    let server_pubkey = instance.id();
     let handler = SyncHandlerImpl::new(instance, sync_tree_id);
 
     // Generate an unauthorized key
-    let (_, unauthorized_verifying_key) = generate_keypair();
+    let (unauthorized_signing_key, unauthorized_verifying_key) = generate_keypair();
 
     // Bootstrap request with unauthorized key and no requested_permission
+    let our_tips: eidetica::Snapshot = Vec::new().into();
     let sync_request = SyncTreeRequest {
         tree_id: tree_id.clone(),
-        our_tips: Vec::new().into(),
+        our_tips: our_tips.clone(),
         peer_pubkey: None,
         requesting_key: Some(unauthorized_verifying_key.clone()),
         requesting_key_name: Some("unauthorized_key".to_string()),
         requested_permission: None,
         metadata: None,
+        auth: Some(SyncRequestAuth::sign(
+            &unauthorized_signing_key,
+            &server_pubkey,
+            &tree_id,
+            &our_tips,
+            FixedClock::default().now_millis(),
+        )),
     };
 
     let context = RequestContext {
@@ -789,6 +821,7 @@ async fn test_bootstrap_auto_detects_global_wildcard_permission() {
         requesting_key_name: Some("random_key".to_string()),
         requested_permission: None, // Should auto-detect global '*' permission
         metadata: None,
+        auth: None,
     };
 
     let context = RequestContext {
@@ -876,6 +909,7 @@ async fn test_bootstrap_uses_highest_permission_when_key_has_multiple() {
         requesting_key_name: Some("special_key".to_string()),
         requested_permission: None, // Should auto-detect highest (Write(5))
         metadata: None,
+        auth: None,
     };
 
     let context = RequestContext {

@@ -856,12 +856,15 @@ impl User {
 
     /// Get a signing key by its ID.
     ///
+    /// Hands out key material from this session's unlocked key manager. Callers
+    /// that sign on the user's behalf need it — signing a sync request as the
+    /// key whose access they are claiming, for example.
+    ///
     /// # Arguments
     /// * `key_id` - The public key identifier
     ///
     /// # Returns
     /// The PrivateKey if found
-    #[cfg(any(test, feature = "testing"))]
     pub fn get_signing_key(&self, key_id: &PublicKey) -> Result<crate::auth::crypto::PrivateKey> {
         self.key_manager
             .get_signing_key(key_id)
@@ -1036,18 +1039,27 @@ impl User {
         requested_permission: Permission,
         metadata: Option<Doc>,
     ) -> Result<()> {
-        if self.key_manager.get_signing_key(key_id).is_none() {
-            return Err(super::errors::UserError::KeyNotFound {
+        // The request is signed with this key, so the peer can tell an actual
+        // key holder from someone naming a key they don't have.
+        let signing_key = self
+            .key_manager
+            .get_signing_key(key_id)
+            .ok_or_else(|| super::errors::UserError::KeyNotFound {
                 key_id: key_id.to_string(),
-            }
-            .into());
-        }
+            })?
+            .clone();
 
         let key_name = key_id.to_string();
         let database_id = ticket.database_id().clone();
 
         let result = sync
-            .bootstrap_with_ticket(ticket, key_id, &key_name, requested_permission, metadata)
+            .bootstrap_with_ticket(
+                ticket,
+                &signing_key,
+                &key_name,
+                requested_permission,
+                metadata,
+            )
             .await;
 
         self.record_database_access(&database_id, key_id, result)

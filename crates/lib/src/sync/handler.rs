@@ -4,7 +4,10 @@
 //! sync requests and generate responses. These handlers can be
 //! used by any transport implementation through the SyncHandler trait.
 
-use std::collections::BTreeMap;
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Mutex,
+};
 
 use async_trait::async_trait;
 use tracing::{Instrument, debug, error, info, info_span, trace, warn};
@@ -53,10 +56,22 @@ pub trait SyncHandler: Send + std::marker::Sync {
     -> SyncResponse;
 }
 
+/// How far a request's timestamp may sit from our clock, in either direction.
+///
+/// Bounds how long a captured signature stays useful. Peers with clocks further
+/// apart than this cannot sync — the window trades clock tolerance against
+/// replay exposure.
+const MAX_REQUEST_AGE_MS: u64 = 60_000;
+
 /// Default implementation of SyncHandler with database backend access.
 pub struct SyncHandlerImpl {
     instance: WeakInstance,
     sync_tree_id: ID,
+    /// Nonces spent within the freshness window, keyed by the claiming key.
+    ///
+    /// Makes each signature single-use: without this, anyone who observes a
+    /// signed request can replay it verbatim until it ages out.
+    spent_nonces: Mutex<HashMap<(PublicKey, Vec<u8>), u64>>,
 }
 
 impl SyncHandlerImpl {
@@ -69,7 +84,80 @@ impl SyncHandlerImpl {
         Self {
             instance: instance.downgrade(),
             sync_tree_id,
+            spent_nonces: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Authenticate a request that is about to be served data.
+    ///
+    /// Returns the key the caller has proven it holds. Checks, in order:
+    /// the signature covers *this* request to *us*, the request is fresh, and
+    /// its nonce has not been spent.
+    ///
+    /// This does not decide authorization — see [`Database::can_access`].
+    fn authenticate_request(&self, request: &SyncTreeRequest) -> Result<PublicKey> {
+        let auth = request
+            .auth
+            .as_ref()
+            .ok_or_else(|| SyncError::AuthenticationRequired(request.tree_id.to_string()))?;
+
+        let instance = self.instance()?;
+        auth.verify(&instance.id(), &request.tree_id, &request.our_tips)
+            .map_err(|_| {
+                SyncError::AuthenticationFailed("invalid request signature".to_string())
+            })?;
+
+        let now = instance.clock().now_millis();
+        if now.abs_diff(auth.timestamp_ms) > MAX_REQUEST_AGE_MS {
+            return Err(SyncError::AuthenticationFailed(
+                "request timestamp outside the freshness window".to_string(),
+            )
+            .into());
+        }
+
+        // The map holds one entry per verified request in the last window, so
+        // it is bounded by request rate, not by uptime. Cap it if a peer can
+        // ever outrun that.
+        let mut spent = self
+            .spent_nonces
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        spent.retain(|_, spent_at| now.abs_diff(*spent_at) <= MAX_REQUEST_AGE_MS);
+        if spent
+            .insert((auth.key.clone(), auth.nonce.clone()), auth.timestamp_ms)
+            .is_some()
+        {
+            return Err(
+                SyncError::AuthenticationFailed("request nonce already spent".to_string()).into(),
+            );
+        }
+
+        Ok(auth.key.clone())
+    }
+
+    /// Whether this request may be served entries from `tree_id`.
+    ///
+    /// A database with no auth configured, or with a global `*` grant, is
+    /// world-readable by design and needs no credentials. Otherwise the caller
+    /// must prove it holds a key that [`Database::can_access`] accepts —
+    /// directly, through the global grant, or through a delegated tree.
+    async fn authorize_read(&self, request: &SyncTreeRequest) -> Result<()> {
+        if !self.check_if_database_has_auth(&request.tree_id).await? {
+            return Ok(());
+        }
+
+        let key = self.authenticate_request(request)?;
+        if !Database::can_access(&self.instance()?, &request.tree_id, &key, &Permission::Read)
+            .await?
+        {
+            return Err(SyncError::PermissionDenied(format!(
+                "key {key} is not authorized to read {}",
+                request.tree_id
+            ))
+            .into());
+        }
+
+        Ok(())
     }
 
     /// Upgrade the weak instance reference to a strong reference.
@@ -252,32 +340,73 @@ impl SyncHandlerImpl {
         Ok(Some(results[0].1))
     }
 
-    /// Check if the requesting key already has sufficient permissions through existing auth.
+    /// Check that the caller signed this request with `claimed_key`.
     ///
-    /// Delegates to [`Database::can_access`], the pubkey-only access decision,
-    /// which resolves direct grants, the global `*` grant, and authority that
-    /// reaches this tree only through a *delegated* tree. Without the delegated
-    /// case a delegated-only key is bounced to manual approval and hangs.
+    /// `requesting_key` is a name the client picks; it decides which key an
+    /// approval would grant, and on its own it must never unlock data. Anything
+    /// that serves entries on the strength of a claimed key needs this first.
+    fn prove_possession_if_required(
+        &self,
+        request: &SyncTreeRequest,
+        claimed_key: &PublicKey,
+        auth_configured: bool,
+    ) -> Result<()> {
+        if !auth_configured {
+            // World-readable database: nothing is being protected, so there is
+            // nothing to prove.
+            return Ok(());
+        }
+        self.prove_possession(request, claimed_key)
+    }
+
+    /// Check that the caller signed this request with `claimed_key`.
+    fn prove_possession(&self, request: &SyncTreeRequest, claimed_key: &PublicKey) -> Result<()> {
+        let proven = self.authenticate_request(request)?;
+        if proven != *claimed_key {
+            return Err(SyncError::AuthenticationFailed(format!(
+                "request is signed by {proven}, which is not the claimed key {claimed_key}"
+            ))
+            .into());
+        }
+        Ok(())
+    }
+
+    /// Check if the caller holds a key that already has sufficient permissions.
+    ///
+    /// Possession first, then authority. Authority resolves through
+    /// [`Database::can_access`], the pubkey-only access decision, which covers
+    /// direct grants, the global `*` grant, and authority that reaches this
+    /// tree only through a *delegated* tree. Without the delegated case a
+    /// delegated-only key is bounced to manual approval and hangs.
     ///
     /// Delegation discovery is **one hop deep**: a key reachable only through a
     /// chain of delegations still falls through to manual approval. See
     /// [`Database::can_access`] for why bootstrap searches where entry
     /// validation walks a named path.
     ///
-    /// # Arguments
-    /// * `tree_id` - The database/tree ID to check auth settings for
-    /// * `requesting_pubkey` - The public key making the request
-    /// * `requested_permission` - The permission level being requested
-    ///
     /// # Returns
-    /// - `Ok(true)` if key has sufficient permission
-    /// - `Ok(false)` if key lacks sufficient permission or auth check fails
-    async fn check_existing_auth_permission(
+    /// - `Ok(true)` if the caller proved a key with sufficient permission
+    /// - `Ok(false)` if possession failed, or the key lacks permission
+    async fn check_proven_auth_permission(
         &self,
-        tree_id: &ID,
+        request: &SyncTreeRequest,
         requesting_pubkey: &PublicKey,
         requested_permission: &Permission,
+        auth_configured: bool,
     ) -> Result<bool> {
+        let tree_id = &request.tree_id;
+        if let Err(e) =
+            self.prove_possession_if_required(request, requesting_pubkey, auth_configured)
+        {
+            warn!(
+                tree_id = %tree_id,
+                requesting_pubkey = %requesting_pubkey,
+                error = %e,
+                "Bootstrap key claim not proven - falling back to the approval queue"
+            );
+            return Ok(false);
+        }
+
         let granted = Database::can_access(
             &self.instance()?,
             tree_id,
@@ -603,16 +732,12 @@ impl SyncHandlerImpl {
             // Check if peer needs bootstrap (empty tips indicates no local data)
             if request.our_tips.is_empty() {
                 debug!(tree_id = %request.tree_id, "Peer needs bootstrap - sending full tree");
-                return self.handle_bootstrap_request(&request.tree_id,
-                                                  request.requesting_key.as_ref(),
-                                                  request.requesting_key_name.as_deref(),
-                                                  request.requested_permission,
-                                                  request.metadata.clone()).await;
+                return self.handle_bootstrap_request(request).await;
             }
 
             // Handle incremental sync (peer has existing data, needs updates)
             debug!(tree_id = %request.tree_id, peer_tips = request.our_tips.len(), "Handling incremental sync");
-            self.handle_incremental_sync(&request.tree_id, &request.our_tips).await
+            self.handle_incremental_sync(request).await
         }
         .instrument(info_span!("handle_sync_tree", tree = %request.tree_id))
         .await
@@ -673,14 +798,13 @@ impl SyncHandlerImpl {
     /// - `BootstrapResponse`: Contains entries and approval status (key_approved, granted_permission)
     /// - `BootstrapPending`: Manual approval required (request queued)
     /// - `Error`: Tree not found, auth required, key not authorized, or processing failure
-    async fn handle_bootstrap_request(
-        &self,
-        tree_id: &ID,
-        requesting_key: Option<&PublicKey>,
-        requesting_key_name: Option<&str>,
-        requested_permission: Option<Permission>,
-        metadata: Option<Doc>,
-    ) -> SyncResponse {
+    async fn handle_bootstrap_request(&self, request: &SyncTreeRequest) -> SyncResponse {
+        let tree_id = &request.tree_id;
+        let requesting_key = request.requesting_key.as_ref();
+        let requesting_key_name = request.requesting_key_name.as_deref();
+        let requested_permission = request.requested_permission;
+        let metadata = request.metadata.clone();
+
         // SECURITY: Check if database has sync enabled (FIRST CHECK - before anything else)
         // This prevents information leakage about database existence: the gate
         // returns false both for databases that are absent and for databases that
@@ -758,7 +882,7 @@ impl SyncHandlerImpl {
 
                 // Check if the requesting key already has sufficient permissions through existing auth
                 match self
-                    .check_existing_auth_permission(tree_id, key, &permission)
+                    .check_proven_auth_permission(request, key, &permission, auth_configured)
                     .await
                 {
                     Ok(true) => {
@@ -819,6 +943,16 @@ impl SyncHandlerImpl {
                     "Auto-detecting permission from auth settings for bootstrap request"
                 );
 
+                if let Err(e) = self.prove_possession_if_required(request, key, auth_configured) {
+                    warn!(
+                        tree_id = %tree_id,
+                        requesting_key = %key,
+                        error = %e,
+                        "Bootstrap request rejected: caller did not prove it holds the key it claims"
+                    );
+                    return SyncResponse::Error(e.to_string());
+                }
+
                 match self.get_key_highest_permission(tree_id, key).await {
                     Ok(Some(permission)) => {
                         info!(
@@ -860,6 +994,21 @@ impl SyncHandlerImpl {
                 (false, None)
             }
         };
+
+        // A database with auth configured serves entries only to a caller that
+        // proved it holds a key with read access. Cases that fall through
+        // without approval (no credentials, or a key with no key name) must not
+        // be served just because they reached this point.
+        if auth_configured && !key_approved {
+            warn!(
+                tree_id = %tree_id,
+                requesting_key = ?requesting_key,
+                "Bootstrap request rejected: no proven authority for a database that requires authentication"
+            );
+            return SyncResponse::Error(
+                SyncError::AuthenticationRequired(tree_id.to_string()).to_string(),
+            );
+        }
 
         // NOW collect all entries after key approval (so we get the updated database state)
         let all_entries = match self.collect_all_entries_for_bootstrap(tree_id).await {
@@ -908,8 +1057,16 @@ impl SyncHandlerImpl {
         })
     }
 
-    /// Handle incremental sync request
-    async fn handle_incremental_sync(&self, tree_id: &ID, peer_tips: &[ID]) -> SyncResponse {
+    /// Handle incremental sync request.
+    ///
+    /// The caller selects this path by sending any non-empty tip list, so it
+    /// enforces the same read policy bootstrap does. Without that, a single
+    /// fabricated tip — which matches nothing in our DAG and therefore never
+    /// stops the ancestor walk — returns the entire tree.
+    async fn handle_incremental_sync(&self, request: &SyncTreeRequest) -> SyncResponse {
+        let tree_id = &request.tree_id;
+        let peer_tips = request.our_tips.tips();
+
         // SECURITY: Check if database has sync enabled (FIRST CHECK - before anything else)
         // This prevents information leakage about database existence: the gate
         // returns false both for databases that are absent and for databases that
@@ -922,6 +1079,16 @@ impl SyncHandlerImpl {
                 "Incremental sync request rejected: database is absent or has no user with sync enabled (responding as not-found)"
             );
             return SyncResponse::Error(format!("Tree not found: {tree_id}"));
+        }
+
+        if let Err(e) = self.authorize_read(request).await {
+            warn!(
+                tree_id = %tree_id,
+                peer_tip_count = peer_tips.len(),
+                error = %e,
+                "Incremental sync request rejected: caller is not authorized to read this database"
+            );
+            return SyncResponse::Error(e.to_string());
         }
 
         // Get our current tips

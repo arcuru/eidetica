@@ -8,7 +8,7 @@ use super::{
 };
 use crate::{
     Database, Result,
-    auth::{Permission, crypto::PublicKey, types::AuthKey},
+    auth::{Permission, crypto::PrivateKey, types::AuthKey},
     crdt::Doc,
     database::DatabaseKey,
     entry::ID,
@@ -33,7 +33,7 @@ impl Sync {
     /// # Arguments
     /// * `address` - The transport address of the peer to sync with
     /// * `tree_id` - The ID of the tree to sync
-    /// * `requesting_public_key` - The formatted public key string for authentication
+    /// * `requesting_key` - The private key to sign the request with and request access for
     /// * `requesting_key_name` - The name/ID of the requesting key
     /// * `requested_permission` - The permission level being requested
     ///
@@ -47,7 +47,7 @@ impl Sync {
         &self,
         address: &Address,
         tree_id: &ID,
-        requesting_public_key: &PublicKey,
+        requesting_key: &PrivateKey,
         requesting_key_name: &str,
         requested_permission: Permission,
         metadata: Option<Doc>,
@@ -70,7 +70,7 @@ impl Sync {
         self.sync_tree_with_peer_auth(
             &peer_pubkey,
             tree_id,
-            Some(requesting_public_key),
+            Some(requesting_key),
             Some(requesting_key_name),
             Some(requested_permission),
             metadata,
@@ -91,7 +91,7 @@ impl Sync {
     /// # Arguments
     /// * `address` - The transport address of the peer to sync with
     /// * `tree_id` - The ID of the tree to sync
-    /// * `requesting_public_key` - The formatted public key string (e.g., "ed25519:base64...")
+    /// * `requesting_key` - The private key to sign the request with and request access for
     /// * `requesting_key_name` - The name/ID of the requesting key for audit trail
     /// * `requested_permission` - The permission level being requested
     ///
@@ -101,11 +101,11 @@ impl Sync {
     /// # Example
     /// ```rust,ignore
     /// // With User API managed keys:
-    /// let public_key = user.get_public_key(user_key_id)?;
+    /// let signing_key = user.get_signing_key(user_key_id)?;
     /// sync.sync_with_peer_for_bootstrap_with_key(
     ///     &Address::http("127.0.0.1:8080"),
     ///     &tree_id,
-    ///     &public_key,
+    ///     &signing_key,
     ///     user_key_id,
     ///     Permission::Write(5),
     /// ).await?;
@@ -114,7 +114,7 @@ impl Sync {
         &self,
         address: &Address,
         tree_id: &ID,
-        requesting_public_key: &PublicKey,
+        requesting_key: &PrivateKey,
         requesting_key_name: &str,
         requested_permission: Permission,
     ) -> Result<()> {
@@ -123,7 +123,7 @@ impl Sync {
         self.sync_with_peer_for_bootstrap_internal(
             address,
             tree_id,
-            requesting_public_key,
+            requesting_key,
             requesting_key_name,
             requested_permission,
             None,
@@ -139,7 +139,7 @@ impl Sync {
     ///
     /// # Arguments
     /// * `ticket` - A ticket containing the database ID and address hints.
-    /// * `requesting_public_key` - The formatted public key string for authentication.
+    /// * `requesting_key` - The private key to sign the request with and request access for.
     /// * `requesting_key_name` - The name/ID of the requesting key.
     /// * `requested_permission` - The permission level being requested.
     /// * `metadata` - Optional free-form context the requester attaches for the
@@ -151,24 +151,24 @@ impl Sync {
     pub async fn bootstrap_with_ticket(
         &self,
         ticket: &DatabaseTicket,
-        requesting_public_key: &PublicKey,
+        requesting_key: &PrivateKey,
         requesting_key_name: &str,
         requested_permission: Permission,
         metadata: Option<Doc>,
     ) -> Result<()> {
         let database_id = ticket.database_id().clone();
-        let pubkey = requesting_public_key.clone();
+        let signing_key = requesting_key.clone();
         let key_name = requesting_key_name.to_string();
         self.try_addresses_concurrently(ticket.addresses(), |sync, addr| {
             let db_id = database_id.clone();
-            let pubkey = pubkey.clone();
+            let signing_key = signing_key.clone();
             let key_name = key_name.clone();
             let metadata = metadata.clone();
             async move {
                 sync.sync_with_peer_for_bootstrap_internal(
                     &addr,
                     &db_id,
-                    &pubkey,
+                    &signing_key,
                     &key_name,
                     requested_permission,
                     metadata,

@@ -42,7 +42,7 @@ async fn test_bootstrap_with_provided_key() {
     let server_addr = start_sync_server(&server_sync).await;
 
     // Setup client with a key we'll manage manually (not in backend)
-    let (_client_signing_key, client_verifying_key) = generate_keypair();
+    let (client_signing_key, client_verifying_key) = generate_keypair();
     let client_key_id = client_verifying_key.to_string();
 
     let (client_instance, client_sync) = setup().await;
@@ -63,7 +63,7 @@ async fn test_bootstrap_with_provided_key() {
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &client_verifying_key,
+            &client_signing_key,
             &client_key_id,
             Permission::Write(5),
         )
@@ -113,7 +113,7 @@ async fn test_bootstrap_with_provided_key_succeeds() {
     let server_addr = start_sync_server(&server_sync).await;
 
     // Setup client with user-managed key
-    let (_client_signing_key, client_verifying_key) = generate_keypair();
+    let (client_signing_key, client_verifying_key) = generate_keypair();
     let client_key_id = client_verifying_key.to_string();
 
     let (_client_instance, client_sync) = setup().await;
@@ -127,7 +127,7 @@ async fn test_bootstrap_with_provided_key_succeeds() {
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &client_verifying_key,
+            &client_signing_key,
             &client_key_id,
             Permission::Read,
         )
@@ -171,7 +171,7 @@ async fn test_bootstrap_with_invalid_key_fails() {
     let server_addr = start_sync_server(&server_sync).await;
 
     // Setup client with a signing key
-    let (_client_signing_key, client_verifying_key) = generate_keypair();
+    let (client_signing_key, client_verifying_key) = generate_keypair();
     let client_key_id = client_verifying_key.to_string();
 
     let (_client_instance, client_sync) = setup().await;
@@ -187,7 +187,7 @@ async fn test_bootstrap_with_invalid_key_fails() {
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &fake_tree_id,
-            &client_verifying_key,
+            &client_signing_key,
             &client_key_id,
             Permission::Write(5),
         )
@@ -228,17 +228,17 @@ async fn test_multiple_clients_with_different_keys() {
     // Setup three clients with different user-managed keys
     let mut clients = Vec::new();
     for i in 0..3 {
-        let (_signing_key, verifying_key) = generate_keypair();
+        let (signing_key, verifying_key) = generate_keypair();
         let key_id = verifying_key.to_string();
         let (instance, sync) = setup().await;
         sync.register_transport("http", HttpTransport::builder())
             .await
             .unwrap();
-        clients.push((instance, sync, verifying_key, key_id, i));
+        clients.push((instance, sync, signing_key, verifying_key, key_id, i));
     }
 
     // Each client bootstraps with their own key
-    for (instance, sync, verifying_key, key_id, i) in clients {
+    for (instance, sync, signing_key, _verifying_key, key_id, i) in clients {
         println!("🧪 Client {i} bootstrapping...");
 
         // Verify client doesn't have database initially
@@ -251,7 +251,7 @@ async fn test_multiple_clients_with_different_keys() {
         sync.sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &verifying_key,
+            &signing_key,
             &key_id,
             Permission::Read,
         )
@@ -306,7 +306,7 @@ async fn test_bootstrap_with_different_permissions() {
     for (perm_name, permission) in permissions {
         println!("🧪 Testing bootstrap with {perm_name} permission");
 
-        let (_signing_key, verifying_key) = generate_keypair();
+        let (signing_key, verifying_key) = generate_keypair();
         let key_id = verifying_key.to_string();
 
         let (_instance, sync) = setup().await;
@@ -318,7 +318,7 @@ async fn test_bootstrap_with_different_permissions() {
         sync.sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &verifying_key,
+            &signing_key,
             &key_id,
             permission,
         )
@@ -369,14 +369,14 @@ async fn test_bootstrap_with_invalid_keys() {
         .unwrap();
 
     // Generate a valid public key for testing
-    let (_signing_key, verifying_key) = generate_keypair();
+    let (signing_key, _verifying_key) = generate_keypair();
 
     println!("🧪 TEST: Testing empty key name");
     let result = sync
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &verifying_key,
+            &signing_key,
             "", // Empty key name
             Permission::Write(5),
         )
@@ -417,7 +417,7 @@ async fn test_full_e2e_bootstrap_with_database_instances() {
     let server_addr = start_sync_server(&server_sync).await;
 
     // Setup client with user-managed key (simulating User API)
-    let (_client_signing_key, client_verifying_key) = generate_keypair();
+    let (client_signing_key, client_verifying_key) = generate_keypair();
     let client_key_id = client_verifying_key.to_string();
 
     let (client_instance, client_sync) = setup().await;
@@ -439,7 +439,7 @@ async fn test_full_e2e_bootstrap_with_database_instances() {
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &client_verifying_key,
+            &client_signing_key,
             &client_key_id,
             Permission::Read,
         )
@@ -521,7 +521,7 @@ async fn test_incremental_sync_after_bootstrap_with_key() {
     let server_addr = start_sync_server(&server_sync).await;
 
     // Setup client with user-managed key
-    let (_client_signing_key, client_verifying_key) = generate_keypair();
+    let (client_signing_key, client_verifying_key) = generate_keypair();
     let client_key_id = client_verifying_key.to_string();
 
     let (_client_instance, client_sync) = setup().await;
@@ -535,7 +535,7 @@ async fn test_incremental_sync_after_bootstrap_with_key() {
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &client_verifying_key,
+            &client_signing_key,
             &client_key_id,
             Permission::Write(5),
         )

@@ -55,11 +55,18 @@
 //!
 //! // Peer 1 bootstraps with its own key, then converges against peer 0.
 //! let key1 = net.peer(1).key_id().clone();
+//! let signing_key1 = net.peer(1).user().get_signing_key(&key1)?;
 //! let name1 = net.peer(1).key_name().to_string();
 //! let addr0 = net.peer(0).address().clone();
 //! net.peer(1)
 //!     .sync()
-//!     .sync_with_peer_for_bootstrap_with_key(&addr0, &room, &key1, &name1, Permission::Write(10))
+//!     .sync_with_peer_for_bootstrap_with_key(
+//!         &addr0,
+//!         &room,
+//!         &signing_key1,
+//!         &name1,
+//!         Permission::Write(10),
+//!     )
 //!     .await?;
 //! net.peer_mut(1)
 //!     .user_mut()
@@ -244,9 +251,19 @@ impl Cluster {
     ) -> Result<()> {
         let from_addr = self.peers[from].address.clone();
         let to_key = self.peers[to].key_id.clone();
+        let to_signing_key = self.peers[to]
+            .user
+            .get_signing_key(&to_key)
+            .expect("peer key must be unlocked");
         self.peers[to]
             .sync
-            .sync_with_peer_for_bootstrap_with_key(&from_addr, tree, &to_key, KEY_NAME, permission)
+            .sync_with_peer_for_bootstrap_with_key(
+                &from_addr,
+                tree,
+                &to_signing_key,
+                KEY_NAME,
+                permission,
+            )
             .await?;
         self.peers[to].sync.flush().await?;
         self.peers[to]
