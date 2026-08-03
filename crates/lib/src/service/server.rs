@@ -652,12 +652,14 @@ async fn dispatch_database_op(
             // every default read by the frontier cut — D1 is closed by
             // construction here, not by gate-hardening a raw `Put`.
             //
-            // Subscribers only ever see settled-state events: the
+            // Only settled-state writes trigger an event: the
             // `put_entry(.., Unverified, ..)` is a no-fire path by
             // design (see `Instance::put_entry`), and `Database::verify`
             // fires its own batched `Verified` event for any entries
             // the pass settles. The handler just chains the two — no
-            // extra fire bookkeeping here.
+            // extra fire bookkeeping here. Note this gates the trigger
+            // only; the event's raw-frontier cursors can still bracket
+            // an unsettled tip (see `Notification` rustdoc).
             instance
                 .put_entry(
                     &root_id,
@@ -855,8 +857,8 @@ async fn dispatch_database_op(
                     // The closure only fires for settled-state writes today
                     // (Verified). Unverified writes go through `put_entry`
                     // without firing `fire_write_callbacks`, so no notification
-                    // ever ships for them — subscribers observe a clean
-                    // promote-only stream.
+                    // is ever *triggered* by them — though the cursors shipped
+                    // here are raw frontiers and can bracket an unsettled tip.
                     let frame = ServerFrame::Notification(Notification::DatabaseWrite {
                         root_id: db.root_id().clone(),
                         previous_tips: event.previous_tips().clone(),

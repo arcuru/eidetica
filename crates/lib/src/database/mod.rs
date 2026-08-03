@@ -735,7 +735,7 @@ impl Database {
     /// stall another. Spawn from inside the callback if you need fanout
     /// within a single tree.
     ///
-    /// # Settled-state only
+    /// # Settled-state trigger — but not a settled-state bracket
     ///
     /// Callbacks fire **only for entries that have passed local
     /// verification** — i.e. entries the system considers `Verified`.
@@ -753,11 +753,21 @@ impl Database {
     /// trigger the access-time auto-verify hook. A listen-only
     /// subscriber therefore sees sync-arrived content promptly.
     ///
+    /// What fires is settled; what the event *brackets* is not. The
+    /// event's cursors are raw DAG frontiers, so an `Unverified` or
+    /// `Failed` entry that happens to be a tip lands inside the bracket
+    /// and [`Self::ids_added`] will enumerate it. Filter on
+    /// `Backend::get_verification_status` before acting on IDs derived
+    /// from a bracket if your callback ingests entry contents.
+    ///
     /// On a connected instance the first `on_write` registration for a
     /// given tree lazily sends a `SubscribeWrites` op to the daemon;
     /// further registrations on the same tree reuse that subscription.
-    /// Subscriptions live for the connection's lifetime — disconnecting
-    /// the client implicitly unsubscribes.
+    /// Dropping the last callback for a tree marks the subscription idle
+    /// rather than unsubscribing immediately, so a quick re-registration
+    /// costs no round-trip; a sweep sends `UnsubscribeWrites` once the
+    /// grace window elapses. Disconnecting the client unsubscribes
+    /// everything.
     ///
     /// # Example
     /// ```rust,no_run
@@ -1703,10 +1713,12 @@ impl Database {
     ///   `post_tips` (i.e. the full ancestor closure of those tips).
     /// - If `post_tips` references an entry that does not exist locally,
     ///   returns an `EntryNotFound` error.
-    /// - Verification status is **not** filtered. `WriteEvent` fires only
-    ///   for settled-state writes, so callers driven by an event observe
-    ///   only Verified IDs in practice. Callers using this directly should
-    ///   filter via `Backend::get_verification_status` if needed.
+    /// - Verification status is **not** filtered, and event-driven callers
+    ///   are not exempt. `WriteEvent` is *triggered* only by Verified
+    ///   writes, but its cursors are raw DAG frontiers, so an `Unverified`
+    ///   or `Failed` entry sitting as a tip is inside the bracket and is
+    ///   enumerated here. Every caller that fetches or ingests these IDs
+    ///   should filter via `Backend::get_verification_status`.
     ///
     /// # Errors
     ///

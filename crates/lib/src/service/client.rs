@@ -496,9 +496,35 @@ impl RemoteConnectionInner {
 /// coordination methods like `notify_entry_written`.
 ///
 /// Cloning is cheap (Arc-backed).
+///
+/// **Teardown.** The reader task holds a strong `Arc<RemoteConnectionInner>`
+/// and `inner` owns the socket's `WriteHalf`, so neither half of the split
+/// stream can drop on its own: the reader parks in `read_frame` until the
+/// daemon EOFs, and the daemon only EOFs once our socket closes. The
+/// `live` token breaks that cycle — when the last user-facing handle drops
+/// it calls `RemoteConnectionInner::mark_dead`, aborting the reader so
+/// its `Arc` is released, `inner` drops, and the `WriteHalf` closes. The
+/// daemon then sees EOF and scrubs the connection's subscriptions via its
+/// `ConnectionGuard`.
 #[derive(Clone)]
 pub struct RemoteConnection {
     inner: Arc<RemoteConnectionInner>,
+    /// `Some` on every user-facing handle; `None` on internal handles
+    /// minted from a task that must not keep the connection alive (the
+    /// sweep). Cloning a user handle clones the token, so teardown fires
+    /// only when the last one goes.
+    _live: Option<Arc<ConnLiveness>>,
+}
+
+/// Drop token wired to `RemoteConnection::_live`. Holds a strong `inner`
+/// so `mark_dead` is always callable; that `Arc` is released immediately
+/// after, as part of this drop.
+struct ConnLiveness(Arc<RemoteConnectionInner>);
+
+impl Drop for ConnLiveness {
+    fn drop(&mut self) {
+        self.0.mark_dead();
+    }
 }
 
 impl std::fmt::Debug for RemoteConnection {
@@ -560,7 +586,8 @@ impl RemoteConnection {
         // Spawn the reader task. It holds an Arc clone of `inner` so the
         // connection (and its pending queue) stay live as long as any
         // request is in flight, and exits cleanly on EOF / read error /
-        // failure-to-deserialize. On exit it drops the remaining oneshot
+        // failure-to-deserialize, or on the abort the `live` token fires
+        // when the last user handle drops. On exit it drops the remaining oneshot
         // senders (surfaces as `RecvError` on awaiting `request()`s) and
         // also drops every per-tree worker channel, which causes those
         // workers to exit. No separate dispatch task — per-tree workers
@@ -577,7 +604,8 @@ impl RemoteConnection {
         let weak_for_sweep = Arc::downgrade(&inner);
         tokio::spawn(run_sweep_task(weak_for_sweep));
 
-        Ok(Self { inner })
+        let _live = Some(Arc::new(ConnLiveness(inner.clone())));
+        Ok(Self { inner, _live })
     }
 
     /// Attach an `Instance` to this connection so the reader task can
@@ -998,6 +1026,31 @@ impl RemoteConnection {
             .unwrap_or_else(|p| p.into_inner())
     }
 
+    /// Whether the attached `Instance` still holds a per-database write
+    /// callback for `tree_id`.
+    ///
+    /// `false` when no instance is attached or it has been dropped —
+    /// nothing can be observing writes in either case, so the caller is
+    /// free to release the subscription.
+    ///
+    /// Lock order: callers hold `subscribed_trees` across this, which
+    /// takes the instance's `write_callbacks`. Nothing acquires those in
+    /// the opposite order — the registry guard in `register_write_callback`,
+    /// `remove_write_callback` and `spawn_write_callbacks` is released
+    /// before any subscription-state access.
+    fn tree_has_local_callbacks(&self, tree_id: &ID) -> bool {
+        let weak = {
+            let guard = self
+                .inner
+                .weak_instance
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            guard.clone()
+        };
+        weak.and_then(|w| w.upgrade())
+            .is_some_and(|instance| instance.has_write_callbacks(tree_id))
+    }
+
     /// Transition the subscription state for `tree_id` from `Subscribed`
     /// to `Idle`. Called from `WriteCallback::drop` when the last local
     /// callback for a tree on this connection is released.
@@ -1010,8 +1063,24 @@ impl RemoteConnection {
     /// If the state isn't `Subscribed` at the moment of the call —
     /// e.g. a concurrent re-registration already raced us, or the
     /// sweep already unsubscribed — this is a no-op.
+    ///
+    /// **Re-check under the state lock.** `WriteCallback::drop` removes
+    /// the callback from the instance registry and calls this as two
+    /// separate steps, so a registration can land in between: it inserts
+    /// into the registry, then `subscribe_writes` observes `Subscribed`
+    /// and returns without wire traffic. Flipping to `Idle` unconditionally
+    /// would strand that live callback on an `Idle` subscription, and the
+    /// sweep would silently unsubscribe it a grace window later. Probing
+    /// the registry while holding `subscribed_trees` closes the window in
+    /// both directions: a registration whose insert is already visible
+    /// keeps us `Subscribed`, and one that isn't visible yet must take
+    /// this same lock in `subscribe_writes`, where it observes `Idle` and
+    /// transitions back.
     pub(crate) fn transition_to_idle(&self, tree_id: &ID) {
         let mut subs = self.subscribed_trees_lock();
+        if self.tree_has_local_callbacks(tree_id) {
+            return;
+        }
         if let Some(SubState::Subscribed { identity }) = subs.get(tree_id) {
             let identity = identity.clone();
             subs.insert(
@@ -1537,11 +1606,13 @@ async fn run_sweep_task(weak_inner: Weak<RemoteConnectionInner>) {
                 .collect()
         };
 
-        // Resolve the connection handle once for the batch. Moving
-        // `inner` into the `RemoteConnection` releases the local
-        // upgrade `Arc` at the same time, so the sweep task does not
-        // hold a strong reference to `inner` across the wire calls.
-        let conn = RemoteConnection { inner };
+        // Resolve the connection handle once for the batch. `live: None`
+        // is load-bearing: this is an internal handle, and minting a
+        // token here would `mark_dead` the connection every time the
+        // batch handle drops at the end of a tick. The strong `inner`
+        // moved in here is released when `conn` drops at the end of the
+        // tick, before the next `upgrade()`.
+        let conn = RemoteConnection { inner, _live: None };
 
         for tree_id in candidates {
             // Per-tree fence: hold across the full Unsubscribe RTT so
@@ -1663,6 +1734,95 @@ mod tests {
         assert!(
             c.get(&root(), &eid("e2"), "s").is_none(),
             "older un-touched entry must be evicted"
+        );
+    }
+
+    /// Build a `RemoteConnection` over a socketpair — enough to exercise the
+    /// subscription state machine without a daemon. No reader task is
+    /// spawned and no wire traffic is sent; the peer end is returned so the
+    /// caller keeps the socket open for the duration of the test.
+    fn test_conn() -> (RemoteConnection, tokio::net::UnixStream) {
+        let (client_side, peer) = tokio::net::UnixStream::pair().unwrap();
+        let (_reader, writer) = tokio::io::split(client_side);
+        let inner = Arc::new(RemoteConnectionInner {
+            writer: Mutex::new(writer),
+            pending: std::sync::Mutex::new(VecDeque::new()),
+            weak_instance: std::sync::Mutex::new(None),
+            session: RwLock::new(None),
+            registered_keys: Mutex::new(HashSet::new()),
+            subscribed_trees: std::sync::Mutex::new(HashMap::new()),
+            subscription_locks: std::sync::Mutex::new(HashMap::new()),
+            crdt_cache: std::sync::Mutex::new(ClientCrdtCache::new(CLIENT_CACHE_CAPACITY_BYTES)),
+            closed: AtomicBool::new(false),
+            tree_workers: std::sync::Mutex::new(HashMap::new()),
+            reader_abort: std::sync::Mutex::new(None),
+        });
+        (RemoteConnection { inner, _live: None }, peer)
+    }
+
+    /// Regression: `transition_to_idle` must not flip a tree to `Idle` while
+    /// the attached instance still holds a per-database callback for it.
+    ///
+    /// `WriteCallback::drop` calls `remove_write_callback` and
+    /// `transition_to_idle` as two separate synchronous steps, so a
+    /// registration on another thread can land between them: it inserts into
+    /// the registry, then `subscribe_writes` observes `Subscribed` and returns
+    /// with no wire traffic. An unconditional flip strands that live callback
+    /// on an `Idle` subscription, and the sweep sends `UnsubscribeWrites` a
+    /// grace window later — after which the callback never fires again, with
+    /// no error surfaced anywhere.
+    #[tokio::test]
+    async fn transition_to_idle_skips_while_a_callback_is_registered() {
+        use crate::auth::crypto::generate_keypair;
+        use crate::backend::database::InMemory;
+        use crate::crdt::Doc;
+
+        let (conn, _peer) = test_conn();
+        // A local instance suffices — the guard only reads the callback
+        // registry, which is the same registry on connected instances.
+        let (instance, _admin) = crate::Instance::create_backend(
+            Box::new(InMemory::new()),
+            crate::NewUser::passwordless("admin"),
+        )
+        .await
+        .unwrap();
+        conn.attach_instance(instance.downgrade());
+
+        let (signing_key, _) = generate_keypair();
+        let db = crate::Database::create(&instance, signing_key, Doc::new())
+            .await
+            .unwrap();
+        let tree_id = db.root_id().clone();
+
+        conn.subscribed_trees_lock().insert(
+            tree_id.clone(),
+            SubState::Subscribed {
+                identity: SigKey::default(),
+            },
+        );
+
+        let cb = db.on_write(|_event, _db| async { Ok(()) }).await.unwrap();
+
+        conn.transition_to_idle(&tree_id);
+        assert!(
+            matches!(
+                conn.subscribed_trees_lock().get(&tree_id),
+                Some(SubState::Subscribed { .. })
+            ),
+            "a live callback must keep the wire subscription Subscribed"
+        );
+
+        // Releasing the last callback makes the transition legitimate. The
+        // handle's own Drop is a no-op for the wire state here (a local
+        // instance has no `remote_connection`), so drive it explicitly.
+        drop(cb);
+        conn.transition_to_idle(&tree_id);
+        assert!(
+            matches!(
+                conn.subscribed_trees_lock().get(&tree_id),
+                Some(SubState::Idle { .. })
+            ),
+            "with no callbacks left the subscription must go Idle"
         );
     }
 

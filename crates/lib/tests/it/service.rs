@@ -2296,3 +2296,53 @@ async fn test_request_after_reader_exit_returns_connection_aborted() {
         "expected ConnectionAborted, got: {err:?}",
     );
 }
+
+/// Regression: dropping the last client handle must close the socket so the
+/// daemon tears the connection down.
+///
+/// The reader task holds a strong `Arc<RemoteConnectionInner>` and `inner`
+/// owns the socket's `WriteHalf`, so without an explicit teardown token the
+/// two halves pin each other: the reader parks in `read_frame` until the
+/// daemon EOFs, and the daemon only EOFs once the client's socket closes.
+/// The daemon-side subscription — a per-database write callback on its
+/// `Instance` — would then survive forever, with the daemon fanning
+/// notifications into a channel nobody drains.
+#[tokio::test]
+async fn test_client_drop_releases_daemon_subscription() {
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    create_user_via_admin(&server, "alice").await;
+
+    {
+        let instance = Instance::connect(format!("unix://{}", socket_path.display()))
+            .await
+            .unwrap();
+        let mut user = instance.login_user("alice", None).await.unwrap();
+        let pubkey = user.get_default_key().unwrap();
+
+        let mut settings = eidetica::crdt::Doc::new();
+        settings.set("name", "drop_release_test");
+        let db = user.create_database(settings, &pubkey).await.unwrap();
+
+        // Detach so the subscription outlives the callback handle: this
+        // asserts teardown comes from the connection closing, not from
+        // `WriteCallback::drop` unregistering.
+        db.on_write(|_event, _db| async { Ok(()) })
+            .await
+            .unwrap()
+            .detach();
+
+        assert!(
+            format!("{server:?}").contains("<1 per-db callbacks>"),
+            "daemon should hold the subscription while the client is alive: {server:?}"
+        );
+    }
+
+    // The daemon scrubs via its `ConnectionGuard` once it sees EOF.
+    for _ in 0..100 {
+        if format!("{server:?}").contains("<0 per-db callbacks>") {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("daemon still holds the subscription after the client dropped: {server:?}");
+}

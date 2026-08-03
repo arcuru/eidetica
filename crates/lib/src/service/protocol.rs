@@ -339,14 +339,29 @@ pub enum ServiceRequest {
 /// for them with a [`DatabaseOp::SubscribeWrites`] and unsubscribes by
 /// dropping the connection or sending [`DatabaseOp::UnsubscribeWrites`].
 ///
-/// Notifications fire **only for settled-state writes** — i.e. entries
-/// that have passed local verification on the daemon. An entry that
-/// arrives `Unverified` (via sync, or as a `SubmitSignedEntry` body) is
-/// ingested silently and only produces a notification once the daemon's
-/// verification pass promotes it to `Verified`. Subscribers therefore
-/// never need to track verification state themselves; every notification
-/// they observe is for entries that already satisfy the daemon's auth
-/// settings.
+/// Notifications are **triggered only by settled-state writes** — i.e.
+/// entries that have passed local verification on the daemon. An entry
+/// that arrives `Unverified` (via sync, or as a `SubmitSignedEntry` body)
+/// is ingested silently and only produces a notification once the daemon's
+/// verification pass promotes it to `Verified`.
+///
+/// **This does not mean the bracket contains only Verified entries.** The
+/// cursors are raw DAG frontiers (`Backend::snapshot`), not the Verified
+/// frontier, so an `Unverified` or `Failed` entry sitting as a raw tip
+/// falls inside every subsequent bracket and
+/// [`Database::ids_added`](crate::Database::ids_added) will enumerate it.
+/// A subscriber that expands a bracket and fetches the IDs can therefore
+/// observe entries that failed the daemon's auth settings. Consumers that
+/// care must filter on verification status themselves; locally that is
+/// `Backend::get_verification_status`, and over the wire there is
+/// currently no way to do it at all — treat bracket-derived IDs as
+/// untrusted until read back through a gated path.
+///
+/// A second consequence of the raw-frontier cursor: because it advances
+/// past a still-`Unverified` tip, a later `verify()` that promotes that
+/// entry fires with `previous_tips == post_tips` for the subscriber, so
+/// `ids_added` returns empty and the promotion is never signalled. An
+/// entry can be reported once while untrusted and never mentioned again.
 ///
 /// The frame carries cursor brackets only — no entry payloads, no entry
 /// IDs. Subscribers that need to enumerate the new entries expand the

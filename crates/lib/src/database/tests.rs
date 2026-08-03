@@ -1092,10 +1092,11 @@ async fn test_ids_added_backward_bracket_does_not_report_full_history() {
 /// entry, and a subscriber expanding it via `ids_added` enumerates that entry
 /// — and can then fetch its body, since `GetEntry` gates read permission only.
 ///
-/// This contradicts the contract stated in `Instance::put_entry`'s own doc
-/// ("a subscriber's accumulated state can only ever rest on entries that have
-/// passed local validation") and on `ids_added` ("callers driven by an event
-/// observe only Verified IDs in practice").
+/// The rustdoc on `Notification`, `Database::on_write`, `ids_added` and
+/// `WriteEvent` describes this behavior rather than promising it away: the
+/// settled-state guarantee covers what *triggers* an event, not what its
+/// bracket spans, and consumers are told to filter on verification status.
+/// This test pins the actual behavior until the cursors themselves narrow.
 ///
 /// Second-order consequence, not asserted here: the cursor advances *past* the
 /// unverified entry, so when it is later promoted (or fails), that transition
@@ -1138,8 +1139,8 @@ async fn test_ids_added_excludes_unverified_entries() {
 
     assert!(
         !added.contains(&id2),
-        "ids_added enumerated an Unverified entry ({id2}); the settled-state-only \
-         contract says a subscriber never observes unvalidated entries"
+        "ids_added enumerated an Unverified entry ({id2}); the raw-frontier cursor \
+         brackets it, so event-driven consumers must filter on verification status"
     );
 }
 
