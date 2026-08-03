@@ -64,7 +64,7 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
     };
 
     // Setup client with its own key
-    let (client_instance, _client_user, client_key_id) =
+    let (client_instance, client_user, client_key_id) =
         test_instance_with_user_and_key("client_user", Some("unauthorized_client")).await;
     client_instance
         .enable_sync()
@@ -86,7 +86,7 @@ async fn test_bootstrap_permission_denied_insufficient_admin() {
             .sync_with_peer_for_bootstrap_with_key(
                 &server_addr,
                 &restricted_tree_id,
-                &client_key_id,
+                &client_user.get_signing_key(&client_key_id).unwrap(),
                 "unauthorized_client", // Client's key name
                 Permission::Write(10), // Requested permission level
             )
@@ -184,7 +184,7 @@ async fn test_bootstrap_permission_denied_no_auth_config() {
     };
 
     // Setup client
-    let (client_instance, _client_user, client_key_id) =
+    let (client_instance, client_user, client_key_id) =
         test_instance_with_user_and_key("client_user", Some("client_key")).await;
     client_instance
         .enable_sync()
@@ -203,7 +203,7 @@ async fn test_bootstrap_permission_denied_no_auth_config() {
             .sync_with_peer_for_bootstrap_with_key(
                 &server_addr,
                 &unprotected_tree_id,
-                &client_key_id,
+                &client_user.get_signing_key(&client_key_id).unwrap(),
                 "client_key",
                 Permission::Write(10),
             )
@@ -297,7 +297,7 @@ async fn test_bootstrap_invalid_public_key_format() {
     };
 
     // Setup client with malformed key name (this tests key validation during bootstrap)
-    let (client_instance, _client_user, client_key_id) =
+    let (client_instance, client_user, client_key_id) =
         test_instance_with_user_and_key("client_user", Some("client_with_spaces_and_symbols!@#"))
             .await;
     client_instance
@@ -320,7 +320,7 @@ async fn test_bootstrap_invalid_public_key_format() {
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &client_key_id,
+            &client_user.get_signing_key(&client_key_id).unwrap(),
             "client_with_spaces_and_symbols!@#",
             Permission::Write(10),
         )
@@ -401,7 +401,7 @@ async fn test_bootstrap_with_revoked_key() {
     };
 
     // Setup different client instance (to simulate external client using revoked key)
-    let (client_instance, _client_user, client_key_id) =
+    let (client_instance, client_user, client_key_id) =
         test_instance_with_user_and_key("client_user", Some("attempting_revoked_access")).await;
     client_instance
         .enable_sync()
@@ -422,7 +422,7 @@ async fn test_bootstrap_with_revoked_key() {
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &client_key_id,
+            &client_user.get_signing_key(&client_key_id).unwrap(),
             "attempting_revoked_access",
             Permission::Write(10),
         )
@@ -495,7 +495,7 @@ async fn test_bootstrap_exceeds_granted_permissions() {
     };
 
     // Setup client requesting Admin permissions (should be excessive)
-    let (client_instance, _client_user, client_key_id) =
+    let (client_instance, client_user, client_key_id) =
         test_instance_with_user_and_key("client_user", Some("greedy_client")).await;
     client_instance
         .enable_sync()
@@ -513,7 +513,7 @@ async fn test_bootstrap_exceeds_granted_permissions() {
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &client_key_id,
+            &client_user.get_signing_key(&client_key_id).unwrap(),
             "greedy_client",
             Permission::Admin(0), // Requesting highest admin level
         )

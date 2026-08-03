@@ -136,6 +136,18 @@ pub enum SyncError {
         actual_permission: Permission,
     },
 
+    /// A request that would be served data carried no proof of key possession.
+    #[error("Authentication required to read database '{0}'")]
+    AuthenticationRequired(String),
+
+    /// The proof of key possession did not hold up.
+    #[error("Authentication failed: {0}")]
+    AuthenticationFailed(String),
+
+    /// The caller proved its key, but that key has no read access.
+    #[error("Permission denied: {0}")]
+    PermissionDenied(String),
+
     /// Invalid public key provided.
     #[error("Invalid public key: {reason}")]
     InvalidPublicKey { reason: String },

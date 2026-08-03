@@ -88,7 +88,7 @@ async fn test_chat_app_authenticated_bootstrap() {
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &client_key_id,
+            &client_user.get_signing_key(&client_key_id).unwrap(),
             "client_key",
             Permission::Write(10),
         )
@@ -125,7 +125,7 @@ async fn test_chat_app_authenticated_bootstrap() {
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &client_key_id,
+            &client_user.get_signing_key(&client_key_id).unwrap(),
             "client_key",
             Permission::Write(10),
         )
@@ -199,9 +199,13 @@ async fn test_chat_app_authenticated_bootstrap() {
             .expect("Client should commit with registered key");
     }
 
-    // Sync back to server
+    // Sync back to server, signing as the key the server granted during bootstrap
     client_sync
-        .sync_with_peer(&server_addr, Some(&tree_id))
+        .sync_with_peer_as(
+            &server_addr,
+            Some(&tree_id),
+            Some(&client_user.get_signing_key(&client_key_id).unwrap()),
+        )
         .await
         .unwrap();
     client_sync.flush().await.ok();
@@ -368,7 +372,7 @@ async fn test_multiple_databases_sync() {
     let server_addr = start_sync_server(&server_sync).await;
 
     // Setup client
-    let (client_instance, _client_user, client_key_id, client_sync) =
+    let (client_instance, client_user, client_key_id, client_sync) =
         setup_sync_enabled_client("client_user", "client_key").await;
     client_sync
         .register_transport("http", HttpTransport::builder())
@@ -381,7 +385,7 @@ async fn test_multiple_databases_sync() {
             .sync_with_peer_for_bootstrap_with_key(
                 &server_addr,
                 room_id,
-                &client_key_id,
+                &client_user.get_signing_key(&client_key_id).unwrap(),
                 "client_key",
                 Permission::Write(10),
             )

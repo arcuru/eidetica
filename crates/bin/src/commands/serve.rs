@@ -526,14 +526,26 @@ async fn handle_track_database(
         }
     };
 
-    let key_id = {
+    let (key_id, signing_key) = {
         let user = user_lock.read().await;
-        match user.get_default_key() {
+        let key_id = match user.get_default_key() {
             Ok(key) => key,
             Err(e) => {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("Failed to get default key: {e}"),
+                )
+                    .into_response();
+            }
+        };
+        // Taken under the same lock: the bootstrap request is signed with this
+        // key to prove we hold it.
+        match user.get_signing_key(&key_id) {
+            Ok(signing_key) => (key_id, signing_key),
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Failed to get signing key: {e}"),
                 )
                     .into_response();
             }
@@ -544,7 +556,7 @@ async fn handle_track_database(
     // slow or hung peer must not freeze the rest of this session's requests.
     let key_name = key_id.to_string();
     let network_result = sync
-        .bootstrap_with_ticket(&ticket, &key_id, &key_name, permission, None)
+        .bootstrap_with_ticket(&ticket, &signing_key, &key_name, permission, None)
         .await;
 
     // Re-acquire only for the cheap, local SigKey-mapping write.

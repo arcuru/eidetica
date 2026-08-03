@@ -189,6 +189,7 @@ async fn test_reject_bootstrap_request() {
         requesting_key_name: Some("laptop_key".to_string()),
         requested_permission: Some(AuthPermission::Write(5)),
         metadata: None,
+        auth: None,
     });
 
     // Handle the request to store it as pending
@@ -274,6 +275,7 @@ async fn test_list_bootstrap_requests_by_status() {
         requesting_key_name: Some("test_key".to_string()),
         requested_permission: Some(AuthPermission::Write(5)),
         metadata: None,
+        auth: None,
     });
 
     let context = RequestContext::default();
@@ -335,6 +337,7 @@ async fn test_duplicate_bootstrap_requests_same_client() {
         requesting_key_name: Some("laptop_key".to_string()),
         requested_permission: Some(AuthPermission::Write(5)),
         metadata: None,
+        auth: None,
     });
 
     // Handle first request
@@ -354,6 +357,7 @@ async fn test_duplicate_bootstrap_requests_same_client() {
         requesting_key_name: Some("laptop_key".to_string()),
         requested_permission: Some(AuthPermission::Write(5)),
         metadata: None,
+        auth: None,
     });
 
     // Handle second identical request
@@ -472,6 +476,7 @@ async fn test_malformed_permission_requests() {
             requesting_key_name: Some(format!("key_for_{}", description.replace(" ", "_"))),
             requested_permission: Some(*permission),
             metadata: None,
+            auth: None,
         });
 
         let context = RequestContext::default();
@@ -638,7 +643,7 @@ async fn test_bootstrap_with_existing_specific_key_permission() {
             .await;
     server_instance.enable_sync().await.unwrap();
 
-    let test_key = PublicKey::random();
+    let (test_signing_key, test_key) = eidetica::auth::generate_keypair();
 
     // Create database with both admin key and the test key with Write(5) permission
     let mut settings = Doc::new();
@@ -669,11 +674,12 @@ async fn test_bootstrap_with_existing_specific_key_permission() {
     let sync_handler = create_test_sync_handler(&sync);
 
     // Now try to bootstrap with the same key requesting Write(10) permission (should succeed)
-    let sync_request = create_bootstrap_request(
+    let sync_request = create_signed_bootstrap_request(
         &tree_id,
-        &test_key.to_string(),
+        &test_signing_key,
         "laptop_key",
         AuthPermission::Write(10),
+        &server_instance.id(),
     );
 
     let context = RequestContext::default();
@@ -829,7 +835,7 @@ async fn test_bootstrap_with_delegated_only_key_auto_approval() {
 
     // Agent tree D: K2 is Admin on it, with no relationship to T except the
     // delegation T will declare below.
-    let k2 = PublicKey::random();
+    let (k2_signing_key, k2) = eidetica::auth::generate_keypair();
     let mut d_settings = Doc::new();
     d_settings.set("name", "Agent DB (delegated tree)");
     let agent_db = server_user
@@ -888,11 +894,12 @@ async fn test_bootstrap_with_delegated_only_key_auto_approval() {
     let sync_handler = create_test_sync_handler(&sync);
 
     // K2 bootstraps T with only its pubkey; its Admin-on-D clamps to Write(10).
-    let sync_request = create_bootstrap_request(
+    let sync_request = create_signed_bootstrap_request(
         &tree_id,
-        &k2.to_string(),
+        &k2_signing_key,
         "daemon_key",
         AuthPermission::Write(10),
+        &server_instance.id(),
     );
     let context = RequestContext::default();
     let response = sync_handler.handle_request(&sync_request, &context).await;
@@ -966,7 +973,7 @@ async fn test_bootstrap_global_permission_client_cannot_create_entries_bug() {
     let tree_id = database.root_id().clone();
 
     // Setup client instance
-    let (client_instance, mut _client_user, client_key_id) =
+    let (client_instance, _client_user, client_key_id) =
         crate::helpers::test_local_instance_with_user_and_key("client_user", Some("client_key"))
             .await;
     client_instance.enable_sync().await.unwrap();
@@ -1234,7 +1241,7 @@ async fn test_client_retry_after_approval() {
     let server_addr = start_sync_server(&server_sync).await;
 
     // Setup client with User API
-    let (client_instance, _client_user, client_key_id, client_sync) =
+    let (client_instance, client_user, client_key_id, client_sync) =
         setup_sync_enabled_client("test_client", "client_key").await;
     client_sync
         .register_transport("http", HttpTransport::builder())
@@ -1248,7 +1255,7 @@ async fn test_client_retry_after_approval() {
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &client_key_id,
+            &client_user.get_signing_key(&client_key_id).unwrap(),
             &client_key_str,
             AuthPermission::Write(5),
         )
@@ -1288,7 +1295,7 @@ async fn test_client_retry_after_approval() {
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &client_key_id,
+            &client_user.get_signing_key(&client_key_id).unwrap(),
             &client_key_str,
             AuthPermission::Write(5),
         )
@@ -1342,7 +1349,7 @@ async fn test_client_denied_after_rejection() {
     let server_addr = start_sync_server(&server_sync).await;
 
     // Setup client with User API
-    let (client_instance, _client_user, client_key_id, client_sync) =
+    let (client_instance, client_user, client_key_id, client_sync) =
         setup_sync_enabled_client("test_client", "client_key").await;
     client_sync
         .register_transport("http", HttpTransport::builder())
@@ -1356,7 +1363,7 @@ async fn test_client_denied_after_rejection() {
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &client_key_id,
+            &client_user.get_signing_key(&client_key_id).unwrap(),
             &client_key_str,
             AuthPermission::Write(5),
         )
@@ -1395,7 +1402,7 @@ async fn test_client_denied_after_rejection() {
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &client_key_id,
+            &client_user.get_signing_key(&client_key_id).unwrap(),
             &client_key_str,
             AuthPermission::Write(5),
         )
@@ -1443,7 +1450,7 @@ async fn test_bootstrap_api_equivalence() {
 
     // Client: Use sync_with_peer_for_bootstrap_with_key (user-provided key)
     println!("🔍 Client: Testing user-provided key API...");
-    let (client_instance, _client_user, client_key_id, client_sync) =
+    let (client_instance, client_user, client_key_id, client_sync) =
         setup_sync_enabled_client("client", "client_key").await;
     client_sync
         .register_transport("http", HttpTransport::builder())
@@ -1455,7 +1462,7 @@ async fn test_bootstrap_api_equivalence() {
         .sync_with_peer_for_bootstrap_with_key(
             &server_addr,
             &tree_id,
-            &client_key_id,
+            &client_user.get_signing_key(&client_key_id).unwrap(),
             &client_key_str,
             AuthPermission::Write(5),
         )

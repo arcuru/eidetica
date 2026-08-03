@@ -11,11 +11,15 @@ use super::{
     background::SyncCommand,
     peer_manager::PeerManager,
     peer_types,
-    protocol::{self, SyncRequest, SyncResponse, SyncTreeRequest},
+    protocol::{self, SyncRequest, SyncRequestAuth, SyncResponse, SyncTreeRequest},
     user_sync_manager::UserSyncManager,
 };
 use crate::{
-    Database, Entry, Result, auth::Permission, auth::crypto::PublicKey, crdt::Doc, entry::ID,
+    Database, Entry, Result,
+    auth::Permission,
+    auth::crypto::{PrivateKey, PublicKey},
+    crdt::Doc,
+    entry::ID,
     store::DocStore,
 };
 
@@ -37,6 +41,23 @@ impl Sync {
     /// # Returns
     /// A Result indicating success or failure of the sync operation.
     pub async fn sync_tree_with_peer(&self, peer_pubkey: &PublicKey, tree_id: &ID) -> Result<()> {
+        self.sync_tree_with_peer_as(peer_pubkey, tree_id, None)
+            .await
+    }
+
+    /// Synchronize a tree with a peer, signing the request with `signing_key`.
+    ///
+    /// The peer authorizes the pull against the key that signed it, so this must
+    /// be a key with read access on `tree_id`. `None` uses this instance's device
+    /// key, which is right when the device itself holds the access (directly or
+    /// through a delegated tree). A database that instead granted a *user* key —
+    /// the usual outcome of bootstrapping with one — needs that key here.
+    pub async fn sync_tree_with_peer_as(
+        &self,
+        peer_pubkey: &PublicKey,
+        tree_id: &ID,
+        signing_key: Option<&PrivateKey>,
+    ) -> Result<()> {
         // Get peer information and address
         let peer_info = self
             .get_peer_info(peer_pubkey)
@@ -58,15 +79,24 @@ impl Sync {
         // Get our device public key for automatic peer tracking
         let our_device_pubkey = self.get_device_pubkey().ok();
 
-        // Send unified sync request
+        // Send unified sync request, signed so the peer can authorize the pull
+        let instance = self.instance()?;
+        let auth = SyncRequestAuth::sign(
+            signing_key.unwrap_or(instance.signing_key()?),
+            peer_pubkey,
+            tree_id,
+            &our_tips,
+            instance.clock().now_millis(),
+        );
         let request = SyncRequest::SyncTree(SyncTreeRequest {
             tree_id: tree_id.clone(),
             our_tips,
             peer_pubkey: our_device_pubkey,
-            requesting_key: None, // TODO: Add auth support for direct sync
+            requesting_key: None,
             requesting_key_name: None,
             requested_permission: None,
             metadata: None,
+            auth: Some(auth),
         });
 
         // Send request via background sync command
@@ -583,6 +613,19 @@ impl Sync {
     /// # Returns
     /// Result indicating success or failure.
     pub async fn sync_with_peer(&self, address: &Address, tree_id: Option<&ID>) -> Result<()> {
+        self.sync_with_peer_as(address, tree_id, None).await
+    }
+
+    /// Sync with a peer, signing requests with `signing_key`.
+    ///
+    /// See [`sync_tree_with_peer_as`](Self::sync_tree_with_peer_as) for which
+    /// key to pass.
+    pub async fn sync_with_peer_as(
+        &self,
+        address: &Address,
+        tree_id: Option<&ID>,
+        signing_key: Option<&PrivateKey>,
+    ) -> Result<()> {
         // Connect to peer if not already connected
         let peer_pubkey = self.connect_to_peer(address).await?;
 
@@ -591,7 +634,8 @@ impl Sync {
 
         if let Some(tree_id) = tree_id {
             // Sync specific tree
-            self.sync_tree_with_peer(&peer_pubkey, tree_id).await?;
+            self.sync_tree_with_peer_as(&peer_pubkey, tree_id, signing_key)
+                .await?;
         } else {
             // TODO: Sync all available trees
             tracing::warn!(
@@ -632,7 +676,7 @@ impl Sync {
     /// # Arguments
     /// * `peer_pubkey` - The public key of the peer to sync with
     /// * `tree_id` - The ID of the tree to sync
-    /// * `requesting_key` - Optional public key requesting access (for bootstrap)
+    /// * `requesting_key` - Optional private key to sign with and request access for
     /// * `requesting_key_name` - Optional name/ID of the requesting key
     /// * `requested_permission` - Optional permission level being requested
     ///
@@ -642,7 +686,7 @@ impl Sync {
         &self,
         peer_pubkey: &PublicKey,
         tree_id: &ID,
-        requesting_key: Option<&PublicKey>,
+        requesting_key: Option<&PrivateKey>,
         requesting_key_name: Option<&str>,
         requested_permission: Option<Permission>,
         metadata: Option<Doc>,
@@ -668,15 +712,27 @@ impl Sync {
         // Get our device public key for automatic peer tracking
         let our_device_pubkey = self.get_device_pubkey().ok();
 
-        // Send unified sync request with auth parameters
+        // Send unified sync request with auth parameters. The signature proves
+        // we hold our device key; a bootstrap that asks for a *different* key
+        // cannot be proven and stays on the manual approval path.
+        let instance = self.instance()?;
+        let signing_key = requesting_key.unwrap_or(instance.signing_key()?);
+        let auth = SyncRequestAuth::sign(
+            signing_key,
+            peer_pubkey,
+            tree_id,
+            &our_tips,
+            instance.clock().now_millis(),
+        );
         let request = SyncRequest::SyncTree(SyncTreeRequest {
             tree_id: tree_id.clone(),
             our_tips,
             peer_pubkey: our_device_pubkey,
-            requesting_key: requesting_key.cloned(),
+            requesting_key: requesting_key.map(|k| k.public_key()),
             requesting_key_name: requesting_key_name.map(|k| k.to_string()),
             requested_permission,
             metadata,
+            auth: Some(auth),
         });
 
         // Send request via background sync command

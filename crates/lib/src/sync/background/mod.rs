@@ -17,7 +17,7 @@ use super::{
     handler::SyncHandlerImpl,
     peer_manager::PeerManager,
     peer_types::{Address, PeerId, PeerStatus},
-    protocol::{SyncRequest, SyncResponse, SyncTreeRequest},
+    protocol::{SyncRequest, SyncRequestAuth, SyncResponse, SyncTreeRequest},
     queue::SyncQueue,
     transport_manager::TransportManager,
 };
@@ -749,15 +749,23 @@ impl BackgroundSync {
 
             debug!(peer = %peer_id, tree = %tree_id, our_tips = our_tips.len(), "Sending sync tree request");
 
-            // Send unified sync request
+            // Send unified sync request, signed so the peer can authorize the pull
+            let auth = SyncRequestAuth::sign(
+                instance.signing_key()?,
+                peer_id.public_key(),
+                tree_id,
+                &our_tips,
+                instance.clock().now_millis(),
+            );
             let request = SyncRequest::SyncTree(SyncTreeRequest {
                 tree_id: tree_id.clone(),
                 our_tips,
                 peer_pubkey: our_device_pubkey,
-                requesting_key: None, // TODO: Add auth support for background sync
+                requesting_key: None,
                 requesting_key_name: None,
                 requested_permission: None,
                 metadata: None,
+                auth: Some(auth),
             });
 
             let response = self.transport_manager.send_request(address, &request).await?;

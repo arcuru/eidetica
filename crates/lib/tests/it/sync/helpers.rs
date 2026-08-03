@@ -365,6 +365,37 @@ pub async fn start_sync_server(sync: &Sync) -> Address {
 }
 
 /// Create a SyncTreeRequest for bootstrap testing
+/// Create a bootstrap request signed by the key it claims, as a real client sends it.
+///
+/// Timestamps come from [`FixedClock::default`] because test instances run on
+/// that clock, not the system one.
+pub fn create_signed_bootstrap_request(
+    tree_id: &ID,
+    signing_key: &eidetica::auth::crypto::PrivateKey,
+    key_name: &str,
+    permission: AuthPermission,
+    server_pubkey: &PublicKey,
+) -> SyncRequest {
+    let our_tips: eidetica::Snapshot = Vec::new().into();
+    let auth = eidetica::sync::protocol::SyncRequestAuth::sign(
+        signing_key,
+        server_pubkey,
+        tree_id,
+        &our_tips,
+        eidetica::Clock::now_millis(&eidetica::FixedClock::default()),
+    );
+    SyncRequest::SyncTree(SyncTreeRequest {
+        tree_id: tree_id.clone(),
+        our_tips,
+        peer_pubkey: None,
+        requesting_key: Some(signing_key.public_key()),
+        requesting_key_name: Some(key_name.to_string()),
+        requested_permission: Some(permission),
+        metadata: None,
+        auth: Some(auth),
+    })
+}
+
 pub fn create_bootstrap_request(
     tree_id: &ID,
     requesting_key: &str,
@@ -379,6 +410,7 @@ pub fn create_bootstrap_request(
         requesting_key_name: Some(key_name.to_string()),
         requested_permission: Some(permission),
         metadata: None,
+        auth: None,
     })
 }
 

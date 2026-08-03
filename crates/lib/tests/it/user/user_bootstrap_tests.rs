@@ -115,6 +115,7 @@ async fn create_pending_request(
         requesting_key_name: Some("laptop_key".to_string()),
         requested_permission: Some(permission),
         metadata: None,
+        auth: None,
     });
 
     let context = RequestContext::default();
