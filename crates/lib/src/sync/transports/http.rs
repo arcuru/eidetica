@@ -96,6 +96,7 @@ impl HttpTransportBuilder {
         Ok(HttpTransport {
             server_state: ServerState::new(),
             bind_address: self.bind_address,
+            client: reqwest::Client::new(),
         })
     }
 }
@@ -111,6 +112,7 @@ impl TransportBuilder for HttpTransportBuilder {
         let transport = HttpTransport {
             server_state: ServerState::new(),
             bind_address: self.bind_address,
+            client: reqwest::Client::new(),
         };
         Ok((transport, None))
     }
@@ -122,6 +124,9 @@ pub struct HttpTransport {
     server_state: ServerState,
     /// Configured bind address (used when start_server is called with empty addr)
     bind_address: Option<String>,
+    /// Outbound HTTP client, shared across requests so its connection pool
+    /// survives between sends rather than being rebuilt per request.
+    client: reqwest::Client,
 }
 
 impl HttpTransport {
@@ -133,6 +138,7 @@ impl HttpTransport {
         Ok(Self {
             server_state: ServerState::new(),
             bind_address: None,
+            client: reqwest::Client::new(),
         })
     }
 
@@ -251,10 +257,10 @@ impl SyncTransport for HttpTransport {
             .into());
         }
 
-        let client = reqwest::Client::new();
         let url = format!("http://{}/api/v0", address.address);
 
-        let response = client
+        let response = self
+            .client
             .post(&url)
             .json(&request) // Send SyncRequest as JSON body
             .send()
