@@ -23,6 +23,7 @@ mod declarative_api_tests;
 mod device_id_tests;
 pub mod helpers;
 mod http_transport_tests;
+mod incremental_auth_tests;
 mod integration_tests;
 mod invariant_assertions_tests;
 mod iroh_e2e_test;
