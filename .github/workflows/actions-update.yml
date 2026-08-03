@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   actions-update:
-    uses: arcuru/actions/.github/workflows/actions-update.yml@45540c9d68eb9d2812bd4c85b43888fa05b22ef8 # main
+    uses: arcuru/actions/.github/workflows/actions-update.yml@ec6897e9561bdefa62d5eb364d49b41bcba122a5 # v0.4.0
     with:
       hold-days: ${{ inputs.hold_days || '7' }}
       runs-on: ubicloud-standard-2
