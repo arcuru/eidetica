@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   cargo-update:
-    uses: arcuru/actions/.github/workflows/cargo-update.yml@c8144123ad5a2c6316b7becab8233b68dfa637d9 # v0.2.1
+    uses: arcuru/actions/.github/workflows/cargo-update.yml@ec6897e9561bdefa62d5eb364d49b41bcba122a5 # v0.4.0
     with:
       hold-days: ${{ inputs.hold_days || '7' }}
       runs-on: ubicloud-standard-2

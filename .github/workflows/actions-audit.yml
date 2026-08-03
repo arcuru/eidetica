@@ -19,6 +19,6 @@ permissions:
 
 jobs:
   audit:
-    uses: arcuru/actions/.github/workflows/actions-audit.yml@863120f2dbc739f0b9a66c5c01e85b87d7551ac8 # v0.3.1
+    uses: arcuru/actions/.github/workflows/actions-audit.yml@ec6897e9561bdefa62d5eb364d49b41bcba122a5 # v0.4.0
     with:
       runs-on: ubicloud-standard-2
