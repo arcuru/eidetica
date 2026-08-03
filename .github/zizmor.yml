@@ -28,6 +28,7 @@ rules:
       - actions-update.yml:24
       - cargo-update.yml:24
       - flake-update.yml:24
+      - update-hold.yml:24
   ref-version-mismatch:
     ignore:
       # dtolnay/rust-toolchain publishes no releases and distributes via
