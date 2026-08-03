@@ -231,6 +231,11 @@ impl ServiceServer {
                         }
                     }
                 }
+                // Reap finished handlers as they complete. Without this arm
+                // the JoinSet only drains at shutdown, so every connection the
+                // daemon has ever served keeps its task entry alive for the
+                // daemon's lifetime.
+                _ = handlers.join_next(), if !handlers.is_empty() => {}
                 _ = shutdown.changed() => {
                     tracing::info!("Service server shutting down");
                     break;
