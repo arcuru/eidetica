@@ -90,9 +90,12 @@ pub enum WriteSource {
 /// awaited, so the next fire is guaranteed to bracket against the latest
 /// observed frontier even if the closure is slow.
 ///
-/// Fires only on settled-state (Verified) writes. See
+/// Triggered only by settled-state (Verified) writes, but the cursors are
+/// raw DAG frontiers — the bracket can span `Unverified`/`Failed` entries,
+/// which [`Database::ids_added`](crate::Database::ids_added) will
+/// enumerate. See
 /// [`Notification::DatabaseWrite`](crate::service::protocol::Notification::DatabaseWrite)
-/// rustdoc for the verification contract.
+/// rustdoc for the full verification contract.
 #[derive(Debug, Clone)]
 pub struct WriteEvent {
     /// The database state this callback was last delivered at — its
@@ -1647,6 +1650,22 @@ impl Instance {
         false
     }
 
+    /// Whether any per-database write callback is currently registered for
+    /// `tree_id`.
+    ///
+    /// Used by [`crate::service::client::RemoteConnection::transition_to_idle`]
+    /// to re-check the registry while holding the subscription-state lock,
+    /// so a registration racing the last callback's drop can't leave a live
+    /// callback stranded on an `Idle` wire subscription.
+    #[cfg(all(unix, feature = "service"))]
+    pub(crate) fn has_write_callbacks(&self, tree_id: &ID) -> bool {
+        self.inner
+            .write_callbacks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains_key(tree_id)
+    }
+
     /// Acquire (or create) the per-tree async lock that serializes the
     /// `snapshot` → backend write → callback dispatch sequence.
     ///
@@ -1733,17 +1752,22 @@ impl Instance {
         // here too would double-deliver. See `Database::on_write` for
         // the timing contract.
         //
-        // **Unverified path**: skipped on purpose. Subscribers only
-        // ever see *settled-state* writes — i.e. Verified. An entry
-        // that arrives `Unverified` (over the wire as a
-        // `SubmitSignedEntry` body, or via sync as a remote batch) is
-        // ingested silently here; the subsequent local verification
-        // pass (the caller's responsibility to schedule) decides
-        // whether it ever becomes a fire-eligible Verified entry, and
-        // if so fires from there. This closes the
-        // Failed-in-`previous_tips` semantic hole: a subscriber's
-        // accumulated state can only ever rest on entries that have
-        // passed local validation.
+        // **Unverified path**: skipped on purpose. Only a Verified write
+        // *triggers* a fire. An entry that arrives `Unverified` (over the
+        // wire as a `SubmitSignedEntry` body, or via sync as a remote
+        // batch) is ingested silently here; the subsequent local
+        // verification pass (the caller's responsibility to schedule)
+        // decides whether it ever becomes a fire-eligible Verified entry,
+        // and if so fires from there.
+        //
+        // This gates the *trigger*, not the bracket: the cursors below are
+        // raw backend snapshots, so an Unverified or Failed entry that is
+        // a raw tip still falls inside a subsequent event's bracket and
+        // `ids_added` will enumerate it. Narrowing that to the Verified
+        // frontier needs an incremental frontier first — `verified_frontier`
+        // is an O(N) walk, too expensive on the per-commit path.
+        // coding: raw-frontier cursors; switch to the Verified frontier
+        // once an incremental one exists.
         let joins = if !is_connected && verification == VerificationStatus::Verified {
             // Compute the post-write snapshot for cursor advance. Cheap:
             // just re-read the backend snapshot post-put. Each per-callback

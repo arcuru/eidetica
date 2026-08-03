@@ -249,6 +249,8 @@ The actual write travels as `DatabaseOp::SubmitSignedEntry` (verification-gated,
 
 A connected client subscribes lazily: the first `Database::on_write` registration for a tree on a given connection spawns a task that sends `DatabaseOp::SubscribeWrites`. Further registrations on the same tree reuse the subscription. `RemoteConnection`'s background reader task demuxes inbound `ServerFrame`s — `Response` frames pop the next pending oneshot in FIFO order; `Notification` frames upgrade a `WeakInstance` and route into `Instance::fire_write_callbacks`, the same dispatch local instances use. The result: connected clients observe writes in daemon-canonical order with full `previous_tips`, including their own commits; subscriptions are torn down implicitly when the connection drops (a `ConnectionGuard` Drop in `handle_connection` scrubs the registry).
 
+Teardown is refcounted with hysteresis rather than immediate. Dropping the last local callback for a tree moves its wire subscription to `Idle` without any round-trip; a sweep task sends `DatabaseOp::UnsubscribeWrites` once the idle grace window elapses, and a re-registration before that transitions straight back to `Subscribed`. Both the sweep and `subscribe_writes` hold a per-tree fence across their wire round-trips so an Unsubscribe and a racing Subscribe can't reorder. Client-side teardown hangs off the last user-facing `RemoteConnection` handle: it carries a drop token that marks the connection dead, aborting the reader task so the socket's `WriteHalf` can close and the daemon sees EOF.
+
 ## CRDT Cache
 
 CRDT-state caching is unified on the local backend engine (`BackendImpl`) under a single LRU keyed by [`CacheScope`](crate::backend::CacheScope):
@@ -378,6 +380,6 @@ This is a **single trusted local client** v1. The following are deferred with tr
 
 - **PAKE for network transport**: `TrustedLogin` is safe only because the socket is filesystem-gated. A network transport must replace it with a password-authenticated key exchange.
 - **Sync delegation**: as above.
-- **Refcounted subscription teardown**: subscriptions live for the connection's lifetime today; when the last `Database::on_write` callback for a tree on a connection drops, send `DatabaseOp::UnsubscribeWrites` instead of leaving the daemon fanning out unread frames. Trivial cost for v1, worth optimizing when long-lived connections churn through many trees.
+- **Verified-frontier cursors**: `WriteEvent` cursors are raw DAG frontiers, so a bracket can span `Unverified`/`Failed` tips and `Database::ids_added` enumerates them — consumers must filter on verification status themselves. Narrowing the cursors to the Verified frontier needs an incremental frontier first; `Database::verified_frontier` is an O(N) walk, too expensive on the per-commit path.
 - **Notification backpressure**: the per-connection writer channel is `mpsc::unbounded_channel`; a stalled client reader buffers notifications in memory. Switch to a bounded channel with a documented drop-oldest policy if memory growth becomes measurable.
 - **Derived-key caching**: cache the Argon2id-derived encryption key in an OS secret store with a TTL, evolving the daemon into an ssh-agent-like key agent to eliminate repeated password prompts for CLI tools.
