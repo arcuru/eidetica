@@ -1,4 +1,4 @@
-name: Codeberg
+name: Mirror
 
 on:
   push:
@@ -14,6 +14,8 @@ jobs:
     with:
       runs-on: ubicloud-standard-2
       environment: mirror
-      destination: git@codeberg.org:arcuru/eidetica.git
+      destination: git@code.jackson.dev:arcuru/eidetica.git
+      host: code.jackson.dev
+      host-key: "code.jackson.dev ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDPsnswuXB8WNSv756SxOsNjoUirmyUJiZgysoCU8EZk"
     secrets:
       ssh-private-key: ${{ secrets.GIT_SSH_PRIVATE_KEY }}

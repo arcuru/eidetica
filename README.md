@@ -83,10 +83,3 @@ Eventually, you will be able to sparsely checkout just particular Stores within 
 ## Contributing
 
 At this time, outside contributions will not be accepted due to [licensing considerations](https://jackson.dev/post/oss-licensing-sucks).
-
-## Repository
-
-Mirrored on [GitHub](https://github.com/arcuru/eidetica) and [Codeberg](https://codeberg.org/arcuru/eidetica).
-
-For practical reasons GitHub is the official repo, but use either repo to contribute.
-Issues can't be synced so there may be some duplicates.

@@ -19,7 +19,7 @@ The primary CI runs on GitHub with these workflows:
 - **[coverage.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/coverage.yml)**: Multi-backend code coverage tracking via Codecov
 - **[deploy-docs.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/deploy-docs.yml)**: Documentation deployment to GitHub Pages
 - **[release-plz.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/release-plz.yml)**: Automated releases and crates.io publishing
-- **[codeberg.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/codeberg.yml)**: Codeberg mirror sync (main branch only)
+- **[mirror.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/mirror.yml)**: Forgejo mirror sync (main branch only)
 - **[security-audit.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/security-audit.yml)**: Daily advisory scanning
 - **[cargo-update.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/cargo-update.yml)**: Monthly cargo dependency updates
 - **[flake-update.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/flake-update.yml)**: Monthly Nix flake input updates
@@ -29,7 +29,7 @@ The primary CI runs on GitHub with these workflows:
 
 ### Forgejo CI
 
-A dedicated Forgejo runner provides CI redundancy on [Codeberg](https://codeberg.org/arcuru/eidetica). The Forgejo workflows mirror the testing in the GitHub Actions setup with minor adaptations for the Forgejo environment.
+A dedicated Forgejo runner provides CI redundancy on [code.jackson.dev](https://code.jackson.dev/arcuru/eidetica). The Forgejo workflows mirror the testing in the GitHub Actions setup with minor adaptations for the Forgejo environment.
 
 ## Nix Flake
 
@@ -182,7 +182,7 @@ Secrets are scoped to [GitHub Environments](https://docs.github.com/en/actions/d
 | `publish`      | `NIX_CACHE_ACCESS_KEY_ID`, `NIX_CACHE_SECRET_ACCESS_KEY`, `NIX_CACHE_SIGNING_KEY`, `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN` | Release builds, cache push, container publishing |
 | `release`      | `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`                                                                                    | Container manifest creation                      |
 | `automation`   | `PAT_TOKEN`                                                                                                                | PR creation with elevated permissions            |
-| `mirror`       | `GIT_SSH_PRIVATE_KEY`                                                                                                      | Codeberg mirror sync                             |
+| `mirror`       | `GIT_SSH_PRIVATE_KEY`                                                                                                      | Forgejo mirror sync                              |
 | _(repo-level)_ | `CODECOV_TOKEN`, `BENCHER_API_TOKEN`                                                                                       | Low-risk upload-only tokens                      |
 
 All environments are restricted to the `main` branch. Low-risk tokens that can only upload metrics or coverage data remain at the repo level.
