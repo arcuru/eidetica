@@ -441,13 +441,11 @@ pub async fn get_tree(backend: &SqlxBackend, tree: &ID) -> Result<Vec<Entry>> {
 pub async fn get_store(backend: &SqlxBackend, tree: &ID, store: &str) -> Result<Vec<Entry>> {
     let pool = backend.pool();
 
-    // Use subtrees table and sort by height directly in SQL
     let rows: Vec<(Vec<u8>,)> = sqlx::query_as(
         "SELECT e.entry_cbor
          FROM entries e
          JOIN subtrees s ON s.entry_id = e.id
-         WHERE e.tree_id = $1 AND s.store_name = $2
-         ORDER BY s.height ASC, e.id ASC",
+         WHERE e.tree_id = $1 AND s.store_name = $2",
     )
     .bind(tree.to_string())
     .bind(store)
@@ -464,6 +462,8 @@ pub async fn get_store(backend: &SqlxBackend, tree: &ID, store: &str) -> Result<
             })?;
         entries.push(entry);
     }
+
+    super::cache::sort_entries_by_store_height(store, &mut entries);
 
     Ok(entries)
 }

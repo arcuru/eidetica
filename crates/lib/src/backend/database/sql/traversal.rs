@@ -475,8 +475,7 @@ pub async fn get_tree_from_tips(
         )
         SELECT e.entry_cbor, e.height
         FROM ancestors a
-        JOIN entries e ON e.id = a.id
-        ORDER BY e.height ASC, a.id ASC"
+        JOIN entries e ON e.id = a.id"
     );
 
     let mut query = sqlx::query_as::<_, (Vec<u8>, i64)>(&sql).bind(tree.to_string());
@@ -490,7 +489,6 @@ pub async fn get_tree_from_tips(
         .await
         .sql_context("Failed to get tree entries from tips")?;
 
-    // Deserialize entries (already sorted by height)
     let mut entries = Vec::with_capacity(rows.len());
     for (bytes, _height) in rows {
         let entry: Entry =
@@ -500,6 +498,8 @@ pub async fn get_tree_from_tips(
             })?;
         entries.push(entry);
     }
+
+    super::cache::sort_entries_by_height(&mut entries);
 
     Ok(entries)
 }
@@ -549,8 +549,7 @@ pub async fn store_at(
         SELECT e.entry_cbor, st.height
         FROM ancestors a
         JOIN entries e ON e.id = a.id
-        JOIN subtrees st ON st.entry_id = a.id AND st.store_name = $2
-        ORDER BY st.height ASC, a.id ASC"
+        JOIN subtrees st ON st.entry_id = a.id AND st.store_name = $2"
     );
 
     let mut query = sqlx::query_as::<_, (Vec<u8>, i64)>(&sql)
@@ -566,7 +565,6 @@ pub async fn store_at(
         .await
         .sql_context("Failed to get store entries from tips")?;
 
-    // Deserialize entries (already sorted by height)
     let mut entries = Vec::with_capacity(rows.len());
     for (bytes, _height) in rows {
         let entry: Entry =
@@ -576,6 +574,8 @@ pub async fn store_at(
             })?;
         entries.push(entry);
     }
+
+    super::cache::sort_entries_by_store_height(store, &mut entries);
 
     Ok(entries)
 }
@@ -596,8 +596,7 @@ pub async fn get_sorted_store_parents(
         "SELECT sp.parent_id, s.height
          FROM store_parents sp
          JOIN subtrees s ON s.entry_id = sp.parent_id AND s.store_name = sp.store_name
-         WHERE sp.child_id = $1 AND sp.store_name = $2
-         ORDER BY s.height ASC, sp.parent_id ASC",
+         WHERE sp.child_id = $1 AND sp.store_name = $2",
     )
     .bind(entry_id.to_string())
     .bind(store)
@@ -605,7 +604,14 @@ pub async fn get_sorted_store_parents(
     .await
     .sql_context("Failed to get sorted store parents")?;
 
-    rows.into_iter().map(|(id, _)| ID::parse(&id)).collect()
+    let mut parents: Vec<(ID, i64)> = rows
+        .into_iter()
+        .map(|(id, height)| ID::parse(&id).map(|id| (id, height)))
+        .collect::<Result<_>>()?;
+
+    super::cache::sort_ids_by_height(&mut parents);
+
+    Ok(parents.into_iter().map(|(id, _)| id).collect())
 }
 
 /// Get all entries between from_id and to_ids in a store.
@@ -652,8 +658,7 @@ pub async fn get_path_from_to(
         )
         SELECT p.id, s.height
         FROM path_entries p
-        JOIN subtrees s ON s.entry_id = p.id AND s.store_name = $1
-        ORDER BY s.height ASC, p.id ASC"
+        JOIN subtrees s ON s.entry_id = p.id AND s.store_name = $1"
     );
 
     let mut query = sqlx::query_as::<_, (String, i64)>(&sql)
@@ -669,5 +674,12 @@ pub async fn get_path_from_to(
         .await
         .sql_context("Failed to get path from to")?;
 
-    rows.into_iter().map(|(id, _)| ID::parse(&id)).collect()
+    let mut path: Vec<(ID, i64)> = rows
+        .into_iter()
+        .map(|(id, height)| ID::parse(&id).map(|id| (id, height)))
+        .collect::<Result<_>>()?;
+
+    super::cache::sort_ids_by_height(&mut path);
+
+    Ok(path.into_iter().map(|(id, _)| id).collect())
 }
