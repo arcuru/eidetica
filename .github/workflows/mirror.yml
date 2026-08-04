@@ -16,6 +16,6 @@ jobs:
       environment: mirror
       destination: git@code.jackson.dev:arcuru/eidetica.git
       host: code.jackson.dev
-      host-key: "code.jackson.dev ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDPsnswuXB8WNSv756SxOsNjoUirmyUJiZgysoCU8EZk"
+      host-key: "code.jackson.dev ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGUJI+z0l5QHNh9hqf1Wx3YD4qJ1a8fdDBRLtXp4bzqf"
     secrets:
       ssh-private-key: ${{ secrets.GIT_SSH_PRIVATE_KEY }}
