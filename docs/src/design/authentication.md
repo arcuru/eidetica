@@ -941,7 +941,7 @@ AuthKey {
 1. **Direct Keys**: ✅ Fully implemented and tested
 2. **Delegated Databases**: ✅ Fully implemented with comprehensive test coverage
 3. **Permission Clamping**: ✅ Functional for delegation chains
-4. **Delegation Depth Limits**: ✅ Implemented with MAX_DELEGATION_DEPTH=10
+4. **Delegation Depth Limits**: ✅ Implemented with MAX_DELEGATION_STEPS=10 — a delegation path is a flat list, so its length is the chain depth, and it is bounded before any delegated database is loaded
 
 ### Future Enhancements
 

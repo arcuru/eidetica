@@ -48,32 +48,6 @@ impl KeyResolver {
         auth_settings: &AuthSettings,
         instance: Option<&Instance>,
     ) -> Result<Vec<ResolvedAuth>> {
-        self.resolve_sig_key_with_depth(sig_key, auth_settings, instance, 0)
-            .await
-    }
-
-    /// Resolve authentication identifier with recursion depth tracking
-    ///
-    /// This internal method tracks delegation depth to prevent infinite loops
-    /// and ensures that delegation chains don't exceed reasonable limits.
-    ///
-    /// Returns all matching ResolvedAuth entries.
-    pub async fn resolve_sig_key_with_depth(
-        &mut self,
-        sig_key: &SigKey,
-        auth_settings: &AuthSettings,
-        instance: Option<&Instance>,
-        depth: usize,
-    ) -> Result<Vec<ResolvedAuth>> {
-        // Prevent infinite recursion and overly deep delegation chains
-        const MAX_DELEGATION_DEPTH: usize = 10;
-        if depth >= MAX_DELEGATION_DEPTH {
-            return Err(AuthError::DelegationDepthExceeded {
-                depth: MAX_DELEGATION_DEPTH,
-            }
-            .into());
-        }
-
         match sig_key {
             SigKey::Direct { hint } => self.resolve_direct_key(hint, auth_settings),
             SigKey::Delegation { path, hint } => {
@@ -81,7 +55,7 @@ impl KeyResolver {
                     operation: "delegated tree resolution".to_string(),
                 })?;
                 self.delegation_resolver
-                    .resolve_delegation_path_with_depth(path, hint, auth_settings, instance, depth)
+                    .resolve_delegation_path(path, hint, auth_settings, instance)
                     .await
             }
         }

@@ -55,13 +55,6 @@ pub enum AuthError {
     #[error("Empty delegation path")]
     EmptyDelegationPath,
 
-    /// Maximum delegation depth was exceeded to prevent infinite loops.
-    #[error("Maximum delegation depth ({depth}) exceeded")]
-    DelegationDepthExceeded {
-        /// The maximum depth that was exceeded
-        depth: usize,
-    },
-
     /// A delegation step is invalid.
     #[error("Invalid delegation step: {reason}")]
     InvalidDelegationStep {
@@ -288,7 +281,6 @@ impl AuthError {
         matches!(
             self,
             AuthError::EmptyDelegationPath
-                | AuthError::DelegationDepthExceeded { .. }
                 | AuthError::InvalidDelegationStep { .. }
                 | AuthError::DelegatedTreeLoadFailed { .. }
                 | AuthError::InvalidDelegationTips { .. }

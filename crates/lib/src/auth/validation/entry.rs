@@ -103,7 +103,7 @@ impl AuthValidator {
         // The claimed tips in a delegation SigKey pin resolution: the delegated
         // tree's auth settings are read as of those tips (not its live head), and
         // the tips may not regress below the snapshot the parent tree committed
-        // for the delegation (see DelegationResolver::resolve_delegation_path_with_depth).
+        // for the delegation (see DelegationResolver::resolve_delegation_path).
         //
         // FIXME(security): this is the settings-pointer floor only — still a known
         // gap. Two hardening steps remain: (1) strict per-entry non-regression

@@ -17,9 +17,9 @@ use crate::{
 /// Maximum number of steps in a single delegation path.
 ///
 /// The path is wire-supplied and processed as a flat list, so its length is the
-/// delegation-chain depth. Bounding it caps the backend work an unauthenticated
-/// signature key can force before the authorization gate decides (mirrors the
-/// `MAX_DELEGATION_DEPTH` recursion guard in the resolver).
+/// delegation-chain depth, and checking it here bounds that depth before any
+/// backend work happens. That caps what an unauthenticated signature key can
+/// force the resolver to do before the authorization gate decides.
 const MAX_DELEGATION_STEPS: usize = 10;
 
 /// Maximum number of claimed tips per delegation step.
@@ -43,16 +43,20 @@ impl DelegationResolver {
     /// applying permission clamping at each level. The final hint
     /// is resolved in the last delegated tree's auth settings.
     ///
+    /// Resolution is a flat loop, not recursion: the path arrives as a list, so
+    /// chain depth is `steps.len()` and is bounded up front by
+    /// [`MAX_DELEGATION_STEPS`]. Nothing here re-enters the resolver — the final
+    /// hint is looked up directly in the last tree's settings.
+    ///
     /// Returns all matching ResolvedAuth entries. For name hints that match
     /// multiple keys at the final step, all matches are returned with the
     /// same permission clamping applied to each.
-    pub async fn resolve_delegation_path_with_depth(
+    pub async fn resolve_delegation_path(
         &mut self,
         steps: &[DelegationStep],
         final_hint: &KeyHint,
         auth_settings: &AuthSettings,
         instance: &Instance,
-        _depth: usize,
     ) -> Result<Vec<ResolvedAuth>> {
         if steps.is_empty() {
             return Err(AuthError::EmptyDelegationPath.into());

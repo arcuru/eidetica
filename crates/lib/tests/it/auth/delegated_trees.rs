@@ -437,12 +437,10 @@ async fn test_delegation_depth_limits() -> Result<()> {
 
     assert!(result.is_err());
     let error_msg = result.unwrap_err().to_string();
-    // The path-length cap rejects the over-limit chain up front; the older
-    // "Maximum delegation depth" / "not found" branches remain valid fallbacks.
+    // The path-length cap rejects the over-limit chain up front, before any
+    // delegated tree is loaded, so this is the only reachable outcome.
     assert!(
-        error_msg.contains("Delegation path too long")
-            || error_msg.contains("Maximum delegation depth")
-            || error_msg.contains("not found"),
+        error_msg.contains("Delegation path too long"),
         "unexpected error for over-limit delegation chain: {error_msg}"
     );
 
@@ -616,7 +614,7 @@ async fn test_delegated_tree_priority_preservation() -> Result<()> {
     Ok(())
 }
 
-/// Test delegation depth limit at exactly MAX_DELEGATION_DEPTH (10)
+/// Test delegation chain length at exactly MAX_DELEGATION_STEPS (10)
 #[tokio::test]
 async fn test_delegation_depth_limit_exact() -> Result<()> {
     let (db, mut user) = crate::helpers::test_local_instance_with_user("test_user").await;
@@ -634,7 +632,7 @@ async fn test_delegation_depth_limit_exact() -> Result<()> {
     // Build a chain exactly 10 levels deep
     let mut delegation_steps = Vec::new();
 
-    // Add 10 intermediate delegation steps (reaches MAX_DELEGATION_DEPTH of 10)
+    // Add 10 intermediate delegation steps (reaches MAX_DELEGATION_STEPS of 10)
     // Using a non-existent ID - test will fail
     let bogus_root_id =
         ID::from_bytes("sha256:0000000000000000000000000000000000000000000000000000000000000000");

@@ -693,38 +693,6 @@ async fn test_nested_delegation_with_permission_clamping() {
     assert_eq!(resolved[0].key_status, KeyStatus::Active);
 }
 
-#[tokio::test]
-async fn test_delegation_depth_limit() {
-    // Test that excessive delegation depth is prevented
-    let mut validator = AuthValidator::new();
-
-    // Create empty auth settings (doesn't matter for depth test)
-    let auth_settings = AuthSettings::new();
-
-    // Test the depth check by directly calling with depth = MAX_DELEGATION_DEPTH
-    let simple_sig_key = SigKey::from_name("base_key");
-
-    // This should succeed (just under the limit)
-    let result = validator
-        .resolver
-        .resolve_sig_key_with_depth(&simple_sig_key, &auth_settings, None, 9)
-        .await;
-    // Should fail due to missing auth configuration, not depth limit
-    assert!(result.is_err());
-    let error = result.unwrap_err();
-    assert!(error.to_string().contains("not found"));
-
-    // This should fail due to depth limit (at the limit)
-    let result = validator
-        .resolver
-        .resolve_sig_key_with_depth(&simple_sig_key, &auth_settings, None, 10)
-        .await;
-    assert!(result.is_err());
-    let error = result.unwrap_err();
-    assert!(error.to_string().contains("Maximum delegation depth"));
-    assert!(error.to_string().contains("exceeded"));
-}
-
 // ===== GLOBAL PERMISSION TESTS =====
 
 #[tokio::test]
