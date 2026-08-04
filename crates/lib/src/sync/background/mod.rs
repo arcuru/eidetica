@@ -4,7 +4,11 @@
 //! in a single background thread, removing circular dependency issues and providing
 //! automatic retry, periodic sync, and reconnection handling.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use tokio::{
     sync::{mpsc, oneshot},
@@ -166,9 +170,89 @@ pub struct BackgroundSync {
     // Retry queue for failed sends
     retry_queue: Vec<RetryEntry>,
 
+    // Per-peer scheduling state for periodic sync
+    peer_state: Mutex<HashMap<PeerId, PeerSyncState>>,
+
     // Communication
     command_rx: mpsc::Receiver<SyncCommand>,
 }
+
+/// Periodic-sync scheduling state for one peer.
+///
+/// Held in memory for the life of the engine and never persisted: losing it on
+/// restart costs at most one full-price round against a peer that is still
+/// down.
+#[derive(Default)]
+struct PeerSyncState {
+    /// Where in the peer's tree list the next round starts.
+    ///
+    /// The list can change between rounds, so this is an approximate position
+    /// taken modulo the current length, not an index of any particular tree.
+    tree_cursor: usize,
+    /// Consecutive rounds in which none of the peer's trees synced.
+    consecutive_failures: u32,
+    /// Rounds still to be skipped before this peer is probed again.
+    rounds_to_skip: u32,
+}
+
+impl PeerSyncState {
+    /// Whether this round skips the peer, consuming one round of backoff if so.
+    fn take_skip(&mut self) -> bool {
+        if self.rounds_to_skip == 0 {
+            return false;
+        }
+        self.rounds_to_skip -= 1;
+        true
+    }
+
+    /// Fold a round's outcome in: move the cursor if the walk got far enough to
+    /// produce one, and either clear the backoff or lengthen it.
+    ///
+    /// Syncing even one tree clears the backoff, whether the round was
+    /// scheduled or asked for. The peer is answering, and whatever failed after
+    /// that is about a particular tree rather than about the peer.
+    ///
+    /// Only a scheduled round lengthens it. An explicit request that fails says
+    /// nothing the scheduler did not already know, and counting it would let
+    /// someone retrying by hand during an outage push the automatic schedule
+    /// further and further out.
+    fn record(&mut self, cursor: Option<usize>, synced_any: bool, scheduled: bool) {
+        if let Some(cursor) = cursor {
+            self.tree_cursor = cursor;
+        }
+
+        if synced_any {
+            self.consecutive_failures = 0;
+            self.rounds_to_skip = 0;
+            return;
+        }
+
+        if !scheduled {
+            return;
+        }
+
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        // Skip 1, 2, 4, 8 ... rounds, up to the cap.
+        self.rounds_to_skip = 1u32
+            .checked_shl(self.consecutive_failures - 1)
+            .unwrap_or(MAX_BACKOFF_ROUNDS)
+            .min(MAX_BACKOFF_ROUNDS);
+    }
+}
+
+/// What one walk of a peer's trees did.
+struct PeerRound {
+    /// Where the peer's cursor should land for the next round.
+    cursor: usize,
+    /// Whether at least one tree synced.
+    synced_any: bool,
+}
+
+/// Longest backoff, in rounds, for a peer that keeps failing.
+///
+/// The delay is capped rather than allowed to grow without limit, and a peer is
+/// never abandoned: one that stops being probed forever diverges silently.
+const MAX_BACKOFF_ROUNDS: u32 = 12;
 
 /// How many peers a periodic round syncs at once. Bounds concurrent
 /// connections on a large peer set; well above the point where a round stops
@@ -193,6 +277,7 @@ impl BackgroundSync {
             sync_tree_id,
             queue,
             retry_queue: Vec::new(),
+            peer_state: Mutex::new(HashMap::new()),
             command_rx: rx,
         };
 
@@ -354,7 +439,11 @@ impl BackgroundSync {
             }
 
             SyncCommand::SyncWithPeer { peer } => {
-                if let Err(e) = self.sync_with_peer(&peer).await {
+                // Deliberately bypasses the periodic backoff: this was asked
+                // for, so it runs whatever the peer's recent history. Passing
+                // `scheduled: false` also keeps a failure here from deepening
+                // that backoff, while a success still clears it.
+                if let Err(e) = self.sync_with_peer(&peer, false).await {
                     // Log sync failure but don't crash the background engine
                     tracing::error!("Failed to sync with peer {peer}: {e}");
                 }
@@ -619,6 +708,41 @@ impl BackgroundSync {
         failed_count
     }
 
+    /// Where in a peer's tree list its next round should start.
+    fn tree_cursor(&self, peer_id: &PeerId) -> usize {
+        self.peer_state
+            .lock()
+            .expect("peer sync state mutex poisoned")
+            .get(peer_id)
+            .map_or(0, |peer| peer.tree_cursor)
+    }
+
+    /// Whether a periodic round should skip this peer, consuming one round of
+    /// its backoff if so.
+    fn take_backoff_skip(&self, peer_id: &PeerId) -> bool {
+        self.peer_state
+            .lock()
+            .expect("peer sync state mutex poisoned")
+            .get_mut(peer_id)
+            .is_some_and(PeerSyncState::take_skip)
+    }
+
+    /// Record how a peer's round went.
+    fn record_round_outcome(
+        &self,
+        peer_id: &PeerId,
+        cursor: Option<usize>,
+        synced_any: bool,
+        scheduled: bool,
+    ) {
+        self.peer_state
+            .lock()
+            .expect("peer sync state mutex poisoned")
+            .entry(peer_id.clone())
+            .or_default()
+            .record(cursor, synced_any, scheduled);
+    }
+
     /// Perform periodic sync with all active peers
     async fn periodic_sync_all_peers(&self) {
         // Periodic sync triggered
@@ -657,25 +781,74 @@ impl BackgroundSync {
         // Bounded so a large peer set can't open an unbounded number of
         // connections at once. These futures are polled on this task rather
         // than spawned, so they need no `Send`/`'static` bounds.
+        //
+        // Peers that failed their last rounds are skipped for a while: a peer
+        // that is down costs a full round trip to discover is still down, and
+        // probing it every round buys nothing. The check consumes one round of
+        // the peer's backoff, so the delay is counted in rounds rather than in
+        // wall-clock time.
+        //
+        // Consuming the backoff is a side effect, so it is done here in an
+        // eager loop rather than in an iterator predicate, where a later `take`
+        // or `find` could quietly spend the backoff of peers that then never
+        // sync.
+        let mut due = Vec::new();
+        for peer_info in peers {
+            if peer_info.status != PeerStatus::Active {
+                continue;
+            }
+            if self.take_backoff_skip(&peer_info.id) {
+                continue;
+            }
+            due.push(peer_info);
+        }
+
         use futures_util::stream::StreamExt;
-        futures_util::stream::iter(
-            peers
-                .into_iter()
-                .filter(|p| p.status == PeerStatus::Active)
-                .map(|peer_info| async move {
-                    if let Err(e) = self.sync_with_peer(&peer_info.id).await {
-                        // Log individual peer sync failure but continue with others
-                        tracing::error!("Periodic sync failed with {}: {e}", peer_info.id);
-                    }
-                }),
-        )
+        futures_util::stream::iter(due.into_iter().map(|peer_info| async move {
+            if let Err(e) = self.sync_with_peer(&peer_info.id, true).await {
+                // Log individual peer sync failure but continue with others
+                tracing::error!("Periodic sync failed with {}: {e}", peer_info.id);
+            }
+        }))
         .buffer_unordered(MAX_CONCURRENT_PEER_SYNCS)
         .collect::<()>()
         .await;
     }
 
-    /// Sync with a specific peer (bidirectional)
-    async fn sync_with_peer(&self, peer_id: &PeerId) -> Result<()> {
+    /// Sync with a specific peer (bidirectional).
+    ///
+    /// `scheduled` distinguishes a periodic round from an explicitly requested
+    /// sync, which only affects how failure is recorded — see
+    /// [`PeerSyncState::record`].
+    async fn sync_with_peer(&self, peer_id: &PeerId, scheduled: bool) -> Result<()> {
+        let round = self.walk_peer_trees(peer_id).await;
+
+        // The single point where a round is recorded, so that failures raised
+        // before the walk begins — no peer info, no address, an unreadable sync
+        // tree — accrue backoff too. Those cost no network I/O, but a peer
+        // whose configuration is broken is exactly the sort that would
+        // otherwise be retried at full rate forever.
+        match &round {
+            // Nothing was configured to sync, so the round is not evidence
+            // about the peer either way.
+            Ok(None) => {}
+            Ok(Some(walked)) => self.record_round_outcome(
+                peer_id,
+                Some(walked.cursor),
+                walked.synced_any,
+                scheduled,
+            ),
+            Err(_) => self.record_round_outcome(peer_id, None, false, scheduled),
+        }
+
+        round.map(|_| ())
+    }
+
+    /// Walk the trees registered against a peer, returning where the peer's
+    /// cursor should land and whether anything synced.
+    ///
+    /// `Ok(None)` means the peer has no trees configured.
+    async fn walk_peer_trees(&self, peer_id: &PeerId) -> Result<Option<PeerRound>> {
         async move {
             info!(peer = %peer_id, "Starting peer synchronization");
 
@@ -704,20 +877,47 @@ impl BackgroundSync {
 
             if sync_trees.is_empty() {
                 debug!(peer = %peer_id, "No trees configured for sync with peer");
-                return Ok(()); // No trees to sync
+                return Ok(None); // No trees to sync
             }
 
             info!(peer = %peer_id, tree_count = sync_trees.len(), "Synchronizing trees with peer");
 
-            for tree_id in sync_trees {
-                if let Err(e) = self.sync_tree_with_peer(peer_id, &tree_id, &address).await {
-                    // Log tree sync failure but continue with other trees
-                    tracing::error!("Failed to sync tree {tree_id} with peer {peer_id}: {e}");
-                }
+            // Start where the previous round left off and wrap around. Without
+            // this, a peer whose first tree always fails would never reach the
+            // rest of them, because the walk below stops at the first failure.
+            let tree_count = sync_trees.len();
+            let start = self.tree_cursor(peer_id) % tree_count;
+
+            let mut attempted = 0;
+            let mut synced_any = false;
+            for step in 0..tree_count {
+                let tree_id = &sync_trees[(start + step) % tree_count];
+                attempted += 1;
+
+                let Err(e) = self.sync_tree_with_peer(peer_id, tree_id, &address).await else {
+                    synced_any = true;
+                    continue;
+                };
+
+                tracing::error!("Failed to sync tree {tree_id} with peer {peer_id}: {e}");
+                // Stop at the first failure rather than paying it again for
+                // every remaining tree. The cause is deliberately not
+                // inspected: whether the peer is unreachable or answering
+                // badly, the remaining trees are attempted next round, starting
+                // after this one.
+                debug!(
+                    peer = %peer_id,
+                    skipped = tree_count - attempted,
+                    "Ending tree walk early after a failure"
+                );
+                break;
             }
 
             info!(peer = %peer_id, "Completed peer synchronization");
-            Ok(())
+            Ok(Some(PeerRound {
+                cursor: start + attempted,
+                synced_any,
+            }))
         }
         .instrument(info_span!("sync_with_peer", peer = %peer_id))
         .await
@@ -865,5 +1065,122 @@ impl BackgroundSync {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_BACKOFF_ROUNDS, PeerSyncState};
+
+    /// A scheduled round in which nothing synced.
+    const FAILED_ROUND: (Option<usize>, bool, bool) = (Some(0), false, true);
+
+    /// Number of rounds a peer is skipped for, given how many consecutive
+    /// scheduled rounds it has now failed.
+    fn skips_after_consecutive_failures(failures: u32) -> u32 {
+        let mut state = PeerSyncState::default();
+        for _ in 0..failures {
+            let (cursor, synced_any, scheduled) = FAILED_ROUND;
+            state.record(cursor, synced_any, scheduled);
+        }
+        let mut skipped = 0;
+        while state.take_skip() {
+            skipped += 1;
+        }
+        skipped
+    }
+
+    #[test]
+    fn backoff_doubles_per_failed_round_and_is_capped() {
+        assert_eq!(skips_after_consecutive_failures(1), 1);
+        assert_eq!(skips_after_consecutive_failures(2), 2);
+        assert_eq!(skips_after_consecutive_failures(3), 4);
+        assert_eq!(skips_after_consecutive_failures(4), 8);
+
+        // Capped, never permanent: a peer that is never probed again diverges
+        // silently, so the delay stops growing instead of the peer being
+        // dropped.
+        assert_eq!(skips_after_consecutive_failures(5), MAX_BACKOFF_ROUNDS);
+        assert_eq!(skips_after_consecutive_failures(64), MAX_BACKOFF_ROUNDS);
+    }
+
+    #[test]
+    fn a_peer_that_is_not_backing_off_is_never_skipped() {
+        let mut state = PeerSyncState::default();
+        assert!(!state.take_skip());
+
+        // Syncing even one tree clears an accumulated backoff.
+        state.record(Some(0), false, true);
+        state.record(Some(0), false, true);
+        state.record(Some(0), true, true);
+        assert!(!state.take_skip());
+    }
+
+    /// The walk stops at the first failure, so a peer whose first tree always
+    /// fails only makes progress if the next round starts past it.
+    #[test]
+    fn cursor_advances_past_the_failure_so_later_trees_are_reached() {
+        let tree_count = 4;
+        let mut state = PeerSyncState::default();
+        let mut first_attempted = Vec::new();
+
+        for _ in 0..tree_count {
+            let start = state.tree_cursor % tree_count;
+            first_attempted.push(start);
+            // Worst case: the round's first tree fails, so exactly one tree is
+            // attempted and none sync.
+            state.record(Some(start + 1), false, true);
+        }
+
+        assert_eq!(first_attempted, vec![0, 1, 2, 3]);
+    }
+
+    /// A round that fails before the walk produces no cursor. It is still a
+    /// failed round — a peer with no address registered is exactly the kind
+    /// that would otherwise be retried at full rate forever — but it must not
+    /// disturb where the next successful walk resumes.
+    #[test]
+    fn a_round_that_fails_before_the_walk_backs_off_without_moving_the_cursor() {
+        let mut state = PeerSyncState::default();
+        state.record(Some(7), false, true);
+        assert_eq!(state.tree_cursor, 7);
+
+        state.record(None, false, true);
+
+        assert_eq!(state.tree_cursor, 7);
+        // Two failed rounds, so two rounds of backoff.
+        assert!(state.take_skip());
+        assert!(state.take_skip());
+        assert!(!state.take_skip());
+    }
+
+    /// Someone retrying by hand during an outage must not push the automatic
+    /// schedule further out.
+    #[test]
+    fn an_explicit_sync_failing_does_not_deepen_the_backoff() {
+        let mut state = PeerSyncState::default();
+        state.record(Some(0), false, true);
+
+        for _ in 0..5 {
+            state.record(None, false, false);
+        }
+
+        // Still just the one scheduled failure's worth of backoff.
+        assert!(state.take_skip());
+        assert!(!state.take_skip());
+    }
+
+    /// The other half of that rule: an explicit sync is the fast way back, so
+    /// succeeding clears the backoff even though failing never deepened it.
+    #[test]
+    fn an_explicit_sync_succeeding_clears_the_backoff() {
+        let mut state = PeerSyncState::default();
+        for _ in 0..3 {
+            state.record(Some(0), false, true);
+        }
+
+        state.record(Some(0), true, false);
+
+        assert!(!state.take_skip());
     }
 }
