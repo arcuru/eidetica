@@ -170,6 +170,11 @@ pub struct BackgroundSync {
     command_rx: mpsc::Receiver<SyncCommand>,
 }
 
+/// How many peers a periodic round syncs at once. Bounds concurrent
+/// connections on a large peer set; well above the point where a round stops
+/// being dominated by any single unreachable peer.
+const MAX_CONCURRENT_PEER_SYNCS: usize = 16;
+
 impl BackgroundSync {
     /// Start the background sync engine and return a command sender.
     ///
@@ -642,15 +647,31 @@ impl BackgroundSync {
             }
         };
 
-        // Now sync with peers (transaction is dropped, so no Send issues)
-        for peer_info in peers {
-            if peer_info.status == PeerStatus::Active
-                && let Err(e) = self.sync_with_peer(&peer_info.id).await
-            {
-                // Log individual peer sync failure but continue with others
-                tracing::error!("Periodic sync failed with {}: {e}", peer_info.id);
-            }
-        }
+        // Sync peers concurrently (the transaction is dropped, so no Send
+        // issues). A round is I/O-bound and dominated by peers that are down:
+        // done serially, one unreachable peer delays every peer behind it by a
+        // full connect timeout, so the round degrades with the number of dead
+        // peers rather than with the work there is to do. Concurrently, a round
+        // costs about as long as its slowest peer.
+        //
+        // Bounded so a large peer set can't open an unbounded number of
+        // connections at once. These futures are polled on this task rather
+        // than spawned, so they need no `Send`/`'static` bounds.
+        use futures_util::stream::StreamExt;
+        futures_util::stream::iter(
+            peers
+                .into_iter()
+                .filter(|p| p.status == PeerStatus::Active)
+                .map(|peer_info| async move {
+                    if let Err(e) = self.sync_with_peer(&peer_info.id).await {
+                        // Log individual peer sync failure but continue with others
+                        tracing::error!("Periodic sync failed with {}: {e}", peer_info.id);
+                    }
+                }),
+        )
+        .buffer_unordered(MAX_CONCURRENT_PEER_SYNCS)
+        .collect::<()>()
+        .await;
     }
 
     /// Sync with a specific peer (bidirectional)
