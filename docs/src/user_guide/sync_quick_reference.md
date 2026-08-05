@@ -436,59 +436,6 @@ if sync.is_server_running() {
 sync.stop_server_async().await?;
 ```
 
-### Sync State Tracking
-
-<!-- Code block ignored: Uses internal APIs requiring sync state setup -->
-
-```rust,ignore
-// Get sync state manager
-let txn = db.sync()?.sync_tree().new_transaction().await?;
-let state_manager = SyncStateManager::new(&txn);
-
-// Get sync cursor for peer-database relationship
-let cursor = state_manager.get_sync_cursor(&peer_key, &tree_id).await?;
-if let Some(cursor) = cursor {
-    println!("Last synced: {:?}", cursor.last_synced_entry);
-    println!("Total synced: {}", cursor.total_synced_count);
-}
-
-// Get peer metadata
-let metadata = state_manager.get_sync_metadata(&peer_key).await?;
-if let Some(meta) = metadata {
-    println!("Successful syncs: {}", meta.successful_sync_count);
-    println!("Failed syncs: {}", meta.failed_sync_count);
-}
-```
-
-### Sync State Tracking
-
-<!-- Code block ignored: Uses internal APIs requiring sync state setup -->
-
-```rust,ignore
-use eidetica::sync::state::SyncStateManager;
-
-// Get sync database transaction
-let txn = sync.sync_tree().new_transaction().await?;
-let state_manager = SyncStateManager::new(&txn);
-
-// Check sync cursor
-let cursor = state_manager.get_sync_cursor(&peer_key, &tree_id).await?;
-println!("Last synced: {:?}", cursor.last_synced_entry);
-println!("Total synced: {}", cursor.total_synced_count);
-
-// Check sync metadata
-let metadata = state_manager.get_sync_metadata(&peer_key).await?;
-println!("Success rate: {:.2}%", metadata.sync_success_rate() * 100.0);
-println!("Avg duration: {:.1}ms", metadata.average_sync_duration_ms);
-
-// Get recent sync history
-let history = state_manager.get_sync_history(&peer_key, Some(10)).await?;
-for entry in history {
-    println!("Sync {}: {} entries in {:.1}ms",
-        entry.sync_id, entry.entries_count, entry.duration_ms);
-}
-```
-
 ## Error Handling
 
 ### Common Error Patterns
@@ -540,9 +487,6 @@ for peer in peers {
         eprintln!("Warning: Peer {} is {}", peer.pubkey, peer.status);
     }
 }
-
-// Sync happens automatically, but you can monitor state
-// via the SyncStateManager for diagnostics
 ```
 
 ## Configuration Examples

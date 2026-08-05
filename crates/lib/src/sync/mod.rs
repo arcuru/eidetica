@@ -79,7 +79,6 @@
 //! Peers and sync relationships are stored in a dedicated sync database (`_sync`):
 //!
 //! - `peer_manager::PeerManager`: Handles peer registration and relationships
-//! - [`state::SyncStateManager`]: Tracks sync cursors, metadata, and history
 //!
 //! # Connection Behavior
 //!
@@ -108,7 +107,6 @@ mod handler_tree_ops;
 pub mod peer_manager;
 pub mod peer_types;
 pub mod protocol;
-pub mod state;
 pub mod ticket;
 pub mod transports;
 pub mod utils;
