@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
+use uuid::Uuid;
 
 use super::peer_types::Address;
 use crate::{
@@ -81,19 +82,73 @@ pub enum RequestStatus {
     },
 }
 
+/// Namespace for deriving bootstrap request ids.
+///
+/// A fixed arbitrary UUID. Its only job is to keep derived ids from colliding
+/// with name-based ids derived elsewhere for a different purpose.
+const BOOTSTRAP_REQUEST_NAMESPACE: Uuid = Uuid::from_bytes([
+    0x8f, 0x3d, 0x1a, 0x77, 0x2c, 0x94, 0x4e, 0x5b, 0xa1, 0x60, 0xd7, 0xe8, 0x35, 0x0b, 0x9c, 0x42,
+]);
+
+/// Derive the storage id for a bootstrap request from what it asks for.
+///
+/// A request is identified by the ask — `(tree, requesting key, permission)` —
+/// not by when it arrived, so the same ask always addresses the same row.
+///
+/// This is what keeps the queue free of duplicates under concurrency. A ticket
+/// carrying several address hints dials them all at once (that race is how a
+/// ticket with both a LAN and a relay address connects fast), so several racers
+/// can run a full bootstrap round-trip against the same owner. Answering from an
+/// existing record is not enough on its own: racers that all look before any of
+/// them commits each see an empty queue. Deriving the key from the ask makes the
+/// duplicate impossible instead of merely unlikely — every racer writes the same
+/// key, and the merge yields one row. The same argument covers requests that
+/// arrive at genuinely separate replicas and meet later during sync.
+///
+/// The permission is part of the id on purpose: a retry re-sends the same one,
+/// but asking for `Admin` after a pending `Read` is a different ask, and
+/// collapsing those would let approving the weaker record answer the escalation.
+///
+/// Ids are stable across restarts and across peers, which also means an operator
+/// can be handed the same id twice for the same ask without it meaning anything
+/// went wrong.
+pub(super) fn request_id_for(
+    tree_id: &ID,
+    requesting_pubkey: &PublicKey,
+    requested_permission: &Permission,
+) -> String {
+    // Spelled out rather than derived from `Debug` or the serde form, so a
+    // change to either does not silently repartition the queue.
+    let permission = match requested_permission {
+        Permission::Admin(priority) => format!("admin:{priority}"),
+        Permission::Write(priority) => format!("write:{priority}"),
+        Permission::Read => "read".to_string(),
+    };
+    // Unit separator: none of the three components can contain it, so the
+    // joined form is unambiguous.
+    let name = format!("{tree_id}\u{1f}{requesting_pubkey}\u{1f}{permission}");
+    Uuid::new_v5(&BOOTSTRAP_REQUEST_NAMESPACE, name.as_bytes()).to_string()
+}
+
 impl<'a> BootstrapRequestManager<'a> {
     /// Create a new BootstrapRequestManager that operates on the given Transaction.
     pub(super) fn new(txn: &'a Transaction) -> Self {
         Self { txn }
     }
 
-    /// Store a new bootstrap request in the sync database.
+    /// Store a bootstrap request in the sync database under its derived id.
+    ///
+    /// The id is a pure function of `(tree_id, requesting_pubkey,
+    /// requested_permission)` — see [`request_id_for`] — so storing the same ask
+    /// twice writes the same row rather than appending a second one. Two writers
+    /// that never saw each other's record still converge on one entry, because
+    /// they address the same key and the CRDT merge collapses them.
     ///
     /// # Arguments
     /// * `request` - The bootstrap request to store
     ///
     /// # Returns
-    /// The generated UUID for the request.
+    /// The derived id for the request.
     pub(super) async fn store_request(&self, request: BootstrapRequest) -> Result<String> {
         let requests = self
             .txn
@@ -102,8 +157,12 @@ impl<'a> BootstrapRequestManager<'a> {
 
         debug!(tree_id = %request.tree_id, "Storing bootstrap request");
 
-        // Insert request and get generated UUID
-        let request_id = requests.insert(request.clone()).await?;
+        let request_id = request_id_for(
+            &request.tree_id,
+            &request.requesting_pubkey,
+            &request.requested_permission,
+        );
+        requests.set(&request_id, request.clone()).await?;
 
         info!(request_id = %request_id, tree_id = %request.tree_id, "Successfully stored bootstrap request");
         Ok(request_id)
@@ -183,24 +242,27 @@ impl<'a> BootstrapRequestManager<'a> {
     /// Find an existing request matching `(tree_id, requesting_pubkey, permission)`
     /// that is still an answer — i.e. `Pending` or `Rejected`.
     ///
-    /// Used to make request storage idempotent: a requester that re-sends the
-    /// same request (the outgoing-bootstrap sweep does so on every tick until
-    /// access is granted) must not accumulate a fresh row per attempt.
+    /// Answers a re-request from the record already on file, so a requester that
+    /// re-sends (the outgoing-bootstrap sweep does so on every tick until access
+    /// is granted) learns it has been rejected rather than being told to keep
+    /// waiting. Keeping the queue itself free of duplicates is the job of the
+    /// derived request id — see [`request_id_for`] — which holds even for writers
+    /// that reach this lookup before any of them has committed.
     ///
-    /// The permission is part of the key. Asking for `Admin` after a pending
-    /// `Read` is a materially different request, and collapsing the two would
-    /// answer the escalation with the weaker record's id — approving it would
-    /// then grant less than was asked for, silently. A retry always re-sends the
-    /// same permission, so amplification is still collapsed.
+    /// The permission is part of the match, for the same reason it is part of the
+    /// id: asking for `Admin` after a pending `Read` is a materially different
+    /// request, and collapsing the two would answer the escalation with the
+    /// weaker record's id — approving it would then grant less than was asked
+    /// for, silently.
     ///
     /// An `Approved` record is deliberately ignored: reaching the store path at
     /// all means the auth check found no live grant, so the approval was since
     /// revoked and a genuinely new request is the right outcome.
     ///
-    /// Note this bounds an *honest* retrying client to one record per distinct
-    /// ask; it is not a defence against a hostile peer cycling permission values
-    /// to force new rows. That needs a per-peer cap on pending requests — see the
-    /// `TODO(bootstrap-metadata-bound)` note in `handler.rs`.
+    /// Bounding an *honest* client is not a defence against a hostile peer
+    /// cycling permission values to force new rows. That needs a per-peer cap on
+    /// pending requests — see the `TODO(bootstrap-metadata-bound)` note in
+    /// `handler.rs`.
     ///
     /// # Returns
     /// The (request_id, request) of the existing record, or `None`.
@@ -403,6 +465,140 @@ mod tests {
         // Verify status was updated
         let updated_request = manager.get_request(&request_id).await.unwrap().unwrap();
         assert_eq!(updated_request.status, new_status);
+    }
+
+    /// Two writers that both look before either commits must still leave one
+    /// row. This is the interleaving racing address hints produce: each racer
+    /// runs its own bootstrap round-trip, and answering from an existing record
+    /// cannot help a racer that looked at an empty queue.
+    ///
+    /// Written as an explicit interleaving rather than a timing race — the
+    /// window between the lookup and the commit is sub-millisecond, so a
+    /// wall-clock race reproduces it only occasionally and would be a flaky
+    /// guard against regression.
+    #[tokio::test]
+    async fn concurrent_writers_converge_on_one_request() {
+        let (_instance, sync_tree, clock) = create_test_sync_tree().await;
+        let request = create_test_request(&clock);
+
+        // Seed an unrelated request so the store exists before the two writers
+        // fork. Racers that also create the store itself concurrently root two
+        // disjoint store histories, which is a defect in the subtree merge
+        // rather than in this queue — see the fix that merges disjoint store
+        // histories from the empty base.
+        let seed = sync_tree.new_transaction().await.unwrap();
+        let seed_id = BootstrapRequestManager::new(&seed)
+            .store_request(create_test_request(&clock))
+            .await
+            .unwrap();
+        seed.commit().await.unwrap();
+
+        // Both transactions open before either commits, so neither sees the
+        // other's lookup — the same position two racing hints reach.
+        let first = sync_tree.new_transaction().await.unwrap();
+        let second = sync_tree.new_transaction().await.unwrap();
+
+        for txn in [&first, &second] {
+            let existing = BootstrapRequestManager::new(txn)
+                .find_existing_request(
+                    &request.tree_id,
+                    &request.requesting_pubkey,
+                    &request.requested_permission,
+                )
+                .await
+                .unwrap();
+            assert!(
+                existing.is_none(),
+                "neither writer can see a record that has not been committed yet"
+            );
+        }
+
+        let first_id = BootstrapRequestManager::new(&first)
+            .store_request(request.clone())
+            .await
+            .unwrap();
+        first.commit().await.unwrap();
+
+        // The racers arrive over different hints at different moments, so the
+        // records are not byte-identical. Vary them, or the two entries would be
+        // one entry by content address and the merge would never be exercised.
+        let mut later = request.clone();
+        later.timestamp = "2026-08-04T12:00:01Z".to_string();
+        later.peer_address = Address {
+            transport_type: "http".to_string(),
+            address: "127.0.0.2:8080".to_string(),
+        };
+
+        let second_id = BootstrapRequestManager::new(&second)
+            .store_request(later)
+            .await
+            .unwrap();
+        second.commit().await.unwrap();
+
+        assert_eq!(
+            first_id, second_id,
+            "the same ask derives the same id, so both writers address one row"
+        );
+
+        let txn = sync_tree.new_transaction().await.unwrap();
+        let pending = BootstrapRequestManager::new(&txn)
+            .pending_requests()
+            .await
+            .unwrap();
+        assert_eq!(
+            pending.iter().filter(|(id, _)| *id == first_id).count(),
+            1,
+            "the racing writers leave one row between them, found: {pending:#?}"
+        );
+        assert_eq!(
+            pending.len(),
+            2,
+            "and the unrelated seeded request is untouched, found: {pending:#?}"
+        );
+        assert!(pending.iter().any(|(id, _)| *id == seed_id));
+    }
+
+    /// The id is a function of the ask, and a different ask is a different row.
+    /// Permission is part of the ask on purpose: an escalation must not be
+    /// answered by approving the weaker pending record.
+    #[tokio::test]
+    async fn request_id_is_derived_from_the_ask() {
+        let tree = ID::from_bytes("test_tree_id");
+        let key = PublicKey::random();
+
+        assert_eq!(
+            request_id_for(&tree, &key, &Permission::Write(5)),
+            request_id_for(&tree, &key, &Permission::Write(5)),
+            "the same ask is stable across calls"
+        );
+
+        let other_tree = ID::from_bytes("other_tree_id");
+        let other_key = PublicKey::random();
+        for (label, id) in [
+            (
+                "tree",
+                request_id_for(&other_tree, &key, &Permission::Write(5)),
+            ),
+            (
+                "key",
+                request_id_for(&tree, &other_key, &Permission::Write(5)),
+            ),
+            (
+                "priority",
+                request_id_for(&tree, &key, &Permission::Write(4)),
+            ),
+            (
+                "permission",
+                request_id_for(&tree, &key, &Permission::Admin(5)),
+            ),
+            ("read", request_id_for(&tree, &key, &Permission::Read)),
+        ] {
+            assert_ne!(
+                request_id_for(&tree, &key, &Permission::Write(5)),
+                id,
+                "a different {label} is a different request"
+            );
+        }
     }
 
     #[tokio::test]

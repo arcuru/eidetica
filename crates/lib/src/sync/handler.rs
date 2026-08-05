@@ -116,11 +116,11 @@ impl SyncHandlerImpl {
         let txn = sync_tree.new_transaction().await?;
         let manager = BootstrapRequestManager::new(&txn);
 
-        // Storage is idempotent per (tree, requesting key). The requester's
-        // outgoing-bootstrap sweep re-sends until access is granted, so inserting
-        // unconditionally would append a row per tick — unbounded growth in the
-        // approver's `_sync` tree and a pending list full of duplicates. Answer
-        // from the existing record instead.
+        // The requester's outgoing-bootstrap sweep re-sends until access is
+        // granted. Storage is keyed on the ask, so the retries do not accumulate
+        // rows either way, but a re-request still has to be told when it has
+        // already been rejected rather than being left to wait. Answer from the
+        // record on file.
         if let Some((existing_id, existing)) = manager
             .find_existing_request(tree_id, requesting_key, requested_permission)
             .await?

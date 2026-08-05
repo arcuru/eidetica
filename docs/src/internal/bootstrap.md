@@ -70,11 +70,15 @@ an enqueue failure is logged and does not undo the committed approval.
 
 Requests are retained indefinitely for audit trail.
 
-Storage is idempotent per `(tree_id, requesting_pubkey)`: a re-request reuses an
-existing `Pending` or `Rejected` record instead of inserting another, so the
-client's completion sweep cannot append a row per tick. `Approved` records are
-not reused — the store path is only reached when the auth check found no live
-grant, meaning the approval was revoked and a new request is correct.
+A request's id is derived from the ask —
+`(tree_id, requesting_pubkey, requested_permission)` — so storing the same ask
+twice addresses one row rather than appending another. The client's completion
+sweep therefore cannot append a row per tick, and racing writers that each look
+at the queue before any of them commits still converge on a single record: they
+address the same key and the merge collapses them. `Approved` records are not
+reused when answering a re-request — the store path is only reached when the auth
+check found no live grant, meaning the approval was revoked and a new request is
+correct.
 
 A `Rejected` record answers subsequent requests with `BootstrapRejected`, which
 the requester treats as terminal (its outgoing record is marked `Rejected` and

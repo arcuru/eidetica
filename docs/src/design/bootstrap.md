@@ -258,18 +258,33 @@ carry.
 
 The sweep re-sends the bootstrap request on every tick until it is answered, so
 the request path must be **idempotent per (tree, requesting key, permission)**.
-An approver holds at most one record per distinct ask: a re-request reuses the
-existing record and returns its id rather than appending a new one. Without this
-an honest client appends a row to the approver's `_sync` tree every sweep
-interval, growing without bound and burying the real request among duplicates.
+An approver holds at most one record per distinct ask. Without this an honest
+client appends a row to the approver's `_sync` tree every sweep interval, growing
+without bound and burying the real request among duplicates.
 
-The permission belongs in the key. A retry always re-sends the same one, so
+Idempotence comes from the identity of the record rather than from a check before
+writing: the request id is derived from the ask, so every writer storing that ask
+addresses the same row. Checking for an existing record first cannot carry this on
+its own, because requests also arrive **concurrently**. A ticket dials all of its
+address hints at once — that race is what lets a ticket carrying both a LAN and a
+relay address connect fast — so several racers can each run a full bootstrap
+round-trip against the same owner, and racers that all look before any of them
+commits each see an empty queue. Since the requester keeps only the winning
+racer's outcome, every extra record the losers file is an orphan no one can
+action. A derived id makes that duplicate impossible instead of unlikely, and the
+same argument covers requests that reach separate replicas and meet later during
+sync.
+
+The permission belongs in the id. A retry always re-sends the same one, so
 amplification still collapses; but asking for `Admin` after a pending `Read` is a
 materially different request, and collapsing those would answer the escalation
 with the weaker record — approving it would silently grant less than was asked
-for. An `Approved` record is likewise not reused: reaching the store path means
-the auth check found no live grant, so the approval was revoked and a genuinely
-new request is correct.
+for. An `Approved` record is not reused when answering a re-request: reaching the
+store path means the auth check found no live grant, so the approval was revoked
+and a genuinely new request is correct.
+
+Ids are consequently stable across restarts and across peers, so an operator can
+be handed the same id twice for the same ask without it signalling anything.
 
 The requester's view of its own requests mirrors the approver's:
 `pending_outgoing_bootstrap_requests()` and

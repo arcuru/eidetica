@@ -18,7 +18,7 @@ use eidetica::{
     auth::Permission,
     path,
     store::DocStore,
-    sync::{DatabaseTicket, OutgoingRequestStatus, transports::http::HttpTransport},
+    sync::{Address, DatabaseTicket, OutgoingRequestStatus, transports::http::HttpTransport},
     user::types::SyncSettings,
 };
 
@@ -397,6 +397,78 @@ async fn repeated_sweeps_do_not_duplicate_the_approvers_pending_request() {
     );
 
     // The client's own record also stays single and still pending.
+    let outgoing = client_sync
+        .pending_outgoing_bootstrap_requests()
+        .await
+        .unwrap();
+    assert_eq!(outgoing.len(), 1, "one outgoing record, still pending");
+
+    server_sync.stop_server().await.unwrap();
+    drop(server_instance);
+}
+
+/// End to end: a ticket carrying several hints for one daemon leaves exactly
+/// one pending request on the approver.
+///
+/// The ticket path dials every hint concurrently — that race is what makes a
+/// ticket with both a LAN and a relay address connect fast — so each hint runs
+/// its own bootstrap round-trip against the owner. The requester keeps only the
+/// winning racer's outcome, so any extra request a loser files becomes an orphan
+/// in the approval queue that nobody can ever action.
+///
+/// This covers the path; it does not by itself pin the fix. The window between
+/// the lookup and the commit is sub-millisecond while the dials stagger by
+/// milliseconds, so over loopback the racers usually queue up behind each other
+/// and this passes either way. The deterministic guard is
+/// `concurrent_writers_converge_on_one_request` in the request manager, which
+/// drives the interleaving directly.
+#[tokio::test]
+async fn racing_address_hints_do_not_duplicate_the_approvers_pending_request() {
+    let (server_instance, _server_user, _server_key_id, _server_database, server_sync, tree_id) =
+        setup_manual_approval_server().await;
+    let server_addr = start_sync_server(&server_sync).await;
+
+    // Textually distinct hints for one daemon — the shape of a ticket carrying
+    // both a LAN and a relay address. Deduplicating the address list would not
+    // help; the racers have to collapse at the storage boundary.
+    let port = server_addr.address.rsplit(':').next().unwrap().to_string();
+    let hints = vec![
+        server_addr.clone(),
+        Address::http(format!("localhost:{port}")),
+        Address::http(format!("127.0.0.2:{port}")),
+    ];
+
+    let (_client_instance, mut client_user, client_key_id, client_sync) =
+        setup_sync_enabled_client("client_user", "client_key").await;
+    client_sync
+        .register_transport("http", HttpTransport::builder())
+        .await
+        .unwrap();
+
+    let ticket = DatabaseTicket::with_addresses(tree_id.clone(), hints);
+    let result = client_user
+        .request_database_access(
+            &client_sync,
+            &ticket,
+            &client_key_id,
+            Permission::Write(5),
+            None,
+        )
+        .await;
+    assert!(result.is_err(), "request should be pending");
+
+    // The losing racer is a detached task, so its request can land after the
+    // call returns. Give it room to file a duplicate before counting.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let pending = server_sync.pending_bootstrap_requests().await.unwrap();
+    assert_eq!(
+        pending.len(),
+        1,
+        "racing hints for one peer collapse to a single pending request, found: {pending:#?}"
+    );
+
+    // And the requester is waiting on the record that actually exists.
     let outgoing = client_sync
         .pending_outgoing_bootstrap_requests()
         .await
