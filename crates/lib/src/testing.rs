@@ -78,7 +78,10 @@
 //! # Ok(()) }
 //! ```
 
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use async_trait::async_trait;
 
@@ -1014,7 +1017,7 @@ impl TransportBuilder for SimTransportBuilder {
             SimTransport {
                 address: self.address,
                 network: self.network,
-                running: false,
+                running: AtomicBool::new(false),
             },
             None,
         ))
@@ -1028,7 +1031,7 @@ pub struct SimTransport {
     /// This peer's own sim address (the key its handler is registered under).
     address: String,
     network: SimNetwork,
-    running: bool,
+    running: AtomicBool,
 }
 
 impl SimTransport {
@@ -1045,15 +1048,15 @@ impl SyncTransport for SimTransport {
         address.transport_type == Self::TRANSPORT_TYPE
     }
 
-    async fn start_server(&mut self, handler: Arc<dyn SyncHandler>) -> Result<()> {
+    async fn start_server(&self, handler: Arc<dyn SyncHandler>) -> Result<()> {
         self.network.register(&self.address, handler);
-        self.running = true;
+        self.running.store(true, Ordering::SeqCst);
         Ok(())
     }
 
-    async fn stop_server(&mut self) -> Result<()> {
+    async fn stop_server(&self) -> Result<()> {
         self.network.unregister(&self.address);
-        self.running = false;
+        self.running.store(false, Ordering::SeqCst);
         Ok(())
     }
 
@@ -1103,11 +1106,11 @@ impl SyncTransport for SimTransport {
     }
 
     fn is_server_running(&self) -> bool {
-        self.running
+        self.running.load(Ordering::SeqCst)
     }
 
     fn get_server_address(&self) -> Result<String> {
-        if self.running {
+        if self.running.load(Ordering::SeqCst) {
             Ok(self.address.clone())
         } else {
             Err(SyncError::ServerNotRunning.into())

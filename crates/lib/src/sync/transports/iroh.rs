@@ -292,7 +292,6 @@ impl IrohTransportBuilder {
         Ok(IrohTransport {
             endpoint: Arc::new(Mutex::new(None)),
             server_state: ServerState::new(),
-            handler: None,
             runtime_config: IrohRuntimeConfig {
                 relay_mode: self.relay_mode,
                 secret_key: self.secret_key,
@@ -357,7 +356,6 @@ impl TransportBuilder for IrohTransportBuilder {
         let transport = IrohTransport {
             endpoint: Arc::new(Mutex::new(None)),
             server_state: ServerState::new(),
-            handler: None,
             runtime_config: IrohRuntimeConfig {
                 relay_mode: self.relay_mode,
                 secret_key: Some(secret_key),
@@ -417,8 +415,6 @@ pub struct IrohTransport {
     endpoint: Arc<Mutex<Option<Endpoint>>>,
     /// Shared server state management.
     server_state: ServerState,
-    /// Handler for processing sync requests.
-    handler: Option<Arc<dyn SyncHandler>>,
     /// Runtime configuration (relay mode, secret key, etc.)
     runtime_config: IrohRuntimeConfig,
 }
@@ -630,7 +626,7 @@ impl SyncTransport for IrohTransport {
         address.transport_type == Self::TRANSPORT_TYPE
     }
 
-    async fn start_server(&mut self, handler: Arc<dyn SyncHandler>) -> Result<()> {
+    async fn start_server(&self, handler: Arc<dyn SyncHandler>) -> Result<()> {
         // Check if server is already running
         if self.server_state.is_running() {
             return Err(SyncError::ServerAlreadyRunning {
@@ -638,9 +634,6 @@ impl SyncTransport for IrohTransport {
             }
             .into());
         }
-
-        // Store the handler
-        self.handler = Some(handler);
 
         // Ensure we have an endpoint and get EndpointAddr with direct addresses
         let endpoint = self.ensure_endpoint().await?;
@@ -657,13 +650,8 @@ impl SyncTransport for IrohTransport {
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
         // Start server loop
-        self.start_server_loop(
-            endpoint_clone,
-            ready_tx,
-            shutdown_rx,
-            self.handler.clone().unwrap(),
-        )
-        .await?;
+        self.start_server_loop(endpoint_clone, ready_tx, shutdown_rx, handler)
+            .await?;
 
         // Wait for server to be ready using shared utility
         wait_for_ready(ready_rx, "iroh-endpoint").await?;
@@ -675,7 +663,7 @@ impl SyncTransport for IrohTransport {
         Ok(())
     }
 
-    async fn stop_server(&mut self) -> Result<()> {
+    async fn stop_server(&self) -> Result<()> {
         if !self.server_state.is_running() {
             return Err(SyncError::ServerNotRunning.into());
         }

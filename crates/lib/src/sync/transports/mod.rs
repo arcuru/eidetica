@@ -139,13 +139,13 @@ pub trait SyncTransport: Send + Sync {
     ///
     /// # Returns
     /// A Result indicating success or failure of server startup.
-    async fn start_server(&mut self, handler: Arc<dyn SyncHandler>) -> Result<()>;
+    async fn start_server(&self, handler: Arc<dyn SyncHandler>) -> Result<()>;
 
     /// Stop the running server gracefully.
     ///
     /// # Returns
     /// A Result indicating success or failure of server shutdown.
-    async fn stop_server(&mut self) -> Result<()>;
+    async fn stop_server(&self) -> Result<()>;
 
     /// Send a sync request to a peer and receive a response.
     ///

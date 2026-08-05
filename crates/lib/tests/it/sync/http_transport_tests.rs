@@ -9,7 +9,7 @@ use eidetica::{
 
 #[tokio::test]
 async fn test_http_transport_server_lifecycle() {
-    let mut transport = HttpTransport::builder()
+    let transport = HttpTransport::builder()
         .bind("127.0.0.1:0")
         .build_sync()
         .unwrap();
@@ -29,7 +29,7 @@ async fn test_http_transport_server_lifecycle() {
 
 #[tokio::test]
 async fn test_http_transport_double_start_error() {
-    let mut transport = HttpTransport::builder()
+    let transport = HttpTransport::builder()
         .bind("127.0.0.1:0")
         .build_sync()
         .unwrap();
@@ -49,7 +49,7 @@ async fn test_http_transport_double_start_error() {
 
 #[tokio::test]
 async fn test_http_transport_stop_without_start() {
-    let mut transport = HttpTransport::builder()
+    let transport = HttpTransport::builder()
         .bind("127.0.0.1:0")
         .build_sync()
         .unwrap();
@@ -61,7 +61,7 @@ async fn test_http_transport_stop_without_start() {
 
 #[tokio::test]
 async fn test_http_transport_client_server_communication() {
-    let mut server_transport = HttpTransport::builder()
+    let server_transport = HttpTransport::builder()
         .bind("127.0.0.1:0")
         .build_sync()
         .unwrap();
@@ -139,7 +139,7 @@ async fn test_http_transport_connection_refused() {
 
 #[tokio::test]
 async fn test_http_transport_get_server_address() {
-    let mut transport = HttpTransport::builder()
+    let transport = HttpTransport::builder()
         .bind("127.0.0.1:0")
         .build_sync()
         .unwrap();

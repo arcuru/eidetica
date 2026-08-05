@@ -10,11 +10,11 @@ use eidetica::{
 #[tokio::test]
 async fn test_version_alignment() {
     // Both transports should be using v0 versioning
-    let mut http_transport = HttpTransport::builder()
+    let http_transport = HttpTransport::builder()
         .bind("127.0.0.1:0")
         .build_sync()
         .unwrap();
-    let mut iroh_transport = IrohTransport::new().unwrap();
+    let iroh_transport = IrohTransport::new().unwrap();
 
     // Start both servers
     let (_instance1, handler1) = super::helpers::setup_test_handler().await;
@@ -46,7 +46,7 @@ async fn test_version_alignment() {
 /// Test HTTP v0 endpoint format explicitly
 #[tokio::test]
 async fn test_http_v0_endpoint_format() {
-    let mut transport = HttpTransport::builder()
+    let transport = HttpTransport::builder()
         .bind("127.0.0.1:0")
         .build_sync()
         .unwrap();

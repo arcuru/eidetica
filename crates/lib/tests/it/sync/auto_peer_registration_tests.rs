@@ -520,7 +520,7 @@ async fn test_http_transport_request_context() {
     let handler = std::sync::Arc::new(SyncHandlerImpl::new(instance, sync_tree_id));
 
     // Start HTTP server
-    let mut transport = HttpTransport::builder()
+    let transport = HttpTransport::builder()
         .bind("127.0.0.1:0")
         .build_sync()
         .unwrap();

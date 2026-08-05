@@ -189,7 +189,7 @@ impl SyncTransport for HttpTransport {
         address.transport_type == Self::TRANSPORT_TYPE
     }
 
-    async fn start_server(&mut self, handler: Arc<dyn SyncHandler>) -> Result<()> {
+    async fn start_server(&self, handler: Arc<dyn SyncHandler>) -> Result<()> {
         // No bind address configured = client-only transport, nothing to start
         let Some(effective_addr) = self.bind_address.as_deref() else {
             return Ok(());
@@ -262,7 +262,7 @@ impl SyncTransport for HttpTransport {
         Ok(())
     }
 
-    async fn stop_server(&mut self) -> Result<()> {
+    async fn stop_server(&self) -> Result<()> {
         if !self.server_state.is_running() {
             return Err(SyncError::ServerNotRunning.into());
         }

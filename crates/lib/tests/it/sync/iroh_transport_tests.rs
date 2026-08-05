@@ -9,7 +9,7 @@ use eidetica::{
 
 #[tokio::test]
 async fn test_iroh_transport_server_lifecycle() {
-    let mut transport = IrohTransport::new().unwrap();
+    let transport = IrohTransport::new().unwrap();
 
     // Server should not be running initially
     assert!(!transport.is_server_running());
@@ -26,7 +26,7 @@ async fn test_iroh_transport_server_lifecycle() {
 
 #[tokio::test]
 async fn test_iroh_transport_double_start_error() {
-    let mut transport = IrohTransport::new().unwrap();
+    let transport = IrohTransport::new().unwrap();
 
     // Start server
     let (_instance, handler) = super::helpers::setup_test_handler().await;
@@ -43,7 +43,7 @@ async fn test_iroh_transport_double_start_error() {
 
 #[tokio::test]
 async fn test_iroh_transport_stop_without_start() {
-    let mut transport = IrohTransport::new().unwrap();
+    let transport = IrohTransport::new().unwrap();
 
     // Attempting to stop when not running should fail
     let result = transport.stop_server().await;
@@ -52,7 +52,7 @@ async fn test_iroh_transport_stop_without_start() {
 
 #[tokio::test]
 async fn test_iroh_transport_get_server_address() {
-    let mut transport = IrohTransport::new().unwrap();
+    let transport = IrohTransport::new().unwrap();
 
     // Should return error when no server is running
     let result = transport.get_server_address();
@@ -100,7 +100,7 @@ async fn test_iroh_transport_send_request_no_endpoint() {
 
 #[tokio::test]
 async fn test_iroh_transport_integration_lifecycle() {
-    let mut server_transport = IrohTransport::new().unwrap();
+    let server_transport = IrohTransport::new().unwrap();
 
     // Test complete server lifecycle
     assert!(!server_transport.is_server_running());
@@ -131,8 +131,8 @@ async fn test_iroh_transport_integration_lifecycle() {
 // Test that demonstrates the P2P nature of Iroh transport
 #[tokio::test]
 async fn test_iroh_transport_p2p_addressing() {
-    let mut transport1 = IrohTransport::new().unwrap();
-    let mut transport2 = IrohTransport::new().unwrap();
+    let transport1 = IrohTransport::new().unwrap();
+    let transport2 = IrohTransport::new().unwrap();
 
     // Start both transports
     let (_instance1, handler1) = super::helpers::setup_test_handler().await;

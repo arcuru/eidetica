@@ -52,7 +52,7 @@ async fn test_unified_message_handling() {
     }
 
     // Test HTTP transport uses same logic
-    let mut http_transport = HttpTransport::builder()
+    let http_transport = HttpTransport::builder()
         .bind("127.0.0.1:0")
         .build_sync()
         .unwrap();
@@ -87,7 +87,7 @@ async fn test_unified_message_handling() {
 /// Test that the new HTTP v0 endpoint format works with JSON requests
 #[tokio::test]
 async fn test_http_v0_json_endpoint() {
-    let mut transport = HttpTransport::builder()
+    let transport = HttpTransport::builder()
         .bind("127.0.0.1:0")
         .build_sync()
         .unwrap();
@@ -152,7 +152,7 @@ async fn test_http_v0_json_endpoint() {
 #[tokio::test]
 async fn test_iroh_transport_handler_integration() {
     // Create Iroh transport and verify it starts with a handler
-    let mut iroh_transport = IrohTransport::new().unwrap();
+    let iroh_transport = IrohTransport::new().unwrap();
     let (_instance, handler) = super::helpers::setup_test_handler().await;
 
     // Test that server can start with a handler (this validates the architecture)

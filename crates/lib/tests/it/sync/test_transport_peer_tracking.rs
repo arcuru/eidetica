@@ -92,7 +92,7 @@ async fn test_server_automatically_tracks_peers_that_sync_trees() {
         .unwrap();
 
     // Start server
-    let mut http_transport = HttpTransport::builder()
+    let http_transport = HttpTransport::builder()
         .bind("127.0.0.1:0")
         .build_sync()
         .unwrap();

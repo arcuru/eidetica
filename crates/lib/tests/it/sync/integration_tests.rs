@@ -166,3 +166,71 @@ async fn test_sync_connect_to_invalid_address() {
         .await;
     assert!(result.is_err());
 }
+
+/// A request that hangs must not stop unrelated requests from being served.
+///
+/// The background engine handles commands one at a time, so awaiting a request
+/// inline holds the engine for as long as the peer takes to answer — and a peer
+/// that accepts a connection and then goes quiet takes the full transport
+/// deadline. A deployment carrying a handful of retired peers therefore starves
+/// the live one, which presents as "everything times out" rather than as one
+/// absent peer.
+#[tokio::test]
+async fn a_hung_request_does_not_block_an_unrelated_one() {
+    use std::{sync::Arc, time::Duration};
+
+    // A healthy peer, answering normally.
+    let (_server_db, sync_server) = setup().await;
+    sync_server
+        .register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
+        .await
+        .unwrap();
+    sync_server.accept_connections().await.unwrap();
+    let live = Address::http(sync_server.get_server_address().await.unwrap());
+
+    // A black hole: completes the TCP handshake, then never answers. This is
+    // what a peer that has gone away behind a live NAT looks like — connecting
+    // succeeds, so nothing fails fast.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let black_hole = Address::http(listener.local_addr().unwrap().to_string());
+    let accepting = tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((conn, _)) = listener.accept().await {
+            held.push(conn);
+        }
+    });
+
+    let (_client_db, client) = setup().await;
+    client
+        .register_transport("http", HttpTransport::builder())
+        .await
+        .unwrap();
+    let client = Arc::new(client);
+
+    let entry = || {
+        vec![
+            Entry::root_builder()
+                .set_subtree_data("data", r#"{"k": "v"}"#)
+                .build()
+                .expect("Failed to build entry"),
+        ]
+    };
+
+    // Put the doomed request in flight first and give it time to be picked up.
+    let hung = {
+        let client = Arc::clone(&client);
+        tokio::spawn(async move { client.send_entries(entry(), &black_hole).await })
+    };
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // The healthy peer answers in milliseconds; allow generously more than that
+    // but far less than the transport deadline the hung request is burning.
+    let served =
+        tokio::time::timeout(Duration::from_secs(5), client.send_entries(entry(), &live)).await;
+
+    hung.abort();
+    accepting.abort();
+
+    let served = served.expect("a healthy peer was starved by an unrelated hung request");
+    served.expect("sending to the healthy peer failed");
+}

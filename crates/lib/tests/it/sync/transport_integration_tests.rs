@@ -10,11 +10,11 @@ use eidetica::{
 /// Test that both HTTP and Iroh transports follow the same interface
 #[tokio::test]
 async fn test_transport_interface_consistency() {
-    let mut http_transport = HttpTransport::builder()
+    let http_transport = HttpTransport::builder()
         .bind("127.0.0.1:0")
         .build_sync()
         .unwrap();
-    let mut iroh_transport = IrohTransport::new().unwrap();
+    let iroh_transport = IrohTransport::new().unwrap();
 
     // Both should not be running initially
     assert!(!http_transport.is_server_running());
@@ -99,16 +99,16 @@ async fn test_transport_error_handling_consistency() {
 #[tokio::test]
 async fn test_transport_isolation() {
     // Create multiple instances of each transport type
-    let mut http1 = HttpTransport::builder()
+    let http1 = HttpTransport::builder()
         .bind("127.0.0.1:0")
         .build_sync()
         .unwrap();
-    let mut http2 = HttpTransport::builder()
+    let http2 = HttpTransport::builder()
         .bind("127.0.0.1:0")
         .build_sync()
         .unwrap();
-    let mut iroh1 = IrohTransport::new().unwrap();
-    let mut iroh2 = IrohTransport::new().unwrap();
+    let iroh1 = IrohTransport::new().unwrap();
+    let iroh2 = IrohTransport::new().unwrap();
 
     // All should be able to start servers independently
     let (_instance1, handler1) = super::helpers::setup_test_handler().await;
@@ -180,11 +180,11 @@ async fn test_transport_polymorphism() {
 #[tokio::test]
 async fn test_concurrent_transport_operation() {
     // Test that HTTP and Iroh can operate simultaneously
-    let mut http_transport = HttpTransport::builder()
+    let http_transport = HttpTransport::builder()
         .bind("127.0.0.1:0")
         .build_sync()
         .unwrap();
-    let mut iroh_transport = IrohTransport::new().unwrap();
+    let iroh_transport = IrohTransport::new().unwrap();
 
     // Start both concurrently
     let (_instance1, handler1) = super::helpers::setup_test_handler().await;

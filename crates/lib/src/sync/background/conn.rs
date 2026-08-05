@@ -112,15 +112,6 @@ impl BackgroundSync {
         }
     }
 
-    /// Send a sync request and get response
-    pub(super) async fn send_sync_request(
-        &self,
-        address: &Address,
-        request: &SyncRequest,
-    ) -> Result<SyncResponse> {
-        self.transport_manager.send_request(address, request).await
-    }
-
     /// Handle bootstrap response by storing root and all entries
     pub(super) async fn handle_bootstrap_response(
         &self,

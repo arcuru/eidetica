@@ -31,7 +31,7 @@ use crate::{
 /// Each named instance has its own persisted state in the sync database.
 #[allow(dead_code)]
 pub struct TransportManager {
-    transports: HashMap<String, Box<dyn SyncTransport>>,
+    transports: HashMap<String, Arc<dyn SyncTransport>>,
 }
 
 impl Default for TransportManager {
@@ -52,14 +52,14 @@ impl TransportManager {
     /// Add a named transport to the manager.
     ///
     /// If a transport with the same name already exists, it will be replaced.
-    pub fn add(&mut self, name: impl Into<String>, transport: Box<dyn SyncTransport>) {
+    pub fn add(&mut self, name: impl Into<String>, transport: Arc<dyn SyncTransport>) {
         self.transports.insert(name.into(), transport);
     }
 
     /// Remove a transport by name.
     ///
     /// Returns the removed transport if it existed.
-    pub fn remove(&mut self, name: &str) -> Option<Box<dyn SyncTransport>> {
+    pub fn remove(&mut self, name: &str) -> Option<Arc<dyn SyncTransport>> {
         self.transports.remove(name)
     }
 
@@ -89,13 +89,21 @@ impl TransportManager {
             .map(|t| t.as_ref())
     }
 
-    /// Get a mutable reference to the transport that can handle the given address.
-    pub fn get_for_address_mut(
-        &mut self,
-        address: &Address,
-    ) -> Option<&mut Box<dyn SyncTransport>> {
+    /// Get an owned handle to the transport that can handle the given address.
+    ///
+    /// The handle outlives any borrow of the manager, so a request can be sent
+    /// from a task of its own instead of holding the sync engine while it runs.
+    pub fn handle_for_address(&self, address: &Address) -> Option<Arc<dyn SyncTransport>> {
         self.transports
-            .values_mut()
+            .values()
+            .find(|t| t.can_handle_address(address))
+            .map(Arc::clone)
+    }
+
+    /// Get a mutable reference to the transport that can handle the given address.
+    pub fn get_for_address_mut(&self, address: &Address) -> Option<&Arc<dyn SyncTransport>> {
+        self.transports
+            .values()
             .find(|t| t.can_handle_address(address))
     }
 
@@ -105,8 +113,8 @@ impl TransportManager {
     }
 
     /// Get a mutable reference to a transport by name.
-    pub fn get_mut(&mut self, name: &str) -> Option<&mut Box<dyn SyncTransport>> {
-        self.transports.get_mut(name)
+    pub fn get_mut(&self, name: &str) -> Option<&Arc<dyn SyncTransport>> {
+        self.transports.get(name)
     }
 
     /// Get a transport by its type identifier.
@@ -123,9 +131,9 @@ impl TransportManager {
     /// Get a mutable reference to a transport by its type identifier.
     ///
     /// Returns the first transport of the given type.
-    pub fn get_by_type_mut(&mut self, transport_type: &str) -> Option<&mut Box<dyn SyncTransport>> {
+    pub fn get_by_type_mut(&self, transport_type: &str) -> Option<&Arc<dyn SyncTransport>> {
         self.transports
-            .values_mut()
+            .values()
             .find(|t| t.transport_type() == transport_type)
     }
 
@@ -137,10 +145,8 @@ impl TransportManager {
     }
 
     /// Iterate mutably over all transports as (name, transport) pairs.
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&str, &mut Box<dyn SyncTransport>)> {
-        self.transports
-            .iter_mut()
-            .map(|(name, t)| (name.as_str(), t))
+    pub fn iter_mut(&self) -> impl Iterator<Item = (&str, &Arc<dyn SyncTransport>)> {
+        self.transports.iter().map(|(name, t)| (name.as_str(), t))
     }
 
     /// Get all transport names.
@@ -183,13 +189,13 @@ impl TransportManager {
     ///
     /// # Arguments
     /// * `handler` - The sync handler to use for all transports.
-    pub async fn start_all_servers(&mut self, handler: Arc<dyn SyncHandler>) -> Result<()> {
+    pub async fn start_all_servers(&self, handler: Arc<dyn SyncHandler>) -> Result<()> {
         let names: Vec<String> = self.transports.keys().cloned().collect();
         let mut errors: Vec<String> = Vec::new();
         let mut started = 0;
 
         for name in &names {
-            if let Some(transport) = self.transports.get_mut(name) {
+            if let Some(transport) = self.transports.get(name) {
                 if let Err(e) = transport.start_server(handler.clone()).await {
                     tracing::warn!(transport = %name, error = %e, "Failed to start transport server");
                     errors.push(format!("{}: {}", name, e));

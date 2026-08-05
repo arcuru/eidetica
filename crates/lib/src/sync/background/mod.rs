@@ -460,7 +460,7 @@ impl BackgroundSync {
                 {
                     let _ = old.stop_server().await;
                 }
-                self.transport_manager.add(&name, transport);
+                self.transport_manager.add(&name, Arc::from(transport));
                 tracing::debug!("Added transport: {}", name);
                 let _ = response.send(Ok(()));
             }
@@ -495,8 +495,31 @@ impl BackgroundSync {
                 request,
                 response,
             } => {
-                let result = self.send_sync_request(&address, &request).await;
-                let _ = response.send(result);
+                // Serve this from a task of its own rather than inline.
+                //
+                // Commands are handled one at a time, so awaiting a request
+                // here holds the engine for as long as the peer takes to
+                // answer — and a peer that accepts a connection and then goes
+                // quiet takes the full transport deadline. Every other
+                // request, the queue drain and the retry queue all wait behind
+                // it, so a deployment carrying a few retired peers starves the
+                // live ones. That presents as "everything times out", which
+                // reads as a local fault rather than as one absent peer.
+                //
+                // The transport handle is owned, so the task borrows nothing
+                // from the engine and the loop is free immediately.
+                match self.transport_manager.handle_for_address(&address) {
+                    Some(transport) => {
+                        tokio::spawn(async move {
+                            let result = transport.send_request(&address, &request).await;
+                            let _ = response.send(result);
+                        });
+                    }
+                    None => {
+                        let _ =
+                            response.send(Err(SyncError::NoTransportForAddress { address }.into()));
+                    }
+                }
             }
 
             SyncCommand::Flush { response } => {
