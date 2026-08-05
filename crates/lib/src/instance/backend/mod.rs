@@ -64,16 +64,18 @@ pub trait Backend: Send + Sync + std::fmt::Debug {
     /// Every entry of `store` reachable from `snapshot`.
     async fn store_at(&self, tree: &ID, store: &str, snapshot: &Snapshot) -> Result<Vec<Entry>>;
 
-    /// Lowest common ancestor of `entry_ids` within `store`.
-    async fn find_merge_base(&self, tree: &ID, store: &str, entry_ids: &[ID]) -> Result<ID>;
+    /// Lowest common ancestor of `entry_ids` within `store`, or `None` when
+    /// they share none and must merge from the empty base.
+    async fn find_merge_base(&self, tree: &ID, store: &str, entry_ids: &[ID])
+    -> Result<Option<ID>>;
 
     /// Every entry on the path from `from_id` to each of `to_ids` within
-    /// `store`.
+    /// `store`. `None` walks the full ancestry of `to_ids`.
     async fn get_path_from_to(
         &self,
         tree: &ID,
         store: &str,
-        from_id: &ID,
+        from_id: Option<&ID>,
         to_ids: &[ID],
     ) -> Result<Vec<ID>>;
 

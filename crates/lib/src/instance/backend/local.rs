@@ -61,7 +61,12 @@ impl Backend for LocalBackend {
         self.0.store_at(tree, store, snapshot).await
     }
 
-    async fn find_merge_base(&self, tree: &ID, store: &str, entry_ids: &[ID]) -> Result<ID> {
+    async fn find_merge_base(
+        &self,
+        tree: &ID,
+        store: &str,
+        entry_ids: &[ID],
+    ) -> Result<Option<ID>> {
         self.0.find_merge_base(tree, store, entry_ids).await
     }
 
@@ -69,7 +74,7 @@ impl Backend for LocalBackend {
         &self,
         tree: &ID,
         store: &str,
-        from_id: &ID,
+        from_id: Option<&ID>,
         to_ids: &[ID],
     ) -> Result<Vec<ID>> {
         self.0.get_path_from_to(tree, store, from_id, to_ids).await

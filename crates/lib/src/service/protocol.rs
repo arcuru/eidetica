@@ -110,7 +110,9 @@ pub struct TransactionContext {
 /// Response for ComputeMergeState: lowest common ancestor + path to tips.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MergeState {
-    pub merge_base: ID,
+    /// `None` when the entries share no common ancestor and the path is the
+    /// full ancestry, to be folded from a default state.
+    pub merge_base: Option<ID>,
     pub path: Vec<ID>,
 }
 

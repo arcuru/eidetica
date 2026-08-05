@@ -237,7 +237,8 @@ pub fn bench_merge_base_linear_chains(c: &mut Criterion) {
 
                             // Verify correctness
                             assert_eq!(
-                                &merge_base, expected_merge_base,
+                                merge_base.as_ref(),
+                                Some(expected_merge_base),
                                 "Merge base mismatch in linear chain"
                             );
                             black_box(merge_base);
@@ -281,7 +282,8 @@ pub fn bench_merge_base_diamond_merge(c: &mut Criterion) {
 
                     // Verify correctness
                     assert_eq!(
-                        merge_base, expected_merge_base,
+                        merge_base.as_ref(),
+                        Some(&expected_merge_base),
                         "Merge base mismatch in diamond pattern"
                     );
                     black_box(merge_base);

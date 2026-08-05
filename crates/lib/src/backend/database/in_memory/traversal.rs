@@ -101,7 +101,7 @@ pub(crate) fn collect_root_to_target(
 /// * `inner` - Reference to the core data
 /// * `tree_id` - The ID of the tree containing all entries
 /// * `subtree` - The name of the subtree to search within
-/// * `from_id` - The starting entry ID
+/// * `from_id` - The starting entry ID, or `None` to walk the full ancestry
 /// * `to_ids` - The target entry IDs to find paths to
 ///
 /// # Returns
@@ -111,7 +111,7 @@ pub(crate) fn get_path_from_to(
     inner: &InMemoryInner,
     tree_id: &ID,
     subtree: &str,
-    from_id: &ID,
+    from_id: Option<&ID>,
     to_ids: &[ID],
 ) -> Result<Vec<ID>> {
     if to_ids.is_empty() {
@@ -126,7 +126,7 @@ pub(crate) fn get_path_from_to(
 
     // Start from all to_ids
     for to_id in to_ids {
-        if to_id != from_id {
+        if Some(to_id) != from_id {
             to_process.push_back(to_id.clone());
         }
     }
@@ -137,8 +137,9 @@ pub(crate) fn get_path_from_to(
             continue;
         }
 
-        // If we've reached the from_id, stop processing this path
-        if current == *from_id {
+        // If we've reached the from_id, stop processing this path. With no
+        // base the walk runs to the store roots, collecting the full ancestry.
+        if Some(&current) == from_id {
             processed.insert(current);
             continue;
         }
@@ -250,13 +251,14 @@ pub(crate) fn get_sorted_store_parents(
 /// * `entry_ids` - The entry IDs to find the merge base for
 ///
 /// # Returns
-/// A `Result` containing the ID of the merge base, or an error if none is found.
+/// A `Result` containing `Some(id)` for the merge base, or `None` when the
+/// entries share no common ancestor and must merge from the empty base.
 pub(crate) fn find_merge_base(
     inner: &InMemoryInner,
     tree: &ID,
     subtree: &str,
     entry_ids: &[ID],
-) -> Result<ID> {
+) -> Result<Option<ID>> {
     if entry_ids.is_empty() {
         return Err(BackendError::EmptyEntryList {
             operation: "find_merge_base".to_string(),
@@ -265,7 +267,7 @@ pub(crate) fn find_merge_base(
     }
 
     if entry_ids.len() == 1 {
-        return Ok(entry_ids[0].clone());
+        return Ok(Some(entry_ids[0].clone()));
     }
 
     tracing::debug!(
@@ -332,17 +334,11 @@ pub(crate) fn find_merge_base(
     }
 
     if common_ancestors.is_empty() {
-        tracing::debug!(subtree = subtree, "No common ancestors found");
-        // TODO(concurrent-store-creation): two subtree roots created
-        // independently (the store didn't exist at fork, so neither first write
-        // shares a subtree_parent) have no common ancestor and fail here. The
-        // main-tree merge tolerates this — disjoint roots merge from an empty
-        // base — and this subtree path should do the same instead of erroring.
-        // Tripwire: tests/it/sync/concurrent_store_creation_tests.rs.
-        return Err(BackendError::NoCommonAncestor {
-            entry_ids: entry_ids.to_vec(),
-        }
-        .into());
+        tracing::debug!(
+            subtree = subtree,
+            "No common ancestors found; merging from the empty base"
+        );
+        return Ok(None);
     }
 
     // Step 3: Get heights for sorting (we want highest height first = closest to tips)
@@ -374,15 +370,17 @@ pub(crate) fn find_merge_base(
                 height = height,
                 "Found merge base"
             );
-            return Ok(candidate);
+            return Ok(Some(candidate));
         }
     }
 
-    // Should not reach here if there's a root
-    Err(BackendError::NoCommonAncestor {
-        entry_ids: entry_ids.to_vec(),
-    }
-    .into())
+    // Common ancestors exist but none dominates every path: the histories
+    // rejoin without a single cut point, so materialize from the empty base.
+    tracing::debug!(
+        subtree = subtree,
+        "No dominating common ancestor; merging from the empty base"
+    );
+    Ok(None)
 }
 
 /// Collect all ancestors of an entry in a subtree (including the entry itself).

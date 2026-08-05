@@ -723,7 +723,7 @@ async fn dispatch_database_op(
                 .await?;
             let path = db
                 .ops()
-                .get_path_from_to(&root_id, &store, &merge_base, &entry_ids)
+                .get_path_from_to(&root_id, &store, merge_base.as_ref(), &entry_ids)
                 .await?;
             Ok(ServiceResponse::MergeState(MergeState { merge_base, path }))
         }

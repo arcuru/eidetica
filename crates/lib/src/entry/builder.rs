@@ -161,13 +161,13 @@ impl EntryBuilder {
     }
 
     /// Get the IDs of the parent entries for the main tree.
-    /// The parent IDs are returned in alphabetical order.
+    /// The parent IDs are returned in CID order (`ID`'s `Ord`, not lexicographic string order).
     pub fn parents(&self) -> Result<Vec<ID>> {
         Ok(self.tree.parents.clone())
     }
 
     /// Get the IDs of the parent entries specific to a named subtree's history.
-    /// The parent IDs are returned in alphabetical order.
+    /// The parent IDs are returned in CID order (`ID`'s `Ord`, not lexicographic string order).
     pub fn subtree_parents(&self, subtree_name: impl AsRef<str>) -> Result<Vec<ID>> {
         self.subtrees
             .iter()
@@ -182,7 +182,7 @@ impl EntryBuilder {
             })
     }
 
-    /// Sort a list of parent IDs in alphabetical order.
+    /// Sort a list of parent IDs in CID order (`ID`'s `Ord`, not lexicographic string order).
     fn sort_parents_list(parents: &mut [ID]) {
         parents.sort();
     }
@@ -343,7 +343,7 @@ impl EntryBuilder {
     }
 
     /// Set the parent IDs for the main tree history.
-    /// The provided vector will be sorted alphabetically during the `build()` process.
+    /// The provided vector will be sorted in CID order during the `build()` process.
     pub fn set_parents(mut self, parents: Vec<ID>) -> Self {
         self.tree.parents = parents;
         self
@@ -351,7 +351,7 @@ impl EntryBuilder {
 
     /// Mutable reference version of set_parents.
     /// Set the parent IDs for the main tree history.
-    /// The provided vector will be sorted alphabetically during the `build()` process.
+    /// The provided vector will be sorted in CID order during the `build()` process.
     pub fn set_parents_mut(&mut self, parents: Vec<ID>) -> &mut Self {
         self.tree.parents = parents;
         self
@@ -382,7 +382,7 @@ impl EntryBuilder {
     }
 
     /// Set the parent IDs for a specific named subtree's history.
-    /// The provided vector will be sorted alphabetically and de-duplicated during the `build()` process.
+    /// The provided vector will be sorted in CID order and de-duplicated during the `build()` process.
     /// If the subtree does not exist, it will be created with empty data ("{}").
     /// The list of subtrees will be sorted by name when `build()` is called.
     pub fn set_subtree_parents(
@@ -411,7 +411,7 @@ impl EntryBuilder {
 
     /// Mutable reference version of set_subtree_parents.
     /// Set the parent IDs for a specific named subtree's history.
-    /// The provided vector will be sorted alphabetically and de-duplicated during the `build()` process.
+    /// The provided vector will be sorted in CID order and de-duplicated during the `build()` process.
     /// If the subtree does not exist, it will be created with no data (`None`).
     /// The list of subtrees will be sorted by name when `build()` is called.
     pub fn set_subtree_parents_mut(

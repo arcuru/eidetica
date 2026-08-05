@@ -345,7 +345,12 @@ impl BackendImpl for InMemory {
         Ok(roots)
     }
 
-    async fn find_merge_base(&self, tree: &ID, subtree: &str, entry_ids: &[ID]) -> Result<ID> {
+    async fn find_merge_base(
+        &self,
+        tree: &ID,
+        subtree: &str,
+        entry_ids: &[ID],
+    ) -> Result<Option<ID>> {
         let inner = self.inner.read().unwrap();
         traversal::find_merge_base(&inner, tree, subtree, entry_ids)
     }
@@ -443,7 +448,7 @@ impl BackendImpl for InMemory {
         &self,
         tree_id: &ID,
         subtree: &str,
-        from_id: &ID,
+        from_id: Option<&ID>,
         to_ids: &[ID],
     ) -> Result<Vec<ID>> {
         let inner = self.inner.read().unwrap();

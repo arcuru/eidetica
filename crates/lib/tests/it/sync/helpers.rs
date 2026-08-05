@@ -883,12 +883,6 @@ pub async fn cluster_shared_database(
     eidetica::testing::set_global_auth_key(&db0, AuthKey::active(None, AuthPermission::Admin(10)))
         .await?;
 
-    // Seed the `data` store before anyone bootstraps, so every peer's later
-    // writes to it descend from a common ancestor. Without this, each peer's
-    // first write would root an independent `data` subtree and merging the
-    // concurrent histories fails with NoCommonAncestor.
-    cluster_put(&db0, "seed", "seed").await?;
-
     net.peer_mut(0).serve(&room).await?;
 
     let mut dbs = vec![db0];
