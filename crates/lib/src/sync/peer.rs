@@ -1,5 +1,7 @@
 //! Peer management, sync relationships, and address handling for the sync system.
 
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
 use tokio::sync::oneshot;
 use tracing::info;
 
@@ -186,19 +188,38 @@ impl Sync {
     pub async fn get_sync_status(
         &self,
         tree_id: &ID,
-        _peer_pubkey: &PublicKey,
+        peer_pubkey: &PublicKey,
     ) -> Result<SyncStatus> {
         // Check if we have local data for this tree
         let backend = self.backend()?;
         let our_snapshot = backend.snapshot(tree_id).await.unwrap_or_default();
 
-        // TODO: Track last_sync time and last_error in sync tree
-        // For now, just report if we have data
         Ok(SyncStatus {
             has_local_data: !our_snapshot.is_empty(),
-            last_sync: None,
+            last_sync: self.peer_last_sync(peer_pubkey).await,
             last_error: None,
         })
+    }
+
+    /// Ask the background engine when it last synced with a peer.
+    ///
+    /// `None` when the engine has not synced with the peer, and also when there
+    /// is no engine to ask — both mean the same thing to a caller, that there
+    /// is no successful round on record.
+    async fn peer_last_sync(&self, peer_pubkey: &PublicKey) -> Option<SystemTime> {
+        let (tx, rx) = oneshot::channel();
+
+        self.background_tx
+            .get()?
+            .send(SyncCommand::GetPeerLastSync {
+                peer: PeerId::from(peer_pubkey),
+                response: tx,
+            })
+            .await
+            .ok()?;
+
+        let millis = rx.await.ok()??;
+        Some(UNIX_EPOCH + Duration::from_millis(millis))
     }
 
     // === Database Sync Relationship Methods ===

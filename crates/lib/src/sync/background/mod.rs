@@ -94,6 +94,14 @@ pub enum SyncCommand {
     Flush {
         response: oneshot::Sender<Result<()>>,
     },
+
+    /// Report when at least one of a peer's trees last synced, in milliseconds
+    /// since the Unix epoch. `None` if the peer has not synced since the engine
+    /// started.
+    GetPeerLastSync {
+        peer: PeerId,
+        response: oneshot::Sender<Option<u64>>,
+    },
 }
 
 // Manual Debug impl required because:
@@ -143,6 +151,10 @@ impl std::fmt::Debug for SyncCommand {
                 .field("request", request)
                 .finish(),
             Self::Flush { .. } => write!(f, "Flush"),
+            Self::GetPeerLastSync { peer, .. } => f
+                .debug_struct("GetPeerLastSync")
+                .field("peer", peer)
+                .finish(),
         }
     }
 }
@@ -193,6 +205,16 @@ struct PeerSyncState {
     consecutive_failures: u32,
     /// Rounds still to be skipped before this peer is probed again.
     rounds_to_skip: u32,
+    /// When at least one of the peer's trees last synced, in milliseconds since
+    /// the Unix epoch. `None` until the peer's first success.
+    ///
+    /// Deliberately not persisted. A successful round is a purely observational
+    /// fact, and writing one entry per peer per round to the sync database
+    /// would grow the DAG without bound to record it — on the order of a
+    /// thousand entries a day for a handful of peers at the default interval.
+    /// The cost is that this reads `None` again after a restart, which is
+    /// accurate: the engine genuinely has no record of a round it did not run.
+    last_success_ms: Option<u64>,
 }
 
 impl PeerSyncState {
@@ -206,7 +228,8 @@ impl PeerSyncState {
     }
 
     /// Fold a round's outcome in: move the cursor if the walk got far enough to
-    /// produce one, and either clear the backoff or lengthen it.
+    /// produce one, and either clear the backoff or lengthen it. A round that
+    /// synced is stamped with `now_ms`.
     ///
     /// Syncing even one tree clears the backoff, whether the round was
     /// scheduled or asked for. The peer is answering, and whatever failed after
@@ -216,7 +239,7 @@ impl PeerSyncState {
     /// nothing the scheduler did not already know, and counting it would let
     /// someone retrying by hand during an outage push the automatic schedule
     /// further and further out.
-    fn record(&mut self, cursor: Option<usize>, synced_any: bool, scheduled: bool) {
+    fn record(&mut self, cursor: Option<usize>, synced_any: bool, scheduled: bool, now_ms: u64) {
         if let Some(cursor) = cursor {
             self.tree_cursor = cursor;
         }
@@ -224,6 +247,7 @@ impl PeerSyncState {
         if synced_any {
             self.consecutive_failures = 0;
             self.rounds_to_skip = 0;
+            self.last_success_ms = Some(now_ms);
             return;
         }
 
@@ -516,6 +540,10 @@ impl BackgroundSync {
                 let _ = response.send(result);
             }
 
+            SyncCommand::GetPeerLastSync { peer, response } => {
+                let _ = response.send(self.last_success_ms(&peer));
+            }
+
             SyncCommand::Shutdown => {
                 // Shutdown command received - exit cleanly
                 return Err(SyncError::Network("Shutdown requested".to_string()).into());
@@ -727,6 +755,16 @@ impl BackgroundSync {
             .is_some_and(PeerSyncState::take_skip)
     }
 
+    /// When at least one of a peer's trees last synced, in milliseconds since
+    /// the Unix epoch.
+    fn last_success_ms(&self, peer_id: &PeerId) -> Option<u64> {
+        self.peer_state
+            .lock()
+            .expect("peer sync state mutex poisoned")
+            .get(peer_id)
+            .and_then(|peer| peer.last_success_ms)
+    }
+
     /// Record how a peer's round went.
     fn record_round_outcome(
         &self,
@@ -735,12 +773,13 @@ impl BackgroundSync {
         synced_any: bool,
         scheduled: bool,
     ) {
+        let now_ms = self.instance().map(|i| i.clock().now_millis()).unwrap_or(0);
         self.peer_state
             .lock()
             .expect("peer sync state mutex poisoned")
             .entry(peer_id.clone())
             .or_default()
-            .record(cursor, synced_any, scheduled);
+            .record(cursor, synced_any, scheduled, now_ms);
     }
 
     /// Perform periodic sync with all active peers
@@ -1075,13 +1114,16 @@ mod tests {
     /// A scheduled round in which nothing synced.
     const FAILED_ROUND: (Option<usize>, bool, bool) = (Some(0), false, true);
 
+    /// Stand-in round timestamp for the tests that do not care about time.
+    const ROUND_MS: u64 = 1_000;
+
     /// Number of rounds a peer is skipped for, given how many consecutive
     /// scheduled rounds it has now failed.
     fn skips_after_consecutive_failures(failures: u32) -> u32 {
         let mut state = PeerSyncState::default();
         for _ in 0..failures {
             let (cursor, synced_any, scheduled) = FAILED_ROUND;
-            state.record(cursor, synced_any, scheduled);
+            state.record(cursor, synced_any, scheduled, ROUND_MS);
         }
         let mut skipped = 0;
         while state.take_skip() {
@@ -1110,9 +1152,9 @@ mod tests {
         assert!(!state.take_skip());
 
         // Syncing even one tree clears an accumulated backoff.
-        state.record(Some(0), false, true);
-        state.record(Some(0), false, true);
-        state.record(Some(0), true, true);
+        state.record(Some(0), false, true, ROUND_MS);
+        state.record(Some(0), false, true, ROUND_MS);
+        state.record(Some(0), true, true, ROUND_MS);
         assert!(!state.take_skip());
     }
 
@@ -1129,7 +1171,7 @@ mod tests {
             first_attempted.push(start);
             // Worst case: the round's first tree fails, so exactly one tree is
             // attempted and none sync.
-            state.record(Some(start + 1), false, true);
+            state.record(Some(start + 1), false, true, ROUND_MS);
         }
 
         assert_eq!(first_attempted, vec![0, 1, 2, 3]);
@@ -1142,10 +1184,10 @@ mod tests {
     #[test]
     fn a_round_that_fails_before_the_walk_backs_off_without_moving_the_cursor() {
         let mut state = PeerSyncState::default();
-        state.record(Some(7), false, true);
+        state.record(Some(7), false, true, ROUND_MS);
         assert_eq!(state.tree_cursor, 7);
 
-        state.record(None, false, true);
+        state.record(None, false, true, ROUND_MS);
 
         assert_eq!(state.tree_cursor, 7);
         // Two failed rounds, so two rounds of backoff.
@@ -1159,10 +1201,10 @@ mod tests {
     #[test]
     fn an_explicit_sync_failing_does_not_deepen_the_backoff() {
         let mut state = PeerSyncState::default();
-        state.record(Some(0), false, true);
+        state.record(Some(0), false, true, ROUND_MS);
 
         for _ in 0..5 {
-            state.record(None, false, false);
+            state.record(None, false, false, ROUND_MS);
         }
 
         // Still just the one scheduled failure's worth of backoff.
@@ -1176,11 +1218,31 @@ mod tests {
     fn an_explicit_sync_succeeding_clears_the_backoff() {
         let mut state = PeerSyncState::default();
         for _ in 0..3 {
-            state.record(Some(0), false, true);
+            state.record(Some(0), false, true, ROUND_MS);
         }
 
-        state.record(Some(0), true, false);
+        state.record(Some(0), true, false, ROUND_MS);
 
         assert!(!state.take_skip());
+    }
+
+    /// Only a round that synced something is evidence the peer was reachable,
+    /// so only a round that synced something moves the timestamp.
+    #[test]
+    fn the_last_success_timestamp_tracks_rounds_that_synced() {
+        let mut state = PeerSyncState::default();
+        assert_eq!(state.last_success_ms, None);
+
+        state.record(Some(0), false, true, ROUND_MS);
+        assert_eq!(state.last_success_ms, None);
+
+        state.record(Some(0), true, true, ROUND_MS);
+        assert_eq!(state.last_success_ms, Some(ROUND_MS));
+
+        state.record(Some(0), false, true, ROUND_MS + 500);
+        assert_eq!(state.last_success_ms, Some(ROUND_MS));
+
+        state.record(Some(0), true, false, ROUND_MS + 900);
+        assert_eq!(state.last_success_ms, Some(ROUND_MS + 900));
     }
 }

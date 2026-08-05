@@ -322,10 +322,7 @@ Applications register sync relationships once; the background engine handles syn
 ```text
 Sync Database (Persistent):
 ├── peers/{peer_pubkey} -> PeerInfo (addresses, status, metadata)
-├── relationships/{peer}/{database} -> SyncRelationship
-├── sync_state/cursors/{peer}/{database} -> SyncCursor
-├── sync_state/metadata/{peer} -> SyncMetadata
-└── sync_state/history/{sync_id} -> SyncHistoryEntry
+└── relationships/{peer}/{database} -> SyncRelationship
 
 BackgroundSync (Transient):
 ├── retry_queue: Vec<RetryEntry> (failed sends pending retry)
@@ -370,11 +367,6 @@ graph LR
         TM --> H3[Custom Transport]
         F --> I[Retry Queue]
         F -.->|reads| ST[Sync Database]
-    end
-
-    subgraph "State Management"
-        K[SyncStateManager] --> L[Persistent State]
-        F --> K
     end
 
     subgraph "Peer Management"

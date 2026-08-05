@@ -108,8 +108,6 @@ pub struct PeerInfo {
     pub addresses: Vec<Address>,
     /// Current connection state
     pub connection_state: ConnectionState,
-    /// ISO timestamp of last successful sync
-    pub last_successful_sync: Option<String>,
     /// Number of connection attempts
     pub connection_attempts: u32,
     /// Last connection error if any
@@ -141,7 +139,6 @@ impl PeerInfo {
             status: PeerStatus::Active,
             addresses: Vec::new(),
             connection_state: ConnectionState::Disconnected,
-            last_successful_sync: None,
             connection_attempts: 0,
             last_error: None,
         }

@@ -160,13 +160,6 @@ impl<'a> PeerManager<'a> {
             )
             .await?;
 
-        // Update optional fields
-        if let Some(last_sync) = &peer_info.last_successful_sync {
-            peers
-                .set_path(path!(&pk_str, "last_successful_sync"), last_sync.clone())
-                .await?;
-        }
-
         peers
             .set_path(
                 path!(&pk_str, "connection_attempts"),
@@ -309,11 +302,6 @@ impl<'a> PeerManager<'a> {
             _ => ConnectionState::Disconnected,
         };
 
-        let last_successful_sync = peers
-            .get_path_as::<String>(path!(pk_str, "last_successful_sync"))
-            .await
-            .ok();
-
         let connection_attempts = peers
             .get_path_as::<i64>(path!(pk_str, "connection_attempts"))
             .await
@@ -333,7 +321,6 @@ impl<'a> PeerManager<'a> {
             status,
             addresses: Vec::new(),
             connection_state,
-            last_successful_sync,
             connection_attempts,
             last_error,
         };
