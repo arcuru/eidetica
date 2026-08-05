@@ -3,8 +3,8 @@
 //! This module provides peer-to-peer sync communication using
 //! Iroh's QUIC-based networking with hole punching and relay servers.
 
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::{sync::Arc, time::Duration};
+use tokio::{sync::Mutex, time::timeout};
 
 use async_trait::async_trait;
 use iroh::{
@@ -31,6 +31,24 @@ use crate::{
 };
 
 const SYNC_ALPN: &[u8] = b"eidetica/v0";
+
+/// Maximum time spent establishing a connection to a peer.
+///
+/// Looser than the HTTP transport's equivalent, because it bounds something
+/// larger: hole punching and relay fallback, not a TCP handshake. Against a
+/// live but awkwardly-NATed peer that work can legitimately run past ten
+/// seconds, and cutting it short would report a reachable peer as unreachable
+/// rather than merely slow.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Maximum time for the request/response exchange once connected, covering
+/// opening the stream, writing the request and reading the response.
+///
+/// Without it, a peer that completes the QUIC handshake and then stops
+/// answering holds the request open forever. Requests are awaited inline by the
+/// background sync engine, so an unbounded one stalls every other thing that
+/// engine does.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Serializable relay mode setting for transport configuration.
 ///
@@ -689,38 +707,54 @@ impl SyncTransport for IrohTransport {
             })?;
         let endpoint_addr = endpoint_ticket.endpoint_addr().clone();
 
-        // Connect to the peer
-        let conn = endpoint
-            .connect(endpoint_addr, SYNC_ALPN)
+        // Connect to the peer, bounding how long an unreachable one can cost.
+        let conn = timeout(CONNECT_TIMEOUT, endpoint.connect(endpoint_addr, SYNC_ALPN))
             .await
+            .map_err(|_| SyncError::ConnectionFailed {
+                address: address.address.clone(),
+                reason: format!("Connection timed out after {CONNECT_TIMEOUT:?}"),
+            })?
             .map_err(|e| SyncError::ConnectionFailed {
                 address: address.address.clone(),
                 reason: e.to_string(),
             })?;
 
-        // Open a bidirectional stream
-        let (mut send_stream, mut recv_stream) = conn
-            .open_bi()
-            .await
-            .map_err(|e| SyncError::Network(format!("Failed to open stream: {e}")))?;
-
-        // Serialize and send the request using JsonHandler
+        // Serialize the request before starting the exchange clock.
         let request_bytes = JsonHandler::serialize_request(request)?;
 
-        send_stream
-            .write_all(&request_bytes)
-            .await
-            .map_err(|e| SyncError::Network(format!("Failed to write request: {e}")))?;
+        // One deadline covers the whole exchange: a peer can otherwise stall
+        // any single step of it indefinitely.
+        let response_bytes: Vec<u8> = timeout(REQUEST_TIMEOUT, async {
+            // Open a bidirectional stream
+            let (mut send_stream, mut recv_stream) = conn
+                .open_bi()
+                .await
+                .map_err(|e| SyncError::Network(format!("Failed to open stream: {e}")))?;
 
-        send_stream
-            .finish()
-            .map_err(|e| SyncError::Network(format!("Failed to finish send stream: {e}")))?;
+            send_stream
+                .write_all(&request_bytes)
+                .await
+                .map_err(|e| SyncError::Network(format!("Failed to write request: {e}")))?;
 
-        // Read the response with size limit (1MB)
-        let response_bytes: Vec<u8> = recv_stream
-            .read_to_end(1024 * 1024)
-            .await
-            .map_err(|e| SyncError::Network(format!("Failed to read response: {e}")))?;
+            send_stream
+                .finish()
+                .map_err(|e| SyncError::Network(format!("Failed to finish send stream: {e}")))?;
+
+            // Read the response with size limit (1MB)
+            recv_stream
+                .read_to_end(1024 * 1024)
+                .await
+                .map_err(|e| SyncError::Network(format!("Failed to read response: {e}")))
+        })
+        .await
+        .map_err(|_| {
+            // The peer answered the connection attempt, so it is reachable:
+            // this is a transport failure, not an unreachable peer.
+            SyncError::Network(format!(
+                "Request to {} timed out after {REQUEST_TIMEOUT:?}",
+                address.address
+            ))
+        })??;
 
         // Deserialize the response using JsonHandler
         let response: SyncResponse = JsonHandler::deserialize_response(&response_bytes)?;
