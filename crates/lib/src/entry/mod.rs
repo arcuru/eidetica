@@ -43,7 +43,7 @@ pub(super) struct TreeNode {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub root: Option<ID>,
     /// IDs of the parent `Entry`s in the main tree history.
-    /// The vector is kept sorted alphabetically.
+    /// The vector is kept sorted in CID order (`ID`'s `Ord`, not lexicographic string order).
     pub parents: Vec<ID>,
     /// Serialized metadata associated with this `Entry` in the main tree.
     /// This data is metadata about this specific entry only and is not merged with other entries.
@@ -67,7 +67,7 @@ pub(super) struct SubTreeNode {
     /// Subtrees are _named_, and not identified by an ID.
     pub name: String,
     /// IDs of the parent `Entry`s specific to this subtree's history.
-    /// The vector is kept sorted alphabetically.
+    /// The vector is kept sorted in CID order (`ID`'s `Ord`, not lexicographic string order).
     pub parents: Vec<ID>,
     /// Serialized data specific to this `Entry` within this named subtree.
     ///
@@ -279,13 +279,13 @@ impl Entry {
     }
 
     /// Get the IDs of the parent entries in the main tree history.
-    /// The parent IDs are returned in alphabetical order.
+    /// The parent IDs are returned in CID order (`ID`'s `Ord`, not lexicographic string order).
     pub fn parents(&self) -> Result<Vec<ID>> {
         Ok(self.tree.parents.clone())
     }
 
     /// Get the IDs of the parent entries specific to a named subtree's history.
-    /// The parent IDs are returned in alphabetical order.
+    /// The parent IDs are returned in CID order (`ID`'s `Ord`, not lexicographic string order).
     pub fn subtree_parents(&self, subtree_name: impl AsRef<str>) -> Result<Vec<ID>> {
         self.subtrees
             .iter()
