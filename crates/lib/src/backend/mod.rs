@@ -387,8 +387,17 @@ pub trait BackendImpl: Send + Sync + Any {
     /// * `entry_ids` - The entry IDs to find the merge base for
     ///
     /// # Returns
-    /// A `Result` containing the merge base entry ID, or an error if no common ancestor exists
-    async fn find_merge_base(&self, tree: &ID, store: &str, entry_ids: &[ID]) -> Result<ID>;
+    /// A `Result` containing `Some(id)` for the merge base, or `None` when the
+    /// entries share no common ancestor.
+    ///
+    /// `None` is a valid result, not an error. A store created independently on
+    /// two peers — it did not exist at the point they forked, so neither side's
+    /// first write has a store parent in common — has two roots and no shared
+    /// ancestor. Those histories merge from the empty base, the same way the
+    /// main tree already merges two disjoint roots into a diamond. Callers
+    /// materialize from a default state and fold the full ancestry.
+    async fn find_merge_base(&self, tree: &ID, store: &str, entry_ids: &[ID])
+    -> Result<Option<ID>>;
 
     /// Collects all entries from the tree root down to the target entry within a store.
     ///
@@ -702,7 +711,9 @@ pub trait BackendImpl: Send + Sync + Any {
     /// # Arguments
     /// * `tree_id` - The ID of the tree containing the entries
     /// * `store` - The name of the store context
-    /// * `from_id` - The starting entry ID (not included in result)
+    /// * `from_id` - The starting entry ID (not included in result), or `None`
+    ///   to walk the full ancestry of `to_ids` — the empty-base case, where the
+    ///   targets share no common ancestor
     /// * `to_ids` - The target entry IDs (all included in result)
     ///
     /// # Returns
@@ -711,7 +722,7 @@ pub trait BackendImpl: Send + Sync + Any {
         &self,
         tree_id: &ID,
         store: &str,
-        from_id: &ID,
+        from_id: Option<&ID>,
         to_ids: &[ID],
     ) -> Result<Vec<ID>>;
 

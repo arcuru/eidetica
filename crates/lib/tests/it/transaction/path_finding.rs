@@ -623,7 +623,8 @@ async fn test_find_merge_base_with_bypass_path() {
     // Traditional LCA would return A (both E and F can reach A)
     // Correct merge base should return R (the only point where ALL paths converge)
     assert_eq!(
-        merge_base, r_id,
+        merge_base,
+        Some(r_id),
         "find_merge_base should return R, not the traditional LCA A. \
          E's path: E→D→B→A→R. F's paths: F→C→A→R OR F→C→X→R. \
          Since F can bypass A via X, the merge base is R, not A."

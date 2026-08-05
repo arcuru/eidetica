@@ -138,7 +138,12 @@ impl Backend for RemoteBackend {
             .await
     }
 
-    async fn find_merge_base(&self, tree: &ID, store: &str, entry_ids: &[ID]) -> Result<ID> {
+    async fn find_merge_base(
+        &self,
+        tree: &ID,
+        store: &str,
+        entry_ids: &[ID],
+    ) -> Result<Option<ID>> {
         let state = self
             .conn
             .compute_merge_state(
@@ -155,7 +160,7 @@ impl Backend for RemoteBackend {
         &self,
         tree: &ID,
         store: &str,
-        _from_id: &ID,
+        _from_id: Option<&ID>,
         to_ids: &[ID],
     ) -> Result<Vec<ID>> {
         // The server fuses LCA + path against `to_ids` in one round-trip, so a

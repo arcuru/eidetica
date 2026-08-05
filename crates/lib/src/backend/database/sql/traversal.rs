@@ -121,12 +121,14 @@ const MERGE_BASE_DEPTH_LIMIT: usize = 100;
 /// to avoid pulling entire history for deep DAGs. For typical shallow divergence, the merge
 /// base is found in a single batch. For deeper divergence, additional batches are pulled
 /// until a common ancestor is found or roots are reached.
+/// Returns `Some(id)` for the merge base, or `None` when the entries share no
+/// common ancestor and must merge from the empty base.
 pub async fn find_merge_base(
     backend: &SqlxBackend,
     _tree: &ID,
     store: &str,
     entry_ids: &[ID],
-) -> Result<ID> {
+) -> Result<Option<ID>> {
     if entry_ids.is_empty() {
         return Err(BackendError::EmptyEntryList {
             operation: "find_merge_base".to_string(),
@@ -135,7 +137,7 @@ pub async fn find_merge_base(
     }
 
     if entry_ids.len() == 1 {
-        return Ok(entry_ids[0].clone());
+        return Ok(Some(entry_ids[0].clone()));
     }
 
     // Track all known ancestors per tip and their frontiers for continuation
@@ -146,17 +148,12 @@ pub async fn find_merge_base(
     loop {
         // Check if all frontiers are exhausted (reached roots without finding common ancestor)
         if frontiers.iter().all(|f| f.is_empty()) {
-            // TODO(concurrent-store-creation): two subtree roots created
-            // independently (the store didn't exist at fork, so neither first
-            // write shares a subtree_parent) have no common ancestor and fail
-            // here. The main-tree merge tolerates this — disjoint roots merge
-            // from an empty base — and this subtree path should do the same
-            // instead of erroring. Tripwire:
-            // tests/it/sync/concurrent_store_creation_tests.rs.
-            return Err(BackendError::NoCommonAncestor {
-                entry_ids: entry_ids.to_vec(),
-            }
-            .into());
+            tracing::debug!(
+                store = store,
+                "Frontiers reached the store roots with no common ancestor; \
+                 merging from the empty base"
+            );
+            return Ok(None);
         }
 
         // Pull next batch from each non-empty frontier
@@ -213,7 +210,7 @@ pub async fn find_merge_base(
                 }
             }
             if all_paths_pass {
-                return Ok(candidate);
+                return Ok(Some(candidate));
             }
         }
 
@@ -624,7 +621,7 @@ pub async fn get_path_from_to(
     backend: &SqlxBackend,
     _tree_id: &ID,
     store: &str,
-    from_id: &ID,
+    from_id: Option<&ID>,
     to_ids: &[ID],
 ) -> Result<Vec<ID>> {
     if to_ids.is_empty() {
@@ -633,12 +630,23 @@ pub async fn get_path_from_to(
 
     let pool = backend.pool();
 
+    // $1 is store; $2 is from_id when there is one, so the to_ids start one
+    // slot later in that case.
+    let to_id_base = if from_id.is_some() { 2 } else { 1 };
+
     // Build UNION ALL clause for starting entries (works in both SQLite and PostgreSQL)
-    // Format: SELECT $3 AS id UNION ALL SELECT $4 AS id ...
     let start_selects: Vec<String> = (1..=to_ids.len())
-        .map(|i| format!("SELECT ${} AS id", i + 2)) // +2 because $1 is store, $2 is from_id
+        .map(|i| format!("SELECT ${} AS id", i + to_id_base))
         .collect();
     let starts_union = start_selects.join(" UNION ALL ");
+
+    // Without a base the traversal runs to the store roots, collecting the
+    // full ancestry of the tips — the empty-base merge.
+    let (start_filter, walk_filter) = if from_id.is_some() {
+        ("WHERE id != $2", "WHERE sp.parent_id != $2")
+    } else {
+        ("", "")
+    };
 
     // Recursive CTE that traverses from to_ids back to from_id,
     // then joins with subtrees to get heights for sorting
@@ -646,7 +654,7 @@ pub async fn get_path_from_to(
         "WITH RECURSIVE path_entries AS (
             -- Start from to_ids (excluding from_id)
             SELECT id FROM ({starts_union}) AS starts
-            WHERE id != $2
+            {start_filter}
 
             UNION
 
@@ -654,16 +662,18 @@ pub async fn get_path_from_to(
             SELECT sp.parent_id AS id
             FROM path_entries p
             JOIN store_parents sp ON sp.child_id = p.id AND sp.store_name = $1
-            WHERE sp.parent_id != $2
+            {walk_filter}
         )
         SELECT p.id, s.height
         FROM path_entries p
         JOIN subtrees s ON s.entry_id = p.id AND s.store_name = $1"
     );
 
-    let mut query = sqlx::query_as::<_, (String, i64)>(&sql)
-        .bind(store)
-        .bind(from_id.to_string());
+    let mut query = sqlx::query_as::<_, (String, i64)>(&sql).bind(store);
+
+    if let Some(from_id) = from_id {
+        query = query.bind(from_id.to_string());
+    }
 
     for to_id in to_ids {
         query = query.bind(to_id.to_string());

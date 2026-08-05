@@ -833,16 +833,28 @@ impl Transaction {
             .find_merge_base(self.db.root_id(), subtree_name, entry_ids)
             .await?;
 
-        // Get the merge base state recursively
-        let mut result = self
-            .compute_single_entry_state_recursive(subtree_name, &merge_base_id)
-            .await?;
+        // With no merge base the histories are disjoint — a store created
+        // independently on both sides of a fork — so fold the full ancestry
+        // from a default state. Convergence must not depend on which peer
+        // created the store first.
+        let mut result = match &merge_base_id {
+            Some(id) => {
+                self.compute_single_entry_state_recursive(subtree_name, id)
+                    .await?
+            }
+            None => T::default(),
+        };
 
         // Get all entries from merge base to all tip entries (deduplicated and sorted)
         let path_entries = {
             self.db
                 .ops()
-                .get_path_from_to(self.db.root_id(), subtree_name, &merge_base_id, entry_ids)
+                .get_path_from_to(
+                    self.db.root_id(),
+                    subtree_name,
+                    merge_base_id.as_ref(),
+                    entry_ids,
+                )
                 .await?
         };
 

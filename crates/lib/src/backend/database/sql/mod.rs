@@ -428,7 +428,12 @@ impl BackendImpl for SqlxBackend {
         storage::all_roots(self).await
     }
 
-    async fn find_merge_base(&self, tree: &ID, store: &str, entry_ids: &[ID]) -> Result<ID> {
+    async fn find_merge_base(
+        &self,
+        tree: &ID,
+        store: &str,
+        entry_ids: &[ID],
+    ) -> Result<Option<ID>> {
         traversal::find_merge_base(self, tree, store, entry_ids).await
     }
 
@@ -497,7 +502,7 @@ impl BackendImpl for SqlxBackend {
         &self,
         tree_id: &ID,
         store: &str,
-        from_id: &ID,
+        from_id: Option<&ID>,
         to_ids: &[ID],
     ) -> Result<Vec<ID>> {
         traversal::get_path_from_to(self, tree_id, store, from_id, to_ids).await
