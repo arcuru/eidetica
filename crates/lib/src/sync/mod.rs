@@ -221,7 +221,11 @@ impl SyncHandle {
 pub struct SyncStatus {
     /// Whether we have local data for this tree
     pub has_local_data: bool,
-    /// Last time sync succeeded (if ever)
+    /// When at least one tree last synced with this peer.
+    ///
+    /// Peer-wide rather than specific to `has_local_data`'s tree, and held only
+    /// in memory by the running sync engine, so it reads `None` before the
+    /// first successful round and again after a restart.
     pub last_sync: Option<SystemTime>,
     /// Last error encountered (if any)
     pub last_error: Option<String>,
