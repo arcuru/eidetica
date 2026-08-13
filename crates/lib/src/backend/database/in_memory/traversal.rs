@@ -240,18 +240,24 @@ pub(crate) fn find_merge_base(
     }
 
     if common_ancestors.is_empty() {
-        tracing::debug!(
-            subtree = subtree,
-            "No common ancestors found; merging from the empty base"
-        );
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            let (walked_entry_count, multiple_roots) =
+                empty_base_topology(inner, subtree, &ancestor_sets);
+            tracing::debug!(
+                subtree = subtree,
+                walked_entry_count,
+                multiple_roots,
+                "No common ancestors found; merging from the empty base"
+            );
+        }
         return Ok(None);
     }
 
     // Step 3: Get heights for sorting (we want highest height first = closest to tips)
     let mut candidates: Vec<(ID, u64)> = Vec::with_capacity(common_ancestors.len());
-    for id in common_ancestors {
-        let height = get_subtree_height(inner, subtree, &id)?;
-        candidates.push((id, height));
+    for id in &common_ancestors {
+        let height = get_subtree_height(inner, subtree, id)?;
+        candidates.push((id.clone(), height));
     }
     // Sort by height descending (highest first = closest to tips)
     candidates.sort_by_key(|b| std::cmp::Reverse(b.1));
@@ -282,11 +288,45 @@ pub(crate) fn find_merge_base(
 
     // Common ancestors exist but none dominates every path: the histories
     // rejoin without a single cut point, so materialize from the empty base.
-    tracing::debug!(
-        subtree = subtree,
-        "No dominating common ancestor; merging from the empty base"
-    );
+    if tracing::enabled!(tracing::Level::DEBUG) {
+        let (walked_entry_count, multiple_roots) =
+            empty_base_topology(inner, subtree, &ancestor_sets);
+        tracing::debug!(
+            subtree = subtree,
+            common_ancestor_count = common_ancestors.len(),
+            walked_entry_count,
+            multiple_roots,
+            "No common ancestor dominates all entries; merging from the empty base"
+        );
+    }
     Ok(None)
+}
+
+/// Summarise the topology a merge-base walk covered, for the empty-base debug events.
+///
+/// Returns the number of entries the walk touched and whether they descend from more
+/// than one store root. Both are read from the ancestor sets the walk already built,
+/// so no additional traversal is performed.
+fn empty_base_topology(
+    inner: &InMemoryInner,
+    subtree: &str,
+    ancestor_sets: &[HashSet<ID>],
+) -> (usize, bool) {
+    let walked_entry_count = ancestor_sets.iter().map(|set| set.len()).sum();
+
+    let mut roots: HashSet<&ID> = HashSet::new();
+    for id in ancestor_sets.iter().flatten() {
+        let is_root = inner.entries.get(id).is_some_and(|entry| {
+            entry
+                .subtree_parents(subtree)
+                .is_ok_and(|parents| parents.is_empty())
+        });
+        if is_root {
+            roots.insert(id);
+        }
+    }
+
+    (walked_entry_count, roots.len() > 1)
 }
 
 /// Collect all ancestors of an entry in a subtree (including the entry itself).

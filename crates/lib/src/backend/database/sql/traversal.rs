@@ -149,15 +149,37 @@ pub async fn find_merge_base(
     let mut ancestor_sets: Vec<HashSet<ID>> = vec![HashSet::new(); entry_ids.len()];
     let mut frontiers: Vec<Vec<ID>> = entry_ids.iter().map(|id| vec![id.clone()]).collect();
     let mut all_with_heights: Vec<(ID, i64)> = Vec::new();
+    // Common ancestors seen on the most recent intersection. The frontiers can drain
+    // either because no common ancestor exists or because none of them dominates every
+    // path, and the empty-base event below distinguishes the two.
+    let mut common_ancestor_count = 0usize;
 
     loop {
-        // Check if all frontiers are exhausted (reached roots without finding common ancestor)
+        // Check if all frontiers are exhausted (reached roots without finding a usable base)
         if frontiers.iter().all(|f| f.is_empty()) {
-            tracing::debug!(
-                store = store,
-                "Frontiers reached the store roots with no common ancestor; \
-                 merging from the empty base"
-            );
+            if tracing::enabled!(tracing::Level::DEBUG) {
+                let root_count: (i64,) = sqlx::query_as(
+                    "SELECT COUNT(*) FROM subtrees s
+                     WHERE s.tree_id = $1 AND s.store_name = $2
+                     AND NOT EXISTS (
+                         SELECT 1 FROM store_parents sp
+                         WHERE sp.child_id = s.entry_id AND sp.store_name = s.store_name
+                     )",
+                )
+                .bind(tree.to_string())
+                .bind(store)
+                .fetch_one(backend.pool())
+                .await
+                .sql_context("Failed to count store roots")?;
+                tracing::debug!(
+                    store = store,
+                    common_ancestor_count,
+                    walked_entry_count = all_with_heights.len(),
+                    multiple_roots = root_count.0 > 1,
+                    "Frontiers reached the store roots with no dominating common ancestor; \
+                     merging from the empty base"
+                );
+            }
             return Ok(None);
         }
 
@@ -186,10 +208,11 @@ pub async fn find_merge_base(
         }
 
         // Intersect to find common ancestors
-        let mut common: HashSet<ID> = ancestor_sets[0].clone();
+        let mut common = ancestor_sets[0].clone();
         for set in &ancestor_sets[1..] {
             common.retain(|id| set.contains(id));
         }
+        common_ancestor_count = common.len();
 
         if common.is_empty() {
             // No common ancestor yet, continue with next batch
