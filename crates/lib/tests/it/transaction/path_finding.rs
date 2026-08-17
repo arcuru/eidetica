@@ -613,12 +613,13 @@ async fn test_find_merge_base_with_bypass_path() {
     assert!(final_state.get("tip_e").is_some(), "Should have tip E data");
     assert!(final_state.get("tip_f").is_some(), "Should have tip F data");
 
-    // Directly test find_merge_base
-    let backend = ctx.database().backend().unwrap().local_engine().unwrap();
+    // Directly test the merge base, through the seam every backend serves
+    let backend = ctx.database().backend().unwrap();
     let merge_base = backend
-        .find_merge_base(ctx.database().root_id(), "data", &[e_id, f_id])
+        .compute_merge_state(ctx.database().root_id(), "data", &[e_id, f_id])
         .await
-        .unwrap();
+        .unwrap()
+        .merge_base;
 
     // Traditional LCA would return A (both E and F can reach A)
     // Correct merge base should return R (the only point where ALL paths converge)
