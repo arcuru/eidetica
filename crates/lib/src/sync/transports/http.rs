@@ -21,7 +21,7 @@ use crate::{
     crdt::Doc,
     store::Registered,
     sync::{
-        error::SyncError,
+        error::{SyncError, TimeoutPhase},
         handler::SyncHandler,
         peer_types::Address,
         protocol::{RequestContext, SyncRequest, SyncResponse},
@@ -290,15 +290,22 @@ impl SyncTransport for HttpTransport {
             .send()
             .await
             .map_err(|e| {
-                // A timeout that is not a connect timeout means the peer
-                // accepted the connection and then went quiet: it is reachable,
-                // so report it as a transport failure rather than as an
-                // unreachable peer.
-                if e.is_timeout() && !e.is_connect() {
-                    SyncError::Network(format!(
-                        "Request to {} timed out after {REQUEST_TIMEOUT:?}",
-                        address.address
-                    ))
+                // Which deadline expired says what the peer proved about
+                // itself: one that never completed the connection may not be
+                // there, while one that accepted it and then went quiet is
+                // reachable. Both are timeouts, so both carry the phase rather
+                // than being sorted into different variants.
+                if e.is_timeout() {
+                    let (phase, elapsed) = if e.is_connect() {
+                        (TimeoutPhase::Connect, CONNECT_TIMEOUT)
+                    } else {
+                        (TimeoutPhase::Request, REQUEST_TIMEOUT)
+                    };
+                    SyncError::Timeout {
+                        address: address.address.clone(),
+                        phase,
+                        elapsed,
+                    }
                 } else {
                     SyncError::ConnectionFailed {
                         address: address.address.clone(),

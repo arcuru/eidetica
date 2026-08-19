@@ -23,7 +23,7 @@ use crate::{
     crdt::Doc,
     store::Registered,
     sync::{
-        error::SyncError,
+        error::{SyncError, TimeoutPhase},
         handler::SyncHandler,
         peer_types::Address,
         protocol::{RequestContext, SyncRequest, SyncResponse},
@@ -710,9 +710,10 @@ impl SyncTransport for IrohTransport {
         // Connect to the peer, bounding how long an unreachable one can cost.
         let conn = timeout(CONNECT_TIMEOUT, endpoint.connect(endpoint_addr, SYNC_ALPN))
             .await
-            .map_err(|_| SyncError::ConnectionFailed {
+            .map_err(|_| SyncError::Timeout {
                 address: address.address.clone(),
-                reason: format!("Connection timed out after {CONNECT_TIMEOUT:?}"),
+                phase: TimeoutPhase::Connect,
+                elapsed: CONNECT_TIMEOUT,
             })?
             .map_err(|e| SyncError::ConnectionFailed {
                 address: address.address.clone(),
@@ -749,11 +750,13 @@ impl SyncTransport for IrohTransport {
         .await
         .map_err(|_| {
             // The peer answered the connection attempt, so it is reachable:
-            // this is a transport failure, not an unreachable peer.
-            SyncError::Network(format!(
-                "Request to {} timed out after {REQUEST_TIMEOUT:?}",
-                address.address
-            ))
+            // the phase records that, rather than the peer being reported as
+            // unreachable.
+            SyncError::Timeout {
+                address: address.address.clone(),
+                phase: TimeoutPhase::Request,
+                elapsed: REQUEST_TIMEOUT,
+            }
         })??;
 
         // Deserialize the response using JsonHandler

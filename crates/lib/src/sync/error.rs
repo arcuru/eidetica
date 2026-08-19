@@ -1,9 +1,41 @@
 //! Error types for the synchronization module.
 
+use std::time::Duration;
+
 use thiserror::Error;
 
 use super::peer_types::Address;
 use crate::{auth::Permission, entry::ID};
+
+/// Which part of an outbound request ran out of time.
+///
+/// Carries what the peer proved about itself before the deadline: a peer that
+/// never completed a connection said nothing, while one that connected and then
+/// stopped answering is reachable and merely unresponsive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeoutPhase {
+    /// The connection was never established, so the peer may not be there at all.
+    Connect,
+    /// The connection was established and the exchange then stalled, so the peer
+    /// is reachable.
+    Request,
+}
+
+impl TimeoutPhase {
+    /// Whether the peer answered far enough to prove it is reachable.
+    pub fn peer_reachable(&self) -> bool {
+        matches!(self, TimeoutPhase::Request)
+    }
+}
+
+impl std::fmt::Display for TimeoutPhase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TimeoutPhase::Connect => write!(f, "connecting"),
+            TimeoutPhase::Request => write!(f, "awaiting a response"),
+        }
+    }
+}
 
 /// Errors that can occur during synchronization operations.
 #[derive(Debug, Error)]
@@ -55,6 +87,20 @@ pub enum SyncError {
     /// Client connection error.
     #[error("Failed to connect to {address}: {reason}")]
     ConnectionFailed { address: String, reason: String },
+
+    /// A peer did not answer within the transport's deadline.
+    ///
+    /// Kept apart from [`SyncError::ConnectionFailed`] and
+    /// [`SyncError::Network`] because a caller reacts differently to silence
+    /// than to a refusal: a peer that never answered is worth asking again,
+    /// while one that answered with an error usually is not. `phase` carries
+    /// what the peer proved about itself before the deadline.
+    #[error("Request to {address} timed out after {elapsed:?} while {phase}")]
+    Timeout {
+        address: String,
+        phase: TimeoutPhase,
+        elapsed: Duration,
+    },
 
     /// Device key not found in backend storage.
     #[error("Device key '{key_name}' not found in backend storage")]
@@ -206,11 +252,31 @@ impl SyncError {
     }
 
     /// Check if this is a network/connection error.
+    ///
+    /// Includes timeouts: a deadline that expires is one way a network call
+    /// fails, and callers classifying by this predicate should not have to
+    /// learn about a new variant to keep treating it as one.
     pub fn is_network_error(&self) -> bool {
         matches!(
             self,
-            SyncError::Network(_) | SyncError::ConnectionFailed { .. }
+            SyncError::Network(_) | SyncError::ConnectionFailed { .. } | SyncError::Timeout { .. }
         )
+    }
+
+    /// Check if this is a timeout, and if so in which phase.
+    ///
+    /// `Some(TimeoutPhase::Request)` means the peer was reachable and stopped
+    /// answering; `Some(TimeoutPhase::Connect)` means it never answered at all.
+    pub fn timeout_phase(&self) -> Option<TimeoutPhase> {
+        match self {
+            SyncError::Timeout { phase, .. } => Some(*phase),
+            _ => None,
+        }
+    }
+
+    /// Check if this is a timeout rather than a refusal or a protocol failure.
+    pub fn is_timeout(&self) -> bool {
+        self.timeout_phase().is_some()
     }
 
     /// Check if this is a protocol error (unexpected response).
@@ -239,5 +305,64 @@ impl SyncError {
     /// Check if this is a backend error.
     pub fn is_backend_error(&self) -> bool {
         matches!(self, SyncError::BackendError(_))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn timeout(phase: TimeoutPhase) -> SyncError {
+        SyncError::Timeout {
+            address: "127.0.0.1:8080".to_string(),
+            phase,
+            elapsed: Duration::from_secs(30),
+        }
+    }
+
+    /// The point of the variant: a caller can tell silence from a refusal
+    /// without matching on the message text.
+    #[test]
+    fn a_timeout_is_distinguishable_from_a_refusal() {
+        let refused = SyncError::ConnectionFailed {
+            address: "127.0.0.1:8080".to_string(),
+            reason: "connection refused".to_string(),
+        };
+
+        assert!(timeout(TimeoutPhase::Request).is_timeout());
+        assert!(!refused.is_timeout());
+        assert!(!SyncError::Network("read failed".to_string()).is_timeout());
+    }
+
+    /// Callers that already classify by `is_network_error` keep working: a
+    /// deadline expiring is still a way a network call failed.
+    #[test]
+    fn a_timeout_is_still_a_network_error() {
+        assert!(timeout(TimeoutPhase::Connect).is_network_error());
+        assert!(timeout(TimeoutPhase::Request).is_network_error());
+    }
+
+    /// The reachability distinction the two transports draw survives into the
+    /// error, rather than being encoded by which variant was chosen.
+    #[test]
+    fn the_phase_records_whether_the_peer_answered_at_all() {
+        assert_eq!(
+            timeout(TimeoutPhase::Connect).timeout_phase(),
+            Some(TimeoutPhase::Connect)
+        );
+        assert!(!TimeoutPhase::Connect.peer_reachable());
+        assert!(TimeoutPhase::Request.peer_reachable());
+
+        assert_eq!(SyncError::ServerNotRunning.timeout_phase(), None);
+    }
+
+    /// The message has to name the peer and the deadline, since that is what a
+    /// log reader has to act on.
+    #[test]
+    fn the_message_names_the_peer_and_the_deadline() {
+        let rendered = timeout(TimeoutPhase::Request).to_string();
+        assert!(rendered.contains("127.0.0.1:8080"), "{rendered}");
+        assert!(rendered.contains("30s"), "{rendered}");
+        assert!(rendered.contains("awaiting a response"), "{rendered}");
     }
 }
