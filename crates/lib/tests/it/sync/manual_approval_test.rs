@@ -1184,7 +1184,7 @@ async fn test_global_permission_enables_transactions() {
         Ok(entry_id) => {
             println!("✅ Transaction committed successfully: {entry_id}");
 
-            // Verify the entry was created with global permission in SigInfo
+            // Verify the entry was created with global permission in AuthInfo
             let entry = client_instance.backend().get(&entry_id).await.unwrap();
             match &entry.auth().key {
                 SigKey::Direct { hint } => {
@@ -1194,7 +1194,7 @@ async fn test_global_permission_enables_transactions() {
                         "Entry should use global permission key, got: {:?}",
                         hint
                     );
-                    println!("✅ Entry correctly uses global permission key in SigInfo");
+                    println!("✅ Entry correctly uses global permission key in AuthInfo");
                 }
                 other => panic!("Expected Direct SigKey, got: {other:?}"),
             }
@@ -1203,9 +1203,9 @@ async fn test_global_permission_enables_transactions() {
             let hint = entry.auth().hint();
             assert!(
                 hint.pubkey.is_some() || hint.name.is_some(),
-                "SigInfo should include key hint"
+                "AuthInfo should include key hint"
             );
-            println!("✅ SigInfo correctly includes key hint");
+            println!("✅ AuthInfo correctly includes key hint");
         }
         Err(e) => {
             panic!("Transaction should succeed with global permission: {e:?}");

@@ -1,7 +1,7 @@
 //! Tests for Entry and EntryBuilder
 
 use super::*;
-use crate::auth::types::{DelegationStep, KeyHint, SigInfo, SigKey};
+use crate::auth::types::{AuthInfo, DelegationStep, KeyHint, SigKey};
 
 #[test]
 fn test_validate_root_entry_without_parents_succeeds() {
@@ -422,7 +422,7 @@ fn test_entry_dagcbor_roundtrip_direct_sigkey() {
 #[test]
 fn test_entry_dagcbor_roundtrip_delegation_sigkey() {
     // Test DAG-CBOR roundtrip with a Delegation SigKey (uses untagged enum + flatten)
-    let sig = SigInfo {
+    let sig = AuthInfo {
         signature: Some("dGVzdF9zaWduYXR1cmU=".to_string()),
         key: SigKey::Delegation {
             path: vec![DelegationStep {
@@ -451,7 +451,7 @@ fn test_entry_dagcbor_roundtrip_with_pubkey_sigkey() {
 
     // Test with a Direct SigKey using pubkey hint
     let private_key = PrivateKey::generate();
-    let sig = SigInfo::from_pubkey(&private_key.public_key());
+    let sig = AuthInfo::from_pubkey(&private_key.public_key());
 
     let entry = Entry::builder(ID::from_bytes("tree_root"))
         .add_parent(ID::from_bytes("parent_entry"))
@@ -534,7 +534,7 @@ fn test_id_memo_is_invalidated_by_set_auth() {
 
     let original_id = entry.id();
     let entry = entry.with_auth(|auth| {
-        *auth = SigInfo::builder()
+        *auth = AuthInfo::builder()
             .key(SigKey::from_name("KEY_LAPTOP"))
             .build()
     });

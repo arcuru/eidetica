@@ -6,24 +6,24 @@
 //!   SQLite lookup + CBOR deserialize + sqlx async overhead.
 //!
 //! Tests four entry shapes:
-//!   - Minimal: root entry, no parents, no subtrees, default SigInfo
+//!   - Minimal: root entry, no parents, no subtrees, default AuthInfo
 //!   - Small: root + 1 parent + 1 small subtree
-//!   - Representative: chaz shape — root + 1 parent + subtree data + delegation SigInfo + height
-//!   - Large: root + 5 parents + 3 subtrees × 1KB each + delegation SigInfo
+//!   - Representative: chaz shape — root + 1 parent + subtree data + delegation AuthInfo + height
+//!   - Large: root + 5 parents + 3 subtrees × 1KB each + delegation AuthInfo
 
 use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use eidetica::auth::types::{DelegationStep, KeyHint, SigInfo, SigKey};
+use eidetica::auth::types::{AuthInfo, DelegationStep, KeyHint, SigKey};
 use eidetica::{Entry, ID, PrivateKey};
 
 fn bench_cbor_deserialize(c: &mut Criterion) {
-    // Shared key for delegation SigInfo
+    // Shared key for delegation AuthInfo
     let private_key = PrivateKey::generate();
     let pubkey = private_key.public_key();
 
-    // ── delegation SigInfo (matches chaz entry shape) ──────────────
-    let delegation_sig = SigInfo {
+    // ── delegation AuthInfo (matches chaz entry shape) ──────────────
+    let delegation_sig = AuthInfo {
         signature: None,
         key: SigKey::Delegation {
             path: vec![DelegationStep {

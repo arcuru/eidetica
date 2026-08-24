@@ -403,9 +403,9 @@ impl SigKey {
     }
 }
 
-/// Signature information embedded in an entry
+/// Authentication information embedded in an entry
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub struct SigInfo {
+pub struct AuthInfo {
     /// Authentication signature - base64-encoded signature bytes
     /// Optional to allow for entry creation before signing
     ///
@@ -417,8 +417,8 @@ pub struct SigInfo {
     pub key: SigKey,
 }
 
-impl SigInfo {
-    /// Create a new SigInfo with a pubkey hint
+impl AuthInfo {
+    /// Create a new AuthInfo with a pubkey hint
     pub fn from_pubkey(pubkey: &PublicKey) -> Self {
         Self {
             signature: None,
@@ -426,7 +426,7 @@ impl SigInfo {
         }
     }
 
-    /// Create a new SigInfo with a name hint
+    /// Create a new AuthInfo with a name hint
     pub fn from_name(name: impl Into<String>) -> Self {
         Self {
             signature: None,
@@ -434,7 +434,7 @@ impl SigInfo {
         }
     }
 
-    /// Create a new SigInfo for global permission
+    /// Create a new AuthInfo for global permission
     pub fn global(actual_pubkey: &PublicKey) -> Self {
         Self {
             signature: None,
@@ -452,14 +452,14 @@ impl SigInfo {
         self.key.hint()
     }
 
-    /// Create a new SigInfoBuilder for constructing SigInfo instances
-    pub fn builder() -> SigInfoBuilder {
-        SigInfoBuilder::new()
+    /// Create a new AuthInfoBuilder for constructing AuthInfo instances
+    pub fn builder() -> AuthInfoBuilder {
+        AuthInfoBuilder::new()
     }
 
     /// Check if this represents an unsigned/unauthenticated entry.
     ///
-    /// An entry is unsigned when `SigInfo` is in its default state:
+    /// An entry is unsigned when `AuthInfo` is in its default state:
     /// - Direct SigKey (not Delegation)
     /// - Empty KeyHint (no pubkey, no name)
     /// - No signature
@@ -498,17 +498,17 @@ impl SigInfo {
     }
 }
 
-/// Builder for constructing SigInfo instances
+/// Builder for constructing AuthInfo instances
 ///
-/// This builder provides a fluent interface for creating SigInfo objects.
+/// This builder provides a fluent interface for creating AuthInfo objects.
 #[derive(Debug, Clone, Default)]
-pub struct SigInfoBuilder {
+pub struct AuthInfoBuilder {
     signature: Option<String>,
     key: Option<SigKey>,
 }
 
-impl SigInfoBuilder {
-    /// Create a new empty SigInfoBuilder
+impl AuthInfoBuilder {
+    /// Create a new empty AuthInfoBuilder
     pub fn new() -> Self {
         Self::default()
     }
@@ -543,14 +543,14 @@ impl SigInfoBuilder {
         self
     }
 
-    /// Build the final SigInfo instance
+    /// Build the final AuthInfo instance
     ///
     /// # Panics
     /// Panics if key is not set, as it's a required field.
-    pub fn build(self) -> SigInfo {
-        SigInfo {
+    pub fn build(self) -> AuthInfo {
+        AuthInfo {
             signature: self.signature,
-            key: self.key.expect("key is required for SigInfo"),
+            key: self.key.expect("key is required for AuthInfo"),
         }
     }
 }

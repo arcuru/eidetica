@@ -131,9 +131,9 @@ impl SettingsStore {
 
 ```rust,ignore
 pub struct Entry {
-    database: TreeNode,              // Main database node with metadata
-    stores: Vec<SubTreeNode>,  // Named stores including _settings
-    auth: SigInfo,               // Signature and key hint
+    database: TreeNode,       // Main database node with metadata
+    stores: Vec<SubTreeNode>, // Named stores including _settings
+    auth: AuthInfo,           // Signature and key hint
 }
 ```
 

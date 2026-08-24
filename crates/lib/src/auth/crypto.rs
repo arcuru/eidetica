@@ -396,7 +396,7 @@ pub fn verify_challenge_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::types::{SigInfo, SigKey};
+    use crate::auth::types::{AuthInfo, SigKey};
 
     #[test]
     fn test_keypair_generation() {
@@ -434,7 +434,7 @@ mod tests {
         // Create a test entry with auth info but no signature
         let entry = Entry::root_builder()
             .set_auth(
-                SigInfo::builder()
+                AuthInfo::builder()
                     .key(SigKey::from_name("KEY_LAPTOP"))
                     .build(),
             )

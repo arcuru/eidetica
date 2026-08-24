@@ -7,7 +7,7 @@ use eidetica::{
     Result,
     auth::{
         AuthSettings,
-        types::{DelegationStep, KeyHint, SigInfo, SigKey},
+        types::{AuthInfo, DelegationStep, KeyHint, SigKey},
         validation::AuthValidator,
     },
     crdt::Doc,
@@ -168,10 +168,10 @@ async fn test_delegation_with_unicode_keys() -> Result<()> {
     Ok(())
 }
 
-/// Test SigInfo with signature but missing key
+/// Test AuthInfo with signature but missing key
 #[tokio::test]
 async fn test_sig_info_with_signature_no_key() {
-    let sig_info = SigInfo::builder()
+    let sig_info = AuthInfo::builder()
         .key(SigKey::Direct {
             hint: KeyHint {
                 pubkey: None,
@@ -184,20 +184,20 @@ async fn test_sig_info_with_signature_no_key() {
 
     // Should serialize/deserialize correctly
     let serialized = serde_json::to_string(&sig_info).unwrap();
-    let deserialized: SigInfo = serde_json::from_str(&serialized).unwrap();
+    let deserialized: AuthInfo = serde_json::from_str(&serialized).unwrap();
     assert_eq!(sig_info, deserialized);
 }
 
-/// Test SigInfo with key but no signature
+/// Test AuthInfo with key but no signature
 #[tokio::test]
 async fn test_sig_info_with_key_no_signature() {
-    let sig_info = SigInfo::builder()
+    let sig_info = AuthInfo::builder()
         .key(SigKey::from_name("valid_key"))
         .build(); // No signature
 
     // Should serialize/deserialize correctly
     let serialized = serde_json::to_string(&sig_info).unwrap();
-    let deserialized: SigInfo = serde_json::from_str(&serialized).unwrap();
+    let deserialized: AuthInfo = serde_json::from_str(&serialized).unwrap();
     assert_eq!(sig_info, deserialized);
 }
 

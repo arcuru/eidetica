@@ -5,7 +5,7 @@ use eidetica::{
     auth::{
         AuthSettings,
         crypto::{PrivateKey, generate_keypair, sign_entry, verify_entry_signature},
-        types::{AuthKey, DelegationStep, KeyHint, KeyStatus, Permission, SigInfo, SigKey},
+        types::{AuthInfo, AuthKey, DelegationStep, KeyHint, KeyStatus, Permission, SigKey},
         validation::AuthValidator,
     },
     crdt::{Doc, doc::Value},
@@ -208,7 +208,7 @@ async fn test_entry_validation_with_corrupted_auth_section() {
     // Create a signed entry
     let entry = Entry::root_builder()
         .set_auth(
-            SigInfo::builder()
+            AuthInfo::builder()
                 .key(SigKey::from_name("TEST_KEY"))
                 .build(),
         )
@@ -316,7 +316,7 @@ async fn test_entry_validation_cache_behavior() {
     // Create a signed entry
     let entry = Entry::root_builder()
         .set_auth(
-            SigInfo::builder()
+            AuthInfo::builder()
                 .key(SigKey::from_pubkey(&verifying_key))
                 .build(),
         )
@@ -371,7 +371,7 @@ async fn test_entry_validation_with_malformed_keys() {
     // Create entry signed with correct key
     let correct_entry = Entry::root_builder()
         .set_auth(
-            SigInfo::builder()
+            AuthInfo::builder()
                 .key(SigKey::from_pubkey(&verifying_key))
                 .build(),
         )
@@ -423,7 +423,7 @@ async fn test_entry_validation_with_malformed_keys() {
 
     let wrong_signature_entry = Entry::root_builder()
         .set_auth(
-            SigInfo::builder()
+            AuthInfo::builder()
                 .key(SigKey::from_pubkey(&verifying_key))
                 .build(),
         )
@@ -496,7 +496,7 @@ async fn test_entry_validation_with_invalid_signatures() {
     // Create entry signed with correct key
     let correct_entry = Entry::root_builder()
         .set_auth(
-            SigInfo::builder()
+            AuthInfo::builder()
                 .key(SigKey::from_pubkey(&verifying_key))
                 .build(),
         )
@@ -545,7 +545,7 @@ async fn test_sigkey_tampering_invalidates_signature() {
     // Create and sign an entry with a pubkey hint
     let entry = Entry::root_builder()
         .set_auth(
-            SigInfo::builder()
+            AuthInfo::builder()
                 .key(SigKey::from_pubkey(&verifying_key))
                 .build(),
         )

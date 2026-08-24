@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use rand::Rng;
 
 use super::{ENTRY_VERSION, Entry, EntryError, ID, RawData, SubTreeNode, TreeNode};
-use crate::{Result, auth::types::SigInfo, constants::ROOT, crdt::Doc, store::StoreError};
+use crate::{Result, auth::types::AuthInfo, constants::ROOT, crdt::Doc, store::StoreError};
 
 /// A builder for creating `Entry` instances.
 ///
@@ -71,7 +71,7 @@ use crate::{Result, auth::types::SigInfo, constants::ROOT, crdt::Doc, store::Sto
 pub struct EntryBuilder {
     pub(super) tree: TreeNode,
     pub(super) subtrees: Vec<SubTreeNode>,
-    pub(super) auth: SigInfo,
+    pub(super) auth: AuthInfo,
 }
 
 impl EntryBuilder {
@@ -91,7 +91,7 @@ impl EntryBuilder {
                 height: 0,
             },
             subtrees: Vec::new(),
-            auth: SigInfo::default(),
+            auth: AuthInfo::default(),
         }
     }
 
@@ -119,7 +119,7 @@ impl EntryBuilder {
     ///
     /// # Arguments
     /// * `auth` - The authentication information including key ID and optional signature
-    pub fn set_auth(mut self, auth: SigInfo) -> Self {
+    pub fn set_auth(mut self, auth: AuthInfo) -> Self {
         self.auth = auth;
         self
     }
@@ -129,7 +129,7 @@ impl EntryBuilder {
     ///
     /// # Arguments
     /// * `auth` - The authentication information including key ID and optional signature
-    pub fn set_auth_mut(&mut self, auth: SigInfo) -> &mut Self {
+    pub fn set_auth_mut(&mut self, auth: AuthInfo) -> &mut Self {
         self.auth = auth;
         self
     }

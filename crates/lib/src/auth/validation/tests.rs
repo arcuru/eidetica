@@ -11,8 +11,8 @@ use crate::{
         crypto::{PrivateKey, PublicKey, generate_keypair, sign_entry},
         settings::AuthSettings,
         types::{
-            AuthKey, DelegationStep, KeyHint, KeyStatus, Operation, Permission, ResolvedAuth,
-            SigInfo, SigKey,
+            AuthInfo, AuthKey, DelegationStep, KeyHint, KeyStatus, Operation, Permission,
+            ResolvedAuth, SigKey,
         },
     },
     crdt::Doc,
@@ -171,7 +171,11 @@ async fn test_entry_validation_success() {
 
     // Create a test entry using Entry::builder
     let entry = Entry::root_builder()
-        .set_auth(SigInfo::builder().key(SigKey::from_pubkey(&pubkey)).build())
+        .set_auth(
+            AuthInfo::builder()
+                .key(SigKey::from_pubkey(&pubkey))
+                .build(),
+        )
         .build()
         .expect("Root entry should build successfully");
 
@@ -235,7 +239,11 @@ async fn test_validate_entry_with_auth_info_against_empty_settings() {
 
     // Create an entry with auth info (signed)
     let entry = Entry::root_builder()
-        .set_auth(SigInfo::builder().key(SigKey::from_pubkey(&pubkey)).build())
+        .set_auth(
+            AuthInfo::builder()
+                .key(SigKey::from_pubkey(&pubkey))
+                .build(),
+        )
         .build()
         .expect("Root entry should build successfully");
 
@@ -273,7 +281,11 @@ async fn test_entry_validation_with_revoked_key() {
 
     // Create a test entry using Entry::builder
     let entry = Entry::root_builder()
-        .set_auth(SigInfo::builder().key(SigKey::from_pubkey(&pubkey)).build())
+        .set_auth(
+            AuthInfo::builder()
+                .key(SigKey::from_pubkey(&pubkey))
+                .build(),
+        )
         .build()
         .expect("Root entry should build successfully");
 
@@ -703,7 +715,7 @@ async fn test_global_permission_with_pubkey_hint() {
 
     // Create an entry that uses global permission with actual signer pubkey in hint
     let entry = Entry::root_builder()
-        .set_auth(SigInfo {
+        .set_auth(AuthInfo {
             key: SigKey::global(&actual_pubkey),
             signature: None,
         })
@@ -736,7 +748,7 @@ async fn test_global_permission_without_pubkey_fails() {
 
     // Create an entry that uses a name hint "*" without pubkey - should fail
     let entry = Entry::root_builder()
-        .set_auth(SigInfo {
+        .set_auth(AuthInfo {
             key: SigKey::from_name("*"), // Just "*" without pubkey - should fail
             signature: None,
         })
@@ -806,7 +818,7 @@ async fn test_global_permission_insufficient_perms() {
 
     // Create an entry that tries to write (requires Write permission)
     let entry = Entry::root_builder()
-        .set_auth(SigInfo {
+        .set_auth(AuthInfo {
             key: SigKey::global(&actual_pubkey),
             signature: None,
         })
@@ -840,7 +852,7 @@ async fn test_global_permission_vs_specific_key() {
     // Test 1: Entry signed with specific key should work normally
     let entry1 = Entry::root_builder()
         .set_auth(
-            SigInfo::builder()
+            AuthInfo::builder()
                 .key(SigKey::from_pubkey(&pubkey1))
                 .build(),
         )
@@ -857,7 +869,7 @@ async fn test_global_permission_vs_specific_key() {
     // Test 2: Entry using global permission should also work
     let entry2 = Entry::root_builder()
         .set_auth(
-            SigInfo::builder()
+            AuthInfo::builder()
                 .key(SigKey::global(&pubkey2)) // Different key using global permission
                 .build(),
         )

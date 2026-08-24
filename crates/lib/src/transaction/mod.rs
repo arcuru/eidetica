@@ -36,7 +36,7 @@ use crate::{
     auth::{
         AuthSettings,
         crypto::{PrivateKey, sign_entry},
-        types::{SigInfo, SigKey},
+        types::{AuthInfo, SigKey},
         validation::AuthValidator,
     },
     backend::VerificationStatus,
@@ -1163,8 +1163,8 @@ impl Transaction {
             // Use provided signing key directly (already decrypted from UserKeyManager or device key)
             let key_clone = provided_key.clone();
 
-            // Build SigInfo from the already-typed SigKey identity
-            let sig_builder = SigInfo::builder().key(identity.clone());
+            // Build AuthInfo from the already-typed SigKey identity
+            let sig_builder = AuthInfo::builder().key(identity.clone());
 
             // Set auth ID on the entry builder (without signature initially)
             builder.set_auth_mut(sig_builder.build());

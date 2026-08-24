@@ -20,7 +20,7 @@ pub use builder::EntryBuilder;
 pub use errors::EntryError;
 pub use id::ID;
 
-use crate::{Result, auth::types::SigInfo, constants::ROOT, store::StoreError};
+use crate::{Result, auth::types::AuthInfo, constants::ROOT, store::StoreError};
 
 use id::IdError;
 
@@ -95,7 +95,7 @@ pub(super) struct SubTreeNode {
 ///
 /// # Authentication
 ///
-/// Each entry contains authentication information (`auth`, a [`SigInfo`]) with:
+/// Each entry contains authentication information (`auth`, an [`AuthInfo`]) with:
 /// - `signature`: Base64-encoded cryptographic signature (optional, allows unsigned entry creation)
 /// - `key`: Authentication key reference path, either:
 ///   - A direct key ID defined in this tree's `_settings.auth`
@@ -226,7 +226,7 @@ pub struct Entry {
     /// rather than mutating it in place. Serialized as `sig` to keep the wire format —
     /// and therefore every existing entry ID — unchanged.
     #[serde(rename = "sig")]
-    auth: SigInfo,
+    auth: AuthInfo,
     /// Memoized content-addressable ID. Derived state; see [`IdCache`].
     #[serde(skip)]
     id_cache: IdCache,
@@ -277,7 +277,7 @@ impl Entry {
     }
 
     /// Get the authentication information attached to this entry.
-    pub fn auth(&self) -> &SigInfo {
+    pub fn auth(&self) -> &AuthInfo {
         &self.auth
     }
 
@@ -296,7 +296,7 @@ impl Entry {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn with_auth(mut self, update: impl FnOnce(&mut SigInfo)) -> Self {
+    pub fn with_auth(mut self, update: impl FnOnce(&mut AuthInfo)) -> Self {
         update(&mut self.auth);
         self.id_cache = IdCache::default();
         self

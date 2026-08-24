@@ -321,7 +321,7 @@ async fn test_global_key_bootstrap() {
     let hint = latest_entry.auth().hint();
     assert!(
         hint.pubkey.is_some() || hint.name.is_some(),
-        "SigInfo should have key hint"
+        "AuthInfo should have key hint"
     );
 
     // Cleanup
