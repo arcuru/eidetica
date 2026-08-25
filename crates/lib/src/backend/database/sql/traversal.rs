@@ -5,6 +5,8 @@
 
 use std::collections::HashSet;
 
+use sqlx::AnyConnection;
+
 use crate::Result;
 use crate::backend::errors::BackendError;
 use crate::entry::{Entry, ID};
@@ -130,6 +132,24 @@ pub async fn find_merge_base(
     store: &str,
     entry_ids: &[ID],
 ) -> Result<Option<ID>> {
+    // A single connection for the whole search: the batches and the dominator
+    // probes below are many statements, and splitting them across pooled
+    // connections would let them see different views of the DAG.
+    let mut tx = backend.begin_read().await?;
+    let result = merge_base_on(&mut tx, tree, store, entry_ids).await;
+    tx.rollback()
+        .await
+        .sql_context("Failed to end read transaction")?;
+    result
+}
+
+/// [`find_merge_base`] against an already-open connection or transaction.
+async fn merge_base_on(
+    conn: &mut AnyConnection,
+    tree: &ID,
+    store: &str,
+    entry_ids: &[ID],
+) -> Result<Option<ID>> {
     if entry_ids.is_empty() {
         return Err(BackendError::EmptyEntryList {
             operation: "find_merge_base".to_string(),
@@ -143,7 +163,7 @@ pub async fn find_merge_base(
 
     // An unknown or foreign tip must error like the in-memory backend does,
     // not fall out of the frontier JOINs as a silent partial merge.
-    validate_tips_in_tree(backend, tree, entry_ids).await?;
+    validate_tips_on(conn, tree, entry_ids).await?;
 
     // Track all known ancestors per tip and their frontiers for continuation
     let mut ancestor_sets: Vec<HashSet<ID>> = vec![HashSet::new(); entry_ids.len()];
@@ -168,7 +188,7 @@ pub async fn find_merge_base(
             }
 
             let (ancestors, new_frontier) =
-                collect_ancestors_from_frontier(backend, store, frontier, MERGE_BASE_DEPTH_LIMIT)
+                collect_ancestors_from_frontier(conn, store, frontier, MERGE_BASE_DEPTH_LIMIT)
                     .await?;
 
             // Add to known ancestors (filtering duplicates)
@@ -209,7 +229,7 @@ pub async fn find_merge_base(
         for (candidate, _height) in candidates {
             let mut all_paths_pass = true;
             for entry_id in entry_ids {
-                if !is_dominator_cte(backend, store, entry_id, &candidate).await? {
+                if !is_dominator_cte(conn, store, entry_id, &candidate).await? {
                     all_paths_pass = false;
                     break;
                 }
@@ -229,7 +249,7 @@ pub async fn find_merge_base(
 /// The new frontier contains entries at exactly `depth_limit` depth whose parents
 /// were not included - these can be used to continue traversal in the next batch.
 async fn collect_ancestors_from_frontier(
-    backend: &SqlxBackend,
+    conn: &mut AnyConnection,
     store: &str,
     frontier: &[ID],
     depth_limit: usize,
@@ -237,8 +257,6 @@ async fn collect_ancestors_from_frontier(
     if frontier.is_empty() {
         return Ok((Vec::new(), Vec::new()));
     }
-
-    let pool = backend.pool();
 
     // Build UNION ALL clause for starting entries
     let start_selects: Vec<String> = (1..=frontier.len())
@@ -271,7 +289,7 @@ async fn collect_ancestors_from_frontier(
     query = query.bind(depth_limit as i64);
 
     let rows = query
-        .fetch_all(pool)
+        .fetch_all(&mut *conn)
         .await
         .sql_context("Failed to collect ancestors from frontier")?;
 
@@ -302,7 +320,7 @@ async fn collect_ancestors_from_frontier(
 /// Returns true if ALL paths from entry to root pass through candidate.
 /// This works by trying to reach a root while avoiding the candidate using a CTE.
 async fn is_dominator_cte(
-    backend: &SqlxBackend,
+    conn: &mut AnyConnection,
     store: &str,
     entry: &ID,
     candidate: &ID,
@@ -311,8 +329,6 @@ async fn is_dominator_cte(
     if entry == candidate {
         return Ok(true);
     }
-
-    let pool = backend.pool();
 
     // Recursive CTE that tries to reach a root while avoiding the candidate.
     // If we can reach any root (entry with no parents), there's a bypass path.
@@ -345,7 +361,7 @@ async fn is_dominator_cte(
     .bind(entry.to_string())
     .bind(candidate.to_string())
     .bind(store)
-    .fetch_one(pool)
+    .fetch_one(&mut *conn)
     .await
     .sql_context("Failed to check dominator")?;
 
@@ -358,11 +374,19 @@ async fn is_dominator_cte(
 /// Returns `EntryNotFound` for an ID with no entry row at all, and
 /// `EntryNotInTree` for one that exists under a different tree.
 async fn validate_tips_in_tree(backend: &SqlxBackend, tree: &ID, tips: &[ID]) -> Result<()> {
+    let mut conn = backend
+        .pool()
+        .acquire()
+        .await
+        .sql_context("Failed to acquire connection")?;
+    validate_tips_on(&mut conn, tree, tips).await
+}
+
+/// [`validate_tips_in_tree`] against an already-open connection or transaction.
+async fn validate_tips_on(conn: &mut AnyConnection, tree: &ID, tips: &[ID]) -> Result<()> {
     if tips.is_empty() {
         return Ok(());
     }
-
-    let pool = backend.pool();
 
     // Build UNION ALL clause for tip IDs (works in both SQLite and PostgreSQL)
     let start_selects: Vec<String> = (1..=tips.len())
@@ -389,7 +413,7 @@ async fn validate_tips_in_tree(backend: &SqlxBackend, tree: &ID, tips: &[ID]) ->
     }
 
     let validation_rows = validation_query
-        .fetch_all(pool)
+        .fetch_all(&mut *conn)
         .await
         .sql_context("Failed to validate tips")?;
 
@@ -605,11 +629,50 @@ pub async fn get_path_from_to(
     from_id: Option<&ID>,
     to_ids: &[ID],
 ) -> Result<Vec<ID>> {
+    let mut conn = backend
+        .pool()
+        .acquire()
+        .await
+        .sql_context("Failed to acquire connection")?;
+    path_from_to_on(&mut conn, store, from_id, to_ids).await
+}
+
+/// Merge base plus the path from it to `entry_ids`, both read inside one
+/// transaction so no ingest can land between the two queries.
+pub async fn compute_merge_state(
+    backend: &SqlxBackend,
+    tree: &ID,
+    store: &str,
+    entry_ids: &[ID],
+) -> Result<(Option<ID>, Vec<ID>)> {
+    let mut tx = backend.begin_read().await?;
+    let result = async {
+        let merge_base = merge_base_on(&mut tx, tree, store, entry_ids).await?;
+        // With no base the caller folds the full ancestry from a default
+        // state via a batch entry fetch, so no path is walked.
+        let path = match &merge_base {
+            Some(base) => path_from_to_on(&mut tx, store, Some(base), entry_ids).await?,
+            None => Vec::new(),
+        };
+        Ok((merge_base, path))
+    }
+    .await;
+    tx.rollback()
+        .await
+        .sql_context("Failed to end read transaction")?;
+    result
+}
+
+/// [`get_path_from_to`] against an already-open connection or transaction.
+async fn path_from_to_on(
+    conn: &mut AnyConnection,
+    store: &str,
+    from_id: Option<&ID>,
+    to_ids: &[ID],
+) -> Result<Vec<ID>> {
     if to_ids.is_empty() {
         return Ok(Vec::new());
     }
-
-    let pool = backend.pool();
 
     // $1 is store; $2 is from_id when there is one, so the to_ids start one
     // slot later in that case.
@@ -661,7 +724,7 @@ pub async fn get_path_from_to(
     }
 
     let rows = query
-        .fetch_all(pool)
+        .fetch_all(&mut *conn)
         .await
         .sql_context("Failed to get path from to")?;
 

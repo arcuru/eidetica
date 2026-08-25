@@ -24,8 +24,8 @@ use crate::entry::ID;
 use crate::instance::{CallbackId, WriteSource};
 use crate::service::error::ServiceError;
 use crate::service::protocol::{
-    AuthenticatedDbRequest, DatabaseOp, HandshakeAck, MergeState, Notification, PROTOCOL_VERSION,
-    ServerFrame, ServiceRequest, ServiceResponse, read_frame, write_frame,
+    AuthenticatedDbRequest, DatabaseOp, HandshakeAck, Notification, PROTOCOL_VERSION, ServerFrame,
+    ServiceRequest, ServiceResponse, read_frame, write_frame,
 };
 use crate::user::system_databases::lookup_user_record;
 
@@ -717,14 +717,11 @@ async fn dispatch_database_op(
 
         DatabaseOp::ComputeMergeState { store, entry_ids } => {
             let db = Database::open(instance, &root_id).await?;
-            let slice = db
+            let state = db
                 .ops()
                 .compute_merge_state(&root_id, &store, &entry_ids)
                 .await?;
-            Ok(ServiceResponse::MergeState(MergeState {
-                merge_base: slice.merge_base,
-                path: slice.path,
-            }))
+            Ok(ServiceResponse::MergeState(state))
         }
 
         DatabaseOp::GetCachedCrdtState { store, key } => {

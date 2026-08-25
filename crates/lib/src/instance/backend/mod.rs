@@ -28,30 +28,11 @@ use async_trait::async_trait;
 use crate::service::client::RemoteConnection;
 use crate::{
     Result,
-    backend::{BackendImpl, InstanceMetadata, VerificationStatus},
+    backend::{BackendImpl, InstanceMetadata, MergeState, VerificationStatus},
     entry::{Entry, ID},
     instance::WriteSource,
     snapshot::Snapshot,
 };
-
-/// The inputs for materializing a multi-tip store state, resolved in one
-/// call (see [`Backend::compute_merge_state`]).
-///
-/// When `merge_base` is `Some`, `path` holds every entry between the base
-/// (exclusive) and the tips (inclusive), sorted by height then ID for the
-/// CRDT fold. When it is `None` the tips share no common ancestor and the
-/// caller materializes their full ancestry from the empty base — via a
-/// batch entry fetch ([`Backend::store_at`]) rather than a path walk, so
-/// `path` is empty.
-#[derive(Debug, Clone)]
-pub struct MergeSlice {
-    /// The common dominator of the queried tips, or `None` for disjoint
-    /// histories.
-    pub merge_base: Option<ID>,
-    /// Entries to fold on top of the base's state; empty when `merge_base`
-    /// is `None`.
-    pub path: Vec<ID>,
-}
 
 /// The storage operations `Transaction`/`Store`/`Database`/`Instance` perform,
 /// independent of whether storage is in-process or served by a daemon.
@@ -90,13 +71,14 @@ pub trait Backend: Send + Sync + std::fmt::Debug {
     /// calls lets the answers come from two different views of the store —
     /// on a remote backend, two RPCs a sync ingest can land between — and a
     /// path anchored at a base the caller never saw folds into a silently
-    /// truncated state.
+    /// truncated state (see [`MergeState`]). Both implementations of this seam
+    /// push the pair down to a single call so the view is chosen once.
     async fn compute_merge_state(
         &self,
         tree: &ID,
         store: &str,
         entry_ids: &[ID],
-    ) -> Result<MergeSlice>;
+    ) -> Result<MergeState>;
 
     /// Cached materialized CRDT state for `(entry_id, store)` within `tree`, if
     /// present. `tree` keys the daemon-side cache and gates the wire RPC; the

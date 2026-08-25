@@ -5,6 +5,7 @@ mod concurrent_writes;
 mod cross_backend_ordering;
 mod height_calculations;
 mod helpers;
+mod merge_state;
 mod out_of_order_tips;
 mod save_load;
 mod subtree_operations;

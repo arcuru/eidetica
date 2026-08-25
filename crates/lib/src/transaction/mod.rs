@@ -826,8 +826,10 @@ impl Transaction {
             return Ok(result);
         }
 
-        // Cache miss: resolve the merge base and the path to fold in a
-        // single call, so both come from one view of the store.
+        // Cache miss: resolve the merge base and the path to fold in a single
+        // call, so both come from one view of the store. An ingest landing
+        // between two separate reads could otherwise expose a path around the
+        // base, replaying entries the base state already contains.
         let merge = self
             .db
             .ops()

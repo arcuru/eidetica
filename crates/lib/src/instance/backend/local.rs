@@ -4,10 +4,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use super::{Backend, MergeSlice};
+use super::Backend;
 use crate::{
     Result,
-    backend::{BackendImpl, CacheScope, InstanceMetadata, VerificationStatus},
+    backend::{BackendImpl, CacheScope, InstanceMetadata, MergeState, VerificationStatus},
     entry::{Entry, ID},
     instance::WriteSource,
     snapshot::Snapshot,
@@ -66,22 +66,10 @@ impl Backend for LocalBackend {
         tree: &ID,
         store: &str,
         entry_ids: &[ID],
-    ) -> Result<MergeSlice> {
-        let merge_base = self.0.find_merge_base(tree, store, entry_ids).await?;
-        // Entries are immutable and parents precede children, so for a local
-        // engine the path is a pure function of (base, tips) — the two
-        // engine calls cannot disagree the way two remote RPCs can. With no
-        // base the caller batch-fetches the full ancestry instead of
-        // walking a path, so none is computed.
-        let path = match &merge_base {
-            Some(base) => {
-                self.0
-                    .get_path_from_to(tree, store, Some(base), entry_ids)
-                    .await?
-            }
-            None => Vec::new(),
-        };
-        Ok(MergeSlice { merge_base, path })
+    ) -> Result<MergeState> {
+        // The engine derives both halves from one view of the DAG; see
+        // `BackendImpl::compute_merge_state`.
+        self.0.compute_merge_state(tree, store, entry_ids).await
     }
 
     async fn get_cached_crdt_state(

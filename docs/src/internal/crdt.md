@@ -27,6 +27,8 @@ Uses a recursive merge-base approach for computing CRDT states:
 - **Path Merging**: Merges all entries from merge base to parents with proper ordering
 - **Local Integration**: Applies current entry's data to final state
 
+The base and the path are read together, through `Backend::compute_merge_state`. They only describe a mergeable region if they came from the same view of the DAG: an entry ingested between two separate reads can open a route around the base that the base computation never saw, and the path then replays entries the base state already contains. The in-memory engine holds one read guard across both halves; the SQL engines run them in one read transaction (`REPEATABLE READ` on PostgreSQL); a remote backend gets both from one RPC.
+
 ## Doc Merge Semantics
 
 The `Doc` type supports two merge modes controlled by an `atomic` flag:

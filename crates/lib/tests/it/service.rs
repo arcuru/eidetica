@@ -114,6 +114,52 @@ async fn setup_db(
 }
 
 #[tokio::test]
+async fn test_compute_merge_state_over_rpc() {
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    let (instance, root_id, identity) = setup_db(&server, &socket_path, "merge_rpc").await;
+    let server_user = server.login_user("merge_rpc", None).await.unwrap();
+    let server_key_pub = server_user.get_default_key().unwrap();
+    let server_sk = server_user.get_signing_key(&server_key_pub).unwrap();
+    let server_db = eidetica::Database::open(&server, &root_id)
+        .await
+        .unwrap()
+        .with_key(server_sk);
+
+    let op = server_db.new_transaction().await.unwrap();
+    op.get_store::<DocStore>("data")
+        .await
+        .unwrap()
+        .set("root", "value")
+        .await
+        .unwrap();
+    let base = op.commit().await.unwrap();
+
+    let mut tips = Vec::new();
+    for (key, value) in [("left", "one"), ("right", "two")] {
+        let op = server_db
+            .new_transaction_at(&eidetica::Snapshot::from(std::slice::from_ref(&base)))
+            .await
+            .unwrap();
+        op.get_store::<DocStore>("data")
+            .await
+            .unwrap()
+            .set(key, value)
+            .await
+            .unwrap();
+        tips.push(op.commit().await.unwrap());
+    }
+
+    let state = remote_conn(&instance)
+        .compute_merge_state(root_id, identity, "data".to_string(), tips.clone())
+        .await
+        .unwrap();
+
+    assert_eq!(state.merge_base, Some(base));
+    assert_eq!(state.path.len(), 2);
+    assert!(tips.iter().all(|tip| state.path.contains(tip)));
+}
+
+#[tokio::test]
 async fn test_connect_and_create_instance() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
     let _instance = Instance::connect(format!("unix://{}", socket_path.display()))

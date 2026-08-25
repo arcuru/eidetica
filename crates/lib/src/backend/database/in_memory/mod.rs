@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     Result,
     backend::{
-        BackendImpl, CacheScope, InstanceMetadata, InstanceSecrets, VerificationStatus,
+        BackendImpl, CacheScope, InstanceMetadata, InstanceSecrets, MergeState, VerificationStatus,
         errors::BackendError,
     },
     entry::{Entry, ID},
@@ -445,5 +445,25 @@ impl BackendImpl for InMemory {
     ) -> Result<Vec<ID>> {
         let inner = self.inner.read().unwrap();
         traversal::get_path_from_to(&inner, tree_id, subtree, from_id, to_ids)
+    }
+
+    async fn compute_merge_state(
+        &self,
+        tree: &ID,
+        subtree: &str,
+        entry_ids: &[ID],
+    ) -> Result<MergeState> {
+        // One read guard spans both halves, so no write can land between them.
+        let inner = self.inner.read().unwrap();
+        let merge_base = traversal::find_merge_base(&inner, tree, subtree, entry_ids)?;
+        // With no base the caller folds the full ancestry from a default
+        // state via a batch entry fetch, so no path is walked.
+        let path = match &merge_base {
+            Some(base) => {
+                traversal::get_path_from_to(&inner, tree, subtree, Some(base), entry_ids)?
+            }
+            None => Vec::new(),
+        };
+        Ok(MergeState { merge_base, path })
     }
 }

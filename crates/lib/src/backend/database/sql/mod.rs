@@ -38,7 +38,7 @@ use sqlx::any::AnyPoolOptions;
 use crate::Result;
 use crate::backend::errors::BackendError;
 use crate::backend::{
-    BackendImpl, CacheScope, InstanceMetadata, InstanceSecrets, VerificationStatus,
+    BackendImpl, CacheScope, InstanceMetadata, InstanceSecrets, MergeState, VerificationStatus,
 };
 use crate::entry::{Entry, ID};
 use crate::snapshot::Snapshot;
@@ -110,6 +110,30 @@ impl SqlxBackend {
     /// Check if this backend is using PostgreSQL.
     pub fn is_postgres(&self) -> bool {
         self.kind == DbKind::Postgres
+    }
+
+    /// Begin a read transaction whose statements all observe one view of the
+    /// database.
+    ///
+    /// SQLite gets sqlx's default `BEGIN DEFERRED`, which pins a read snapshot
+    /// at the first statement and (under WAL) never blocks writers. PostgreSQL
+    /// defaults to READ COMMITTED, where each statement takes its own snapshot,
+    /// so the isolation level is raised to REPEATABLE READ.
+    ///
+    /// The caller is expected to roll back: nothing here writes.
+    pub(crate) async fn begin_read(&self) -> Result<sqlx::Transaction<'_, sqlx::Any>> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .sql_context("Failed to begin read transaction")?;
+        if self.is_postgres() {
+            sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+                .execute(&mut *tx)
+                .await
+                .sql_context("Failed to set REPEATABLE READ isolation")?;
+        }
+        Ok(tx)
     }
 }
 
@@ -496,6 +520,17 @@ impl BackendImpl for SqlxBackend {
         to_ids: &[ID],
     ) -> Result<Vec<ID>> {
         traversal::get_path_from_to(self, tree_id, store, from_id, to_ids).await
+    }
+
+    async fn compute_merge_state(
+        &self,
+        tree: &ID,
+        store: &str,
+        entry_ids: &[ID],
+    ) -> Result<MergeState> {
+        let (merge_base, path) =
+            traversal::compute_merge_state(self, tree, store, entry_ids).await?;
+        Ok(MergeState { merge_base, path })
     }
 
     async fn get_instance_metadata(&self) -> Result<Option<InstanceMetadata>> {

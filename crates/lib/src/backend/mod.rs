@@ -153,6 +153,37 @@ pub enum Reachability {
     },
 }
 
+/// A merge base together with the path of entries leading from it to a set of
+/// tips, within one store.
+///
+/// The two halves only describe a mergeable region if they were derived from
+/// the *same* view of the DAG. Computing them from two separate reads lets a
+/// concurrent ingest land ancestors in between, which can expose a path around
+/// the base that the base computation never saw — the resulting path then
+/// includes entries already folded into the base state, and replaying them on
+/// top can regress newer values. [`BackendImpl::compute_merge_state`] exists to
+/// derive the pair as a unit.
+///
+/// This is the one pair type for merge-based materialization: the engine trait
+/// computes it, the instance seam ([`crate::instance::backend::Backend`])
+/// returns it, and the service protocol serves it on the wire.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MergeState {
+    /// Lowest common dominator of the requested entries within the store, or
+    /// `None` when they share no common ancestor.
+    ///
+    /// `None` is a valid result rather than an error: two independently
+    /// created copies of a store have disjoint roots, and their histories
+    /// merge from the empty base. The caller then materializes the tips' full
+    /// ancestry from a default state via a batch entry fetch
+    /// ([`BackendImpl::store_at`]) rather than a path walk.
+    pub merge_base: Option<ID>,
+    /// Entries strictly between `merge_base` and the requested entries,
+    /// deduplicated and ordered by height then ID. Empty when `merge_base` is
+    /// `None`.
+    pub path: Vec<ID>,
+}
+
 /// Verification status for entries in the backend.
 ///
 /// This enum tracks whether an entry has been cryptographically verified
@@ -705,6 +736,28 @@ pub trait BackendImpl: Send + Sync + Any {
         from_id: Option<&ID>,
         to_ids: &[ID],
     ) -> Result<Vec<ID>>;
+
+    /// Computes the merge base of `entry_ids` and the path from it to them as
+    /// one consistent pair.
+    ///
+    /// Equivalent to [`find_merge_base`](Self::find_merge_base) followed by
+    /// [`get_path_from_to`](Self::get_path_from_to) — skipped entirely when
+    /// there is no base, since the caller folds the full ancestry from a
+    /// default state instead — except that an
+    /// implementation is expected to derive both halves from a single view of
+    /// the DAG so a concurrent ingest cannot land between them (see
+    /// [`MergeState`]).
+    ///
+    /// # Arguments
+    /// * `tree` - The root ID of the tree
+    /// * `store` - The name of the store context
+    /// * `entry_ids` - The tip entry IDs being merged
+    async fn compute_merge_state(
+        &self,
+        tree: &ID,
+        store: &str,
+        entry_ids: &[ID],
+    ) -> Result<MergeState>;
 
     // === Instance Metadata Methods ===
     //

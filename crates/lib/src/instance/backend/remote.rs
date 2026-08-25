@@ -2,11 +2,11 @@
 
 use async_trait::async_trait;
 
-use super::{Backend, MergeSlice};
+use super::Backend;
 use crate::{
     Result,
     auth::SigKey,
-    backend::{InstanceMetadata, VerificationStatus},
+    backend::{InstanceMetadata, MergeState, VerificationStatus},
     entry::{Entry, ID},
     instance::WriteSource,
     service::{client::RemoteConnection, protocol::ReadScope},
@@ -143,22 +143,17 @@ impl Backend for RemoteBackend {
         tree: &ID,
         store: &str,
         entry_ids: &[ID],
-    ) -> Result<MergeSlice> {
+    ) -> Result<MergeState> {
         // One RPC resolves base and path against a single server-side view;
         // see the trait doc for why they must not be two round-trips.
-        let state = self
-            .conn
+        self.conn
             .compute_merge_state(
                 tree.clone(),
                 self.identity(),
                 store.to_string(),
                 entry_ids.to_vec(),
             )
-            .await?;
-        Ok(MergeSlice {
-            merge_base: state.merge_base,
-            path: state.path,
-        })
+            .await
     }
 
     async fn get_cached_crdt_state(

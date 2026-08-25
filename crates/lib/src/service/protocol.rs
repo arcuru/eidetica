@@ -115,16 +115,13 @@ pub struct TransactionContext {
 }
 
 /// Response for ComputeMergeState: lowest common ancestor + path to tips.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MergeState {
-    /// `None` when the entries share no common ancestor: the state is folded
-    /// from a default over the tips' full ancestry, which the client fetches
-    /// as whole entries (`GetStoreEntries`) rather than as a path of IDs.
-    pub merge_base: Option<ID>,
-    /// Entries between the base and the tips; empty when `merge_base` is
-    /// `None`.
-    pub path: Vec<ID>,
-}
+///
+/// The wire shape is the backend's own pair type, so the daemon serves what the
+/// engine computed without a translation step. A `None` merge base means the
+/// entries share no common ancestor: the state is folded from a default over
+/// the tips' full ancestry, which the client fetches as whole entries
+/// (`GetStoreEntries`) rather than as a path of IDs.
+pub use crate::backend::MergeState;
 
 /// Database-level operations the server runs on its local `Database`.
 ///
