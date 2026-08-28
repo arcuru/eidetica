@@ -24,8 +24,9 @@ use crate::entry::ID;
 use crate::instance::{CallbackId, WriteSource};
 use crate::service::error::ServiceError;
 use crate::service::protocol::{
-    AuthenticatedDbRequest, DatabaseOp, HandshakeAck, MergeState, Notification, PROTOCOL_VERSION,
-    ServerFrame, ServiceRequest, ServiceResponse, read_frame, write_frame,
+    AuthenticatedDbRequest, DatabaseOp, HandshakeAck, MAX_FRAME_SIZE, MergeState, Notification,
+    PROTOCOL_VERSION, ServerFrame, ServiceRequest, ServiceResponse, encode_frame_with_limit,
+    read_frame, write_frame, write_payload,
 };
 use crate::user::system_databases::lookup_user_record;
 
@@ -259,6 +260,60 @@ impl ServiceServer {
     }
 }
 
+/// Write one [`ServerFrame`], substituting a correlated error for a response
+/// that cannot be encoded within `limit` bytes.
+///
+/// Returns `false` when the connection must be torn down. Encoding touches no
+/// bytes, so a frame rejected there leaves the stream intact and the
+/// connection usable; a failed write may have put a partial frame on the wire
+/// and is unrecoverable.
+///
+/// A response is owed to a request that is still pending, and the protocol
+/// correlates responses by order — dropping one would answer every later
+/// request with the wrong reply — so an unencodable response becomes an error
+/// response. Notifications carry no correlation and are recoverable by design
+/// (a subscriber that misses one catches up from the next event's tips), so an
+/// unencodable notification is dropped.
+async fn write_server_frame<W: tokio::io::AsyncWrite + Unpin>(
+    writer: &mut W,
+    frame: ServerFrame,
+    limit: u32,
+    conn_id: ConnectionId,
+) -> bool {
+    let payload = match encode_frame_with_limit(&frame, limit) {
+        Ok(payload) => payload,
+        Err(e) => match frame {
+            ServerFrame::Response(_) => {
+                let replacement =
+                    ServerFrame::Response(Box::new(ServiceResponse::Error(ServiceError {
+                        module: "service".to_string(),
+                        kind: "ResponseTooLarge".to_string(),
+                        message: format!(
+                            "response exceeds the protocol frame limit ({e}); \
+                             request a smaller range"
+                        ),
+                    })));
+                match encode_frame_with_limit(&replacement, limit) {
+                    Ok(payload) => payload,
+                    Err(e) => {
+                        tracing::debug!(conn_id, "Connection writer error: {e}");
+                        return false;
+                    }
+                }
+            }
+            ServerFrame::Notification(_) => {
+                tracing::debug!(conn_id, "Dropping unencodable notification: {e}");
+                return true;
+            }
+        },
+    };
+    if let Err(e) = write_payload(writer, &payload).await {
+        tracing::debug!(conn_id, "Connection writer error: {e}");
+        return false;
+    }
+    true
+}
+
 /// Handle a single client connection.
 ///
 /// I/O is split across two tasks:
@@ -344,8 +399,7 @@ async fn handle_connection(
     let (frame_tx, mut frame_rx) = mpsc::unbounded_channel::<ServerFrame>();
     let writer_task = tokio::spawn(async move {
         while let Some(frame) = frame_rx.recv().await {
-            if let Err(e) = write_frame(&mut writer, &frame).await {
-                tracing::debug!(conn_id, "Connection writer error: {e}");
+            if !write_server_frame(&mut writer, frame, MAX_FRAME_SIZE, conn_id).await {
                 break;
             }
         }
@@ -638,6 +692,19 @@ async fn dispatch_database_op(
             // could not cover the entry's real owning tree.
             gate_entry_read(instance, acting_pubkey, identity, &entry).await?;
             Ok(ServiceResponse::Entry(entry))
+        }
+
+        DatabaseOp::GetEntries { ids } => {
+            // Batch fetch collapses N client round-trips into one. Each entry
+            // is fetched in-process (cheap on the server's local backend) and
+            // gated post-fetch by its owning tree, exactly like `GetEntry`.
+            let mut entries = Vec::with_capacity(ids.len());
+            for id in ids {
+                let entry = instance.backend().get(&id).await?;
+                gate_entry_read(instance, acting_pubkey, identity, &entry).await?;
+                entries.push(entry);
+            }
+            Ok(ServiceResponse::Entries(entries))
         }
 
         DatabaseOp::GetVerifiedTips => {
@@ -1507,5 +1574,73 @@ mod tests {
             matches!(&err, crate::Error::Auth(b) if matches!(**b, AuthError::PermissionDenied { .. })),
             "expected PermissionDenied, got: {err:?}",
         );
+    }
+
+    /// A frame within the limit is written through unchanged.
+    #[tokio::test]
+    async fn a_frame_within_the_limit_is_written() {
+        let frame = ServerFrame::Response(Box::new(ServiceResponse::Ok));
+        let mut wire: Vec<u8> = Vec::new();
+
+        assert!(write_server_frame(&mut wire, frame, MAX_FRAME_SIZE, 0).await);
+
+        let mut cursor = std::io::Cursor::new(wire);
+        let read: ServerFrame = read_frame(&mut cursor).await.unwrap().unwrap();
+        assert!(matches!(
+            read,
+            ServerFrame::Response(r) if matches!(*r, ServiceResponse::Ok)
+        ));
+    }
+
+    /// A response too large for a frame is answered with a correlated error
+    /// rather than by dropping the connection. Responses are matched to
+    /// requests by order, so a teardown leaves the pending request with no
+    /// reply at all and the client sees a dead socket instead of a reason.
+    #[tokio::test]
+    async fn an_oversize_response_becomes_a_correlated_error() {
+        let oversize = ServerFrame::Response(Box::new(ServiceResponse::Error(ServiceError {
+            module: "backend".to_string(),
+            kind: "EntryNotFound".to_string(),
+            message: "x".repeat(4096),
+        })));
+        let mut wire: Vec<u8> = Vec::new();
+
+        assert!(
+            write_server_frame(&mut wire, oversize, 1024, 0).await,
+            "an oversize response must not tear down the connection"
+        );
+
+        let mut cursor = std::io::Cursor::new(wire);
+        let read: ServerFrame = read_frame(&mut cursor).await.unwrap().unwrap();
+        match read {
+            ServerFrame::Response(response) => match *response {
+                ServiceResponse::Error(e) => assert_eq!(
+                    e.kind, "ResponseTooLarge",
+                    "the substitute must name the frame limit as the cause"
+                ),
+                other => panic!("expected an error response, got {other:?}"),
+            },
+            other => panic!("expected a response frame, got {other:?}"),
+        }
+    }
+
+    /// An unencodable notification is dropped rather than substituted: it
+    /// answers no request, and a subscriber that misses one catches up from
+    /// the next event's tips.
+    #[tokio::test]
+    async fn an_oversize_notification_is_dropped() {
+        let notification = ServerFrame::Notification(Notification::DatabaseWrite {
+            root_id: ID::from_bytes("root"),
+            previous_tips: crate::Snapshot::from([ID::from_bytes("a")]),
+            post_tips: crate::Snapshot::from([ID::from_bytes("b")]),
+            source: WriteSource::Local,
+        });
+        let mut wire: Vec<u8> = Vec::new();
+
+        assert!(
+            write_server_frame(&mut wire, notification, 8, 0).await,
+            "a dropped notification must not tear down the connection"
+        );
+        assert!(wire.is_empty(), "nothing may reach the wire");
     }
 }

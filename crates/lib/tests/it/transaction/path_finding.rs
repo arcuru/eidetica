@@ -829,3 +829,80 @@ async fn test_multi_tip_cache_key_is_order_independent() {
         "Same cache key should be used regardless of tip order"
     );
 }
+
+/// A merge path longer than the remote backend's entry-fetch window folds to
+/// the same state as one that fits in a single window.
+///
+/// Under `TEST_BACKEND=service` the path is fetched across several windows, so
+/// this covers the boundary crossing end to end: an entry lost, duplicated or
+/// reordered at a window seam changes the folded state. Under the in-process
+/// backends the fetch is a per-entry loop and the assertion is simply that the
+/// long merge path folds correctly.
+#[tokio::test]
+async fn test_merge_path_crossing_a_fetch_window() {
+    // Safety: setting env vars is process-wide and not thread-safe. Only this
+    // test reads or writes this var, and nextest runs each test in its own
+    // process; a stray smaller window elsewhere would only add round-trips.
+    unsafe { std::env::set_var("EIDETICA_TEST_GET_ENTRIES_CHUNK", "3") };
+
+    const BRANCH_LEN: usize = 8;
+
+    let ctx = TestContext::new().with_database().await;
+
+    let txn_base = ctx.database().new_transaction().await.unwrap();
+    let store_base = txn_base.get_store::<DocStore>("data").await.unwrap();
+    store_base.set("base", "base").await.unwrap();
+    let base_id = txn_base.commit().await.unwrap();
+
+    // Two independent branches off the base, each longer than one window.
+    let mut tips: Vec<ID> = Vec::new();
+    for branch in ["left", "right"] {
+        let mut head = base_id.clone();
+        for i in 0..BRANCH_LEN {
+            let txn = ctx
+                .database()
+                .new_transaction_at(&Snapshot::from([head]))
+                .await
+                .unwrap();
+            let store = txn.get_store::<DocStore>("data").await.unwrap();
+            store
+                .set(
+                    format!("{branch}{i}").as_str(),
+                    format!("{branch}-{i}").as_str(),
+                )
+                .await
+                .unwrap();
+            head = txn.commit().await.unwrap();
+        }
+        tips.push(head);
+    }
+
+    // Merging both tips walks a path of 2 * BRANCH_LEN entries — six windows
+    // at the size set above.
+    let merge = ctx
+        .database()
+        .new_transaction_at(&Snapshot::from(tips))
+        .await
+        .unwrap();
+    let merged = merge
+        .get_store::<DocStore>("data")
+        .await
+        .unwrap()
+        .get_all()
+        .await
+        .unwrap();
+
+    assert!(merged.get("base").is_some(), "base state must survive");
+    for branch in ["left", "right"] {
+        for i in 0..BRANCH_LEN {
+            let key = format!("{branch}{i}");
+            assert_eq!(
+                merged.get_as::<String>(key.as_str()).unwrap(),
+                format!("{branch}-{i}"),
+                "every entry on the path must be folded exactly once"
+            );
+        }
+    }
+
+    unsafe { std::env::remove_var("EIDETICA_TEST_GET_ENTRIES_CHUNK") };
+}

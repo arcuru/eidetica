@@ -37,6 +37,53 @@ pub struct RemoteBackend {
     identity: Option<SigKey>,
 }
 
+/// Entries per `GetEntries` request.
+///
+/// A batched response travels as a single frame, and frames are capped at
+/// [`MAX_FRAME_SIZE`](crate::service::protocol::MAX_FRAME_SIZE) (64 MiB), so
+/// an unwindowed fetch of a long merge path can exceed the cap and fail where
+/// a per-entry loop would have succeeded. Windowing bounds each response by
+/// `chunk × entry size` instead of by the length of the path, at the cost of
+/// one round-trip per window.
+///
+/// The bound is a count rather than a byte budget because the client cannot
+/// know the encoded size of entries it has not fetched yet. 512 leaves ~128
+/// KiB of frame budget per entry, well above an ordinary entry, while still
+/// collapsing a thousand-entry path into two round-trips instead of a
+/// thousand.
+///
+/// Tests override this via `EIDETICA_TEST_GET_ENTRIES_CHUNK` (see
+/// [`get_entries_chunk`]).
+const GET_ENTRIES_CHUNK: usize = 512;
+
+/// Test-overridable window size. Reads `EIDETICA_TEST_GET_ENTRIES_CHUNK` if it
+/// parses to a positive count; otherwise [`GET_ENTRIES_CHUNK`].
+fn get_entries_chunk() -> usize {
+    std::env::var("EIDETICA_TEST_GET_ENTRIES_CHUNK")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(GET_ENTRIES_CHUNK)
+}
+
+/// Fetch every id in `ids` through `fetch`, in windows of at most `chunk`.
+///
+/// Windows are issued in input order and their results concatenated, so the
+/// output order matches `ids` exactly as long as `fetch` preserves the order
+/// of the window it is given. Callers depend on that: the merge path is the
+/// canonical CRDT replay order, and a reorder silently corrupts merged state.
+async fn fetch_windowed<F, Fut>(ids: &[ID], chunk: usize, fetch: F) -> Result<Vec<Entry>>
+where
+    F: Fn(Vec<ID>) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<Entry>>>,
+{
+    let mut entries = Vec::with_capacity(ids.len());
+    for window in ids.chunks(chunk) {
+        entries.extend(fetch(window.to_vec()).await?);
+    }
+    Ok(entries)
+}
+
 impl RemoteBackend {
     pub fn new(conn: RemoteConnection, identity: Option<SigKey>) -> Self {
         Self { conn, identity }
@@ -61,6 +108,22 @@ impl Backend for RemoteBackend {
         self.conn
             .db_get_entry(ID::default(), self.identity(), id.clone())
             .await
+    }
+
+    async fn get_entries(&self, ids: &[ID]) -> Result<Vec<Entry>> {
+        // Same waved-through root as `get`: the server gates each entry
+        // post-fetch by its owning tree. Order is preserved, so callers that
+        // rely on the input order (e.g. a canonical CRDT replay path) get the
+        // entries back in that order.
+        //
+        // Windowed so a long path cannot produce a response frame over the
+        // protocol cap; see `GET_ENTRIES_CHUNK`.
+        fetch_windowed(ids, get_entries_chunk(), |window| async move {
+            self.conn
+                .db_get_entries(ID::default(), self.identity(), window)
+                .await
+        })
+        .await
     }
 
     async fn snapshot(&self, tree: &ID) -> Result<Snapshot> {
@@ -246,5 +309,134 @@ impl Backend for RemoteBackend {
 
     fn remote_connection(&self) -> Option<RemoteConnection> {
         Some(self.conn.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use super::*;
+
+    /// A distinct entry per index, so IDs are unique and order is checkable.
+    fn test_entry(n: usize) -> Entry {
+        Entry::builder(ID::from_bytes("windowed-root"))
+            .set_parents(vec![ID::from_bytes("windowed-root")])
+            .set_subtree_data("data", format!("{{\"n\":{n}}}").as_bytes())
+            .build()
+            .unwrap()
+    }
+
+    /// Run `fetch_windowed` over `count` entries with the given window size,
+    /// returning the windows the fetcher saw and the IDs it produced.
+    async fn run(count: usize, chunk: usize) -> (Vec<Vec<ID>>, Vec<ID>) {
+        let entries: Vec<Entry> = (0..count).map(test_entry).collect();
+        let ids: Vec<ID> = entries.iter().map(|e| e.id()).collect();
+        let windows: Mutex<Vec<Vec<ID>>> = Mutex::new(Vec::new());
+
+        let fetched = {
+            let entries = &entries;
+            let windows = &windows;
+            fetch_windowed(&ids, chunk, move |window: Vec<ID>| {
+                windows.lock().unwrap().push(window.clone());
+                async move {
+                    Ok(window
+                        .iter()
+                        .map(|id| {
+                            entries
+                                .iter()
+                                .find(|e| e.id() == *id)
+                                .expect("window holds only requested ids")
+                                .clone()
+                        })
+                        .collect())
+                }
+            })
+            .await
+            .unwrap()
+        };
+
+        (
+            windows.into_inner().unwrap(),
+            fetched.iter().map(|e| e.id()).collect(),
+        )
+    }
+
+    /// Every window stays within the bound, the windows partition the input in
+    /// order, and the concatenated result is in input order. Order is the
+    /// invariant that matters most: the merge path is the canonical CRDT
+    /// replay order, and a reorder silently corrupts merged state.
+    #[tokio::test]
+    async fn windows_are_bounded_and_order_is_preserved() {
+        let entries: Vec<Entry> = (0..7).map(test_entry).collect();
+        let expected: Vec<ID> = entries.iter().map(|e| e.id()).collect();
+
+        let (windows, fetched) = run(7, 3).await;
+
+        assert_eq!(windows.len(), 3, "7 ids in windows of 3 is 3 requests");
+        assert!(
+            windows.iter().all(|w| w.len() <= 3),
+            "no window may exceed the bound: {:?}",
+            windows.iter().map(Vec::len).collect::<Vec<_>>()
+        );
+        let flattened: Vec<ID> = windows.concat();
+        assert_eq!(flattened, expected, "windows must partition ids in order");
+        assert_eq!(fetched, expected, "results must concatenate in input order");
+    }
+
+    /// A window size at or above the input length degenerates to the single
+    /// batched request the windowing replaced.
+    #[tokio::test]
+    async fn a_short_input_takes_one_window() {
+        let (windows, fetched) = run(4, 512).await;
+        assert_eq!(windows.len(), 1);
+        assert_eq!(fetched.len(), 4);
+    }
+
+    /// An empty fetch issues no request at all rather than an empty one.
+    #[tokio::test]
+    async fn an_empty_input_issues_no_request() {
+        let (windows, fetched) = run(0, 3).await;
+        assert!(windows.is_empty(), "no ids means no round-trip");
+        assert!(fetched.is_empty());
+    }
+
+    /// A failing window aborts the fetch instead of returning a short result
+    /// that would fold into a silently truncated CRDT state.
+    #[tokio::test]
+    async fn a_failing_window_aborts_the_fetch() {
+        let ids: Vec<ID> = (0..9).map(|n| test_entry(n).id()).collect();
+        let calls = Mutex::new(0usize);
+
+        let result = {
+            let calls = &calls;
+            fetch_windowed(&ids, 3, move |window: Vec<ID>| {
+                let mut n = calls.lock().unwrap();
+                *n += 1;
+                let fail = *n == 2;
+                async move {
+                    if fail {
+                        Err(crate::Error::Io(std::io::Error::other("window failed")))
+                    } else {
+                        Ok(window.iter().map(|_| test_entry(0)).collect())
+                    }
+                }
+            })
+            .await
+        };
+
+        assert!(result.is_err(), "the window error must propagate");
+        assert_eq!(
+            *calls.lock().unwrap(),
+            2,
+            "the fetch must stop at the failing window"
+        );
+    }
+
+    /// The window size falls back to the constant unless the test knob names a
+    /// positive count.
+    #[test]
+    fn the_window_size_defaults_to_the_constant() {
+        assert_eq!(get_entries_chunk(), GET_ENTRIES_CHUNK);
     }
 }

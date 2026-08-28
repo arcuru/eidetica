@@ -978,9 +978,15 @@ impl Transaction {
     where
         T: CRDT,
     {
-        for entry_id in entry_ids {
-            let entry = self.db.ops().get(entry_id).await?;
+        // Batch-fetch the whole path in one round-trip instead of one `get`
+        // per entry (each a separate RPC on a remote backend). Order is
+        // preserved, which matters here: `entry_ids` is the canonical CRDT
+        // replay order produced by `get_path_from_to`. The remote backend
+        // windows the fetch internally, so no length of path can produce a
+        // response frame over the protocol cap.
+        let entries = self.db.ops().get_entries(entry_ids).await?;
 
+        for entry in entries {
             // Get local data for this entry in the subtree
             let local_data = if let Ok(data) = entry.data(subtree_name) {
                 // Decrypt before deserializing

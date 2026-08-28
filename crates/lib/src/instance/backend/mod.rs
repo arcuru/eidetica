@@ -65,6 +65,20 @@ pub trait Backend: Send + Sync + std::fmt::Debug {
     /// Retrieve an entry by ID.
     async fn get(&self, id: &ID) -> Result<Entry>;
 
+    /// Retrieve multiple entries by ID, preserving input order.
+    ///
+    /// Defaults to a [`Backend::get`] loop, which is the right shape for any
+    /// in-process backend — the calls are local and there is nothing to
+    /// batch. Backends that pay a per-call round-trip override this to fold
+    /// the whole set into one request (see [`RemoteBackend`]).
+    async fn get_entries(&self, ids: &[ID]) -> Result<Vec<Entry>> {
+        let mut entries = Vec::with_capacity(ids.len());
+        for id in ids {
+            entries.push(self.get(id).await?);
+        }
+        Ok(entries)
+    }
+
     /// Raw [`Snapshot`] of `tree` (no Verified-frontier filtering — that stays
     /// in `Database`).
     async fn snapshot(&self, tree: &ID) -> Result<Snapshot>;

@@ -176,6 +176,12 @@ pub enum DatabaseOp {
     /// Read.
     GetEntry { id: ID },
 
+    /// Fetch multiple entries by id in one round-trip, preserving input
+    /// order. Each entry is gated post-fetch by its owning tree, exactly like
+    /// [`DatabaseOp::GetEntry`]; the caller must hold `Read` on every tree
+    /// involved. Gate Read.
+    GetEntries { ids: Vec<ID> },
+
     /// Look up a cached materialized CRDT state. Server returns the previously
     /// `CacheCrdtState`-submitted blob for `(session user, root_id, key, store)`,
     /// or `None` on miss. Gate Read.
@@ -487,23 +493,54 @@ pub enum ServiceResponse {
     SessionKeyChallenge { challenge: Vec<u8> },
 }
 
+/// The error a frame exceeding the size cap is rejected with.
+pub(crate) fn frame_too_large(len: usize, limit: u32) -> crate::Error {
+    crate::Error::Io(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        format!("frame too large: {len} bytes (max {limit})"),
+    ))
+}
+
+/// Serialize `value` into a frame payload, rejecting anything larger than
+/// `limit` bytes.
+///
+/// Separate from [`write_frame`] so a writer that must stay on the connection
+/// can learn a frame is oversize *before* any bytes reach the wire and put a
+/// smaller one in its place. Responses are correlated by order, so a frame
+/// that is silently skipped mismatches every response after it.
+///
+/// `limit` is [`MAX_FRAME_SIZE`] everywhere except tests, which lower it to
+/// exercise the oversize path without building a 64 MiB value.
+pub(crate) fn encode_frame_with_limit<T: Serialize>(
+    value: &T,
+    limit: u32,
+) -> crate::Result<Vec<u8>> {
+    let payload = serde_json::to_vec(value)?;
+    if payload.len() > limit as usize {
+        return Err(frame_too_large(payload.len(), limit));
+    }
+    Ok(payload)
+}
+
+/// Write an already-encoded frame payload with its length prefix.
+pub(crate) async fn write_payload<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    payload: &[u8],
+) -> crate::Result<()> {
+    let len = payload.len() as u32;
+    writer.write_all(&len.to_be_bytes()).await?;
+    writer.write_all(payload).await?;
+    writer.flush().await?;
+    Ok(())
+}
+
 /// Write a length-prefixed JSON frame to an async writer.
 pub async fn write_frame<W: AsyncWrite + Unpin, T: Serialize>(
     writer: &mut W,
     value: &T,
 ) -> crate::Result<()> {
-    let payload = serde_json::to_vec(value)?;
-    let len = payload.len() as u32;
-    if len > MAX_FRAME_SIZE {
-        return Err(crate::Error::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("frame too large: {len} bytes (max {MAX_FRAME_SIZE})"),
-        )));
-    }
-    writer.write_all(&len.to_be_bytes()).await?;
-    writer.write_all(&payload).await?;
-    writer.flush().await?;
-    Ok(())
+    let payload = encode_frame_with_limit(value, MAX_FRAME_SIZE)?;
+    write_payload(writer, &payload).await
 }
 
 /// Read a length-prefixed JSON frame from an async reader.
@@ -520,10 +557,7 @@ pub async fn read_frame<R: AsyncRead + Unpin, T: for<'de> Deserialize<'de>>(
     }
     let len = u32::from_be_bytes(len_buf);
     if len > MAX_FRAME_SIZE {
-        return Err(crate::Error::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("frame too large: {len} bytes (max {MAX_FRAME_SIZE})"),
-        )));
+        return Err(frame_too_large(len as usize, MAX_FRAME_SIZE));
     }
     let mut payload = vec![0u8; len as usize];
     reader.read_exact(&mut payload).await?;

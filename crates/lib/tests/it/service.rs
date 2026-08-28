@@ -595,6 +595,69 @@ async fn test_database_submit_signed_entry() {
     assert_eq!(fetched.id(), entries[0].id());
 }
 
+/// Exercise `DatabaseOp::GetEntries`: batch entry fetch preserves input order
+/// and returns the same entries as individual `GetEntry` calls.
+#[tokio::test]
+async fn test_database_get_entries() {
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    let (instance, root_id, identity) = setup_db(&server, &socket_path, "alice").await;
+
+    // Write two entries server-side into the same store.
+    let server_user = server.login_user("alice", None).await.unwrap();
+    let server_key_pub = server_user.get_default_key().unwrap();
+    let server_sk = server_user.get_signing_key(&server_key_pub).unwrap();
+    let db = eidetica::Database::open(&server, &root_id)
+        .await
+        .unwrap()
+        .with_key(server_sk);
+    for i in 0..2 {
+        db.with_transaction(|tx| async move {
+            let store = tx.get_store::<DocStore>("entries").await?;
+            let key = format!("key{i}");
+            let value = format!("value{i}");
+            store.set(key.as_str(), value.as_str()).await?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+
+    let conn = remote_conn(&instance);
+    let tips = conn
+        .get_verified_tips(root_id.clone(), identity.clone())
+        .await
+        .unwrap();
+    let entries = conn
+        .get_store_entries(
+            root_id.clone(),
+            identity.clone(),
+            "entries".to_string(),
+            tips.into_tips(),
+            ReadScope::Verified,
+        )
+        .await
+        .unwrap();
+    assert!(entries.len() >= 2, "expected at least two store entries");
+
+    // Fetch by id in reverse order to prove the batch preserves input order.
+    let ids: Vec<eidetica::entry::ID> = entries.iter().map(|e| e.id()).rev().collect();
+    let fetched = conn
+        .db_get_entries(root_id.clone(), identity.clone(), ids.clone())
+        .await
+        .unwrap();
+    assert_eq!(fetched.len(), ids.len(), "batch must return every id");
+    for (entry, id) in fetched.iter().zip(ids.iter()) {
+        assert_eq!(entry.id(), *id, "batch fetch must preserve input order");
+    }
+
+    // Cross-check one entry against the single-entry fetch.
+    let single = conn
+        .db_get_entry(root_id, identity, ids[0].clone())
+        .await
+        .unwrap();
+    assert_eq!(single.id(), ids[0]);
+}
+
 /// Exercise encrypted store roundtrip.
 #[tokio::test]
 async fn test_database_encrypted_store_roundtrip() {

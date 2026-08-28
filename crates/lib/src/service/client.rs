@@ -1264,6 +1264,25 @@ impl RemoteConnection {
         }
     }
 
+    /// Fetch multiple database entries by id in a single round-trip.
+    ///
+    /// Input order is preserved. Each entry is gated post-fetch by its owning
+    /// tree, so the caller must hold `Read` on every database involved.
+    pub async fn db_get_entries(
+        &self,
+        root_id: ID,
+        identity: SigKey,
+        ids: Vec<ID>,
+    ) -> crate::Result<Vec<Entry>> {
+        let resp = self
+            .db_request(root_id, identity, DatabaseOp::GetEntries { ids })
+            .await?;
+        match resp {
+            ServiceResponse::Entries(entries) => Ok(entries),
+            other => Err(unexpected_response("Entries", &other)),
+        }
+    }
+
     /// Subtree tips reachable from given main-tree entries.
     pub async fn store_snapshot_at(
         &self,
