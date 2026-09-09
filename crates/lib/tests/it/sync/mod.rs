@@ -21,6 +21,7 @@ mod concurrent_writer_determinism_tests;
 mod dag_sync_tests;
 mod declarative_api_tests;
 mod device_id_tests;
+mod failed_address_race_lifetime;
 pub mod helpers;
 mod http_transport_tests;
 mod incremental_auth_tests;
