@@ -45,6 +45,7 @@ aes-gcm = "0.10"
 zeroize = { version = "1.8", features = ["derive"] }
 handle_trait = "1.1"
 # Networking dependencies
+libc = "0.2"
 tokio = { version = "1", features = [
     "rt-multi-thread",
     "macros",

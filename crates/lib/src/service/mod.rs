@@ -77,7 +77,7 @@ pub mod protocol;
 pub mod server;
 
 pub use client::RemoteConnection;
-pub use server::ServiceServer;
+pub use server::{BoundServiceServer, ServiceServer};
 
 use std::path::PathBuf;
 

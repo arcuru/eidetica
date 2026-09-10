@@ -62,16 +62,8 @@ async fn start_test_server_with_token_ttl(
     let (tx, rx) = watch::channel(());
     let server =
         ServiceServer::new(instance.clone(), socket_path.clone()).with_token_idle_ttl_for_test(ttl);
-    tokio::spawn(async move {
-        let _ = server.run(rx).await;
-    });
-    // Wait for the socket to appear (server binds asynchronously).
-    for _ in 0..50 {
-        if socket_path.exists() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    let server = server.bind().await.unwrap();
+    tokio::spawn(server.run(rx));
     (socket_path, tx, instance, dir)
 }
 

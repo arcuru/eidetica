@@ -4,7 +4,8 @@
 //! notifications through the Instance's callback system.
 
 use std::collections::{HashMap, HashSet};
-use std::os::unix::fs::PermissionsExt;
+use std::fs::{File, OpenOptions, TryLockError};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -205,6 +206,35 @@ pub struct ServiceServer {
     token_idle_ttl: Duration,
 }
 
+/// A service host that owns a bound socket and is ready to accept clients.
+pub struct BoundServiceServer {
+    instance: Instance,
+    socket_path: PathBuf,
+    listener: UnixListener,
+    socket_identity: SocketIdentity,
+    token_idle_ttl: Duration,
+    _lock_file: File,
+}
+
+#[derive(Clone, Copy)]
+struct SocketIdentity {
+    device: u64,
+    inode: u64,
+}
+
+impl SocketIdentity {
+    fn from_metadata(metadata: &std::fs::Metadata) -> Self {
+        Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        }
+    }
+
+    fn matches(self, metadata: &std::fs::Metadata) -> bool {
+        self.device == metadata.dev() && self.inode == metadata.ino()
+    }
+}
+
 impl ServiceServer {
     /// Create a new service server.
     ///
@@ -232,32 +262,177 @@ impl ServiceServer {
         &self.socket_path
     }
 
-    /// Run the server until the shutdown signal is received.
+    /// Prepare this service host and return once clients can connect.
     ///
-    /// Removes any stale socket file, creates the parent directory, binds the
-    /// listener, and loops accepting connections. Each connection is handled in
-    /// a spawned task. On shutdown, the socket file is cleaned up.
-    ///
-    /// # Arguments
-    /// * `shutdown` - A watch receiver; the server stops when the sender is dropped.
-    pub async fn run(&self, mut shutdown: watch::Receiver<()>) -> crate::Result<()> {
-        // Remove stale socket if it exists
-        if self.socket_path.exists() {
-            tokio::fs::remove_file(&self.socket_path).await?;
-        }
-
-        // Create parent directory with owner-only permissions (0700)
-        if let Some(parent) = self.socket_path.parent() {
+    /// This creates and restricts the socket directory, claims the endpoint,
+    /// removes a stale socket when safe, and binds the listener.
+    pub async fn bind(&self) -> crate::Result<BoundServiceServer> {
+        if let Some(parent) = self.socket_path.parent()
+            && !parent.as_os_str().is_empty()
+            && !tokio::fs::try_exists(parent).await?
+        {
             tokio::fs::create_dir_all(parent).await?;
             tokio::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700)).await?;
         }
 
+        let lock_file = acquire_endpoint_lock(&self.socket_path)?;
+        recover_stale_socket(&self.socket_path).await?;
+
         let listener = UnixListener::bind(&self.socket_path)?;
+        let socket_identity = prepare_bound_socket(&self.socket_path)?;
 
-        // Restrict socket to owner-only access (0600)
-        tokio::fs::set_permissions(&self.socket_path, std::fs::Permissions::from_mode(0o600))
-            .await?;
+        Ok(BoundServiceServer {
+            instance: self.instance.clone(),
+            socket_path: self.socket_path.clone(),
+            listener,
+            socket_identity,
+            token_idle_ttl: self.token_idle_ttl,
+            _lock_file: lock_file,
+        })
+    }
 
+    /// Host the service until the shutdown signal is received.
+    ///
+    /// Call [`Self::bind`] directly when the host must report that it is ready
+    /// before entering the accept loop.
+    ///
+    /// # Arguments
+    /// * `shutdown` - A watch receiver; the server stops when the sender is dropped.
+    pub async fn run(&self, shutdown: watch::Receiver<()>) -> crate::Result<()> {
+        self.bind().await?.run(shutdown).await
+    }
+}
+
+fn lock_path(socket_path: &Path) -> PathBuf {
+    let mut path = socket_path.as_os_str().to_owned();
+    path.push(".lock");
+    PathBuf::from(path)
+}
+
+fn acquire_endpoint_lock(socket_path: &Path) -> crate::Result<File> {
+    let path = lock_path(socket_path);
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(&path)?;
+    let metadata = file.metadata()?;
+    let effective_uid = unsafe { libc::geteuid() };
+    if !metadata.file_type().is_file() || metadata.uid() != effective_uid || metadata.nlink() != 1 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "refusing unsafe service endpoint lockfile {}",
+                path.display()
+            ),
+        )
+        .into());
+    }
+    if metadata.permissions().mode() & 0o777 != 0o600 {
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    file.try_lock().map_err(|error| match error {
+        TryLockError::WouldBlock => std::io::Error::new(
+            std::io::ErrorKind::AddrInUse,
+            format!(
+                "service endpoint {} is already owned",
+                socket_path.display()
+            ),
+        ),
+        TryLockError::Error(error) => error,
+    })?;
+    Ok(file)
+}
+
+async fn recover_stale_socket(socket_path: &Path) -> crate::Result<()> {
+    let metadata = match tokio::fs::symlink_metadata(socket_path).await {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+
+    if !metadata.file_type().is_socket() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AddrInUse,
+            format!(
+                "refusing to replace non-socket service endpoint {}",
+                socket_path.display()
+            ),
+        )
+        .into());
+    }
+
+    match tokio::net::UnixStream::connect(socket_path).await {
+        Ok(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::AddrInUse,
+            format!("service endpoint {} is live", socket_path.display()),
+        )
+        .into()),
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
+            ) =>
+        {
+            tokio::fs::remove_file(socket_path).await?;
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn prepare_bound_socket(socket_path: &Path) -> crate::Result<SocketIdentity> {
+    let metadata = std::fs::symlink_metadata(socket_path)?;
+    if !metadata.file_type().is_socket() {
+        return Err(std::io::Error::other(format!(
+            "bound service endpoint is not a socket: {}",
+            socket_path.display()
+        ))
+        .into());
+    }
+    let identity = SocketIdentity::from_metadata(&metadata);
+    let result = (|| -> crate::Result<()> {
+        std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))?;
+        let metadata = std::fs::symlink_metadata(socket_path)?;
+        if !metadata.file_type().is_socket()
+            || !identity.matches(&metadata)
+            || metadata.permissions().mode() & 0o777 != 0o600
+        {
+            return Err(std::io::Error::other(format!(
+                "service endpoint changed or has incorrect permissions: {}",
+                socket_path.display()
+            ))
+            .into());
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        remove_socket_if_owned(socket_path, Some(identity));
+        return Err(error);
+    }
+    Ok(identity)
+}
+
+fn remove_socket_if_owned(socket_path: &Path, identity: Option<SocketIdentity>) {
+    let Ok(metadata) = std::fs::symlink_metadata(socket_path) else {
+        return;
+    };
+    if metadata.file_type().is_socket()
+        && identity.is_none_or(|expected| expected.matches(&metadata))
+    {
+        let _ = std::fs::remove_file(socket_path);
+    }
+}
+
+impl BoundServiceServer {
+    /// Accept client connections until the shutdown signal is received.
+    ///
+    /// # Arguments
+    /// * `shutdown` - A watch receiver; the server stops when the sender is dropped.
+    pub async fn run(self, mut shutdown: watch::Receiver<()>) -> crate::Result<()> {
         tracing::info!("Service server listening on {}", self.socket_path.display());
 
         // Diagnostic per-connection counter — purely for logging. No
@@ -273,9 +448,9 @@ impl ServiceServer {
         // hang on response reads from a daemon they were told had stopped.
         let mut handlers = JoinSet::new();
 
-        loop {
+        let result = loop {
             tokio::select! {
-                accept_result = listener.accept() => {
+                accept_result = self.listener.accept() => {
                     match accept_result {
                         Ok((stream, _addr)) => {
                             let instance = self.instance.clone();
@@ -287,9 +462,7 @@ impl ServiceServer {
                                 }
                             });
                         }
-                        Err(e) => {
-                            tracing::error!("Failed to accept connection: {e}");
-                        }
+                        Err(e) => break Err(e.into()),
                     }
                 }
                 // Reap finished handlers as they complete. Without this arm
@@ -299,10 +472,10 @@ impl ServiceServer {
                 _ = handlers.join_next(), if !handlers.is_empty() => {}
                 _ = shutdown.changed() => {
                     tracing::info!("Service server shutting down");
-                    break;
+                    break Ok(());
                 }
             }
-        }
+        };
 
         // Abort live handlers. Each aborted task drops its `UnixStream`
         // halves, which the client observes as a clean EOF on its read
@@ -314,9 +487,13 @@ impl ServiceServer {
         // the abort.
         while handlers.join_next().await.is_some() {}
 
-        // Clean up socket file
-        let _ = tokio::fs::remove_file(&self.socket_path).await;
-        Ok(())
+        result
+    }
+}
+
+impl Drop for BoundServiceServer {
+    fn drop(&mut self) {
+        remove_socket_if_owned(&self.socket_path, Some(self.socket_identity));
     }
 }
 
@@ -1527,7 +1704,12 @@ mod tests {
     use crate::service::protocol::{Handshake, write_frame};
 
     /// Helper: start a server on a temp socket, return path + shutdown sender.
-    async fn start_test_server() -> (PathBuf, watch::Sender<()>, Instance) {
+    async fn start_test_server() -> (
+        PathBuf,
+        watch::Sender<()>,
+        tokio::task::JoinHandle<crate::Result<()>>,
+        Instance,
+    ) {
         let dir = tempfile::tempdir().unwrap();
         let socket_path = dir.keep().join("test.sock");
         let (instance, _admin) = Instance::create_backend(
@@ -1538,41 +1720,79 @@ mod tests {
         .unwrap();
         let (tx, rx) = watch::channel(());
         let server = ServiceServer::new(instance.clone(), socket_path.clone());
-        tokio::spawn(async move {
-            let _ = server.run(rx).await;
-        });
-        // Wait for the socket to appear (server binds asynchronously). Poll
-        // with a short sleep instead of a fixed delay so a slow sandbox
-        // (where this test was occasionally flaky under `nix build`) doesn't
-        // race the bind step.
-        for _ in 0..50 {
-            if socket_path.exists() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-        (socket_path, tx, instance)
+        let server = server.bind().await.unwrap();
+        let task = tokio::spawn(server.run(rx));
+        (socket_path, tx, task, instance)
     }
 
     #[tokio::test]
     async fn test_server_starts_and_shuts_down() {
-        let (socket_path, tx, _instance) = start_test_server().await;
+        let (socket_path, tx, task, _instance) = start_test_server().await;
         assert!(socket_path.exists());
         drop(tx);
-        // Poll for cleanup with the same robustness as the bind wait.
-        for _ in 0..50 {
-            if !socket_path.exists() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-        // Socket should be cleaned up
+        task.await.unwrap().unwrap();
         assert!(!socket_path.exists());
     }
 
     #[tokio::test]
+    async fn test_run_compatibility_wrapper() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("test.sock");
+        let (instance, _admin) = Instance::create_backend(
+            Box::new(InMemory::new()),
+            crate::NewUser::passwordless("admin"),
+        )
+        .await
+        .unwrap();
+        let (tx, rx) = watch::channel(());
+        let server = ServiceServer::new(instance, &socket_path);
+        let task = tokio::spawn(async move { server.run(rx).await });
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if tokio::net::UnixStream::connect(&socket_path).await.is_ok() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("run should bind the service socket");
+
+        drop(tx);
+        task.await.unwrap().unwrap();
+        assert!(!socket_path.exists());
+    }
+
+    #[tokio::test]
+    async fn test_existing_parent_permissions_are_preserved() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path().join("shared");
+        tokio::fs::create_dir(&parent).await.unwrap();
+        tokio::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755))
+            .await
+            .unwrap();
+        let socket_path = parent.join("test.sock");
+        let (instance, _admin) = Instance::create_backend(
+            Box::new(InMemory::new()),
+            crate::NewUser::passwordless("admin"),
+        )
+        .await
+        .unwrap();
+
+        let server = ServiceServer::new(instance, &socket_path)
+            .bind()
+            .await
+            .unwrap();
+
+        let mode = std::fs::metadata(&parent).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o755);
+        drop(server);
+    }
+
+    #[tokio::test]
     async fn test_wrong_protocol_version() {
-        let (socket_path, _tx, _instance) = start_test_server().await;
+        let (socket_path, _tx, _task, _instance) = start_test_server().await;
 
         let stream = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
         let (mut reader, mut writer) = tokio::io::split(stream);
@@ -1686,7 +1906,7 @@ mod tests {
         // — exercises the same gate path against the raw protocol so a
         // regression here surfaces immediately, not just at the
         // `RemoteConnection` layer.
-        let (socket_path, _tx, _instance) = start_test_server().await;
+        let (socket_path, _tx, _task, _instance) = start_test_server().await;
 
         let stream = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
         let (mut reader, mut writer) = tokio::io::split(stream);
@@ -1733,7 +1953,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_instance_metadata() {
-        let (socket_path, _tx, _instance) = start_test_server().await;
+        let (socket_path, _tx, _task, _instance) = start_test_server().await;
 
         let stream = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
         let (mut reader, mut writer) = tokio::io::split(stream);
@@ -1772,8 +1992,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let socket_path = dir.path().join("test.sock");
 
-        // Create a stale socket file
-        tokio::fs::write(&socket_path, "stale").await.unwrap();
+        // Leave a stale socket path behind after its listener exits.
+        drop(UnixListener::bind(&socket_path).unwrap());
         assert!(socket_path.exists());
 
         let (instance, _admin) = Instance::create_backend(
@@ -1785,25 +2005,206 @@ mod tests {
         let (_tx, rx) = watch::channel(());
         let server = ServiceServer::new(instance, socket_path.clone());
 
-        // Server should remove stale socket and bind successfully
-        let handle = tokio::spawn(async move { server.run(rx).await });
-
-        // The server binds asynchronously; poll until it accepts a connection
-        // rather than racing a fixed sleep (flaky under parallel test load).
-        let mut stream = None;
-        for _ in 0..200 {
-            if let Ok(s) = tokio::net::UnixStream::connect(&socket_path).await {
-                stream = Some(s);
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-        assert!(
-            stream.is_some(),
-            "server did not bind a connectable socket in time"
-        );
+        let server = server.bind().await.unwrap();
+        let _stream = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
+        let handle = tokio::spawn(server.run(rx));
 
         handle.abort();
+        handle.await.unwrap_err();
+        assert!(!socket_path.exists());
+    }
+
+    #[tokio::test]
+    async fn test_second_bind_is_refused_and_first_endpoint_remains_usable() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("test.sock");
+        let (instance, _admin) = Instance::create_backend(
+            Box::new(InMemory::new()),
+            crate::NewUser::passwordless("admin"),
+        )
+        .await
+        .unwrap();
+
+        let first = ServiceServer::new(instance.clone(), &socket_path)
+            .bind()
+            .await
+            .unwrap();
+        let error = match ServiceServer::new(instance, &socket_path).bind().await {
+            Ok(_) => panic!("second bind must be refused"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(&error, crate::Error::Io(error) if error.kind() == std::io::ErrorKind::AddrInUse),
+            "expected AddrInUse, got {error:?}"
+        );
+        tokio::net::UnixStream::connect(&socket_path)
+            .await
+            .expect("first endpoint must remain usable");
+        drop(first);
+    }
+
+    #[tokio::test]
+    async fn test_existing_regular_file_is_refused_and_preserved() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("test.sock");
+        tokio::fs::write(&socket_path, b"keep me").await.unwrap();
+        let (instance, _admin) = Instance::create_backend(
+            Box::new(InMemory::new()),
+            crate::NewUser::passwordless("admin"),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            ServiceServer::new(instance, &socket_path)
+                .bind()
+                .await
+                .is_err(),
+            "regular file must be refused"
+        );
+        assert_eq!(tokio::fs::read(&socket_path).await.unwrap(), b"keep me");
+    }
+
+    #[tokio::test]
+    async fn test_symlink_lockfile_is_refused_without_touching_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("test.sock");
+        let lock_path = lock_path(&socket_path);
+        let sentinel_path = dir.path().join("sentinel");
+        tokio::fs::write(&sentinel_path, b"keep me").await.unwrap();
+        std::fs::set_permissions(&sentinel_path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        std::os::unix::fs::symlink(&sentinel_path, &lock_path).unwrap();
+        let (instance, _admin) = Instance::create_backend(
+            Box::new(InMemory::new()),
+            crate::NewUser::passwordless("admin"),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            ServiceServer::new(instance, &socket_path)
+                .bind()
+                .await
+                .is_err(),
+            "symlink lockfile must be refused"
+        );
+        assert_eq!(tokio::fs::read(&sentinel_path).await.unwrap(), b"keep me");
+        assert_eq!(
+            std::fs::metadata(&sentinel_path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o640
+        );
+        assert!(
+            std::fs::symlink_metadata(&lock_path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_hard_link_lockfile_is_refused_without_touching_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("test.sock");
+        let lock_path = lock_path(&socket_path);
+        let sentinel_path = dir.path().join("sentinel");
+        tokio::fs::write(&sentinel_path, b"keep me").await.unwrap();
+        std::fs::set_permissions(&sentinel_path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        std::fs::hard_link(&sentinel_path, &lock_path).unwrap();
+        let (instance, _admin) = Instance::create_backend(
+            Box::new(InMemory::new()),
+            crate::NewUser::passwordless("admin"),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            ServiceServer::new(instance, &socket_path)
+                .bind()
+                .await
+                .is_err(),
+            "hard-linked lockfile must be refused"
+        );
+        assert_eq!(tokio::fs::read(&sentinel_path).await.unwrap(), b"keep me");
+        assert_eq!(
+            std::fs::metadata(&sentinel_path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o640
+        );
+    }
+
+    #[tokio::test]
+    async fn test_dropping_bound_server_cleans_socket() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("test.sock");
+        let (instance, _admin) = Instance::create_backend(
+            Box::new(InMemory::new()),
+            crate::NewUser::passwordless("admin"),
+        )
+        .await
+        .unwrap();
+
+        let server = ServiceServer::new(instance, &socket_path)
+            .bind()
+            .await
+            .unwrap();
+        assert!(socket_path.exists());
+        drop(server);
+        assert!(!socket_path.exists());
+        assert!(lock_path(&socket_path).exists(), "lockfile remains stable");
+    }
+
+    #[tokio::test]
+    async fn test_drop_preserves_replacement_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("test.sock");
+        let (instance, _admin) = Instance::create_backend(
+            Box::new(InMemory::new()),
+            crate::NewUser::passwordless("admin"),
+        )
+        .await
+        .unwrap();
+
+        let server = ServiceServer::new(instance, &socket_path)
+            .bind()
+            .await
+            .unwrap();
+        tokio::fs::remove_file(&socket_path).await.unwrap();
+        tokio::fs::write(&socket_path, b"replacement")
+            .await
+            .unwrap();
+        drop(server);
+        assert_eq!(tokio::fs::read(&socket_path).await.unwrap(), b"replacement");
+    }
+
+    #[tokio::test]
+    async fn test_bind_failure_is_returned_before_server_is_ready() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path().join("not-a-directory");
+        let socket_path = parent.join("test.sock");
+        tokio::fs::write(&parent, "file").await.unwrap();
+        let (instance, _admin) = Instance::create_backend(
+            Box::new(InMemory::new()),
+            crate::NewUser::passwordless("admin"),
+        )
+        .await
+        .unwrap();
+
+        let error = match ServiceServer::new(instance, &socket_path).bind().await {
+            Ok(_) => panic!("startup bind failure must return from bind"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(&error, crate::Error::Io(error) if error.kind() == std::io::ErrorKind::NotADirectory),
+            "expected synchronous parent-path failure, got {error:?}"
+        );
+        assert!(!socket_path.exists());
     }
 
     /// D8 regression: `require_existing` flips the create-flow passthrough

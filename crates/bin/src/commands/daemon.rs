@@ -59,8 +59,9 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
     // Determine socket path
     let socket_path = args.socket.clone().unwrap_or_else(default_socket_path);
 
-    // Create and start server
+    // Do not report the daemon as ready until its service socket accepts clients.
     let server = ServiceServer::new(instance, &socket_path);
+    let server = server.bind().await?;
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
 
     println!("Eidetica daemon listening on {}", socket_path.display());
@@ -74,21 +75,24 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
     println!();
     println!("Press Ctrl+C to shutdown");
 
-    // Run server with signal-based shutdown
-    let server_handle = tokio::spawn(async move { server.run(shutdown_rx).await });
+    // Keep serving errors attached to the daemon process.
+    let server = server.run(shutdown_rx);
+    tokio::pin!(server);
 
-    // Wait for shutdown signal
     let mut sigterm = signal(SignalKind::terminate()).expect("failed to set up SIGTERM handler");
     let mut sigint = signal(SignalKind::interrupt()).expect("failed to set up SIGINT handler");
 
     tokio::select! {
+        result = &mut server => {
+            result?;
+            return Err("service server stopped unexpectedly".into());
+        }
         _ = sigterm.recv() => tracing::info!("Received SIGTERM"),
         _ = sigint.recv() => tracing::info!("Received SIGINT"),
     }
 
-    // Signal shutdown
     drop(shutdown_tx);
-    let _ = server_handle.await;
+    server.await?;
 
     println!("Daemon shut down");
     Ok(())

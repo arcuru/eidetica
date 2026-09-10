@@ -1,6 +1,4 @@
 use std::sync::Arc;
-#[cfg(all(unix, feature = "service"))]
-use std::time::Duration;
 
 use eidetica::{
     Database, Error, FixedClock, Instance, NewUser,
@@ -251,24 +249,11 @@ async fn test_remote_instance() -> Instance {
             .await
             .expect("Failed to create server-side Instance");
     let service = ServiceServer::new(server.clone(), socket_path.clone());
+    let service = service.bind().await.expect("Failed to bind test daemon");
     let (tx, rx) = watch::channel(());
     // Keep the shutdown channel alive so the server doesn't exit.
     let _tx = Box::leak(Box::new(tx));
-    tokio::spawn(async move {
-        let _ = service.run(rx).await;
-    });
-
-    // Wait for the socket to appear (server binds asynchronously).
-    for _ in 0..50 {
-        if socket_path.exists() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    assert!(
-        socket_path.exists(),
-        "daemon socket did not appear within 500ms"
-    );
+    tokio::spawn(service.run(rx));
 
     let instance = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
@@ -322,22 +307,10 @@ async fn test_remote_instance_with_user(username: &str) -> (Instance, User) {
             .await
             .expect("Failed to create server-side Instance");
     let service = ServiceServer::new(server.clone(), socket_path.clone());
+    let service = service.bind().await.expect("Failed to bind test daemon");
     let (tx, rx) = watch::channel(());
     let _tx = Box::leak(Box::new(tx));
-    tokio::spawn(async move {
-        let _ = service.run(rx).await;
-    });
-
-    for _ in 0..50 {
-        if socket_path.exists() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    assert!(
-        socket_path.exists(),
-        "daemon socket did not appear within 500ms"
-    );
+    tokio::spawn(service.run(rx));
 
     // create_user is not available over the wire — create user server-side.
     create_user(&server, username, None)
@@ -408,22 +381,10 @@ async fn test_remote_instance_with_user_and_key(
             .await
             .expect("Failed to create server-side Instance");
     let service = ServiceServer::new(server.clone(), socket_path.clone());
+    let service = service.bind().await.expect("Failed to bind test daemon");
     let (tx, rx) = watch::channel(());
     let _tx = Box::leak(Box::new(tx));
-    tokio::spawn(async move {
-        let _ = service.run(rx).await;
-    });
-
-    for _ in 0..50 {
-        if socket_path.exists() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    assert!(
-        socket_path.exists(),
-        "daemon socket did not appear within 500ms"
-    );
+    tokio::spawn(service.run(rx));
 
     // Create user and add key server-side.
     create_user(&server, username, None)
