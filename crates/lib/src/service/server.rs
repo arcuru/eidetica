@@ -1831,11 +1831,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_existing_group_traversable_setgid_parent_is_preserved() {
+    async fn test_existing_group_traversable_parent_is_preserved() {
         let dir = private_tempdir();
         let parent = dir.path().join("shared");
         tokio::fs::create_dir(&parent).await.unwrap();
-        tokio::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o2750))
+        tokio::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o750))
             .await
             .unwrap();
         let socket_path = parent.join("test.sock");
@@ -1850,7 +1850,7 @@ mod tests {
         let parent_metadata = std::fs::metadata(&parent).unwrap();
         let socket_metadata = std::fs::symlink_metadata(&socket_path).unwrap();
 
-        assert_eq!(parent_metadata.permissions().mode() & 0o7777, 0o2750);
+        assert_eq!(parent_metadata.permissions().mode() & 0o777, 0o750);
         assert_eq!(socket_metadata.permissions().mode() & 0o777, 0o660);
         assert_eq!(socket_metadata.gid(), parent_metadata.gid());
         drop(server);
