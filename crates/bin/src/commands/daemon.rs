@@ -59,7 +59,6 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
     // Determine socket path
     let socket_path = args.socket.clone().unwrap_or_else(default_socket_path);
 
-    // Do not report the daemon as ready until its service socket accepts clients.
     let server = ServiceServer::bind(instance, &socket_path).await?;
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
 
@@ -74,7 +73,6 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
     println!();
     println!("Press Ctrl+C to shutdown");
 
-    // Keep serving errors attached to the daemon process.
     let server = server.run(shutdown_rx);
     tokio::pin!(server);
 

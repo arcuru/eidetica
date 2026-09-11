@@ -94,7 +94,7 @@ Client-side signing. The daemon stores and serves encrypted key material and sig
 - **Authentication via challenge-response**: the daemon issues fresh random challenge bytes per login attempt. Successful decryption of the user's signing key on the client _is_ password verification; the daemon verifies the returned signature against the user's stored public key. No password is sent over the wire.
 - **`TrustedLogin` naming is load-bearing**: the flow assumes the caller is already trusted by the socket's filesystem permissions. Over a network transport this would need a PAKE instead — the name flags that gap deliberately.
 - **Encrypted stores remain opaque to the daemon**: per-database encrypted CRDTs merge as `Vec<EncryptedBlob>`; the daemon participates in storage and sync without ever holding a content encryption key.
-- **Filesystem permissions**: missing directories in the socket path are created mode `0700`, and the socket itself is set to `0600` as an additional access-control layer.
+- **Filesystem permissions**: missing directories in the socket path start at mode `0700`, even with a permissive process umask. A restrictive umask may remove owner bits, so the server restores `0700` after creation. The socket itself is set to `0600`.
 
 Existing directory modes are preserved, including shared or sticky directories and paths reached through symlinks.
 Directory permissions therefore decide which users can reach, replace, or remove the socket and its adjacent lockfile; use a private directory when the endpoint must be isolated from other local users.

@@ -95,7 +95,7 @@ The returned Instance is fully transparent -- all downstream code (Database, Tra
 - **Keys and passwords stay client-side.** The daemon sees only encrypted key material and signed entries. Password verification and key derivation (Argon2id) happen in the client process.
 - **No plaintext secrets cross the socket.** Authentication operations (user creation, login, key management) run locally in the client. Only storage operations (get, put, tips, etc.) are forwarded to the daemon.
 - **The socket is a local Unix domain socket.** Access is controlled by filesystem permissions on the socket file. Only processes that can reach the socket path can connect.
-- **Prefer a private socket directory.** Missing directories are created with mode `0700`, while existing directory modes are preserved. Shared or sticky directories and symlinked paths remain supported, but every directory's permissions affect who can reach or replace the endpoint. The socket itself is set to `0600`.
+- **Prefer a private socket directory.** Missing directories start at mode `0700` and are restored to that mode if a restrictive umask removes owner bits. Existing directory modes are preserved. Shared or sticky directories and symlinked paths remain supported, but every directory's permissions affect who can reach or replace the endpoint. The socket itself is set to `0600`.
 
 The service owns its sibling lockfile and socket pathname for the server's lifetime.
 This prevents cooperating Eidetica daemons from claiming one endpoint and keeps their stale recovery or shutdown from deleting a replacement they observe.
