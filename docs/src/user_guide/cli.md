@@ -181,5 +181,6 @@ eidetica info --json
 eidetica db list --data-dir /var/lib/eidetica
 
 # Start a daemon for shared multi-process access
-eidetica daemon --socket /tmp/eidetica.sock
+install -d -m 0700 "$XDG_RUNTIME_DIR/eidetica"
+eidetica daemon --socket "$XDG_RUNTIME_DIR/eidetica/service.sock"
 ```

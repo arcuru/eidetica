@@ -58,7 +58,7 @@ let instance = Instance::connect("sqlite://./my_data.db").await?;
 
 let (shutdown_tx, shutdown_rx) = watch::channel(());
 // Binding completes only after the socket is ready to accept clients.
-let server = ServiceServer::bind(instance, "/tmp/eidetica.sock").await?;
+let server = ServiceServer::bind(instance, eidetica::service::default_socket_path()).await?;
 
 // Serve until shutdown_tx is dropped.
 server.run(shutdown_rx).await?;
@@ -74,7 +74,7 @@ Clients reach the daemon by passing a `unix://` URL to `Instance::connect`:
 use eidetica::Instance;
 
 // Connect to a running daemon
-let instance = Instance::connect("unix:///tmp/eidetica.sock").await?;
+let instance = Instance::connect(eidetica::service::default_socket_url()).await?;
 
 // Use it exactly like a local Instance. The daemon was initialised with
 // an initial admin user via `eidetica daemon init --username ops`
@@ -138,12 +138,12 @@ Multiple clients can connect to the same daemon simultaneously. Each client main
 
 ```rust,ignore
 // Client 1: an admin session creates the new user via the InstanceAdmin path.
-let instance1 = Instance::connect("unix:///tmp/eidetica.sock").await?;
+let instance1 = Instance::connect(eidetica::service::default_socket_url()).await?;
 let admin = instance1.login_user("ops", None).await?;
 admin.admin().await?.create_user(eidetica::NewUser::passwordless("alice")).await?;
 
 // Client 2 (separate process or task): log in as the user that was just created.
-let instance2 = Instance::connect("unix:///tmp/eidetica.sock").await?;
+let instance2 = Instance::connect(eidetica::service::default_socket_url()).await?;
 let user = instance2.login_user("alice", None).await?;
 ```
 
