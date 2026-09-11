@@ -267,6 +267,18 @@ impl ServiceServer {
     /// This creates and restricts the socket directory, claims the endpoint,
     /// removes a stale socket when safe, and binds the listener.
     pub async fn bind(&self) -> crate::Result<BoundServiceServer> {
+        self.bind_inner(&mut |_| {}).await
+    }
+
+    #[cfg(test)]
+    async fn bind_with_test_hook(
+        &self,
+        mut hook: impl FnMut(BindTestStage),
+    ) -> crate::Result<BoundServiceServer> {
+        self.bind_inner(&mut hook).await
+    }
+
+    async fn bind_inner(&self, hook: &mut impl FnMut(BindTestStage)) -> crate::Result<BoundServiceServer> {
         if let Some(parent) = self.socket_path.parent()
             && !parent.as_os_str().is_empty()
             && !tokio::fs::try_exists(parent).await?
@@ -275,11 +287,13 @@ impl ServiceServer {
             tokio::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700)).await?;
         }
 
+        hook(BindTestStage::AfterParentSetup);
         let lock_file = acquire_endpoint_lock(&self.socket_path)?;
-        recover_stale_socket(&self.socket_path).await?;
+        hook(BindTestStage::AfterLock);
+        recover_stale_socket(&self.socket_path, hook).await?;
 
         let listener = UnixListener::bind(&self.socket_path)?;
-        let socket_identity = prepare_bound_socket(&self.socket_path)?;
+        let socket_identity = prepare_bound_socket(&self.socket_path, hook)?;
 
         Ok(BoundServiceServer {
             instance: self.instance.clone(),
@@ -301,6 +315,14 @@ impl ServiceServer {
     pub async fn run(&self, shutdown: watch::Receiver<()>) -> crate::Result<()> {
         self.bind().await?.run(shutdown).await
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BindTestStage {
+    AfterParentSetup,
+    AfterLock,
+    AfterStaleProbe,
+    BeforeSocketChmod,
 }
 
 fn lock_path(socket_path: &Path) -> PathBuf {
@@ -347,7 +369,10 @@ fn acquire_endpoint_lock(socket_path: &Path) -> crate::Result<File> {
     Ok(file)
 }
 
-async fn recover_stale_socket(socket_path: &Path) -> crate::Result<()> {
+async fn recover_stale_socket(
+    socket_path: &Path,
+    hook: &mut impl FnMut(BindTestStage),
+) -> crate::Result<()> {
     let metadata = match tokio::fs::symlink_metadata(socket_path).await {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -377,6 +402,7 @@ async fn recover_stale_socket(socket_path: &Path) -> crate::Result<()> {
                 std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
             ) =>
         {
+            hook(BindTestStage::AfterStaleProbe);
             tokio::fs::remove_file(socket_path).await?;
             Ok(())
         }
@@ -384,7 +410,10 @@ async fn recover_stale_socket(socket_path: &Path) -> crate::Result<()> {
     }
 }
 
-fn prepare_bound_socket(socket_path: &Path) -> crate::Result<SocketIdentity> {
+fn prepare_bound_socket(
+    socket_path: &Path,
+    hook: &mut impl FnMut(BindTestStage),
+) -> crate::Result<SocketIdentity> {
     let metadata = std::fs::symlink_metadata(socket_path)?;
     if !metadata.file_type().is_socket() {
         return Err(std::io::Error::other(format!(
@@ -394,6 +423,7 @@ fn prepare_bound_socket(socket_path: &Path) -> crate::Result<SocketIdentity> {
         .into());
     }
     let identity = SocketIdentity::from_metadata(&metadata);
+    hook(BindTestStage::BeforeSocketChmod);
     let result = (|| -> crate::Result<()> {
         std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))?;
         let metadata = std::fs::symlink_metadata(socket_path)?;
@@ -1791,6 +1821,35 @@ mod tests {
     }
 
     #[tokio::test]
+    #[should_panic(expected = "a replaced socket parent must invalidate bind")]
+    async fn test_parent_replacement_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path().join("endpoint");
+        let replacement = dir.path().join("replacement");
+        tokio::fs::create_dir(&parent).await.unwrap();
+        tokio::fs::create_dir(&replacement).await.unwrap();
+        let socket_path = parent.join("test.sock");
+        let (instance, _admin) = Instance::create_backend(
+            Box::new(InMemory::new()),
+            crate::NewUser::passwordless("admin"),
+        )
+        .await
+        .unwrap();
+
+        let result = ServiceServer::new(instance, &socket_path)
+            .bind_with_test_hook(|stage| {
+                if stage == BindTestStage::AfterParentSetup {
+                    std::fs::remove_dir(&parent).unwrap();
+                    std::fs::rename(&replacement, &parent).unwrap();
+                }
+            })
+            .await;
+
+        assert!(result.is_err(), "a replaced socket parent must invalidate bind");
+        assert!(!socket_path.exists());
+    }
+
+    #[tokio::test]
     async fn test_wrong_protocol_version() {
         let (socket_path, _tx, _task, _instance) = start_test_server().await;
 
@@ -2136,6 +2195,108 @@ mod tests {
                 .mode()
                 & 0o777,
             0o640
+        );
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "a replaced lock path must invalidate bind")]
+    async fn test_replaced_lock_path_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("test.sock");
+        let lock_path = lock_path(&socket_path);
+        let replacement = dir.path().join("replacement");
+        tokio::fs::write(&replacement, b"replacement")
+            .await
+            .unwrap();
+        let (instance, _admin) = Instance::create_backend(
+            Box::new(InMemory::new()),
+            crate::NewUser::passwordless("admin"),
+        )
+        .await
+        .unwrap();
+
+        let result = ServiceServer::new(instance, &socket_path)
+            .bind_with_test_hook(|stage| {
+                if stage == BindTestStage::AfterLock {
+                    std::fs::remove_file(&lock_path).unwrap();
+                    std::fs::rename(&replacement, &lock_path).unwrap();
+                }
+            })
+            .await;
+
+        assert!(result.is_err(), "a replaced lock path must invalidate bind");
+        assert!(!socket_path.exists());
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "a replacement socket must invalidate bind")]
+    async fn test_stale_probe_preserves_replacement_socket() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("test.sock");
+        drop(UnixListener::bind(&socket_path).unwrap());
+        let replacement_path = dir.path().join("replacement.sock");
+        let replacement = UnixListener::bind(&replacement_path).unwrap();
+        let (instance, _admin) = Instance::create_backend(
+            Box::new(InMemory::new()),
+            crate::NewUser::passwordless("admin"),
+        )
+        .await
+        .unwrap();
+
+        let result = ServiceServer::new(instance, &socket_path)
+            .bind_with_test_hook(|stage| {
+                if stage == BindTestStage::AfterStaleProbe {
+                    std::fs::remove_file(&socket_path).unwrap();
+                    std::fs::rename(&replacement_path, &socket_path).unwrap();
+                }
+            })
+            .await;
+
+        assert!(result.is_err(), "a replacement socket must invalidate bind");
+        assert!(
+            tokio::net::UnixStream::connect(&socket_path).await.is_ok(),
+            "the replacement listener must remain reachable"
+        );
+        drop(replacement);
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "bind must not chmod a replacement path")]
+    async fn test_socket_chmod_preserves_replacement_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("test.sock");
+        let replacement_path = dir.path().join("replacement");
+        tokio::fs::write(&replacement_path, b"replacement")
+            .await
+            .unwrap();
+        std::fs::set_permissions(&replacement_path, std::fs::Permissions::from_mode(0o640))
+            .unwrap();
+        let (instance, _admin) = Instance::create_backend(
+            Box::new(InMemory::new()),
+            crate::NewUser::passwordless("admin"),
+        )
+        .await
+        .unwrap();
+
+        let result = ServiceServer::new(instance, &socket_path)
+            .bind_with_test_hook(|stage| {
+                if stage == BindTestStage::BeforeSocketChmod {
+                    std::fs::remove_file(&socket_path).unwrap();
+                    std::fs::rename(&replacement_path, &socket_path).unwrap();
+                }
+            })
+            .await;
+
+        assert!(result.is_err(), "a replacement path must invalidate bind");
+        assert_eq!(std::fs::read(&socket_path).unwrap(), b"replacement");
+        assert_eq!(
+            std::fs::metadata(&socket_path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o640,
+            "bind must not chmod a replacement path"
         );
     }
 
