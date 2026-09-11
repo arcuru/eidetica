@@ -95,11 +95,11 @@ The returned Instance is fully transparent -- all downstream code (Database, Tra
 - **Keys and passwords stay client-side.** The daemon sees only encrypted key material and signed entries. Password verification and key derivation (Argon2id) happen in the client process.
 - **No plaintext secrets cross the socket.** Authentication operations (user creation, login, key management) run locally in the client. Only storage operations (get, put, tips, etc.) are forwarded to the daemon.
 - **The socket is a local Unix domain socket.** Access is controlled by filesystem permissions on the socket file. Only processes that can reach the socket path can connect.
-- **Use a private socket directory.** The socket's immediate parent must be owned by the daemon user with mode `0700`. A missing immediate parent is created with that mode when its ancestors already exist; an existing shared directory such as `/tmp` is rejected rather than modified. Use a dedicated child such as `/tmp/my-eidetica/daemon.sock` for custom temporary paths.
+- **Prefer a private socket directory.** Missing directories are created with mode `0700`, while existing directory modes are preserved. Shared or sticky directories and symlinked paths remain supported, but every directory's permissions affect who can reach or replace the endpoint. The socket itself is set to `0600`.
 
 The service owns its sibling lockfile and socket pathname for the server's lifetime.
-This prevents two cooperating Eidetica daemons from claiming one endpoint and avoids deleting a replaced socket during stale recovery or shutdown.
-It does not defend against root or a hostile process running as the same user, which can replace entries inside the private directory.
+This prevents cooperating Eidetica daemons from claiming one endpoint and keeps their stale recovery or shutdown from deleting a replacement they observe.
+It does not defend against root or a hostile process running as the same user, and a directory writable by another user permits the pathname changes allowed by that directory's permissions.
 
 > ⚠️ **The deployment bootstrap fails closed.** Both the NixOS module and
 > the published container image refuse to start on a fresh backend unless

@@ -371,21 +371,16 @@ const STALE_PROBE_TIMEOUT: Duration = Duration::from_millis(250);
 struct ParentGuard {
     path: PathBuf,
     identity: SocketIdentity,
-    _directory: File,
 }
 
 impl ParentGuard {
     fn ensure_current(&self) -> crate::Result<()> {
         let metadata = std::fs::symlink_metadata(&self.path)?;
-        if !metadata.file_type().is_dir()
-            || !self.identity.matches(&metadata)
-            || metadata.uid() != effective_uid()
-            || metadata.permissions().mode() & 0o777 != PARENT_MODE
-        {
+        if !metadata.file_type().is_dir() || !self.identity.matches(&metadata) {
             return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
+                std::io::ErrorKind::NotADirectory,
                 format!(
-                    "service endpoint parent {} changed or is not owner-only",
+                    "service endpoint parent {} changed while binding",
                     self.path.display()
                 ),
             )
@@ -418,23 +413,35 @@ fn resolve_socket_path(path: PathBuf) -> std::io::Result<PathBuf> {
         )
     })?;
 
-    match std::fs::canonicalize(parent) {
-        Ok(parent) => Ok(parent.join(file_name)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let invalid_parent = || {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    format!("service endpoint parent {} is invalid", parent.display()),
-                )
-            };
-            let parent_name = parent.file_name().ok_or_else(invalid_parent)?;
-            let ancestor = parent.parent().ok_or_else(invalid_parent)?;
-            Ok(std::fs::canonicalize(ancestor)?
-                .join(parent_name)
-                .join(file_name))
+    let mut missing = Vec::new();
+    let mut ancestor = parent;
+    let canonical_parent = loop {
+        match std::fs::canonicalize(ancestor) {
+            Ok(mut canonical) => {
+                for component in missing.iter().rev() {
+                    canonical.push(component);
+                }
+                break canonical;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                missing.push(ancestor.file_name().ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("service endpoint parent {} is invalid", parent.display()),
+                    )
+                })?);
+                ancestor = ancestor.parent().ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("service endpoint parent {} is invalid", parent.display()),
+                    )
+                })?;
+            }
+            Err(error) => return Err(error),
         }
-        Err(error) => Err(error),
-    }
+    };
+
+    Ok(canonical_parent.join(file_name))
 }
 
 async fn prepare_parent(socket_path: &Path) -> crate::Result<ParentGuard> {
@@ -452,88 +459,64 @@ async fn prepare_parent(socket_path: &Path) -> crate::Result<ParentGuard> {
         })?;
 
     match std::fs::symlink_metadata(parent) {
-        Ok(_) => {}
+        Ok(metadata) if metadata.file_type().is_dir() => {}
+        Ok(_) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotADirectory,
+                format!(
+                    "service endpoint parent {} is not a directory",
+                    parent.display()
+                ),
+            )
+            .into());
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let ancestor = parent.parent().ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    format!(
-                        "service endpoint parent {} has no existing ancestor",
-                        parent.display()
-                    ),
-                )
-            })?;
-            validate_existing_ancestors(ancestor)?;
-            let mut builder = tokio::fs::DirBuilder::new();
-            builder.mode(PARENT_MODE);
-            match builder.create(parent).await {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(error.into()),
-            }
+            create_missing_parents(parent).await?;
         }
         Err(error) => return Err(error.into()),
     }
-    validate_existing_ancestors(parent)?;
 
     let metadata = std::fs::symlink_metadata(parent)?;
-    if !metadata.file_type().is_dir()
-        || metadata.uid() != effective_uid()
-        || metadata.permissions().mode() & 0o777 != PARENT_MODE
-    {
+    if !metadata.file_type().is_dir() {
         return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
+            std::io::ErrorKind::NotADirectory,
             format!(
-                "refusing unsafe service endpoint parent {} (must be owned by the effective user with mode 0700)",
+                "service endpoint parent {} is not a directory",
                 parent.display()
             ),
         )
         .into());
     }
-
-    let directory = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(parent)?;
-    let guard = ParentGuard {
+    Ok(ParentGuard {
         path: parent.to_path_buf(),
-        identity: SocketIdentity::from_metadata(&directory.metadata()?),
-        _directory: directory,
-    };
-    guard.ensure_current()?;
-    Ok(guard)
+        identity: SocketIdentity::from_metadata(&metadata),
+    })
 }
 
-fn validate_existing_ancestors(parent: &Path) -> crate::Result<()> {
-    for ancestor in parent.ancestors() {
-        if ancestor.as_os_str().is_empty() {
-            continue;
-        }
-        let metadata = match std::fs::symlink_metadata(ancestor) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(error.into()),
-        };
-        if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::NotADirectory,
+async fn create_missing_parents(parent: &Path) -> std::io::Result<()> {
+    let mut missing = Vec::new();
+    let mut ancestor = parent;
+    while !ancestor.exists() {
+        missing.push(ancestor);
+        ancestor = ancestor.parent().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
                 format!(
-                    "service endpoint ancestor {} is not a real directory",
-                    ancestor.display()
+                    "service endpoint parent {} has no existing ancestor",
+                    parent.display()
                 ),
             )
-            .into());
-        }
-        let mode = metadata.permissions().mode();
-        if mode & 0o022 != 0 && mode & 0o1000 == 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                format!(
-                    "service endpoint ancestor {} is writable by another user",
-                    ancestor.display()
-                ),
-            )
-            .into());
+        })?;
+    }
+
+    for directory in missing.into_iter().rev() {
+        match tokio::fs::create_dir(directory).await {
+            Ok(()) => {
+                tokio::fs::set_permissions(directory, std::fs::Permissions::from_mode(PARENT_MODE))
+                    .await?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
         }
     }
     Ok(())
@@ -2037,40 +2020,42 @@ mod tests {
     }
 
     #[tokio::test]
-    #[should_panic]
-    async fn test_existing_shared_parent_mode_is_preserved() {
+    async fn test_existing_shared_parent_modes_are_preserved() {
         let dir = private_tempdir();
-        let parent = dir.path().join("shared");
-        tokio::fs::create_dir(&parent).await.unwrap();
-        tokio::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755))
+        for mode in [0o755, 0o750, 0o1777] {
+            let parent = dir.path().join(format!("shared-{mode:o}"));
+            tokio::fs::create_dir(&parent).await.unwrap();
+            tokio::fs::set_permissions(&parent, std::fs::Permissions::from_mode(mode))
+                .await
+                .unwrap();
+            let socket_path = parent.join("test.sock");
+            let (instance, _admin) = Instance::create_backend(
+                Box::new(InMemory::new()),
+                crate::NewUser::passwordless("admin"),
+            )
             .await
             .unwrap();
-        let socket_path = parent.join("test.sock");
-        let (instance, _admin) = Instance::create_backend(
-            Box::new(InMemory::new()),
-            crate::NewUser::passwordless("admin"),
-        )
-        .await
-        .unwrap();
 
-        let server = ServiceServer::bind(instance, &socket_path).await.unwrap();
+            let server = ServiceServer::bind(instance, &socket_path).await.unwrap();
 
-        let mode = std::fs::metadata(&parent).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o755);
-        assert_eq!(
-            std::fs::symlink_metadata(&socket_path)
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            SOCKET_MODE
-        );
-        drop(server);
-        assert!(!socket_path.exists());
+            assert_eq!(
+                std::fs::metadata(&parent).unwrap().permissions().mode() & 0o7777,
+                mode
+            );
+            assert_eq!(
+                std::fs::symlink_metadata(&socket_path)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                SOCKET_MODE
+            );
+            drop(server);
+            assert!(!socket_path.exists());
+        }
     }
 
     #[tokio::test]
-    #[should_panic]
     async fn test_symlinked_nested_parent_is_created_privately() {
         let dir = private_tempdir();
         let target = dir.path().join("shared");
@@ -2111,7 +2096,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
     fn test_restrictive_umask_does_not_weaken_created_parent_mode() {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
@@ -2425,8 +2409,8 @@ mod tests {
         assert!(!socket_path.exists());
     }
 
-    #[tokio::test]
-    async fn test_second_bind_is_refused_and_first_endpoint_remains_usable() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_simultaneous_bind_refuses_one_and_winner_serves_protocol() {
         let dir = private_tempdir();
         let socket_path = dir.path().join("test.sock");
         let (instance, _admin) = Instance::create_backend(
@@ -2435,22 +2419,53 @@ mod tests {
         )
         .await
         .unwrap();
+        let expected_id = instance.id();
+        let barrier = Arc::new(tokio::sync::Barrier::new(3));
 
-        let first = ServiceServer::bind(instance.clone(), &socket_path)
-            .await
-            .unwrap();
-        let error = match ServiceServer::bind(instance, &socket_path).await {
-            Ok(_) => panic!("second bind must be refused"),
-            Err(error) => error,
+        let contender = |instance: Instance| {
+            let barrier = barrier.clone();
+            let socket_path = socket_path.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                ServiceServer::bind(instance, socket_path).await
+            })
+        };
+        let first = contender(instance.clone());
+        let second = contender(instance);
+        barrier.wait().await;
+        let (first, second) = tokio::time::timeout(Duration::from_secs(1), async {
+            (first.await.unwrap(), second.await.unwrap())
+        })
+        .await
+        .expect("simultaneous binds must finish within a bound");
+
+        let (winner, error) = match (first, second) {
+            (Ok(winner), Err(error)) | (Err(error), Ok(winner)) => (winner, error),
+            (Ok(_), Ok(_)) => panic!("only one simultaneous bind may succeed"),
+            (Err(first), Err(second)) => {
+                panic!("one simultaneous bind must succeed; got {first:?} and {second:?}")
+            }
         };
         assert!(
             matches!(&error, crate::Error::Io(error) if error.kind() == std::io::ErrorKind::AddrInUse),
             "expected AddrInUse, got {error:?}"
         );
-        tokio::net::UnixStream::connect(&socket_path)
-            .await
-            .expect("first endpoint must remain usable");
-        drop(first);
+
+        let (shutdown, rx) = watch::channel(());
+        let task = tokio::spawn(winner.run(rx));
+        let client = tokio::time::timeout(
+            Duration::from_secs(1),
+            Instance::connect(format!("unix://{}", socket_path.display())),
+        )
+        .await
+        .expect("the winning server must answer within a bound")
+        .expect("the winning server must complete a protocol request");
+        assert_eq!(client.id(), expected_id);
+
+        drop(client);
+        drop(shutdown);
+        task.await.unwrap().unwrap();
+        assert!(!socket_path.exists());
     }
 
     #[tokio::test]

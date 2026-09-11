@@ -32,9 +32,10 @@
 //!   in storage and sync without ever holding a content encryption key. Clients
 //!   decrypt and merge in-process and may write the result back as an encrypted
 //!   cache entry.
-//! - **Filesystem permissions**: the socket directory is owner-only (mode 0700) and
-//!   the socket itself is mode 0600 as an additional access-control layer. Binding
-//!   refuses unsafe existing parents and pathname replacements, but does not claim
+//! - **Filesystem permissions**: missing socket directories are created owner-only
+//!   (mode 0700) and the socket itself is set to mode 0600. Existing directory modes
+//!   are preserved, so access to the pathname still depends on every directory in
+//!   the supplied path. Binding coordinates cooperating servers but does not claim
 //!   to defend against root or a hostile process running under the same UID.
 //!
 //! See the brain note "Service Architecture" § Security Model for the design rationale,

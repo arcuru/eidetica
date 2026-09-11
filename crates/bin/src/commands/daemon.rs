@@ -237,7 +237,12 @@ mod tests {
         let (instance, _admin) = Instance::create_backend(backend, NewUser::passwordless("admin"))
             .await
             .unwrap();
-        let owner = ServiceServer::bind(instance, &socket_path).await.unwrap();
+        let owner = ServiceServer::bind(instance.clone(), &socket_path)
+            .await
+            .unwrap();
+        let expected_id = instance.id();
+        let (shutdown, rx) = tokio::sync::watch::channel(());
+        let owner_task = tokio::spawn(owner.run(rx));
 
         let result = tokio::time::timeout(
             Duration::from_secs(1),
@@ -247,10 +252,17 @@ mod tests {
         .expect("concurrent daemon startup must be bounded");
 
         assert!(result.is_err());
-        tokio::net::UnixStream::connect(&socket_path)
-            .await
-            .expect("the original daemon endpoint must remain reachable");
-        drop(owner);
+        let client = tokio::time::timeout(
+            Duration::from_secs(1),
+            Instance::connect(format!("unix://{}", socket_path.display())),
+        )
+        .await
+        .expect("the original daemon must answer within a bound")
+        .expect("the original daemon must still serve protocol requests");
+        assert_eq!(client.id(), expected_id);
+        drop(client);
+        drop(shutdown);
+        owner_task.await.unwrap().unwrap();
         assert!(!socket_path.exists());
     }
 }
