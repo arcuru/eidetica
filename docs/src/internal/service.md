@@ -94,12 +94,13 @@ Client-side signing. The daemon stores and serves encrypted key material and sig
 - **Authentication via challenge-response**: the daemon issues fresh random challenge bytes per login attempt. Successful decryption of the user's signing key on the client _is_ password verification; the daemon verifies the returned signature against the user's stored public key. No password is sent over the wire.
 - **`TrustedLogin` naming is load-bearing**: the flow assumes the caller is already trusted by the socket's filesystem permissions. Over a network transport this would need a PAKE instead — the name flags that gap deliberately.
 - **Encrypted stores remain opaque to the daemon**: per-database encrypted CRDTs merge as `Vec<EncryptedBlob>`; the daemon participates in storage and sync without ever holding a content encryption key.
-- **Filesystem permissions**: missing directories in the socket path start at mode `0700`, even with a permissive process umask. A restrictive umask may remove owner bits, so the server restores `0700` after creation. The socket itself is set to `0600`.
+- **Filesystem permissions**: missing directories in the socket path are created with mode `0700`, including under a permissive process umask. The socket is mode `0660`.
 
-Existing directory modes are preserved, including shared or sticky directories and paths reached through symlinks.
-Directory permissions therefore decide which users can reach, replace, or remove the socket and its adjacent lockfile; use a private directory when the endpoint must be isolated from other local users.
-The endpoint lock serializes cooperating Eidetica servers, and inode checks keep their stale recovery and cleanup from removing a replacement pathname that they observe.
-These pathname checks do not defend against a hostile process with the same UID or root, and a directory writable by another user grants that user whatever replacement operations the operating system permits there.
+The socket directory is the local trust boundary.
+An existing parent must be owned by the daemon user, not writable by group or others, and reached without symlinked path components.
+Its group, setgid bit, and traversal permissions can intentionally grant another Unix user access; every process that can connect receives the existing fully trusted service API.
+Unsafe shared-writable and symlinked layouts are rejected rather than supported.
+An adjacent advisory lock coordinates cooperating daemon owners, stale sockets are recovered, and graceful or dropped servers remove only the socket identity they bound.
 
 See the `crate::service` module rustdoc for the full design rationale, including why daemon-side signing (the earlier draft) was rejected.
 
@@ -379,7 +380,7 @@ The architectural seam — wire-path tests vs. subsystem tests — is explicit a
 
 ## V1 Limitations
 
-This is a **single trusted local client** v1. The following are deferred with tracked follow-ups:
+This is a **fully trusted local-client** v1. Filesystem access to the socket grants the whole service API; the following are deferred with tracked follow-ups:
 
 - **Lock-poisoning posture**: the per-connection session `RwLock` and the `RemoteBackend` per-connection cache mutex are poison-tolerant (handlers recover the guard from a poisoned lock rather than panicking), but other `std::sync::Mutex` sites in the service path still use `lock().unwrap()`. Documented at the lock sites; the remaining ones must be audited before serving multiple or untrusted clients.
 - **Verification status is never asserted over the wire**: the service protocol carries no way for a client to assert a verification status; entries arriving over the wire are stored `Unverified` and earn `Verified` only via the daemon's own validation pass. The status model, the pinned-settings validation that makes it staleness-free, the disclosure posture, and the unbuilt authority-_reduction_ (revocation) gap are documented in the [Verification Model](../design/verification.md) design doc.

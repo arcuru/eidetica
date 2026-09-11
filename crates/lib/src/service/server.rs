@@ -5,9 +5,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions, TryLockError};
-use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -152,10 +151,9 @@ impl Drop for ConnectionGuard {
 /// Any other request while in `AwaitingProof` also resets the state so a
 /// half-finished login can't be exploited mid-flight.
 ///
-/// "Trusted" refers to the assumption that whoever can reach this socket is
-/// already authorised by filesystem permissions (mode 0600 under
-/// `$XDG_RUNTIME_DIR`); see the protocol module docs and the Service
-/// Architecture brain doc § Trusted login threat model.
+/// "Trusted" means every process that can reach the socket is authorised for
+/// the full service API. The socket directory is the trust boundary; see the
+/// service architecture documentation.
 #[derive(Debug, Clone)]
 enum ConnectionState {
     /// No login attempt yet, or last attempt failed/abandoned.
@@ -208,7 +206,6 @@ pub struct ServiceServer {
     socket_identity: SocketIdentity,
     token_idle_ttl: Duration,
     _lock_file: File,
-    parent: ParentGuard,
 }
 
 #[derive(Clone, Copy)]
@@ -237,7 +234,7 @@ impl ServiceServer {
     /// * `instance` - The Instance to serve. The server holds a strong reference.
     /// * `socket_path` - Path for the Unix domain socket.
     pub async fn bind(instance: Instance, socket_path: impl Into<PathBuf>) -> crate::Result<Self> {
-        Self::bind_inner(instance, socket_path.into(), TOKEN_IDLE_TTL, &mut |_| {}).await
+        Self::bind_inner(instance, socket_path.into(), TOKEN_IDLE_TTL).await
     }
 
     /// Bind with a shorter session-token lifetime for expiry tests.
@@ -247,35 +244,27 @@ impl ServiceServer {
         socket_path: impl Into<PathBuf>,
         ttl: Duration,
     ) -> crate::Result<Self> {
-        Self::bind_inner(instance, socket_path.into(), ttl, &mut |_| {}).await
-    }
-
-    #[cfg(test)]
-    async fn bind_with_test_hook(
-        instance: Instance,
-        socket_path: impl Into<PathBuf>,
-        mut hook: impl FnMut(BindTestStage),
-    ) -> crate::Result<Self> {
-        Self::bind_inner(instance, socket_path.into(), TOKEN_IDLE_TTL, &mut hook).await
+        Self::bind_inner(instance, socket_path.into(), ttl).await
     }
 
     async fn bind_inner(
         instance: Instance,
         socket_path: PathBuf,
         token_idle_ttl: Duration,
-        hook: &mut impl FnMut(BindTestStage),
     ) -> crate::Result<Self> {
-        let socket_path = resolve_socket_path(socket_path)?;
-        let parent = prepare_parent(&socket_path, hook).await?;
-        hook(BindTestStage::AfterParentSetup);
-        parent.ensure_current()?;
-        let lock_file = acquire_endpoint_lock(&socket_path, hook)?;
-        parent.ensure_current()?;
-        recover_stale_socket(&socket_path, &parent, hook).await?;
+        let socket_path = absolute_socket_path(socket_path)?;
+        prepare_parent(&socket_path).await?;
+        let lock_file = acquire_endpoint_lock(&socket_path)?;
+        recover_stale_socket(&socket_path).await?;
 
-        parent.ensure_current()?;
         let listener = UnixListener::bind(&socket_path)?;
-        let socket_identity = prepare_bound_socket(&listener, &socket_path, &parent, hook)?;
+        let socket_identity = match prepare_bound_socket(&socket_path) {
+            Ok(identity) => identity,
+            Err(error) => {
+                remove_socket_if_owned(&socket_path, None);
+                return Err(error);
+            }
+        };
 
         Ok(Self {
             instance,
@@ -284,7 +273,6 @@ impl ServiceServer {
             socket_identity,
             token_idle_ttl,
             _lock_file: lock_file,
-            parent,
         })
     }
 
@@ -356,178 +344,103 @@ impl ServiceServer {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum BindTestStage {
-    AfterParentCreated,
-    AfterParentSetup,
-    AfterLock,
-    AfterStaleProbe,
-    BeforeSocketChmod,
-}
-
 const PARENT_MODE: u32 = 0o700;
-const SOCKET_MODE: u32 = 0o600;
+const SOCKET_MODE: u32 = 0o660;
 const STALE_PROBE_TIMEOUT: Duration = Duration::from_millis(250);
-
-struct ParentGuard {
-    path: PathBuf,
-    identity: SocketIdentity,
-}
-
-impl ParentGuard {
-    fn ensure_current(&self) -> crate::Result<()> {
-        let metadata = std::fs::symlink_metadata(&self.path)?;
-        if !metadata.file_type().is_dir() || !self.identity.matches(&metadata) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::NotADirectory,
-                format!(
-                    "service endpoint parent {} changed while binding",
-                    self.path.display()
-                ),
-            )
-            .into());
-        }
-        Ok(())
-    }
-}
 
 fn effective_uid() -> u32 {
     unsafe { libc::geteuid() }
 }
 
-fn resolve_socket_path(path: PathBuf) -> std::io::Result<PathBuf> {
-    let absolute = if path.is_absolute() {
+fn absolute_socket_path(path: PathBuf) -> std::io::Result<PathBuf> {
+    let path = if path.is_absolute() {
         path
     } else {
         std::env::current_dir()?.join(path)
     };
-    let file_name = absolute.file_name().ok_or_else(|| {
-        std::io::Error::new(
+    if path.file_name().is_none() || path.parent().is_none() {
+        return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            format!("service endpoint {} has no file name", absolute.display()),
-        )
-    })?;
-    let parent = absolute.parent().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("service endpoint {} has no parent", absolute.display()),
-        )
-    })?;
-
-    let mut missing = Vec::new();
-    let mut ancestor = parent;
-    let canonical_parent = loop {
-        match std::fs::canonicalize(ancestor) {
-            Ok(mut canonical) => {
-                for component in missing.iter().rev() {
-                    canonical.push(component);
-                }
-                break canonical;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                missing.push(ancestor.file_name().ok_or_else(|| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        format!("service endpoint parent {} is invalid", parent.display()),
-                    )
-                })?);
-                ancestor = ancestor.parent().ok_or_else(|| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        format!("service endpoint parent {} is invalid", parent.display()),
-                    )
-                })?;
-            }
-            Err(error) => return Err(error),
-        }
-    };
-
-    Ok(canonical_parent.join(file_name))
+            format!(
+                "service endpoint {} has no parent or file name",
+                path.display()
+            ),
+        ));
+    }
+    Ok(path)
 }
 
-async fn prepare_parent(
-    socket_path: &Path,
-    hook: &mut impl FnMut(BindTestStage),
-) -> crate::Result<ParentGuard> {
+async fn prepare_parent(socket_path: &Path) -> crate::Result<()> {
     let parent = socket_path
         .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!(
-                    "service endpoint {} has no parent directory",
-                    socket_path.display()
-                ),
-            )
-        })?;
+        .expect("absolute socket path has a parent");
+    let mut current = PathBuf::new();
 
-    match std::fs::symlink_metadata(parent) {
-        Ok(metadata) if metadata.file_type().is_dir() => {}
-        Ok(_) => {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::NotADirectory,
-                format!(
-                    "service endpoint parent {} is not a directory",
-                    parent.display()
-                ),
-            )
-            .into());
+    for component in parent.components() {
+        match component {
+            Component::RootDir | Component::Prefix(_) => {
+                current.push(component.as_os_str());
+                continue;
+            }
+            Component::CurDir => continue,
+            Component::ParentDir => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("service endpoint parent {} contains '..'", parent.display()),
+                )
+                .into());
+            }
+            Component::Normal(name) => current.push(name),
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            create_missing_parents(parent, hook).await?;
+
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) => validate_directory_component(&current, &metadata)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let mut builder = tokio::fs::DirBuilder::new();
+                builder.mode(PARENT_MODE);
+                match builder.create(&current).await {
+                    Ok(()) => {
+                        tokio::fs::set_permissions(
+                            &current,
+                            std::fs::Permissions::from_mode(PARENT_MODE),
+                        )
+                        .await?;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(error) => return Err(error.into()),
+                }
+                let metadata = std::fs::symlink_metadata(&current)?;
+                validate_directory_component(&current, &metadata)?;
+            }
+            Err(error) => return Err(error.into()),
         }
-        Err(error) => return Err(error.into()),
     }
 
     let metadata = std::fs::symlink_metadata(parent)?;
-    if !metadata.file_type().is_dir() {
+    let mode = metadata.permissions().mode();
+    if metadata.uid() != effective_uid() || mode & 0o022 != 0 {
         return Err(std::io::Error::new(
-            std::io::ErrorKind::NotADirectory,
+            std::io::ErrorKind::PermissionDenied,
             format!(
-                "service endpoint parent {} is not a directory",
+                "service endpoint parent {} must be owned by the daemon user and not writable by group or others",
                 parent.display()
             ),
         )
         .into());
     }
-    Ok(ParentGuard {
-        path: parent.to_path_buf(),
-        identity: SocketIdentity::from_metadata(&metadata),
-    })
+    Ok(())
 }
 
-async fn create_missing_parents(
-    parent: &Path,
-    hook: &mut impl FnMut(BindTestStage),
-) -> std::io::Result<()> {
-    let mut missing = Vec::new();
-    let mut ancestor = parent;
-    while !ancestor.exists() {
-        missing.push(ancestor);
-        ancestor = ancestor.parent().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!(
-                    "service endpoint parent {} has no existing ancestor",
-                    parent.display()
-                ),
-            )
-        })?;
-    }
-
-    for directory in missing.into_iter().rev() {
-        let mut builder = tokio::fs::DirBuilder::new();
-        builder.mode(PARENT_MODE);
-        match builder.create(directory).await {
-            Ok(()) => {
-                hook(BindTestStage::AfterParentCreated);
-                tokio::fs::set_permissions(directory, std::fs::Permissions::from_mode(PARENT_MODE))
-                    .await?;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(error),
-        }
+fn validate_directory_component(path: &Path, metadata: &std::fs::Metadata) -> crate::Result<()> {
+    if !metadata.file_type().is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "service endpoint path component {} must be a directory, not a symlink or file",
+                path.display()
+            ),
+        )
+        .into());
     }
     Ok(())
 }
@@ -538,10 +451,7 @@ fn lock_path(socket_path: &Path) -> PathBuf {
     PathBuf::from(path)
 }
 
-fn acquire_endpoint_lock(
-    socket_path: &Path,
-    hook: &mut impl FnMut(BindTestStage),
-) -> crate::Result<File> {
+fn acquire_endpoint_lock(socket_path: &Path) -> crate::Result<File> {
     let path = lock_path(socket_path);
     let file = OpenOptions::new()
         .read(true)
@@ -549,23 +459,7 @@ fn acquire_endpoint_lock(
         .create(true)
         .truncate(false)
         .mode(SOCKET_MODE)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(&path)?;
-    let metadata = file.metadata()?;
-    if !metadata.file_type().is_file() || metadata.uid() != effective_uid() || metadata.nlink() != 1
-    {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            format!(
-                "refusing unsafe service endpoint lockfile {}",
-                path.display()
-            ),
-        )
-        .into());
-    }
-    if metadata.permissions().mode() & 0o777 != SOCKET_MODE {
-        file.set_permissions(std::fs::Permissions::from_mode(SOCKET_MODE))?;
-    }
     file.try_lock().map_err(|error| match error {
         TryLockError::WouldBlock => std::io::Error::new(
             std::io::ErrorKind::AddrInUse,
@@ -576,33 +470,15 @@ fn acquire_endpoint_lock(
         ),
         TryLockError::Error(error) => error,
     })?;
-    hook(BindTestStage::AfterLock);
-    let locked = SocketIdentity::from_metadata(&file.metadata()?);
-    let current = std::fs::symlink_metadata(&path)?;
-    if !current.file_type().is_file() || !locked.matches(&current) {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::AddrInUse,
-            format!(
-                "service endpoint lockfile {} changed while acquiring it",
-                path.display()
-            ),
-        )
-        .into());
-    }
     Ok(file)
 }
 
-async fn recover_stale_socket(
-    socket_path: &Path,
-    parent: &ParentGuard,
-    hook: &mut impl FnMut(BindTestStage),
-) -> crate::Result<()> {
+async fn recover_stale_socket(socket_path: &Path) -> crate::Result<()> {
     let metadata = match tokio::fs::symlink_metadata(socket_path).await {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.into()),
     };
-
     if !metadata.file_type().is_socket() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::AddrInUse,
@@ -614,12 +490,12 @@ async fn recover_stale_socket(
         .into());
     }
 
-    let probe = tokio::time::timeout(
+    match tokio::time::timeout(
         STALE_PROBE_TIMEOUT,
         tokio::net::UnixStream::connect(socket_path),
     )
-    .await;
-    match probe {
+    .await
+    {
         Err(_) => Err(std::io::Error::new(
             std::io::ErrorKind::TimedOut,
             format!(
@@ -639,21 +515,6 @@ async fn recover_stale_socket(
                 std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
             ) =>
         {
-            hook(BindTestStage::AfterStaleProbe);
-            parent.ensure_current()?;
-            let current = tokio::fs::symlink_metadata(socket_path).await?;
-            if !current.file_type().is_socket()
-                || !SocketIdentity::from_metadata(&metadata).matches(&current)
-            {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::AddrInUse,
-                    format!(
-                        "service endpoint {} changed while recovering it",
-                        socket_path.display()
-                    ),
-                )
-                .into());
-            }
             tokio::fs::remove_file(socket_path).await?;
             Ok(())
         }
@@ -661,84 +522,23 @@ async fn recover_stale_socket(
     }
 }
 
-fn prepare_bound_socket(
-    listener: &UnixListener,
-    socket_path: &Path,
-    parent: &ParentGuard,
-    hook: &mut impl FnMut(BindTestStage),
-) -> crate::Result<SocketIdentity> {
+fn prepare_bound_socket(socket_path: &Path) -> crate::Result<SocketIdentity> {
+    std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(SOCKET_MODE))?;
     let metadata = std::fs::symlink_metadata(socket_path)?;
-    if !metadata.file_type().is_socket() || metadata.uid() != effective_uid() {
+    if !metadata.file_type().is_socket()
+        || metadata.uid() != effective_uid()
+        || metadata.permissions().mode() & 0o777 != SOCKET_MODE
+    {
         return Err(std::io::Error::other(format!(
-            "bound service endpoint is not an owned socket: {}",
+            "bound service endpoint has incorrect type, owner, or permissions: {}",
             socket_path.display()
         ))
         .into());
     }
-    let identity = SocketIdentity::from_metadata(&metadata);
-    hook(BindTestStage::BeforeSocketChmod);
-    let result = (|| -> crate::Result<()> {
-        parent.ensure_current()?;
-        let descriptor = fstat_fd(listener.as_fd())?;
-        if descriptor.st_mode & libc::S_IFMT != libc::S_IFSOCK
-            || descriptor.st_uid != effective_uid()
-        {
-            return Err(std::io::Error::other(format!(
-                "bound service endpoint has incorrect type or owner: {}",
-                socket_path.display()
-            ))
-            .into());
-        }
-        let current = std::fs::symlink_metadata(socket_path)?;
-        if !current.file_type().is_socket()
-            || current.uid() != effective_uid()
-            || !identity.matches(&current)
-        {
-            return Err(std::io::Error::other(format!(
-                "bound service endpoint changed before permissions were applied: {}",
-                socket_path.display()
-            ))
-            .into());
-        }
-        std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(SOCKET_MODE))?;
-        parent.ensure_current()?;
-        let current = std::fs::symlink_metadata(socket_path)?;
-        if !current.file_type().is_socket()
-            || current.uid() != effective_uid()
-            || !identity.matches(&current)
-            || current.permissions().mode() & 0o777 != SOCKET_MODE
-        {
-            return Err(std::io::Error::other(format!(
-                "bound service endpoint changed or has incorrect permissions: {}",
-                socket_path.display()
-            ))
-            .into());
-        }
-        Ok(())
-    })();
-    if let Err(error) = result {
-        remove_socket_if_owned(socket_path, Some(identity), parent);
-        return Err(error);
-    }
-    Ok(identity)
+    Ok(SocketIdentity::from_metadata(&metadata))
 }
 
-fn fstat_fd(fd: std::os::fd::BorrowedFd<'_>) -> std::io::Result<libc::stat> {
-    let mut status: libc::stat = unsafe { std::mem::zeroed() };
-    if unsafe { libc::fstat(fd.as_raw_fd(), &mut status) } != 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(status)
-}
-
-fn remove_socket_if_owned(
-    socket_path: &Path,
-    identity: Option<SocketIdentity>,
-    parent: &ParentGuard,
-) {
-    if parent.ensure_current().is_err() {
-        return;
-    }
+fn remove_socket_if_owned(socket_path: &Path, identity: Option<SocketIdentity>) {
     let Ok(metadata) = std::fs::symlink_metadata(socket_path) else {
         return;
     };
@@ -751,7 +551,7 @@ fn remove_socket_if_owned(
 
 impl Drop for ServiceServer {
     fn drop(&mut self) {
-        remove_socket_if_owned(&self.socket_path, Some(self.socket_identity), &self.parent);
+        remove_socket_if_owned(&self.socket_path, Some(self.socket_identity));
     }
 }
 
@@ -812,10 +612,9 @@ async fn handle_connection(
     // 2. Spin up the per-connection writer task.
     //
     // TODO(backpressure): this channel is `unbounded`, so a stalled client
-    // reader buffers frames in daemon memory without limit. Acceptable
-    // under the v1 trust posture (single trusted local client over a Unix
-    // socket — an unresponsive reader is treated as a client-side bug, not
-    // an attacker). Before serving multiple or untrusted clients this
+    // reader buffers frames in daemon memory without limit. Socket access is
+    // fully trusted, so an unresponsive reader is a client bug rather than an
+    // adversarial input. Before serving untrusted clients this
     // needs a bound + drop policy. Complication: this single channel
     // carries both `Response` and `Notification` frames. Naive bounding
     // is wrong — dropping a `Response` breaks request/response
@@ -2000,7 +1799,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[should_panic]
     async fn test_bind_creates_private_nested_parents_and_group_socket() {
         let dir = private_tempdir();
         let parents = [dir.path().join("one"), dir.path().join("one/two")];
@@ -2059,7 +1857,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[should_panic]
     async fn test_group_or_other_writable_parent_is_refused() {
         let dir = private_tempdir();
         for mode in [0o720, 0o702] {
@@ -2085,7 +1882,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[should_panic]
     async fn test_symlinked_parent_component_is_refused() {
         let dir = private_tempdir();
         let target = dir.path().join("target");

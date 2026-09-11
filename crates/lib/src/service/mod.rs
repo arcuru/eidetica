@@ -32,12 +32,11 @@
 //!   in storage and sync without ever holding a content encryption key. Clients
 //!   decrypt and merge in-process and may write the result back as an encrypted
 //!   cache entry.
-//! - **Filesystem permissions**: missing socket directories start at mode 0700;
-//!   restrictive umasks are repaired after creation. The socket is mode 0600.
-//!   Existing directory modes are preserved, so access to the pathname still
-//!   depends on every directory in the supplied path. Binding coordinates
-//!   cooperating servers but does not defend against root or a hostile process
-//!   running under the same UID.
+//! - **Filesystem permissions**: missing socket directories are created with
+//!   mode 0700. An existing parent must be owned by the daemon user, must not
+//!   be writable by group or others, and must have no symlinked path component.
+//!   The socket is mode 0660; the parent's group and traversal bits may grant
+//!   trusted group members the full service API.
 //!
 //! See the brain note "Service Architecture" § Security Model for the design rationale,
 //! including why daemon-side signing (the earlier draft) was rejected and the
