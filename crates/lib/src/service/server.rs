@@ -1831,6 +1831,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[should_panic(expected = "endpoint lock must remain owner-only")]
     async fn test_existing_group_traversable_parent_is_preserved() {
         let dir = private_tempdir();
         let parent = dir.path().join("shared");
@@ -1853,6 +1854,12 @@ mod tests {
         assert_eq!(parent_metadata.permissions().mode() & 0o777, 0o750);
         assert_eq!(socket_metadata.permissions().mode() & 0o777, 0o660);
         assert_eq!(socket_metadata.gid(), parent_metadata.gid());
+        let lock_metadata = std::fs::symlink_metadata(lock_path(&socket_path)).unwrap();
+        assert_eq!(
+            lock_metadata.permissions().mode() & 0o777,
+            0o600,
+            "endpoint lock must remain owner-only"
+        );
         drop(server);
     }
 
