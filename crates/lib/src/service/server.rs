@@ -460,6 +460,9 @@ fn acquire_endpoint_lock(socket_path: &Path) -> crate::Result<File> {
         .truncate(false)
         .mode(0o600)
         .open(&path)?;
+    if file.metadata()?.permissions().mode() & 0o777 != 0o600 {
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
     file.try_lock().map_err(|error| match error {
         TryLockError::WouldBlock => std::io::Error::new(
             std::io::ErrorKind::AddrInUse,
@@ -1858,6 +1861,35 @@ mod tests {
             lock_metadata.permissions().mode() & 0o777,
             0o600,
             "endpoint lock must remain owner-only"
+        );
+        drop(server);
+    }
+
+    #[tokio::test]
+    async fn test_existing_endpoint_lock_is_restricted() {
+        let dir = private_tempdir();
+        let socket_path = dir.path().join("test.sock");
+        let lock_path = lock_path(&socket_path);
+        tokio::fs::write(&lock_path, b"").await.unwrap();
+        tokio::fs::set_permissions(&lock_path, std::fs::Permissions::from_mode(0o660))
+            .await
+            .unwrap();
+        let (instance, _admin) = Instance::create_backend(
+            Box::new(InMemory::new()),
+            crate::NewUser::passwordless("admin"),
+        )
+        .await
+        .unwrap();
+
+        let server = ServiceServer::bind(instance, &socket_path).await.unwrap();
+        assert_eq!(
+            std::fs::symlink_metadata(lock_path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600,
+            "existing endpoint lock must be restricted"
         );
         drop(server);
     }
