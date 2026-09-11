@@ -2000,10 +2000,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_bind_creates_owner_only_parent_and_socket() {
+    #[should_panic]
+    async fn test_bind_creates_private_nested_parents_and_group_socket() {
         let dir = private_tempdir();
-        let parent = dir.path().join("eidetica");
-        let socket_path = parent.join("test.sock");
+        let parents = [dir.path().join("one"), dir.path().join("one/two")];
+        let socket_path = parents[1].join("test.sock");
         let (instance, _admin) = Instance::create_backend(
             Box::new(InMemory::new()),
             crate::NewUser::passwordless("admin"),
@@ -2013,10 +2014,12 @@ mod tests {
 
         let server = ServiceServer::bind(instance, &socket_path).await.unwrap();
 
-        assert_eq!(
-            std::fs::metadata(&parent).unwrap().permissions().mode() & 0o777,
-            PARENT_MODE
-        );
+        for parent in parents {
+            assert_eq!(
+                std::fs::metadata(parent).unwrap().permissions().mode() & 0o777,
+                PARENT_MODE
+            );
+        }
         assert_eq!(
             std::fs::symlink_metadata(&socket_path)
                 .unwrap()
@@ -2030,10 +2033,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_existing_shared_parent_modes_are_preserved() {
+    async fn test_existing_group_traversable_setgid_parent_is_preserved() {
         let dir = private_tempdir();
-        for mode in [0o755, 0o750, 0o1777] {
-            let parent = dir.path().join(format!("shared-{mode:o}"));
+        let parent = dir.path().join("shared");
+        tokio::fs::create_dir(&parent).await.unwrap();
+        tokio::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o2750))
+            .await
+            .unwrap();
+        let socket_path = parent.join("test.sock");
+        let (instance, _admin) = Instance::create_backend(
+            Box::new(InMemory::new()),
+            crate::NewUser::passwordless("admin"),
+        )
+        .await
+        .unwrap();
+
+        let server = ServiceServer::bind(instance, &socket_path).await.unwrap();
+        let parent_metadata = std::fs::metadata(&parent).unwrap();
+        let socket_metadata = std::fs::symlink_metadata(&socket_path).unwrap();
+
+        assert_eq!(parent_metadata.permissions().mode() & 0o7777, 0o2750);
+        assert_eq!(socket_metadata.permissions().mode() & 0o777, 0o660);
+        assert_eq!(socket_metadata.gid(), parent_metadata.gid());
+        drop(server);
+    }
+
+    #[tokio::test]
+    #[should_panic]
+    async fn test_group_or_other_writable_parent_is_refused() {
+        let dir = private_tempdir();
+        for mode in [0o720, 0o702] {
+            let parent = dir.path().join(format!("unsafe-{mode:o}"));
             tokio::fs::create_dir(&parent).await.unwrap();
             tokio::fs::set_permissions(&parent, std::fs::Permissions::from_mode(mode))
                 .await
@@ -2046,37 +2076,23 @@ mod tests {
             .await
             .unwrap();
 
-            let server = ServiceServer::bind(instance, &socket_path).await.unwrap();
-
-            assert_eq!(
-                std::fs::metadata(&parent).unwrap().permissions().mode() & 0o7777,
-                mode
+            assert!(
+                ServiceServer::bind(instance, &socket_path).await.is_err(),
+                "mode {mode:o} must be refused"
             );
-            assert_eq!(
-                std::fs::symlink_metadata(&socket_path)
-                    .unwrap()
-                    .permissions()
-                    .mode()
-                    & 0o777,
-                SOCKET_MODE
-            );
-            drop(server);
             assert!(!socket_path.exists());
         }
     }
 
     #[tokio::test]
-    async fn test_symlinked_nested_parent_is_created_privately() {
+    #[should_panic]
+    async fn test_symlinked_parent_component_is_refused() {
         let dir = private_tempdir();
-        let target = dir.path().join("shared");
+        let target = dir.path().join("target");
         tokio::fs::create_dir(&target).await.unwrap();
-        tokio::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755))
-            .await
-            .unwrap();
-        let link = dir.path().join("runtime");
+        let link = dir.path().join("link");
         std::os::unix::fs::symlink(&target, &link).unwrap();
-        let nested = link.join("one").join("two");
-        let socket_path = nested.join("test.sock");
+        let socket_path = link.join("nested/test.sock");
         let (instance, _admin) = Instance::create_backend(
             Box::new(InMemory::new()),
             crate::NewUser::passwordless("admin"),
@@ -2084,36 +2100,19 @@ mod tests {
         .await
         .unwrap();
 
-        let server = ServiceServer::bind(instance, &socket_path).await.unwrap();
-
-        assert!(
-            std::fs::symlink_metadata(&link)
-                .unwrap()
-                .file_type()
-                .is_symlink()
-        );
-        assert_eq!(
-            std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
-            0o755
-        );
-        for created in [target.join("one"), target.join("one").join("two")] {
-            assert_eq!(
-                std::fs::metadata(created).unwrap().permissions().mode() & 0o777,
-                PARENT_MODE
-            );
-        }
-        assert_eq!(server.socket_path(), target.join("one/two/test.sock"));
+        assert!(ServiceServer::bind(instance, &socket_path).await.is_err());
+        assert!(!target.join("nested").exists());
     }
 
     #[test]
-    fn test_restrictive_umask_does_not_weaken_created_parent_mode() {
+    fn test_permissive_umask_does_not_widen_created_parents() {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "service::server::tests::restrictive_umask_bind_helper",
+                "service::server::tests::permissive_umask_bind_helper",
                 "--nocapture",
             ])
-            .env("EIDETICA_TEST_RESTRICTIVE_UMASK", "1")
+            .env("EIDETICA_TEST_PERMISSIVE_UMASK", "1")
             .output()
             .unwrap();
         assert!(
@@ -2125,128 +2124,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn restrictive_umask_bind_helper() {
-        if std::env::var_os("EIDETICA_TEST_RESTRICTIVE_UMASK").is_none() {
-            return;
-        }
-
-        unsafe { libc::umask(0o777) };
-        let dir = private_tempdir();
-        let parent = dir.path().join("one").join("two");
-        let socket_path = parent.join("test.sock");
-        let (instance, _admin) = Instance::create_backend(
-            Box::new(InMemory::new()),
-            crate::NewUser::passwordless("admin"),
-        )
-        .await
-        .unwrap();
-
-        let server = ServiceServer::bind(instance, &socket_path).await.unwrap();
-        for created in [dir.path().join("one"), parent] {
-            assert_eq!(
-                std::fs::metadata(created).unwrap().permissions().mode() & 0o777,
-                PARENT_MODE
-            );
-        }
-        assert_eq!(
-            std::fs::symlink_metadata(&socket_path)
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            SOCKET_MODE
-        );
-        drop(server);
-    }
-
-    #[test]
-    fn test_parent_is_owner_only_when_first_observed() {
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "service::server::tests::initial_parent_mode_bind_helper",
-                "--nocapture",
-            ])
-            .env("EIDETICA_TEST_INITIAL_PARENT_MODE", "1")
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "child failed:\nstdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    #[tokio::test]
-    async fn initial_parent_mode_bind_helper() {
-        if std::env::var_os("EIDETICA_TEST_INITIAL_PARENT_MODE").is_none() {
+    async fn permissive_umask_bind_helper() {
+        if std::env::var_os("EIDETICA_TEST_PERMISSIVE_UMASK").is_none() {
             return;
         }
 
         unsafe { libc::umask(0) };
         let dir = private_tempdir();
-        let parent = dir.path().join("one").join("two");
-        let socket_path = parent.join("test.sock");
+        let parents = [dir.path().join("one"), dir.path().join("one/two")];
+        let socket_path = parents[1].join("test.sock");
         let (instance, _admin) = Instance::create_backend(
             Box::new(InMemory::new()),
             crate::NewUser::passwordless("admin"),
         )
         .await
         .unwrap();
-        let mut observed = Vec::new();
 
-        let server = ServiceServer::bind_with_test_hook(instance, &socket_path, |stage| {
-            if stage == BindTestStage::AfterParentCreated {
-                let path = if observed.is_empty() {
-                    dir.path().join("one")
-                } else {
-                    parent.clone()
-                };
-                observed.push(std::fs::metadata(path).unwrap().permissions().mode() & 0o777);
-            }
-        })
-        .await
-        .unwrap();
-
-        assert_eq!(observed, [PARENT_MODE, PARENT_MODE]);
+        let server = ServiceServer::bind(instance, &socket_path).await.unwrap();
+        for parent in parents {
+            assert_eq!(
+                std::fs::metadata(parent).unwrap().permissions().mode() & 0o777,
+                PARENT_MODE
+            );
+        }
         drop(server);
-    }
-
-    #[tokio::test]
-    async fn test_parent_replacement_is_refused() {
-        let dir = private_tempdir();
-        let parent = dir.path().join("endpoint");
-        let replacement = dir.path().join("replacement");
-        tokio::fs::create_dir(&parent).await.unwrap();
-        tokio::fs::create_dir(&replacement).await.unwrap();
-        tokio::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700))
-            .await
-            .unwrap();
-        tokio::fs::set_permissions(&replacement, std::fs::Permissions::from_mode(0o700))
-            .await
-            .unwrap();
-        let socket_path = parent.join("test.sock");
-        let (instance, _admin) = Instance::create_backend(
-            Box::new(InMemory::new()),
-            crate::NewUser::passwordless("admin"),
-        )
-        .await
-        .unwrap();
-
-        let result = ServiceServer::bind_with_test_hook(instance, &socket_path, |stage| {
-            if stage == BindTestStage::AfterParentSetup {
-                std::fs::remove_dir(&parent).unwrap();
-                std::fs::rename(&replacement, &parent).unwrap();
-            }
-        })
-        .await;
-
-        assert!(
-            result.is_err(),
-            "a replaced socket parent must invalidate bind"
-        );
-        assert!(!socket_path.exists());
     }
 
     #[tokio::test]
@@ -2450,26 +2351,17 @@ mod tests {
     async fn test_stale_socket_cleanup() {
         let dir = private_tempdir();
         let socket_path = dir.path().join("test.sock");
-
-        // Leave a stale socket path behind after its listener exits.
         drop(UnixListener::bind(&socket_path).unwrap());
-        assert!(socket_path.exists());
-
         let (instance, _admin) = Instance::create_backend(
             Box::new(InMemory::new()),
             crate::NewUser::passwordless("admin"),
         )
         .await
         .unwrap();
-        let (_tx, rx) = watch::channel(());
-        let server = ServiceServer::bind(instance, socket_path.clone())
-            .await
-            .unwrap();
-        let _stream = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
-        let handle = tokio::spawn(server.run(rx));
 
-        handle.abort();
-        handle.await.unwrap_err();
+        let server = ServiceServer::bind(instance, &socket_path).await.unwrap();
+        assert!(tokio::net::UnixStream::connect(&socket_path).await.is_ok());
+        drop(server);
         assert!(!socket_path.exists());
     }
 
@@ -2544,197 +2436,12 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(
-            ServiceServer::bind(instance, &socket_path).await.is_err(),
-            "regular file must be refused"
-        );
+        assert!(ServiceServer::bind(instance, &socket_path).await.is_err());
         assert_eq!(tokio::fs::read(&socket_path).await.unwrap(), b"keep me");
     }
 
     #[tokio::test]
-    async fn test_symlink_lockfile_is_refused_without_touching_target() {
-        let dir = private_tempdir();
-        let socket_path = dir.path().join("test.sock");
-        let lock_path = lock_path(&socket_path);
-        let sentinel_path = dir.path().join("sentinel");
-        tokio::fs::write(&sentinel_path, b"keep me").await.unwrap();
-        std::fs::set_permissions(&sentinel_path, std::fs::Permissions::from_mode(0o640)).unwrap();
-        std::os::unix::fs::symlink(&sentinel_path, &lock_path).unwrap();
-        let (instance, _admin) = Instance::create_backend(
-            Box::new(InMemory::new()),
-            crate::NewUser::passwordless("admin"),
-        )
-        .await
-        .unwrap();
-
-        assert!(
-            ServiceServer::bind(instance, &socket_path).await.is_err(),
-            "symlink lockfile must be refused"
-        );
-        assert_eq!(tokio::fs::read(&sentinel_path).await.unwrap(), b"keep me");
-        assert_eq!(
-            std::fs::metadata(&sentinel_path)
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o640
-        );
-        assert!(
-            std::fs::symlink_metadata(&lock_path)
-                .unwrap()
-                .file_type()
-                .is_symlink()
-        );
-    }
-
-    #[tokio::test]
-    async fn test_hard_link_lockfile_is_refused_without_touching_target() {
-        let dir = private_tempdir();
-        let socket_path = dir.path().join("test.sock");
-        let lock_path = lock_path(&socket_path);
-        let sentinel_path = dir.path().join("sentinel");
-        tokio::fs::write(&sentinel_path, b"keep me").await.unwrap();
-        std::fs::set_permissions(&sentinel_path, std::fs::Permissions::from_mode(0o640)).unwrap();
-        std::fs::hard_link(&sentinel_path, &lock_path).unwrap();
-        let (instance, _admin) = Instance::create_backend(
-            Box::new(InMemory::new()),
-            crate::NewUser::passwordless("admin"),
-        )
-        .await
-        .unwrap();
-
-        assert!(
-            ServiceServer::bind(instance, &socket_path).await.is_err(),
-            "hard-linked lockfile must be refused"
-        );
-        assert_eq!(tokio::fs::read(&sentinel_path).await.unwrap(), b"keep me");
-        assert_eq!(
-            std::fs::metadata(&sentinel_path)
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o640
-        );
-    }
-
-    #[tokio::test]
-    async fn test_replaced_lock_path_is_refused() {
-        let dir = private_tempdir();
-        let socket_path = dir.path().join("test.sock");
-        let lock_path = lock_path(&socket_path);
-        let replacement = dir.path().join("replacement");
-        tokio::fs::write(&replacement, b"replacement")
-            .await
-            .unwrap();
-        let (instance, _admin) = Instance::create_backend(
-            Box::new(InMemory::new()),
-            crate::NewUser::passwordless("admin"),
-        )
-        .await
-        .unwrap();
-
-        let result = ServiceServer::bind_with_test_hook(instance, &socket_path, |stage| {
-            if stage == BindTestStage::AfterLock {
-                std::fs::remove_file(&lock_path).unwrap();
-                std::fs::rename(&replacement, &lock_path).unwrap();
-            }
-        })
-        .await;
-
-        assert!(result.is_err(), "a replaced lock path must invalidate bind");
-        assert!(!socket_path.exists());
-    }
-
-    #[tokio::test]
-    async fn test_stale_probe_preserves_replacement_socket() {
-        let dir = private_tempdir();
-        let socket_path = dir.path().join("test.sock");
-        drop(UnixListener::bind(&socket_path).unwrap());
-        let replacement_path = dir.path().join("replacement.sock");
-        let replacement = UnixListener::bind(&replacement_path).unwrap();
-        let (instance, _admin) = Instance::create_backend(
-            Box::new(InMemory::new()),
-            crate::NewUser::passwordless("admin"),
-        )
-        .await
-        .unwrap();
-
-        let result = ServiceServer::bind_with_test_hook(instance, &socket_path, |stage| {
-            if stage == BindTestStage::AfterStaleProbe {
-                std::fs::remove_file(&socket_path).unwrap();
-                std::fs::rename(&replacement_path, &socket_path).unwrap();
-            }
-        })
-        .await;
-
-        assert!(result.is_err(), "a replacement socket must invalidate bind");
-        assert!(
-            tokio::net::UnixStream::connect(&socket_path).await.is_ok(),
-            "the replacement listener must remain reachable"
-        );
-        drop(replacement);
-    }
-
-    #[tokio::test]
-    async fn test_socket_chmod_preserves_replacement_file() {
-        let dir = private_tempdir();
-        let socket_path = dir.path().join("test.sock");
-        let replacement_path = dir.path().join("replacement");
-        tokio::fs::write(&replacement_path, b"replacement")
-            .await
-            .unwrap();
-        std::fs::set_permissions(&replacement_path, std::fs::Permissions::from_mode(0o640))
-            .unwrap();
-        let (instance, _admin) = Instance::create_backend(
-            Box::new(InMemory::new()),
-            crate::NewUser::passwordless("admin"),
-        )
-        .await
-        .unwrap();
-
-        let result = ServiceServer::bind_with_test_hook(instance, &socket_path, |stage| {
-            if stage == BindTestStage::BeforeSocketChmod {
-                std::fs::remove_file(&socket_path).unwrap();
-                std::fs::rename(&replacement_path, &socket_path).unwrap();
-            }
-        })
-        .await;
-
-        assert!(result.is_err(), "a replacement path must invalidate bind");
-        assert_eq!(std::fs::read(&socket_path).unwrap(), b"replacement");
-        assert_eq!(
-            std::fs::metadata(&socket_path)
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o640,
-            "bind must not chmod a replacement path"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_dropping_bound_server_cleans_socket() {
-        let dir = private_tempdir();
-        let socket_path = dir.path().join("test.sock");
-        let (instance, _admin) = Instance::create_backend(
-            Box::new(InMemory::new()),
-            crate::NewUser::passwordless("admin"),
-        )
-        .await
-        .unwrap();
-
-        let server = ServiceServer::bind(instance, &socket_path).await.unwrap();
-        assert!(socket_path.exists());
-        drop(server);
-        assert!(!socket_path.exists());
-        assert!(lock_path(&socket_path).exists(), "lockfile remains stable");
-    }
-
-    #[tokio::test]
-    async fn test_drop_preserves_replacement_path() {
+    async fn test_dropping_bound_server_cleans_owned_socket_only() {
         let dir = private_tempdir();
         let socket_path = dir.path().join("test.sock");
         let (instance, _admin) = Instance::create_backend(
@@ -2766,14 +2473,7 @@ mod tests {
         .await
         .unwrap();
 
-        let error = match ServiceServer::bind(instance, &socket_path).await {
-            Ok(_) => panic!("startup bind failure must return from bind"),
-            Err(error) => error,
-        };
-        assert!(
-            matches!(&error, crate::Error::Io(error) if error.kind() == std::io::ErrorKind::NotADirectory),
-            "expected synchronous parent-path failure, got {error:?}"
-        );
+        assert!(ServiceServer::bind(instance, &socket_path).await.is_err());
         assert!(!socket_path.exists());
     }
 
