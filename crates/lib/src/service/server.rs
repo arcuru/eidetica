@@ -458,7 +458,7 @@ fn acquire_endpoint_lock(socket_path: &Path) -> crate::Result<File> {
         .write(true)
         .create(true)
         .truncate(false)
-        .mode(SOCKET_MODE)
+        .mode(0o600)
         .open(&path)?;
     file.try_lock().map_err(|error| match error {
         TryLockError::WouldBlock => std::io::Error::new(
@@ -1831,7 +1831,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[should_panic(expected = "endpoint lock must remain owner-only")]
     async fn test_existing_group_traversable_parent_is_preserved() {
         let dir = private_tempdir();
         let parent = dir.path().join("shared");
