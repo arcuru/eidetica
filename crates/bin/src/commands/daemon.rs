@@ -27,12 +27,7 @@ use crate::cli::{BackendConfig, DaemonArgs, DaemonInitArgs};
 /// initialised yet (i.e. `Instance::open_backend` returns
 /// [`InstanceError::NotInitialized`]).
 pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize tracing
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::from_default_env().add_directive("eidetica=info".parse().unwrap()),
-        )
-        .init();
+    init_tracing();
 
     // Create backend
     let backend = create_backend(&args.backend_config).await?;
@@ -105,11 +100,7 @@ pub async fn run_init(
     args: &DaemonInitArgs,
     backend_args: &BackendConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::from_default_env().add_directive("eidetica=info".parse().unwrap()),
-        )
-        .init();
+    init_tracing();
 
     // Resolve the password choice. `--passwordless` and explicit `--password`
     // are mutually exclusive (enforced by clap); otherwise prompt twice.
@@ -162,6 +153,14 @@ pub async fn run_init(
     println!("Start the daemon with: `eidetica daemon`");
 
     Ok(())
+}
+
+fn init_tracing() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::from_default_env().add_directive("eidetica=info".parse().unwrap()),
+        )
+        .try_init();
 }
 
 #[cfg(test)]
