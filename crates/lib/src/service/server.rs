@@ -266,7 +266,7 @@ impl ServiceServer {
         hook: &mut impl FnMut(BindTestStage),
     ) -> crate::Result<Self> {
         let socket_path = resolve_socket_path(socket_path)?;
-        let parent = prepare_parent(&socket_path).await?;
+        let parent = prepare_parent(&socket_path, hook).await?;
         hook(BindTestStage::AfterParentSetup);
         parent.ensure_current()?;
         let lock_file = acquire_endpoint_lock(&socket_path, hook)?;
@@ -358,6 +358,7 @@ impl ServiceServer {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BindTestStage {
+    AfterParentCreated,
     AfterParentSetup,
     AfterLock,
     AfterStaleProbe,
@@ -444,7 +445,10 @@ fn resolve_socket_path(path: PathBuf) -> std::io::Result<PathBuf> {
     Ok(canonical_parent.join(file_name))
 }
 
-async fn prepare_parent(socket_path: &Path) -> crate::Result<ParentGuard> {
+async fn prepare_parent(
+    socket_path: &Path,
+    hook: &mut impl FnMut(BindTestStage),
+) -> crate::Result<ParentGuard> {
     let parent = socket_path
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
@@ -471,7 +475,7 @@ async fn prepare_parent(socket_path: &Path) -> crate::Result<ParentGuard> {
             .into());
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            create_missing_parents(parent).await?;
+            create_missing_parents(parent, hook).await?;
         }
         Err(error) => return Err(error.into()),
     }
@@ -493,7 +497,10 @@ async fn prepare_parent(socket_path: &Path) -> crate::Result<ParentGuard> {
     })
 }
 
-async fn create_missing_parents(parent: &Path) -> std::io::Result<()> {
+async fn create_missing_parents(
+    parent: &Path,
+    hook: &mut impl FnMut(BindTestStage),
+) -> std::io::Result<()> {
     let mut missing = Vec::new();
     let mut ancestor = parent;
     while !ancestor.exists() {
@@ -512,6 +519,7 @@ async fn create_missing_parents(parent: &Path) -> std::io::Result<()> {
     for directory in missing.into_iter().rev() {
         match tokio::fs::create_dir(directory).await {
             Ok(()) => {
+                hook(BindTestStage::AfterParentCreated);
                 tokio::fs::set_permissions(directory, std::fs::Permissions::from_mode(PARENT_MODE))
                     .await?;
             }
@@ -2146,6 +2154,60 @@ mod tests {
                 & 0o777,
             SOCKET_MODE
         );
+        drop(server);
+    }
+
+    #[test]
+    fn test_parent_is_owner_only_when_first_observed() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "service::server::tests::initial_parent_mode_bind_helper",
+                "--nocapture",
+            ])
+            .env("EIDETICA_TEST_INITIAL_PARENT_MODE", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "child failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[tokio::test]
+    async fn initial_parent_mode_bind_helper() {
+        if std::env::var_os("EIDETICA_TEST_INITIAL_PARENT_MODE").is_none() {
+            return;
+        }
+
+        unsafe { libc::umask(0) };
+        let dir = private_tempdir();
+        let parent = dir.path().join("one").join("two");
+        let socket_path = parent.join("test.sock");
+        let (instance, _admin) = Instance::create_backend(
+            Box::new(InMemory::new()),
+            crate::NewUser::passwordless("admin"),
+        )
+        .await
+        .unwrap();
+        let mut observed = Vec::new();
+
+        let server = ServiceServer::bind_with_test_hook(instance, &socket_path, |stage| {
+            if stage == BindTestStage::AfterParentCreated {
+                let path = if observed.is_empty() {
+                    dir.path().join("one")
+                } else {
+                    parent.clone()
+                };
+                observed.push(std::fs::metadata(path).unwrap().permissions().mode() & 0o777);
+            }
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(observed, [PARENT_MODE, PARENT_MODE]);
         drop(server);
     }
 
