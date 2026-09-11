@@ -517,7 +517,9 @@ async fn create_missing_parents(
     }
 
     for directory in missing.into_iter().rev() {
-        match tokio::fs::create_dir(directory).await {
+        let mut builder = tokio::fs::DirBuilder::new();
+        builder.mode(PARENT_MODE);
+        match builder.create(directory).await {
             Ok(()) => {
                 hook(BindTestStage::AfterParentCreated);
                 tokio::fs::set_permissions(directory, std::fs::Permissions::from_mode(PARENT_MODE))
