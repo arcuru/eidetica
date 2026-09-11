@@ -2037,7 +2037,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_unsafe_existing_parent_is_refused_and_preserved() {
+    #[should_panic]
+    async fn test_existing_shared_parent_mode_is_preserved() {
         let dir = private_tempdir();
         let parent = dir.path().join("shared");
         tokio::fs::create_dir(&parent).await.unwrap();
@@ -2052,11 +2053,116 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(ServiceServer::bind(instance, &socket_path).await.is_err());
+        let server = ServiceServer::bind(instance, &socket_path).await.unwrap();
 
         let mode = std::fs::metadata(&parent).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o755);
+        assert_eq!(
+            std::fs::symlink_metadata(&socket_path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            SOCKET_MODE
+        );
+        drop(server);
         assert!(!socket_path.exists());
+    }
+
+    #[tokio::test]
+    #[should_panic]
+    async fn test_symlinked_nested_parent_is_created_privately() {
+        let dir = private_tempdir();
+        let target = dir.path().join("shared");
+        tokio::fs::create_dir(&target).await.unwrap();
+        tokio::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755))
+            .await
+            .unwrap();
+        let link = dir.path().join("runtime");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let nested = link.join("one").join("two");
+        let socket_path = nested.join("test.sock");
+        let (instance, _admin) = Instance::create_backend(
+            Box::new(InMemory::new()),
+            crate::NewUser::passwordless("admin"),
+        )
+        .await
+        .unwrap();
+
+        let server = ServiceServer::bind(instance, &socket_path).await.unwrap();
+
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+        for created in [target.join("one"), target.join("one").join("two")] {
+            assert_eq!(
+                std::fs::metadata(created).unwrap().permissions().mode() & 0o777,
+                PARENT_MODE
+            );
+        }
+        assert_eq!(server.socket_path(), target.join("one/two/test.sock"));
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_restrictive_umask_does_not_weaken_created_parent_mode() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "service::server::tests::restrictive_umask_bind_helper",
+                "--nocapture",
+            ])
+            .env("EIDETICA_TEST_RESTRICTIVE_UMASK", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "child failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[tokio::test]
+    async fn restrictive_umask_bind_helper() {
+        if std::env::var_os("EIDETICA_TEST_RESTRICTIVE_UMASK").is_none() {
+            return;
+        }
+
+        unsafe { libc::umask(0o777) };
+        let dir = private_tempdir();
+        let parent = dir.path().join("one").join("two");
+        let socket_path = parent.join("test.sock");
+        let (instance, _admin) = Instance::create_backend(
+            Box::new(InMemory::new()),
+            crate::NewUser::passwordless("admin"),
+        )
+        .await
+        .unwrap();
+
+        let server = ServiceServer::bind(instance, &socket_path).await.unwrap();
+        for created in [dir.path().join("one"), parent] {
+            assert_eq!(
+                std::fs::metadata(created).unwrap().permissions().mode() & 0o777,
+                PARENT_MODE
+            );
+        }
+        assert_eq!(
+            std::fs::symlink_metadata(&socket_path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            SOCKET_MODE
+        );
+        drop(server);
     }
 
     #[tokio::test]
