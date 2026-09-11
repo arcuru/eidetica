@@ -556,7 +556,7 @@ pub async fn put(backend: &SqlxBackend, entry: Entry) -> Result<()> {
     }
 
     // Update tips incrementally
-    update_tips_for_entry(backend, &mut tx, &id, &tree_id, &entry).await?;
+    update_tips_for_entry(backend, &mut tx, &tree_id, &entry).await?;
 
     tx.commit()
         .await
@@ -638,10 +638,11 @@ async fn insert_subtree(
 async fn update_tips_for_entry(
     backend: &SqlxBackend,
     tx: &mut sqlx::Transaction<'_, sqlx::Any>,
-    entry_id: &ID,
     tree_id: &ID,
     entry: &Entry,
 ) -> Result<()> {
+    let entry_id = entry.id_ref();
+
     // Check if this entry already has children in the tree (out-of-order arrival)
     let has_tree_children: Option<(i32,)> =
         sqlx::query_as("SELECT 1 FROM tree_parents WHERE parent_id = $1 LIMIT 1")
