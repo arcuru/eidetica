@@ -96,6 +96,11 @@ Client-side signing. The daemon stores and serves encrypted key material and sig
 - **Encrypted stores remain opaque to the daemon**: per-database encrypted CRDTs merge as `Vec<EncryptedBlob>`; the daemon participates in storage and sync without ever holding a content encryption key.
 - **Filesystem permissions**: the socket's parent directory is created mode `0700` and the socket itself is set to `0600` as an additional access-control layer.
 
+The socket path must live in a directory owned by the daemon's effective user with mode `0700`.
+Binding can create the missing immediate parent with that mode when its ancestors already exist, but refuses an existing parent that is shared, foreign-owned, or reached through a symlink; it never changes an existing directory's permissions.
+The endpoint lock serializes cooperating Eidetica servers, and inode checks prevent stale recovery and cleanup from removing a replacement pathname.
+These checks exclude other Unix users from the bind-to-chmod window and protect against accidental replacement, not a hostile process with the same UID or root: either can still rename files in the private directory between pathname operations.
+
 See the `crate::service` module rustdoc for the full design rationale, including why daemon-side signing (the earlier draft) was rejected.
 
 ## Request / Response Types

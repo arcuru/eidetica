@@ -3,6 +3,7 @@
 #![cfg(all(unix, feature = "service"))]
 
 use std::collections::BTreeMap;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -52,6 +53,7 @@ async fn start_test_server_with_token_ttl(
     ttl: Duration,
 ) -> (PathBuf, watch::Sender<()>, Instance, TempDir) {
     let dir = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let socket_path = dir.path().join("test.sock");
     let (instance, _admin) = Instance::create_backend(
         Box::new(InMemory::new()),
@@ -60,9 +62,13 @@ async fn start_test_server_with_token_ttl(
     .await
     .unwrap();
     let (tx, rx) = watch::channel(());
-    let server =
-        ServiceServer::new(instance.clone(), socket_path.clone()).with_token_idle_ttl_for_test(ttl);
-    let server = server.bind().await.unwrap();
+    let server = ServiceServer::bind_with_token_idle_ttl_for_test(
+        instance.clone(),
+        socket_path.clone(),
+        ttl,
+    )
+    .await
+    .unwrap();
     tokio::spawn(server.run(rx));
     (socket_path, tx, instance, dir)
 }

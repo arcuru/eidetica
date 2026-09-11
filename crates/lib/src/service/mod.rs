@@ -33,7 +33,9 @@
 //!   decrypt and merge in-process and may write the result back as an encrypted
 //!   cache entry.
 //! - **Filesystem permissions**: the socket directory is owner-only (mode 0700) and
-//!   the socket itself is mode 0600 as an additional access-control layer.
+//!   the socket itself is mode 0600 as an additional access-control layer. Binding
+//!   refuses unsafe existing parents and pathname replacements, but does not claim
+//!   to defend against root or a hostile process running under the same UID.
 //!
 //! See the brain note "Service Architecture" § Security Model for the design rationale,
 //! including why daemon-side signing (the earlier draft) was rejected and the
@@ -77,7 +79,7 @@ pub mod protocol;
 pub mod server;
 
 pub use client::RemoteConnection;
-pub use server::{BoundServiceServer, ServiceServer};
+pub use server::ServiceServer;
 
 use std::path::PathBuf;
 

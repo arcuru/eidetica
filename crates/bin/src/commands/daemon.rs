@@ -60,8 +60,7 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
     let socket_path = args.socket.clone().unwrap_or_else(default_socket_path);
 
     // Do not report the daemon as ready until its service socket accepts clients.
-    let server = ServiceServer::new(instance, &socket_path);
-    let server = server.bind().await?;
+    let server = ServiceServer::bind(instance, &socket_path).await?;
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
 
     println!("Eidetica daemon listening on {}", socket_path.display());
@@ -165,4 +164,93 @@ pub async fn run_init(
     println!("Start the daemon with: `eidetica daemon`");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::Duration;
+
+    use super::*;
+    use crate::cli::Backend;
+
+    fn daemon_args(data_dir: &std::path::Path, socket: &std::path::Path) -> DaemonArgs {
+        DaemonArgs {
+            command: None,
+            socket: Some(socket.to_path_buf()),
+            backend_config: BackendConfig {
+                backend: Backend::Inmemory,
+                data_dir: Some(data_dir.to_path_buf()),
+                postgres_url: None,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn daemon_bind_error_returns_within_a_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().join("data");
+        let socket_parent = dir.path().join("not-a-directory");
+        let socket_path = socket_parent.join("daemon.sock");
+        tokio::fs::write(&socket_parent, b"not a directory")
+            .await
+            .unwrap();
+        let backend = create_backend(&BackendConfig {
+            backend: Backend::Inmemory,
+            data_dir: Some(data_dir.clone()),
+            postgres_url: None,
+        })
+        .await
+        .unwrap();
+        Instance::create_backend(backend, NewUser::passwordless("admin"))
+            .await
+            .unwrap();
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            run(&daemon_args(&data_dir, &socket_path)),
+        )
+        .await
+        .expect("daemon startup failure must not hang");
+
+        assert!(result.is_err());
+        assert!(!socket_path.exists());
+    }
+
+    #[tokio::test]
+    async fn concurrent_daemon_is_rejected_without_disturbing_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().join("data");
+        let socket_parent = dir.path().join("runtime");
+        tokio::fs::create_dir(&socket_parent).await.unwrap();
+        tokio::fs::set_permissions(&socket_parent, std::fs::Permissions::from_mode(0o700))
+            .await
+            .unwrap();
+        let socket_path = socket_parent.join("daemon.sock");
+        let backend = create_backend(&BackendConfig {
+            backend: Backend::Inmemory,
+            data_dir: Some(data_dir.clone()),
+            postgres_url: None,
+        })
+        .await
+        .unwrap();
+        let (instance, _admin) = Instance::create_backend(backend, NewUser::passwordless("admin"))
+            .await
+            .unwrap();
+        let owner = ServiceServer::bind(instance, &socket_path).await.unwrap();
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            run(&daemon_args(&data_dir, &socket_path)),
+        )
+        .await
+        .expect("concurrent daemon startup must be bounded");
+
+        assert!(result.is_err());
+        tokio::net::UnixStream::connect(&socket_path)
+            .await
+            .expect("the original daemon endpoint must remain reachable");
+        drop(owner);
+        assert!(!socket_path.exists());
+    }
 }

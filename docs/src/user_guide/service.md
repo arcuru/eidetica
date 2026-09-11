@@ -57,10 +57,10 @@ use tokio::sync::watch;
 let instance = Instance::connect("sqlite://./my_data.db").await?;
 
 let (shutdown_tx, shutdown_rx) = watch::channel(());
-let server = ServiceServer::new(instance, "/tmp/eidetica.sock");
+// Binding completes only after the socket is ready to accept clients.
+let server = ServiceServer::bind(instance, "/tmp/eidetica.sock").await?;
 
-// Run the server (blocks until shutdown)
-// Drop shutdown_tx to trigger graceful shutdown
+// Serve until shutdown_tx is dropped.
 server.run(shutdown_rx).await?;
 ```
 
@@ -95,6 +95,11 @@ The returned Instance is fully transparent -- all downstream code (Database, Tra
 - **Keys and passwords stay client-side.** The daemon sees only encrypted key material and signed entries. Password verification and key derivation (Argon2id) happen in the client process.
 - **No plaintext secrets cross the socket.** Authentication operations (user creation, login, key management) run locally in the client. Only storage operations (get, put, tips, etc.) are forwarded to the daemon.
 - **The socket is a local Unix domain socket.** Access is controlled by filesystem permissions on the socket file. Only processes that can reach the socket path can connect.
+- **Use a private socket directory.** The socket's immediate parent must be owned by the daemon user with mode `0700`. A missing immediate parent is created with that mode when its ancestors already exist; an existing shared directory such as `/tmp` is rejected rather than modified. Use a dedicated child such as `/tmp/my-eidetica/daemon.sock` for custom temporary paths.
+
+The service owns its sibling lockfile and socket pathname for the server's lifetime.
+This prevents two cooperating Eidetica daemons from claiming one endpoint and avoids deleting a replaced socket during stale recovery or shutdown.
+It does not defend against root or a hostile process running as the same user, which can replace entries inside the private directory.
 
 > ⚠️ **The deployment bootstrap fails closed.** Both the NixOS module and
 > the published container image refuse to start on a fresh backend unless

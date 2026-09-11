@@ -1,5 +1,8 @@
 use std::sync::Arc;
 
+#[cfg(all(unix, feature = "service"))]
+use std::os::unix::fs::PermissionsExt;
+
 use eidetica::{
     Database, Error, FixedClock, Instance, NewUser,
     auth::{crypto::PublicKey, types::AuthKey},
@@ -15,6 +18,14 @@ use eidetica::{
 
 #[cfg(all(unix, feature = "service"))]
 use {eidetica::service::ServiceServer, tokio::sync::watch};
+
+#[cfg(all(unix, feature = "service"))]
+fn private_tempdir() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("Failed to create temp dir for test daemon");
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
+        .expect("Failed to restrict test daemon directory");
+    dir
+}
 
 // Re-export tokio test macro for convenience
 pub use tokio;
@@ -239,17 +250,16 @@ pub async fn list_users(instance: &Instance) -> eidetica::Result<Vec<String>> {
 /// in service mode.
 #[cfg(all(unix, feature = "service"))]
 async fn test_remote_instance() -> Instance {
-    let dir = Box::leak(Box::new(
-        tempfile::tempdir().expect("Failed to create temp dir for test daemon"),
-    ));
+    let dir = Box::leak(Box::new(private_tempdir()));
     let socket_path = dir.path().join("test.sock");
 
     let (server, _admin) =
         Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless("admin"))
             .await
             .expect("Failed to create server-side Instance");
-    let service = ServiceServer::new(server.clone(), socket_path.clone());
-    let service = service.bind().await.expect("Failed to bind test daemon");
+    let service = ServiceServer::bind(server.clone(), socket_path.clone())
+        .await
+        .expect("Failed to bind test daemon");
     let (tx, rx) = watch::channel(());
     // Keep the shutdown channel alive so the server doesn't exit.
     let _tx = Box::leak(Box::new(tx));
@@ -297,17 +307,16 @@ pub async fn test_instance_with_user(username: &str) -> (Instance, User) {
 /// connects and authenticates as that user.
 #[cfg(all(unix, feature = "service"))]
 async fn test_remote_instance_with_user(username: &str) -> (Instance, User) {
-    let dir = Box::leak(Box::new(
-        tempfile::tempdir().expect("Failed to create temp dir for test daemon"),
-    ));
+    let dir = Box::leak(Box::new(private_tempdir()));
     let socket_path = dir.path().join("test.sock");
 
     let (server, _admin) =
         Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless("admin"))
             .await
             .expect("Failed to create server-side Instance");
-    let service = ServiceServer::new(server.clone(), socket_path.clone());
-    let service = service.bind().await.expect("Failed to bind test daemon");
+    let service = ServiceServer::bind(server.clone(), socket_path.clone())
+        .await
+        .expect("Failed to bind test daemon");
     let (tx, rx) = watch::channel(());
     let _tx = Box::leak(Box::new(tx));
     tokio::spawn(service.run(rx));
@@ -371,17 +380,16 @@ async fn test_remote_instance_with_user_and_key(
     username: &str,
     key_display_name: Option<&str>,
 ) -> (Instance, User, PublicKey) {
-    let dir = Box::leak(Box::new(
-        tempfile::tempdir().expect("Failed to create temp dir for test daemon"),
-    ));
+    let dir = Box::leak(Box::new(private_tempdir()));
     let socket_path = dir.path().join("test.sock");
 
     let (server, _admin) =
         Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless("admin"))
             .await
             .expect("Failed to create server-side Instance");
-    let service = ServiceServer::new(server.clone(), socket_path.clone());
-    let service = service.bind().await.expect("Failed to bind test daemon");
+    let service = ServiceServer::bind(server.clone(), socket_path.clone())
+        .await
+        .expect("Failed to bind test daemon");
     let (tx, rx) = watch::channel(());
     let _tx = Box::leak(Box::new(tx));
     tokio::spawn(service.run(rx));
