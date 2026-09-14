@@ -735,10 +735,16 @@ impl Transaction {
             .get(store)
             .cloned()
             .unwrap_or_default();
-        let mut merged = BTreeMap::new();
+        let mut merged = mutations
+            .iter()
+            .filter(|(key, value)| {
+                value.is_some() && after.is_none_or(|after| key.as_slice() > after)
+            })
+            .map(|(key, value)| (key.clone(), value.clone().unwrap()))
+            .collect::<BTreeMap<_, _>>();
         let mut backend_after = after.map(ToOwned::to_owned);
         let mut backend_has_more = true;
-        while backend_has_more && merged.len() <= limit {
+        while backend_has_more {
             let page = match self
                 .db
                 .ops()
@@ -796,29 +802,13 @@ impl Transaction {
             }
             backend_after = page.next;
             backend_has_more = backend_after.is_some();
-            for (key, value) in &mutations {
-                if after.is_none_or(|after| key.as_slice() > after) {
-                    match value {
-                        Some(value) => {
-                            merged.insert(key.clone(), value.clone());
-                        }
-                        None => {
-                            merged.remove(key);
-                        }
-                    }
-                }
-            }
-        }
-        for (key, value) in mutations {
-            if after.is_none_or(|after| key.as_slice() > after) {
-                match value {
-                    Some(value) => {
-                        merged.insert(key, value);
-                    }
-                    None => {
-                        merged.remove(&key);
-                    }
-                }
+            let backend_reached_page_end = merged.keys().nth(limit).is_some_and(|page_end| {
+                backend_after
+                    .as_ref()
+                    .is_some_and(|backend_after| backend_after >= page_end)
+            });
+            if backend_reached_page_end {
+                break;
             }
         }
         let mut records = merged
@@ -885,12 +875,24 @@ impl Transaction {
         }
         let mut records = records
             .into_iter()
-            .filter(|(key, _)| after.is_none_or(|after| key.as_slice() > after))
+            .map(|(logical_key, value)| {
+                Ok((
+                    self.physical_record_key(store, &logical_key)?,
+                    (logical_key, value),
+                ))
+            })
+            .collect::<Result<BTreeMap<_, _>>>()?
+            .into_iter()
+            .filter(|(physical_key, _)| after.is_none_or(|after| physical_key.as_slice() > after))
             .take(limit.saturating_add(1))
             .collect::<Vec<_>>();
         let has_more = records.len() > limit;
         records.truncate(limit);
         let next = has_more.then(|| records.last().unwrap().0.clone());
+        let records = records
+            .into_iter()
+            .map(|(_, (logical_key, value))| (logical_key, value))
+            .collect();
         Ok(crate::backend::RecordPage { records, next })
     }
 

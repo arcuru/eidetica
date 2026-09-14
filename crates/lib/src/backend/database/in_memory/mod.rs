@@ -96,6 +96,8 @@ pub struct InMemory {
     pub(crate) inner: RwLock<InMemoryInner>,
     store_state_point_reads: AtomicUsize,
     store_state_scan_reads: AtomicUsize,
+    #[cfg(feature = "testing")]
+    store_history_reads: AtomicUsize,
 }
 
 impl InMemory {
@@ -146,6 +148,11 @@ impl InMemory {
             self.store_state_scan_reads.load(Ordering::Relaxed),
         )
     }
+
+    #[cfg(feature = "testing")]
+    pub fn store_history_read_count(&self) -> usize {
+        self.store_history_reads.load(Ordering::Relaxed)
+    }
 }
 
 impl InMemory {
@@ -162,6 +169,8 @@ impl InMemory {
             }),
             store_state_point_reads: AtomicUsize::new(0),
             store_state_scan_reads: AtomicUsize::new(0),
+            #[cfg(feature = "testing")]
+            store_history_reads: AtomicUsize::new(0),
         }
     }
 
@@ -635,6 +644,8 @@ impl BackendImpl for InMemory {
     }
 
     async fn store_at(&self, tree: &ID, subtree: &str, snapshot: &Snapshot) -> Result<Vec<Entry>> {
+        #[cfg(feature = "testing")]
+        self.store_history_reads.fetch_add(1, Ordering::Relaxed);
         let inner = self.inner.read().unwrap();
         storage::store_at(&inner, tree, subtree, snapshot.tips())
     }

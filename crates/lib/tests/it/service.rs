@@ -1623,6 +1623,103 @@ async fn test_historical_table_service_reads_use_row_record_set() {
     assert!(second.next.is_none());
 }
 
+/// A warm encrypted `Table` point read stays on the service's point-record
+/// path: it neither scans the published row set nor reconstructs Store history.
+#[tokio::test]
+async fn test_warm_encrypted_table_service_point_read_is_lazy() {
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    create_user_via_admin(&server, "alice").await;
+
+    let mut server_user = server.login_user("alice", None).await.unwrap();
+    let key = server_user.get_default_key().unwrap();
+    let database = server_user.create_database(Doc::new(), &key).await.unwrap();
+    let root_id = database.root_id().clone();
+    database
+        .with_transaction(|transaction| async move {
+            let mut encrypted = transaction
+                .get_store::<PasswordStore<Table<ServiceTodo>>>("encrypted_rows")
+                .await?;
+            encrypted.initialize("pass", Doc::new()).await?;
+            let table = encrypted.inner().await?;
+            for key in ["a", "b", "c", "d"] {
+                table
+                    .set(
+                        key,
+                        ServiceTodo {
+                            title: key.into(),
+                            done: false,
+                        },
+                    )
+                    .await?;
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let identity = eidetica::Database::find_sigkeys(&server, &root_id, &key)
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap()
+        .0;
+    let client = login_client(&socket_path, "alice").await;
+    let remote = eidetica::Database::open_remote(&client, remote_conn(&client), &root_id, identity)
+        .await
+        .unwrap();
+
+    // First use publishes the encrypted row projection into this session's
+    // cache. A fresh transaction below proves the already-published path.
+    let tx = remote.new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<Table<ServiceTodo>>>("encrypted_rows")
+        .await
+        .unwrap();
+    encrypted.open("pass").unwrap();
+    assert_eq!(
+        encrypted
+            .inner()
+            .await
+            .unwrap()
+            .get("a")
+            .await
+            .unwrap()
+            .title,
+        "a"
+    );
+
+    let engine = server.backend().local_engine().unwrap();
+    let memory = engine
+        .as_any()
+        .downcast_ref::<InMemory>()
+        .expect("test server is always InMemory");
+    assert_eq!(
+        memory.store_state_record_count(&root_id, "encrypted_rows"),
+        4
+    );
+    let tx = remote.new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<Table<ServiceTodo>>>("encrypted_rows")
+        .await
+        .unwrap();
+    encrypted.open("pass").unwrap();
+    let table = encrypted.inner().await.unwrap();
+    let before_records = memory.store_state_read_counts();
+    let before_history = memory.store_history_read_count();
+    assert_eq!(table.get("c").await.unwrap().title, "c");
+    assert_eq!(
+        memory.store_state_read_counts(),
+        (before_records.0 + 3, before_records.1),
+        "a warm point read fetches PasswordStore metadata and one table row without scanning"
+    );
+    assert_eq!(
+        memory.store_history_read_count(),
+        before_history,
+        "a warm point read must not reconstruct Store history"
+    );
+}
+
 /// A connected `Table` keeps reading after its published-view capability
 /// expires: the stale cached view resolves transparently to a fresh view onto
 /// the same published record set.

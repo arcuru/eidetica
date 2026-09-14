@@ -420,10 +420,7 @@ struct PasswordTestRecord {
 
 #[tokio::test]
 async fn test_password_table_uses_lazy_encrypted_record_cache() {
-    if std::env::var("TEST_BACKEND").as_deref() == Ok("service") {
-        return;
-    }
-    let (instance, database) = setup_tree().await;
+    let (instance, database, _key) = setup_tree_with_user_key_local().await;
     let tx = database.new_transaction().await.unwrap();
     let mut encrypted = tx
         .get_store::<PasswordStore<Table<PasswordTestRecord>>>("lazy_records")
