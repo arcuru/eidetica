@@ -177,6 +177,23 @@
       cargoNextestExtraArgs = "--workspace --all-features ${nextestCheckArgs}";
     });
 
+  test-check-shistory-hooks =
+    pkgs.runCommand "test-check-shistory-hooks" {
+      nativeBuildInputs = [pkgs.zsh];
+      src = ../../examples/shistory;
+    } ''
+      work="$PWD/work"
+      mkdir "$work"
+      cp -r "$src"/. "$work"
+      chmod -R u+w "$work"
+      export HOME="$work"
+      export TMPDIR="$work"
+      cd "$work"
+      zsh -d -f tests/hooks.zsh | tee summary
+      grep -Fx 'hook checks: 8 passed; 0 failed' summary
+      mkdir "$out"
+    '';
+
   # PostgreSQL backend check (Linux only)
   test-check-postgres = craneLib.cargoNextest (testCheckArgs
     // {
@@ -219,6 +236,7 @@ in {
       inmemory = test-check-inmemory;
       sqlite = test-check-sqlite;
       minimal = test-check-minimal;
+      shistory-hooks = test-check-shistory-hooks;
     }
     // lib.optionalAttrs pkgs.stdenv.isLinux {
       service = test-check-service;

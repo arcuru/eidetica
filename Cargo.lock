@@ -4726,6 +4726,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "shistory"
+version = "0.2.0"
+dependencies = [
+ "chrono",
+ "clap",
+ "eidetica",
+ "serde",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
