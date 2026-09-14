@@ -28,12 +28,26 @@ mod traversal;
 pub mod schema;
 
 use std::any::Any;
+#[cfg(feature = "sqlite")]
+use std::fs::{File, OpenOptions, TryLockError};
+#[cfg(feature = "sqlite")]
+use std::io;
+#[cfg(feature = "sqlite")]
+use std::path::{Path, PathBuf};
+#[cfg(feature = "sqlite")]
+use std::str::FromStr;
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 use std::time::Duration;
 
 use async_trait::async_trait;
-use sqlx::AnyPool;
-use sqlx::Executor;
+#[cfg(feature = "postgres")]
+use sqlx::AnyConnection;
+#[cfg(feature = "postgres")]
+use sqlx::Connection;
 use sqlx::any::AnyPoolOptions;
+#[cfg(feature = "sqlite")]
+use sqlx::sqlite::SqliteConnectOptions;
+use sqlx::{AnyPool, Executor};
 
 use crate::Result;
 use crate::backend::errors::BackendError;
@@ -78,24 +92,207 @@ pub enum DbKind {
 ///
 /// This backend supports both SQLite and PostgreSQL through sqlx's `AnyPool`.
 ///
-/// # Thread Safety
+/// # Concurrency
 ///
 /// `SqlxBackend` is `Send + Sync` as required by `BackendImpl`. The underlying
-/// sqlx pool handles connection pooling and thread safety.
+/// sqlx pool handles connection pooling and thread safety. Each backend owns its
+/// persistent storage namespace exclusively for its lifetime. Share one backend
+/// through the Eidetica service rather than opening the same storage directly.
 ///
 /// # Test Isolation
 ///
 /// For PostgreSQL, each backend instance can use its own schema for test isolation.
 /// Use `connect_postgres_isolated()` to create an isolated backend for testing.
+///
+/// ```compile_fail
+/// use eidetica::backend::database::SqlxBackend;
+///
+/// fn cannot_escape_pool(backend: SqlxBackend) {
+///     let _ = backend.pool();
+/// }
+/// ```
 pub struct SqlxBackend {
-    pool: AnyPool,
+    pool: Option<AnyPool>,
     kind: DbKind,
+    _owner: Option<StorageOwner>,
+    #[cfg(all(feature = "postgres", feature = "testing"))]
+    postgres_token: Option<String>,
+}
+
+impl Drop for SqlxBackend {
+    fn drop(&mut self) {
+        // Mark every pool handle closed before releasing the ownership lock. Creating this
+        // future performs the close transition; waiting is unnecessary for the fence.
+        // Checked-out SQLx connections remain valid until returned, so PostgreSQL retains
+        // their shared advisory locks until then.
+        if let Some(pool) = self.pool.take() {
+            drop(pool.close());
+        }
+    }
+}
+
+enum StorageOwner {
+    #[cfg(feature = "sqlite")]
+    Sqlite { _lock: File },
+    #[cfg(feature = "postgres")]
+    Postgres {
+        _connection: tokio::sync::Mutex<AnyConnection>,
+    },
+}
+
+#[cfg(feature = "sqlite")]
+fn prepare_sqlite(url: &str) -> Result<Option<StorageOwner>> {
+    let normalized_url = normalize_sqlite_url(url);
+    let options = SqliteConnectOptions::from_str(&normalized_url).map_err(|error| {
+        BackendError::SqlxError {
+            reason: format!("Failed to parse SQLite connection URL: {error}"),
+            source: Some(error),
+        }
+    })?;
+    if sqlite_is_in_memory(&normalized_url) {
+        return Ok(None);
+    }
+
+    let database_path = canonical_database_path(options.get_filename()).map_err(|error| {
+        BackendError::SqlxError {
+            reason: format!(
+                "Failed to identify SQLite database `{}`: {error}",
+                options.get_filename().display()
+            ),
+            source: None,
+        }
+    })?;
+    let lock_path = sqlite_owner_lock_path(&database_path);
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|error| BackendError::SqlxError {
+            reason: format!(
+                "Failed to open SQLite ownership sidecar `{}`: {error}",
+                lock_path.display()
+            ),
+            source: None,
+        })?;
+    match lock.try_lock() {
+        Ok(()) => Ok(Some(StorageOwner::Sqlite { _lock: lock })),
+        Err(TryLockError::WouldBlock) => Err(BackendError::StorageAlreadyOwned {
+            namespace: database_path.display().to_string(),
+        }
+        .into()),
+        Err(TryLockError::Error(error)) => Err(BackendError::SqlxError {
+            reason: format!(
+                "Failed to claim SQLite database ownership `{}`: {error}",
+                database_path.display()
+            ),
+            source: None,
+        }
+        .into()),
+    }
+}
+
+#[cfg(feature = "sqlite")]
+fn sqlite_owner_lock_path(database_path: &Path) -> PathBuf {
+    let mut path = database_path.as_os_str().to_owned();
+    path.push(".eidetica-owner");
+    PathBuf::from(path)
+}
+
+#[cfg(feature = "sqlite")]
+fn normalize_sqlite_url(url: &str) -> String {
+    let Some(rest) = url.strip_prefix("sqlite:file:") else {
+        return url.to_owned();
+    };
+    if rest == ":memory:" || rest.starts_with(":memory:?") {
+        return url.to_owned();
+    }
+    format!("sqlite:{rest}")
+}
+
+#[cfg(feature = "sqlite")]
+fn sqlite_is_in_memory(url: &str) -> bool {
+    let url = url
+        .trim_start_matches("sqlite://")
+        .trim_start_matches("sqlite:");
+    let (database, _) = url.split_once('?').unwrap_or((url, ""));
+    database == ":memory:" || database == "file::memory:" || sqlite_file_mode(url)
+}
+
+#[cfg(feature = "sqlite")]
+fn sqlite_file_mode(url: &str) -> bool {
+    let query = url.split_once('?').map_or("", |(_, query)| query);
+    url::form_urlencoded::parse(query.as_bytes())
+        .any(|(key, value)| key == "mode" && value == "memory")
+}
+
+#[cfg(feature = "sqlite")]
+fn canonical_database_path(path: &Path) -> io::Result<PathBuf> {
+    let absolute = if path.is_absolute() {
+        path.to_owned()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+
+    match absolute.symlink_metadata() {
+        Ok(_) => return absolute.canonicalize(),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+
+    let file_name = absolute.file_name().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "database path has no file name",
+        )
+    })?;
+    let parent = absolute.parent().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "database path has no parent")
+    })?;
+    Ok(parent.canonicalize()?.join(file_name))
+}
+
+#[cfg(feature = "sqlite")]
+fn sqlite_path_url(path: &Path) -> Result<String> {
+    let absolute = if path.is_absolute() {
+        path.to_owned()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| BackendError::SqlxError {
+                reason: format!("Failed to resolve SQLite database path: {error}"),
+                source: None,
+            })?
+            .join(path)
+    };
+    let file_url = url::Url::from_file_path(&absolute).map_err(|()| BackendError::SqlxError {
+        reason: format!(
+            "Failed to encode SQLite database path `{}` as a file URL",
+            absolute.display()
+        ),
+        source: None,
+    })?;
+    Ok(format!(
+        "sqlite:{}?mode=rwc",
+        &file_url.as_str()["file:".len()..]
+    ))
 }
 
 impl SqlxBackend {
-    /// Get a reference to the underlying pool.
-    pub fn pool(&self) -> &AnyPool {
-        &self.pool
+    /// Get a reference to the underlying pool for SQL backend modules.
+    pub(crate) fn pool(&self) -> &AnyPool {
+        self.pool.as_ref().expect("SQL pool must exist until drop")
+    }
+
+    #[cfg(all(feature = "postgres", feature = "testing"))]
+    #[doc(hidden)]
+    pub async fn test_postgres_checked_out_connection(
+        &self,
+    ) -> Result<sqlx::pool::PoolConnection<sqlx::Any>> {
+        self.pool()
+            .acquire()
+            .await
+            .sql_context("Failed to acquire PostgreSQL test connection")
     }
 
     /// Get the database kind.
@@ -111,6 +308,57 @@ impl SqlxBackend {
     /// Check if this backend is using PostgreSQL.
     pub fn is_postgres(&self) -> bool {
         self.kind == DbKind::Postgres
+    }
+
+    #[cfg(all(feature = "postgres", feature = "testing"))]
+    #[doc(hidden)]
+    pub async fn test_postgres_owner_pid(&self) -> Result<i32> {
+        let _connection = match self
+            ._owner
+            .as_ref()
+            .expect("PostgreSQL backend must hold an ownership connection")
+        {
+            StorageOwner::Postgres { _connection } => _connection,
+            #[cfg(feature = "sqlite")]
+            StorageOwner::Sqlite { .. } => unreachable!("only PostgreSQL ownership is queried"),
+        };
+        let mut connection = _connection.lock().await;
+        let (pid,): (i32,) = sqlx::query_as("SELECT pg_backend_pid()")
+            .fetch_one(&mut *connection)
+            .await
+            .sql_context("Failed to read PostgreSQL ownership session")?;
+        Ok(pid)
+    }
+
+    #[cfg(all(feature = "postgres", feature = "testing"))]
+    #[doc(hidden)]
+    pub async fn test_postgres_pool_pids(&self) -> Result<Vec<i32>> {
+        let mut connections = Vec::with_capacity(2);
+        for _ in 0..2 {
+            connections.push(
+                self.pool()
+                    .acquire()
+                    .await
+                    .sql_context("Failed to acquire PostgreSQL test connection")?,
+            );
+        }
+        let mut pids = Vec::with_capacity(connections.len());
+        for connection in &mut connections {
+            let (pid,): (i32,) = sqlx::query_as("SELECT pg_backend_pid()")
+                .fetch_one(&mut **connection)
+                .await
+                .sql_context("Failed to read PostgreSQL pool session")?;
+            pids.push(pid);
+        }
+        Ok(pids)
+    }
+
+    #[cfg(all(feature = "postgres", feature = "testing"))]
+    #[doc(hidden)]
+    pub fn test_postgres_token(&self) -> &str {
+        self.postgres_token
+            .as_deref()
+            .expect("PostgreSQL backend must hold an ownership token")
     }
 }
 
@@ -241,7 +489,7 @@ impl SqlxBackend {
     /// ```
     pub async fn open_sqlite<P: AsRef<std::path::Path>>(path: P) -> Result<Self> {
         // mode=rwc: read-write-create (create file if it doesn't exist)
-        let url = format!("sqlite:{}?mode=rwc", path.as_ref().display());
+        let url = sqlite_path_url(path.as_ref())?;
         Self::connect_sqlite(&url).await
     }
 
@@ -254,12 +502,9 @@ impl SqlxBackend {
         // Install any driver support
         sqlx::any::install_default_drivers();
 
-        // Detect if this is an in-memory database. Two URL conventions
-        // exist: `?mode=memory` (sqlx's explicit query flag, used by
-        // `Sqlite::in_memory`) and `:memory:` (SQLite's classic magic
-        // filename, embedded in URI-filename forms like
-        // `sqlite:file::memory:?cache=shared`).
-        let is_in_memory = url.contains("mode=memory") || url.contains(":memory:");
+        let storage = prepare_sqlite(url)?;
+        let is_in_memory = storage.is_none();
+        let normalized_url = normalize_sqlite_url(url);
 
         // For SQLite in-memory databases with shared cache, we must prevent
         // all connections from being closed. When the last connection closes,
@@ -270,7 +515,7 @@ impl SqlxBackend {
         // these configured, not just one.
         let pool = if is_in_memory {
             AnyPoolOptions::new()
-                .max_connections(5)
+                .max_connections(1)
                 .min_connections(1)
                 .idle_timeout(None)
                 .max_lifetime(None)
@@ -282,7 +527,7 @@ impl SqlxBackend {
                         Ok(())
                     })
                 })
-                .connect(url)
+                .connect(&normalized_url)
                 .await
                 .sql_context("Failed to connect to SQLite")?
         } else {
@@ -301,7 +546,7 @@ impl SqlxBackend {
                         Ok(())
                     })
                 })
-                .connect(url)
+                .connect(&normalized_url)
                 .await
                 .sql_context("Failed to connect to SQLite")?
         };
@@ -315,8 +560,11 @@ impl SqlxBackend {
         }
 
         let backend = Self {
-            pool,
+            pool: Some(pool),
             kind: DbKind::Sqlite,
+            _owner: storage,
+            #[cfg(all(feature = "postgres", feature = "testing"))]
+            postgres_token: None,
         };
 
         // Initialize schema
@@ -352,6 +600,12 @@ impl SqlxBackend {
 }
 
 // PostgreSQL-specific implementations
+#[cfg(feature = "postgres")]
+const POSTGRES_OWNERSHIP_TABLE: &str = "_eidetica_storage_owner";
+
+#[cfg(feature = "postgres")]
+const POSTGRES_NAMESPACE_LOCK: &str = "hashtextextended(format('eidetica-storage-v1:%s/%s:%s/%s', octet_length(current_database()), current_database(), octet_length(current_schema()), current_schema()), 0)";
+
 #[cfg(feature = "postgres")]
 impl SqlxBackend {
     /// Connect to a PostgreSQL database using a connection URL.
@@ -411,6 +665,53 @@ impl SqlxBackend {
         // Build pool with after_connect hook to set search_path on each connection
         // For isolated (test) connections, use smaller pool to avoid exhausting
         // PostgreSQL's max_connections when running many tests in parallel.
+        let mut owner = AnyConnection::connect(url)
+            .await
+            .sql_context("Failed to connect to PostgreSQL")?;
+        if let Some(ref schema) = schema_name {
+            let set_path = format!("SET search_path TO {schema}");
+            owner
+                .execute(set_path.as_str())
+                .await
+                .sql_context("Failed to select PostgreSQL storage namespace")?;
+        }
+
+        let (database, schema, acquired): (String, String, bool) = sqlx::query_as(&format!(
+            "SELECT current_database()::text, current_schema()::text, pg_try_advisory_lock({POSTGRES_NAMESPACE_LOCK})"
+        ))
+        .fetch_one(&mut owner)
+        .await
+        .sql_context("Failed to claim PostgreSQL storage ownership")?;
+        if !acquired {
+            return Err(BackendError::StorageAlreadyOwned {
+                namespace: format!("PostgreSQL database `{database}` schema `{schema}`"),
+            }
+            .into());
+        }
+
+        owner
+            .execute(format!(
+                "CREATE TABLE IF NOT EXISTS {POSTGRES_OWNERSHIP_TABLE} (id SMALLINT PRIMARY KEY CHECK (id = 1), token TEXT NOT NULL)"
+            ).as_str())
+            .await
+            .sql_context("Failed to initialize PostgreSQL storage ownership metadata")?;
+        let token = uuid::Uuid::new_v4().to_string();
+        sqlx::query(&format!(
+            "INSERT INTO {POSTGRES_OWNERSHIP_TABLE} (id, token) VALUES (1, $1) ON CONFLICT (id) DO UPDATE SET token = EXCLUDED.token"
+        ))
+        .bind(&token)
+        .execute(&mut owner)
+        .await
+        .sql_context("Failed to publish PostgreSQL storage ownership token")?;
+        owner
+            .execute(format!("SELECT pg_advisory_lock_shared({POSTGRES_NAMESPACE_LOCK})").as_str())
+            .await
+            .sql_context("Failed to fence PostgreSQL storage ownership")?;
+        owner
+            .execute(format!("SELECT pg_advisory_unlock({POSTGRES_NAMESPACE_LOCK})").as_str())
+            .await
+            .sql_context("Failed to finish PostgreSQL storage ownership claim")?;
+
         let schema_for_hook = schema_name.clone();
         let is_isolated = schema_name.is_some();
         let mut pool_options = AnyPoolOptions::new();
@@ -426,13 +727,31 @@ impl SqlxBackend {
             pool_options = pool_options.max_connections(5);
         }
 
+        let token_for_hook = token.clone();
         let pool = pool_options
             .after_connect(move |conn, _meta| {
                 let schema = schema_for_hook.clone();
+                let token = token_for_hook.clone();
                 Box::pin(async move {
-                    if let Some(ref s) = schema {
-                        let set_path = format!("SET search_path TO {s}");
+                    if let Some(ref schema) = schema {
+                        let set_path = format!("SET search_path TO {schema}");
                         conn.execute(set_path.as_str()).await?;
+                    }
+                    conn.execute(
+                        format!("SELECT pg_advisory_lock_shared({POSTGRES_NAMESPACE_LOCK})")
+                            .as_str(),
+                    )
+                    .await?;
+                    let valid: (bool,) = sqlx::query_as(&format!(
+                        "SELECT token = $1 FROM {POSTGRES_OWNERSHIP_TABLE} WHERE id = 1"
+                    ))
+                    .bind(token)
+                    .fetch_one(&mut *conn)
+                    .await?;
+                    if !valid.0 {
+                        return Err(sqlx::Error::Protocol(
+                            "PostgreSQL storage ownership changed".to_string(),
+                        ));
                     }
                     Ok(())
                 })
@@ -442,8 +761,13 @@ impl SqlxBackend {
             .sql_context("Failed to connect to PostgreSQL")?;
 
         let backend = Self {
-            pool,
+            pool: Some(pool),
             kind: DbKind::Postgres,
+            _owner: Some(StorageOwner::Postgres {
+                _connection: tokio::sync::Mutex::new(owner),
+            }),
+            #[cfg(feature = "testing")]
+            postgres_token: Some(token),
         };
 
         // Initialize schema (tables will be created in the current search_path)
@@ -475,6 +799,12 @@ impl SqlxBackend {
         let unique_id = uuid::Uuid::new_v4().simple().to_string();
         let schema_name = format!("test_{unique_id}");
         Self::connect_postgres_with_schema(url, Some(schema_name)).await
+    }
+
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub async fn test_connect_postgres_schema(url: &str, schema: String) -> Result<Self> {
+        Self::connect_postgres_with_schema(url, Some(schema)).await
     }
 }
 
@@ -735,6 +1065,58 @@ impl Postgres {
     /// * `url` - PostgreSQL connection URL
     pub async fn connect_isolated(url: &str) -> Result<SqlxBackend> {
         SqlxBackend::connect_postgres_isolated(url).await
+    }
+}
+
+#[cfg(all(test, feature = "postgres"))]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn failed_postgres_initialization_releases_ownership() {
+        if std::env::var("TEST_BACKEND").as_deref() != Ok("postgres") {
+            return;
+        }
+
+        let url = std::env::var("TEST_POSTGRES_URL")
+            .unwrap_or_else(|_| "postgres://localhost/eidetica_test".to_string());
+        sqlx::any::install_default_drivers();
+        let schema = format!("test_{}", uuid::Uuid::new_v4().simple());
+        let setup = AnyPoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .unwrap();
+        sqlx::query(&format!("CREATE SCHEMA {schema}"))
+            .execute(&setup)
+            .await
+            .unwrap();
+        sqlx::query(&format!(
+            "CREATE VIEW {schema}.entries AS SELECT 1 AS value"
+        ))
+        .execute(&setup)
+        .await
+        .unwrap();
+
+        assert!(
+            SqlxBackend::connect_postgres_with_schema(&url, Some(schema.clone()))
+                .await
+                .is_err(),
+            "the conflicting view must make schema initialization fail"
+        );
+        sqlx::query(&format!("DROP VIEW {schema}.entries"))
+            .execute(&setup)
+            .await
+            .unwrap();
+
+        SqlxBackend::connect_postgres_with_schema(&url, Some(schema.clone()))
+            .await
+            .expect("failed initialization must release PostgreSQL ownership");
+        sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+            .execute(&setup)
+            .await
+            .unwrap();
+        setup.close().await;
     }
 }
 
