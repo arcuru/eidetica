@@ -419,6 +419,64 @@ struct PasswordTestRecord {
 }
 
 #[tokio::test]
+#[should_panic]
+async fn test_password_table_uses_lazy_encrypted_record_cache() {
+    if std::env::var("TEST_BACKEND").as_deref() == Ok("service") {
+        return;
+    }
+    let (instance, database) = setup_tree().await;
+    let tx = database.new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<Table<PasswordTestRecord>>>("lazy_records")
+        .await
+        .unwrap();
+    encrypted.initialize("pass", Doc::new()).await.unwrap();
+    let table = encrypted.inner().await.unwrap();
+    for (key, value) in [("a", 1), ("b", 2)] {
+        table
+            .set(
+                key,
+                PasswordTestRecord {
+                    name: key.to_string(),
+                    value,
+                },
+            )
+            .await
+            .unwrap();
+    }
+    tx.commit().await.unwrap();
+
+    let engine = instance.backend().local_engine().unwrap();
+    let memory = engine
+        .as_any()
+        .downcast_ref::<eidetica::backend::database::InMemory>()
+        .unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let before_load = memory.store_state_read_counts();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<Table<PasswordTestRecord>>>("lazy_records")
+        .await
+        .unwrap();
+    encrypted.open("pass").unwrap();
+    let table = encrypted.inner().await.unwrap();
+    assert_eq!(memory.store_state_read_counts(), before_load);
+
+    assert_eq!(table.get("a").await.unwrap().value, 1);
+    assert_eq!(
+        memory.store_state_record_count(database.root_id(), "lazy_records"),
+        2
+    );
+    let after_get = memory.store_state_read_counts();
+    assert_eq!(after_get, (before_load.0 + 1, before_load.1));
+
+    assert_eq!(table.scan_page(None, 1).await.unwrap().rows.len(), 1);
+    let after_scan = memory.store_state_read_counts();
+    assert_eq!(after_scan.0, after_get.0);
+    assert!(after_scan.1 > after_get.1);
+    assert!(after_scan.1 <= after_get.1 + 4);
+}
+
+#[tokio::test]
 async fn test_password_store_table_basic_operations() {
     let (_instance, database) = setup_tree().await;
 

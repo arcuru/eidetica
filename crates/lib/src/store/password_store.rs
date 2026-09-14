@@ -530,6 +530,38 @@ pub struct PasswordStore<S: Store> {
     _phantom: PhantomData<S>,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn encryptor(store: &str) -> PasswordEncryptor {
+        PasswordEncryptor::new(
+            Password {
+                salt: "MDEyMzQ1Njc4OUFCQ0RFRg".to_string(),
+                password: "record-authentication".to_string(),
+                argon2_m_cost: 8,
+                argon2_t_cost: 1,
+                argon2_p_cost: 1,
+            },
+            store.to_string(),
+        )
+    }
+
+    #[test]
+    #[should_panic(expected = "ciphertext from another Store must be rejected")]
+    fn encrypted_record_rejects_cross_store_substitution() {
+        let first = encryptor("first");
+        let second = encryptor("second");
+        let physical_key = first.physical_record_key(b"logical").unwrap();
+        let ciphertext = first.encrypt_record(b"logical", b"plaintext").unwrap();
+
+        assert!(
+            second.decrypt_record(&physical_key, &ciphertext).is_err(),
+            "ciphertext from another Store must be rejected"
+        );
+    }
+}
+
 impl<S: Store> PasswordStore<S> {
     /// Derive the current state from internal fields
     fn state(&self) -> PasswordStoreState {

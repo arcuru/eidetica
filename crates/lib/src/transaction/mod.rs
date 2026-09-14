@@ -124,6 +124,18 @@ pub(crate) trait Encryptor: Send + Sync {
     /// # Returns
     /// Encrypted data in implementation-defined format
     fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>>;
+
+    fn physical_record_key(&self, logical_key: &[u8]) -> Result<Vec<u8>> {
+        Ok(logical_key.to_vec())
+    }
+
+    fn encrypt_record(&self, _logical_key: &[u8], plaintext: &[u8]) -> Result<Vec<u8>> {
+        self.encrypt(plaintext)
+    }
+
+    fn decrypt_record(&self, physical_key: &[u8], ciphertext: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
+        Ok((physical_key.to_vec(), self.decrypt(ciphertext)?))
+    }
 }
 
 /// Metadata structure for entries
