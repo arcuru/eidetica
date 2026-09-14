@@ -1,47 +1,96 @@
 # shistory
 
-A small zsh history example backed by an existing Eidetica daemon. Its command-start/command-finish workflow is inspired by [Atuin](https://atuin.sh/); it deliberately omits Atuin's interactive search and broader shell tooling.
+`shistory` is a small zsh history example for an existing Eidetica daemon. Its
+start/finish model was inspired by [Atuin](https://atuin.sh/), without Atuin's
+interactive search or broader shell tooling.
 
-`shistory` connects only to Eidetica's Unix service socket. It does not start a daemon, open a backend directly, or implement synchronization. Each host writes a separate `Table` Store in one `shistory` database, while a tiny `hosts` Store records the explicitly configured host labels needed for all-host queries.
+It connects only to the daemon's Unix service socket. It never starts or
+manages a daemon, opens a backend directly, or manages synchronization. One
+`shistory` database holds a small `hosts` catalog and one `Table` Store per
+explicit host label. That keeps writes from each host separate while
+`--all-hosts` queries combine them.
 
-## Prerequisites
+## Before setup
 
-- A running Eidetica daemon. `EIDETICA_SOCKET` overrides its default socket path.
-- An existing **passwordless** daemon user. Passwordless users keep their root key unencrypted, so protect the daemon's data directory with normal filesystem permissions.
-- Peer connections and database access preconfigured on each daemon. Eidetica owns subsequent synchronization.
-- A stable, unique host label such as `laptop-work` or `server-home`. Do not derive this from a transient hostname.
+This example assumes an operator has already done the following on every host:
 
-History may contain secrets. Eidetica history is replicated and append-only; skipping leading-space commands is a capture convention, not secret detection or an erasure guarantee.
+- Run an Eidetica daemon and grant the shell user filesystem access to its Unix
+  socket. `EIDETICA_SOCKET` selects the socket; otherwise Eidetica uses
+  `$XDG_RUNTIME_DIR/eidetica/service.sock` or
+  `/tmp/eidetica-$USER/service.sock`.
+- Create the `SHISTORY_USER` user as a **passwordless** daemon user. `shistory`
+  only logs that user in; it cannot create users. A passwordless user's root
+  signing key is unencrypted, so protect the daemon data directory and socket
+  path. Socket filesystem permissions are the trust boundary.
+- Choose a stable, unique `SHISTORY_HOST` label such as `laptop-work` or
+  `server-home`. Do not derive it from a hostname that may change.
 
-## Setup
+For two hosts, configure their daemon peer relationship and authorize both for
+one shared database _before_ running `setup` on the second host. Its user must
+already see exactly one tracked database named `shistory`. The first host creates
+that database; each later host only registers its label. Existing ticket,
+access-request, and approval APIs are not exposed through the service socket,
+and `shistory` has no workflow for them. Do that daemon and database setup
+separately; after it is in place, Eidetica handles ongoing replication and
+offline local writes converge when the daemons synchronize.
 
-Build the workspace example, then configure its environment:
+## Install the hook
+
+Build the example, set its identity, then initialize the first host:
 
 ```console
 $ cargo build -p shistory
 $ export SHISTORY_BIN="$PWD/target/debug/shistory"
 $ export SHISTORY_USER=alice
 $ export SHISTORY_HOST=laptop-work
-$ shistory setup
+$ # Set this only when the daemon does not use Eidetica's default socket.
+$ export EIDETICA_SOCKET=/path/to/eidetica.sock
+$ "$SHISTORY_BIN" setup
 history database: bafyr4i...
-$ source examples/shistory/shistory.zsh
+$ source "$PWD/examples/shistory/shistory.zsh"
 ```
 
-Add the exports and `source` line to `.zshrc` after confirming the setup command succeeds. Remove that line to uninstall the hooks.
+Add the three `SHISTORY_*` exports and the `source` command to `.zshrc`, using
+absolute paths that remain valid after changing directories. Remove the `source`
+line to stop installing the hooks.
 
-The first configured host creates the database. Other preauthorized hosts open the same tracked database and register their own label with `shistory setup`.
+The `preexec` hook starts a record before a command runs. The following `precmd`
+hook fills in its duration and exit status. If either hook call cannot reach the
+daemon, it stays quiet, preserves the command's exit status, and never prints the
+command text. A failed start leaves no record; a failed finish leaves an
+`incomplete` record.
 
-## Queries
+Set `SHISTORY_CAPTURE_DISABLED=1` to leave the hooks installed but stop capture;
+`unset SHISTORY_CAPTURE_DISABLED` enables it again. Commands beginning with a
+space are always skipped. This is an opt-out convention, not secret detection.
+
+## Query history
 
 ```console
-shistory list --limit 20
-shistory list --host server-home --limit 20
-shistory list --all-hosts --limit 50
-shistory search 'git log' --all-hosts --limit 25
+"$SHISTORY_BIN" list --limit 20
+"$SHISTORY_BIN" list --host server-home --limit 20
+"$SHISTORY_BIN" list --all-hosts --limit 50
+"$SHISTORY_BIN" search 'git log' --all-hosts --limit 25
 ```
 
-Rows are tab-separated: start time, host, exit status (`incomplete` when no finish hook ran), duration in milliseconds, working directory, then command text.
+Each row is tab-separated:
 
-Set `SHISTORY_CAPTURE_DISABLED=1` to disable capture without removing the hooks. Commands beginning with a space are always skipped.
+```text
+start time    host    exit status    duration (ms)    working directory    command
+```
 
-Hook commands discard their errors, preserve the command's exit status, and never print command text if the daemon is unavailable. Run a query or `shistory setup` directly when diagnosing connection errors.
+An unfinished command has `incomplete` for its exit status and `-` for its
+duration. Queries default to 100 rows and accept limits from 1 through 1000.
+
+## Security and limits
+
+History includes command text, working directories, timestamps, status, and
+runtime. It may contain secrets. Eidetica history is replicated and append-only:
+there is no redaction, retention policy, import path, or erasure guarantee here.
+Do not treat a leading space as protection for a secret that must not persist or
+replicate.
+
+This is a v0 example, not a history service. It has no daemon lifecycle,
+embedded-backend fallback, sync management, credential provisioning,
+ticket/request/approval UI, retention controls, secret filtering, imports, or
+interactive search. It supports zsh hooks only.
