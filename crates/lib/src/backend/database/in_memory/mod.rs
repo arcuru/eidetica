@@ -110,11 +110,10 @@ impl InMemory {
                 record_set.ready
                     && record_set.request.database == *database
                     && record_set.request.store == store
-                    && record_set
-                        .request
-                        .projection
-                        .name
-                        .ends_with("eidetica/table/rows")
+                    && matches!(
+                        record_set.request.projection.name.as_str(),
+                        "eidetica/table/rows" | "eidetica/password/eidetica/table/rows"
+                    )
             })
             .map(|record_set| record_set.records.len())
             .max()
