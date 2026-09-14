@@ -33,20 +33,21 @@ async fn existing_schema_v0_database_gets_store_state_tables() {
     pool.close().await;
 
     let backend = Sqlite::open(&path).await.unwrap();
-    let version: (i64,) = sqlx::query_as("SELECT version FROM schema_version")
-        .fetch_one(backend.pool())
-        .await
-        .unwrap();
-    assert_eq!(version.0, 0);
-
-    let tables: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN \
-         ('store_state_namespaces', 'store_state_records')",
+    let request = request("db", "store", StoreStateLifecycle::Derived);
+    let view = publish(
+        &backend,
+        request.clone(),
+        [(b"key".to_vec(), b"value".to_vec())],
     )
-    .fetch_one(backend.pool())
-    .await
-    .unwrap();
-    assert_eq!(tables.0, 2);
+    .await;
+    assert_eq!(
+        backend.store_state_record_get(&view, b"key").await.unwrap(),
+        Some(b"value".to_vec())
+    );
+    assert_eq!(
+        backend.resolve_store_state(&request).await.unwrap(),
+        Some(view)
+    );
 }
 
 fn request(database: &str, store: &str, lifecycle: StoreStateLifecycle) -> StoreStateRequest {
