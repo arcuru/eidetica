@@ -339,6 +339,13 @@ impl SqlxBackend {
         schema::testing_set_schema_version(self, version).await
     }
 
+    /// Add a marker table to a future-version schema fixture.
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub async fn testing_add_future_schema_marker(&self) -> Result<()> {
+        schema::testing_add_future_schema_marker(self).await
+    }
+
     /// Inspect the narrow SQL state needed by historyless migration and
     /// rollback tests without handing ownership of the raw pool to callers.
     #[cfg(feature = "testing")]

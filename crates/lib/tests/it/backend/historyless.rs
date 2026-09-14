@@ -356,6 +356,7 @@ async fn test_historyless_sql_rejects_future_schema_version() {
         .testing_set_schema_version(eidetica::backend::database::sql::schema::SCHEMA_VERSION + 1)
         .await
         .unwrap();
+    backend.testing_add_future_schema_marker().await.unwrap();
     drop(backend);
 
     let error = match Sqlite::open(&path).await {
@@ -363,6 +364,17 @@ async fn test_historyless_sql_rejects_future_schema_version() {
         Err(error) => error,
     };
     assert!(matches!(error, Error::Backend(error) if error.is_sql_error()));
+
+    let database = sqlx::SqlitePool::connect(&format!("sqlite:{}", path.display()))
+        .await
+        .unwrap();
+    let tables: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'future_schema_marker'",
+    )
+    .fetch_one(&database)
+    .await
+    .unwrap();
+    assert_eq!(tables.0, 1, "rejection must not mutate the future schema");
 }
 
 #[cfg(feature = "sqlite")]

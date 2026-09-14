@@ -148,14 +148,10 @@ pub const CREATE_INDEXES: &[&str] = &[
 /// Initialize the database schema.
 pub async fn initialize(backend: &SqlxBackend) -> Result<()> {
     let pool = backend.pool();
-    let blob_type = if backend.is_sqlite() { "BLOB" } else { "BYTEA" };
-    for statement in CREATE_TABLES {
-        sqlx::query(&statement.replace("BLOB", blob_type))
-            .execute(pool)
-            .await
-            .sql_context("Schema creation failed")?;
-    }
-
+    sqlx::query(CREATE_TABLES[0])
+        .execute(pool)
+        .await
+        .sql_context("Schema version table creation failed")?;
     let row: Option<(i64,)> = sqlx::query_as("SELECT version FROM schema_version")
         .fetch_optional(pool)
         .await
@@ -171,6 +167,14 @@ pub async fn initialize(backend: &SqlxBackend) -> Result<()> {
             source: None,
         }
         .into());
+    }
+
+    let blob_type = if backend.is_sqlite() { "BLOB" } else { "BYTEA" };
+    for statement in &CREATE_TABLES[1..] {
+        sqlx::query(&statement.replace("BLOB", blob_type))
+            .execute(pool)
+            .await
+            .sql_context("Schema creation failed")?;
     }
 
     // The generic Store-state tables are part of schema v0 and remain created
@@ -393,6 +397,15 @@ pub(crate) async fn testing_set_schema_version(backend: &SqlxBackend, version: i
         .execute(backend.pool())
         .await
         .sql_context("Failed to set test schema version")?;
+    Ok(())
+}
+
+#[cfg(feature = "testing")]
+pub(crate) async fn testing_add_future_schema_marker(backend: &SqlxBackend) -> Result<()> {
+    sqlx::query("CREATE TABLE future_schema_marker (id BIGINT PRIMARY KEY)")
+        .execute(backend.pool())
+        .await
+        .sql_context("Failed to add future schema marker")?;
     Ok(())
 }
 
