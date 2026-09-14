@@ -26,7 +26,7 @@ add-zsh-hook -d preexec _shistory_preexec
 add-zsh-hook -d precmd _shistory_precmd
 : > "$SHISTORY_HOOK_LOG"
 
-# A normal command records start and finish while preserving its status.
+# A normal command records start metadata and finish metadata while preserving its status.
 _shistory_preexec 'false synthetic-secret'
 set +e
 false
@@ -34,8 +34,15 @@ _shistory_precmd
 command_status=$?
 set -e
 [[ $command_status == 1 ]]
-grep -q '^start .*-- false synthetic-secret$' "$SHISTORY_HOOK_LOG"
+grep -Eq '^start --session [^ ]+ --cwd .+ --started-at [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z -- false synthetic-secret$' "$SHISTORY_HOOK_LOG"
 grep -q '^finish synthetic-id .*--exit-status 1$' "$SHISTORY_HOOK_LOG"
+started_at=$(sed -n 's/.*--started-at \([^ ]*\) --.*/\1/p' "$SHISTORY_HOOK_LOG")
+python3 - "$started_at" <<'PY'
+from datetime import datetime
+import sys
+
+datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00"))
+PY
 
 # Leading-space and disabled commands never reach the binary.
 : > "$SHISTORY_HOOK_LOG"

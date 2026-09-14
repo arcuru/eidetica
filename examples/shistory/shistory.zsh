@@ -14,9 +14,14 @@ _shistory_preexec() {
   [[ -n ${SHISTORY_CAPTURE_DISABLED:-} || $command == ' '* ]] && return 0
 
   SHISTORY_STARTED_AT=$EPOCHREALTIME
+  local -i started_seconds=${SHISTORY_STARTED_AT%.*}
+  local started_fraction=${SHISTORY_STARTED_AT#*.}
+  local started_at
+  TZ=UTC0 strftime -s started_at '%Y-%m-%dT%H:%M:%S' "$started_seconds"
   SHISTORY_RECORD_ID=$("$SHISTORY_BIN" start \
     --session "$SHISTORY_SESSION" \
     --cwd "$PWD" \
+    --started-at "${started_at}.${started_fraction}Z" \
     -- "$command" 2>/dev/null) || SHISTORY_RECORD_ID=
   return 0
 }

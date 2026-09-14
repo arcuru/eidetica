@@ -179,7 +179,7 @@
 
   test-check-shistory-hooks =
     pkgs.runCommand "test-check-shistory-hooks" {
-      nativeBuildInputs = [pkgs.zsh];
+      nativeBuildInputs = [pkgs.python3 pkgs.zsh];
       src = ../../examples/shistory;
     } ''
       work="$PWD/work"
