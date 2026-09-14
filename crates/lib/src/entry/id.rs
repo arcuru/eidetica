@@ -5,6 +5,7 @@
 use crate::Result;
 use cid::Cid;
 use multihash_codetable::{Code, MultihashDigest};
+use rand::{RngCore, rngs::OsRng};
 use serde::{Deserialize, Serialize};
 
 // Codec values are taken from https://github.com/multiformats/multicodec
@@ -73,6 +74,17 @@ impl Ord for ID {
 }
 
 impl ID {
+    /// Creates an opaque, non-content-addressed identifier.
+    ///
+    /// The identifier is a raw CID over 32 bytes from the operating system's
+    /// random number generator. It is suitable for objects whose identity must
+    /// remain stable while their contents change, such as historyless databases.
+    pub fn random() -> Self {
+        let mut bytes = [0_u8; 32];
+        OsRng.fill_bytes(&mut bytes);
+        Self::from_bytes(bytes)
+    }
+
     /// Creates an ID by hashing DAG-CBOR encoded bytes with BLAKE3.
     ///
     /// This is the primary way to create an ID from serialized entry content.
@@ -220,6 +232,17 @@ mod tests {
         assert_eq!(cid.codec(), RAW_CODEC);
         // Default is BLAKE3 (multihash code 0x1e)
         assert_eq!(cid.hash().code(), 0x1e);
+    }
+
+    #[test]
+    fn test_random_produces_distinct_opaque_ids() {
+        let first = ID::random();
+        let second = ID::random();
+
+        assert!(!first.is_empty());
+        assert!(!second.is_empty());
+        assert_ne!(first, second);
+        assert_eq!(first.as_cid().unwrap().codec(), RAW_CODEC);
     }
 
     #[test]

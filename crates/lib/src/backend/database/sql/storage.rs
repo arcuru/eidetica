@@ -1,17 +1,28 @@
 //! Entry storage operations for SQL backends.
 //!
-//! This module implements the core CRUD operations for entries using sqlx.
+//! This module implements authoritative entry and historyless storage.
+
+use std::collections::BTreeMap;
 
 use crate::Result;
 use crate::backend::errors::BackendError;
 use crate::backend::{
-    CacheScope, InstanceMetadata, InstanceSecrets, RecordMutations, RecordPage, RecordRange,
-    RecordView, StagingToken, StoreStateLifecycle, StoreStateRequest, VerificationStatus,
+    CacheScope, HistorylessMetadata, HistorylessOwner, HistorylessReadSnapshot,
+    HistorylessStoreMutation, InstanceMetadata, InstanceSecrets, LegacyHistorylessSnapshot,
+    RecordMutations, RecordPage, RecordRange, RecordView, StagingToken, StoreStateLifecycle,
+    StoreStateRequest, VerificationStatus,
 };
 use crate::entry::{Entry, ID};
 
 use super::{SqlxBackend, SqlxResultExt};
 use crate::backend::database::sorting;
+
+fn owner_to_column(owner: &HistorylessOwner) -> Option<&str> {
+    match owner {
+        HistorylessOwner::Instance => None,
+        HistorylessOwner::User(user) => Some(user),
+    }
+}
 
 fn store_state_scope(scope: &CacheScope) -> &str {
     match scope {
@@ -378,6 +389,458 @@ pub async fn clear_derived_store_state(backend: &SqlxBackend) -> Result<()> {
         .sql_context("Failed to commit derived Store-state clear")
 }
 
+/// Serialize cross-namespace admission for one ID on PostgreSQL.
+///
+/// SQLite's `BEGIN IMMEDIATE` already serializes these checks. PostgreSQL
+/// needs a transaction-scoped lock because `entries` and
+/// `historyless_databases` cannot share a uniqueness constraint.
+async fn lock_id_admission(
+    backend: &SqlxBackend,
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    id: &str,
+) -> Result<()> {
+    if backend.is_postgres() {
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1)::bigint)")
+            .bind(id)
+            .execute(&mut **tx)
+            .await
+            .sql_context("Failed to lock historyless ID admission")?;
+    }
+    Ok(())
+}
+
+pub async fn create_historyless(
+    backend: &SqlxBackend,
+    id: &ID,
+    owner: HistorylessOwner,
+    stores: BTreeMap<String, HistorylessStoreMutation>,
+) -> Result<()> {
+    let mut tx = backend
+        .pool()
+        .begin()
+        .await
+        .sql_context("Failed to begin historyless creation")?;
+    if backend.is_sqlite() {
+        sqlx::query("COMMIT; BEGIN IMMEDIATE")
+            .execute(&mut *tx)
+            .await
+            .sql_context("Failed to upgrade historyless creation transaction")?;
+    }
+    let id_string = id.to_string();
+    lock_id_admission(backend, &mut tx, &id_string).await?;
+    let entry_collision: Option<(i32,)> =
+        sqlx::query_as("SELECT 1 FROM entries WHERE id = $1 LIMIT 1")
+            .bind(&id_string)
+            .fetch_optional(&mut *tx)
+            .await
+            .sql_context("Failed to check entry collision")?;
+    let historyless_collision: Option<(i32,)> =
+        sqlx::query_as("SELECT 1 FROM historyless_databases WHERE id = $1 LIMIT 1")
+            .bind(&id_string)
+            .fetch_optional(&mut *tx)
+            .await
+            .sql_context("Failed to check historyless collision")?;
+    if entry_collision.is_some() || historyless_collision.is_some() {
+        return Err(BackendError::HistorylessDatabaseAlreadyExists { id: id.clone() }.into());
+    }
+
+    sqlx::query(
+        "INSERT INTO historyless_databases (id, owner_user_uuid, revision) VALUES ($1, $2, 0)",
+    )
+    .bind(&id_string)
+    .bind(owner_to_column(&owner))
+    .execute(&mut *tx)
+    .await
+    .sql_context("Failed to insert historyless database")?;
+    for (name, mutation) in stores {
+        let namespace = uuid::Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO store_state_namespaces
+             (namespace_id, database_id, store_name, lifecycle, status, scope_user_uuid,
+              projection_name, projection_version, source_key, created_revision)
+             VALUES ($1, $2, $3, $4, 1, '', $5, $6, $7, 0)",
+        )
+        .bind(&namespace)
+        .bind(&id_string)
+        .bind(&name)
+        .bind(StoreStateLifecycle::Authoritative.as_db_int())
+        .bind(&mutation.projection.name)
+        .bind(i64::from(mutation.projection.version))
+        .bind(0i64.to_be_bytes().to_vec())
+        .execute(&mut *tx)
+        .await
+        .sql_context("Failed to insert historyless namespace")?;
+        for (key, value) in mutation.records {
+            if let Some(value) = value {
+                sqlx::query(
+                    "INSERT INTO store_state_records (namespace_id, record_key, record_value)
+                     VALUES ($1, $2, $3)",
+                )
+                .bind(&namespace)
+                .bind(key)
+                .bind(value)
+                .execute(&mut *tx)
+                .await
+                .sql_context("Failed to insert historyless record")?;
+            }
+        }
+        sqlx::query(
+            "INSERT INTO historyless_store_heads (database_id, store_name, namespace_id)
+             VALUES ($1, $2, $3)",
+        )
+        .bind(&id_string)
+        .bind(name)
+        .bind(namespace)
+        .execute(&mut *tx)
+        .await
+        .sql_context("Failed to insert historyless head")?;
+    }
+    tx.commit()
+        .await
+        .sql_context("Failed to commit historyless creation")
+}
+
+pub async fn begin_historyless_read(
+    backend: &SqlxBackend,
+    id: &ID,
+) -> Result<HistorylessReadSnapshot> {
+    let id_string = id.to_string();
+    let mut tx = backend
+        .pool()
+        .begin()
+        .await
+        .sql_context("Failed to begin historyless read")?;
+    if backend.is_postgres() {
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            .execute(&mut *tx)
+            .await
+            .sql_context("Failed to set historyless read isolation")?;
+    }
+    let row: Option<(Option<String>, i64)> =
+        sqlx::query_as("SELECT owner_user_uuid, revision FROM historyless_databases WHERE id = $1")
+            .bind(&id_string)
+            .fetch_optional(&mut *tx)
+            .await
+            .sql_context("Failed to read historyless database")?;
+    let Some((owner, revision)) = row else {
+        return Err(BackendError::HistorylessDatabaseNotFound { id: id.clone() }.into());
+    };
+    let revision = u64::try_from(revision).map_err(|_| BackendError::TreeIntegrityViolation {
+        reason: format!("historyless database {id} has invalid revision {revision}"),
+    })?;
+    tx.commit()
+        .await
+        .sql_context("Failed to commit historyless read")?;
+    Ok(HistorylessReadSnapshot {
+        metadata: HistorylessMetadata {
+            id: id.clone(),
+            owner: owner.map_or(HistorylessOwner::Instance, HistorylessOwner::User),
+            revision,
+        },
+        token: revision.to_string(),
+    })
+}
+
+async fn historyless_namespace_at_revision(
+    backend: &SqlxBackend,
+    snapshot: &HistorylessReadSnapshot,
+    store: &str,
+) -> Result<Option<String>> {
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT n.namespace_id
+         FROM store_state_namespaces n
+         WHERE n.database_id = $1 AND n.store_name = $2 AND n.lifecycle = $3
+           AND n.status = 1 AND n.created_revision <= $4
+         ORDER BY n.created_revision DESC LIMIT 1",
+    )
+    .bind(snapshot.metadata.id.to_string())
+    .bind(store)
+    .bind(StoreStateLifecycle::Authoritative.as_db_int())
+    .bind(i64::try_from(snapshot.metadata.revision).map_err(|_| {
+        BackendError::TreeIntegrityViolation {
+            reason: "historyless revision exceeds SQL range".to_string(),
+        }
+    })?)
+    .fetch_optional(backend.pool())
+    .await
+    .sql_context("Failed to resolve pinned historyless namespace")?;
+    Ok(row.map(|(namespace,)| namespace))
+}
+
+pub async fn historyless_record_get(
+    backend: &SqlxBackend,
+    snapshot: &HistorylessReadSnapshot,
+    store: &str,
+    key: &[u8],
+) -> Result<Option<Vec<u8>>> {
+    let Some(namespace) = historyless_namespace_at_revision(backend, snapshot, store).await? else {
+        return Ok(None);
+    };
+    store_state_record_get(
+        backend,
+        &RecordView {
+            namespace_id: namespace,
+        },
+        key,
+    )
+    .await
+}
+
+pub async fn historyless_record_scan(
+    backend: &SqlxBackend,
+    snapshot: &HistorylessReadSnapshot,
+    store: &str,
+    range: &RecordRange,
+    after: Option<&[u8]>,
+    limit: usize,
+) -> Result<RecordPage> {
+    let Some(namespace) = historyless_namespace_at_revision(backend, snapshot, store).await? else {
+        return Ok(RecordPage {
+            records: Vec::new(),
+            next: None,
+        });
+    };
+    store_state_record_scan(
+        backend,
+        &RecordView {
+            namespace_id: namespace,
+        },
+        range,
+        after,
+        limit,
+    )
+    .await
+}
+
+pub async fn commit_historyless(
+    backend: &SqlxBackend,
+    id: &ID,
+    expected_revision: u64,
+    stores: BTreeMap<String, HistorylessStoreMutation>,
+) -> Result<u64> {
+    let next =
+        expected_revision
+            .checked_add(1)
+            .ok_or_else(|| BackendError::TreeIntegrityViolation {
+                reason: format!("historyless database {id} revision overflow"),
+            })?;
+    let expected_i64 =
+        i64::try_from(expected_revision).map_err(|_| BackendError::TreeIntegrityViolation {
+            reason: format!("historyless database {id} revision exceeds SQL range"),
+        })?;
+    let next_i64 = i64::try_from(next).map_err(|_| BackendError::TreeIntegrityViolation {
+        reason: format!("historyless database {id} revision exceeds SQL range"),
+    })?;
+    let id_string = id.to_string();
+    let mut tx = backend
+        .pool()
+        .begin()
+        .await
+        .sql_context("Failed to begin historyless replacement")?;
+    if backend.is_sqlite() {
+        sqlx::query("COMMIT; BEGIN IMMEDIATE")
+            .execute(&mut *tx)
+            .await
+            .sql_context("Failed to upgrade historyless replacement transaction")?;
+    }
+    let result = sqlx::query(
+        "UPDATE historyless_databases SET revision = $1 WHERE id = $2 AND revision = $3",
+    )
+    .bind(next_i64)
+    .bind(&id_string)
+    .bind(expected_i64)
+    .execute(&mut *tx)
+    .await
+    .sql_context("Failed to advance historyless revision")?;
+    if result.rows_affected() == 0 {
+        let actual: Option<(i64,)> =
+            sqlx::query_as("SELECT revision FROM historyless_databases WHERE id = $1")
+                .bind(&id_string)
+                .fetch_optional(&mut *tx)
+                .await
+                .sql_context("Failed to classify historyless replacement")?;
+        return match actual {
+            Some((actual,)) => {
+                let actual =
+                    u64::try_from(actual).map_err(|_| BackendError::TreeIntegrityViolation {
+                        reason: format!("historyless database {id} has invalid revision {actual}"),
+                    })?;
+                Err(BackendError::HistorylessWriteConflict {
+                    id: id.clone(),
+                    expected: expected_revision,
+                    actual,
+                }
+                .into())
+            }
+            None => Err(BackendError::HistorylessDatabaseNotFound { id: id.clone() }.into()),
+        };
+    }
+    for (_index, (name, mutation)) in stores.into_iter().enumerate() {
+        #[cfg(feature = "testing")]
+        if _index == backend.historyless_fail_after_store() {
+            backend.testing_fail_historyless_commit_after_store(None);
+            return Err(BackendError::HistorylessCommitFaultInjected.into());
+        }
+        let current: Option<(String, String, i64)> = sqlx::query_as(
+            "SELECT h.namespace_id, n.projection_name, n.projection_version
+             FROM historyless_store_heads h
+             JOIN store_state_namespaces n ON n.namespace_id = h.namespace_id
+             WHERE h.database_id = $1 AND h.store_name = $2",
+        )
+        .bind(&id_string)
+        .bind(&name)
+        .fetch_optional(&mut *tx)
+        .await
+        .sql_context("Failed to resolve current historyless head")?;
+        if let Some((_, projection, version)) = &current
+            && (*projection != mutation.projection.name
+                || *version != i64::from(mutation.projection.version))
+        {
+            return Err(BackendError::HistorylessProjectionMismatch.into());
+        }
+        let mut records: BTreeMap<Vec<u8>, Vec<u8>> = if let Some((namespace, _, _)) = &current {
+            sqlx::query_as(
+                "SELECT record_key, record_value FROM store_state_records
+                 WHERE namespace_id = $1 AND record_value IS NOT NULL ORDER BY record_key",
+            )
+            .bind(namespace)
+            .fetch_all(&mut *tx)
+            .await
+            .sql_context("Failed to copy current historyless records")?
+            .into_iter()
+            .collect()
+        } else {
+            BTreeMap::new()
+        };
+        for (key, value) in mutation.records {
+            match value {
+                Some(value) => {
+                    records.insert(key, value);
+                }
+                None => {
+                    records.remove(&key);
+                }
+            }
+        }
+        let namespace = uuid::Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO store_state_namespaces
+             (namespace_id, database_id, store_name, lifecycle, status, scope_user_uuid,
+              projection_name, projection_version, source_key, created_revision)
+             VALUES ($1, $2, $3, $4, 1, '', $5, $6, $7, $8)",
+        )
+        .bind(&namespace)
+        .bind(&id_string)
+        .bind(&name)
+        .bind(StoreStateLifecycle::Authoritative.as_db_int())
+        .bind(&mutation.projection.name)
+        .bind(i64::from(mutation.projection.version))
+        .bind(next_i64.to_be_bytes().to_vec())
+        .bind(next_i64)
+        .execute(&mut *tx)
+        .await
+        .sql_context("Failed to insert replacement historyless namespace")?;
+        for (key, value) in records {
+            sqlx::query(
+                "INSERT INTO store_state_records (namespace_id, record_key, record_value)
+                 VALUES ($1, $2, $3)",
+            )
+            .bind(&namespace)
+            .bind(key)
+            .bind(value)
+            .execute(&mut *tx)
+            .await
+            .sql_context("Failed to insert replacement historyless record")?;
+        }
+        sqlx::query(
+            "INSERT INTO historyless_store_heads (database_id, store_name, namespace_id)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (database_id, store_name)
+             DO UPDATE SET namespace_id = EXCLUDED.namespace_id",
+        )
+        .bind(&id_string)
+        .bind(name)
+        .bind(namespace)
+        .execute(&mut *tx)
+        .await
+        .sql_context("Failed to replace historyless head")?;
+    }
+    tx.commit()
+        .await
+        .sql_context("Failed to commit historyless replacement")?;
+    Ok(next)
+}
+
+pub async fn read_historyless_compat(
+    backend: &SqlxBackend,
+    id: &ID,
+) -> Result<LegacyHistorylessSnapshot> {
+    let snapshot = begin_historyless_read(backend, id).await?;
+    let names: Vec<(String,)> = sqlx::query_as(
+        "SELECT DISTINCT store_name FROM store_state_namespaces
+         WHERE database_id = $1 AND lifecycle = $2 AND status = 1",
+    )
+    .bind(id.to_string())
+    .bind(StoreStateLifecycle::Authoritative.as_db_int())
+    .fetch_all(backend.pool())
+    .await
+    .sql_context("Failed to list historyless Stores")?;
+    let mut stores = BTreeMap::new();
+    for (name,) in names {
+        if let Some(bytes) = historyless_record_get(backend, &snapshot, &name, &[0]).await? {
+            stores.insert(name, bytes);
+        } else {
+            let page = historyless_record_scan(
+                backend,
+                &snapshot,
+                &name,
+                &RecordRange::default(),
+                None,
+                usize::MAX,
+            )
+            .await?;
+            let mut doc = crate::crdt::Doc::new();
+            for (key, value) in page.records {
+                doc.set(
+                    String::from_utf8(key)
+                        .map_err(|_| BackendError::HistorylessProjectionMismatch)?,
+                    String::from_utf8(value)
+                        .map_err(|_| BackendError::HistorylessProjectionMismatch)?,
+                );
+            }
+            stores.insert(name, serde_json::to_vec(&doc)?);
+        }
+    }
+    Ok(LegacyHistorylessSnapshot {
+        metadata: snapshot.metadata,
+        stores,
+    })
+}
+
+pub async fn replace_historyless_compat(
+    backend: &SqlxBackend,
+    id: &ID,
+    expected_revision: u64,
+    stores: BTreeMap<String, Vec<u8>>,
+) -> Result<u64> {
+    let mutations = stores
+        .into_iter()
+        .map(|(name, bytes)| {
+            (
+                name,
+                HistorylessStoreMutation {
+                    projection: crate::backend::ProjectionDescriptor {
+                        name: "eidetica/opaque".to_string(),
+                        version: 1,
+                    },
+                    records: BTreeMap::from([(vec![0], Some(bytes))]),
+                },
+            )
+        })
+        .collect();
+    commit_historyless(backend, id, expected_revision, mutations).await
+}
+
 /// Get an entry by ID.
 pub async fn get(backend: &SqlxBackend, id: &ID) -> Result<Entry> {
     let pool = backend.pool();
@@ -475,6 +938,8 @@ pub async fn put(backend: &SqlxBackend, entry: Entry) -> Result<()> {
             .sql_context("Failed to upgrade to IMMEDIATE transaction")?;
     }
 
+    lock_id_admission(backend, &mut tx, &id.to_string()).await?;
+
     // Check if entry already exists - entries are content-addressable and immutable
     let existing_status: Option<(i64,)> =
         sqlx::query_as("SELECT verification_status FROM entries WHERE id = $1")
@@ -482,6 +947,16 @@ pub async fn put(backend: &SqlxBackend, entry: Entry) -> Result<()> {
             .fetch_optional(&mut *tx)
             .await
             .sql_context("Failed to check entry existence")?;
+
+    let historyless_collision: Option<(i32,)> =
+        sqlx::query_as("SELECT 1 FROM historyless_databases WHERE id = $1 LIMIT 1")
+            .bind(id.to_string())
+            .fetch_optional(&mut *tx)
+            .await
+            .sql_context("Failed to check historyless ID collision")?;
+    if historyless_collision.is_some() {
+        return Err(BackendError::HistorylessDatabaseAlreadyExists { id }.into());
+    }
 
     if existing_status.is_some() {
         // Entry exists. Content is content-addressed and immutable, and its

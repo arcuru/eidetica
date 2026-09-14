@@ -33,6 +33,7 @@
 - [Subtrees](internal/subtrees.md)
 - [CRDT Merging](internal/crdt.md)
 - [Store State](internal/store_state.md)
+- [Historyless Storage](internal/historyless.md)
 - [Historical Store-state Cache](internal/cache.md)
 - [Authentication](internal/authentication.md)
 - [Sync](internal/sync.md)

@@ -24,15 +24,19 @@ use serde::{Deserialize, Serialize};
 use crate::{
     Result,
     backend::{
-        BackendImpl, InstanceMetadata, InstanceSecrets, RecordMutations, RecordPage, RecordRange,
-        RecordView, StagingToken, StoreStateLifecycle, StoreStateRequest, VerificationStatus,
-        errors::BackendError,
+        BackendImpl, HistorylessMetadata, HistorylessOwner, HistorylessReadSnapshot,
+        HistorylessStoreMutation, InstanceMetadata, InstanceSecrets, LegacyHistorylessSnapshot,
+        RecordMutations, RecordPage, RecordRange, RecordView, StagingToken, StoreStateLifecycle,
+        StoreStateRequest, VerificationStatus, errors::BackendError,
     },
     entry::{Entry, ID},
     snapshot::Snapshot,
 };
 
 use crate::backend::database::sorting;
+
+#[cfg(feature = "testing")]
+static HISTORYLESS_FAIL_AFTER_STORE: AtomicUsize = AtomicUsize::new(usize::MAX);
 
 /// Grouped tree tips cache: (tree_tips, subtree_name -> subtree_tips)
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -49,6 +53,10 @@ pub(crate) struct TreeTipsCache {
 #[derive(Debug)]
 pub(crate) struct InMemoryInner {
     pub(crate) entries: HashMap<ID, Entry>,
+    /// Authoritative current-state databases, kept separate from entries and
+    /// from the disposable CRDT materialization cache.
+    pub(crate) historyless: HashMap<ID, HistorylessCatalog>,
+    pub(crate) historyless_pins: HashMap<String, HistorylessRevision>,
     pub(crate) store_state_namespaces: HashMap<String, RecordNamespace>,
     pub(crate) verification_status: HashMap<ID, VerificationStatus>,
     /// Instance metadata containing device public key and system database IDs.
@@ -74,6 +82,23 @@ pub(crate) struct RecordNamespace {
     /// through views resolved before the clear.
     unlinked: bool,
     records: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct HistorylessCatalog {
+    pub(crate) metadata: HistorylessMetadata,
+    pub(crate) state: HistorylessRevision,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub(crate) struct HistorylessRevision {
+    pub(crate) stores: HashMap<String, HistorylessStoreState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct HistorylessStoreState {
+    pub(crate) projection: crate::backend::ProjectionDescriptor,
+    pub(crate) records: BTreeMap<Vec<u8>, Vec<u8>>,
 }
 
 /// A simple in-memory database implementation using a `HashMap` for storage.
@@ -124,6 +149,16 @@ impl InMemory {
             self.store_state_scan_reads.load(Ordering::Relaxed),
         )
     }
+
+    #[cfg(feature = "testing")]
+    pub fn historyless_pin_count(&self) -> usize {
+        self.inner.read().unwrap().historyless_pins.len()
+    }
+
+    #[cfg(feature = "testing")]
+    pub fn fail_historyless_commit_after_store(index: Option<usize>) {
+        HISTORYLESS_FAIL_AFTER_STORE.store(index.unwrap_or(usize::MAX), Ordering::Relaxed);
+    }
 }
 
 impl InMemory {
@@ -132,6 +167,8 @@ impl InMemory {
         Self {
             inner: RwLock::new(InMemoryInner {
                 entries: HashMap::new(),
+                historyless: HashMap::new(),
+                historyless_pins: HashMap::new(),
                 store_state_namespaces: HashMap::new(),
                 verification_status: HashMap::new(),
                 instance_metadata: None,
@@ -437,6 +474,261 @@ impl BackendImpl for InMemory {
         }
         Ok(())
     }
+    async fn create_historyless(
+        &self,
+        id: &ID,
+        owner: HistorylessOwner,
+        stores: BTreeMap<String, HistorylessStoreMutation>,
+    ) -> Result<()> {
+        let mut inner = self.inner.write().unwrap();
+        if inner.entries.contains_key(id) || inner.historyless.contains_key(id) {
+            return Err(BackendError::HistorylessDatabaseAlreadyExists { id: id.clone() }.into());
+        }
+
+        let stores = stores
+            .into_iter()
+            .map(|(name, mutation)| {
+                let records = mutation
+                    .records
+                    .into_iter()
+                    .filter_map(|(key, value)| value.map(|value| (key, value)))
+                    .collect();
+                (
+                    name,
+                    HistorylessStoreState {
+                        projection: mutation.projection,
+                        records,
+                    },
+                )
+            })
+            .collect();
+        inner.historyless.insert(
+            id.clone(),
+            HistorylessCatalog {
+                metadata: HistorylessMetadata {
+                    id: id.clone(),
+                    owner,
+                    revision: 0,
+                },
+                state: HistorylessRevision { stores },
+            },
+        );
+        Ok(())
+    }
+
+    async fn begin_historyless_read(&self, id: &ID) -> Result<HistorylessReadSnapshot> {
+        let mut inner = self.inner.write().unwrap();
+        let catalog = inner
+            .historyless
+            .get(id)
+            .cloned()
+            .ok_or_else(|| BackendError::HistorylessDatabaseNotFound { id: id.clone() })?;
+        let token = uuid::Uuid::new_v4().to_string();
+        inner.historyless_pins.insert(token.clone(), catalog.state);
+        Ok(HistorylessReadSnapshot {
+            metadata: catalog.metadata,
+            token,
+        })
+    }
+
+    async fn historyless_record_get(
+        &self,
+        snapshot: &HistorylessReadSnapshot,
+        store: &str,
+        key: &[u8],
+    ) -> Result<Option<Vec<u8>>> {
+        self.store_state_point_reads.fetch_add(1, Ordering::Relaxed);
+        let inner = self.inner.read().unwrap();
+        let state = inner
+            .historyless_pins
+            .get(&snapshot.token)
+            .ok_or(BackendError::InvalidHistorylessReadSnapshot)?;
+        Ok(state
+            .stores
+            .get(store)
+            .and_then(|store| store.records.get(key))
+            .cloned())
+    }
+
+    async fn historyless_record_scan(
+        &self,
+        snapshot: &HistorylessReadSnapshot,
+        store: &str,
+        range: &RecordRange,
+        after: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<RecordPage> {
+        let inner = self.inner.read().unwrap();
+        let state = inner
+            .historyless_pins
+            .get(&snapshot.token)
+            .ok_or(BackendError::InvalidHistorylessReadSnapshot)?;
+        if limit == 0 {
+            return Ok(RecordPage::default());
+        }
+        self.store_state_scan_reads.fetch_add(1, Ordering::Relaxed);
+        let Some(store) = state.stores.get(store) else {
+            return Ok(RecordPage {
+                records: Vec::new(),
+                next: None,
+            });
+        };
+        let mut records = store
+            .records
+            .iter()
+            .filter(|(key, _)| {
+                range
+                    .start
+                    .as_deref()
+                    .is_none_or(|start| key.as_slice() >= start)
+                    && range.end.as_deref().is_none_or(|end| key.as_slice() < end)
+                    && after.is_none_or(|after| key.as_slice() > after)
+            })
+            .take(limit.saturating_add(1))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect::<Vec<_>>();
+        let has_more = records.len() > limit;
+        records.truncate(limit);
+        let next = has_more.then(|| records.last().unwrap().0.clone());
+        Ok(RecordPage { records, next })
+    }
+
+    async fn commit_historyless(
+        &self,
+        id: &ID,
+        expected_revision: u64,
+        stores: BTreeMap<String, HistorylessStoreMutation>,
+    ) -> Result<u64> {
+        #[cfg(feature = "testing")]
+        let fail_after = HISTORYLESS_FAIL_AFTER_STORE.load(Ordering::Relaxed);
+        let mut inner = self.inner.write().unwrap();
+        let catalog = inner
+            .historyless
+            .get_mut(id)
+            .ok_or_else(|| BackendError::HistorylessDatabaseNotFound { id: id.clone() })?;
+        if catalog.metadata.revision != expected_revision {
+            return Err(BackendError::HistorylessWriteConflict {
+                id: id.clone(),
+                expected: expected_revision,
+                actual: catalog.metadata.revision,
+            }
+            .into());
+        }
+        let revision = expected_revision.checked_add(1).ok_or_else(|| {
+            BackendError::TreeIntegrityViolation {
+                reason: format!("historyless database {id} revision overflow"),
+            }
+        })?;
+        let mut state = catalog.state.clone();
+        for (_index, (name, mutation)) in stores.into_iter().enumerate() {
+            #[cfg(feature = "testing")]
+            if fail_after != usize::MAX && _index == fail_after {
+                return Err(BackendError::HistorylessCommitFaultInjected.into());
+            }
+            let store = state
+                .stores
+                .entry(name)
+                .or_insert_with(|| HistorylessStoreState {
+                    projection: mutation.projection.clone(),
+                    records: BTreeMap::new(),
+                });
+            if store.projection != mutation.projection {
+                return Err(BackendError::HistorylessProjectionMismatch.into());
+            }
+            for (key, value) in mutation.records {
+                match value {
+                    Some(value) => {
+                        store.records.insert(key, value);
+                    }
+                    None => {
+                        store.records.remove(&key);
+                    }
+                }
+            }
+        }
+        catalog.metadata.revision = revision;
+        catalog.state = state;
+        Ok(revision)
+    }
+
+    async fn release_historyless_read(&self, snapshot: HistorylessReadSnapshot) -> Result<()> {
+        self.inner
+            .write()
+            .unwrap()
+            .historyless_pins
+            .remove(&snapshot.token);
+        Ok(())
+    }
+
+    async fn read_historyless_compat(&self, id: &ID) -> Result<LegacyHistorylessSnapshot> {
+        let snapshot = self.begin_historyless_read(id).await?;
+        let store_names = self
+            .inner
+            .read()
+            .unwrap()
+            .historyless_pins
+            .get(&snapshot.token)
+            .ok_or(BackendError::InvalidHistorylessReadSnapshot)?
+            .stores
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut stores = BTreeMap::new();
+        for name in store_names {
+            if let Some(bytes) = self.historyless_record_get(&snapshot, &name, &[0]).await? {
+                stores.insert(name, bytes);
+            } else {
+                let page = self
+                    .historyless_record_scan(
+                        &snapshot,
+                        &name,
+                        &RecordRange::default(),
+                        None,
+                        usize::MAX,
+                    )
+                    .await?;
+                let mut doc = crate::crdt::Doc::new();
+                for (key, value) in page.records {
+                    doc.set(
+                        String::from_utf8(key)
+                            .map_err(|_| BackendError::HistorylessProjectionMismatch)?,
+                        String::from_utf8(value)
+                            .map_err(|_| BackendError::HistorylessProjectionMismatch)?,
+                    );
+                }
+                stores.insert(name, serde_json::to_vec(&doc)?);
+            }
+        }
+        let metadata = snapshot.metadata.clone();
+        self.release_historyless_read(snapshot).await?;
+        Ok(LegacyHistorylessSnapshot { metadata, stores })
+    }
+
+    async fn replace_historyless_compat(
+        &self,
+        id: &ID,
+        expected_revision: u64,
+        stores: BTreeMap<String, Vec<u8>>,
+    ) -> Result<u64> {
+        let mutations = stores
+            .into_iter()
+            .map(|(name, bytes)| {
+                (
+                    name,
+                    HistorylessStoreMutation {
+                        projection: crate::backend::ProjectionDescriptor {
+                            name: "eidetica/opaque".to_string(),
+                            version: 1,
+                        },
+                        records: BTreeMap::from([(vec![0], Some(bytes))]),
+                    },
+                )
+            })
+            .collect();
+        self.commit_historyless(id, expected_revision, mutations)
+            .await
+    }
+
     /// Retrieves an entry by its unique content-addressable ID.
     ///
     /// # Arguments

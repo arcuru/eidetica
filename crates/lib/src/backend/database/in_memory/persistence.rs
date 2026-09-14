@@ -108,6 +108,8 @@ impl<'de> Deserialize<'de> for InMemory {
         Ok(InMemory {
             inner: RwLock::new(InMemoryInner {
                 entries: serializable.entries,
+                historyless: HashMap::new(),
+                historyless_pins: HashMap::new(),
                 // Derived and staging Store-state records are disposable.
                 store_state_namespaces: HashMap::new(),
                 verification_status: serializable.verification_status,

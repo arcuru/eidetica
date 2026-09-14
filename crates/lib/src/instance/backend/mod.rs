@@ -20,7 +20,7 @@ pub use local::LocalBackend;
 #[cfg(all(unix, feature = "service"))]
 pub use remote::RemoteBackend;
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use async_trait::async_trait;
 
@@ -29,8 +29,9 @@ use crate::service::client::RemoteConnection;
 use crate::{
     Result,
     backend::{
-        BackendError, BackendImpl, InstanceMetadata, RecordMutations, RecordPage, RecordRange,
-        RecordView, StagingToken, StoreStateRequest, VerificationStatus,
+        BackendError, BackendImpl, HistorylessOwner, HistorylessReadSnapshot,
+        HistorylessStoreMutation, InstanceMetadata, LegacyHistorylessSnapshot, RecordMutations,
+        RecordPage, RecordRange, RecordView, StagingToken, StoreStateRequest, VerificationStatus,
     },
     entry::{Entry, ID},
     instance::WriteSource,
@@ -106,6 +107,75 @@ pub trait Backend: Send + Sync + std::fmt::Debug {
     async fn clear_derived_store_state(&self) -> Result<()> {
         Err(BackendError::StoreStateStorageUnsupported.into())
     }
+    /// Create an authoritative historyless database at revision zero.
+    async fn create_historyless(
+        &self,
+        _id: &ID,
+        _owner: HistorylessOwner,
+        _stores: BTreeMap<String, HistorylessStoreMutation>,
+    ) -> Result<()> {
+        Err(BackendError::HistorylessStorageUnsupported.into())
+    }
+
+    async fn create_historyless_initialized(
+        &self,
+        id: &ID,
+        owner: HistorylessOwner,
+        stores: BTreeMap<String, HistorylessStoreMutation>,
+    ) -> Result<()> {
+        self.create_historyless(id, owner, stores).await
+    }
+
+    async fn begin_historyless_read(&self, _id: &ID) -> Result<HistorylessReadSnapshot> {
+        Err(BackendError::HistorylessStorageUnsupported.into())
+    }
+
+    async fn historyless_record_get(
+        &self,
+        _snapshot: &HistorylessReadSnapshot,
+        _store: &str,
+        _key: &[u8],
+    ) -> Result<Option<Vec<u8>>> {
+        Err(BackendError::HistorylessStorageUnsupported.into())
+    }
+
+    async fn historyless_record_scan(
+        &self,
+        _snapshot: &HistorylessReadSnapshot,
+        _store: &str,
+        _range: &RecordRange,
+        _after: Option<&[u8]>,
+        _limit: usize,
+    ) -> Result<RecordPage> {
+        Err(BackendError::HistorylessStorageUnsupported.into())
+    }
+
+    async fn commit_historyless(
+        &self,
+        _id: &ID,
+        _expected_revision: u64,
+        _stores: BTreeMap<String, HistorylessStoreMutation>,
+    ) -> Result<u64> {
+        Err(BackendError::HistorylessStorageUnsupported.into())
+    }
+
+    async fn release_historyless_read(&self, _snapshot: HistorylessReadSnapshot) -> Result<()> {
+        Ok(())
+    }
+
+    async fn read_historyless_compat(&self, _id: &ID) -> Result<LegacyHistorylessSnapshot> {
+        Err(BackendError::HistorylessStorageUnsupported.into())
+    }
+
+    async fn replace_historyless_compat(
+        &self,
+        _id: &ID,
+        _expected_revision: u64,
+        _stores: BTreeMap<String, Vec<u8>>,
+    ) -> Result<u64> {
+        Err(BackendError::HistorylessStorageUnsupported.into())
+    }
+
     /// Retrieve an entry by ID.
     async fn get(&self, id: &ID) -> Result<Entry>;
 
