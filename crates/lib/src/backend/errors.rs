@@ -18,6 +18,14 @@ use crate::entry::ID;
 #[non_exhaustive]
 #[derive(Debug, Error)]
 pub enum BackendError {
+    /// Another Eidetica backend already owns this storage namespace.
+    #[error(
+        "Eidetica storage `{namespace}` is already owned; connect through the owning Eidetica service instead"
+    )]
+    StorageAlreadyOwned {
+        /// Credential-free description of the storage namespace.
+        namespace: String,
+    },
     /// The backend does not cache Store state as records.
     #[error("Store-state records are not supported by this backend")]
     StoreStateStorageUnsupported,
