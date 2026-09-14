@@ -24,8 +24,10 @@ use eidetica::{
     },
     crdt::Doc,
     entry::{Entry, ID},
-    store::{DocStore, Table},
+    store::{DocStore, PasswordStore, Table},
 };
+
+static ENCRYPTED_FALLBACK_TEST: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// A pre-record-substrate backend: full entry storage, no record support.
 struct Recordless<B>(B, Option<Arc<StaleThenUnsupported>>);
@@ -434,5 +436,141 @@ async fn stale_record_view_retries_fallback_to_history() {
             ("a".to_string(), TableRow { value: 1 }),
             ("b".to_string(), TableRow { value: 2 }),
         ]
+    );
+}
+
+async fn encrypted_table_with_overlays(database: &Database) -> Table<TableRow> {
+    let tx = database.new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<Table<TableRow>>>("encrypted_rows")
+        .await
+        .unwrap();
+    encrypted.open("pass").unwrap();
+    let table = encrypted.inner().await.unwrap();
+    assert!(table.delete("amber").await.unwrap());
+    table.set("cobalt", TableRow { value: 100 }).await.unwrap();
+    table.set("new-row", TableRow { value: 200 }).await.unwrap();
+    table
+}
+
+async fn scan_pages(
+    table: &Table<TableRow>,
+    limit: usize,
+) -> Vec<eidetica::store::TablePage<TableRow>> {
+    scan_pages_after(table, None, limit).await
+}
+
+async fn scan_pages_after(
+    table: &Table<TableRow>,
+    mut cursor: Option<eidetica::store::TableCursor>,
+    limit: usize,
+) -> Vec<eidetica::store::TablePage<TableRow>> {
+    let mut pages = Vec::new();
+    loop {
+        let page = table.scan_page(cursor.as_ref(), limit).await.unwrap();
+        cursor = page.next.clone();
+        pages.push(page);
+        if cursor.is_none() {
+            return pages;
+        }
+    }
+}
+
+/// Encrypted cursors always describe physical-key order, including when a
+/// record-capable backend becomes unavailable between pages.
+#[tokio::test]
+async fn encrypted_table_history_fallback_preserves_physical_pagination() {
+    let _guard = ENCRYPTED_FALLBACK_TEST.lock().await;
+    let state = Arc::new(StaleThenUnsupported {
+        phase: AtomicU8::new(0),
+        get: AtomicU8::new(0),
+        scan: AtomicU8::new(0),
+    });
+    let (instance, _admin) = Instance::create_backend(
+        Box::new(Recordless(InMemory::new(), Some(state.clone()))),
+        NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let (private_key, _) = generate_keypair();
+    let database = Database::create(&instance, private_key, Doc::new())
+        .await
+        .unwrap();
+
+    let tx = database.new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<Table<TableRow>>>("encrypted_rows")
+        .await
+        .unwrap();
+    encrypted.initialize("pass", Doc::new()).await.unwrap();
+    let table = encrypted.inner().await.unwrap();
+    for (index, key) in [
+        "amber", "bronze", "cobalt", "denim", "emerald", "fuchsia", "gold", "hazel", "indigo",
+        "jade", "khaki", "lilac",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        table
+            .set(
+                key,
+                TableRow {
+                    value: index as u32,
+                },
+            )
+            .await
+            .unwrap();
+    }
+    tx.commit().await.unwrap();
+    let database = Database::open(&instance, database.root_id())
+        .await
+        .unwrap()
+        .allow_unverified();
+
+    let cached = scan_pages(&encrypted_table_with_overlays(&database).await, 3).await;
+    let cached_keys = cached
+        .iter()
+        .flat_map(|page| page.rows.iter().map(|(key, _)| key.clone()))
+        .collect::<Vec<_>>();
+    let mut logical_keys = cached_keys.clone();
+    logical_keys.sort();
+    assert_ne!(
+        cached_keys, logical_keys,
+        "fixture must distinguish physical and logical order"
+    );
+
+    state.phase.store(0, Ordering::SeqCst);
+    let history_table = encrypted_table_with_overlays(&database).await;
+    state.scan.store(0, Ordering::SeqCst);
+    state.phase.store(2, Ordering::SeqCst);
+    let historical = scan_pages(&history_table, 3).await;
+    assert_eq!(
+        historical, cached,
+        "cache and history must return identical pages and cursors"
+    );
+
+    state.phase.store(0, Ordering::SeqCst);
+    let cached_then_history = encrypted_table_with_overlays(&database).await;
+    let first = cached_then_history.scan_page(None, 3).await.unwrap();
+    assert_eq!(first, cached[0]);
+    state.scan.store(0, Ordering::SeqCst);
+    state.phase.store(2, Ordering::SeqCst);
+    assert_eq!(
+        scan_pages_after(&cached_then_history, first.next, 3).await,
+        cached[1..],
+        "a cached cursor must continue through all remaining history pages"
+    );
+
+    state.phase.store(0, Ordering::SeqCst);
+    let history_then_cached = encrypted_table_with_overlays(&database).await;
+    state.scan.store(0, Ordering::SeqCst);
+    state.phase.store(2, Ordering::SeqCst);
+    let first = history_then_cached.scan_page(None, 3).await.unwrap();
+    assert_eq!(first, cached[0]);
+    state.phase.store(3, Ordering::SeqCst);
+    assert_eq!(
+        scan_pages_after(&history_then_cached, first.next, 3).await,
+        cached[1..],
+        "a history cursor must continue through all remaining cached pages"
     );
 }

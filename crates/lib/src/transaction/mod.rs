@@ -124,6 +124,22 @@ pub(crate) trait Encryptor: Send + Sync {
     /// # Returns
     /// Encrypted data in implementation-defined format
     fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>>;
+
+    fn physical_record_key(&self, logical_key: &[u8]) -> Result<Vec<u8>> {
+        Ok(logical_key.to_vec())
+    }
+
+    fn encrypt_record(&self, _logical_key: &[u8], plaintext: &[u8]) -> Result<Vec<u8>> {
+        self.encrypt(plaintext)
+    }
+
+    fn decrypt_record(&self, physical_key: &[u8], ciphertext: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
+        Ok((physical_key.to_vec(), self.decrypt(ciphertext)?))
+    }
+
+    fn projection_descriptor(&self, descriptor: ProjectionDescriptor) -> ProjectionDescriptor {
+        descriptor
+    }
 }
 
 /// Metadata structure for entries
@@ -179,6 +195,7 @@ pub struct Transaction {
     /// `_index` updates — bypass `get_store` and remain unaffected.
     system_subtrees_locked: Arc<AtomicBool>,
     record_mutations: Arc<Mutex<HashMap<String, RecordMutations>>>,
+    logical_record_mutations: Arc<Mutex<HashMap<String, RecordMutations>>>,
     record_views: Arc<Mutex<HashMap<String, RecordView>>>,
 }
 
@@ -247,6 +264,7 @@ impl Transaction {
             encryptors: Arc::new(Mutex::new(HashMap::new())),
             system_subtrees_locked: Arc::new(AtomicBool::new(false)),
             record_mutations: Arc::new(Mutex::new(HashMap::new())),
+            logical_record_mutations: Arc::new(Mutex::new(HashMap::new())),
             record_views: Arc::new(Mutex::new(HashMap::new())),
         })
     }
@@ -343,6 +361,31 @@ impl Transaction {
             .unwrap()
             .insert(subtree.into(), encryptor);
         Ok(())
+    }
+
+    fn physical_record_key(&self, store: &str, logical_key: &[u8]) -> Result<Vec<u8>> {
+        self.encryptors.lock().unwrap().get(store).map_or_else(
+            || Ok(logical_key.to_vec()),
+            |encryptor| encryptor.physical_record_key(logical_key),
+        )
+    }
+
+    fn encrypt_record(&self, store: &str, logical_key: &[u8], value: &[u8]) -> Result<Vec<u8>> {
+        self.encryptors.lock().unwrap().get(store).map_or_else(
+            || Ok(value.to_vec()),
+            |encryptor| encryptor.encrypt_record(logical_key, value),
+        )
+    }
+
+    fn decrypt_record(&self, store: &str, key: &[u8], value: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
+        self.encryptors.lock().unwrap().get(store).map_or_else(
+            || Ok((key.to_vec(), value.to_vec())),
+            |encryptor| encryptor.decrypt_record(key, value),
+        )
+    }
+
+    pub(crate) fn database_id(&self) -> &ID {
+        self.db.root_id()
     }
 
     /// Decrypt bytes if an encryptor is registered, otherwise return them unchanged.
@@ -546,10 +589,30 @@ impl Transaction {
         let Some(key) = projection.normalize_record_key(&key)? else {
             return Ok(());
         };
+        let conflicting_keys = {
+            let mut staged = self.logical_record_mutations.lock().unwrap();
+            let mutations = staged.entry(store.to_string()).or_default();
+            let conflicting_keys = mutations
+                .keys()
+                .filter(|staged_key| projection.staged_keys_conflict(staged_key, &key))
+                .cloned()
+                .collect::<Vec<_>>();
+            mutations.retain(|staged_key, _| !conflicting_keys.contains(staged_key));
+            mutations.insert(key.clone(), value.clone());
+            conflicting_keys
+        };
+        let physical_key = self.physical_record_key(store, &key)?;
+        let conflicting_physical_keys = conflicting_keys
+            .iter()
+            .map(|key| self.physical_record_key(store, key))
+            .collect::<Result<Vec<_>>>()?;
+        let value = value
+            .map(|value| self.encrypt_record(store, &key, &value))
+            .transpose()?;
         let mut record_mutations = self.record_mutations.lock().unwrap();
         let mutations = record_mutations.entry(store.to_string()).or_default();
-        mutations.retain(|staged_key, _| !projection.staged_keys_conflict(staged_key, &key));
-        mutations.insert(key, value);
+        mutations.retain(|staged_key, _| !conflicting_physical_keys.contains(staged_key));
+        mutations.insert(physical_key, value);
         Ok(())
     }
 
@@ -562,7 +625,7 @@ impl Transaction {
         let Some(key) = projection.normalize_record_key(key)? else {
             return Ok(None);
         };
-        if let Some(mutations) = self.record_mutations.lock().unwrap().get(store) {
+        if let Some(mutations) = self.logical_record_mutations.lock().unwrap().get(store) {
             if let Some(value) = mutations.get(&key) {
                 return Ok(value.clone());
             }
@@ -573,35 +636,49 @@ impl Transaction {
                 return Ok(None);
             }
         }
-        if self.encryptors.lock().unwrap().contains_key(store) {
-            return self.record_get_from_history(store, &key).await;
-        }
+        let physical_key = self.physical_record_key(store, &key)?;
         let view = match self.record_view(store, projection).await {
             Err(err) if err.is_unsupported_store_state() => {
                 return self.record_get_from_history(store, &key).await;
             }
             result => result?,
         };
-        match self.db.ops().store_state_record_get(&view, &key).await {
+        match self
+            .db
+            .ops()
+            .store_state_record_get(&view, &physical_key)
+            .await
+        {
             Err(err) if err.is_unsupported_store_state() => {
                 self.record_get_from_history(store, &key).await
             }
             Err(err) if err.is_invalid_store_state_view() => {
                 self.record_views.lock().unwrap().remove(store);
-                match self.record_view(store, projection).await {
+                let view = match self.record_view(store, projection).await {
+                    Err(err) if err.is_unsupported_store_state() => {
+                        return self.record_get_from_history(store, &key).await;
+                    }
+                    result => result?,
+                };
+                match self
+                    .db
+                    .ops()
+                    .store_state_record_get(&view, &physical_key)
+                    .await
+                {
                     Err(err) if err.is_unsupported_store_state() => {
                         self.record_get_from_history(store, &key).await
                     }
-                    Ok(view) => match self.db.ops().store_state_record_get(&view, &key).await {
-                        Err(err) if err.is_unsupported_store_state() => {
-                            self.record_get_from_history(store, &key).await
-                        }
-                        result => result,
-                    },
-                    Err(err) => Err(err),
+                    result => result?.map_or(Ok(None), |value| {
+                        self.decrypt_record(store, &physical_key, &value)
+                            .map(|(_, value)| Some(value))
+                    }),
                 }
             }
-            result => result,
+            result => result?.map_or(Ok(None), |value| {
+                self.decrypt_record(store, &physical_key, &value)
+                    .map(|(_, value)| Some(value))
+            }),
         }
     }
 
@@ -615,7 +692,7 @@ impl Transaction {
             return Ok(false);
         };
         Ok(self
-            .record_mutations
+            .logical_record_mutations
             .lock()
             .unwrap()
             .get(store)
@@ -636,11 +713,6 @@ impl Transaction {
         if limit == 0 {
             return Ok(crate::backend::RecordPage::default());
         }
-        if self.encryptors.lock().unwrap().contains_key(store) {
-            return self
-                .record_scan_from_history(store, projection, after, limit)
-                .await;
-        }
         let view = match self.record_view(store, projection).await {
             Err(err) if err.is_unsupported_store_state() => {
                 return self
@@ -649,6 +721,13 @@ impl Transaction {
             }
             result => result?,
         };
+        let logical_mutations = self
+            .logical_record_mutations
+            .lock()
+            .unwrap()
+            .get(store)
+            .cloned()
+            .unwrap_or_default();
         let mutations = self
             .record_mutations
             .lock()
@@ -656,10 +735,16 @@ impl Transaction {
             .get(store)
             .cloned()
             .unwrap_or_default();
-        let mut merged = BTreeMap::new();
+        let mut merged = mutations
+            .iter()
+            .filter(|(key, value)| {
+                value.is_some() && after.is_none_or(|after| key.as_slice() > after)
+            })
+            .map(|(key, value)| (key.clone(), value.clone().unwrap()))
+            .collect::<BTreeMap<_, _>>();
         let mut backend_after = after.map(ToOwned::to_owned);
         let mut backend_has_more = true;
-        while backend_has_more && merged.len() <= limit {
+        while backend_has_more {
             let page = match self
                 .db
                 .ops()
@@ -707,36 +792,23 @@ impl Transaction {
                 }
                 result => result?,
             };
-            merged.extend(page.records.into_iter().filter(|(cached_key, _)| {
-                !mutations
-                    .keys()
-                    .any(|staged_key| projection.staged_key_shadows_cached(staged_key, cached_key))
-            }));
-            backend_after = page.next;
-            backend_has_more = backend_after.is_some();
-            for (key, value) in &mutations {
-                if after.is_none_or(|after| key.as_slice() > after) {
-                    match value {
-                        Some(value) => {
-                            merged.insert(key.clone(), value.clone());
-                        }
-                        None => {
-                            merged.remove(key);
-                        }
-                    }
+            for (physical_key, value) in page.records {
+                let (logical_key, _) = self.decrypt_record(store, &physical_key, &value)?;
+                if !logical_mutations.keys().any(|staged_key| {
+                    projection.staged_key_shadows_cached(staged_key, &logical_key)
+                }) {
+                    merged.insert(physical_key, value);
                 }
             }
-        }
-        for (key, value) in mutations {
-            if after.is_none_or(|after| key.as_slice() > after) {
-                match value {
-                    Some(value) => {
-                        merged.insert(key, value);
-                    }
-                    None => {
-                        merged.remove(&key);
-                    }
-                }
+            backend_after = page.next;
+            backend_has_more = backend_after.is_some();
+            let backend_reached_page_end = merged.keys().nth(limit).is_some_and(|page_end| {
+                backend_after
+                    .as_ref()
+                    .is_some_and(|backend_after| backend_after >= page_end)
+            });
+            if backend_reached_page_end {
+                break;
             }
         }
         let mut records = merged
@@ -746,6 +818,9 @@ impl Transaction {
         let has_more = records.len() > limit || backend_has_more;
         records.truncate(limit);
         let next = has_more.then(|| records.last().unwrap().0.clone());
+        for (key, value) in &mut records {
+            (*key, *value) = self.decrypt_record(store, key, value)?;
+        }
         Ok(crate::backend::RecordPage { records, next })
     }
 
@@ -773,7 +848,7 @@ impl Transaction {
         let mut projected = RecordMutations::new();
         projection.project_delta(&state, &mut projected)?;
         let mutations = self
-            .record_mutations
+            .logical_record_mutations
             .lock()
             .unwrap()
             .get(store)
@@ -800,13 +875,93 @@ impl Transaction {
         }
         let mut records = records
             .into_iter()
-            .filter(|(key, _)| after.is_none_or(|after| key.as_slice() > after))
+            .map(|(logical_key, value)| {
+                Ok((
+                    self.physical_record_key(store, &logical_key)?,
+                    (logical_key, value),
+                ))
+            })
+            .collect::<Result<BTreeMap<_, _>>>()?
+            .into_iter()
+            .filter(|(physical_key, _)| after.is_none_or(|after| physical_key.as_slice() > after))
             .take(limit.saturating_add(1))
             .collect::<Vec<_>>();
         let has_more = records.len() > limit;
         records.truncate(limit);
         let next = has_more.then(|| records.last().unwrap().0.clone());
+        let records = records
+            .into_iter()
+            .map(|(_, (logical_key, value))| (logical_key, value))
+            .collect();
         Ok(crate::backend::RecordPage { records, next })
+    }
+
+    fn encrypted_projection_descriptor(
+        &self,
+        store: &str,
+        descriptor: ProjectionDescriptor,
+    ) -> ProjectionDescriptor {
+        self.encryptors
+            .lock()
+            .unwrap()
+            .get(store)
+            .map_or(descriptor.clone(), |encryptor| {
+                encryptor.projection_descriptor(descriptor)
+            })
+    }
+
+    async fn publish_record_view(
+        &self,
+        store: &str,
+        projection: &dyn RecordProjection<Doc>,
+        request: crate::backend::StoreStateRequest,
+        entries: &[Entry],
+    ) -> Result<RecordView> {
+        if !self.encryptors.lock().unwrap().contains_key(store) {
+            return state::publish_records(
+                self.db.ops(),
+                request,
+                entries
+                    .iter()
+                    .filter_map(|entry| entry.data(store).ok().map(|bytes| bytes.as_slice())),
+                projection,
+            )
+            .await;
+        }
+
+        let token = self.db.ops().begin_store_state_staging(request).await?;
+        let result = async {
+            let mut logical = RecordMutations::new();
+            for entry in entries {
+                if let Ok(bytes) = entry.data(store) {
+                    let plaintext = self.decrypt_if_needed(store, bytes)?;
+                    let delta: Doc = serde_json::from_slice(&plaintext)?;
+                    projection.project_delta(&delta, &mut logical)?;
+                }
+            }
+            logical.retain(|_, value| value.is_some());
+            let mut physical = RecordMutations::new();
+            for (key, value) in logical {
+                if let Some(value) = value {
+                    physical.insert(
+                        self.physical_record_key(store, &key)?,
+                        Some(self.encrypt_record(store, &key, &value)?),
+                    );
+                }
+            }
+            if !physical.is_empty() {
+                self.db
+                    .ops()
+                    .stage_store_state_records(&token, physical)
+                    .await?;
+            }
+            self.db.ops().publish_store_state(token.clone()).await
+        }
+        .await;
+        if result.is_err() {
+            let _ = self.db.ops().abort_store_state(token).await;
+        }
+        result
     }
 
     async fn record_view(
@@ -827,10 +982,11 @@ impl Transaction {
             .subtree_parents(store)
             .unwrap_or_default();
         let source_key = create_merge_cache_id(&parents).to_string().into_bytes();
+        let descriptor = self.encrypted_projection_descriptor(store, projection.descriptor());
         let request = state::records_request(
             self.db.root_id(),
             store,
-            projection.descriptor(),
+            descriptor,
             source_key,
             crate::backend::CacheScope::Shared,
         );
@@ -843,15 +999,8 @@ impl Transaction {
                 .ops()
                 .store_at(self.db.root_id(), store, &boundary)
                 .await?;
-            state::publish_records(
-                self.db.ops(),
-                request,
-                entries
-                    .iter()
-                    .filter_map(|entry| entry.data(store).ok().map(|bytes| bytes.as_slice())),
-                projection,
-            )
-            .await?
+            self.publish_record_view(store, projection, request, &entries)
+                .await?
         };
         self.record_views
             .lock()
@@ -1356,7 +1505,7 @@ impl Transaction {
     /// A `Result<ID>` containing the ID of the committed entry.
     pub async fn commit(self) -> Result<ID> {
         {
-            let staged = self.record_mutations.lock().unwrap().clone();
+            let staged = self.logical_record_mutations.lock().unwrap().clone();
             for (store, mutations) in staged {
                 let delta = crate::store::table::encode_entry_delta(&mutations)?;
                 self.update_subtree(store, serde_json::to_vec(&delta)?)

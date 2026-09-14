@@ -4,7 +4,7 @@
 //! encryption/decryption, DocStore integration, and Table integration.
 
 use eidetica::{
-    Registered,
+    Registered, Store,
     crdt::{Doc, doc::Value},
     store::{DocStore, PasswordStore, Table},
 };
@@ -416,6 +416,266 @@ async fn test_password_store_docstore_delete() {
 struct PasswordTestRecord {
     name: String,
     value: i32,
+}
+
+#[tokio::test]
+async fn test_password_table_uses_lazy_encrypted_record_cache() {
+    let (instance, database, _key) = setup_tree_with_user_key_local().await;
+    let tx = database.new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<Table<PasswordTestRecord>>>("lazy_records")
+        .await
+        .unwrap();
+    encrypted.initialize("pass", Doc::new()).await.unwrap();
+    let table = encrypted.inner().await.unwrap();
+    for (key, value) in [("a", 1), ("b", 2)] {
+        table
+            .set(
+                key,
+                PasswordTestRecord {
+                    name: key.to_string(),
+                    value,
+                },
+            )
+            .await
+            .unwrap();
+    }
+    tx.commit().await.unwrap();
+
+    let engine = instance.backend().local_engine().unwrap();
+    let memory = engine
+        .as_any()
+        .downcast_ref::<eidetica::backend::database::InMemory>()
+        .unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let before_load = memory.store_state_read_counts();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<Table<PasswordTestRecord>>>("lazy_records")
+        .await
+        .unwrap();
+    encrypted.open("pass").unwrap();
+    let table = encrypted.inner().await.unwrap();
+    let after_load = memory.store_state_read_counts();
+    assert_eq!(after_load.1, before_load.1);
+
+    assert_eq!(table.get("a").await.unwrap().value, 1);
+    assert_eq!(
+        memory.store_state_record_count(database.root_id(), "lazy_records"),
+        2
+    );
+    let after_get = memory.store_state_read_counts();
+    assert_eq!(after_get, (after_load.0 + 1, after_load.1));
+
+    assert_eq!(table.scan_page(None, 1).await.unwrap().rows.len(), 1);
+    let after_scan = memory.store_state_read_counts();
+    assert_eq!(after_scan.0, after_get.0);
+    assert!(after_scan.1 > after_get.1);
+    assert!(after_scan.1 <= after_get.1 + 4);
+
+    assert_eq!(
+        PasswordStore::<Table<PasswordTestRecord>>::state_model()
+            .descriptor()
+            .name,
+        "eidetica/password/eidetica/table/rows"
+    );
+    let records = memory
+        .store_state_records(database.root_id(), "lazy_records")
+        .unwrap();
+    assert_eq!(records.len(), 2);
+    for (physical_key, ciphertext) in records {
+        let ciphertext = ciphertext.unwrap();
+        assert_eq!(physical_key.len(), 32);
+        assert_ne!(physical_key.as_slice(), b"a");
+        assert_ne!(physical_key.as_slice(), b"b");
+        for plaintext in [b"\"name\":\"a\"".as_slice(), b"\"name\":\"b\""] {
+            assert!(
+                !ciphertext
+                    .windows(plaintext.len())
+                    .any(|bytes| bytes == plaintext)
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_password_table_staged_parent_child_conflicts() {
+    let (_instance, database) = setup_tree().await;
+    let tx = database.new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<Table<PasswordTestRecord>>>("path_records")
+        .await
+        .unwrap();
+    encrypted.initialize("pass", Doc::new()).await.unwrap();
+    let table = encrypted.inner().await.unwrap();
+    table
+        .set(
+            "a.b",
+            PasswordTestRecord {
+                name: "child".to_string(),
+                value: 1,
+            },
+        )
+        .await
+        .unwrap();
+    table
+        .set(
+            "a",
+            PasswordTestRecord {
+                name: "parent".to_string(),
+                value: 2,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(table.get("a.b").await.is_err());
+    assert_eq!(table.get("a").await.unwrap().value, 2);
+    tx.commit().await.unwrap();
+
+    let tx = database.new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<Table<PasswordTestRecord>>>("path_records")
+        .await
+        .unwrap();
+    encrypted.open("pass").unwrap();
+    let table = encrypted.inner().await.unwrap();
+    assert!(table.get("a.b").await.is_err());
+    assert_eq!(table.get("a").await.unwrap().value, 2);
+}
+
+#[tokio::test]
+async fn test_password_table_scan_is_deterministic_in_physical_key_order() {
+    let ctx = TestContext::new().with_database().await;
+    let database = ctx.database();
+    let tx = database.new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<Table<PasswordTestRecord>>>("scan_records")
+        .await
+        .unwrap();
+    encrypted.initialize("pass", Doc::new()).await.unwrap();
+    let table = encrypted.inner().await.unwrap();
+    for (key, value) in [("logical-c", 3), ("logical-a", 1), ("logical-b", 2)] {
+        table
+            .set(
+                key,
+                PasswordTestRecord {
+                    name: key.to_string(),
+                    value,
+                },
+            )
+            .await
+            .unwrap();
+    }
+    tx.commit().await.unwrap();
+
+    async fn scan(database: &eidetica::Database) -> Vec<String> {
+        let tx = database.new_transaction().await.unwrap();
+        let mut encrypted = tx
+            .get_store::<PasswordStore<Table<PasswordTestRecord>>>("scan_records")
+            .await
+            .unwrap();
+        encrypted.open("pass").unwrap();
+        let table = encrypted.inner().await.unwrap();
+        let mut cursor = None;
+        let mut keys = Vec::new();
+        loop {
+            let page = table.scan_page(cursor.as_ref(), 1).await.unwrap();
+            keys.extend(page.rows.into_iter().map(|(key, _)| key));
+            let Some(next) = page.next else {
+                return keys;
+            };
+            cursor = Some(next);
+        }
+    }
+
+    let first = scan(database).await;
+    assert_eq!(first.len(), 3);
+    assert_eq!(scan(database).await, first);
+}
+
+#[tokio::test]
+async fn test_password_table_scan_merges_staged_puts_and_deletes() {
+    let ctx = TestContext::new().with_database().await;
+    let database = ctx.database();
+    let tx = database.new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<Table<PasswordTestRecord>>>("overlay_records")
+        .await
+        .unwrap();
+    encrypted.initialize("pass", Doc::new()).await.unwrap();
+    let table = encrypted.inner().await.unwrap();
+    for (key, value) in [("delete", 1), ("update", 2)] {
+        table
+            .set(
+                key,
+                PasswordTestRecord {
+                    name: key.to_string(),
+                    value,
+                },
+            )
+            .await
+            .unwrap();
+    }
+    tx.commit().await.unwrap();
+
+    let tx = database.new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<Table<PasswordTestRecord>>>("overlay_records")
+        .await
+        .unwrap();
+    encrypted.open("pass").unwrap();
+    let table = encrypted.inner().await.unwrap();
+    assert!(table.delete("delete").await.unwrap());
+    table
+        .set(
+            "update",
+            PasswordTestRecord {
+                name: "updated".to_string(),
+                value: 3,
+            },
+        )
+        .await
+        .unwrap();
+    table
+        .set(
+            "insert",
+            PasswordTestRecord {
+                name: "inserted".to_string(),
+                value: 4,
+            },
+        )
+        .await
+        .unwrap();
+
+    let mut cursor = None;
+    let mut rows = Vec::new();
+    loop {
+        let page = table.scan_page(cursor.as_ref(), 1).await.unwrap();
+        rows.extend(page.rows);
+        let Some(next) = page.next else {
+            break;
+        };
+        cursor = Some(next);
+    }
+    rows.sort_by(|left, right| left.0.cmp(&right.0));
+    assert_eq!(
+        rows,
+        [
+            (
+                "insert".to_string(),
+                PasswordTestRecord {
+                    name: "inserted".to_string(),
+                    value: 4,
+                },
+            ),
+            (
+                "update".to_string(),
+                PasswordTestRecord {
+                    name: "updated".to_string(),
+                    value: 3,
+                },
+            ),
+        ]
+    );
 }
 
 #[tokio::test]

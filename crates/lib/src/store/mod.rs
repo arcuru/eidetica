@@ -39,6 +39,41 @@ pub trait RecordProjection<D: CRDT>: Send + Sync {
     }
 }
 
+struct DescribedProjection<D: CRDT + 'static> {
+    descriptor: ProjectionDescriptor,
+    inner: Arc<dyn RecordProjection<D>>,
+}
+
+impl<D: CRDT + 'static> RecordProjection<D> for DescribedProjection<D> {
+    fn descriptor(&self) -> ProjectionDescriptor {
+        self.descriptor.clone()
+    }
+
+    fn project_delta(&self, delta: &D, out: &mut RecordMutations) -> Result<()> {
+        self.inner.project_delta(delta, out)
+    }
+
+    fn encode_entry_delta(&self, mutations: &RecordMutations) -> Result<D> {
+        self.inner.encode_entry_delta(mutations)
+    }
+
+    fn normalize_record_key(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        self.inner.normalize_record_key(key)
+    }
+
+    fn staged_keys_conflict(&self, left: &[u8], right: &[u8]) -> bool {
+        self.inner.staged_keys_conflict(left, right)
+    }
+
+    fn staged_key_shadows_cached(&self, staged_key: &[u8], cached_key: &[u8]) -> bool {
+        self.inner.staged_key_shadows_cached(staged_key, cached_key)
+    }
+
+    fn staged_key_descends_from(&self, staged_key: &[u8], key: &[u8]) -> bool {
+        self.inner.staged_key_descends_from(staged_key, key)
+    }
+}
+
 pub mod state;
 pub use crate::backend::ProjectionDescriptor;
 pub use state::OPAQUE_STATE_KEY;
@@ -74,6 +109,18 @@ impl<D: CRDT + 'static> StoreStateModel<D> {
         match self {
             Self::Opaque { descriptor, .. } => descriptor.clone(),
             Self::Records(projection) => projection.descriptor(),
+        }
+    }
+
+    pub(crate) fn with_descriptor(self, descriptor: ProjectionDescriptor) -> Self {
+        match self {
+            Self::Opaque { .. } => Self::Opaque {
+                descriptor,
+                data: PhantomData,
+            },
+            Self::Records(inner) => {
+                Self::Records(Arc::new(DescribedProjection { descriptor, inner }))
+            }
         }
     }
 }

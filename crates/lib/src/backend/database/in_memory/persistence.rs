@@ -117,6 +117,8 @@ impl<'de> Deserialize<'de> for InMemory {
             }),
             store_state_point_reads: std::sync::atomic::AtomicUsize::new(0),
             store_state_scan_reads: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(feature = "testing")]
+            store_history_reads: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 }

@@ -4,7 +4,7 @@
 //! text operations, map operations, incremental updates, and external updates.
 
 #[cfg(feature = "y-crdt")]
-use eidetica::store::YDoc;
+use eidetica::store::{PasswordStore, YDoc};
 #[cfg(feature = "y-crdt")]
 use yrs::{GetString, Map as YrsMapTrait, Text, Transact};
 
@@ -211,6 +211,52 @@ async fn test_ydoc_multiple_operations_with_diffs() {
         })
         .await
         .expect("Failed to verify final state");
+}
+
+#[cfg(feature = "y-crdt")]
+#[tokio::test]
+async fn test_password_ydoc_historical_round_trip() {
+    let ctx = TestContext::new().with_database().await;
+    let tx = ctx.database().new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<YDoc>>("encrypted-ydoc")
+        .await
+        .unwrap();
+    encrypted
+        .initialize("password", eidetica::crdt::Doc::new())
+        .await
+        .unwrap();
+    encrypted
+        .inner()
+        .await
+        .unwrap()
+        .with_doc_mut(|doc| {
+            let text = doc.get_or_insert_text("body");
+            text.insert(&mut doc.transact_mut(), 0, "historical secret");
+            Ok(())
+        })
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let tx = ctx.database().new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<YDoc>>("encrypted-ydoc")
+        .await
+        .unwrap();
+    encrypted.open("password").unwrap();
+    encrypted
+        .inner()
+        .await
+        .unwrap()
+        .with_doc(|doc| {
+            let text = doc.get_or_insert_text("body");
+            let txn = doc.transact();
+            assert_eq!(text.get_string(&txn), "historical secret");
+            Ok(())
+        })
+        .await
+        .unwrap();
 }
 
 #[cfg(feature = "y-crdt")]
