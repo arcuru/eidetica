@@ -36,7 +36,7 @@ use aes_gcm::{
 use argon2::{Argon2, Params, password_hash::SaltString};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use base64ct::{Base64, Encoding};
 
@@ -381,21 +381,21 @@ impl PasswordEncryptor {
         f(guard.get().unwrap())
     }
 
-    fn record_key_material(&self) -> Result<[u8; 32]> {
+    fn record_key_material(&self) -> Result<Zeroizing<[u8; 32]>> {
         self.with_key(|master| {
-            Ok(blake3::derive_key(
+            Ok(Zeroizing::new(blake3::derive_key(
                 "eidetica/password-store/record-key/v1",
                 master,
-            ))
+            )))
         })
     }
 
-    fn record_value_material(&self) -> Result<[u8; 32]> {
+    fn record_value_material(&self) -> Result<Zeroizing<[u8; 32]>> {
         self.with_key(|master| {
-            Ok(blake3::derive_key(
+            Ok(Zeroizing::new(blake3::derive_key(
                 "eidetica/password-store/record-value/v1",
                 master,
-            ))
+            )))
         })
     }
 }
@@ -470,20 +470,18 @@ impl Encryptor for PasswordEncryptor {
     }
 
     fn physical_record_key(&self, logical_key: &[u8]) -> Result<Vec<u8>> {
-        Ok(
-            blake3::keyed_hash(&self.record_key_material()?, logical_key)
-                .as_bytes()
-                .to_vec(),
-        )
+        let key = self.record_key_material()?;
+        Ok(blake3::keyed_hash(&key, logical_key).as_bytes().to_vec())
     }
 
     fn encrypt_record(&self, logical_key: &[u8], plaintext: &[u8]) -> Result<Vec<u8>> {
         let key = self.record_value_material()?;
-        let cipher =
-            Aes256Gcm::new_from_slice(&key).map_err(|error| StoreError::ImplementationError {
+        let cipher = Aes256Gcm::new_from_slice(key.as_ref()).map_err(|error| {
+            StoreError::ImplementationError {
                 store: self.subtree_name.clone(),
                 reason: format!("Failed to create record cipher: {error}"),
-            })?;
+            }
+        })?;
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
         let physical_key = self.physical_record_key(logical_key)?;
         let aad = physical_record_aad(&self.store_identity, &physical_key);
@@ -518,11 +516,12 @@ impl Encryptor for PasswordEncryptor {
         }
         let (nonce, ciphertext) = ciphertext.split_at(AES_GCM_NONCE_SIZE);
         let key = self.record_value_material()?;
-        let cipher =
-            Aes256Gcm::new_from_slice(&key).map_err(|error| StoreError::ImplementationError {
+        let cipher = Aes256Gcm::new_from_slice(key.as_ref()).map_err(|error| {
+            StoreError::ImplementationError {
                 store: self.subtree_name.clone(),
                 reason: format!("Failed to create record cipher: {error}"),
-            })?;
+            }
+        })?;
         let aad = physical_record_aad(&self.store_identity, physical_key);
         let plaintext = cipher
             .decrypt(
@@ -1191,19 +1190,19 @@ mod tests {
         let master = first
             .with_key(|key| Ok(<[u8; 32]>::try_from(key).unwrap()))
             .unwrap();
-        assert_ne!(first.record_key_material().unwrap(), master);
-        assert_ne!(first.record_value_material().unwrap(), master);
+        assert_ne!(*first.record_key_material().unwrap(), master);
+        assert_ne!(*first.record_value_material().unwrap(), master);
         assert_ne!(
             first.record_key_material().unwrap(),
             first.record_value_material().unwrap()
         );
         assert_eq!(
-            first.record_key_material().unwrap(),
-            second.record_key_material().unwrap()
+            *first.record_key_material().unwrap(),
+            *second.record_key_material().unwrap()
         );
         assert_eq!(
-            first.record_value_material().unwrap(),
-            second.record_value_material().unwrap()
+            *first.record_value_material().unwrap(),
+            *second.record_value_material().unwrap()
         );
     }
 
