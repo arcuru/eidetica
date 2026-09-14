@@ -26,6 +26,38 @@ pub enum BackendError {
         /// Credential-free description of the storage namespace.
         namespace: String,
     },
+
+    /// Historyless database not found by ID.
+    #[error("Historyless database not found: {id}")]
+    HistorylessDatabaseNotFound {
+        /// The opaque database identifier that was not found.
+        id: ID,
+    },
+
+    /// An entry or historyless database already uses this ID.
+    #[error("Database identifier already exists: {id}")]
+    HistorylessDatabaseAlreadyExists {
+        /// The colliding identifier.
+        id: ID,
+    },
+
+    /// A historyless replacement was based on a stale revision.
+    #[error(
+        "Historyless write conflict for {id}: expected revision {expected}, actual revision {actual}"
+    )]
+    HistorylessWriteConflict {
+        /// The database whose replacement conflicted.
+        id: ID,
+        /// Revision supplied by the writer.
+        expected: u64,
+        /// Current stored revision.
+        actual: u64,
+    },
+
+    /// The backend does not implement authoritative historyless storage.
+    #[error("Historyless databases are not supported by this backend")]
+    HistorylessStorageUnsupported,
+
     /// The backend does not cache Store state as records.
     #[error("Store-state records are not supported by this backend")]
     StoreStateStorageUnsupported,
@@ -53,6 +85,18 @@ pub enum BackendError {
         /// Encoded record size rejected before transmission.
         encoded_bytes: usize,
     },
+
+    /// A historyless read token no longer identifies a pinned revision.
+    #[error("Invalid or expired historyless read snapshot")]
+    InvalidHistorylessReadSnapshot,
+
+    /// A Store was opened with a projection different from its authority.
+    #[error("Historyless Store projection does not match its authoritative namespace")]
+    HistorylessProjectionMismatch,
+
+    #[cfg(feature = "testing")]
+    #[error("Injected historyless commit failure")]
+    HistorylessCommitFaultInjected,
 
     /// Entry not found by ID.
     #[error("Entry not found: {id}")]
@@ -216,9 +260,20 @@ impl BackendError {
         matches!(
             self,
             BackendError::EntryNotFound { .. }
+                | BackendError::HistorylessDatabaseNotFound { .. }
                 | BackendError::VerificationStatusNotFound { .. }
                 | BackendError::PrivateKeyNotFound { .. }
         )
+    }
+
+    /// Check if a historyless mode probe found no matching database.
+    pub fn is_historyless_not_found(&self) -> bool {
+        matches!(self, BackendError::HistorylessDatabaseNotFound { .. })
+    }
+
+    /// Check if this backend has no historyless storage implementation.
+    pub fn is_historyless_unsupported(&self) -> bool {
+        matches!(self, BackendError::HistorylessStorageUnsupported)
     }
 
     /// Check if this error indicates a data integrity issue.
@@ -292,11 +347,14 @@ impl BackendError {
     pub fn entry_id(&self) -> Option<&ID> {
         match self {
             BackendError::EntryNotFound { id }
+            | BackendError::HistorylessDatabaseNotFound { id }
+            | BackendError::HistorylessDatabaseAlreadyExists { id }
             | BackendError::VerificationStatusNotFound { id }
             | BackendError::EntryValidationFailed { entry_id: id, .. }
             | BackendError::CycleDetected { entry_id: id }
             | BackendError::EntryNotInTree { entry_id: id, .. }
             | BackendError::EntryNotInSubtree { entry_id: id, .. } => Some(id),
+            BackendError::HistorylessWriteConflict { id, .. } => Some(id),
             _ => None,
         }
     }

@@ -209,6 +209,50 @@ pub struct InstanceSecrets {
     pub(crate) signing_key: PrivateKey,
 }
 
+/// Local ownership recorded for an authoritative historyless database.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum HistorylessOwner {
+    /// Owned by the embedded instance itself.
+    Instance,
+    /// Owned by an authenticated daemon user.
+    User(String),
+}
+
+/// Catalog metadata for a historyless database.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistorylessMetadata {
+    /// Stable opaque identifier; it is not an entry ID.
+    pub id: ID,
+    /// Local owner of the authoritative state.
+    pub owner: HistorylessOwner,
+    /// Whole-database compare-and-swap revision.
+    pub revision: u64,
+}
+
+/// One pinned authoritative historyless revision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistorylessReadSnapshot {
+    /// Catalog metadata at the instant the pin was acquired.
+    pub metadata: HistorylessMetadata,
+    /// Opaque backend capability resolving every Store at that revision.
+    pub(crate) token: String,
+}
+
+/// Record changes for one Store in an authoritative commit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistorylessStoreMutation {
+    pub projection: ProjectionDescriptor,
+    pub records: RecordMutations,
+}
+
+/// Protocol-v1 compatibility payload. Runtime authority never reads from it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LegacyHistorylessSnapshot {
+    pub metadata: HistorylessMetadata,
+    pub stores: BTreeMap<String, Vec<u8>>,
+}
+
 // Category modules
 pub mod database;
 pub mod errors;
@@ -407,6 +451,87 @@ pub trait BackendImpl: Send + Sync + Any {
     async fn clear_derived_store_state(&self) -> Result<()> {
         Err(BackendError::StoreStateStorageUnsupported.into())
     }
+    /// Atomically create an authoritative historyless database at revision zero.
+    ///
+    /// Implementations must reject identifiers already used by either an entry
+    /// or another historyless database. The default keeps existing custom entry
+    /// backends source-compatible while explicitly declining this capability.
+    async fn create_historyless(
+        &self,
+        _id: &ID,
+        _owner: HistorylessOwner,
+        _stores: BTreeMap<String, HistorylessStoreMutation>,
+    ) -> Result<()> {
+        Err(BackendError::HistorylessStorageUnsupported.into())
+    }
+
+    /// Atomically create revision zero and publish its initial Store records.
+    async fn create_historyless_initialized(
+        &self,
+        id: &ID,
+        owner: HistorylessOwner,
+        stores: BTreeMap<String, HistorylessStoreMutation>,
+    ) -> Result<()> {
+        self.create_historyless(id, owner, stores).await
+    }
+
+    /// Pin the current revision before any Store is opened.
+    async fn begin_historyless_read(&self, _id: &ID) -> Result<HistorylessReadSnapshot> {
+        Err(BackendError::HistorylessStorageUnsupported.into())
+    }
+
+    /// Read one record through a pinned revision.
+    async fn historyless_record_get(
+        &self,
+        _snapshot: &HistorylessReadSnapshot,
+        _store: &str,
+        _key: &[u8],
+    ) -> Result<Option<Vec<u8>>> {
+        Err(BackendError::HistorylessStorageUnsupported.into())
+    }
+
+    /// Read one ordered record page through a pinned revision.
+    async fn historyless_record_scan(
+        &self,
+        _snapshot: &HistorylessReadSnapshot,
+        _store: &str,
+        _range: &RecordRange,
+        _after: Option<&[u8]>,
+        _limit: usize,
+    ) -> Result<RecordPage> {
+        Err(BackendError::HistorylessStorageUnsupported.into())
+    }
+
+    /// Atomically publish all touched Stores when the revision matches.
+    async fn commit_historyless(
+        &self,
+        _id: &ID,
+        _expected_revision: u64,
+        _stores: BTreeMap<String, HistorylessStoreMutation>,
+    ) -> Result<u64> {
+        Err(BackendError::HistorylessStorageUnsupported.into())
+    }
+
+    /// Release a pinned revision. Releasing an unknown token is harmless.
+    async fn release_historyless_read(&self, _snapshot: HistorylessReadSnapshot) -> Result<()> {
+        Ok(())
+    }
+
+    /// Bounded protocol-v1 bridge retained until record paging replaces it.
+    async fn read_historyless_compat(&self, _id: &ID) -> Result<LegacyHistorylessSnapshot> {
+        Err(BackendError::HistorylessStorageUnsupported.into())
+    }
+
+    /// Bounded protocol-v1 bridge retained until chunked record commits replace it.
+    async fn replace_historyless_compat(
+        &self,
+        _id: &ID,
+        _expected_revision: u64,
+        _stores: BTreeMap<String, Vec<u8>>,
+    ) -> Result<u64> {
+        Err(BackendError::HistorylessStorageUnsupported.into())
+    }
+
     /// Retrieves an entry by its unique content-addressable ID.
     ///
     /// # Arguments

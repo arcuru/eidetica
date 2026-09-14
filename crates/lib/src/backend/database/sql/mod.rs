@@ -52,8 +52,9 @@ use sqlx::{AnyPool, Executor};
 use crate::Result;
 use crate::backend::errors::BackendError;
 use crate::backend::{
-    BackendImpl, InstanceMetadata, InstanceSecrets, RecordMutations, RecordPage, RecordRange,
-    RecordView, StagingToken, StoreStateRequest, VerificationStatus,
+    BackendImpl, HistorylessOwner, HistorylessReadSnapshot, HistorylessStoreMutation,
+    InstanceMetadata, InstanceSecrets, LegacyHistorylessSnapshot, RecordMutations, RecordPage,
+    RecordRange, RecordView, StagingToken, StoreStateRequest, VerificationStatus,
 };
 use crate::entry::{Entry, ID};
 use crate::snapshot::Snapshot;
@@ -115,6 +116,8 @@ pub struct SqlxBackend {
     pool: Option<AnyPool>,
     kind: DbKind,
     _owner: Option<StorageOwner>,
+    #[cfg(feature = "testing")]
+    historyless_fail_after_store: std::sync::atomic::AtomicUsize,
     #[cfg(all(feature = "postgres", feature = "testing"))]
     postgres_token: Option<String>,
 }
@@ -284,6 +287,74 @@ impl SqlxBackend {
         self.pool.as_ref().expect("SQL pool must exist until drop")
     }
 
+    #[cfg(feature = "testing")]
+    pub(crate) fn historyless_fail_after_store(&self) -> usize {
+        self.historyless_fail_after_store
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Inject a failure before the selected Store is written by the next
+    /// historyless commit. The hook is available only to the integration test
+    /// feature and does not expose the owned SQL connection.
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub fn testing_fail_historyless_commit_after_store(&self, index: Option<usize>) {
+        self.historyless_fail_after_store.store(
+            index.unwrap_or(usize::MAX),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+
+    /// Prepare this owned database as a schema-v0 fixture.
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub async fn testing_prepare_historyless_v0(&self) -> Result<()> {
+        schema::testing_prepare_historyless_v0(self).await
+    }
+
+    /// Seed one schema-v1 whole-state row and mark the database as v1.
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub async fn testing_seed_historyless_v1(
+        &self,
+        id: &ID,
+        store: &str,
+        state: &[u8],
+        revision: i64,
+    ) -> Result<()> {
+        schema::testing_seed_historyless_v1(self, id, store, state, revision).await
+    }
+
+    /// Run schema initialization through the backend-owned connection.
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub async fn testing_initialize_schema(&self) -> Result<()> {
+        schema::initialize(self).await
+    }
+
+    /// Inspect the narrow SQL state needed by historyless migration and
+    /// rollback tests without handing ownership of the raw pool to callers.
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub async fn testing_historyless_state(
+        &self,
+        id: &ID,
+        store: &str,
+    ) -> Result<SqlHistorylessTestState> {
+        schema::testing_historyless_state(self, id, store).await
+    }
+
+    /// Set an otherwise invalid SQLite revision for corruption tests.
+    #[cfg(all(feature = "sqlite", feature = "testing"))]
+    #[doc(hidden)]
+    pub async fn testing_set_sqlite_historyless_revision(
+        &self,
+        id: &ID,
+        revision: i64,
+    ) -> Result<()> {
+        schema::testing_set_sqlite_historyless_revision(self, id, revision).await
+    }
+
     #[cfg(all(feature = "postgres", feature = "testing"))]
     #[doc(hidden)]
     pub async fn test_postgres_checked_out_connection(
@@ -360,6 +431,20 @@ impl SqlxBackend {
             .as_deref()
             .expect("PostgreSQL backend must hold an ownership token")
     }
+}
+
+/// Narrow SQL observations used by historyless integration tests.
+#[cfg(feature = "testing")]
+#[doc(hidden)]
+#[derive(Debug, PartialEq, Eq)]
+pub struct SqlHistorylessTestState {
+    pub schema_version: i64,
+    pub database_count: i64,
+    pub legacy_store_count: i64,
+    pub revision: Option<i64>,
+    pub projection_name: Option<String>,
+    pub projection_version: Option<i64>,
+    pub record_value: Option<Vec<u8>>,
 }
 
 // Test-only Store-state stage pause hook.
@@ -563,6 +648,8 @@ impl SqlxBackend {
             pool: Some(pool),
             kind: DbKind::Sqlite,
             _owner: storage,
+            #[cfg(feature = "testing")]
+            historyless_fail_after_store: std::sync::atomic::AtomicUsize::new(usize::MAX),
             #[cfg(all(feature = "postgres", feature = "testing"))]
             postgres_token: None,
         };
@@ -767,6 +854,8 @@ impl SqlxBackend {
                 _connection: tokio::sync::Mutex::new(owner),
             }),
             #[cfg(feature = "testing")]
+            historyless_fail_after_store: std::sync::atomic::AtomicUsize::new(usize::MAX),
+            #[cfg(feature = "testing")]
             postgres_token: Some(token),
         };
 
@@ -855,6 +944,61 @@ impl BackendImpl for SqlxBackend {
     async fn clear_derived_store_state(&self) -> Result<()> {
         storage::clear_derived_store_state(self).await
     }
+    async fn create_historyless(
+        &self,
+        id: &ID,
+        owner: HistorylessOwner,
+        stores: std::collections::BTreeMap<String, HistorylessStoreMutation>,
+    ) -> Result<()> {
+        storage::create_historyless(self, id, owner, stores).await
+    }
+
+    async fn begin_historyless_read(&self, id: &ID) -> Result<HistorylessReadSnapshot> {
+        storage::begin_historyless_read(self, id).await
+    }
+
+    async fn historyless_record_get(
+        &self,
+        snapshot: &HistorylessReadSnapshot,
+        store: &str,
+        key: &[u8],
+    ) -> Result<Option<Vec<u8>>> {
+        storage::historyless_record_get(self, snapshot, store, key).await
+    }
+
+    async fn historyless_record_scan(
+        &self,
+        snapshot: &HistorylessReadSnapshot,
+        store: &str,
+        range: &RecordRange,
+        after: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<RecordPage> {
+        storage::historyless_record_scan(self, snapshot, store, range, after, limit).await
+    }
+
+    async fn commit_historyless(
+        &self,
+        id: &ID,
+        expected_revision: u64,
+        stores: std::collections::BTreeMap<String, HistorylessStoreMutation>,
+    ) -> Result<u64> {
+        storage::commit_historyless(self, id, expected_revision, stores).await
+    }
+
+    async fn read_historyless_compat(&self, id: &ID) -> Result<LegacyHistorylessSnapshot> {
+        storage::read_historyless_compat(self, id).await
+    }
+
+    async fn replace_historyless_compat(
+        &self,
+        id: &ID,
+        expected_revision: u64,
+        stores: std::collections::BTreeMap<String, Vec<u8>>,
+    ) -> Result<u64> {
+        storage::replace_historyless_compat(self, id, expected_revision, stores).await
+    }
+
     async fn get(&self, id: &ID) -> Result<Entry> {
         storage::get(self, id).await
     }

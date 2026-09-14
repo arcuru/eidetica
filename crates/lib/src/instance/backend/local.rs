@@ -1,6 +1,6 @@
 //! [`LocalBackend`]: the seam backed by a concrete in-process storage engine.
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use async_trait::async_trait;
 
@@ -8,8 +8,9 @@ use super::{Backend, MergeSlice};
 use crate::{
     Result,
     backend::{
-        BackendImpl, InstanceMetadata, RecordMutations, RecordPage, RecordRange, RecordView,
-        StagingToken, StoreStateRequest, VerificationStatus,
+        BackendImpl, HistorylessOwner, HistorylessReadSnapshot, HistorylessStoreMutation,
+        InstanceMetadata, LegacyHistorylessSnapshot, RecordMutations, RecordPage, RecordRange,
+        RecordView, StagingToken, StoreStateRequest, VerificationStatus,
     },
     entry::{Entry, ID},
     instance::WriteSource,
@@ -79,6 +80,82 @@ impl Backend for LocalBackend {
     async fn clear_derived_store_state(&self) -> Result<()> {
         self.0.clear_derived_store_state().await
     }
+    async fn create_historyless(
+        &self,
+        id: &ID,
+        owner: HistorylessOwner,
+        stores: BTreeMap<String, HistorylessStoreMutation>,
+    ) -> Result<()> {
+        self.0.create_historyless(id, owner, stores).await
+    }
+
+    async fn create_historyless_initialized(
+        &self,
+        id: &ID,
+        owner: HistorylessOwner,
+        stores: BTreeMap<String, HistorylessStoreMutation>,
+    ) -> Result<()> {
+        self.0
+            .create_historyless_initialized(id, owner, stores)
+            .await
+    }
+
+    async fn begin_historyless_read(&self, id: &ID) -> Result<HistorylessReadSnapshot> {
+        self.0.begin_historyless_read(id).await
+    }
+
+    async fn historyless_record_get(
+        &self,
+        snapshot: &HistorylessReadSnapshot,
+        store: &str,
+        key: &[u8],
+    ) -> Result<Option<Vec<u8>>> {
+        self.0.historyless_record_get(snapshot, store, key).await
+    }
+
+    async fn historyless_record_scan(
+        &self,
+        snapshot: &HistorylessReadSnapshot,
+        store: &str,
+        range: &RecordRange,
+        after: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<RecordPage> {
+        self.0
+            .historyless_record_scan(snapshot, store, range, after, limit)
+            .await
+    }
+
+    async fn commit_historyless(
+        &self,
+        id: &ID,
+        expected_revision: u64,
+        stores: BTreeMap<String, HistorylessStoreMutation>,
+    ) -> Result<u64> {
+        self.0
+            .commit_historyless(id, expected_revision, stores)
+            .await
+    }
+
+    async fn release_historyless_read(&self, snapshot: HistorylessReadSnapshot) -> Result<()> {
+        self.0.release_historyless_read(snapshot).await
+    }
+
+    async fn read_historyless_compat(&self, id: &ID) -> Result<LegacyHistorylessSnapshot> {
+        self.0.read_historyless_compat(id).await
+    }
+
+    async fn replace_historyless_compat(
+        &self,
+        id: &ID,
+        expected_revision: u64,
+        stores: BTreeMap<String, Vec<u8>>,
+    ) -> Result<u64> {
+        self.0
+            .replace_historyless_compat(id, expected_revision, stores)
+            .await
+    }
+
     async fn get(&self, id: &ID) -> Result<Entry> {
         self.0.get(id).await
     }
