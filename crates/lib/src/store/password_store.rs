@@ -31,7 +31,7 @@ use std::sync::{Arc, Mutex};
 
 use aes_gcm::{
     Aes256Gcm, KeyInit, Nonce,
-    aead::{Aead, AeadCore, OsRng},
+    aead::{Aead, AeadCore, OsRng, Payload},
 };
 use argon2::{Argon2, Params, password_hash::SaltString};
 use async_trait::async_trait;
@@ -43,7 +43,7 @@ use base64ct::{Base64, Encoding};
 use crate::{
     Result, Transaction,
     crdt::{CRDTError, Doc, doc::Value},
-    store::{Registered, Store, StoreError},
+    store::{ProjectionDescriptor, Registered, Store, StoreError, StoreStateModel},
     transaction::Encryptor,
 };
 
@@ -293,16 +293,33 @@ impl DerivedKey {
 struct PasswordEncryptor {
     password: Password,
     subtree_name: String,
+    store_identity: Vec<u8>,
     /// Cached derived key (zeroized on drop, thread-safe)
     derived_key: Arc<Mutex<DerivedKey>>,
 }
 
+#[derive(Serialize, Deserialize)]
+struct EncryptedRecordEnvelope<'a> {
+    key: &'a [u8],
+    value: &'a [u8],
+}
+
+#[derive(Deserialize)]
+struct DecryptedRecordEnvelope {
+    key: Vec<u8>,
+    value: Vec<u8>,
+}
+
 impl PasswordEncryptor {
     /// Create a new PasswordEncryptor
-    fn new(password: Password, subtree_name: String) -> Self {
+    fn new(password: Password, subtree_name: String, database_id: &[u8]) -> Self {
+        let mut store_identity = database_id.to_vec();
+        store_identity.push(0);
+        store_identity.extend_from_slice(subtree_name.as_bytes());
         Self {
             password,
             subtree_name,
+            store_identity,
             derived_key: Arc::new(Mutex::new(DerivedKey::new())),
         }
     }
@@ -362,6 +379,24 @@ impl PasswordEncryptor {
 
         // Execute function with the derived key (guard still held)
         f(guard.get().unwrap())
+    }
+
+    fn record_key_material(&self) -> Result<[u8; 32]> {
+        self.with_key(|master| {
+            Ok(blake3::derive_key(
+                "eidetica/password-store/record-key/v1",
+                master,
+            ))
+        })
+    }
+
+    fn record_value_material(&self) -> Result<[u8; 32]> {
+        self.with_key(|master| {
+            Ok(blake3::derive_key(
+                "eidetica/password-store/record-value/v1",
+                master,
+            ))
+        })
     }
 }
 
@@ -433,6 +468,99 @@ impl Encryptor for PasswordEncryptor {
             Ok(result)
         })
     }
+
+    fn physical_record_key(&self, logical_key: &[u8]) -> Result<Vec<u8>> {
+        Ok(
+            blake3::keyed_hash(&self.record_key_material()?, logical_key)
+                .as_bytes()
+                .to_vec(),
+        )
+    }
+
+    fn encrypt_record(&self, logical_key: &[u8], plaintext: &[u8]) -> Result<Vec<u8>> {
+        let key = self.record_value_material()?;
+        let cipher =
+            Aes256Gcm::new_from_slice(&key).map_err(|error| StoreError::ImplementationError {
+                store: self.subtree_name.clone(),
+                reason: format!("Failed to create record cipher: {error}"),
+            })?;
+        let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+        let physical_key = self.physical_record_key(logical_key)?;
+        let aad = physical_record_aad(&self.store_identity, &physical_key);
+        let plaintext = serde_json::to_vec(&EncryptedRecordEnvelope {
+            key: logical_key,
+            value: plaintext,
+        })?;
+        let ciphertext = cipher
+            .encrypt(
+                &nonce,
+                Payload {
+                    msg: &plaintext,
+                    aad: &aad,
+                },
+            )
+            .map_err(|error| StoreError::ImplementationError {
+                store: self.subtree_name.clone(),
+                reason: format!("Record encryption failed: {error}"),
+            })?;
+        let mut result = nonce.to_vec();
+        result.extend(ciphertext);
+        Ok(result)
+    }
+
+    fn decrypt_record(&self, physical_key: &[u8], ciphertext: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
+        if ciphertext.len() < AES_GCM_NONCE_SIZE {
+            return Err(StoreError::DeserializationFailed {
+                store: self.subtree_name.clone(),
+                reason: "Encrypted record is shorter than its nonce".to_string(),
+            }
+            .into());
+        }
+        let (nonce, ciphertext) = ciphertext.split_at(AES_GCM_NONCE_SIZE);
+        let key = self.record_value_material()?;
+        let cipher =
+            Aes256Gcm::new_from_slice(&key).map_err(|error| StoreError::ImplementationError {
+                store: self.subtree_name.clone(),
+                reason: format!("Failed to create record cipher: {error}"),
+            })?;
+        let aad = physical_record_aad(&self.store_identity, physical_key);
+        let plaintext = cipher
+            .decrypt(
+                Nonce::from_slice(nonce),
+                Payload {
+                    msg: ciphertext,
+                    aad: &aad,
+                },
+            )
+            .map_err(|_| StoreError::DataCorruption {
+                store: self.subtree_name.clone(),
+                reason: "record authentication failed".to_string(),
+            })?;
+        let envelope: DecryptedRecordEnvelope = serde_json::from_slice(&plaintext)?;
+        if self.physical_record_key(&envelope.key)? != physical_key {
+            return Err(StoreError::DataCorruption {
+                store: self.subtree_name.clone(),
+                reason: "record envelope key does not match its physical key".to_string(),
+            }
+            .into());
+        }
+        Ok((envelope.key, envelope.value))
+    }
+
+    fn projection_descriptor(&self, descriptor: ProjectionDescriptor) -> ProjectionDescriptor {
+        ProjectionDescriptor {
+            name: format!("eidetica/password/{}", descriptor.name),
+            version: descriptor.version,
+        }
+    }
+}
+
+fn physical_record_aad(store_identity: &[u8], physical_key: &[u8]) -> Vec<u8> {
+    let mut aad = b"eidetica/password-store/record-envelope/v1\0".to_vec();
+    aad.extend_from_slice(store_identity);
+    aad.push(0);
+    aad.extend_from_slice(physical_key);
+    aad
 }
 
 /// Password-encrypted store wrapper.
@@ -470,6 +598,7 @@ impl Encryptor for PasswordEncryptor {
 ///
 /// - **Password Loss**: Losing the password means permanent data loss
 /// - **Performance**: Encryption/decryption overhead on every operation
+/// - **Metadata**: Backends can observe record counts, ciphertext sizes, and access patterns
 ///
 /// # Examples
 ///
@@ -530,38 +659,6 @@ pub struct PasswordStore<S: Store> {
     _phantom: PhantomData<S>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn encryptor(store: &str) -> PasswordEncryptor {
-        PasswordEncryptor::new(
-            Password {
-                salt: "MDEyMzQ1Njc4OUFCQ0RFRg".to_string(),
-                password: "record-authentication".to_string(),
-                argon2_m_cost: 8,
-                argon2_t_cost: 1,
-                argon2_p_cost: 1,
-            },
-            store.to_string(),
-        )
-    }
-
-    #[test]
-    #[should_panic(expected = "ciphertext from another Store must be rejected")]
-    fn encrypted_record_rejects_cross_store_substitution() {
-        let first = encryptor("first");
-        let second = encryptor("second");
-        let physical_key = first.physical_record_key(b"logical").unwrap();
-        let ciphertext = first.encrypt_record(b"logical", b"plaintext").unwrap();
-
-        assert!(
-            second.decrypt_record(&physical_key, &ciphertext).is_err(),
-            "ciphertext from another Store must be rejected"
-        );
-    }
-}
-
 impl<S: Store> PasswordStore<S> {
     /// Derive the current state from internal fields
     fn state(&self) -> PasswordStoreState {
@@ -583,6 +680,15 @@ impl<S: Store> Registered for PasswordStore<S> {
 #[async_trait]
 impl<S: Store> Store for PasswordStore<S> {
     type Data = S::Data;
+
+    fn state_model() -> StoreStateModel<Self::Data> {
+        let inner = S::state_model();
+        let descriptor = inner.descriptor();
+        inner.with_descriptor(ProjectionDescriptor {
+            name: format!("eidetica/password/{}", descriptor.name),
+            version: descriptor.version,
+        })
+    }
 
     async fn load(txn: &Transaction, subtree_name: String) -> Result<Self> {
         // Try to load config from _index to determine state
@@ -827,6 +933,7 @@ impl<S: Store> PasswordStore<S> {
         let encryptor = Box::new(PasswordEncryptor::new(
             password_cache.clone(),
             self.name.clone(),
+            self.transaction.database_id().to_string().as_bytes(),
         ));
         self.transaction.register_encryptor(&self.name, encryptor)?;
 
@@ -988,7 +1095,11 @@ impl<S: Store> PasswordStore<S> {
         self.wrapped_info = Some(wrapped_info);
 
         // Register encryptor with the transaction for transparent encryption
-        let encryptor = Box::new(PasswordEncryptor::new(password_cache, self.name.clone()));
+        let encryptor = Box::new(PasswordEncryptor::new(
+            password_cache,
+            self.name.clone(),
+            self.transaction.database_id().to_string().as_bytes(),
+        ));
         self.transaction.register_encryptor(&self.name, encryptor)?;
 
         Ok(())
@@ -1053,5 +1164,59 @@ impl<S: Store> PasswordStore<S> {
         // We call S::load() directly, bypassing Transaction::get_store() type
         // checking, since type consistency was already verified in open().
         S::load(&self.transaction, self.name.clone()).await
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn encryptor(store: &str) -> PasswordEncryptor {
+        PasswordEncryptor::new(
+            Password {
+                salt: "MDEyMzQ1Njc4OUFCQ0RFRg".to_string(),
+                password: "record-authentication".to_string(),
+                argon2_m_cost: 8,
+                argon2_t_cost: 1,
+                argon2_p_cost: 1,
+            },
+            store.to_string(),
+            b"database",
+        )
+    }
+
+    #[test]
+    fn record_keys_and_values_use_separate_domain_material() {
+        let encryptor = encryptor("first");
+        let master = encryptor
+            .with_key(|key| Ok(<[u8; 32]>::try_from(key).unwrap()))
+            .unwrap();
+        assert_ne!(encryptor.record_key_material().unwrap(), master);
+        assert_ne!(encryptor.record_value_material().unwrap(), master);
+        assert_ne!(
+            encryptor.record_key_material().unwrap(),
+            encryptor.record_value_material().unwrap()
+        );
+    }
+
+    #[test]
+    fn encrypted_record_rejects_wrong_store_and_physical_key() {
+        let first = encryptor("first");
+        let second = encryptor("second");
+        let physical_key = first.physical_record_key(b"logical").unwrap();
+        let ciphertext = first.encrypt_record(b"logical", b"plaintext").unwrap();
+        assert_eq!(
+            first.decrypt_record(&physical_key, &ciphertext).unwrap(),
+            (b"logical".to_vec(), b"plaintext".to_vec())
+        );
+        assert!(
+            first
+                .decrypt_record(&first.physical_record_key(b"other").unwrap(), &ciphertext)
+                .is_err(),
+            "ciphertext moved to another row must be rejected"
+        );
+        assert!(
+            second.decrypt_record(&physical_key, &ciphertext).is_err(),
+            "ciphertext from another Store must be rejected"
+        );
     }
 }

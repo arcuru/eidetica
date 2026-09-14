@@ -114,7 +114,7 @@ impl RecordProjection<Doc> for TableProjection {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableCursor(Vec<u8>);
 
-/// One bounded page of rows in primary-key byte order.
+/// One bounded page of rows in the Store's persisted record-key order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TablePage<T> {
     pub rows: Vec<(String, T)>,
@@ -364,7 +364,11 @@ where
         Ok(result)
     }
 
-    /// Reads at most `limit` rows in deterministic primary-key byte order.
+    /// Reads at most `limit` rows in deterministic persisted record-key order.
+    ///
+    /// Plain `Table` records use primary-key byte order. Wrappers such as
+    /// `PasswordStore<Table<T>>` may transform keys, so their order is not
+    /// logical primary-key order.
     pub async fn scan_page(
         &self,
         cursor: Option<&TableCursor>,

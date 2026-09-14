@@ -110,11 +110,34 @@ impl InMemory {
                 record_set.ready
                     && record_set.request.database == *database
                     && record_set.request.store == store
-                    && record_set.request.projection.name == "eidetica/table/rows"
+                    && record_set
+                        .request
+                        .projection
+                        .name
+                        .ends_with("eidetica/table/rows")
             })
             .map(|record_set| record_set.records.len())
             .max()
             .unwrap_or(0)
+    }
+
+    #[cfg(feature = "testing")]
+    pub fn store_state_records(
+        &self,
+        database: &ID,
+        store: &str,
+    ) -> Option<crate::backend::RecordMutations> {
+        self.inner
+            .read()
+            .unwrap()
+            .store_state_namespaces
+            .values()
+            .find(|namespace| {
+                namespace.ready
+                    && namespace.request.database == *database
+                    && namespace.request.store == store
+            })
+            .map(|namespace| namespace.records.clone())
     }
 
     #[cfg(feature = "testing")]
