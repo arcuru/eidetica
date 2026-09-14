@@ -596,6 +596,92 @@ async fn test_password_table_scan_is_deterministic_in_physical_key_order() {
 }
 
 #[tokio::test]
+async fn test_password_table_scan_merges_staged_puts_and_deletes() {
+    let ctx = TestContext::new().with_database().await;
+    let database = ctx.database();
+    let tx = database.new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<Table<PasswordTestRecord>>>("overlay_records")
+        .await
+        .unwrap();
+    encrypted.initialize("pass", Doc::new()).await.unwrap();
+    let table = encrypted.inner().await.unwrap();
+    for (key, value) in [("delete", 1), ("update", 2)] {
+        table
+            .set(
+                key,
+                PasswordTestRecord {
+                    name: key.to_string(),
+                    value,
+                },
+            )
+            .await
+            .unwrap();
+    }
+    tx.commit().await.unwrap();
+
+    let tx = database.new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<Table<PasswordTestRecord>>>("overlay_records")
+        .await
+        .unwrap();
+    encrypted.open("pass").unwrap();
+    let table = encrypted.inner().await.unwrap();
+    assert!(table.delete("delete").await.unwrap());
+    table
+        .set(
+            "update",
+            PasswordTestRecord {
+                name: "updated".to_string(),
+                value: 3,
+            },
+        )
+        .await
+        .unwrap();
+    table
+        .set(
+            "insert",
+            PasswordTestRecord {
+                name: "inserted".to_string(),
+                value: 4,
+            },
+        )
+        .await
+        .unwrap();
+
+    let mut cursor = None;
+    let mut rows = Vec::new();
+    loop {
+        let page = table.scan_page(cursor.as_ref(), 1).await.unwrap();
+        rows.extend(page.rows);
+        let Some(next) = page.next else {
+            break;
+        };
+        cursor = Some(next);
+    }
+    rows.sort_by(|left, right| left.0.cmp(&right.0));
+    assert_eq!(
+        rows,
+        [
+            (
+                "insert".to_string(),
+                PasswordTestRecord {
+                    name: "inserted".to_string(),
+                    value: 4,
+                },
+            ),
+            (
+                "update".to_string(),
+                PasswordTestRecord {
+                    name: "updated".to_string(),
+                    value: 3,
+                },
+            ),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn test_password_store_table_basic_operations() {
     let (_instance, database) = setup_tree().await;
 

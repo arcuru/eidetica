@@ -1186,16 +1186,35 @@ mod tests {
 
     #[test]
     fn record_keys_and_values_use_separate_domain_material() {
-        let encryptor = encryptor("first");
-        let master = encryptor
+        let first = encryptor("first");
+        let second = encryptor("second");
+        let master = first
             .with_key(|key| Ok(<[u8; 32]>::try_from(key).unwrap()))
             .unwrap();
-        assert_ne!(encryptor.record_key_material().unwrap(), master);
-        assert_ne!(encryptor.record_value_material().unwrap(), master);
+        assert_ne!(first.record_key_material().unwrap(), master);
+        assert_ne!(first.record_value_material().unwrap(), master);
         assert_ne!(
-            encryptor.record_key_material().unwrap(),
-            encryptor.record_value_material().unwrap()
+            first.record_key_material().unwrap(),
+            first.record_value_material().unwrap()
         );
+        assert_eq!(
+            first.record_key_material().unwrap(),
+            second.record_key_material().unwrap()
+        );
+        assert_eq!(
+            first.record_value_material().unwrap(),
+            second.record_value_material().unwrap()
+        );
+    }
+
+    #[test]
+    fn encrypted_records_use_unique_nonces() {
+        let encryptor = encryptor("first");
+        let first = encryptor.encrypt_record(b"logical", b"plaintext").unwrap();
+        let second = encryptor.encrypt_record(b"logical", b"plaintext").unwrap();
+
+        assert_ne!(&first[..AES_GCM_NONCE_SIZE], &second[..AES_GCM_NONCE_SIZE]);
+        assert_ne!(first, second);
     }
 
     #[test]
@@ -1217,6 +1236,25 @@ mod tests {
         assert!(
             second.decrypt_record(&physical_key, &ciphertext).is_err(),
             "ciphertext from another Store must be rejected"
+        );
+    }
+
+    #[test]
+    fn encrypted_record_rejects_malformed_and_modified_ciphertext() {
+        let encryptor = encryptor("first");
+        let physical_key = encryptor.physical_record_key(b"logical").unwrap();
+        let mut ciphertext = encryptor.encrypt_record(b"logical", b"plaintext").unwrap();
+
+        assert!(
+            encryptor
+                .decrypt_record(&physical_key, &ciphertext[..AES_GCM_NONCE_SIZE - 1])
+                .is_err()
+        );
+        *ciphertext.last_mut().unwrap() ^= 1;
+        assert!(
+            encryptor
+                .decrypt_record(&physical_key, &ciphertext)
+                .is_err()
         );
     }
 }
