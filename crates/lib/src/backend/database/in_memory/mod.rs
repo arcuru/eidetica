@@ -558,12 +558,15 @@ impl BackendImpl for InMemory {
         after: Option<&[u8]>,
         limit: usize,
     ) -> Result<RecordPage> {
-        self.store_state_scan_reads.fetch_add(1, Ordering::Relaxed);
         let inner = self.inner.read().unwrap();
         let state = inner
             .historyless_pins
             .get(&snapshot.token)
             .ok_or(BackendError::InvalidHistorylessReadSnapshot)?;
+        if limit == 0 {
+            return Ok(RecordPage::default());
+        }
+        self.store_state_scan_reads.fetch_add(1, Ordering::Relaxed);
         let Some(store) = state.stores.get(store) else {
             return Ok(RecordPage {
                 records: Vec::new(),

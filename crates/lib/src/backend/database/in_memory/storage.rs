@@ -52,6 +52,10 @@ pub(crate) fn get(inner: &InMemoryInner, id: &ID) -> Result<Entry> {
 pub(crate) fn put(inner: &mut InMemoryInner, entry: Entry) -> Result<()> {
     let entry_id = entry.id();
 
+    if inner.historyless.contains_key(&entry_id) {
+        return Err(BackendError::HistorylessDatabaseAlreadyExists { id: entry_id }.into());
+    }
+
     // Content-addressed and immutable: if we already hold this entry, a
     // re-`put` is a no-op. We do NOT reset `verification_status` —
     // re-receiving an entry on overlapping/bootstrap sync must not demote a

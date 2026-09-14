@@ -161,6 +161,18 @@ pub async fn initialize(backend: &SqlxBackend) -> Result<()> {
         .await
         .sql_context("Failed to check schema version")?;
 
+    if let Some((current_version,)) = row
+        && current_version > SCHEMA_VERSION
+    {
+        return Err(BackendError::SqlxError {
+            reason: format!(
+                "Database schema version {current_version} is newer than supported version {SCHEMA_VERSION}"
+            ),
+            source: None,
+        }
+        .into());
+    }
+
     // The generic Store-state tables are part of schema v0 and remain created
     // independently of the versioned historyless migration.
     initialize_store_state_tables(backend).await?;
@@ -375,6 +387,16 @@ pub(crate) async fn testing_prepare_historyless_v0(backend: &SqlxBackend) -> Res
 }
 
 #[cfg(feature = "testing")]
+pub(crate) async fn testing_set_schema_version(backend: &SqlxBackend, version: i64) -> Result<()> {
+    sqlx::query("UPDATE schema_version SET version = $1")
+        .bind(version)
+        .execute(backend.pool())
+        .await
+        .sql_context("Failed to set test schema version")?;
+    Ok(())
+}
+
+#[cfg(feature = "testing")]
 pub(crate) async fn testing_seed_historyless_v1(
     backend: &SqlxBackend,
     id: &crate::entry::ID,
@@ -475,6 +497,24 @@ pub(crate) async fn testing_historyless_state(
         projection_version,
         record_value,
     })
+}
+
+#[cfg(feature = "testing")]
+pub(crate) async fn testing_historyless_namespace_count(
+    backend: &SqlxBackend,
+    id: &crate::entry::ID,
+    store: &str,
+) -> Result<i64> {
+    let (count,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM store_state_namespaces
+         WHERE database_id = $1 AND store_name = $2 AND lifecycle = 1 AND status = 1",
+    )
+    .bind(id.to_string())
+    .bind(store)
+    .fetch_one(backend.pool())
+    .await
+    .sql_context("Failed to count historyless Store revisions")?;
+    Ok(count)
 }
 
 #[cfg(all(feature = "sqlite", feature = "testing"))]

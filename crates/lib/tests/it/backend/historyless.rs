@@ -4,7 +4,10 @@ use std::collections::BTreeMap;
 use eidetica::crdt::Doc;
 use eidetica::{
     Error,
-    backend::{BackendError, BackendImpl, HistorylessOwner, database::InMemory},
+    backend::{
+        BackendError, BackendImpl, HistorylessOwner, HistorylessStoreMutation,
+        ProjectionDescriptor, RecordRange, database::InMemory,
+    },
     entry::{Entry, ID},
 };
 
@@ -83,6 +86,96 @@ async fn test_historyless_id_cannot_collide_with_entry() {
         Error::Backend(error)
             if matches!(*error, BackendError::HistorylessDatabaseAlreadyExists { .. })
     ));
+}
+
+#[tokio::test]
+async fn test_entry_cannot_collide_with_historyless_id() {
+    let backend = InMemory::new();
+    let entry = Entry::root_builder().build().unwrap();
+    let id = entry.id();
+    backend
+        .create_historyless(&id, HistorylessOwner::Instance, BTreeMap::new())
+        .await
+        .unwrap();
+
+    let error = backend.put(entry).await.unwrap_err();
+    assert!(matches!(
+        error,
+        Error::Backend(error)
+            if matches!(*error, BackendError::HistorylessDatabaseAlreadyExists { .. })
+    ));
+    assert!(backend.get(&id).await.is_err());
+    assert!(backend.read_historyless_compat(&id).await.is_ok());
+}
+
+#[tokio::test]
+async fn test_historyless_pinned_reads_and_zero_limit_scan() {
+    let backend = InMemory::new();
+    let id = ID::random();
+    let initial = HistorylessStoreMutation {
+        projection: ProjectionDescriptor {
+            name: "test/records".to_string(),
+            version: 1,
+        },
+        records: BTreeMap::from([
+            (b"a".to_vec(), Some(b"old-a".to_vec())),
+            (b"b".to_vec(), Some(b"old-b".to_vec())),
+        ]),
+    };
+    backend
+        .create_historyless(
+            &id,
+            HistorylessOwner::Instance,
+            BTreeMap::from([("rows".to_string(), initial)]),
+        )
+        .await
+        .unwrap();
+    let pinned = backend.begin_historyless_read(&id).await.unwrap();
+
+    let update = HistorylessStoreMutation {
+        projection: ProjectionDescriptor {
+            name: "test/records".to_string(),
+            version: 1,
+        },
+        records: BTreeMap::from([
+            (b"a".to_vec(), Some(b"new-a".to_vec())),
+            (b"b".to_vec(), None),
+        ]),
+    };
+    backend
+        .commit_historyless(&id, 0, BTreeMap::from([("rows".to_string(), update)]))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        backend
+            .historyless_record_get(&pinned, "rows", b"a")
+            .await
+            .unwrap(),
+        Some(b"old-a".to_vec())
+    );
+    let page = backend
+        .historyless_record_scan(&pinned, "rows", &RecordRange::default(), None, 0)
+        .await
+        .unwrap();
+    assert!(page.records.is_empty());
+    assert!(page.next.is_none());
+
+    let current = backend.begin_historyless_read(&id).await.unwrap();
+    assert_eq!(
+        backend
+            .historyless_record_get(&current, "rows", b"a")
+            .await
+            .unwrap(),
+        Some(b"new-a".to_vec())
+    );
+    assert_eq!(
+        backend
+            .historyless_record_get(&current, "rows", b"b")
+            .await
+            .unwrap(),
+        None
+    );
 }
 
 #[tokio::test]
@@ -212,6 +305,87 @@ async fn test_historyless_sql_v1_imports_legacy_rows_and_preserves_table() {
     );
     assert_eq!(imported.projection_version, Some(1));
     assert_eq!(imported.record_value, Some(state));
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn test_historyless_sql_pinned_read_survives_commit() {
+    use eidetica::backend::database::Sqlite;
+
+    let backend = Sqlite::in_memory().await.unwrap();
+    let id = ID::random();
+    backend
+        .create_historyless(
+            &id,
+            HistorylessOwner::Instance,
+            opaque_stores(stores(&[("data", b"old")])),
+        )
+        .await
+        .unwrap();
+    let pinned = backend.begin_historyless_read(&id).await.unwrap();
+    backend
+        .replace_historyless_compat(&id, 0, stores(&[("data", b"new")]))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        backend
+            .historyless_record_get(&pinned, "data", &[0])
+            .await
+            .unwrap(),
+        Some(b"old".to_vec())
+    );
+    assert_eq!(
+        backend
+            .testing_historyless_namespace_count(&id, "data")
+            .await
+            .unwrap(),
+        2
+    );
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn test_historyless_sql_rejects_future_schema_version() {
+    use eidetica::backend::database::Sqlite;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("future-version.db");
+    let backend = Sqlite::open(&path).await.unwrap();
+    backend
+        .testing_set_schema_version(eidetica::backend::database::sql::schema::SCHEMA_VERSION + 1)
+        .await
+        .unwrap();
+    drop(backend);
+
+    let error = match Sqlite::open(&path).await {
+        Ok(_) => panic!("future schema version must be rejected"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, Error::Backend(error) if error.is_sql_error()));
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn test_historyless_sqlite_entry_cannot_collide_with_historyless_id() {
+    use eidetica::backend::database::Sqlite;
+
+    let backend = Sqlite::in_memory().await.unwrap();
+    let entry = Entry::root_builder().build().unwrap();
+    let id = entry.id();
+    backend
+        .create_historyless(&id, HistorylessOwner::Instance, BTreeMap::new())
+        .await
+        .unwrap();
+
+    let error = backend.put(entry).await.unwrap_err();
+    assert!(matches!(
+        error,
+        Error::Backend(error)
+            if matches!(*error, BackendError::HistorylessDatabaseAlreadyExists { .. })
+    ));
+    assert!(backend.get(&id).await.is_err());
+    assert!(backend.read_historyless_compat(&id).await.is_ok());
 }
 
 #[cfg(feature = "sqlite")]
