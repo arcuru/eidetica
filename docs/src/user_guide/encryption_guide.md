@@ -118,6 +118,8 @@ tx.commit().await?;
 - **No recovery**: Lost password = lost data (by design)
 - **Encryption**: AES-256-GCM with Argon2id key derivation
 - **Relay-safe**: Encrypted data can sync through untrusted relays
+- **Cached records**: Record-oriented Stores use keyed physical record keys and authenticated encrypted values. Scans are deterministic in physical-key order, not logical primary-key order.
+- **Metadata leakage**: Backends can observe record counts, ciphertext sizes, and access patterns.
 
 ## See Also
 
