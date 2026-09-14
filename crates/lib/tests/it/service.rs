@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use eidetica::Entry;
 use eidetica::Instance;
+use eidetica::NewUser;
 use eidetica::auth::crypto::{create_challenge_response, generate_keypair, sign_entry};
 use eidetica::backend::database::InMemory;
 use eidetica::backend::{ProjectionDescriptor, StoreStateRequest};
@@ -227,6 +228,57 @@ async fn test_concurrent_clients() {
     let _user1 = instance1.login_user("bob", None).await.unwrap();
     let user2 = instance2.login_user("bob", None).await.unwrap();
     assert_eq!(user2.username(), "bob");
+}
+
+#[tokio::test]
+async fn two_service_clients_share_one_sqlite_daemon() {
+    let dir = tempfile::tempdir().unwrap();
+    let database_path = dir.path().join("daemon.db");
+    let socket_path = dir.path().join("daemon.sock");
+    let (server, _) = Instance::connect_or_create(
+        format!("sqlite:{}?mode=rwc", database_path.display()),
+        NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let (tx, rx) = watch::channel(());
+    let service = ServiceServer::bind(server.clone(), socket_path.clone())
+        .await
+        .unwrap();
+    let handle = tokio::spawn(service.run(rx));
+
+    let client1 = Instance::connect(format!("unix://{}", socket_path.display()))
+        .await
+        .unwrap();
+    let client2 = Instance::connect(format!("unix://{}", socket_path.display()))
+        .await
+        .unwrap();
+
+    assert_eq!(client1.id(), server.id());
+    assert_eq!(client2.id(), server.id());
+
+    let mut admin1 = client1.login_user("admin", None).await.unwrap();
+    let key = admin1.get_default_key().unwrap();
+    let database = admin1.create_database(Doc::new(), &key).await.unwrap();
+    let root_id = database.root_id().clone();
+    database
+        .with_transaction(|tx| async move {
+            let store = tx.get_store::<DocStore>("shared").await?;
+            store.set("writer", "client1").await?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let admin2 = client2.login_user("admin", None).await.unwrap();
+    let database = admin2.open_database(&root_id).await.unwrap();
+    let transaction = database.new_transaction().await.unwrap();
+    let store = transaction.get_store::<DocStore>("shared").await.unwrap();
+    assert_eq!(store.get("writer").await.unwrap(), "client1");
+
+    drop(tx);
+    handle.await.unwrap().unwrap();
 }
 
 #[tokio::test]

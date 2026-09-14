@@ -20,6 +20,9 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+#[cfg(feature = "sqlite")]
+const SQLITE_OWNER_HELPER_ENV: &str = "EIDETICA_SQLITE_OWNER_HELPER";
+
 use tracing_subscriber::EnvFilter;
 
 struct CountingAllocator;
@@ -64,6 +67,28 @@ fn live_allocations() -> (usize, usize) {
         LIVE_ALLOCATION_BYTES.load(Ordering::Relaxed),
         LIVE_ALLOCATION_COUNT.load(Ordering::Relaxed),
     )
+}
+
+#[cfg(feature = "sqlite")]
+#[ctor::ctor]
+fn run_sqlite_owner_helper() {
+    let Ok(database_path) = std::env::var(SQLITE_OWNER_HELPER_ENV) else {
+        return;
+    };
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let backend = runtime
+        .block_on(eidetica::backend::database::SqlxBackend::open_sqlite(
+            database_path,
+        ))
+        .unwrap();
+    println!("EIDETICA_SQLITE_OWNER_READY");
+    use std::io::Write;
+    std::io::stdout().flush().unwrap();
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line).unwrap();
+    drop(backend);
+    std::process::exit(0);
 }
 
 #[ctor::ctor]
