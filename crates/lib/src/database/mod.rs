@@ -1694,9 +1694,10 @@ impl Database {
         };
 
         // Completeness: every pinned tip and its full `_settings` ancestor
-        // closure must be present locally. `store_at` silently
-        // skips absent ancestors, so an explicit walk is required — a missing
-        // ancestor would otherwise yield a wrong (partial) auth config.
+        // closure must be present locally. `store_at` reports a gap in the
+        // `_settings` store DAG, but this walk additionally covers the main
+        // parent chain that carries it, and an incomplete pin is a normal
+        // partial-sync state to be retried rather than an error to propagate.
         let mut stack: Vec<ID> = effective_tips.clone();
         let mut seen: std::collections::HashSet<ID> = std::collections::HashSet::new();
         while let Some(id) = stack.pop() {

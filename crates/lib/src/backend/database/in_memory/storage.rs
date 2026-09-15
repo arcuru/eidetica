@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use super::InMemoryInner;
 use crate::{
     Result,
-    backend::{VerificationStatus, errors::BackendError},
+    backend::{VerificationStatus, database::completeness, errors::BackendError},
     entry::{Entry, ID},
 };
 
@@ -305,6 +305,13 @@ pub(crate) fn get_tree_from_tips(
         }
     }
 
+    // A parent we never visited is a parent we do not hold: the walk stopped
+    // short of the real root and `result` is a truncated history.
+    let missing = completeness::missing_tree_ancestors(&result);
+    if !missing.is_empty() {
+        return Err(completeness::incomplete_tree_history(tree, missing));
+    }
+
     // Sort the result by height
     sorting::sort_entries_by_height(&mut result);
 
@@ -327,14 +334,26 @@ pub(crate) fn store_at(
     let mut to_process = std::collections::VecDeque::new();
     let mut processed = std::collections::HashSet::new();
 
-    // Initialize with tips
+    // Initialize with tips. A tip we hold but that is not a member of this
+    // store contributes nothing and is skipped; a tip we do not hold at all is
+    // an unreachable branch of the history, not an empty one.
+    let mut missing_tips: Vec<ID> = Vec::new();
     for tip in tips {
-        if let Some(entry) = inner.entries.get(tip) {
-            // Only include entries that are part of both the tree and the subtree
-            if entry.in_tree(tree) && entry.in_subtree(subtree) {
-                to_process.push_back(tip.clone());
+        match inner.entries.get(tip) {
+            Some(entry) => {
+                if entry.in_tree(tree) && entry.in_subtree(subtree) {
+                    to_process.push_back(tip.clone());
+                }
             }
+            None => missing_tips.push(tip.clone()),
         }
+    }
+    if !missing_tips.is_empty() {
+        return Err(completeness::incomplete_store_history(
+            tree,
+            subtree,
+            missing_tips,
+        ));
     }
 
     // Process entries in breadth-first order
@@ -361,6 +380,15 @@ pub(crate) fn store_at(
                 processed.insert(current_id);
             }
         }
+    }
+
+    // A store parent we never visited is one we cannot fold: the state built
+    // from `result` would be missing that whole branch of the store's history.
+    let missing = completeness::missing_store_ancestors(subtree, &result);
+    if !missing.is_empty() {
+        return Err(completeness::incomplete_store_history(
+            tree, subtree, missing,
+        ));
     }
 
     // Sort the result by subtree height

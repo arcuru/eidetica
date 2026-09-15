@@ -159,17 +159,19 @@ async fn test_backend_store_at() {
     );
 
     // --- Test with non-existent tip ---
-    let subtree_bad_tip = backend
+    // A tip we do not hold is an unreachable branch of the history, not an
+    // empty one: folding what is held would produce a silently wrong state.
+    let result = backend
         .store_at(
             &root_entry_id,
             subtree_name,
             &Snapshot::from([ID::from_bytes("bad_tip_id")]),
         )
-        .await
-        .expect("Failed to get subtree with non-existent tip");
+        .await;
+    let err = result.expect_err("Getting a store from a tip we do not hold should error");
     assert!(
-        subtree_bad_tip.is_empty(),
-        "Getting subtree from non-existent tip should return empty list"
+        err.is_incomplete_history(),
+        "Expected IncompleteHistory error, got: {err:?}"
     );
 
     // --- Test with non-existent tree root ---
