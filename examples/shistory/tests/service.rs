@@ -313,3 +313,64 @@ fn daemon_unavailable_is_a_clear_error() {
         .unwrap_err();
     assert!(error.to_string().contains("missing.sock"));
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+#[should_panic(expected = "command text leaked through argv")]
+fn cli_command_text_is_not_exposed_in_argv() {
+    use std::{
+        fs,
+        os::unix::net::UnixListener,
+        process::Stdio,
+        sync::mpsc,
+        thread,
+        time::Duration,
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("stalled.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let (accepted_tx, accepted_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let server = thread::spawn(move || {
+        let (_stream, _) = listener.accept().unwrap();
+        accepted_tx.send(()).unwrap();
+        release_rx.recv().unwrap();
+    });
+
+    let secret = "echo synthetic-secret-argv";
+    let mut child = Command::new(env!("CARGO_BIN_EXE_shistory"))
+        .env("EIDETICA_SOCKET", &socket)
+        .args([
+            "--user",
+            "alice",
+            "--host",
+            "laptop",
+            "start",
+            "--session",
+            "cli-shell",
+            "--cwd",
+            "/tmp",
+            "--started-at",
+            "2026-09-14T12:00:00Z",
+            secret,
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    accepted_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+
+    let command_line = fs::read(format!("/proc/{}/cmdline", child.id())).unwrap();
+    child.kill().unwrap();
+    child.wait().unwrap();
+    release_tx.send(()).unwrap();
+    server.join().unwrap();
+
+    assert!(
+        !command_line
+            .windows(secret.len())
+            .any(|window| window == secret.as_bytes()),
+        "command text leaked through argv"
+    );
+}
