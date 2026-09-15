@@ -1,9 +1,11 @@
-use std::{process::ExitCode, str::FromStr};
+use std::{future::Future, io::Read, process::ExitCode, str::FromStr, time::Duration};
 
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
 use eidetica::Result;
 use shistory::{DEFAULT_LIMIT, connect, finish, open_database, print_entries, query, setup, start};
+
+const CAPTURE_DEADLINE: Duration = Duration::from_secs(1);
 
 #[derive(Parser)]
 #[command(about = "Record zsh history in an Eidetica daemon")]
@@ -15,10 +17,6 @@ struct Cli {
     /// Stable, unique label for this host.
     #[arg(long, env = "SHISTORY_HOST")]
     host: Option<String>,
-
-    /// Disable history capture while leaving queries available.
-    #[arg(long, env = "SHISTORY_CAPTURE_DISABLED", default_value_t = false)]
-    capture_disabled: bool,
 
     #[command(subcommand)]
     command: Command,
@@ -36,7 +34,6 @@ enum Command {
         cwd: String,
         #[arg(long)]
         started_at: String,
-        command: String,
     },
     /// Complete the history record with duration and exit status.
     Finish {
@@ -79,18 +76,10 @@ async fn main() -> ExitCode {
 }
 
 async fn run(cli: Cli) -> Result<()> {
-    if matches!(&cli.command, Command::Start { command, .. } if cli.capture_disabled || command.starts_with(' '))
-    {
-        return Ok(());
-    }
-    if matches!(&cli.command, Command::Finish { .. }) && cli.capture_disabled {
-        return Ok(());
-    }
-
-    let (_instance, mut user) = connect(&cli.user).await?;
     match cli.command {
         Command::Setup => {
             let host = required_host(cli.host.as_deref())?;
+            let (_instance, mut user) = connect(&cli.user).await?;
             let database = setup(&mut user, host).await?;
             println!("history database: {}", database.root_id());
         }
@@ -98,20 +87,27 @@ async fn run(cli: Cli) -> Result<()> {
             session,
             cwd,
             started_at,
-            command,
         } => {
             let host = required_host(cli.host.as_deref())?;
-            let database = open_database(&user).await?;
-            if let Some(id) = start(
-                &database,
-                host,
-                &session,
-                &cwd,
-                &command,
-                parse_time(&started_at)?,
-            )
-            .await?
-            {
+            let command = read_command()?;
+            if command.starts_with(' ') {
+                return Ok(());
+            }
+            let id = capture_with_deadline(async {
+                let (_instance, user) = connect(&cli.user).await?;
+                let database = open_database(&user).await?;
+                start(
+                    &database,
+                    host,
+                    &session,
+                    &cwd,
+                    &command,
+                    parse_time(&started_at)?,
+                )
+                .await
+            })
+            .await?;
+            if let Some(id) = id {
                 println!("{id}");
             }
         }
@@ -121,14 +117,19 @@ async fn run(cli: Cli) -> Result<()> {
             exit_status,
         } => {
             let host = required_host(cli.host.as_deref())?;
-            let database = open_database(&user).await?;
-            finish(&database, host, &id, duration_ms, exit_status).await?;
+            capture_with_deadline(async {
+                let (_instance, user) = connect(&cli.user).await?;
+                let database = open_database(&user).await?;
+                finish(&database, host, &id, duration_ms, exit_status).await
+            })
+            .await?;
         }
         Command::List {
             host,
             all_hosts,
             limit,
         } => {
+            let (_instance, user) = connect(&cli.user).await?;
             let database = open_database(&user).await?;
             let host = selected_host(host.as_deref().or(cli.host.as_deref()), all_hosts)?;
             print_entries(
@@ -142,6 +143,7 @@ async fn run(cli: Cli) -> Result<()> {
             all_hosts,
             limit,
         } => {
+            let (_instance, user) = connect(&cli.user).await?;
             let database = open_database(&user).await?;
             let host = selected_host(host.as_deref().or(cli.host.as_deref()), all_hosts)?;
             print_entries(
@@ -151,6 +153,25 @@ async fn run(cli: Cli) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn read_command() -> Result<String> {
+    let mut command = String::new();
+    std::io::stdin().read_to_string(&mut command)?;
+    Ok(command)
+}
+
+async fn capture_with_deadline<T>(future: impl Future<Output = Result<T>>) -> Result<T> {
+    tokio::time::timeout(CAPTURE_DEADLINE, future)
+        .await
+        .map_err(|_| -> eidetica::Error {
+            eidetica::store::StoreError::InvalidOperation {
+                store: "shistory".to_owned(),
+                operation: "capture".to_owned(),
+                reason: "daemon request exceeded the 1 second capture deadline".to_owned(),
+            }
+            .into()
+        })?
 }
 
 fn required_host(host: Option<&str>) -> Result<&str> {

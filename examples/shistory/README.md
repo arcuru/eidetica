@@ -57,12 +57,18 @@ line to stop installing the hooks.
 The `preexec` hook starts a record before a command runs. The following `precmd`
 hook fills in its duration and exit status. If either hook call cannot reach the
 daemon, it stays quiet, preserves the command's exit status, and never prints the
-command text. A failed start leaves no record; a failed finish leaves an
-`incomplete` record.
+command text. Each start or finish request has a fixed one-second deadline that
+covers connecting to the socket, the protocol and login handshakes, and the
+database request. Cancellation can race a daemon commit: a timed-out start may
+leave an incomplete record even when its ID was not returned, and a timed-out
+finish may or may not have completed the record.
 
-Set `SHISTORY_CAPTURE_DISABLED=1` to leave the hooks installed but stop capture;
-`unset SHISTORY_CAPTURE_DISABLED` enables it again. Commands beginning with a
-space are always skipped. This is an opt-out convention, not secret detection.
+Command text is sent to `shistory start` through standard input, not a process
+argument. Commands beginning with a space are skipped. This convention is not
+secret detection. To stop capture, remove or comment out the `source` line and
+start a new shell (or remove both hooks from the current shell with
+`add-zsh-hook -d preexec _shistory_preexec` and
+`add-zsh-hook -d precmd _shistory_precmd`).
 
 ## Query history
 
@@ -80,7 +86,10 @@ start time    host    exit status    duration (ms)    working directory    comma
 ```
 
 An unfinished command has `incomplete` for its exit status and `-` for its
-duration. Queries default to 100 rows and accept limits from 1 through 1000.
+duration. Control characters in the working directory and command fields are
+escaped (`\t`, `\n`, `\r`, or a Unicode escape), so each record occupies exactly
+one row; the stored text is unchanged. Queries default to 100 rows and accept
+limits from 1 through 1000.
 
 ## Security and limits
 

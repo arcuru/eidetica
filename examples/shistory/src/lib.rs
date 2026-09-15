@@ -166,18 +166,31 @@ pub fn print_entries(mut output: impl Write, entries: &[HistoryEntry]) -> io::Re
         let status = entry
             .exit_status
             .map_or_else(|| "incomplete".to_owned(), |status| status.to_string());
-        writeln!(
+        write!(
             output,
-            "{}\t{}\t{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t",
             entry.started_at.to_rfc3339(),
             entry.host,
             status,
             entry
                 .duration_ms
                 .map_or_else(|| "-".to_owned(), |ms| ms.to_string()),
-            entry.cwd,
-            entry.command
         )?;
+        write_escaped(&mut output, &entry.cwd)?;
+        write!(output, "\t")?;
+        write_escaped(&mut output, &entry.command)?;
+        writeln!(output)?;
+    }
+    Ok(())
+}
+
+fn write_escaped(mut output: impl Write, value: &str) -> io::Result<()> {
+    for character in value.chars() {
+        if character.is_control() {
+            write!(output, "{}", character.escape_default())?;
+        } else {
+            write!(output, "{character}")?;
+        }
     }
     Ok(())
 }

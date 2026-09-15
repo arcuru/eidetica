@@ -11,7 +11,9 @@ use eidetica::{
     sync::{peer_types::Address, transports::http::HttpTransport},
     user::types::SyncSettings,
 };
-use shistory::{HistoryEntry, connect_to, finish, open_database, query, setup, start};
+use shistory::{
+    HistoryEntry, connect_to, finish, open_database, print_entries, query, setup, start,
+};
 use tempfile::TempDir;
 use tokio::{sync::watch, task::JoinHandle};
 
@@ -54,14 +56,26 @@ impl Daemon {
 }
 
 async fn run_cli(daemon: &Daemon, args: &[&str]) -> std::process::Output {
+    run_cli_with_stdin(daemon, args, b"").await
+}
+
+async fn run_cli_with_stdin(daemon: &Daemon, args: &[&str], stdin: &[u8]) -> std::process::Output {
+    use std::io::Write;
+
     let socket = daemon.socket.clone();
     let args = args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
+    let stdin = stdin.to_vec();
     tokio::task::spawn_blocking(move || {
-        Command::new(env!("CARGO_BIN_EXE_shistory"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_shistory"))
             .env("EIDETICA_SOCKET", socket)
             .args(args)
-            .output()
-            .unwrap()
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(&stdin).unwrap();
+        child.wait_with_output().unwrap()
     })
     .await
     .unwrap()
@@ -129,7 +143,7 @@ async fn cli_captures_and_queries_through_configured_socket() {
         String::from_utf8_lossy(&setup.stderr)
     );
 
-    let start = run_cli(
+    let start = run_cli_with_stdin(
         &daemon,
         &[
             "--user",
@@ -143,8 +157,8 @@ async fn cli_captures_and_queries_through_configured_socket() {
             "/tmp",
             "--started-at",
             "2026-09-14T12:00:00Z",
-            "echo cli needle",
         ],
+        b"echo cli needle\n\n",
     )
     .await;
     assert!(
@@ -194,7 +208,66 @@ async fn cli_captures_and_queries_through_configured_socket() {
         String::from_utf8_lossy(&search.stderr)
     );
     let output = String::from_utf8(search.stdout).unwrap();
-    assert!(output.contains("\tlaptop\t0\t12\t/tmp\techo cli needle"));
+    assert!(output.contains("\tlaptop\t0\t12\t/tmp\techo cli needle\\n\\n"));
+
+    let skipped = run_cli_with_stdin(
+        &daemon,
+        &[
+            "--user",
+            "alice",
+            "--host",
+            "laptop",
+            "start",
+            "--session",
+            "cli-shell",
+            "--cwd",
+            "/tmp",
+            "--started-at",
+            "2026-09-14T12:00:01Z",
+        ],
+        b"  echo skipped",
+    )
+    .await;
+    assert!(skipped.status.success());
+    assert!(skipped.stdout.is_empty());
+
+    daemon.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn removed_capture_options_are_rejected_without_affecting_queries() {
+    let daemon = Daemon::start("alice").await;
+    let setup = run_cli(&daemon, &["--user", "alice", "--host", "laptop", "setup"]).await;
+    assert!(setup.status.success());
+
+    let removed_flag = run_cli(
+        &daemon,
+        &[
+            "--capture-disabled",
+            "--user",
+            "alice",
+            "--host",
+            "laptop",
+            "list",
+        ],
+    )
+    .await;
+    assert_eq!(removed_flag.status.code(), Some(2));
+
+    let query_with_old_env = tokio::task::spawn_blocking({
+        let socket = daemon.socket.clone();
+        move || {
+            Command::new(env!("CARGO_BIN_EXE_shistory"))
+                .env("EIDETICA_SOCKET", socket)
+                .env("SHISTORY_CAPTURE_DISABLED", "1")
+                .args(["--user", "alice", "--host", "laptop", "list"])
+                .output()
+                .unwrap()
+        }
+    })
+    .await
+    .unwrap();
+    assert!(query_with_old_env.status.success());
 
     daemon.stop().await;
 }
@@ -316,15 +389,9 @@ fn daemon_unavailable_is_a_clear_error() {
 
 #[cfg(target_os = "linux")]
 #[test]
-#[should_panic(expected = "command text leaked through argv")]
 fn cli_command_text_is_not_exposed_in_argv() {
     use std::{
-        fs,
-        os::unix::net::UnixListener,
-        process::Stdio,
-        sync::mpsc,
-        thread,
-        time::Duration,
+        fs, os::unix::net::UnixListener, process::Stdio, sync::mpsc, thread, time::Duration,
     };
 
     let dir = tempfile::tempdir().unwrap();
@@ -353,15 +420,23 @@ fn cli_command_text_is_not_exposed_in_argv() {
             "/tmp",
             "--started-at",
             "2026-09-14T12:00:00Z",
-            secret,
         ])
+        .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
+    use std::io::Write;
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(secret.as_bytes())
+        .unwrap();
     accepted_rx.recv_timeout(Duration::from_secs(1)).unwrap();
 
     let command_line = fs::read(format!("/proc/{}/cmdline", child.id())).unwrap();
+    assert!(child.try_wait().unwrap().is_none());
     child.kill().unwrap();
     child.wait().unwrap();
     release_tx.send(()).unwrap();
@@ -372,5 +447,26 @@ fn cli_command_text_is_not_exposed_in_argv() {
             .windows(secret.len())
             .any(|window| window == secret.as_bytes()),
         "command text leaked through argv"
+    );
+}
+
+#[test]
+fn displayed_entries_escape_control_characters_into_one_row() {
+    let entry = HistoryEntry {
+        command: "print 'one\ttwo'\nprint \u{1b}[31mthree\r".to_owned(),
+        started_at: time(0),
+        cwd: "/tmp/with\ttab\nand-newline".to_owned(),
+        duration_ms: Some(1),
+        exit_status: Some(0),
+        host: "fixture-host".to_owned(),
+        session: "fixture-session".to_owned(),
+    };
+    let mut output = Vec::new();
+
+    print_entries(&mut output, &[entry]).unwrap();
+
+    assert_eq!(
+        String::from_utf8(output).unwrap(),
+        "2026-09-14T12:00:00+00:00\tfixture-host\t0\t1\t/tmp/with\\ttab\\nand-newline\tprint 'one\\ttwo'\\nprint \\u{1b}[31mthree\\r\n"
     );
 }
