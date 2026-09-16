@@ -770,13 +770,19 @@ async fn dispatch_inner(
             let sync = instance
                 .sync()
                 .ok_or(crate::sync::SyncError::SyncNotEnabled)?;
-            let tips = instance.backend().snapshot(ticket.database_id()).await?;
+            if !instance
+                .backend()
+                .snapshot(ticket.database_id())
+                .await?
+                .is_empty()
+            {
+                return Err(crate::sync::SyncError::SyncProtocolError(
+                    "ticket bootstrap requires an absent local database".to_string(),
+                )
+                .into());
+            }
             let (address, peer) = sync.select_address(ticket.addresses(), None).await?;
-            Ok(ServiceResponse::TicketBootstrapPrepared {
-                address,
-                peer,
-                tips,
-            })
+            Ok(ServiceResponse::TicketBootstrapPrepared { address, peer })
         }
         ServiceRequest::TicketBootstrap {
             ticket,

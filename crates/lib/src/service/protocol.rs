@@ -517,11 +517,7 @@ pub enum ServiceResponse {
     /// signature in `SessionKeyRegister`.
     SessionKeyChallenge { challenge: Vec<u8> },
     /// Route and peer identity selected from a database ticket.
-    TicketBootstrapPrepared {
-        address: Address,
-        peer: PublicKey,
-        tips: Snapshot,
-    },
+    TicketBootstrapPrepared { address: Address, peer: PublicKey },
     /// Database ticket created by the daemon's sync engine.
     DatabaseTicket(DatabaseTicket),
 }

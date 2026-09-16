@@ -195,11 +195,11 @@ pub fn print_entries(mut output: impl Write, entries: &[HistoryEntry]) -> io::Re
         let status = entry
             .exit_status
             .map_or_else(|| "incomplete".to_owned(), |status| status.to_string());
+        write!(output, "{}\t", entry.started_at.to_rfc3339())?;
+        write_escaped(&mut output, &entry.host_name)?;
         write!(
             output,
-            "{}\t{}\t{}\t{}\t",
-            entry.started_at.to_rfc3339(),
-            entry.host_name,
+            "\t{}\t{}\t",
             status,
             entry
                 .duration_ms

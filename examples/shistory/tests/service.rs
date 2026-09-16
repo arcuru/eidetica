@@ -383,7 +383,7 @@ fn displayed_entries_escape_control_characters_into_one_row() {
         duration_ms: Some(1),
         exit_status: Some(0),
         host_id: Uuid::nil(),
-        host_name: "fixture-host".to_owned(),
+        host_name: "fixture\thost\nname".to_owned(),
         session: "fixture-session".to_owned(),
     };
     let mut output = Vec::new();
@@ -392,6 +392,6 @@ fn displayed_entries_escape_control_characters_into_one_row() {
 
     assert_eq!(
         String::from_utf8(output).unwrap(),
-        "2026-09-14T12:00:00+00:00\tfixture-host\t0\t1\t/tmp/with\\ttab\\nand-newline\tprint 'one\\ttwo'\\nprint \\u{1b}[31mthree\\r\n"
+        "2026-09-14T12:00:00+00:00\tfixture\\thost\\nname\t0\t1\t/tmp/with\\ttab\\nand-newline\tprint 'one\\ttwo'\\nprint \\u{1b}[31mthree\\r\n"
     );
 }

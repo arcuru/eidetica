@@ -809,19 +809,15 @@ impl RemoteConnection {
                 ticket: ticket.clone(),
             })
             .await?;
-        let (address, peer, tips) = match response {
-            ServiceResponse::TicketBootstrapPrepared {
-                address,
-                peer,
-                tips,
-            } => (address, peer, tips),
+        let (address, peer) = match response {
+            ServiceResponse::TicketBootstrapPrepared { address, peer } => (address, peer),
             other => return Err(unexpected_response("TicketBootstrapPrepared", &other)),
         };
         let auth = crate::sync::protocol::SyncRequestAuth::sign(
             signing_key,
             &peer,
             ticket.database_id(),
-            &tips,
+            &crate::snapshot::Snapshot::default(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_err(|error| std::io::Error::other(error.to_string()))?
