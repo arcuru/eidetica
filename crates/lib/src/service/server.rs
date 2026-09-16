@@ -72,7 +72,11 @@ struct SessionStaging {
 /// (`Instance::register_write_callback`); the daemon's existing
 /// `fire_write_callbacks` dispatch path handles fan-out by walking the
 /// per-tree callback list, no separate fan-out mechanism required.
-type ManagementTask = (tokio::task::AbortHandle, Vec<(ID, CallbackId)>);
+struct ManagementTask {
+    subscription_id: u64,
+    task: tokio::task::AbortHandle,
+    callbacks: Vec<(ID, CallbackId)>,
+}
 
 struct ConnectionContext {
     conn_id: ConnectionId,
@@ -130,15 +134,15 @@ impl Drop for ConnectionGuard {
             self.ctx.instance.remove_write_callback(tree_id, *id);
         }
         drop(subs);
-        for (task, callbacks) in std::mem::take(
+        for management in std::mem::take(
             &mut *self
                 .ctx
                 .management_tasks
                 .lock()
                 .unwrap_or_else(|p| p.into_inner()),
         ) {
-            task.abort();
-            for (tree_id, callback) in callbacks {
+            management.task.abort();
+            for (tree_id, callback) in management.callbacks {
                 self.ctx.instance.remove_write_callback(&tree_id, callback);
             }
         }
@@ -806,7 +810,12 @@ async fn dispatch_inner(
                 ManagementOp::Snapshot {
                     tree_id, identity, ..
                 }
-                | ManagementOp::Subscribe { tree_id, identity } => (tree_id, identity),
+                | ManagementOp::Subscribe {
+                    tree_id, identity, ..
+                }
+                | ManagementOp::Unsubscribe {
+                    tree_id, identity, ..
+                } => (tree_id, identity),
             };
             let acting_pubkey = resolve_acting_pubkey(identity, &login_pubkey, &keyset_snapshot)?;
             gate_tree_permission(
@@ -850,7 +859,11 @@ async fn dispatch_inner(
                             .with_desired(desired),
                     ))
                 }
-                ManagementOp::Subscribe { tree_id, identity } => {
+                ManagementOp::Subscribe {
+                    tree_id,
+                    identity,
+                    subscription_id,
+                } => {
                     let mut runtime = instance.subscribe_management_runtime();
                     let tx = ctx.tx.clone();
                     let target = tree_id.clone();
@@ -898,7 +911,39 @@ async fn dispatch_inner(
                     ctx.management_tasks
                         .lock()
                         .unwrap_or_else(|p| p.into_inner())
-                        .push((task.abort_handle(), vec![(tree_id, target_callback)]));
+                        .push(ManagementTask {
+                            subscription_id,
+                            task: task.abort_handle(),
+                            callbacks: vec![(tree_id, target_callback)],
+                        });
+                    Ok(ServiceResponse::Ok)
+                }
+                ManagementOp::Unsubscribe {
+                    tree_id,
+                    subscription_id,
+                    ..
+                } => {
+                    let mut tasks = ctx
+                        .management_tasks
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner());
+                    let mut keep = Vec::with_capacity(tasks.len());
+                    for management in std::mem::take(&mut *tasks) {
+                        if management.subscription_id == subscription_id
+                            && management
+                                .callbacks
+                                .iter()
+                                .any(|(database, _)| database == &tree_id)
+                        {
+                            management.task.abort();
+                            for (database, callback) in management.callbacks {
+                                instance.remove_write_callback(&database, callback);
+                            }
+                        } else {
+                            keep.push(management);
+                        }
+                    }
+                    *tasks = keep;
                     Ok(ServiceResponse::Ok)
                 }
             }
