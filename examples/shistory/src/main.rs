@@ -106,8 +106,8 @@ async fn run(cli: Cli) -> Result<()> {
             rename(&open_database(&user).await?, host_id, &name).await?;
         }
         Command::Ticket => {
-            let (_instance, user) = connect(&cli.user).await?;
-            println!("{}", ticket(&user).await?);
+            let (_instance, mut user) = connect(&cli.user).await?;
+            println!("{}", ticket(&mut user).await?);
         }
         Command::Start {
             session,

@@ -1099,9 +1099,12 @@ impl User {
         self.open_database(ticket.database_id()).await
     }
 
-    /// Build a ticket for a tracked database through a connected daemon.
+    /// Enable sync and build a ticket for a tracked database through a connected daemon.
+    ///
+    /// The ticket is built before the user's sync preference is changed, matching
+    /// [`share`](Self::share): transport failures leave user state unchanged.
     #[cfg(all(unix, feature = "service"))]
-    pub async fn share_database(&self, database_id: &ID) -> Result<DatabaseTicket> {
+    pub async fn share_database(&mut self, database_id: &ID) -> Result<DatabaseTicket> {
         let connection =
             self.instance
                 .remote_connection()
@@ -1120,9 +1123,11 @@ impl User {
                     key_id: key_id.to_string(),
                     database_id: database_id.clone(),
                 })?;
-        connection
+        let ticket = connection
             .create_database_ticket(database_id, &signing_key, identity)
-            .await
+            .await?;
+        self.enable_sync(database_id).await?;
+        Ok(ticket)
     }
 
     /// Record the User-layer SigKey mapping for a bootstrap whose network phase

@@ -125,15 +125,18 @@ async fn service_capture_query_and_incomplete_records() -> Result<()> {
 #[tokio::test]
 async fn ticket_is_sufficient_to_setup_a_second_host() -> Result<()> {
     let first = Daemon::start("alice").await;
-    let second = Daemon::start("alice").await;
+    let second = Daemon::start("bob").await;
     let (_first_client, mut first_user) = connect_to(&first.socket_url, "alice").await?;
     let laptop = setup(&mut first_user, None, "laptop").await?;
     let first_database = open_database(&first_user).await?;
-    let ticket = shistory::ticket(&first_user).await?;
+    first_user.disable_sync(first_database.root_id()).await?;
+    assert!(!first_user.is_sync_enabled(first_database.root_id()).await?);
+    let ticket = shistory::ticket(&mut first_user).await?;
     assert_eq!(ticket.database_id(), first_database.root_id());
     assert!(!ticket.addresses().is_empty());
+    assert!(first_user.is_sync_enabled(first_database.root_id()).await?);
 
-    let (_second_client, mut second_user) = connect_to(&second.socket_url, "alice").await?;
+    let (_second_client, mut second_user) = connect_to(&second.socket_url, "bob").await?;
     let server = setup(&mut second_user, Some(&ticket), "server").await?;
     let second_database = open_database(&second_user).await?;
     assert_eq!(second_database.root_id(), first_database.root_id());

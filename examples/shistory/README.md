@@ -20,9 +20,10 @@ filesystem permissions are the local trust boundary.
 The daemon owns synchronization and advertises the addresses embedded in an
 Eidetica database ticket. A second host needs only that ticket: `setup` sends it
 through the service socket, asks the daemon to join and track the database, and
-registers a new local host UUID. The first host's database grants its user's key
-Admin access, so another daemon for the same user is already authorized by the
-ticket flow. No peer or database access preconfiguration is required.
+registers a new local host UUID. The history database grants global Write
+access, so any daemon user that proves possession of its own key can join from
+the ticket without separate approval. Treat the ticket as a write-capability:
+no peer or database access preconfiguration is required.
 
 ## Install the hook
 

@@ -69,7 +69,7 @@ pub async fn setup(user: &mut User, ticket: Option<&DatabaseTicket>, name: &str)
     Ok(host)
 }
 
-pub async fn ticket(user: &User) -> Result<DatabaseTicket> {
+pub async fn ticket(user: &mut User) -> Result<DatabaseTicket> {
     let database = open_database(user).await?;
     user.share_database(database.root_id()).await
 }
