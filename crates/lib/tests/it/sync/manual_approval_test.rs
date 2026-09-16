@@ -315,6 +315,190 @@ async fn test_list_bootstrap_requests_by_status() {
     println!("✅ Double approval/rejection properly prevented");
 }
 
+fn assert_authentication_failure(response: SyncResponse) {
+    match response {
+        SyncResponse::Error(message) => assert!(
+            message.contains("Authentication"),
+            "expected authentication failure, got: {message}"
+        ),
+        other => panic!("expected authentication failure, got: {other:?}"),
+    }
+}
+
+#[should_panic]
+#[tokio::test]
+async fn named_bootstrap_request_requires_matching_proof() {
+    let (instance, _user, _key_id, _database, sync, tree_id) = setup_manual_approval_server().await;
+    let handler = create_test_sync_handler(&sync);
+    let context = RequestContext::default();
+
+    let missing_key = PrivateKey::generate();
+    let missing = create_bootstrap_request(
+        &tree_id,
+        &missing_key.public_key().to_string(),
+        "missing-proof",
+        AuthPermission::Write(5),
+    );
+    assert_authentication_failure(handler.handle_request(&missing, &context).await);
+
+    let corrupt_key = PrivateKey::generate();
+    let mut corrupt = create_signed_bootstrap_request(
+        &tree_id,
+        &corrupt_key,
+        "corrupt-proof",
+        AuthPermission::Write(5),
+        &instance.id(),
+    );
+    let SyncRequest::SyncTree(corrupt) = &mut corrupt else {
+        unreachable!()
+    };
+    corrupt.auth.as_mut().unwrap().signature[0] ^= 0xff;
+    assert_authentication_failure(
+        handler
+            .handle_request(&SyncRequest::SyncTree(corrupt.clone()), &context)
+            .await,
+    );
+
+    let claimed_key = PrivateKey::generate();
+    let other_key = PrivateKey::generate();
+    let mut wrong_signer = create_signed_bootstrap_request(
+        &tree_id,
+        &other_key,
+        "wrong-signer",
+        AuthPermission::Write(5),
+        &instance.id(),
+    );
+    let SyncRequest::SyncTree(wrong_signer) = &mut wrong_signer else {
+        unreachable!()
+    };
+    wrong_signer.requesting_key = Some(claimed_key.public_key());
+    assert_authentication_failure(
+        handler
+            .handle_request(&SyncRequest::SyncTree(wrong_signer.clone()), &context)
+            .await,
+    );
+
+    assert!(sync.pending_bootstrap_requests().await.unwrap().is_empty());
+}
+
+#[should_panic]
+#[tokio::test]
+async fn unproven_callers_cannot_observe_existing_request_lifecycle() {
+    let (instance, user, key_id, _database, sync, tree_id) = setup_manual_approval_server().await;
+    let handler = create_test_sync_handler(&sync);
+    let context = RequestContext::default();
+
+    let pending_key = PrivateKey::generate();
+    let pending_request = create_signed_bootstrap_request(
+        &tree_id,
+        &pending_key,
+        "pending-key",
+        AuthPermission::Write(5),
+        &instance.id(),
+    );
+    let pending_id =
+        assert_bootstrap_pending(&handler.handle_request(&pending_request, &context).await)
+            .to_string();
+    let missing_proof = create_bootstrap_request(
+        &tree_id,
+        &pending_key.public_key().to_string(),
+        "pending-key",
+        AuthPermission::Write(5),
+    );
+    assert_authentication_failure(handler.handle_request(&missing_proof, &context).await);
+    assert_eq!(sync.pending_bootstrap_requests().await.unwrap().len(), 1);
+
+    user.reject_bootstrap_request(&sync, &pending_id, &key_id)
+        .await
+        .unwrap();
+    let wrong_key = PrivateKey::generate();
+    let mut wrong_signer = create_signed_bootstrap_request(
+        &tree_id,
+        &wrong_key,
+        "pending-key",
+        AuthPermission::Write(5),
+        &instance.id(),
+    );
+    let SyncRequest::SyncTree(wrong_signer) = &mut wrong_signer else {
+        unreachable!()
+    };
+    wrong_signer.requesting_key = Some(pending_key.public_key());
+    assert_authentication_failure(
+        handler
+            .handle_request(&SyncRequest::SyncTree(wrong_signer.clone()), &context)
+            .await,
+    );
+
+    let approved_key = PrivateKey::generate();
+    let approved_request = create_signed_bootstrap_request(
+        &tree_id,
+        &approved_key,
+        "approved-key",
+        AuthPermission::Read,
+        &instance.id(),
+    );
+    let approved_id =
+        assert_bootstrap_pending(&handler.handle_request(&approved_request, &context).await)
+            .to_string();
+    user.approve_bootstrap_request(&sync, &approved_id, &key_id)
+        .await
+        .unwrap();
+    let approved_missing_proof = create_bootstrap_request(
+        &tree_id,
+        &approved_key.public_key().to_string(),
+        "approved-key",
+        AuthPermission::Read,
+    );
+    assert_authentication_failure(
+        handler
+            .handle_request(&approved_missing_proof, &context)
+            .await,
+    );
+}
+
+#[should_panic]
+#[tokio::test]
+async fn public_sync_distinguishes_anonymous_reads_from_named_access_requests() {
+    let (instance, _user, _key_id, _database, tree_id, sync) =
+        setup_public_sync_enabled_server("server", "server-key", "public-db").await;
+    let handler = create_test_sync_handler(&sync);
+    let context = RequestContext::default();
+
+    let anonymous = SyncRequest::SyncTree(SyncTreeRequest {
+        tree_id: tree_id.clone(),
+        our_tips: Vec::new().into(),
+        peer_pubkey: None,
+        requesting_key: None,
+        requesting_key_name: None,
+        requested_permission: None,
+        metadata: None,
+        auth: None,
+    });
+    assert!(matches!(
+        handler.handle_request(&anonymous, &context).await,
+        SyncResponse::Bootstrap(_)
+    ));
+
+    let named_key = PrivateKey::generate();
+    let unsigned_named = create_bootstrap_request(
+        &tree_id,
+        &named_key.public_key().to_string(),
+        "named-key",
+        AuthPermission::Admin(5),
+    );
+    assert_authentication_failure(handler.handle_request(&unsigned_named, &context).await);
+    assert!(sync.pending_bootstrap_requests().await.unwrap().is_empty());
+
+    let signed_named = create_signed_bootstrap_request(
+        &tree_id,
+        &named_key,
+        "named-key",
+        AuthPermission::Admin(5),
+        &instance.id(),
+    );
+    assert_bootstrap_pending(&handler.handle_request(&signed_named, &context).await);
+}
+
 #[tokio::test]
 async fn test_duplicate_bootstrap_requests_same_client() {
     let (instance, _user, _key_id, database, sync, _tree_id_from_setup) =
