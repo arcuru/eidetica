@@ -796,6 +796,72 @@ impl RemoteConnection {
         Ok(())
     }
 
+    /// Bootstrap a database ticket through the daemon-owned sync engine while
+    /// keeping the user's private key in the client process.
+    pub async fn bootstrap_ticket(
+        &self,
+        ticket: &crate::sync::DatabaseTicket,
+        signing_key: &PrivateKey,
+        requested_permission: crate::auth::Permission,
+    ) -> crate::Result<()> {
+        let response = self
+            .request_ok(ServiceRequest::TicketBootstrapPrepare {
+                ticket: ticket.clone(),
+            })
+            .await?;
+        let (address, peer, tips) = match response {
+            ServiceResponse::TicketBootstrapPrepared {
+                address,
+                peer,
+                tips,
+            } => (address, peer, tips),
+            other => return Err(unexpected_response("TicketBootstrapPrepared", &other)),
+        };
+        let auth = crate::sync::protocol::SyncRequestAuth::sign(
+            signing_key,
+            &peer,
+            ticket.database_id(),
+            &tips,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|error| std::io::Error::other(error.to_string()))?
+                .as_millis()
+                .try_into()
+                .map_err(|_| std::io::Error::other("timestamp exceeds u64"))?,
+        );
+        let response = self
+            .request_ok(ServiceRequest::TicketBootstrap {
+                ticket: ticket.clone(),
+                address,
+                peer,
+                requesting_key_name: signing_key.public_key().to_string(),
+                requested_permission,
+                auth: Box::new(auth),
+            })
+            .await?;
+        Self::expect_ok(response)
+    }
+
+    /// Build a database ticket from the daemon's advertised sync addresses.
+    pub async fn create_database_ticket(
+        &self,
+        tree_id: &ID,
+        signing_key: &PrivateKey,
+        identity: crate::auth::SigKey,
+    ) -> crate::Result<crate::sync::DatabaseTicket> {
+        self.register_session_key(signing_key).await?;
+        let response = self
+            .request_ok(ServiceRequest::CreateDatabaseTicket {
+                tree_id: tree_id.clone(),
+                identity,
+            })
+            .await?;
+        match response {
+            ServiceResponse::DatabaseTicket(ticket) => Ok(ticket),
+            other => Err(unexpected_response("DatabaseTicket", &other)),
+        }
+    }
+
     // === Response extraction helpers ===
 
     fn expect_ok(resp: ServiceResponse) -> crate::Result<()> {

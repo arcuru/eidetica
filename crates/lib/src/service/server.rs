@@ -765,6 +765,76 @@ async fn dispatch_inner(
             handle_session_key_register(state, pubkey, &signature)
         }
 
+        ServiceRequest::TicketBootstrapPrepare { ticket } => {
+            require_authenticated(state, "ticket bootstrap")?;
+            let sync = instance
+                .sync()
+                .ok_or(crate::sync::SyncError::SyncNotEnabled)?;
+            let tips = instance.backend().snapshot(ticket.database_id()).await?;
+            let (address, peer) = sync.select_address(ticket.addresses(), None).await?;
+            Ok(ServiceResponse::TicketBootstrapPrepared {
+                address,
+                peer,
+                tips,
+            })
+        }
+        ServiceRequest::TicketBootstrap {
+            ticket,
+            address,
+            peer,
+            requesting_key_name,
+            requested_permission,
+            auth,
+        } => {
+            require_authenticated(state, "ticket bootstrap")?;
+            let sync = instance
+                .sync()
+                .ok_or(crate::sync::SyncError::SyncNotEnabled)?;
+            sync.bootstrap_with_ticket_proof(
+                &address,
+                &peer,
+                &ticket,
+                &requesting_key_name,
+                requested_permission,
+                *auth,
+            )
+            .await?;
+            Ok(ServiceResponse::Ok)
+        }
+        ServiceRequest::CreateDatabaseTicket { tree_id, identity } => {
+            let (login_pubkey, keyset) = match state {
+                ConnectionState::Authenticated {
+                    login_pubkey,
+                    session_keyset,
+                    ..
+                } => (login_pubkey, session_keyset),
+                _ => {
+                    return Err(crate::Error::Auth(Box::new(
+                        AuthError::InvalidAuthConfiguration {
+                            reason: "ticket creation requires an authenticated connection"
+                                .to_string(),
+                        },
+                    )));
+                }
+            };
+            let acting_pubkey = resolve_acting_pubkey(&identity, login_pubkey, keyset)?;
+            gate_tree_permission(
+                instance,
+                &acting_pubkey,
+                &identity,
+                &tree_id,
+                Permission::Admin(0),
+                true,
+            )
+            .await?;
+            let sync = instance
+                .sync()
+                .ok_or(crate::sync::SyncError::SyncNotEnabled)?;
+            Ok(ServiceResponse::DatabaseTicket(
+                sync.create_ticket(&tree_id).await?,
+            ))
+        }
+
         // === Authenticated storage operations ===
         //
         // Gate 1: the connection must have completed `TrustedLogin*`. Gate 2:
@@ -888,6 +958,18 @@ async fn dispatch_inner(
             )
             .await
         }
+    }
+}
+
+fn require_authenticated(state: &ConnectionState, operation: &str) -> crate::Result<()> {
+    if matches!(state, ConnectionState::Authenticated { .. }) {
+        Ok(())
+    } else {
+        Err(crate::Error::Auth(Box::new(
+            AuthError::InvalidAuthConfiguration {
+                reason: format!("{operation} requires an authenticated connection"),
+            },
+        )))
     }
 }
 

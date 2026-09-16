@@ -1,4 +1,4 @@
-# Source this file from .zshrc after setting SHISTORY_HOST.
+# Source this file from .zshrc after setting SHISTORY_HOST_ID.
 autoload -Uz add-zsh-hook
 zmodload zsh/datetime
 

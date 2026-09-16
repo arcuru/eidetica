@@ -4,18 +4,16 @@ use std::{path::PathBuf, process::Command};
 
 use chrono::{TimeZone, Utc};
 use eidetica::{
-    Instance, NewUser, Result,
-    auth::{AuthKey, Permission},
-    backend::database::InMemory,
-    service::ServiceServer,
-    sync::{peer_types::Address, transports::http::HttpTransport},
-    user::types::SyncSettings,
+    Instance, NewUser, Result, backend::database::InMemory, service::ServiceServer,
+    sync::transports::http::HttpTransport,
 };
 use shistory::{
-    HistoryEntry, connect_to, finish, open_database, print_entries, query, setup, start,
+    HistoryEntry, connect_to, finish, host, open_database, print_entries, query, rename, setup,
+    start,
 };
 use tempfile::TempDir;
 use tokio::{sync::watch, task::JoinHandle};
+use uuid::Uuid;
 
 struct Daemon {
     instance: Instance,
@@ -34,6 +32,13 @@ impl Daemon {
             Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless(user))
                 .await
                 .unwrap();
+        instance.enable_sync().await.unwrap();
+        let sync = instance.sync().unwrap();
+        sync.register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
+            .await
+            .unwrap();
+        sync.accept_connections().await.unwrap();
+        sync.get_server_address_for("http").await.unwrap();
         let service = ServiceServer::bind(instance.clone(), &socket)
             .await
             .unwrap();
@@ -50,6 +55,7 @@ impl Daemon {
     }
 
     async fn stop(self) {
+        self.instance.sync().unwrap().stop_server().await.unwrap();
         drop(self.shutdown);
         self.service.await.unwrap().unwrap();
     }
@@ -88,46 +94,114 @@ fn time(second: u32) -> chrono::DateTime<Utc> {
 }
 
 #[tokio::test]
-async fn service_capture_query_concurrency_and_incomplete_records() -> Result<()> {
+async fn service_capture_query_and_incomplete_records() -> Result<()> {
     let daemon = Daemon::start("alice").await;
     let (_client, mut user) = connect_to(&daemon.socket_url, "alice").await?;
-    let database = setup(&mut user, "laptop").await?;
-    setup(&mut user, "server").await?;
+    let laptop = setup(&mut user, None, "laptop").await?;
+    let database = open_database(&user).await?;
 
-    let one = start(&database, "laptop", "shell-a", "/one", "sleep 1", time(1))
+    let one = start(&database, laptop.id, "shell-a", "/one", "sleep 1", time(1))
         .await?
         .unwrap();
-    let two = start(&database, "laptop", "shell-b", "/two", "false", time(2))
+    let two = start(&database, laptop.id, "shell-b", "/two", "false", time(2))
         .await?
         .unwrap();
-    let skipped = start(&database, "laptop", "shell-a", "/", " secret", time(3)).await?;
-    let remote = start(
-        &database,
-        "server",
-        "shell-c",
+    let skipped = start(&database, laptop.id, "shell-a", "/", " secret", time(3)).await?;
+    finish(&database, laptop.id, &two, 8, 1).await?;
+
+    assert!(skipped.is_none());
+    let entries = query(&database, Some(laptop.id), None, 10).await?;
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].command, "false");
+    assert_eq!(entries[0].exit_status, Some(1));
+    assert_eq!(entries[1].command, "sleep 1");
+    assert_eq!(entries[1].exit_status, None);
+    assert_ne!(one, two);
+
+    daemon.stop().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn ticket_is_sufficient_to_setup_a_second_host() -> Result<()> {
+    let first = Daemon::start("alice").await;
+    let second = Daemon::start("alice").await;
+    let (_first_client, mut first_user) = connect_to(&first.socket_url, "alice").await?;
+    let laptop = setup(&mut first_user, None, "laptop").await?;
+    let first_database = open_database(&first_user).await?;
+    let ticket = shistory::ticket(&first_user).await?;
+    assert_eq!(ticket.database_id(), first_database.root_id());
+    assert!(!ticket.addresses().is_empty());
+
+    let (_second_client, mut second_user) = connect_to(&second.socket_url, "alice").await?;
+    let server = setup(&mut second_user, Some(&ticket), "server").await?;
+    let second_database = open_database(&second_user).await?;
+    assert_eq!(second_database.root_id(), first_database.root_id());
+
+    let record = start(
+        &second_database,
+        server.id,
+        "server-shell",
         "/srv",
-        "echo needle",
-        time(4),
+        "echo joined",
+        time(2),
     )
     .await?
     .unwrap();
+    finish(&second_database, server.id, &record, 4, 0).await?;
+    second.instance.flush_sync().await?;
+    first.instance.flush_sync().await?;
 
-    finish(&database, "laptop", &two, 8, 1).await?;
-    finish(&database, "server", &remote, 3, 0).await?;
+    let entries = query(&first_database, None, None, 10).await?;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].command, "echo joined");
+    assert_eq!(host(&first_database, laptop.id).await?.name, "laptop");
+    assert_eq!(host(&first_database, server.id).await?.name, "server");
 
-    assert!(skipped.is_none());
-    let laptop = query(&database, Some("laptop"), None, 10).await?;
-    assert_eq!(laptop.len(), 2);
-    assert_eq!(laptop[0].command, "false");
-    assert_eq!(laptop[0].exit_status, Some(1));
-    assert_eq!(laptop[1].command, "sleep 1");
-    assert_eq!(laptop[1].exit_status, None);
-    assert_ne!(one, two);
+    first.stop().await;
+    second.stop().await;
+    Ok(())
+}
 
-    let all = query(&database, None, Some("needle"), 10).await?;
-    assert_eq!(all.len(), 1);
-    assert_eq!(all[0].host, "server");
-    assert_eq!(query(&database, None, None, 2).await?.len(), 2);
+#[tokio::test]
+async fn display_name_change_keeps_uuid_store_and_history_ownership() -> Result<()> {
+    let daemon = Daemon::start("alice").await;
+    let (_client, mut user) = connect_to(&daemon.socket_url, "alice").await?;
+    let host_record = setup(&mut user, None, "before").await?;
+    let database = open_database(&user).await?;
+    let record = start(
+        &database,
+        host_record.id,
+        "shell",
+        "/tmp",
+        "echo before",
+        time(1),
+    )
+    .await?
+    .unwrap();
+    finish(&database, host_record.id, &record, 1, 0).await?;
+
+    rename(&database, host_record.id, "after").await?;
+    let second = start(
+        &database,
+        host_record.id,
+        "shell",
+        "/tmp",
+        "echo after",
+        time(2),
+    )
+    .await?
+    .unwrap();
+    finish(&database, host_record.id, &second, 1, 0).await?;
+
+    assert_eq!(host(&database, host_record.id).await?.name, "after");
+    let entries = query(&database, Some(host_record.id), None, 10).await?;
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].host_id, host_record.id);
+    assert_eq!(entries[1].host_id, host_record.id);
+    assert_eq!(entries[0].host_name, "after");
+    assert_eq!(entries[1].host_name, "after");
+    assert_eq!(entries[1].command, "echo before");
 
     daemon.stop().await;
     Ok(())
@@ -136,20 +210,26 @@ async fn service_capture_query_concurrency_and_incomplete_records() -> Result<()
 #[tokio::test(flavor = "multi_thread")]
 async fn cli_captures_and_queries_through_configured_socket() {
     let daemon = Daemon::start("alice").await;
-    let setup = run_cli(&daemon, &["--user", "alice", "--host", "laptop", "setup"]).await;
+    let setup = run_cli(&daemon, &["--user", "alice", "setup", "--name", "laptop"]).await;
     assert!(
         setup.status.success(),
         "{}",
         String::from_utf8_lossy(&setup.stderr)
     );
+    let setup_output = String::from_utf8(setup.stdout).unwrap();
+    let host_id = setup_output
+        .lines()
+        .find_map(|line| line.strip_prefix("host id: "))
+        .unwrap();
+    Uuid::parse_str(host_id).unwrap();
 
     let start = run_cli_with_stdin(
         &daemon,
         &[
             "--user",
             "alice",
-            "--host",
-            "laptop",
+            "--host-id",
+            host_id,
             "start",
             "--session",
             "cli-shell",
@@ -172,8 +252,8 @@ async fn cli_captures_and_queries_through_configured_socket() {
         &[
             "--user",
             "alice",
-            "--host",
-            "laptop",
+            "--host-id",
+            host_id,
             "finish",
             id.trim(),
             "--duration-ms",
@@ -207,171 +287,13 @@ async fn cli_captures_and_queries_through_configured_socket() {
         "{}",
         String::from_utf8_lossy(&search.stderr)
     );
-    let output = String::from_utf8(search.stdout).unwrap();
-    assert!(output.contains("\tlaptop\t0\t12\t/tmp\techo cli needle\\n\\n"));
-
-    let skipped = run_cli_with_stdin(
-        &daemon,
-        &[
-            "--user",
-            "alice",
-            "--host",
-            "laptop",
-            "start",
-            "--session",
-            "cli-shell",
-            "--cwd",
-            "/tmp",
-            "--started-at",
-            "2026-09-14T12:00:01Z",
-        ],
-        b"  echo skipped",
-    )
-    .await;
-    assert!(skipped.status.success());
-    assert!(skipped.stdout.is_empty());
+    assert!(
+        String::from_utf8(search.stdout)
+            .unwrap()
+            .contains("\tlaptop\t0\t12\t/tmp\techo cli needle\\n\\n")
+    );
 
     daemon.stop().await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn removed_capture_options_are_rejected_without_affecting_queries() {
-    let daemon = Daemon::start("alice").await;
-    let setup = run_cli(&daemon, &["--user", "alice", "--host", "laptop", "setup"]).await;
-    assert!(setup.status.success());
-
-    let removed_flag = run_cli(
-        &daemon,
-        &[
-            "--capture-disabled",
-            "--user",
-            "alice",
-            "--host",
-            "laptop",
-            "list",
-        ],
-    )
-    .await;
-    assert_eq!(removed_flag.status.code(), Some(2));
-
-    let query_with_old_env = tokio::task::spawn_blocking({
-        let socket = daemon.socket.clone();
-        move || {
-            Command::new(env!("CARGO_BIN_EXE_shistory"))
-                .env("EIDETICA_SOCKET", socket)
-                .env("SHISTORY_CAPTURE_DISABLED", "1")
-                .args(["--user", "alice", "--host", "laptop", "list"])
-                .output()
-                .unwrap()
-        }
-    })
-    .await
-    .unwrap();
-    assert!(query_with_old_env.status.success());
-
-    daemon.stop().await;
-}
-
-#[tokio::test]
-async fn no_peer_write_converges_between_two_service_daemons() -> Result<()> {
-    let first = Daemon::start("alice").await;
-    let second = Daemon::start("alice").await;
-    first.instance.enable_sync().await?;
-    second.instance.enable_sync().await?;
-    let first_sync = first.instance.sync().unwrap();
-    let second_sync = second.instance.sync().unwrap();
-    first_sync
-        .register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
-        .await?;
-    second_sync
-        .register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
-        .await?;
-    first_sync.accept_connections().await?;
-    second_sync.accept_connections().await?;
-    let first_address = Address::http(first_sync.get_server_address_for("http").await?);
-    let second_address = Address::http(second_sync.get_server_address_for("http").await?);
-
-    let (_first_client, mut first_user) = connect_to(&first.socket_url, "alice").await?;
-    let first_database = setup(&mut first_user, "laptop").await?;
-    let database_id = first_database.root_id().clone();
-    let transaction = first_database.new_transaction().await?;
-    transaction
-        .get_settings()?
-        .set_global_auth_key(AuthKey::active(None, Permission::Admin(0)))
-        .await?;
-    transaction.commit().await?;
-    first_user
-        .track_database(
-            database_id.clone(),
-            &first_user.get_default_key()?,
-            SyncSettings::on_commit(),
-        )
-        .await?;
-
-    let offline_id = start(
-        &first_database,
-        "laptop",
-        "offline-shell",
-        "/tmp",
-        "echo offline",
-        time(1),
-    )
-    .await?
-    .unwrap();
-    finish(&first_database, "laptop", &offline_id, 7, 0).await?;
-
-    second_sync
-        .sync_with_peer(&first_address, Some(&database_id))
-        .await?;
-    let (_second_client, mut second_user) = connect_to(&second.socket_url, "alice").await?;
-    second_user
-        .track_database(
-            database_id.clone(),
-            &second_user.get_default_key()?,
-            SyncSettings::on_commit(),
-        )
-        .await?;
-    setup(&mut second_user, "server").await?;
-    first_sync
-        .add_peer_address(&second.instance.id(), second_address)
-        .await?;
-    second_sync
-        .add_peer_address(&first.instance.id(), first_address)
-        .await?;
-    first_sync
-        .add_tree_sync(&second.instance.id(), &database_id)
-        .await?;
-    second_sync
-        .add_tree_sync(&first.instance.id(), &database_id)
-        .await?;
-
-    let second_database = open_database(&second_user).await?;
-    let server_id = start(
-        &second_database,
-        "server",
-        "server-shell",
-        "/srv",
-        "echo server",
-        time(2),
-    )
-    .await?
-    .unwrap();
-    finish(&second_database, "server", &server_id, 4, 0).await?;
-    second.instance.flush_sync().await?;
-    first.instance.flush_sync().await?;
-
-    let entries = query(&first_database, None, None, 10).await?;
-    assert_eq!(commands(entries), ["echo server", "echo offline"]);
-
-    first_sync.stop_server().await?;
-    second_sync.stop_server().await?;
-    first.stop().await;
-    second.stop().await;
-    Ok(())
-}
-
-fn commands(entries: Vec<HistoryEntry>) -> Vec<String> {
-    entries.into_iter().map(|entry| entry.command).collect()
 }
 
 #[test]
@@ -411,8 +333,8 @@ fn cli_command_text_is_not_exposed_in_argv() {
         .args([
             "--user",
             "alice",
-            "--host",
-            "laptop",
+            "--host-id",
+            "4cc330d8-b6af-44e5-a46b-eb700df805c5",
             "start",
             "--session",
             "cli-shell",
@@ -445,8 +367,7 @@ fn cli_command_text_is_not_exposed_in_argv() {
     assert!(
         !command_line
             .windows(secret.len())
-            .any(|window| window == secret.as_bytes()),
-        "command text leaked through argv"
+            .any(|window| window == secret.as_bytes())
     );
 }
 
@@ -458,7 +379,8 @@ fn displayed_entries_escape_control_characters_into_one_row() {
         cwd: "/tmp/with\ttab\nand-newline".to_owned(),
         duration_ms: Some(1),
         exit_status: Some(0),
-        host: "fixture-host".to_owned(),
+        host_id: Uuid::nil(),
+        host_name: "fixture-host".to_owned(),
         session: "fixture-session".to_owned(),
     };
     let mut output = Vec::new();

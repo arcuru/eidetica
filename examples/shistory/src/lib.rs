@@ -2,9 +2,16 @@ use std::io::{self, Write};
 
 use chrono::{DateTime, Utc};
 use eidetica::{
-    Database, Instance, Result, crdt::Doc, service::default_socket_url, store::Table, user::User,
+    Database, Instance, Result,
+    auth::{AuthKey, Permission},
+    crdt::Doc,
+    service::default_socket_url,
+    store::Table,
+    sync::DatabaseTicket,
+    user::{SyncSettings, User},
 };
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 const DATABASE_NAME: &str = "shistory";
 const HOSTS_STORE: &str = "hosts";
@@ -19,13 +26,16 @@ pub struct HistoryEntry {
     pub cwd: String,
     pub duration_ms: Option<i64>,
     pub exit_status: Option<i32>,
-    pub host: String,
+    pub host_id: Uuid,
+    #[serde(skip)]
+    pub host_name: String,
     pub session: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct Host {
-    label: String,
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Host {
+    pub id: Uuid,
+    pub name: String,
 }
 
 pub async fn connect(username: &str) -> Result<(Instance, User)> {
@@ -45,40 +55,68 @@ pub async fn connect_to(socket_url: impl AsRef<str>, username: &str) -> Result<(
     Ok((instance, user))
 }
 
-pub async fn setup(user: &mut User, host: &str) -> Result<Database> {
-    validate_host(host)?;
-    let database = load_or_create_database(user).await?;
+pub async fn setup(user: &mut User, ticket: Option<&DatabaseTicket>, name: &str) -> Result<Host> {
+    validate_name(name)?;
+    let database = match ticket {
+        Some(ticket) => user.join_database(ticket, Permission::Write(10)).await?,
+        None => create_database(user).await?,
+    };
+    let host = Host {
+        id: Uuid::new_v4(),
+        name: name.to_owned(),
+    };
+    save_host(&database, &host).await?;
+    Ok(host)
+}
+
+pub async fn ticket(user: &User) -> Result<DatabaseTicket> {
+    let database = open_database(user).await?;
+    user.share_database(database.root_id()).await
+}
+
+pub async fn rename(database: &Database, host_id: Uuid, name: &str) -> Result<()> {
+    validate_name(name)?;
+    let transaction = database.new_transaction().await?;
+    let hosts = transaction.get_store::<Table<Host>>(HOSTS_STORE).await?;
+    let mut host = hosts.get(&host_id.to_string()).await?;
+    host.name = name.to_owned();
+    hosts.set(&host_id.to_string(), host).await?;
+    transaction.commit().await.map(|_| ())
+}
+
+async fn save_host(database: &Database, host: &Host) -> Result<()> {
     let transaction = database.new_transaction().await?;
     transaction
         .get_store::<Table<Host>>(HOSTS_STORE)
         .await?
-        .set(
-            host,
-            Host {
-                label: host.to_owned(),
-            },
-        )
+        .set(&host.id.to_string(), host.clone())
         .await?;
-    transaction.commit().await?;
-    Ok(database)
+    transaction.commit().await.map(|_| ())
+}
+
+pub async fn host(database: &Database, host_id: Uuid) -> Result<Host> {
+    database
+        .get_store_viewer::<Table<Host>>(HOSTS_STORE)
+        .await?
+        .get(&host_id.to_string())
+        .await
 }
 
 pub async fn start(
     database: &Database,
-    host: &str,
+    host_id: Uuid,
     session: &str,
     cwd: &str,
     command: &str,
     started_at: DateTime<Utc>,
 ) -> Result<Option<String>> {
-    validate_host(host)?;
     if command.starts_with(' ') {
         return Ok(None);
     }
-
+    host(database, host_id).await?;
     let transaction = database.new_transaction().await?;
     let id = transaction
-        .get_store::<Table<HistoryEntry>>(&history_store(host))
+        .get_store::<Table<HistoryEntry>>(&history_store(host_id))
         .await?
         .insert(HistoryEntry {
             command: command.to_owned(),
@@ -86,7 +124,8 @@ pub async fn start(
             cwd: cwd.to_owned(),
             duration_ms: None,
             exit_status: None,
-            host: host.to_owned(),
+            host_id,
+            host_name: String::new(),
             session: session.to_owned(),
         })
         .await?;
@@ -96,35 +135,25 @@ pub async fn start(
 
 pub async fn finish(
     database: &Database,
-    host: &str,
+    host_id: Uuid,
     id: &str,
     duration_ms: i64,
     exit_status: i32,
 ) -> Result<()> {
-    validate_host(host)?;
     let transaction = database.new_transaction().await?;
     let history = transaction
-        .get_store::<Table<HistoryEntry>>(&history_store(host))
+        .get_store::<Table<HistoryEntry>>(&history_store(host_id))
         .await?;
     let mut entry = history.get(id).await?;
-    if entry.host != host {
-        return Err(eidetica::store::StoreError::InvalidOperation {
-            store: history_store(host),
-            operation: "finish".to_owned(),
-            reason: "record belongs to a different host".to_owned(),
-        }
-        .into());
-    }
     entry.duration_ms = Some(duration_ms.max(0));
     entry.exit_status = Some(exit_status);
     history.set(id, entry).await?;
-    transaction.commit().await?;
-    Ok(())
+    transaction.commit().await.map(|_| ())
 }
 
 pub async fn query(
     database: &Database,
-    host: Option<&str>,
+    host_id: Option<Uuid>,
     text: Option<&str>,
     limit: usize,
 ) -> Result<Vec<HistoryEntry>> {
@@ -135,25 +164,25 @@ pub async fn query(
         }
         .into());
     }
-
-    let hosts = match host {
-        Some(host) => {
-            validate_host(host)?;
-            vec![host.to_owned()]
-        }
+    let host_ids = match host_id {
+        Some(host_id) => vec![host_id],
         None => configured_hosts(database).await?,
     };
     let mut entries = Vec::new();
-    for host in hosts {
+    for host_id in host_ids {
+        let host_name = host(database, host_id).await?.name;
         let history = database
-            .get_store_viewer::<Table<HistoryEntry>>(&history_store(&host))
+            .get_store_viewer::<Table<HistoryEntry>>(&history_store(host_id))
             .await?;
         entries.extend(
             history
                 .search(|entry| text.is_none_or(|text| entry.command.contains(text)))
                 .await?
                 .into_iter()
-                .map(|(_, entry)| entry),
+                .map(|(_, mut entry)| {
+                    entry.host_name = host_name.clone();
+                    entry
+                }),
         );
     }
     entries.sort_by_key(|entry| std::cmp::Reverse(entry.started_at));
@@ -170,7 +199,7 @@ pub fn print_entries(mut output: impl Write, entries: &[HistoryEntry]) -> io::Re
             output,
             "{}\t{}\t{}\t{}\t",
             entry.started_at.to_rfc3339(),
-            entry.host,
+            entry.host_name,
             status,
             entry
                 .duration_ms
@@ -195,22 +224,32 @@ fn write_escaped(mut output: impl Write, value: &str) -> io::Result<()> {
     Ok(())
 }
 
-async fn load_or_create_database(user: &mut User) -> Result<Database> {
+async fn create_database(user: &mut User) -> Result<Database> {
     match user.find_database(DATABASE_NAME).await {
-        Ok(mut databases) if databases.len() == 1 => Ok(databases.pop().unwrap()),
-        Ok(databases) => Err(eidetica::store::StoreError::InvalidConfiguration {
+        Ok(_) => Err(eidetica::store::StoreError::InvalidConfiguration {
             store: DATABASE_NAME.to_owned(),
-            reason: format!(
-                "found {} tracked databases named {DATABASE_NAME}; keep exactly one",
-                databases.len()
-            ),
+            reason: "history database already exists; omit the ticket only on the first host"
+                .to_owned(),
         }
         .into()),
         Err(error) if error.is_not_found() => {
             let mut settings = Doc::new();
             settings.set("name", DATABASE_NAME);
             let key = user.get_default_key()?;
-            user.create_database(settings, &key).await
+            let database = user.create_database(settings, &key).await?;
+            let transaction = database.new_transaction().await?;
+            transaction
+                .get_settings()?
+                .set_auth_key(&key, AuthKey::active(None, Permission::Admin(0)))
+                .await?;
+            transaction
+                .get_settings()?
+                .set_global_auth_key(AuthKey::active(None, Permission::Write(10)))
+                .await?;
+            transaction.commit().await?;
+            user.track_database(database.root_id().clone(), &key, SyncSettings::on_commit())
+                .await?;
+            Ok(database)
         }
         Err(error) => Err(error),
     }
@@ -231,38 +270,28 @@ pub async fn open_database(user: &User) -> Result<Database> {
     Ok(databases.pop().unwrap())
 }
 
-async fn configured_hosts(database: &Database) -> Result<Vec<String>> {
-    let hosts = database
+async fn configured_hosts(database: &Database) -> Result<Vec<Uuid>> {
+    database
         .get_store_viewer::<Table<Host>>(HOSTS_STORE)
         .await?
         .search(|_| true)
-        .await?;
-    let mut labels = hosts
+        .await?
         .into_iter()
-        .map(|(_, host)| host.label)
-        .collect::<Vec<_>>();
-    labels.sort();
-    labels.dedup();
-    Ok(labels)
+        .map(|(_, host)| Ok(host.id))
+        .collect()
 }
 
-fn validate_host(host: &str) -> Result<()> {
-    if host.is_empty()
-        || !host
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
-    {
+fn validate_name(name: &str) -> Result<()> {
+    if name.trim().is_empty() {
         return Err(eidetica::store::StoreError::InvalidConfiguration {
             store: HOSTS_STORE.to_owned(),
-            reason:
-                "host must be a non-empty label containing only letters, digits, '.', '-', or '_'"
-                    .to_owned(),
+            reason: "host display name must not be empty".to_owned(),
         }
         .into());
     }
     Ok(())
 }
 
-fn history_store(host: &str) -> String {
-    format!("{HISTORY_STORE_PREFIX}{host}")
+fn history_store(host_id: Uuid) -> String {
+    format!("{HISTORY_STORE_PREFIX}{host_id}")
 }

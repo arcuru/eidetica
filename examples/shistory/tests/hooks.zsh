@@ -29,7 +29,7 @@ chmod +x "$tmp/shistory"
 
 export SHISTORY_BIN="$tmp/shistory"
 export SHISTORY_HOOK_LOG="$tmp/calls"
-export SHISTORY_HOST=test-host
+export SHISTORY_HOST_ID=4cc330d8-b6af-44e5-a46b-eb700df805c5
 source "$example_dir/shistory.zsh"
 add-zsh-hook -d preexec _shistory_preexec
 add-zsh-hook -d precmd _shistory_precmd

@@ -2,8 +2,12 @@ use std::{future::Future, io::Read, process::ExitCode, str::FromStr, time::Durat
 
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
-use eidetica::Result;
-use shistory::{DEFAULT_LIMIT, connect, finish, open_database, print_entries, query, setup, start};
+use eidetica::{Result, sync::DatabaseTicket};
+use shistory::{
+    DEFAULT_LIMIT, connect, finish, open_database, print_entries, query, rename, setup, start,
+    ticket,
+};
+use uuid::Uuid;
 
 const CAPTURE_DEADLINE: Duration = Duration::from_secs(1);
 
@@ -14,9 +18,9 @@ struct Cli {
     #[arg(long, env = "SHISTORY_USER", default_value = "shistory")]
     user: String,
 
-    /// Stable, unique label for this host.
-    #[arg(long, env = "SHISTORY_HOST")]
-    host: Option<String>,
+    /// Stable UUID printed by setup for this local host record.
+    #[arg(long, env = "SHISTORY_HOST_ID")]
+    host_id: Option<Uuid>,
 
     #[command(subcommand)]
     command: Command,
@@ -24,8 +28,18 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Create or open the history database and register this host.
-    Setup,
+    /// Create the first history database or join one using an Eidetica ticket.
+    Setup {
+        /// Eidetica ticket from the first host; omit only when creating it.
+        ticket: Option<DatabaseTicket>,
+        /// Mutable display name for this host.
+        #[arg(long, env = "SHISTORY_HOST_NAME")]
+        name: String,
+    },
+    /// Change this host's display name without changing its UUID or Store.
+    Rename { name: String },
+    /// Print an Eidetica ticket for setting up another host.
+    Ticket,
     /// Start a history record, printing its ID.
     Start {
         #[arg(long)]
@@ -46,7 +60,7 @@ enum Command {
     /// List recent history.
     List {
         #[arg(long, conflicts_with = "all_hosts")]
-        host: Option<String>,
+        host_id: Option<Uuid>,
         #[arg(long)]
         all_hosts: bool,
         #[arg(long, default_value_t = DEFAULT_LIMIT)]
@@ -56,7 +70,7 @@ enum Command {
     Search {
         text: String,
         #[arg(long, conflicts_with = "all_hosts")]
-        host: Option<String>,
+        host_id: Option<Uuid>,
         #[arg(long)]
         all_hosts: bool,
         #[arg(long, default_value_t = DEFAULT_LIMIT)]
@@ -77,28 +91,39 @@ async fn main() -> ExitCode {
 
 async fn run(cli: Cli) -> Result<()> {
     match cli.command {
-        Command::Setup => {
-            let host = required_host(cli.host.as_deref())?;
+        Command::Setup { ticket, name } => {
             let (_instance, mut user) = connect(&cli.user).await?;
-            let database = setup(&mut user, host).await?;
-            println!("history database: {}", database.root_id());
+            let host = setup(&mut user, ticket.as_ref(), &name).await?;
+            println!(
+                "history database: {}",
+                open_database(&user).await?.root_id()
+            );
+            println!("host id: {}", host.id);
+        }
+        Command::Rename { name } => {
+            let host_id = required_host_id(cli.host_id)?;
+            let (_instance, user) = connect(&cli.user).await?;
+            rename(&open_database(&user).await?, host_id, &name).await?;
+        }
+        Command::Ticket => {
+            let (_instance, user) = connect(&cli.user).await?;
+            println!("{}", ticket(&user).await?);
         }
         Command::Start {
             session,
             cwd,
             started_at,
         } => {
-            let host = required_host(cli.host.as_deref())?;
+            let host_id = required_host_id(cli.host_id)?;
             let command = read_command()?;
             if command.starts_with(' ') {
                 return Ok(());
             }
             let id = capture_with_deadline(async {
                 let (_instance, user) = connect(&cli.user).await?;
-                let database = open_database(&user).await?;
                 start(
-                    &database,
-                    host,
+                    &open_database(&user).await?,
+                    host_id,
                     &session,
                     &cwd,
                     &command,
@@ -116,39 +141,45 @@ async fn run(cli: Cli) -> Result<()> {
             duration_ms,
             exit_status,
         } => {
-            let host = required_host(cli.host.as_deref())?;
+            let host_id = required_host_id(cli.host_id)?;
             capture_with_deadline(async {
                 let (_instance, user) = connect(&cli.user).await?;
-                let database = open_database(&user).await?;
-                finish(&database, host, &id, duration_ms, exit_status).await
+                finish(
+                    &open_database(&user).await?,
+                    host_id,
+                    &id,
+                    duration_ms,
+                    exit_status,
+                )
+                .await
             })
             .await?;
         }
         Command::List {
-            host,
+            host_id,
             all_hosts,
             limit,
         } => {
             let (_instance, user) = connect(&cli.user).await?;
             let database = open_database(&user).await?;
-            let host = selected_host(host.as_deref().or(cli.host.as_deref()), all_hosts)?;
+            let host_id = selected_host(host_id.or(cli.host_id), all_hosts)?;
             print_entries(
                 std::io::stdout(),
-                &query(&database, host, None, limit).await?,
+                &query(&database, host_id, None, limit).await?,
             )?;
         }
         Command::Search {
             text,
-            host,
+            host_id,
             all_hosts,
             limit,
         } => {
             let (_instance, user) = connect(&cli.user).await?;
             let database = open_database(&user).await?;
-            let host = selected_host(host.as_deref().or(cli.host.as_deref()), all_hosts)?;
+            let host_id = selected_host(host_id.or(cli.host_id), all_hosts)?;
             print_entries(
                 std::io::stdout(),
-                &query(&database, host, Some(&text), limit).await?,
+                &query(&database, host_id, Some(&text), limit).await?,
             )?;
         }
     }
@@ -174,21 +205,21 @@ async fn capture_with_deadline<T>(future: impl Future<Output = Result<T>>) -> Re
         })?
 }
 
-fn required_host(host: Option<&str>) -> Result<&str> {
-    host.ok_or_else(|| {
+fn required_host_id(host_id: Option<Uuid>) -> Result<Uuid> {
+    host_id.ok_or_else(|| {
         eidetica::store::StoreError::InvalidConfiguration {
             store: "shistory".to_owned(),
-            reason: "set --host or SHISTORY_HOST to a stable, unique host label".to_owned(),
+            reason: "set --host-id or SHISTORY_HOST_ID to the UUID printed by setup".to_owned(),
         }
         .into()
     })
 }
 
-fn selected_host(host: Option<&str>, all_hosts: bool) -> Result<Option<&str>> {
+fn selected_host(host_id: Option<Uuid>, all_hosts: bool) -> Result<Option<Uuid>> {
     if all_hosts {
         Ok(None)
     } else {
-        required_host(host).map(Some)
+        required_host_id(host_id).map(Some)
     }
 }
 
