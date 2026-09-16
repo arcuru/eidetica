@@ -1,6 +1,10 @@
 #![cfg(unix)]
 
-use std::{path::PathBuf, process::Command};
+use std::{
+    path::PathBuf,
+    process::Command,
+    time::{Duration, Instant},
+};
 
 use chrono::{TimeZone, Utc};
 use eidetica::{
@@ -67,9 +71,17 @@ async fn run_cli(daemon: &Daemon, args: &[&str]) -> std::process::Output {
 }
 
 async fn run_cli_with_stdin(daemon: &Daemon, args: &[&str], stdin: &[u8]) -> std::process::Output {
+    run_cli_at_socket(&daemon.socket, args, stdin).await
+}
+
+async fn run_cli_at_socket(
+    socket: &std::path::Path,
+    args: &[&str],
+    stdin: &[u8],
+) -> std::process::Output {
     use std::io::Write;
 
-    let socket = daemon.socket.clone();
+    let socket = socket.to_owned();
     let args = args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
     let stdin = stdin.to_vec();
     tokio::task::spawn_blocking(move || {
@@ -111,7 +123,7 @@ async fn service_capture_query_and_incomplete_records() -> Result<()> {
     finish(&database, laptop.id, &two, 8, 1).await?;
 
     assert!(skipped.is_none());
-    let entries = query(&database, Some(laptop.id), None, 10).await?;
+    let entries = query(&database, Some(laptop.id), None, 10, true).await?;
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0].command, "false");
     assert_eq!(entries[0].exit_status, Some(1));
@@ -156,7 +168,7 @@ async fn ticket_is_sufficient_to_setup_a_second_host() -> Result<()> {
     second.instance.flush_sync().await?;
     first.instance.flush_sync().await?;
 
-    let entries = query(&first_database, None, None, 10).await?;
+    let entries = query(&first_database, None, None, 10, true).await?;
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].command, "echo joined");
     assert_eq!(host(&first_database, laptop.id).await?.name, "laptop");
@@ -199,7 +211,7 @@ async fn display_name_change_keeps_uuid_store_and_history_ownership() -> Result<
     finish(&database, host_record.id, &second, 1, 0).await?;
 
     assert_eq!(host(&database, host_record.id).await?.name, "after");
-    let entries = query(&database, Some(host_record.id), None, 10).await?;
+    let entries = query(&database, Some(host_record.id), None, 10, true).await?;
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0].host_id, host_record.id);
     assert_eq!(entries[1].host_id, host_record.id);
@@ -313,7 +325,7 @@ async fn cli_captures_and_queries_through_configured_socket() {
 }
 
 #[tokio::test]
-async fn query_defaults_to_twenty_rows_and_summary_scans_all_history() -> Result<()> {
+async fn query_limits_unique_commands_and_summary_scans_all_history() -> Result<()> {
     let daemon = Daemon::start("alice").await;
     let (_client, mut user) = connect_to(&daemon.socket_url, "alice").await?;
     let laptop = setup(&mut user, None, "laptop").await?;
@@ -337,14 +349,15 @@ async fn query_defaults_to_twenty_rows_and_summary_scans_all_history() -> Result
                 exit_status: Some(0),
                 host_id: laptop.id,
                 host_name: String::new(),
+                entry_id: String::new(),
                 session: "shell".to_owned(),
             })
             .await?;
     }
     transaction.commit().await?;
 
-    let entries = query(&database, Some(laptop.id), None, DEFAULT_LIMIT).await?;
-    assert_eq!(entries.len(), DEFAULT_LIMIT);
+    let entries = query(&database, Some(laptop.id), None, DEFAULT_LIMIT, false).await?;
+    assert_eq!(entries.len(), 2);
     assert_eq!(entries[0].command, "rare");
 
     let summary = summarize(&database, None).await?;
@@ -355,6 +368,341 @@ async fn query_defaults_to_twenty_rows_and_summary_scans_all_history() -> Result
     );
     assert_eq!(summary.longest_runtime.unwrap().command, "rare");
     assert_eq!(summary.successes, MAX_LIMIT + 1);
+
+    daemon.stop().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cli_status_reports_read_only_recording_prerequisites() -> Result<()> {
+    let daemon = Daemon::start("alice").await;
+    let (_client, mut user) = connect_to(&daemon.socket_url, "alice").await?;
+    let configured = setup(&mut user, None, "laptop").await?;
+    let database = open_database(&user).await?;
+    let host_id = configured.id.to_string();
+
+    let healthy = run_cli(
+        &daemon,
+        &["--user", "alice", "--host-id", &host_id, "status"],
+    )
+    .await;
+    assert!(
+        healthy.status.success(),
+        "{}",
+        String::from_utf8_lossy(&healthy.stderr)
+    );
+    let healthy = String::from_utf8(healthy.stdout).unwrap();
+    assert!(healthy.contains("effective socket: "));
+    assert!(healthy.contains("daemon connectivity: ok"));
+    assert!(healthy.contains("passwordless user: ok"));
+    assert!(healthy.contains("history database: ok ("));
+    assert!(healthy.contains("configured host: ok ("));
+    assert!(healthy.contains("shell hooks: not checked"));
+    assert!(healthy.contains("remote synchronization: not checked"));
+    assert_eq!(
+        summarize(&database, None).await?.total,
+        0,
+        "status made no history record"
+    );
+
+    let unconfigured = run_cli(&daemon, &["--user", "alice", "status"]).await;
+    assert!(!unconfigured.status.success());
+    let unconfigured = String::from_utf8(unconfigured.stdout).unwrap();
+    assert!(unconfigured.contains("host configuration: failed"));
+    assert!(unconfigured.contains("configured host: skipped — no host UUID is configured"));
+    assert_eq!(
+        summarize(&database, None).await?.total,
+        0,
+        "unconfigured status made no history record"
+    );
+
+    let invalid = run_cli(
+        &daemon,
+        &[
+            "--user",
+            "alice",
+            "--host-id",
+            "00000000-0000-0000-0000-000000000000",
+            "status",
+        ],
+    )
+    .await;
+    assert!(!invalid.status.success());
+    let invalid = String::from_utf8(invalid.stdout).unwrap();
+    assert!(invalid.contains("configured host: failed"));
+    assert!(invalid.contains("use the UUID printed by setup"));
+    assert_eq!(
+        summarize(&database, None).await?.total,
+        0,
+        "failed status made no history record"
+    );
+
+    let missing_user = run_cli(
+        &daemon,
+        &["--user", "missing", "--host-id", &host_id, "status"],
+    )
+    .await;
+    assert!(!missing_user.status.success());
+    let missing_user = String::from_utf8(missing_user.stdout).unwrap();
+    assert!(missing_user.contains("passwordless user: failed"));
+    assert!(missing_user.contains("history database: skipped"));
+    assert!(missing_user.contains("configured host: skipped"));
+
+    daemon.stop().await;
+
+    let no_database = Daemon::start("bob").await;
+    let missing_database = run_cli(
+        &no_database,
+        &[
+            "--user",
+            "bob",
+            "--host-id",
+            "00000000-0000-0000-0000-000000000000",
+            "status",
+        ],
+    )
+    .await;
+    assert!(!missing_database.status.success());
+    let missing_database = String::from_utf8(missing_database.stdout).unwrap();
+    assert!(missing_database.contains("passwordless user: ok"));
+    assert!(missing_database.contains("history database: failed"));
+    assert!(missing_database.contains("run shistory setup once"));
+    assert!(missing_database.contains("configured host: skipped"));
+    no_database.stop().await;
+
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn cli_status_reports_unavailable_and_unresponsive_daemons_within_deadline() {
+    use std::{os::unix::net::UnixListener, sync::mpsc, thread};
+
+    let missing_dir = tempfile::tempdir().unwrap();
+    let missing =
+        run_cli_at_socket(&missing_dir.path().join("missing.sock"), &["status"], b"").await;
+    assert!(!missing.status.success());
+    let missing = String::from_utf8(missing.stdout).unwrap();
+    assert!(missing.contains("daemon connectivity: failed"));
+    assert!(missing.contains("start the Eidetica daemon"));
+    assert!(missing.contains("passwordless user: skipped"));
+    assert!(missing.contains("shell hooks: not checked"));
+    assert!(missing.contains("remote synchronization: not checked"));
+
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("stalled.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let (accepted_tx, accepted_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let server = thread::spawn(move || {
+        let (_stream, _) = listener.accept().unwrap();
+        accepted_tx.send(()).unwrap();
+        release_rx.recv().unwrap();
+    });
+
+    let started = Instant::now();
+    let stalled = run_cli_at_socket(&socket, &["status"], b"").await;
+    assert!(started.elapsed() < Duration::from_secs(2));
+    accepted_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert!(!stalled.status.success());
+    let stalled = String::from_utf8(stalled.stdout).unwrap();
+    assert!(stalled.contains("daemon connection exceeded the 1 second diagnostic deadline"));
+    release_tx.send(()).unwrap();
+    server.join().unwrap();
+}
+
+#[tokio::test]
+async fn query_deduplicates_full_commands_after_filtering_and_before_limiting() -> Result<()> {
+    let daemon = Daemon::start("alice").await;
+    let (_client, mut user) = connect_to(&daemon.socket_url, "alice").await?;
+    let first = setup(&mut user, None, "first").await?;
+    let database = open_database(&user).await?;
+    let second = Host {
+        id: Uuid::new_v4(),
+        name: "second".to_owned(),
+    };
+    let transaction = database.new_transaction().await?;
+    transaction
+        .get_store::<Table<Host>>("hosts")
+        .await?
+        .set(&second.id.to_string(), second.clone())
+        .await?;
+    let first_history = transaction
+        .get_store::<Table<HistoryEntry>>(&format!("history-{}", first.id))
+        .await?;
+    let second_history = transaction
+        .get_store::<Table<HistoryEntry>>(&format!("history-{}", second.id))
+        .await?;
+    for second_offset in 0..=DEFAULT_LIMIT {
+        first_history
+            .insert(HistoryEntry {
+                command: "repeat needle".to_owned(),
+                started_at: time(10) + chrono::Duration::seconds(second_offset as i64),
+                cwd: format!("/repeat/{second_offset}"),
+                duration_ms: Some(1),
+                exit_status: Some(0),
+                host_id: first.id,
+                host_name: String::new(),
+                entry_id: String::new(),
+                session: "shell".to_owned(),
+            })
+            .await?;
+    }
+    for (command, cwd) in [
+        (format!("{}a", "x".repeat(COMMAND_DISPLAY_LIMIT)), "/a"),
+        (format!("{}b", "x".repeat(COMMAND_DISPLAY_LIMIT)), "/b"),
+    ] {
+        second_history
+            .insert(HistoryEntry {
+                command,
+                started_at: time(50),
+                cwd: cwd.to_owned(),
+                duration_ms: Some(1),
+                exit_status: Some(0),
+                host_id: second.id,
+                host_name: String::new(),
+                entry_id: String::new(),
+                session: "shell".to_owned(),
+            })
+            .await?;
+    }
+    second_history
+        .insert(HistoryEntry {
+            command: "repeat needle".to_owned(),
+            started_at: time(5),
+            cwd: "/second-host".to_owned(),
+            duration_ms: Some(1),
+            exit_status: Some(0),
+            host_id: second.id,
+            host_name: String::new(),
+            entry_id: String::new(),
+            session: "shell".to_owned(),
+        })
+        .await?;
+    first_history
+        .insert(HistoryEntry {
+            command: "same time".to_owned(),
+            started_at: time(55),
+            cwd: "/a".to_owned(),
+            duration_ms: Some(1),
+            exit_status: Some(0),
+            host_id: first.id,
+            host_name: String::new(),
+            entry_id: String::new(),
+            session: "shell".to_owned(),
+        })
+        .await?;
+    first_history
+        .insert(HistoryEntry {
+            command: "same time".to_owned(),
+            started_at: time(55),
+            cwd: "/b".to_owned(),
+            duration_ms: Some(1),
+            exit_status: Some(0),
+            host_id: first.id,
+            host_name: String::new(),
+            entry_id: String::new(),
+            session: "shell".to_owned(),
+        })
+        .await?;
+    transaction.commit().await?;
+
+    let unique = query(&database, None, Some("needle"), 2, false).await?;
+    assert_eq!(unique.len(), 1, "deduplication happens before the limit");
+    assert_eq!(unique[0].cwd, format!("/repeat/{DEFAULT_LIMIT}"));
+
+    let all = query(&database, None, Some("needle"), 2, true).await?;
+    assert_eq!(all.len(), 2, "--duplicates preserves executions");
+    assert_eq!(all[0].cwd, format!("/repeat/{DEFAULT_LIMIT}"));
+    assert_eq!(all[1].cwd, format!("/repeat/{}", DEFAULT_LIMIT - 1));
+
+    let cli_unique = run_cli(
+        &daemon,
+        &[
+            "--user",
+            "alice",
+            "search",
+            "needle",
+            "--all-hosts",
+            "--limit",
+            "2",
+        ],
+    )
+    .await;
+    assert!(
+        cli_unique.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli_unique.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(cli_unique.stdout)
+            .unwrap()
+            .lines()
+            .count(),
+        2
+    );
+    let cli_duplicates = run_cli(
+        &daemon,
+        &[
+            "--user",
+            "alice",
+            "search",
+            "needle",
+            "--all-hosts",
+            "--limit",
+            "2",
+            "--duplicates",
+        ],
+    )
+    .await;
+    assert!(
+        cli_duplicates.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli_duplicates.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(cli_duplicates.stdout)
+            .unwrap()
+            .lines()
+            .count(),
+        3
+    );
+
+    let truncated_alike = query(
+        &database,
+        None,
+        Some(&"x".repeat(COMMAND_DISPLAY_LIMIT)),
+        2,
+        false,
+    )
+    .await?;
+    assert_eq!(
+        truncated_alike.len(),
+        2,
+        "full commands, not display text, deduplicate"
+    );
+    assert_ne!(truncated_alike[0].command, truncated_alike[1].command);
+
+    let tied = query(&database, Some(first.id), Some("same time"), 1, false).await?;
+    assert_eq!(tied[0].cwd, "/a", "equal timestamps have a stable winner");
+    assert!(
+        !tied[0].entry_id.is_empty(),
+        "entry identity breaks full ties"
+    );
+
+    let scoped = query(&database, Some(first.id), Some("repeat"), 2, false).await?;
+    assert_eq!(scoped.len(), 1);
+    assert_eq!(scoped[0].host_id, first.id);
+    let second_scoped = query(&database, Some(second.id), Some("repeat"), 2, false).await?;
+    assert_eq!(second_scoped.len(), 1);
+    assert_eq!(second_scoped[0].cwd, "/second-host");
+
+    let summary = summarize(&database, None).await?;
+    assert_eq!(
+        summary.total,
+        DEFAULT_LIMIT + 6,
+        "summary counts executions"
+    );
 
     daemon.stop().await;
     Ok(())
@@ -508,6 +856,7 @@ fn displayed_entries_bound_escape_and_preserve_unicode() {
         exit_status: None,
         host_id: Uuid::nil(),
         host_name: format!("🚀{}\t", "x".repeat(HOST_DISPLAY_LIMIT)),
+        entry_id: String::new(),
         session: String::new(),
     };
     let mut output = Vec::new();
@@ -568,6 +917,7 @@ fn displayed_summary_bounds_and_escapes_untrusted_labels() {
         exit_status: Some(0),
         host_id,
         host_name: host.clone(),
+        entry_id: String::new(),
         session: String::new(),
     };
     let mut output = Vec::new();
@@ -705,6 +1055,7 @@ fn displayed_entries_escape_control_characters_into_one_row() {
         exit_status: Some(0),
         host_id: Uuid::nil(),
         host_name: "fixture\thost\nname".to_owned(),
+        entry_id: String::new(),
         session: "fixture-session".to_owned(),
     };
     let mut output = Vec::new();

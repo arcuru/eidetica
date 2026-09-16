@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     io::{self, Write},
 };
 
@@ -35,6 +35,8 @@ pub struct HistoryEntry {
     pub host_id: Uuid,
     #[serde(skip)]
     pub host_name: String,
+    #[serde(skip)]
+    pub entry_id: String,
     pub session: String,
 }
 
@@ -145,6 +147,7 @@ pub async fn start(
             exit_status: None,
             host_id,
             host_name: String::new(),
+            entry_id: String::new(),
             session: session.to_owned(),
         })
         .await?;
@@ -175,9 +178,14 @@ pub async fn query(
     host_id: Option<Uuid>,
     text: Option<&str>,
     limit: usize,
+    duplicates: bool,
 ) -> Result<Vec<HistoryEntry>> {
     validate_limit(limit)?;
     let mut entries = matching_entries(database, host_id, text).await?;
+    if !duplicates {
+        let mut commands = HashSet::new();
+        entries.retain(|entry| commands.insert(entry.command.clone()));
+    }
     entries.truncate(limit);
     Ok(entries)
 }
@@ -313,13 +321,14 @@ impl HistorySummary {
     }
 }
 
-fn entry_tie_key(entry: &HistoryEntry) -> (&str, Uuid, DateTime<Utc>, &str, &str) {
+fn entry_tie_key(entry: &HistoryEntry) -> (&str, Uuid, DateTime<Utc>, &str, &str, &str) {
     (
         &entry.command,
         entry.host_id,
         entry.started_at,
         &entry.cwd,
         &entry.session,
+        &entry.entry_id,
     )
 }
 
@@ -344,8 +353,9 @@ async fn matching_entries(
                 .search(|entry| text.is_none_or(|text| entry.command.contains(text)))
                 .await?
                 .into_iter()
-                .map(|(_, mut entry)| {
+                .map(|(entry_id, mut entry)| {
                     entry.host_name = host_name.clone();
+                    entry.entry_id = entry_id;
                     entry
                 }),
         );
@@ -358,6 +368,9 @@ async fn matching_entries(
             .then_with(|| left.command.cmp(&right.command))
             .then_with(|| left.cwd.cmp(&right.cwd))
             .then_with(|| left.session.cmp(&right.session))
+            .then_with(|| left.exit_status.cmp(&right.exit_status))
+            .then_with(|| left.duration_ms.cmp(&right.duration_ms))
+            .then_with(|| left.entry_id.cmp(&right.entry_id))
     });
     Ok(entries)
 }

@@ -100,8 +100,10 @@ and start a new shell, or remove both hooks from the current shell with
 "$SHISTORY_BIN" list --host-id e4e2f3f6-d723-42b8-a0b7-f245624960b4 --limit 20
 "$SHISTORY_BIN" list --all-hosts --limit 50
 "$SHISTORY_BIN" search 'git log' --all-hosts --limit 25
+"$SHISTORY_BIN" list --duplicates --limit 50
 "$SHISTORY_BIN" summary
 "$SHISTORY_BIN" summary --host-id e4e2f3f6-d723-42b8-a0b7-f245624960b4
+"$SHISTORY_BIN" status
 ```
 
 List and search output is tab-separated with a header:
@@ -114,7 +116,10 @@ An unfinished command has `incomplete` for its exit status and `-` for its
 duration. Control characters are escaped, so each record occupies one row;
 stored text is unchanged. Displayed commands, working directories, and host
 names are bounded to 80, 40, and 20 characters respectively, with an ellipsis
-when truncated. Queries default to 20 rows and accept limits from 1 through 1000.
+when truncated. Queries default to 20 unique full commands: filters select
+executions first, then the newest occurrence of each exact command text is kept,
+then the limit is applied. `--duplicates` displays every matching execution.
+Queries accept limits from 1 through 1000.
 
 `summary` scans all stored records, regardless of the list/search limit. It
 reports the total, date range, success/failure/incomplete counts, the most
@@ -122,6 +127,16 @@ common first command word, the longest completed runtime, and per-machine
 counts. It includes all hosts by default; `--host-id` selects the stable UUID
 for one machine. Display names are only labels, so two hosts with the same name
 remain separate summary rows.
+
+`status` reads the selected socket, daemon connection, passwordless user,
+history database, and configured host UUID without changing history or daemon
+setup. It exits nonzero when a local recording prerequisite is missing or a
+read cannot complete, and gives a recovery hint for each failed check. A socket
+path alone is not considered healthy: status completes a bounded service
+connection and read-only lookups. It does not write a probe record, attempt
+sync, repair setup, or inspect the parent shell, so it cannot confirm that the
+zsh hooks are loaded, that writes would succeed, or that remote hosts are
+synchronized.
 
 ## Security and limits
 

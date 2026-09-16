@@ -2,10 +2,15 @@ use std::{future::Future, io::Read, process::ExitCode, str::FromStr, time::Durat
 
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
-use eidetica::{Result, sync::DatabaseTicket};
+use eidetica::{
+    Instance, Result,
+    service::{default_socket_path, default_socket_url},
+    store::StoreError,
+    sync::DatabaseTicket,
+};
 use shistory::{
-    DEFAULT_LIMIT, connect, finish, open_database, print_entries, print_summary, query, rename,
-    setup, start, summarize, ticket,
+    DEFAULT_LIMIT, connect, finish, host, open_database, print_entries, print_summary, query,
+    rename, setup, start, summarize, ticket,
 };
 use uuid::Uuid;
 
@@ -65,6 +70,9 @@ enum Command {
         all_hosts: bool,
         #[arg(long, default_value_t = DEFAULT_LIMIT)]
         limit: usize,
+        /// Show every execution rather than one newest occurrence per command.
+        #[arg(long)]
+        duplicates: bool,
     },
     /// Search command text.
     Search {
@@ -75,12 +83,17 @@ enum Command {
         all_hosts: bool,
         #[arg(long, default_value_t = DEFAULT_LIMIT)]
         limit: usize,
+        /// Show every execution rather than one newest occurrence per command.
+        #[arg(long)]
+        duplicates: bool,
     },
     /// Summarize stored history across all hosts or one host UUID.
     Summary {
         #[arg(long)]
         host_id: Option<Uuid>,
     },
+    /// Check local history-recording prerequisites without changing daemon state.
+    Status,
 }
 
 #[tokio::main]
@@ -164,13 +177,14 @@ async fn run(cli: Cli) -> Result<()> {
             host_id,
             all_hosts,
             limit,
+            duplicates,
         } => {
             let (_instance, user) = connect(&cli.user).await?;
             let database = open_database(&user).await?;
             let host_id = selected_host(host_id.or(cli.host_id), all_hosts)?;
             print_entries(
                 std::io::stdout(),
-                &query(&database, host_id, None, limit).await?,
+                &query(&database, host_id, None, limit, duplicates).await?,
             )?;
         }
         Command::Search {
@@ -178,13 +192,14 @@ async fn run(cli: Cli) -> Result<()> {
             host_id,
             all_hosts,
             limit,
+            duplicates,
         } => {
             let (_instance, user) = connect(&cli.user).await?;
             let database = open_database(&user).await?;
             let host_id = selected_host(host_id.or(cli.host_id), all_hosts)?;
             print_entries(
                 std::io::stdout(),
-                &query(&database, host_id, Some(&text), limit).await?,
+                &query(&database, host_id, Some(&text), limit, duplicates).await?,
             )?;
         }
         Command::Summary { host_id } => {
@@ -192,6 +207,7 @@ async fn run(cli: Cli) -> Result<()> {
             let database = open_database(&user).await?;
             print_summary(std::io::stdout(), &summarize(&database, host_id).await?)?;
         }
+        Command::Status => status(&cli.user, cli.host_id).await?,
     }
     Ok(())
 }
@@ -213,6 +229,139 @@ async fn capture_with_deadline<T>(future: impl Future<Output = Result<T>>) -> Re
             }
             .into()
         })?
+}
+
+async fn status(username: &str, host_id: Option<Uuid>) -> Result<()> {
+    let socket_path = default_socket_path();
+    println!("effective socket: {}", socket_path.display());
+    println!("selected user: {username}");
+
+    let mut healthy = true;
+    let host_id = match host_id {
+        Some(host_id) => {
+            println!("host configuration: {host_id}");
+            Some(host_id)
+        }
+        None => {
+            healthy = false;
+            println!(
+                "host configuration: failed — set SHISTORY_HOST_ID or --host-id to the UUID printed by setup"
+            );
+            None
+        }
+    };
+
+    let instance = match status_with_deadline(
+        "daemon connection",
+        Instance::connect(default_socket_url()),
+    )
+    .await
+    {
+        Ok(instance) => {
+            println!("daemon connectivity: ok");
+            instance
+        }
+        Err(error) => {
+            println!(
+                "daemon connectivity: failed — {error}; start the Eidetica daemon or set EIDETICA_SOCKET to its service socket"
+            );
+            println!("passwordless user: skipped — daemon connection failed");
+            println!("history database: skipped — daemon connection failed");
+            println!("configured host: skipped — daemon connection failed");
+            status_limitations();
+            return status_result(false);
+        }
+    };
+
+    let user = match status_with_deadline(
+        "passwordless user login",
+        instance.login_user(username, None),
+    )
+    .await
+    {
+        Ok(user) => {
+            println!("passwordless user: ok");
+            user
+        }
+        Err(error) => {
+            println!(
+                "passwordless user: failed — {error}; create the configured passwordless daemon user or select it with SHISTORY_USER"
+            );
+            println!("history database: skipped — passwordless user login failed");
+            println!("configured host: skipped — passwordless user login failed");
+            status_limitations();
+            return status_result(false);
+        }
+    };
+
+    let database = match status_with_deadline("history database lookup", open_database(&user)).await
+    {
+        Ok(database) => {
+            println!("history database: ok ({})", database.root_id());
+            database
+        }
+        Err(error) => {
+            println!("history database: failed — {error}; run shistory setup once for this user");
+            println!("configured host: skipped — history database lookup failed");
+            status_limitations();
+            return status_result(false);
+        }
+    };
+
+    match host_id {
+        Some(host_id) => {
+            match status_with_deadline("configured host lookup", host(&database, host_id)).await {
+                Ok(host) => println!("configured host: ok ({host_id}, {})", host.name),
+                Err(error) => {
+                    healthy = false;
+                    println!(
+                        "configured host: failed — {error}; use the UUID printed by setup for this host"
+                    );
+                }
+            }
+        }
+        None => println!("configured host: skipped — no host UUID is configured"),
+    }
+
+    status_limitations();
+    status_result(healthy)
+}
+
+fn status_limitations() {
+    println!("shell hooks: not checked — status cannot inspect a parent shell");
+    println!("remote synchronization: not checked — status does not attempt or prove sync");
+}
+
+async fn status_with_deadline<T>(
+    operation: &str,
+    future: impl Future<Output = Result<T>>,
+) -> Result<T> {
+    tokio::time::timeout(CAPTURE_DEADLINE, future)
+        .await
+        .map_err(|_| {
+            status_error(format!(
+                "{operation} exceeded the 1 second diagnostic deadline"
+            ))
+        })?
+}
+
+fn status_result(healthy: bool) -> Result<()> {
+    if healthy {
+        Ok(())
+    } else {
+        Err(status_error(
+            "diagnostics found local recording prerequisites that need attention".to_owned(),
+        ))
+    }
+}
+
+fn status_error(reason: String) -> eidetica::Error {
+    StoreError::InvalidOperation {
+        store: "shistory".to_owned(),
+        operation: "status".to_owned(),
+        reason,
+    }
+    .into()
 }
 
 fn required_host_id(host_id: Option<Uuid>) -> Result<Uuid> {
