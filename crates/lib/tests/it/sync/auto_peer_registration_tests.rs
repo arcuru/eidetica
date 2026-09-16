@@ -807,21 +807,29 @@ async fn test_bootstrap_auto_detects_global_wildcard_permission() {
         .unwrap();
 
     let sync_tree_id = sync.sync_tree_root_id().clone();
+    let server_pubkey = instance.id();
     let handler = SyncHandlerImpl::new(instance, sync_tree_id);
 
     // Generate a random key (any key should work due to global '*')
-    let (_, random_verifying_key) = generate_keypair();
+    let (random_signing_key, random_verifying_key) = generate_keypair();
 
     // Bootstrap request with random key and no requested_permission
+    let our_tips: eidetica::Snapshot = Vec::new().into();
     let sync_request = SyncTreeRequest {
         tree_id: tree_id.clone(),
-        our_tips: Vec::new().into(),
+        our_tips: our_tips.clone(),
         peer_pubkey: None,
         requesting_key: Some(random_verifying_key.clone()),
         requesting_key_name: Some("random_key".to_string()),
         requested_permission: None, // Should auto-detect global '*' permission
         metadata: None,
-        auth: None,
+        auth: Some(SyncRequestAuth::sign(
+            &random_signing_key,
+            &server_pubkey,
+            &tree_id,
+            &our_tips,
+            FixedClock::default().now_millis(),
+        )),
     };
 
     let context = RequestContext {
@@ -858,7 +866,7 @@ async fn test_bootstrap_uses_highest_permission_when_key_has_multiple() {
     let key_id = user.add_private_key(Some("test_key")).await.unwrap();
 
     // Generate a key that will have both direct and global permissions
-    let (_, special_verifying_key) = generate_keypair();
+    let (special_signing_key, special_verifying_key) = generate_keypair();
 
     // Create database (user's key will be auto-added as Admin)
     let mut settings = Doc::new();
@@ -898,18 +906,26 @@ async fn test_bootstrap_uses_highest_permission_when_key_has_multiple() {
         .unwrap();
 
     let sync_tree_id = sync.sync_tree_root_id().clone();
+    let server_pubkey = instance.id();
     let handler = SyncHandlerImpl::new(instance, sync_tree_id);
 
     // Bootstrap with the special key (has both Write(5) and Read via global)
+    let our_tips: eidetica::Snapshot = Vec::new().into();
     let sync_request = SyncTreeRequest {
         tree_id: tree_id.clone(),
-        our_tips: Vec::new().into(),
+        our_tips: our_tips.clone(),
         peer_pubkey: None,
         requesting_key: Some(special_verifying_key.clone()),
         requesting_key_name: Some("special_key".to_string()),
         requested_permission: None, // Should auto-detect highest (Write(5))
         metadata: None,
-        auth: None,
+        auth: Some(SyncRequestAuth::sign(
+            &special_signing_key,
+            &server_pubkey,
+            &tree_id,
+            &our_tips,
+            FixedClock::default().now_millis(),
+        )),
     };
 
     let context = RequestContext {
