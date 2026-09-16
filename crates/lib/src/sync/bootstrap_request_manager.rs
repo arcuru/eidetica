@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
+use uuid::Uuid;
 
 use super::peer_types::Address;
 use crate::{
@@ -70,19 +71,38 @@ pub enum RequestStatus {
     },
 }
 
+const BOOTSTRAP_REQUEST_NAMESPACE: Uuid = Uuid::from_bytes([
+    0x8f, 0x3d, 0x1a, 0x77, 0x2c, 0x94, 0x4e, 0x5b, 0xa1, 0x60, 0xd7, 0xe8, 0x35, 0x0b, 0x9c, 0x42,
+]);
+
+/// Derive the storage ID from the requested access identity.
+pub(super) fn request_id_for(
+    tree_id: &ID,
+    requesting_pubkey: &PublicKey,
+    requested_permission: &Permission,
+) -> String {
+    let permission = match requested_permission {
+        Permission::Admin(priority) => format!("admin:{priority}"),
+        Permission::Write(priority) => format!("write:{priority}"),
+        Permission::Read => "read".to_string(),
+    };
+    let name = format!("{tree_id}\u{1f}{requesting_pubkey}\u{1f}{permission}");
+    Uuid::new_v5(&BOOTSTRAP_REQUEST_NAMESPACE, name.as_bytes()).to_string()
+}
+
 impl<'a> BootstrapRequestManager<'a> {
     /// Create a new BootstrapRequestManager that operates on the given Transaction.
     pub(super) fn new(txn: &'a Transaction) -> Self {
         Self { txn }
     }
 
-    /// Store a new bootstrap request in the sync database.
+    /// Store a bootstrap request under the ID derived from its identity.
     ///
     /// # Arguments
     /// * `request` - The bootstrap request to store
     ///
     /// # Returns
-    /// The generated UUID for the request.
+    /// The stable ID for the request.
     pub(super) async fn store_request(&self, request: BootstrapRequest) -> Result<String> {
         let requests = self
             .txn
@@ -91,8 +111,12 @@ impl<'a> BootstrapRequestManager<'a> {
 
         debug!(tree_id = %request.tree_id, "Storing bootstrap request");
 
-        // Insert request and get generated UUID
-        let request_id = requests.insert(request.clone()).await?;
+        let request_id = request_id_for(
+            &request.tree_id,
+            &request.requesting_pubkey,
+            &request.requested_permission,
+        );
+        requests.set(&request_id, request.clone()).await?;
 
         info!(request_id = %request_id, tree_id = %request.tree_id, "Successfully stored bootstrap request");
         Ok(request_id)
@@ -167,6 +191,37 @@ impl<'a> BootstrapRequestManager<'a> {
             rejection_time: String::new(),
         })
         .await
+    }
+
+    /// Find the existing record for the same requested access.
+    pub(super) async fn find_existing_request(
+        &self,
+        tree_id: &ID,
+        requesting_pubkey: &PublicKey,
+        requested_permission: &Permission,
+    ) -> Result<Option<(String, BootstrapRequest)>> {
+        let requests = self
+            .txn
+            .get_store::<Table<BootstrapRequest>>(BOOTSTRAP_REQUESTS_SUBTREE)
+            .await?;
+        let matches = requests
+            .search(|request| {
+                &request.tree_id == tree_id
+                    && &request.requesting_pubkey == requesting_pubkey
+                    && &request.requested_permission == requested_permission
+            })
+            .await?;
+        Ok(matches
+            .iter()
+            .find(|(_, request)| matches!(request.status, RequestStatus::Rejected { .. }))
+            .cloned()
+            .or_else(|| {
+                matches
+                    .iter()
+                    .find(|(_, request)| matches!(request.status, RequestStatus::Pending))
+                    .cloned()
+            })
+            .or_else(|| matches.into_iter().next()))
     }
 
     /// Update the status of a bootstrap request.
@@ -333,6 +388,47 @@ mod tests {
         // Verify status was updated
         let updated_request = manager.get_request(&request_id).await.unwrap().unwrap();
         assert_eq!(updated_request.status, new_status);
+    }
+
+    #[test]
+    fn request_identity_includes_permission() {
+        let tree = ID::from_bytes("test_tree_id");
+        let key = PublicKey::random();
+        assert_eq!(
+            request_id_for(&tree, &key, &Permission::Write(5)),
+            request_id_for(&tree, &key, &Permission::Write(5))
+        );
+        assert_ne!(
+            request_id_for(&tree, &key, &Permission::Write(5)),
+            request_id_for(&tree, &key, &Permission::Read)
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_writers_converge_on_one_request() {
+        let (_instance, sync_tree, clock) = create_test_sync_tree().await;
+        let request = create_test_request(&clock);
+        let first = sync_tree.new_transaction().await.unwrap();
+        let second = sync_tree.new_transaction().await.unwrap();
+        let first_id = BootstrapRequestManager::new(&first)
+            .store_request(request.clone())
+            .await
+            .unwrap();
+        let mut later = request;
+        later.timestamp = "2026-09-15T23:00:01Z".to_string();
+        let second_id = BootstrapRequestManager::new(&second)
+            .store_request(later)
+            .await
+            .unwrap();
+        first.commit().await.unwrap();
+        second.commit().await.unwrap();
+        assert_eq!(first_id, second_id);
+        let txn = sync_tree.new_transaction().await.unwrap();
+        let pending = BootstrapRequestManager::new(&txn)
+            .pending_requests()
+            .await
+            .unwrap();
+        assert_eq!(pending.len(), 1, "racing writers left {pending:#?}");
     }
 
     #[tokio::test]

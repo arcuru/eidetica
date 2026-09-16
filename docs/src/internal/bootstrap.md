@@ -68,6 +68,11 @@ sync.reject_bootstrap_request(id, signing_key)?;
 - **Approved**: Key added to database
 - **Rejected**: Request denied, no key added
 
+Retries use the request identity `(tree, requesting key, requested permission)`.
+A pending retry returns the existing request ID; a rejected retry returns a typed
+terminal rejection with that same ID. A different permission is a distinct request.
+Approved history does not block a new request after its grant is no longer live.
+
 Requests are retained indefinitely for audit trail.
 
 See `src/sync/bootstrap_request_manager.rs` and `src/sync/handler.rs` for implementation.

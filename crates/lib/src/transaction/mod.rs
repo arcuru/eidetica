@@ -1355,6 +1355,21 @@ impl Transaction {
     /// # Returns
     /// A `Result<ID>` containing the ID of the committed entry.
     pub async fn commit(self) -> Result<ID> {
+        self.commit_inner(None).await
+    }
+
+    /// Commit while the caller holds this database's per-tree write lock.
+    ///
+    /// This is used by operations whose decision depends on a read made before
+    /// the write. Ordinary transactions acquire the same lock when persisting.
+    pub(crate) async fn commit_under_tree_lock(
+        self,
+        guard: tokio::sync::OwnedMutexGuard<()>,
+    ) -> Result<ID> {
+        self.commit_inner(Some(guard)).await
+    }
+
+    async fn commit_inner(self, guard: Option<tokio::sync::OwnedMutexGuard<()>>) -> Result<ID> {
         {
             let staged = self.record_mutations.lock().unwrap().clone();
             for (store, mutations) in staged {
@@ -1701,14 +1716,26 @@ impl Transaction {
 
         // Write entry through Instance which handles backend storage and callback dispatch
         let instance = self.db.instance()?;
-        instance
-            .put_entry(
-                self.db.root_id(),
-                verification_status,
-                entry.clone(),
-                WriteSource::Local,
-            )
-            .await?;
+        if let Some(guard) = guard {
+            instance
+                .put_entry_under_tree_lock(
+                    guard,
+                    self.db.root_id(),
+                    verification_status,
+                    entry.clone(),
+                    WriteSource::Local,
+                )
+                .await?;
+        } else {
+            instance
+                .put_entry(
+                    self.db.root_id(),
+                    verification_status,
+                    entry.clone(),
+                    WriteSource::Local,
+                )
+                .await?;
+        }
 
         Ok(id)
     }

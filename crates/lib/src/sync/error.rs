@@ -210,6 +210,10 @@ pub enum SyncError {
     #[error("Bootstrap request pending approval (request_id: {request_id}): {message}")]
     BootstrapPending { request_id: String, message: String },
 
+    /// Bootstrap request was rejected by an administrator.
+    #[error("Bootstrap request rejected (request_id: {request_id}): {message}")]
+    BootstrapRejected { request_id: String, message: String },
+
     /// Transport configuration type mismatch.
     #[error("Transport config type mismatch for '{name}': expected '{expected}', found '{found}'")]
     TransportTypeMismatch {
