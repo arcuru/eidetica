@@ -4,8 +4,8 @@ use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
 use eidetica::{Result, sync::DatabaseTicket};
 use shistory::{
-    DEFAULT_LIMIT, connect, finish, open_database, print_entries, query, rename, setup, start,
-    ticket,
+    DEFAULT_LIMIT, connect, finish, open_database, print_entries, print_summary, query, rename,
+    setup, start, summarize, ticket,
 };
 use uuid::Uuid;
 
@@ -75,6 +75,11 @@ enum Command {
         all_hosts: bool,
         #[arg(long, default_value_t = DEFAULT_LIMIT)]
         limit: usize,
+    },
+    /// Summarize stored history across all hosts or one host UUID.
+    Summary {
+        #[arg(long)]
+        host_id: Option<Uuid>,
     },
 }
 
@@ -180,6 +185,14 @@ async fn run(cli: Cli) -> Result<()> {
             print_entries(
                 std::io::stdout(),
                 &query(&database, host_id, Some(&text), limit).await?,
+            )?;
+        }
+        Command::Summary { host_id } => {
+            let (_instance, user) = connect(&cli.user).await?;
+            let database = open_database(&user).await?;
+            print_summary(
+                std::io::stdout(),
+                &summarize(&database, host_id.or(cli.host_id)).await?,
             )?;
         }
     }

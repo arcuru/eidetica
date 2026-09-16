@@ -100,18 +100,28 @@ and start a new shell, or remove both hooks from the current shell with
 "$SHISTORY_BIN" list --host-id e4e2f3f6-d723-42b8-a0b7-f245624960b4 --limit 20
 "$SHISTORY_BIN" list --all-hosts --limit 50
 "$SHISTORY_BIN" search 'git log' --all-hosts --limit 25
+"$SHISTORY_BIN" summary
+"$SHISTORY_BIN" summary --host-id e4e2f3f6-d723-42b8-a0b7-f245624960b4
 ```
 
-Each row is tab-separated:
+List and search output is tab-separated with a header:
 
 ```text
-start time    host display name    exit status    duration (ms)    working directory    command
+start time    host    exit status    duration (ms)    working directory    command
 ```
 
 An unfinished command has `incomplete` for its exit status and `-` for its
-duration. Control characters in the working directory and command fields are
-escaped, so each record occupies one row; stored text is unchanged. Queries
-default to 100 rows and accept limits from 1 through 1000.
+duration. Control characters are escaped, so each record occupies one row;
+stored text is unchanged. Displayed commands, working directories, and host
+names are bounded to 80, 40, and 20 characters respectively, with an ellipsis
+when truncated. Queries default to 20 rows and accept limits from 1 through 1000.
+
+`summary` scans all stored records, regardless of the list/search limit. It
+reports the total, date range, success/failure/incomplete counts, the most
+common first command word, the longest completed runtime, and per-machine
+counts. It includes all hosts by default; `--host-id` selects the stable UUID
+for one machine. Display names are only labels, so two hosts with the same name
+remain separate summary rows.
 
 ## Security and limits
 

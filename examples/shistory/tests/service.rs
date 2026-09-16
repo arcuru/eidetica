@@ -4,12 +4,13 @@ use std::{path::PathBuf, process::Command};
 
 use chrono::{TimeZone, Utc};
 use eidetica::{
-    Instance, NewUser, Result, backend::database::InMemory, service::ServiceServer,
+    Instance, NewUser, Result, backend::database::InMemory, service::ServiceServer, store::Table,
     sync::transports::http::HttpTransport,
 };
 use shistory::{
-    HistoryEntry, connect_to, finish, host, open_database, print_entries, query, rename, setup,
-    start,
+    COMMAND_DISPLAY_LIMIT, CWD_DISPLAY_LIMIT, DEFAULT_LIMIT, HOST_DISPLAY_LIMIT, HistoryEntry,
+    Host, MAX_LIMIT, connect_to, finish, host, open_database, print_entries, print_summary, query,
+    rename, setup, start, summarize,
 };
 use tempfile::TempDir;
 use tokio::{sync::watch, task::JoinHandle};
@@ -293,10 +294,184 @@ async fn cli_captures_and_queries_through_configured_socket() {
     assert!(
         String::from_utf8(search.stdout)
             .unwrap()
-            .contains("\tlaptop\t0\t12\t/tmp\techo cli needle\\n\\n")
+            .contains("start time\thost\texit status\tduration (ms)\tworking directory\tcommand\n2026-09-14T12:00:00+00:00\tlaptop\t0\t12\t/tmp\techo cli needle\\n\\n")
+    );
+
+    let summary = run_cli(&daemon, &["--user", "alice", "summary"]).await;
+    assert!(
+        summary.status.success(),
+        "{}",
+        String::from_utf8_lossy(&summary.stderr)
+    );
+    assert!(
+        String::from_utf8(summary.stdout)
+            .unwrap()
+            .contains("total records: 1\n")
     );
 
     daemon.stop().await;
+}
+
+#[tokio::test]
+async fn query_defaults_to_twenty_rows_and_summary_scans_all_history() -> Result<()> {
+    let daemon = Daemon::start("alice").await;
+    let (_client, mut user) = connect_to(&daemon.socket_url, "alice").await?;
+    let laptop = setup(&mut user, None, "laptop").await?;
+    let database = open_database(&user).await?;
+
+    let transaction = database.new_transaction().await?;
+    let history = transaction
+        .get_store::<Table<HistoryEntry>>(&format!("history-{}", laptop.id))
+        .await?;
+    for second in 0..=MAX_LIMIT {
+        history
+            .insert(HistoryEntry {
+                command: if second == MAX_LIMIT {
+                    "rare".to_owned()
+                } else {
+                    "common".to_owned()
+                },
+                started_at: time(0) + chrono::Duration::seconds(second as i64),
+                cwd: "/tmp".to_owned(),
+                duration_ms: Some(second as i64),
+                exit_status: Some(0),
+                host_id: laptop.id,
+                host_name: String::new(),
+                session: "shell".to_owned(),
+            })
+            .await?;
+    }
+    transaction.commit().await?;
+
+    let entries = query(&database, Some(laptop.id), None, DEFAULT_LIMIT).await?;
+    assert_eq!(entries.len(), DEFAULT_LIMIT);
+    assert_eq!(entries[0].command, "rare");
+
+    let summary = summarize(&database, None).await?;
+    assert_eq!(summary.total, MAX_LIMIT + 1);
+    assert_eq!(
+        summary.most_common_command,
+        Some(("common".to_owned(), MAX_LIMIT))
+    );
+    assert_eq!(summary.longest_runtime.unwrap().command, "rare");
+    assert_eq!(summary.successes, MAX_LIMIT + 1);
+
+    daemon.stop().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn summary_keeps_duplicate_names_distinct_and_filters_by_uuid() -> Result<()> {
+    let daemon = Daemon::start("alice").await;
+    let (_client, mut user) = connect_to(&daemon.socket_url, "alice").await?;
+    let first = setup(&mut user, None, "same\tname").await?;
+    let database = open_database(&user).await?;
+    let second = Host {
+        id: Uuid::new_v4(),
+        name: "same\tname".to_owned(),
+    };
+    let transaction = database.new_transaction().await?;
+    transaction
+        .get_store::<Table<Host>>("hosts")
+        .await?
+        .set(&second.id.to_string(), second.clone())
+        .await?;
+    transaction.commit().await?;
+
+    let one = start(&database, first.id, "shell", "/one", "git status", time(1))
+        .await?
+        .unwrap();
+    let two = start(&database, second.id, "shell", "/two", "cargo test", time(2))
+        .await?
+        .unwrap();
+    let incomplete = start(&database, first.id, "shell", "/one", "git diff", time(3))
+        .await?
+        .unwrap();
+    finish(&database, first.id, &one, 3, 1).await?;
+    finish(&database, second.id, &two, 8, 0).await?;
+
+    let summary = summarize(&database, None).await?;
+    assert_eq!(summary.machine_counts.len(), 2);
+    assert!(
+        summary
+            .machine_counts
+            .iter()
+            .any(|(id, _, count)| *id == first.id && *count == 2)
+    );
+    assert!(
+        summary
+            .machine_counts
+            .iter()
+            .any(|(id, _, count)| *id == second.id && *count == 1)
+    );
+    assert_eq!(summary.failures, 1);
+    assert_eq!(summary.successes, 1);
+    assert_eq!(summary.incomplete, 1);
+    assert!(!incomplete.is_empty());
+
+    let filtered = summarize(&database, Some(first.id)).await?;
+    assert_eq!(filtered.total, 2);
+    assert_eq!(filtered.machine_counts, vec![(first.id, first.name, 2)]);
+
+    daemon.stop().await;
+    Ok(())
+}
+
+#[test]
+fn displayed_entries_bound_escape_and_preserve_unicode() {
+    let entry = HistoryEntry {
+        command: format!("界{}\u{1b}[31m", "x".repeat(COMMAND_DISPLAY_LIMIT)),
+        started_at: time(0),
+        cwd: format!("📁{}\n", "x".repeat(CWD_DISPLAY_LIMIT)),
+        duration_ms: None,
+        exit_status: None,
+        host_id: Uuid::nil(),
+        host_name: format!("🚀{}\t", "x".repeat(HOST_DISPLAY_LIMIT)),
+        session: String::new(),
+    };
+    let mut output = Vec::new();
+
+    print_entries(&mut output, &[entry]).unwrap();
+
+    let row = String::from_utf8(output)
+        .unwrap()
+        .lines()
+        .nth(1)
+        .unwrap()
+        .to_owned();
+    let fields = row.split('\t').collect::<Vec<_>>();
+    assert_eq!(fields.len(), 6);
+    assert_eq!(fields[2], "incomplete");
+    assert_eq!(fields[3], "-");
+    assert!(fields[1].ends_with('…') && fields[1].chars().count() <= HOST_DISPLAY_LIMIT);
+    assert!(fields[4].ends_with('…') && fields[4].chars().count() <= CWD_DISPLAY_LIMIT);
+    assert!(fields[5].ends_with('…') && fields[5].chars().count() <= COMMAND_DISPLAY_LIMIT);
+    assert!(fields[1].contains('🚀') && fields[4].contains('📁') && fields[5].contains('界'));
+    assert!(!row.contains('\u{1b}') && !row.contains('\n'));
+}
+
+#[test]
+fn empty_summary_is_bounded_and_printable() {
+    let mut output = Vec::new();
+    print_summary(
+        &mut output,
+        &shistory::HistorySummary {
+            total: 0,
+            first_started_at: None,
+            last_started_at: None,
+            successes: 0,
+            failures: 0,
+            incomplete: 0,
+            most_common_command: None,
+            longest_runtime: None,
+            machine_counts: Vec::new(),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        String::from_utf8(output).unwrap(),
+        "total records: 0\nstatus: 0 success, 0 failure, 0 incomplete\nrecords by machine:\n"
+    );
 }
 
 #[test]
@@ -392,6 +567,6 @@ fn displayed_entries_escape_control_characters_into_one_row() {
 
     assert_eq!(
         String::from_utf8(output).unwrap(),
-        "2026-09-14T12:00:00+00:00\tfixture\\thost\\nname\t0\t1\t/tmp/with\\ttab\\nand-newline\tprint 'one\\ttwo'\\nprint \\u{1b}[31mthree\\r\n"
+        "start time\thost\texit status\tduration (ms)\tworking directory\tcommand\n2026-09-14T12:00:00+00:00\tfixture\\thost\\nname\t0\t1\t/tmp/with\\ttab\\nand-newline\tprint 'one\\ttwo'\\nprint \\u{1b}[31mthree\\r\n"
     );
 }

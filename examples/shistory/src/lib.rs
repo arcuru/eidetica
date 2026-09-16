@@ -1,4 +1,7 @@
-use std::io::{self, Write};
+use std::{
+    collections::BTreeMap,
+    io::{self, Write},
+};
 
 use chrono::{DateTime, Utc};
 use eidetica::{
@@ -16,8 +19,11 @@ use uuid::Uuid;
 const DATABASE_NAME: &str = "shistory";
 const HOSTS_STORE: &str = "hosts";
 const HISTORY_STORE_PREFIX: &str = "history-";
-pub const DEFAULT_LIMIT: usize = 100;
+pub const DEFAULT_LIMIT: usize = 20;
 pub const MAX_LIMIT: usize = 1000;
+pub const COMMAND_DISPLAY_LIMIT: usize = 80;
+pub const CWD_DISPLAY_LIMIT: usize = 40;
+pub const HOST_DISPLAY_LIMIT: usize = 20;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HistoryEntry {
@@ -36,6 +42,19 @@ pub struct HistoryEntry {
 pub struct Host {
     pub id: Uuid,
     pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistorySummary {
+    pub total: usize,
+    pub first_started_at: Option<DateTime<Utc>>,
+    pub last_started_at: Option<DateTime<Utc>>,
+    pub successes: usize,
+    pub failures: usize,
+    pub incomplete: usize,
+    pub most_common_command: Option<(String, usize)>,
+    pub longest_runtime: Option<HistoryEntry>,
+    pub machine_counts: Vec<(Uuid, String, usize)>,
 }
 
 pub async fn connect(username: &str) -> Result<(Instance, User)> {
@@ -157,17 +176,152 @@ pub async fn query(
     text: Option<&str>,
     limit: usize,
 ) -> Result<Vec<HistoryEntry>> {
-    if limit == 0 || limit > MAX_LIMIT {
-        return Err(eidetica::store::StoreError::InvalidConfiguration {
-            store: "shistory".to_owned(),
-            reason: format!("limit must be between 1 and {MAX_LIMIT}"),
-        }
-        .into());
+    validate_limit(limit)?;
+    let mut entries = matching_entries(database, host_id, text).await?;
+    entries.truncate(limit);
+    Ok(entries)
+}
+
+pub async fn summarize(database: &Database, host_id: Option<Uuid>) -> Result<HistorySummary> {
+    let entries = matching_entries(database, host_id, None).await?;
+    Ok(HistorySummary::from_entries(entries))
+}
+
+pub fn print_entries(mut output: impl Write, entries: &[HistoryEntry]) -> io::Result<()> {
+    writeln!(
+        output,
+        "start time\thost\texit status\tduration (ms)\tworking directory\tcommand"
+    )?;
+    for entry in entries {
+        let status = entry
+            .exit_status
+            .map_or_else(|| "incomplete".to_owned(), |status| status.to_string());
+        writeln!(
+            output,
+            "{}\t{}\t{}\t{}\t{}\t{}",
+            entry.started_at.to_rfc3339(),
+            bounded_escaped(&entry.host_name, HOST_DISPLAY_LIMIT),
+            status,
+            entry
+                .duration_ms
+                .map_or_else(|| "-".to_owned(), |ms| ms.to_string()),
+            bounded_escaped(&entry.cwd, CWD_DISPLAY_LIMIT),
+            bounded_escaped(&entry.command, COMMAND_DISPLAY_LIMIT),
+        )?;
     }
-    let host_ids = match host_id {
+    Ok(())
+}
+
+pub fn print_summary(mut output: impl Write, summary: &HistorySummary) -> io::Result<()> {
+    writeln!(output, "total records: {}", summary.total)?;
+    if let (Some(first), Some(last)) = (summary.first_started_at, summary.last_started_at) {
+        writeln!(
+            output,
+            "date range: {} to {}",
+            first.to_rfc3339(),
+            last.to_rfc3339()
+        )?;
+    }
+    writeln!(
+        output,
+        "status: {} success, {} failure, {} incomplete",
+        summary.successes, summary.failures, summary.incomplete
+    )?;
+    if let Some((command, count)) = &summary.most_common_command {
+        writeln!(
+            output,
+            "most common command: {} ({count})",
+            bounded_escaped(command, COMMAND_DISPLAY_LIMIT)
+        )?;
+    }
+    if let Some(entry) = &summary.longest_runtime {
+        writeln!(
+            output,
+            "longest runtime: {} ms\t{}\t{}",
+            entry.duration_ms.unwrap_or_default(),
+            bounded_escaped(&entry.host_name, HOST_DISPLAY_LIMIT),
+            bounded_escaped(&entry.command, COMMAND_DISPLAY_LIMIT),
+        )?;
+    }
+    writeln!(output, "records by machine:")?;
+    for (id, name, count) in &summary.machine_counts {
+        writeln!(
+            output,
+            "{}\t{}\t{count}",
+            bounded_escaped(name, HOST_DISPLAY_LIMIT),
+            id,
+        )?;
+    }
+    Ok(())
+}
+
+impl HistorySummary {
+    fn from_entries(entries: Vec<HistoryEntry>) -> Self {
+        let mut command_counts = BTreeMap::new();
+        let mut machine_counts = BTreeMap::new();
+        let mut successes = 0;
+        let mut failures = 0;
+        let mut incomplete = 0;
+        let mut longest_runtime = None;
+
+        for entry in &entries {
+            match entry.exit_status {
+                Some(0) => successes += 1,
+                Some(_) => failures += 1,
+                None => incomplete += 1,
+            }
+            let command = entry.command.split_whitespace().next().unwrap_or("(empty)");
+            *command_counts.entry(command.to_owned()).or_insert(0) += 1;
+            let machine = machine_counts
+                .entry(entry.host_id)
+                .or_insert_with(|| (entry.host_name.clone(), 0));
+            machine.1 += 1;
+            if entry.duration_ms.is_some_and(|duration| {
+                longest_runtime
+                    .as_ref()
+                    .and_then(|longest: &HistoryEntry| longest.duration_ms)
+                    .is_none_or(|longest| duration > longest)
+            }) {
+                longest_runtime = Some(entry.clone());
+            }
+        }
+
+        let most_common_command = command_counts.into_iter().max_by(
+            |(left_command, left_count), (right_command, right_count)| {
+                left_count
+                    .cmp(right_count)
+                    .then_with(|| right_command.cmp(left_command))
+            },
+        );
+        let first_started_at = entries.last().map(|entry| entry.started_at);
+        let last_started_at = entries.first().map(|entry| entry.started_at);
+        Self {
+            total: entries.len(),
+            first_started_at,
+            last_started_at,
+            successes,
+            failures,
+            incomplete,
+            most_common_command,
+            longest_runtime,
+            machine_counts: machine_counts
+                .into_iter()
+                .map(|(id, (name, count))| (id, name, count))
+                .collect(),
+        }
+    }
+}
+
+async fn matching_entries(
+    database: &Database,
+    host_id: Option<Uuid>,
+    text: Option<&str>,
+) -> Result<Vec<HistoryEntry>> {
+    let mut host_ids = match host_id {
         Some(host_id) => vec![host_id],
         None => configured_hosts(database).await?,
     };
+    host_ids.sort_unstable();
     let mut entries = Vec::new();
     for host_id in host_ids {
         let host_name = host(database, host_id).await?.name;
@@ -185,43 +339,47 @@ pub async fn query(
                 }),
         );
     }
-    entries.sort_by_key(|entry| std::cmp::Reverse(entry.started_at));
-    entries.truncate(limit);
+    entries.sort_by(|left, right| {
+        right
+            .started_at
+            .cmp(&left.started_at)
+            .then_with(|| left.host_id.cmp(&right.host_id))
+            .then_with(|| left.command.cmp(&right.command))
+            .then_with(|| left.cwd.cmp(&right.cwd))
+            .then_with(|| left.session.cmp(&right.session))
+    });
     Ok(entries)
 }
 
-pub fn print_entries(mut output: impl Write, entries: &[HistoryEntry]) -> io::Result<()> {
-    for entry in entries {
-        let status = entry
-            .exit_status
-            .map_or_else(|| "incomplete".to_owned(), |status| status.to_string());
-        write!(output, "{}\t", entry.started_at.to_rfc3339())?;
-        write_escaped(&mut output, &entry.host_name)?;
-        write!(
-            output,
-            "\t{}\t{}\t",
-            status,
-            entry
-                .duration_ms
-                .map_or_else(|| "-".to_owned(), |ms| ms.to_string()),
-        )?;
-        write_escaped(&mut output, &entry.cwd)?;
-        write!(output, "\t")?;
-        write_escaped(&mut output, &entry.command)?;
-        writeln!(output)?;
+fn validate_limit(limit: usize) -> Result<()> {
+    if limit == 0 || limit > MAX_LIMIT {
+        return Err(eidetica::store::StoreError::InvalidConfiguration {
+            store: "shistory".to_owned(),
+            reason: format!("limit must be between 1 and {MAX_LIMIT}"),
+        }
+        .into());
     }
     Ok(())
 }
 
-fn write_escaped(mut output: impl Write, value: &str) -> io::Result<()> {
+fn bounded_escaped(value: &str, limit: usize) -> String {
+    let mut display = String::new();
     for character in value.chars() {
-        if character.is_control() {
-            write!(output, "{}", character.escape_default())?;
+        let escaped = if character.is_control() {
+            character.escape_default().to_string()
         } else {
-            write!(output, "{character}")?;
+            character.to_string()
+        };
+        if display.chars().count() + escaped.chars().count() > limit {
+            while display.chars().count() >= limit {
+                display.pop();
+            }
+            display.push('…');
+            break;
         }
+        display.push_str(&escaped);
     }
-    Ok(())
+    display
 }
 
 async fn create_database(user: &mut User) -> Result<Database> {
