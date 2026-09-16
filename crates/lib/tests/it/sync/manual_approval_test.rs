@@ -9,7 +9,7 @@ use eidetica::{
     Database, Entry,
     auth::{
         Permission as AuthPermission,
-        crypto::PublicKey,
+        crypto::{PrivateKey, PublicKey},
         types::{AuthKey, KeyStatus, SigKey},
     },
     crdt::{Doc, doc::Value},
@@ -317,7 +317,7 @@ async fn test_list_bootstrap_requests_by_status() {
 
 #[tokio::test]
 async fn test_duplicate_bootstrap_requests_same_client() {
-    let (_instance, _user, _key_id, database, sync, _tree_id_from_setup) =
+    let (instance, _user, _key_id, database, sync, _tree_id_from_setup) =
         setup_manual_approval_server().await;
     let tree_id = database.root_id().clone();
 
@@ -328,41 +328,28 @@ async fn test_duplicate_bootstrap_requests_same_client() {
     );
 
     // Create first bootstrap request
-    let test_key = PublicKey::random();
-    let sync_request1 = SyncRequest::SyncTree(SyncTreeRequest {
-        tree_id: tree_id.clone(),
-        our_tips: Vec::new().into(), // Empty tips = bootstrap needed
-        peer_pubkey: None,
-        requesting_key: Some(test_key.clone()),
-        requesting_key_name: Some("laptop_key".to_string()),
-        requested_permission: Some(AuthPermission::Write(5)),
-        metadata: None,
-        auth: None,
-    });
+    let signing_key = PrivateKey::generate();
+    let test_key = signing_key.public_key();
+    let sync_request = create_signed_bootstrap_request(
+        &tree_id,
+        &signing_key,
+        "laptop_key",
+        AuthPermission::Write(5),
+        &instance.id(),
+    );
 
-    // Handle first request
-    let context = RequestContext::default();
-    let response1 = sync_handler.handle_request(&sync_request1, &context).await;
+    // Submit the same signed request concurrently. A pending request does not
+    // serve data, so its proof nonce remains reusable for an exact retry.
+    let context1 = RequestContext::default();
+    let context2 = RequestContext::default();
+    let (response1, response2) = tokio::join!(
+        sync_handler.handle_request(&sync_request, &context1),
+        sync_handler.handle_request(&sync_request, &context2),
+    );
     let request_id1 = match response1 {
         SyncResponse::BootstrapPending { request_id, .. } => request_id,
         other => panic!("Expected BootstrapPending, got: {other:?}"),
     };
-
-    // Create identical second bootstrap request
-    let sync_request2 = SyncRequest::SyncTree(SyncTreeRequest {
-        tree_id: tree_id.clone(),
-        our_tips: Vec::new().into(), // Empty tips = bootstrap needed
-        peer_pubkey: None,
-        requesting_key: Some(test_key.clone()),
-        requesting_key_name: Some("laptop_key".to_string()),
-        requested_permission: Some(AuthPermission::Write(5)),
-        metadata: None,
-        auth: None,
-    });
-
-    // Handle second identical request
-    let context = RequestContext::default();
-    let response2 = sync_handler.handle_request(&sync_request2, &context).await;
     let request_id2 = match response2 {
         SyncResponse::BootstrapPending { request_id, .. } => request_id,
         other => panic!("Expected BootstrapPending, got: {other:?}"),
@@ -392,14 +379,16 @@ async fn test_duplicate_bootstrap_requests_same_client() {
 
 #[tokio::test]
 async fn test_rejected_retry_is_typed_and_other_permission_is_distinct() {
-    let (_instance, user, key_id, database, sync, tree_id) = setup_manual_approval_server().await;
+    let (instance, user, key_id, database, sync, tree_id) = setup_manual_approval_server().await;
     let handler = create_test_sync_handler(&sync);
-    let requesting_key = PublicKey::random();
-    let write_request = create_bootstrap_request(
+    let signing_key = PrivateKey::generate();
+    let requesting_key = signing_key.public_key();
+    let write_request = create_signed_bootstrap_request(
         &tree_id,
-        &requesting_key.to_string(),
+        &signing_key,
         "laptop_key",
         AuthPermission::Write(5),
+        &instance.id(),
     );
     let context = RequestContext::default();
 
@@ -419,16 +408,37 @@ async fn test_rejected_retry_is_typed_and_other_permission_is_distinct() {
     ));
     assert!(sync.pending_bootstrap_requests().await.unwrap().is_empty());
 
-    let read_request = create_bootstrap_request(
+    let read_request = create_signed_bootstrap_request(
         &tree_id,
-        &requesting_key.to_string(),
+        &signing_key,
         "laptop_key",
         AuthPermission::Read,
+        &instance.id(),
     );
     let read_id = assert_bootstrap_pending(&handler.handle_request(&read_request, &context).await)
         .to_string();
     assert_ne!(read_id, request_id);
     assert_eq!(sync.pending_bootstrap_requests().await.unwrap().len(), 1);
+
+    // A later out-of-band grant must not turn the rejected request into a
+    // successful retry. Rejection is terminal for this request identity.
+    let tx = database.new_transaction().await.unwrap();
+    tx.get_settings()
+        .unwrap()
+        .set_auth_key(
+            &requesting_key,
+            AuthKey::active(Some("laptop_key"), AuthPermission::Write(5)),
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert!(matches!(
+        handler.handle_request(&write_request, &context).await,
+        SyncResponse::BootstrapRejected {
+            request_id: ref rejected_id,
+            ..
+        } if rejected_id == &request_id
+    ));
 
     // The rejection remains durable when Sync is reconstructed over the same
     // persisted tree, which is the restart path for the request manager.
@@ -448,6 +458,42 @@ async fn test_rejected_retry_is_typed_and_other_permission_is_distinct() {
 
     // Keep the target database live for the handler's sync-enabled check.
     assert_eq!(database.root_id(), &tree_id);
+}
+
+#[tokio::test]
+async fn test_successful_explicit_bootstrap_consumes_request_nonce() {
+    let (instance, _user, _key_id, database, sync, tree_id) = setup_manual_approval_server().await;
+    let handler = create_test_sync_handler(&sync);
+    let signing_key = PrivateKey::generate();
+    let requesting_key = signing_key.public_key();
+
+    let tx = database.new_transaction().await.unwrap();
+    tx.get_settings()
+        .unwrap()
+        .set_auth_key(
+            &requesting_key,
+            AuthKey::active(Some("laptop_key"), AuthPermission::Write(5)),
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let request = create_signed_bootstrap_request(
+        &tree_id,
+        &signing_key,
+        "laptop_key",
+        AuthPermission::Write(5),
+        &instance.id(),
+    );
+    let context = RequestContext::default();
+    assert!(matches!(
+        handler.handle_request(&request, &context).await,
+        SyncResponse::Bootstrap(_)
+    ));
+    assert!(matches!(
+        handler.handle_request(&request, &context).await,
+        SyncResponse::Error(ref message) if message.contains("nonce already spent")
+    ));
 }
 
 #[tokio::test]
