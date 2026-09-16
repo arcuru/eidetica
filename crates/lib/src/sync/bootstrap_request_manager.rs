@@ -5,7 +5,6 @@
 
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
-use uuid::Uuid;
 
 use super::peer_types::Address;
 use crate::{
@@ -71,23 +70,15 @@ pub enum RequestStatus {
     },
 }
 
-const BOOTSTRAP_REQUEST_NAMESPACE: Uuid = Uuid::from_bytes([
-    0x8f, 0x3d, 0x1a, 0x77, 0x2c, 0x94, 0x4e, 0x5b, 0xa1, 0x60, 0xd7, 0xe8, 0x35, 0x0b, 0x9c, 0x42,
-]);
-
 /// Derive the storage ID from the requested access identity.
 pub(super) fn request_id_for(
     tree_id: &ID,
     requesting_pubkey: &PublicKey,
     requested_permission: &Permission,
 ) -> String {
-    let permission = match requested_permission {
-        Permission::Admin(priority) => format!("admin:{priority}"),
-        Permission::Write(priority) => format!("write:{priority}"),
-        Permission::Read => "read".to_string(),
-    };
-    let name = format!("{tree_id}\u{1f}{requesting_pubkey}\u{1f}{permission}");
-    Uuid::new_v5(&BOOTSTRAP_REQUEST_NAMESPACE, name.as_bytes()).to_string()
+    let identity = serde_ipld_dagcbor::to_vec(&(tree_id, requesting_pubkey, requested_permission))
+        .expect("bootstrap request identity is serializable");
+    ID::from_dagcbor_bytes(identity).to_string()
 }
 
 impl<'a> BootstrapRequestManager<'a> {
@@ -314,7 +305,7 @@ mod tests {
 
         let request = create_test_request(&clock);
 
-        // Store the request and get the generated UUID
+        // Store the request and get its identity-derived ID
         let request_id = manager.store_request(request.clone()).await.unwrap();
 
         // Retrieve the request
@@ -372,7 +363,7 @@ mod tests {
 
         let request = create_test_request(&clock);
 
-        // Store the request and get the generated UUID
+        // Store the request and get its identity-derived ID
         let request_id = manager.store_request(request).await.unwrap();
 
         // Update status to approved
@@ -391,16 +382,70 @@ mod tests {
     }
 
     #[test]
-    fn request_identity_includes_permission() {
+    fn request_identity_is_deterministic_and_distinguishes_semantic_fields() {
         let tree = ID::from_bytes("test_tree_id");
+        let other_tree = ID::from_bytes("other_tree_id");
         let key = PublicKey::random();
+        let other_key = PublicKey::random();
+        let request_id = request_id_for(&tree, &key, &Permission::Write(5));
+        let storage_id = ID::parse(&request_id).expect("request ID uses the project ID encoding");
+
+        assert_eq!(storage_id.as_cid().unwrap().codec(), 0x71);
+        assert_eq!(storage_id.hash_code(), Some(0x1e));
         assert_eq!(
-            request_id_for(&tree, &key, &Permission::Write(5)),
+            request_id,
             request_id_for(&tree, &key, &Permission::Write(5))
         );
         assert_ne!(
-            request_id_for(&tree, &key, &Permission::Write(5)),
-            request_id_for(&tree, &key, &Permission::Read)
+            request_id,
+            request_id_for(&other_tree, &key, &Permission::Write(5))
+        );
+        assert_ne!(
+            request_id,
+            request_id_for(&tree, &other_key, &Permission::Write(5))
+        );
+        assert_ne!(
+            request_id,
+            request_id_for(&tree, &key, &Permission::Admin(5))
+        );
+        assert_ne!(
+            request_id,
+            request_id_for(&tree, &key, &Permission::Write(6))
+        );
+        assert_ne!(request_id, request_id_for(&tree, &key, &Permission::Read));
+    }
+
+    #[test]
+    fn request_identity_ignores_mutable_record_fields() {
+        let clock = FixedClock::default();
+        let request = create_test_request(&clock);
+        let request_id = request_id_for(
+            &request.tree_id,
+            &request.requesting_pubkey,
+            &request.requested_permission,
+        );
+        let mut changed = request;
+        changed.requesting_key_name = "renamed key".to_string();
+        changed.timestamp = "2026-09-16T12:34:56Z".to_string();
+        changed.status = RequestStatus::Rejected {
+            rejected_by: "admin".to_string(),
+            rejection_time: "2026-09-16T12:35:00Z".to_string(),
+        };
+        changed.peer_address = Address {
+            transport_type: "iroh".to_string(),
+            address: "new-address".to_string(),
+        };
+        let mut metadata = Doc::new();
+        metadata.set("note", "changed");
+        changed.metadata = Some(metadata);
+
+        assert_eq!(
+            request_id,
+            request_id_for(
+                &changed.tree_id,
+                &changed.requesting_pubkey,
+                &changed.requested_permission,
+            )
         );
     }
 
