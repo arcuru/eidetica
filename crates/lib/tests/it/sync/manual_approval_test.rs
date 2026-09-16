@@ -374,19 +374,11 @@ async fn test_duplicate_bootstrap_requests_same_client() {
         .await
         .expect("Failed to list pending requests");
 
-    // Document current behavior - may create duplicates or reuse existing
-    println!(
-        "Number of pending requests after duplicate submission: {}",
-        pending_requests.len()
+    assert_eq!(
+        request_id1, request_id2,
+        "a retry must reuse its request ID"
     );
-    println!("First request ID: {request_id1}");
-    println!("Second request ID: {request_id2}");
-
-    // Verify at least one request exists
-    assert!(
-        !pending_requests.is_empty(),
-        "Should have at least one pending request"
-    );
+    assert_eq!(pending_requests.len(), 1, "a retry must not add a row");
 
     // Verify all requests have correct details
     for (_, request) in &pending_requests {
@@ -396,8 +388,105 @@ async fn test_duplicate_bootstrap_requests_same_client() {
         assert_eq!(request.requested_permission, AuthPermission::Write(5));
         assert!(matches!(request.status, RequestStatus::Pending));
     }
+}
 
-    println!("✅ Duplicate request handling behavior documented");
+#[tokio::test]
+async fn test_rejected_retry_is_typed_and_other_permission_is_distinct() {
+    let (_instance, user, key_id, database, sync, tree_id) = setup_manual_approval_server().await;
+    let handler = create_test_sync_handler(&sync);
+    let requesting_key = PublicKey::random();
+    let write_request = create_bootstrap_request(
+        &tree_id,
+        &requesting_key.to_string(),
+        "laptop_key",
+        AuthPermission::Write(5),
+    );
+    let context = RequestContext::default();
+
+    let first = handler.handle_request(&write_request, &context).await;
+    let request_id = assert_bootstrap_pending(&first).to_string();
+    user.reject_bootstrap_request(&sync, &request_id, &key_id)
+        .await
+        .unwrap();
+
+    let retry = handler.handle_request(&write_request, &context).await;
+    assert!(matches!(
+        retry,
+        SyncResponse::BootstrapRejected {
+            request_id: ref rejected_id,
+            ..
+        } if rejected_id == &request_id
+    ));
+    assert!(sync.pending_bootstrap_requests().await.unwrap().is_empty());
+
+    let read_request = create_bootstrap_request(
+        &tree_id,
+        &requesting_key.to_string(),
+        "laptop_key",
+        AuthPermission::Read,
+    );
+    let read_id = assert_bootstrap_pending(&handler.handle_request(&read_request, &context).await)
+        .to_string();
+    assert_ne!(read_id, request_id);
+    assert_eq!(sync.pending_bootstrap_requests().await.unwrap().len(), 1);
+
+    // The rejection remains durable when Sync is reconstructed over the same
+    // persisted tree, which is the restart path for the request manager.
+    let reloaded = Sync::load(sync.instance().unwrap().clone(), sync.sync_tree_root_id())
+        .await
+        .unwrap();
+    let reloaded_handler = create_test_sync_handler(&reloaded);
+    assert!(matches!(
+        reloaded_handler
+            .handle_request(&write_request, &context)
+            .await,
+        SyncResponse::BootstrapRejected {
+            request_id: ref rejected_id,
+            ..
+        } if rejected_id == &request_id
+    ));
+
+    // Keep the target database live for the handler's sync-enabled check.
+    assert_eq!(database.root_id(), &tree_id);
+}
+
+#[tokio::test]
+async fn test_approved_request_can_restart_after_grant_revocation() {
+    let (_instance, user, key_id, database, sync, tree_id) = setup_manual_approval_server().await;
+    let handler = create_test_sync_handler(&sync);
+    let requesting_key = PublicKey::random();
+    let request = create_bootstrap_request(
+        &tree_id,
+        &requesting_key.to_string(),
+        "laptop_key",
+        AuthPermission::Write(5),
+    );
+    let context = RequestContext::default();
+
+    let original_id =
+        assert_bootstrap_pending(&handler.handle_request(&request, &context).await).to_string();
+    user.approve_bootstrap_request(&sync, &original_id, &key_id)
+        .await
+        .unwrap();
+
+    let tx = database.new_transaction().await.unwrap();
+    tx.get_settings()
+        .unwrap()
+        .revoke_auth_key(&requesting_key)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let response = handler.handle_request(&request, &context).await;
+    let pending_id = assert_bootstrap_pending(&response);
+    assert_eq!(pending_id, original_id);
+    let stored = sync
+        .get_bootstrap_request(&original_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .1;
+    assert!(matches!(stored.status, RequestStatus::Pending));
 }
 
 #[tokio::test]
@@ -1407,7 +1496,12 @@ async fn test_client_denied_after_rejection() {
             AuthPermission::Write(5),
         )
         .await;
-    assert!(retry_result.is_err(), "Retry should fail after rejection");
+    let error = retry_result.expect_err("Retry should fail after rejection");
+    assert!(matches!(
+        error,
+        eidetica::Error::Sync(ref error)
+            if matches!(error.as_ref(), eidetica::sync::SyncError::BootstrapRejected { request_id: rejected_id, .. } if rejected_id == request_id)
+    ));
     println!("✅ Retry correctly failed after rejection");
 
     // Client should not have the database

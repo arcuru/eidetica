@@ -255,6 +255,13 @@ pub enum SyncResponse {
         /// Human-readable message about the pending status
         message: String,
     },
+    /// Bootstrap request was rejected by an administrator.
+    BootstrapRejected {
+        /// Identifier of the rejected request
+        request_id: String,
+        /// Human-readable rejection detail
+        message: String,
+    },
     /// Acknowledgment that entries were received successfully
     Ack,
     /// Number of entries received (for multiple entries)

@@ -1733,8 +1733,20 @@ impl Instance {
         source: WriteSource,
     ) -> Result<()> {
         let lock = self.tree_lock(tree_id);
-        let _guard = lock.lock().await;
+        let guard = lock.lock_owned().await;
+        self.put_entry_under_tree_lock(guard, tree_id, verification, entry, source)
+            .await
+    }
 
+    /// Write an entry while the caller holds this tree's write lock.
+    pub(crate) async fn put_entry_under_tree_lock(
+        &self,
+        guard: tokio::sync::OwnedMutexGuard<()>,
+        tree_id: &ID,
+        verification: crate::backend::VerificationStatus,
+        entry: Entry,
+        source: WriteSource,
+    ) -> Result<()> {
         // 1. Capture tips before the write so callbacks know what changed.
         //
         // On a connected (remote) instance, the daemon owns the canonical
@@ -1814,7 +1826,7 @@ impl Instance {
         };
 
         // Release the per-tree lock before awaiting user callbacks.
-        drop(_guard);
+        drop(guard);
 
         if let Some(mut joins) = joins {
             while joins.join_next().await.is_some() {}

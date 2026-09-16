@@ -244,6 +244,10 @@ impl Sync {
         request_id: &str,
         key: &DatabaseKey,
     ) -> Result<()> {
+        let instance = self.instance()?;
+        let lock = instance.tree_lock(self.sync_tree.root_id());
+        let guard = lock.lock_owned().await;
+
         // Load the request from sync database
         let sync_op = self.sync_tree.new_transaction().await?;
         let manager = BootstrapRequestManager::new(&sync_op);
@@ -320,7 +324,7 @@ impl Sync {
                 },
             )
             .await?;
-        sync_op.commit().await?;
+        sync_op.commit_under_tree_lock(guard).await?;
 
         info!(
             request_id = %request_id,
@@ -353,6 +357,10 @@ impl Sync {
         request_id: &str,
         key: &DatabaseKey,
     ) -> Result<()> {
+        let instance = self.instance()?;
+        let lock = instance.tree_lock(self.sync_tree.root_id());
+        let guard = lock.lock_owned().await;
+
         // Load the request from sync database
         let sync_op = self.sync_tree.new_transaction().await?;
         let manager = BootstrapRequestManager::new(&sync_op);
@@ -405,7 +413,7 @@ impl Sync {
                 },
             )
             .await?;
-        sync_op.commit().await?;
+        sync_op.commit_under_tree_lock(guard).await?;
 
         info!(
             request_id = %request_id,

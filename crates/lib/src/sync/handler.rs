@@ -28,7 +28,6 @@ use crate::{
         Permission,
         crypto::{PublicKey, create_challenge_response, generate_challenge},
     },
-    crdt::Doc,
     entry::ID,
     store::SettingsStore,
     sync::error::SyncError,
@@ -135,6 +134,31 @@ impl SyncHandlerImpl {
         Ok(auth.key.clone())
     }
 
+    /// Verify possession without consuming the request nonce.
+    ///
+    /// Manual bootstrap retries prove who is asking but disclose no data. The
+    /// nonce is consumed only if the request later reaches a path that serves
+    /// entries.
+    fn verify_request_signature(&self, request: &SyncTreeRequest) -> Result<PublicKey> {
+        let auth = request
+            .auth
+            .as_ref()
+            .ok_or_else(|| SyncError::AuthenticationRequired(request.tree_id.to_string()))?;
+        let instance = self.instance()?;
+        auth.verify(&instance.id(), &request.tree_id, &request.our_tips)
+            .map_err(|_| {
+                SyncError::AuthenticationFailed("invalid request signature".to_string())
+            })?;
+        let now = instance.clock().now_millis();
+        if now.abs_diff(auth.timestamp_ms) > MAX_REQUEST_AGE_MS {
+            return Err(SyncError::AuthenticationFailed(
+                "request timestamp outside the freshness window".to_string(),
+            )
+            .into());
+        }
+        Ok(auth.key.clone())
+    }
+
     /// Whether this request may be served entries from `tree_id`.
     ///
     /// A database with no auth configured, or with a global `*` grant, is
@@ -189,24 +213,63 @@ impl SyncHandlerImpl {
     /// * `requested_permission` - Permission level being requested
     ///
     /// # Returns
-    /// The generated UUID for the stored request
+    /// Whether the request is pending, approved, or already rejected.
     async fn store_bootstrap_request(
         &self,
-        tree_id: &ID,
-        requesting_key: &PublicKey,
+        sync_request: &SyncTreeRequest,
         requesting_key_name: &str,
-        requested_permission: &Permission,
-        metadata: Option<Doc>,
-    ) -> Result<String> {
+        requesting_key_proven: bool,
+    ) -> Result<BootstrapRequestOutcome> {
+        let tree_id = &sync_request.tree_id;
+        let requesting_key = sync_request
+            .requesting_key
+            .as_ref()
+            .expect("explicit bootstrap request has a requesting key");
+        let requested_permission = sync_request
+            .requested_permission
+            .expect("explicit bootstrap request has a requested permission");
         let sync_tree = self.get_sync_tree().await?;
+        let instance = self.instance()?;
+        let lock = instance.tree_lock(&self.sync_tree_id);
+        let guard = lock.lock_owned().await;
         let txn = sync_tree.new_transaction().await?;
         let manager = BootstrapRequestManager::new(&txn);
+
+        if let Some((request_id, request)) = manager
+            .find_existing_request(tree_id, requesting_key, &requested_permission)
+            .await?
+        {
+            match request.status {
+                RequestStatus::Rejected { .. } => {
+                    return Ok(BootstrapRequestOutcome::Rejected(request_id));
+                }
+                RequestStatus::Pending => {
+                    return Ok(BootstrapRequestOutcome::Pending(request_id));
+                }
+                RequestStatus::Approved { .. } => {
+                    if Database::can_access(
+                        &instance,
+                        tree_id,
+                        requesting_key,
+                        &requested_permission,
+                    )
+                    .await?
+                    {
+                        return Ok(if requesting_key_proven {
+                            BootstrapRequestOutcome::Approved
+                        } else {
+                            BootstrapRequestOutcome::ApprovedButNotProven
+                        });
+                    }
+                }
+            }
+        }
 
         let request = BootstrapRequest {
             tree_id: tree_id.clone(),
             requesting_pubkey: requesting_key.clone(),
             requesting_key_name: requesting_key_name.to_string(),
-            requested_permission: *requested_permission,
+            requested_permission,
             timestamp: self.instance()?.clock().now_rfc3339(),
             status: RequestStatus::Pending,
             // TODO: We need to get the actual peer address from the transport layer
@@ -222,14 +285,21 @@ impl SyncHandlerImpl {
             // requests per peer, before this is exposed to untrusted peers. Note the
             // `Doc` is already deserialized at the protocol layer ahead of the
             // sync-enabled gate, so the size cap ideally belongs there too.
-            metadata,
+            metadata: sync_request.metadata.clone(),
         };
 
         let request_id = manager.store_request(request).await?;
-        txn.commit().await?;
+        txn.commit_under_tree_lock(guard).await?;
 
-        Ok(request_id)
+        Ok(BootstrapRequestOutcome::Pending(request_id))
     }
+}
+
+enum BootstrapRequestOutcome {
+    Pending(String),
+    Rejected(String),
+    Approved,
+    ApprovedButNotProven,
 }
 
 #[async_trait]
@@ -384,27 +454,38 @@ impl SyncHandlerImpl {
     /// [`Database::can_access`] for why bootstrap searches where entry
     /// validation walks a named path.
     ///
-    /// # Returns
-    /// - `Ok(true)` if the caller proved a key with sufficient permission
-    /// - `Ok(false)` if possession failed, or the key lacks permission
+    /// Returns `(possession_proven, permission_granted)`.
     async fn check_proven_auth_permission(
         &self,
         request: &SyncTreeRequest,
         requesting_pubkey: &PublicKey,
         requested_permission: &Permission,
         auth_configured: bool,
-    ) -> Result<bool> {
+    ) -> Result<(bool, bool)> {
         let tree_id = &request.tree_id;
-        if let Err(e) =
-            self.prove_possession_if_required(request, requesting_pubkey, auth_configured)
-        {
+        let possession = if auth_configured {
+            self.verify_request_signature(request)
+                .and_then(|proven| {
+                    if proven == *requesting_pubkey {
+                        Ok(())
+                    } else {
+                        Err(SyncError::AuthenticationFailed(format!(
+                            "request is signed by {proven}, which is not the claimed key {requesting_pubkey}"
+                        ))
+                        .into())
+                    }
+                })
+        } else {
+            Ok(())
+        };
+        if let Err(e) = possession {
             warn!(
                 tree_id = %tree_id,
                 requesting_pubkey = %requesting_pubkey,
                 error = %e,
                 "Bootstrap key claim not proven - falling back to the approval queue"
             );
-            return Ok(false);
+            return Ok((false, false));
         }
 
         let granted = Database::can_access(
@@ -422,7 +503,7 @@ impl SyncHandlerImpl {
                 "Key has sufficient permission for bootstrap access"
             );
         }
-        Ok(granted)
+        Ok((true, granted))
     }
 
     /// Check if a database requires authentication for unauthenticated requests.
@@ -803,7 +884,6 @@ impl SyncHandlerImpl {
         let requesting_key = request.requesting_key.as_ref();
         let requesting_key_name = request.requesting_key_name.as_deref();
         let requested_permission = request.requested_permission;
-        let metadata = request.metadata.clone();
 
         // SECURITY: Check if database has sync enabled (FIRST CHECK - before anything else)
         // This prevents information leakage about database existence: the gate
@@ -885,7 +965,7 @@ impl SyncHandlerImpl {
                     .check_proven_auth_permission(request, key, &permission, auth_configured)
                     .await
                 {
-                    Ok(true) => {
+                    Ok((true, true)) => {
                         // Key already has sufficient permission - approve without adding
                         info!(
                             tree_id = %tree_id,
@@ -895,16 +975,16 @@ impl SyncHandlerImpl {
                         );
                         (true, Some(permission))
                     }
-                    Ok(false) => {
+                    Ok((requesting_key_proven, false)) => {
                         // No existing permission, store request for manual approval
                         info!(tree_id = %tree_id, "Bootstrap key approval requested - storing for manual approval");
 
                         // Store the bootstrap request in sync database for manual approval
                         match self
-                            .store_bootstrap_request(tree_id, key, key_name, &permission, metadata)
+                            .store_bootstrap_request(request, key_name, requesting_key_proven)
                             .await
                         {
-                            Ok(request_id) => {
+                            Ok(BootstrapRequestOutcome::Pending(request_id)) => {
                                 info!(
                                     tree_id = %tree_id,
                                     request_id = %request_id,
@@ -915,6 +995,25 @@ impl SyncHandlerImpl {
                                     message: "Bootstrap request pending manual approval"
                                         .to_string(),
                                 };
+                            }
+                            Ok(BootstrapRequestOutcome::Rejected(request_id)) => {
+                                return SyncResponse::BootstrapRejected {
+                                    request_id,
+                                    message: "Bootstrap request was rejected by an administrator"
+                                        .to_string(),
+                                };
+                            }
+                            Ok(BootstrapRequestOutcome::Approved) => {
+                                if let Err(e) = self.prove_possession(request, key) {
+                                    return SyncResponse::Error(e.to_string());
+                                }
+                                (true, Some(permission))
+                            }
+                            Ok(BootstrapRequestOutcome::ApprovedButNotProven) => {
+                                return SyncResponse::Error(
+                                    "Authentication required: approved key was not proven"
+                                        .to_string(),
+                                );
                             }
                             Err(e) => {
                                 error!(
@@ -927,6 +1026,9 @@ impl SyncHandlerImpl {
                                 ));
                             }
                         }
+                    }
+                    Ok((false, true)) => {
+                        unreachable!("permission cannot be granted without possession")
                     }
                     Err(e) => {
                         error!(tree_id = %tree_id, error = %e, "Failed to check global permission for bootstrap");
