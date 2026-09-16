@@ -453,13 +453,27 @@ impl RemoteConnectionInner {
 pub(crate) struct ManagementSubscription {
     connection: RemoteConnection,
     tree_id: ID,
+    identity: SigKey,
     id: u64,
 }
 
 impl Drop for ManagementSubscription {
     fn drop(&mut self) {
-        self.connection
-            .remove_management_trigger(&self.tree_id, self.id);
+        if self
+            .connection
+            .remove_management_trigger(&self.tree_id, self.id)
+            && let Ok(runtime) = tokio::runtime::Handle::try_current()
+        {
+            let connection = self.connection.clone();
+            let tree_id = self.tree_id.clone();
+            let identity = self.identity.clone();
+            let subscription_id = self.id;
+            runtime.spawn(async move {
+                let _ = connection
+                    .unsubscribe_management(tree_id, identity, subscription_id)
+                    .await;
+            });
+        }
     }
 }
 
@@ -847,18 +861,21 @@ impl RemoteConnection {
             .inner
             .next_management_subscription
             .fetch_add(1, Ordering::Relaxed);
-        self.inner
-            .management_triggers
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .entry(tree_id.clone())
-            .or_default()
-            .insert(id, trigger);
+        {
+            let mut triggers = self
+                .inner
+                .management_triggers
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let tree_triggers = triggers.entry(tree_id.clone()).or_default();
+            tree_triggers.insert(id, trigger);
+        }
         let result = Self::expect_ok(
             self.request_ok(ServiceRequest::Management(Box::new(
                 ManagementOp::Subscribe {
                     tree_id: tree_id.clone(),
-                    identity,
+                    identity: identity.clone(),
+                    subscription_id: id,
                 },
             )))
             .await?,
@@ -870,11 +887,12 @@ impl RemoteConnection {
         Ok(ManagementSubscription {
             connection: self.clone(),
             tree_id,
+            identity,
             id,
         })
     }
 
-    fn remove_management_trigger(&self, tree_id: &ID, id: u64) {
+    fn remove_management_trigger(&self, tree_id: &ID, id: u64) -> bool {
         let mut triggers = self
             .inner
             .management_triggers
@@ -884,8 +902,28 @@ impl RemoteConnection {
             tree_triggers.remove(&id);
             if tree_triggers.is_empty() {
                 triggers.remove(tree_id);
+                return true;
             }
         }
+        false
+    }
+
+    async fn unsubscribe_management(
+        &self,
+        tree_id: ID,
+        identity: SigKey,
+        subscription_id: u64,
+    ) -> crate::Result<()> {
+        Self::expect_ok(
+            self.request_ok(ServiceRequest::Management(Box::new(
+                ManagementOp::Unsubscribe {
+                    tree_id,
+                    identity,
+                    subscription_id,
+                },
+            )))
+            .await?,
+        )
     }
 
     // === Response extraction helpers ===
