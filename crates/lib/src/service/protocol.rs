@@ -309,14 +309,26 @@ pub enum ManagementOp {
     /// Recompute one filtered desired/applied/observed snapshot.
     Snapshot { tree_id: ID, identity: SigKey },
     /// Subscribe this connection to scoped invalidations for `tree_id`.
-    Subscribe { tree_id: ID, identity: SigKey },
+    Subscribe {
+        tree_id: ID,
+        identity: SigKey,
+        subscription_id: u64,
+    },
+    /// Stop scoped management invalidations for `tree_id`.
+    Unsubscribe {
+        tree_id: ID,
+        identity: SigKey,
+        subscription_id: u64,
+    },
 }
 
 impl ManagementOp {
     /// Target database whose Read permission gates this operation.
     pub fn tree_id(&self) -> &ID {
         match self {
-            Self::Snapshot { tree_id, .. } | Self::Subscribe { tree_id, .. } => tree_id,
+            Self::Snapshot { tree_id, .. }
+            | Self::Subscribe { tree_id, .. }
+            | Self::Unsubscribe { tree_id, .. } => tree_id,
         }
     }
 }
@@ -864,6 +876,7 @@ mod tests {
         let request = ManagementOp::Subscribe {
             tree_id: tree.clone(),
             identity: SigKey::default(),
+            subscription_id: 1,
         };
         assert_eq!(request.tree_id(), &tree);
         let frame = ServerFrame::Notification(Notification::ManagementInvalidated {
@@ -874,6 +887,22 @@ mod tests {
         assert!(encoded.contains("ManagementInvalidated"));
         assert!(!encoded.contains("desired"));
         assert!(!encoded.contains("peers"));
+    }
+
+    #[test]
+    fn management_unsubscribe_wire_remains_tree_scoped() {
+        let tree = test_id();
+        let request = ServiceRequest::Management(Box::new(ManagementOp::Unsubscribe {
+            tree_id: tree.clone(),
+            identity: SigKey::default(),
+            subscription_id: 1,
+        }));
+        let encoded = serde_json::to_string(&request).unwrap();
+        let decoded: ServiceRequest = serde_json::from_str(&encoded).unwrap();
+        match decoded {
+            ServiceRequest::Management(op) => assert_eq!(op.tree_id(), &tree),
+            other => panic!("expected management request, got {other:?}"),
+        }
     }
 
     #[tokio::test]

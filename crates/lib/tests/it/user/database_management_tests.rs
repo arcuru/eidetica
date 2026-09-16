@@ -377,3 +377,45 @@ async fn service_watch_stops_after_read_authority_is_revoked() -> Result<()> {
     drop(owner);
     Ok(())
 }
+
+#[cfg(all(unix, feature = "service"))]
+#[tokio::test]
+async fn service_wait_timeout_releases_management_subscription() -> Result<()> {
+    if std::env::var("TEST_BACKEND").as_deref() != Ok("service") {
+        return Ok(());
+    }
+    let (owner, user, owner_database) = setup_full().await?;
+    let database_id = owner_database.root_id().clone();
+    let management = user.manage_database(&database_id).await?;
+    let waiter = tokio::spawn(async move {
+        management
+            .wait_for(Duration::from_millis(50), |snapshot| {
+                !snapshot.observed.listen_addresses.is_empty()
+            })
+            .await
+    });
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if owner.write_callback_count(&database_id) >= 2 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("wait did not install its daemon management subscription");
+    assert!(waiter.await.expect("wait task panicked")?.is_none());
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if owner.write_callback_count(&database_id) <= 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("timed-out wait left a daemon management subscription behind");
+    Ok(())
+}

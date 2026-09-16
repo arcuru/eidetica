@@ -1837,6 +1837,17 @@ impl Instance {
             .contains_key(tree_id)
     }
 
+    #[cfg(all(feature = "testing", unix, feature = "service"))]
+    #[doc(hidden)]
+    pub fn write_callback_count(&self, tree_id: &ID) -> usize {
+        self.inner
+            .write_callbacks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(tree_id)
+            .map_or(0, Vec::len)
+    }
+
     /// Acquire (or create) the per-tree async lock that serializes the
     /// `snapshot` → backend write → callback dispatch sequence.
     ///
