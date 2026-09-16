@@ -128,15 +128,17 @@ counts. It includes all hosts by default; `--host-id` selects the stable UUID
 for one machine. Display names are only labels, so two hosts with the same name
 remain separate summary rows.
 
-`status` reads the selected socket, daemon connection, passwordless user,
-history database, and configured host UUID without changing history or daemon
-setup. It exits nonzero when a local recording prerequisite is missing or a
-read cannot complete, and gives a recovery hint for each failed check. A socket
-path alone is not considered healthy: status completes a bounded service
-connection and read-only lookups. It does not write a probe record, attempt
-sync, repair setup, or inspect the parent shell, so it cannot confirm that the
-zsh hooks are loaded, that writes would succeed, or that remote hosts are
-synchronized.
+`status` checks the selected socket, daemon connection, passwordless user,
+history database, and configured host UUID without writing history, running
+setup, or initiating sync. It exits nonzero when a local recording prerequisite
+is missing or a read cannot complete, and gives a recovery hint for each failed
+check. A socket path alone is not considered healthy: status completes a
+bounded service connection and lookups. It does not write a probe record or
+inspect the parent shell, so it cannot confirm that the zsh hooks are loaded,
+that writes would succeed, or that remote hosts are synchronized. The existing
+service login API may idempotently bootstrap missing key or authorization
+metadata in a legacy or incompletely initialized user tree; status performs no
+other persistent mutation.
 
 ## Security and limits
 

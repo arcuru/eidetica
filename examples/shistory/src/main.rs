@@ -9,12 +9,14 @@ use eidetica::{
     sync::DatabaseTicket,
 };
 use shistory::{
-    DEFAULT_LIMIT, connect, finish, host, open_database, print_entries, print_summary, query,
-    rename, setup, start, summarize, ticket,
+    DEFAULT_LIMIT, HOST_DISPLAY_LIMIT, bounded_escaped, connect, finish, host, open_database,
+    print_entries, print_summary, query, rename, setup, start, summarize, ticket,
 };
 use uuid::Uuid;
 
 const CAPTURE_DEADLINE: Duration = Duration::from_secs(1);
+const STATUS_VALUE_LIMIT: usize = 200;
+const STATUS_ERROR_LIMIT: usize = 240;
 
 #[derive(Parser)]
 #[command(about = "Record zsh history in an Eidetica daemon")]
@@ -92,7 +94,7 @@ enum Command {
         #[arg(long)]
         host_id: Option<Uuid>,
     },
-    /// Check local history-recording prerequisites without changing daemon state.
+    /// Check local history-recording prerequisites without writing history or initiating sync.
     Status,
 }
 
@@ -233,8 +235,11 @@ async fn capture_with_deadline<T>(future: impl Future<Output = Result<T>>) -> Re
 
 async fn status(username: &str, host_id: Option<Uuid>) -> Result<()> {
     let socket_path = default_socket_path();
-    println!("effective socket: {}", socket_path.display());
-    println!("selected user: {username}");
+    println!(
+        "effective socket: {}",
+        status_value(&socket_path.display().to_string())
+    );
+    println!("selected user: {}", status_value(username));
 
     let mut healthy = true;
     let host_id = match host_id {
@@ -263,7 +268,8 @@ async fn status(username: &str, host_id: Option<Uuid>) -> Result<()> {
         }
         Err(error) => {
             println!(
-                "daemon connectivity: failed — {error}; start the Eidetica daemon or set EIDETICA_SOCKET to its service socket"
+                "daemon connectivity: failed — {}; start the Eidetica daemon or set EIDETICA_SOCKET to its service socket",
+                status_error_value(&error)
             );
             println!("passwordless user: skipped — daemon connection failed");
             println!("history database: skipped — daemon connection failed");
@@ -285,7 +291,8 @@ async fn status(username: &str, host_id: Option<Uuid>) -> Result<()> {
         }
         Err(error) => {
             println!(
-                "passwordless user: failed — {error}; create the configured passwordless daemon user or select it with SHISTORY_USER"
+                "passwordless user: failed — {}; create the configured passwordless daemon user or select it with SHISTORY_USER",
+                status_error_value(&error)
             );
             println!("history database: skipped — passwordless user login failed");
             println!("configured host: skipped — passwordless user login failed");
@@ -297,11 +304,17 @@ async fn status(username: &str, host_id: Option<Uuid>) -> Result<()> {
     let database = match status_with_deadline("history database lookup", open_database(&user)).await
     {
         Ok(database) => {
-            println!("history database: ok ({})", database.root_id());
+            println!(
+                "history database: ok ({})",
+                status_value(&database.root_id().to_string())
+            );
             database
         }
         Err(error) => {
-            println!("history database: failed — {error}; run shistory setup once for this user");
+            println!(
+                "history database: failed — {}; run shistory setup once for this user",
+                status_error_value(&error)
+            );
             println!("configured host: skipped — history database lookup failed");
             status_limitations();
             return status_result(false);
@@ -311,11 +324,15 @@ async fn status(username: &str, host_id: Option<Uuid>) -> Result<()> {
     match host_id {
         Some(host_id) => {
             match status_with_deadline("configured host lookup", host(&database, host_id)).await {
-                Ok(host) => println!("configured host: ok ({host_id}, {})", host.name),
+                Ok(host) => println!(
+                    "configured host: ok ({host_id}, {})",
+                    bounded_escaped(&host.name, HOST_DISPLAY_LIMIT)
+                ),
                 Err(error) => {
                     healthy = false;
                     println!(
-                        "configured host: failed — {error}; use the UUID printed by setup for this host"
+                        "configured host: failed — {}; use the UUID printed by setup for this host",
+                        status_error_value(&error)
                     );
                 }
             }
@@ -330,6 +347,17 @@ async fn status(username: &str, host_id: Option<Uuid>) -> Result<()> {
 fn status_limitations() {
     println!("shell hooks: not checked — status cannot inspect a parent shell");
     println!("remote synchronization: not checked — status does not attempt or prove sync");
+    println!(
+        "write readiness: not checked — status does not write a probe; service login may idempotently bootstrap missing user-tree metadata"
+    );
+}
+
+fn status_value(value: &str) -> String {
+    bounded_escaped(value, STATUS_VALUE_LIMIT)
+}
+
+fn status_error_value(error: &impl std::fmt::Display) -> String {
+    bounded_escaped(&error.to_string(), STATUS_ERROR_LIMIT)
 }
 
 async fn status_with_deadline<T>(

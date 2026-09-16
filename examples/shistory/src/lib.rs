@@ -386,7 +386,7 @@ fn validate_limit(limit: usize) -> Result<()> {
     Ok(())
 }
 
-fn bounded_escaped(value: &str, limit: usize) -> String {
+pub fn bounded_escaped(value: &str, limit: usize) -> String {
     let mut display = String::new();
     for character in value.chars() {
         let escaped = if character.is_control() {

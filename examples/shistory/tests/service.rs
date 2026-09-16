@@ -377,9 +377,16 @@ async fn query_limits_unique_commands_and_summary_scans_all_history() -> Result<
 async fn cli_status_reports_read_only_recording_prerequisites() -> Result<()> {
     let daemon = Daemon::start("alice").await;
     let (_client, mut user) = connect_to(&daemon.socket_url, "alice").await?;
-    let configured = setup(&mut user, None, "laptop").await?;
+    let configured = setup(
+        &mut user,
+        None,
+        &format!("laptop\ninjected\t{}", "x".repeat(100)),
+    )
+    .await?;
     let database = open_database(&user).await?;
     let host_id = configured.id.to_string();
+    let user_before = user.user_database().snapshot().await?;
+    let history_before = database.snapshot().await?;
 
     let healthy = run_cli(
         &daemon,
@@ -397,8 +404,14 @@ async fn cli_status_reports_read_only_recording_prerequisites() -> Result<()> {
     assert!(healthy.contains("passwordless user: ok"));
     assert!(healthy.contains("history database: ok ("));
     assert!(healthy.contains("configured host: ok ("));
+    assert!(healthy.contains(r"laptop\ninjected\t"));
+    assert!(!healthy.lines().any(|line| line.contains('\t')));
+    assert!(healthy.lines().all(|line| line.chars().count() < 500));
     assert!(healthy.contains("shell hooks: not checked"));
     assert!(healthy.contains("remote synchronization: not checked"));
+    assert!(healthy.contains("write readiness: not checked"));
+    assert_eq!(user.user_database().snapshot().await?, user_before);
+    assert_eq!(database.snapshot().await?, history_before);
     assert_eq!(
         summarize(&database, None).await?.total,
         0,
@@ -437,9 +450,10 @@ async fn cli_status_reports_read_only_recording_prerequisites() -> Result<()> {
         "failed status made no history record"
     );
 
+    let hostile_user = format!("missing\ninjected\t{}", "x".repeat(300));
     let missing_user = run_cli(
         &daemon,
-        &["--user", "missing", "--host-id", &host_id, "status"],
+        &["--user", &hostile_user, "--host-id", &host_id, "status"],
     )
     .await;
     assert!(!missing_user.status.success());
@@ -447,6 +461,9 @@ async fn cli_status_reports_read_only_recording_prerequisites() -> Result<()> {
     assert!(missing_user.contains("passwordless user: failed"));
     assert!(missing_user.contains("history database: skipped"));
     assert!(missing_user.contains("configured host: skipped"));
+    assert!(missing_user.contains(r"missing\ninjected\t"));
+    assert!(!missing_user.lines().any(|line| line.contains('\t')));
+    assert!(missing_user.lines().all(|line| line.chars().count() < 500));
 
     daemon.stop().await;
 
