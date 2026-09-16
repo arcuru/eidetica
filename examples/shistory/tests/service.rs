@@ -387,8 +387,19 @@ async fn summary_keeps_duplicate_names_distinct_and_filters_by_uuid() -> Result<
     let incomplete = start(&database, first.id, "shell", "/one", "git diff", time(3))
         .await?
         .unwrap();
+    let tied = start(
+        &database,
+        second.id,
+        "shell",
+        "/two",
+        "cargo build",
+        time(4),
+    )
+    .await?
+    .unwrap();
     finish(&database, first.id, &one, 3, 1).await?;
     finish(&database, second.id, &two, 8, 0).await?;
+    finish(&database, second.id, &tied, 8, 0).await?;
 
     let summary = summarize(&database, None).await?;
     assert_eq!(summary.machine_counts.len(), 2);
@@ -402,11 +413,19 @@ async fn summary_keeps_duplicate_names_distinct_and_filters_by_uuid() -> Result<
         summary
             .machine_counts
             .iter()
-            .any(|(id, _, count)| *id == second.id && *count == 1)
+            .any(|(id, _, count)| *id == second.id && *count == 2)
     );
     assert_eq!(summary.failures, 1);
-    assert_eq!(summary.successes, 1);
+    assert_eq!(summary.successes, 2);
     assert_eq!(summary.incomplete, 1);
+    assert_eq!(summary.most_common_command, Some(("cargo".to_owned(), 2)));
+    assert_eq!(
+        summary
+            .longest_runtime
+            .as_ref()
+            .map(|entry| entry.command.as_str()),
+        Some("cargo build")
+    );
     assert!(!incomplete.is_empty());
 
     let filtered = summarize(&database, Some(first.id)).await?;
@@ -415,6 +434,68 @@ async fn summary_keeps_duplicate_names_distinct_and_filters_by_uuid() -> Result<
 
     daemon.stop().await;
     Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cli_summary_ignores_global_host_default_but_accepts_explicit_filter() {
+    let daemon = Daemon::start("alice").await;
+    let (_client, mut user) = connect_to(&daemon.socket_url, "alice").await.unwrap();
+    let first = setup(&mut user, None, "first").await.unwrap();
+    let database = open_database(&user).await.unwrap();
+    let second = Host {
+        id: Uuid::new_v4(),
+        name: "second".to_owned(),
+    };
+    let transaction = database.new_transaction().await.unwrap();
+    transaction
+        .get_store::<Table<Host>>("hosts")
+        .await
+        .unwrap()
+        .set(&second.id.to_string(), second.clone())
+        .await
+        .unwrap();
+    transaction.commit().await.unwrap();
+    start(&database, first.id, "shell", "/one", "one", time(1))
+        .await
+        .unwrap();
+    start(&database, second.id, "shell", "/two", "two", time(2))
+        .await
+        .unwrap();
+    let first_id = first.id.to_string();
+    let second_id = second.id.to_string();
+
+    let all = run_cli(
+        &daemon,
+        &["--user", "alice", "--host-id", &first_id, "summary"],
+    )
+    .await;
+    assert!(
+        all.status.success(),
+        "{}",
+        String::from_utf8_lossy(&all.stderr)
+    );
+    assert!(
+        String::from_utf8(all.stdout)
+            .unwrap()
+            .contains("total records: 2\n")
+    );
+
+    let filtered = run_cli(
+        &daemon,
+        &["--user", "alice", "summary", "--host-id", &second_id],
+    )
+    .await;
+    assert!(
+        filtered.status.success(),
+        "{}",
+        String::from_utf8_lossy(&filtered.stderr)
+    );
+    let filtered = String::from_utf8(filtered.stdout).unwrap();
+    assert!(filtered.contains("total records: 1\n"));
+    assert!(filtered.contains(&second_id));
+    assert!(!filtered.contains(&first_id));
+
+    daemon.stop().await;
 }
 
 #[test]
@@ -472,6 +553,71 @@ fn empty_summary_is_bounded_and_printable() {
         String::from_utf8(output).unwrap(),
         "total records: 0\nstatus: 0 success, 0 failure, 0 incomplete\nrecords by machine:\n"
     );
+}
+
+#[test]
+fn displayed_summary_bounds_and_escapes_untrusted_labels() {
+    let host_id = Uuid::nil();
+    let command = format!("界\n{}", "x".repeat(COMMAND_DISPLAY_LIMIT));
+    let host = format!("🚀\t{}", "x".repeat(HOST_DISPLAY_LIMIT));
+    let entry = HistoryEntry {
+        command: command.clone(),
+        started_at: time(0),
+        cwd: String::new(),
+        duration_ms: Some(7),
+        exit_status: Some(0),
+        host_id,
+        host_name: host.clone(),
+        session: String::new(),
+    };
+    let mut output = Vec::new();
+
+    print_summary(
+        &mut output,
+        &shistory::HistorySummary {
+            total: 1,
+            first_started_at: Some(time(0)),
+            last_started_at: Some(time(0)),
+            successes: 1,
+            failures: 0,
+            incomplete: 0,
+            most_common_command: Some((command, 1)),
+            longest_runtime: Some(entry),
+            machine_counts: vec![(host_id, host, 1)],
+        },
+    )
+    .unwrap();
+
+    let output = String::from_utf8(output).unwrap();
+    let common = output
+        .lines()
+        .find_map(|line| line.strip_prefix("most common command: "))
+        .unwrap()
+        .strip_suffix(" (1)")
+        .unwrap();
+    assert_eq!(common.chars().count(), COMMAND_DISPLAY_LIMIT);
+    assert!(common.starts_with("界\\n") && common.ends_with('…'));
+    let longest = output
+        .lines()
+        .find_map(|line| line.strip_prefix("longest runtime: 7 ms\t"))
+        .unwrap()
+        .split('\t')
+        .collect::<Vec<_>>();
+    assert_eq!(longest[0].chars().count(), HOST_DISPLAY_LIMIT);
+    assert_eq!(longest[1].chars().count(), COMMAND_DISPLAY_LIMIT);
+    assert!(longest[0].starts_with("🚀\\t"));
+    assert!(longest[1].starts_with("界\\n"));
+    assert!(longest.iter().all(|field| field.ends_with('…')));
+
+    let machine = output
+        .lines()
+        .find(|line| line.contains(&host_id.to_string()))
+        .unwrap()
+        .split('\t')
+        .collect::<Vec<_>>();
+    assert_eq!(machine.len(), 3);
+    assert_eq!(machine[0].chars().count(), HOST_DISPLAY_LIMIT);
+    assert!(machine[0].starts_with("🚀\\t") && machine[0].ends_with('…'));
 }
 
 #[test]

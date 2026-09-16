@@ -262,7 +262,7 @@ impl HistorySummary {
         let mut successes = 0;
         let mut failures = 0;
         let mut incomplete = 0;
-        let mut longest_runtime = None;
+        let mut longest_runtime: Option<HistoryEntry> = None;
 
         for entry in &entries {
             match entry.exit_status {
@@ -277,10 +277,11 @@ impl HistorySummary {
                 .or_insert_with(|| (entry.host_name.clone(), 0));
             machine.1 += 1;
             if entry.duration_ms.is_some_and(|duration| {
-                longest_runtime
-                    .as_ref()
-                    .and_then(|longest: &HistoryEntry| longest.duration_ms)
-                    .is_none_or(|longest| duration > longest)
+                longest_runtime.as_ref().is_none_or(|longest| {
+                    duration > longest.duration_ms.unwrap_or_default()
+                        || (duration == longest.duration_ms.unwrap_or_default()
+                            && entry_tie_key(entry) < entry_tie_key(longest))
+                })
             }) {
                 longest_runtime = Some(entry.clone());
             }
@@ -310,6 +311,16 @@ impl HistorySummary {
                 .collect(),
         }
     }
+}
+
+fn entry_tie_key(entry: &HistoryEntry) -> (&str, Uuid, DateTime<Utc>, &str, &str) {
+    (
+        &entry.command,
+        entry.host_id,
+        entry.started_at,
+        &entry.cwd,
+        &entry.session,
+    )
 }
 
 async fn matching_entries(

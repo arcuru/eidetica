@@ -190,10 +190,7 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Summary { host_id } => {
             let (_instance, user) = connect(&cli.user).await?;
             let database = open_database(&user).await?;
-            print_summary(
-                std::io::stdout(),
-                &summarize(&database, host_id.or(cli.host_id)).await?,
-            )?;
+            print_summary(std::io::stdout(), &summarize(&database, host_id).await?)?;
         }
     }
     Ok(())
