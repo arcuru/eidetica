@@ -80,9 +80,10 @@ pub struct SyncTreeRequest {
     pub our_tips: Snapshot,
     /// Device public key of the requesting peer (used for automatic tree/peer relationship tracking)
     pub peer_pubkey: Option<PublicKey>,
-    // Note: requesting_key is unverified. It selects which key an approval
-    // would grant; it never authorizes serving data — `auth` does that.
-    /// Authentication key requesting access (for bootstrap)
+    /// Authentication key requesting access (for bootstrap).
+    ///
+    /// A request that names this key must carry matching proof in `auth` before
+    /// its approval lifecycle is read or changed. Anonymous public sync omits it.
     pub requesting_key: Option<PublicKey>,
     /// Key name/identifier for the requesting key
     pub requesting_key_name: Option<String>,
@@ -95,9 +96,9 @@ pub struct SyncTreeRequest {
     pub metadata: Option<Doc>,
     /// Proof that the caller holds the private half of the key it is claiming.
     ///
-    /// Required before any entry is served from a database that has auth
-    /// configured. Absent on requests that only *ask* for access (the manual
-    /// approval queue), which disclose nothing.
+    /// Required whenever `requesting_key` claims an identity, including manual
+    /// approval requests and named-key requests on public databases. Anonymous
+    /// public sync omits both fields.
     #[serde(default)]
     pub auth: Option<SyncRequestAuth>,
 }

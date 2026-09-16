@@ -14,7 +14,8 @@ sequenceDiagram
     participant Handler
     participant Database
 
-    Client->>Handler: Bootstrap Request (key, permission)
+    Client->>Handler: Bootstrap Request (key, permission, proof)
+    Handler->>Handler: Verify proof matches claimed key
     Handler->>Handler: Resolve existing authority (direct / global '*' / delegated)
 
     alt Existing authority sufficient
@@ -68,10 +69,17 @@ sync.reject_bootstrap_request(id, signing_key)?;
 - **Approved**: Key added to database
 - **Rejected**: Request denied, no key added
 
+A named-key request must prove possession of the requesting key before the server
+looks up, creates, or reports its lifecycle state. Missing, invalid, or mismatched
+proof is rejected without creating a request. Anonymous sync remains available for
+public databases when no named-key access request is made.
+
 Retries use the request identity `(tree, requesting key, requested permission)`.
 A pending retry returns the existing request ID; a rejected retry returns a typed
 terminal rejection with that same ID. A different permission is a distinct request.
 Approved history does not block a new request after its grant is no longer live.
+Proof validation for a pending retry does not consume its nonce; a response that
+serves database entries does.
 
 Requests are retained indefinitely for audit trail.
 

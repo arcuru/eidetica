@@ -418,11 +418,13 @@ pub fn create_bootstrap_request(
 pub async fn create_pending_bootstrap_request(
     handler: &SyncHandlerImpl,
     tree_id: &ID,
-    requesting_key: &str,
+    signing_key: &eidetica::auth::crypto::PrivateKey,
     key_name: &str,
     permission: AuthPermission,
+    server_pubkey: &PublicKey,
 ) -> String {
-    let request = create_bootstrap_request(tree_id, requesting_key, key_name, permission);
+    let request =
+        create_signed_bootstrap_request(tree_id, signing_key, key_name, permission, server_pubkey);
     let context = RequestContext::default();
     let response = handler.handle_request(&request, &context).await;
 

@@ -25,17 +25,18 @@ use eidetica::{
 
 #[tokio::test]
 async fn test_manual_approval_stores_pending_request() {
-    let (_instance, _user, _key_id, _database, sync, tree_id) =
-        setup_manual_approval_server().await;
+    let (instance, _user, _key_id, _database, sync, tree_id) = setup_manual_approval_server().await;
     let sync_handler = create_test_sync_handler(&sync);
 
     // Create a bootstrap request that should be stored as pending
-    let test_key = PublicKey::random();
-    let sync_request = create_bootstrap_request(
+    let signing_key = PrivateKey::generate();
+    let test_key = signing_key.public_key();
+    let sync_request = create_signed_bootstrap_request(
         &tree_id,
-        &test_key.to_string(),
+        &signing_key,
         "laptop_key",
         AuthPermission::Write(5),
+        &instance.id(),
     );
 
     // Handle the request
@@ -63,16 +64,17 @@ async fn test_manual_approval_stores_pending_request() {
 
 #[tokio::test]
 async fn test_auto_approve_still_works() {
-    let (_instance, _user, _key_id, _database, sync, tree_id) = setup_auto_approval_server().await;
+    let (instance, _user, _key_id, _database, sync, tree_id) = setup_auto_approval_server().await;
     let sync_handler = create_test_sync_handler(&sync);
 
     // Create a bootstrap request that should be auto-approved
-    let test_key = PublicKey::random();
-    let sync_request = create_bootstrap_request(
+    let signing_key = PrivateKey::generate();
+    let sync_request = create_signed_bootstrap_request(
         &tree_id,
-        &test_key.to_string(),
+        &signing_key,
         "laptop_key",
         AuthPermission::Write(5),
+        &instance.id(),
     );
 
     // Handle the request
@@ -101,19 +103,21 @@ async fn test_auto_approve_still_works() {
 
 #[tokio::test]
 async fn test_approve_bootstrap_request() {
-    let (_instance, user, key_id, database, sync, tree_id) = setup_manual_approval_server().await;
+    let (instance, user, key_id, database, sync, tree_id) = setup_manual_approval_server().await;
 
     // Server already has admin key from setup_manual_approval_server
 
     // Create sync handler and submit bootstrap request
     let sync_handler = create_test_sync_handler(&sync);
-    let test_key = PublicKey::random();
+    let signing_key = PrivateKey::generate();
+    let test_key = signing_key.public_key();
     let request_id = create_pending_bootstrap_request(
         &sync_handler,
         &tree_id,
-        &test_key.to_string(),
+        &signing_key,
         "laptop_key",
         AuthPermission::Write(5),
+        &instance.id(),
     )
     .await;
 
@@ -170,7 +174,7 @@ async fn test_approve_bootstrap_request() {
 
 #[tokio::test]
 async fn test_reject_bootstrap_request() {
-    let (_instance, user, key_id, database, sync, _tree_id) = setup_manual_approval_server().await;
+    let (instance, user, key_id, database, sync, _tree_id) = setup_manual_approval_server().await;
     let tree_id = database.root_id().clone();
 
     // Create sync handler
@@ -180,17 +184,15 @@ async fn test_reject_bootstrap_request() {
     );
 
     // Create a bootstrap request that will be stored as pending
-    let test_key = PublicKey::random();
-    let sync_request = SyncRequest::SyncTree(SyncTreeRequest {
-        tree_id: tree_id.clone(),
-        our_tips: Vec::new().into(), // Empty tips = bootstrap needed
-        peer_pubkey: None,
-        requesting_key: Some(test_key.clone()),
-        requesting_key_name: Some("laptop_key".to_string()),
-        requested_permission: Some(AuthPermission::Write(5)),
-        metadata: None,
-        auth: None,
-    });
+    let signing_key = PrivateKey::generate();
+    let test_key = signing_key.public_key();
+    let sync_request = create_signed_bootstrap_request(
+        &tree_id,
+        &signing_key,
+        "laptop_key",
+        AuthPermission::Write(5),
+        &instance.id(),
+    );
 
     // Handle the request to store it as pending
     let context = RequestContext::default();
@@ -254,7 +256,7 @@ async fn test_reject_bootstrap_request() {
 
 #[tokio::test]
 async fn test_list_bootstrap_requests_by_status() {
-    let (_instance, user, key_id, database, sync, _tree_id) = setup_manual_approval_server().await;
+    let (instance, user, key_id, database, sync, _tree_id) = setup_manual_approval_server().await;
     let tree_id = database.root_id().clone();
 
     // Server already has admin key from setup_manual_approval_server
@@ -266,17 +268,14 @@ async fn test_list_bootstrap_requests_by_status() {
     );
 
     // Create and store a bootstrap request
-    let test_key = PublicKey::random();
-    let sync_request = SyncRequest::SyncTree(SyncTreeRequest {
-        tree_id: tree_id.clone(),
-        our_tips: Vec::new().into(),
-        peer_pubkey: None,
-        requesting_key: Some(test_key.clone()),
-        requesting_key_name: Some("test_key".to_string()),
-        requested_permission: Some(AuthPermission::Write(5)),
-        metadata: None,
-        auth: None,
-    });
+    let signing_key = PrivateKey::generate();
+    let sync_request = create_signed_bootstrap_request(
+        &tree_id,
+        &signing_key,
+        "test_key",
+        AuthPermission::Write(5),
+        &instance.id(),
+    );
 
     let context = RequestContext::default();
     let response = sync_handler.handle_request(&sync_request, &context).await;
@@ -325,7 +324,6 @@ fn assert_authentication_failure(response: SyncResponse) {
     }
 }
 
-#[should_panic]
 #[tokio::test]
 async fn named_bootstrap_request_requires_matching_proof() {
     let (instance, _user, _key_id, _database, sync, tree_id) = setup_manual_approval_server().await;
@@ -379,9 +377,20 @@ async fn named_bootstrap_request_requires_matching_proof() {
     );
 
     assert!(sync.pending_bootstrap_requests().await.unwrap().is_empty());
+
+    let incomplete = SyncRequest::SyncTree(SyncTreeRequest {
+        tree_id,
+        our_tips: Vec::new().into(),
+        peer_pubkey: None,
+        requesting_key: Some(PrivateKey::generate().public_key()),
+        requesting_key_name: None,
+        requested_permission: None,
+        metadata: None,
+        auth: None,
+    });
+    assert_authentication_failure(handler.handle_request(&incomplete, &context).await);
 }
 
-#[should_panic]
 #[tokio::test]
 async fn unproven_callers_cannot_observe_existing_request_lifecycle() {
     let (instance, user, key_id, _database, sync, tree_id) = setup_manual_approval_server().await;
@@ -456,7 +465,6 @@ async fn unproven_callers_cannot_observe_existing_request_lifecycle() {
     );
 }
 
-#[should_panic]
 #[tokio::test]
 async fn public_sync_distinguishes_anonymous_reads_from_named_access_requests() {
     let (instance, _user, _key_id, _database, tree_id, sync) =
@@ -682,14 +690,16 @@ async fn test_successful_explicit_bootstrap_consumes_request_nonce() {
 
 #[tokio::test]
 async fn test_approved_request_can_restart_after_grant_revocation() {
-    let (_instance, user, key_id, database, sync, tree_id) = setup_manual_approval_server().await;
+    let (instance, user, key_id, database, sync, tree_id) = setup_manual_approval_server().await;
     let handler = create_test_sync_handler(&sync);
-    let requesting_key = PublicKey::random();
-    let request = create_bootstrap_request(
+    let signing_key = PrivateKey::generate();
+    let requesting_key = signing_key.public_key();
+    let request = create_signed_bootstrap_request(
         &tree_id,
-        &requesting_key.to_string(),
+        &signing_key,
         "laptop_key",
         AuthPermission::Write(5),
+        &instance.id(),
     );
     let context = RequestContext::default();
 
@@ -758,7 +768,7 @@ async fn test_approval_with_nonexistent_request_id() {
 
 #[tokio::test]
 async fn test_malformed_permission_requests() {
-    let (_instance, _user, _key_id, database, sync, _tree_id_from_setup) =
+    let (instance, _user, _key_id, database, sync, _tree_id_from_setup) =
         setup_manual_approval_server().await;
     let tree_id = database.root_id().clone();
 
@@ -769,8 +779,7 @@ async fn test_malformed_permission_requests() {
     );
 
     // Generate a test key to use for all permission tests
-    let test_key = PublicKey::random();
-
+    let signing_key = PrivateKey::generate();
     // Test with various permission configurations to ensure they're handled properly
     let permission_tests = vec![
         (AuthPermission::Read, "Read permission"),
@@ -787,16 +796,13 @@ async fn test_malformed_permission_requests() {
     ];
 
     for (permission, description) in &permission_tests {
-        let sync_request = SyncRequest::SyncTree(SyncTreeRequest {
-            tree_id: tree_id.clone(),
-            our_tips: Vec::new().into(),
-            peer_pubkey: None,
-            requesting_key: Some(test_key.clone()),
-            requesting_key_name: Some(format!("key_for_{}", description.replace(" ", "_"))),
-            requested_permission: Some(*permission),
-            metadata: None,
-            auth: None,
-        });
+        let sync_request = create_signed_bootstrap_request(
+            &tree_id,
+            &signing_key,
+            &format!("key_for_{}", description.replace(" ", "_")),
+            *permission,
+            &instance.id(),
+        );
 
         let context = RequestContext::default();
         let response = sync_handler.handle_request(&sync_request, &context).await;
@@ -863,12 +869,13 @@ async fn test_bootstrap_with_global_permission_auto_approval() {
     // Test 1: Request Write(15) permission - should be auto-approved via global permission
     // Note: Lower priority numbers = higher permissions, so Write(15) < Write(10) in permission level
     println!("🔍 Testing Write(15) request against global Write(10) permission");
-    let (_, client_pk1) = eidetica::auth::generate_keypair();
-    let sync_request = create_bootstrap_request(
+    let (client_key1, _) = eidetica::auth::generate_keypair();
+    let sync_request = create_signed_bootstrap_request(
         &tree_id,
-        &client_pk1.to_string(),
+        &client_key1,
         "client_key",
         AuthPermission::Write(15),
+        &server_instance.id(),
     );
 
     let context = RequestContext::default();
@@ -896,12 +903,13 @@ async fn test_bootstrap_with_global_permission_auto_approval() {
 
     // Test 2: Request Read permission - should also be auto-approved (Read < Write in permission level)
     println!("🔍 Testing Read request against global Write(10) permission");
-    let (_, client_pk2) = eidetica::auth::generate_keypair();
-    let sync_request = create_bootstrap_request(
+    let (client_key2, _) = eidetica::auth::generate_keypair();
+    let sync_request = create_signed_bootstrap_request(
         &tree_id,
-        &client_pk2.to_string(),
+        &client_key2,
         "another_client",
         AuthPermission::Read,
+        &server_instance.id(),
     );
 
     let context = RequestContext::default();
@@ -920,12 +928,13 @@ async fn test_bootstrap_with_global_permission_auto_approval() {
 
     // Test 3: Request Admin(5) permission - should require manual approval (Admin > Write always)
     println!("🔍 Testing Admin(5) request against global Write(10) permission");
-    let (_, client_pk3) = eidetica::auth::generate_keypair();
-    let sync_request = create_bootstrap_request(
+    let (client_key3, _) = eidetica::auth::generate_keypair();
+    let sync_request = create_signed_bootstrap_request(
         &tree_id,
-        &client_pk3.to_string(),
+        &client_key3,
         "admin_client",
         AuthPermission::Admin(5),
+        &server_instance.id(),
     );
 
     let context = RequestContext::default();
@@ -1055,7 +1064,7 @@ async fn test_bootstrap_with_existing_global_permission_no_duplicate() {
             .await;
     server_instance.enable_sync().await.unwrap();
 
-    let test_key = PublicKey::random();
+    let (test_signing_key, _) = eidetica::auth::generate_keypair();
 
     // Create database with admin key and global Write(5) permission
     let mut settings = Doc::new();
@@ -1082,11 +1091,12 @@ async fn test_bootstrap_with_existing_global_permission_no_duplicate() {
     let sync_handler = create_test_sync_handler(&sync);
 
     // Try to bootstrap with any key requesting Write(10) permission (should succeed via global)
-    let sync_request = create_bootstrap_request(
+    let sync_request = create_signed_bootstrap_request(
         &tree_id,
-        &test_key.to_string(),
+        &test_signing_key,
         "laptop_key",
         AuthPermission::Write(10),
+        &server_instance.id(),
     );
 
     let context = RequestContext::default();
@@ -1292,7 +1302,7 @@ async fn test_bootstrap_global_permission_client_cannot_create_entries_bug() {
     let tree_id = database.root_id().clone();
 
     // Setup client instance
-    let (client_instance, _client_user, client_key_id) =
+    let (client_instance, client_user, client_key_id) =
         crate::helpers::test_local_instance_with_user_and_key("client_user", Some("client_key"))
             .await;
     client_instance.enable_sync().await.unwrap();
@@ -1302,12 +1312,15 @@ async fn test_bootstrap_global_permission_client_cannot_create_entries_bug() {
     let sync_handler = create_test_sync_handler(&sync);
 
     // Client bootstraps via global permission - this should succeed
-    let client_key_str = client_key_id.to_string();
-    let sync_request = create_bootstrap_request(
+    let client_signing_key = client_user
+        .get_signing_key(&client_key_id)
+        .expect("Failed to get client signing key");
+    let sync_request = create_signed_bootstrap_request(
         &tree_id,
-        &client_key_str,
+        &client_signing_key,
         "client_key",
         AuthPermission::Write(10),
+        &server_instance.id(),
     );
     let context = RequestContext::default();
     let response = sync_handler.handle_request(&sync_request, &context).await;
@@ -1407,12 +1420,15 @@ async fn test_global_permission_enables_transactions() {
     println!("🔍 Testing bootstrap with global permission");
 
     // Test 1: Bootstrap with global permission
-    let client_key_str = client_key_id.to_string();
-    let sync_request = create_bootstrap_request(
+    let client_signing_key = client_user
+        .get_signing_key(&client_key_id)
+        .expect("Failed to get client signing key");
+    let sync_request = create_signed_bootstrap_request(
         &tree_id,
-        &client_key_str,
+        &client_signing_key,
         "client_device",
         AuthPermission::Write(15),
+        &server_instance.id(),
     );
 
     let context = RequestContext::default();
@@ -1456,12 +1472,6 @@ async fn test_global_permission_enables_transactions() {
     for entry in tree_entries {
         client_instance.backend().put_verified(entry).await.unwrap();
     }
-
-    // Load the database on client side with the client's signing key
-    // When using User API, keys are stored in the User's key manager, not the Instance backend
-    let client_signing_key = client_user
-        .get_signing_key(&client_key_id)
-        .expect("Failed to get client signing key");
 
     // Discover which SigKeys this public key can use
     // This will return a global SigKey since the client is using global permissions

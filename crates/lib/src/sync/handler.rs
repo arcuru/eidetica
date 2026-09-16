@@ -198,7 +198,6 @@ impl SyncHandlerImpl {
         &self,
         sync_request: &SyncTreeRequest,
         requesting_key_name: &str,
-        requesting_key_proven: bool,
     ) -> Result<BootstrapRequestOutcome> {
         let tree_id = &sync_request.tree_id;
         let requesting_key = sync_request
@@ -235,22 +234,14 @@ impl SyncHandlerImpl {
                     )
                     .await?
                     {
-                        return Ok(if requesting_key_proven {
-                            BootstrapRequestOutcome::Approved
-                        } else {
-                            BootstrapRequestOutcome::ApprovedButNotProven
-                        });
+                        return Ok(BootstrapRequestOutcome::Approved);
                     }
                 }
             }
         }
 
         if Database::can_access(&instance, tree_id, requesting_key, &requested_permission).await? {
-            return Ok(if requesting_key_proven {
-                BootstrapRequestOutcome::Approved
-            } else {
-                BootstrapRequestOutcome::ApprovedButNotProven
-            });
+            return Ok(BootstrapRequestOutcome::Approved);
         }
 
         let request = BootstrapRequest {
@@ -287,7 +278,6 @@ enum BootstrapRequestOutcome {
     Pending(String),
     Rejected(String),
     Approved,
-    ApprovedButNotProven,
 }
 
 #[async_trait]
@@ -400,26 +390,12 @@ impl SyncHandlerImpl {
 
     /// Check that the caller signed this request with `claimed_key`.
     ///
-    /// `requesting_key` is a name the client picks; it decides which key an
-    /// approval would grant, and on its own it must never unlock data. Anything
-    /// that serves entries on the strength of a claimed key needs this first.
-    fn prove_possession_if_required(
-        &self,
-        request: &SyncTreeRequest,
-        claimed_key: &PublicKey,
-        auth_configured: bool,
-    ) -> Result<()> {
-        if !auth_configured {
-            // World-readable database: nothing is being protected, so there is
-            // nothing to prove.
-            return Ok(());
-        }
-        self.prove_possession(request, claimed_key)
-    }
-
-    /// Check that the caller signed this request with `claimed_key`.
+    /// Named-key bootstrap requests enter a persistent lifecycle and may expose
+    /// its status, so possession is required even when the database is public.
+    /// This validation is non-consuming; the nonce is spent only if entries are
+    /// served.
     fn prove_possession(&self, request: &SyncTreeRequest, claimed_key: &PublicKey) -> Result<()> {
-        let proven = self.authenticate_request(request)?;
+        let proven = self.verify_request_signature(request)?;
         if proven != *claimed_key {
             return Err(SyncError::AuthenticationFailed(format!(
                 "request is signed by {proven}, which is not the claimed key {claimed_key}"
@@ -427,71 +403,6 @@ impl SyncHandlerImpl {
             .into());
         }
         Ok(())
-    }
-
-    /// Check if the caller holds a key that already has sufficient permissions.
-    ///
-    /// Possession first, then authority. Authority resolves through
-    /// [`Database::can_access`], the pubkey-only access decision, which covers
-    /// direct grants, the global `*` grant, and authority that reaches this
-    /// tree only through a *delegated* tree. Without the delegated case a
-    /// delegated-only key is bounced to manual approval and hangs.
-    ///
-    /// Delegation discovery is **one hop deep**: a key reachable only through a
-    /// chain of delegations still falls through to manual approval. See
-    /// [`Database::can_access`] for why bootstrap searches where entry
-    /// validation walks a named path.
-    ///
-    /// Returns `(possession_proven, permission_granted)`.
-    async fn check_proven_auth_permission(
-        &self,
-        request: &SyncTreeRequest,
-        requesting_pubkey: &PublicKey,
-        requested_permission: &Permission,
-        auth_configured: bool,
-    ) -> Result<(bool, bool)> {
-        let tree_id = &request.tree_id;
-        let possession = if auth_configured {
-            self.verify_request_signature(request)
-                .and_then(|proven| {
-                    if proven == *requesting_pubkey {
-                        Ok(())
-                    } else {
-                        Err(SyncError::AuthenticationFailed(format!(
-                            "request is signed by {proven}, which is not the claimed key {requesting_pubkey}"
-                        ))
-                        .into())
-                    }
-                })
-        } else {
-            Ok(())
-        };
-        if let Err(e) = possession {
-            warn!(
-                tree_id = %tree_id,
-                requesting_pubkey = %requesting_pubkey,
-                error = %e,
-                "Bootstrap key claim not proven - falling back to the approval queue"
-            );
-            return Ok((false, false));
-        }
-
-        let granted = Database::can_access(
-            &self.instance()?,
-            tree_id,
-            requesting_pubkey,
-            requested_permission,
-        )
-        .await?;
-        if granted {
-            debug!(
-                tree_id = %tree_id,
-                requesting_pubkey = %requesting_pubkey,
-                requested_permission = ?requested_permission,
-                "Key has sufficient permission for bootstrap access"
-            );
-        }
-        Ok((true, granted))
     }
 
     /// Check if a database requires authentication for unauthenticated requests.
@@ -773,11 +684,13 @@ impl SyncHandlerImpl {
     /// - `requesting_key`: Public key to add
     /// - `requesting_key_name`: Name for the key
     /// - `requested_permission`: Access level requested
+    /// - `auth`: Proof that the requester holds `requesting_key`
     ///
     /// The handler will evaluate the bootstrap policy and either:
-    /// - Auto-approve and add the key immediately
-    /// - Store request for manual approval
-    /// - Proceed without authentication (anonymous bootstrap)
+    /// - Auto-approve a proven key with existing authority
+    /// - Store a proven request for manual approval
+    /// - Proceed anonymously only when no named-key request is made and the
+    ///   database is public
     async fn handle_sync_tree(
         &self,
         request: &SyncTreeRequest,
@@ -825,10 +738,11 @@ impl SyncHandlerImpl {
     /// The bootstrap process handles three authentication scenarios:
     ///
     /// ## 1. Explicit Permission Request
-    /// When all three auth parameters are provided (`requesting_key`, `requesting_key_name`, `requested_permission`):
-    /// - Check if key already has sufficient permissions
-    /// - If yes: Approve immediately without adding key
-    /// - If no: Store request for manual approval and return `BootstrapPending`
+    /// When all three request parameters are provided (`requesting_key`, `requesting_key_name`, `requested_permission`):
+    /// - Verify `auth` proves possession of `requesting_key`
+    /// - Check if the key already has sufficient permissions
+    /// - If yes: Approve immediately without adding a key
+    /// - If no: Store the request for manual approval and return `BootstrapPending`
     ///
     /// ## 2. Auto-Detection
     /// When key is provided but `requested_permission` is `None`:
@@ -837,30 +751,15 @@ impl SyncHandlerImpl {
     /// - If key found: Use highest available permission and approve immediately
     /// - If key not found: Reject with authentication error
     ///
-    /// ## 3. Unauthenticated Access
-    /// When no `requesting_key` is provided:
-    /// - Only allowed if database has no auth configured or has global wildcard permission
+    /// ## 3. Anonymous Access
+    /// When no named-key request is made:
+    /// - Only allowed if the database has no auth configured or has a global wildcard permission
     /// - Otherwise rejected with authentication required error
-    ///
-    /// # Note on Key Verification
-    ///
-    /// This function does not verify that the peer actually controls the `requesting_key`.
-    /// The `requesting_key` parameter is an unverified string from the client.
-    ///
-    /// **This is not a security vulnerability** because:
-    /// - Approval only adds the public key to database auth settings
-    /// - Actual database access requires signing entries with the corresponding private key
-    /// - If an attacker claims someone else's public key, approval grants access to the
-    ///   legitimate key holder (who has the private key), not the attacker
-    ///
-    /// The lack of verification may cause:
-    /// - Audit trail confusion (request appears to come from a different identity)
-    /// - Admins approving access for keys that didn't actually request it
     ///
     /// # Arguments
     /// * `tree_id` - The database/tree to bootstrap
-    /// * `requesting_key` - Optional public key requesting access (unverified, but safe - see above)
-    /// * `requesting_key_name` - Optional name/identifier for the key (unverified)
+    /// * `requesting_key` - Optional public key requesting access; possession must be proven
+    /// * `requesting_key_name` - Optional name/identifier for the key
     /// * `requested_permission` - Optional permission level requested (if None, auto-detects from auth settings)
     ///
     /// # Returns
@@ -932,6 +831,20 @@ impl SyncHandlerImpl {
             );
         }
 
+        // A named key must prove ownership before any approval lookup or
+        // lifecycle response, even when the database is public.
+        if let Some(key) = requesting_key
+            && let Err(e) = self.prove_possession(request, key)
+        {
+            warn!(
+                tree_id = %tree_id,
+                requesting_key = %key,
+                error = %e,
+                "Bootstrap request rejected: caller did not prove it holds the claimed key"
+            );
+            return SyncResponse::Error(e.to_string());
+        }
+
         // Handle key approval for bootstrap requests FIRST
         let (key_approved, granted_permission) = match (
             requesting_key,
@@ -948,23 +861,7 @@ impl SyncHandlerImpl {
                     "Processing key approval request for bootstrap"
                 );
 
-                let requesting_key_proven = match self
-                    .check_proven_auth_permission(request, key, &permission, auth_configured)
-                    .await
-                {
-                    Ok((proven, _)) => proven,
-                    Err(e) => {
-                        error!(tree_id = %tree_id, error = %e, "Failed to verify bootstrap request");
-                        return SyncResponse::Error(format!(
-                            "Failed to verify bootstrap request: {e}"
-                        ));
-                    }
-                };
-
-                match self
-                    .resolve_bootstrap_request(request, key_name, requesting_key_proven)
-                    .await
-                {
+                match self.resolve_bootstrap_request(request, key_name).await {
                     Ok(BootstrapRequestOutcome::Pending(request_id)) => {
                         info!(
                             tree_id = %tree_id,
@@ -983,17 +880,7 @@ impl SyncHandlerImpl {
                                 .to_string(),
                         };
                     }
-                    Ok(BootstrapRequestOutcome::Approved) => {
-                        if auth_configured && let Err(e) = self.prove_possession(request, key) {
-                            return SyncResponse::Error(e.to_string());
-                        }
-                        (true, Some(permission))
-                    }
-                    Ok(BootstrapRequestOutcome::ApprovedButNotProven) => {
-                        return SyncResponse::Error(
-                            "Authentication required: approved key was not proven".to_string(),
-                        );
-                    }
+                    Ok(BootstrapRequestOutcome::Approved) => (true, Some(permission)),
                     Err(e) => {
                         error!(
                             tree_id = %tree_id,
@@ -1014,16 +901,6 @@ impl SyncHandlerImpl {
                     requesting_key = %key,
                     "Auto-detecting permission from auth settings for bootstrap request"
                 );
-
-                if let Err(e) = self.prove_possession_if_required(request, key, auth_configured) {
-                    warn!(
-                        tree_id = %tree_id,
-                        requesting_key = %key,
-                        error = %e,
-                        "Bootstrap request rejected: caller did not prove it holds the key it claims"
-                    );
-                    return SyncResponse::Error(e.to_string());
-                }
 
                 match self.get_key_highest_permission(tree_id, key).await {
                     Ok(Some(permission)) => {
@@ -1080,6 +957,24 @@ impl SyncHandlerImpl {
             return SyncResponse::Error(
                 SyncError::AuthenticationRequired(tree_id.to_string()).to_string(),
             );
+        }
+
+        // Named-key requests validate non-consumingly before lifecycle access so
+        // legitimate pending retries can reuse the same proof. Once this path
+        // will serve entries, consume the nonce and reject replays.
+        if let Some(key) = requesting_key
+            && let Err(e) = self.authenticate_request(request).and_then(|proven| {
+                if proven == *key {
+                    Ok(())
+                } else {
+                    Err(SyncError::AuthenticationFailed(format!(
+                        "request is signed by {proven}, which is not the claimed key {key}"
+                    ))
+                    .into())
+                }
+            })
+        {
+            return SyncResponse::Error(e.to_string());
         }
 
         // NOW collect all entries after key approval (so we get the updated database state)

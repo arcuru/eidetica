@@ -27,20 +27,19 @@ use eidetica::{
 async fn test_bootstrap_pending_error_structure() {
     println!("\n🧪 TEST: BootstrapPending error contains expected fields");
 
-    let (_instance, _user, _key_id, _database, sync, tree_id) =
-        setup_manual_approval_server().await;
+    let (instance, _user, _key_id, _database, sync, tree_id) = setup_manual_approval_server().await;
     let sync_handler = create_test_sync_handler(&sync);
 
-    // Generate a test public key
-    let (_, verifying_key) = generate_keypair();
-    let test_pubkey = verifying_key.to_string();
+    // Generate a test key
+    let (signing_key, _) = generate_keypair();
 
     // Create a bootstrap request that will require manual approval
-    let sync_request = create_bootstrap_request(
+    let sync_request = create_signed_bootstrap_request(
         &tree_id,
-        &test_pubkey,
+        &signing_key,
         "test_client",
         AuthPermission::Write(5),
+        &instance.id(),
     );
 
     // Handle the request - should return BootstrapPending

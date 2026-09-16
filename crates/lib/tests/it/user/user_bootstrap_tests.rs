@@ -7,7 +7,7 @@ use eidetica::{
     Database, Instance, Result,
     auth::{
         AuthKey, Permission,
-        crypto::{PublicKey, generate_keypair},
+        crypto::{PrivateKey, PublicKey, generate_keypair},
         settings::AuthSettings,
     },
     constants::SETTINGS,
@@ -99,7 +99,7 @@ fn create_client_key() -> (eidetica::auth::crypto::PrivateKey, PublicKey) {
 async fn create_pending_request(
     sync: &Sync,
     tree_id: &ID,
-    client_pubkey: &PublicKey,
+    client_key: &PrivateKey,
     permission: Permission,
 ) -> String {
     let handler = SyncHandlerImpl::new(
@@ -107,15 +107,23 @@ async fn create_pending_request(
         sync.sync_tree_root_id().clone(),
     );
 
+    let our_tips = Vec::new().into();
+    let auth = eidetica::sync::protocol::SyncRequestAuth::sign(
+        client_key,
+        &sync.instance().expect("Failed to get instance").id(),
+        tree_id,
+        &our_tips,
+        eidetica::Clock::now_millis(&eidetica::FixedClock::default()),
+    );
     let request = SyncRequest::SyncTree(SyncTreeRequest {
         tree_id: tree_id.clone(),
-        our_tips: Vec::new().into(), // Empty tips = bootstrap needed
+        our_tips,
         peer_pubkey: None,
-        requesting_key: Some(client_pubkey.clone()),
+        requesting_key: Some(client_key.public_key()),
         requesting_key_name: Some("laptop_key".to_string()),
         requested_permission: Some(permission),
         metadata: None,
-        auth: None,
+        auth: Some(auth),
     });
 
     let context = RequestContext::default();
@@ -158,11 +166,11 @@ async fn test_user_approve_bootstrap_request() {
         .expect("Failed to setup test");
 
     // Create a client requesting access
-    let (_client_key, client_pubkey) = create_client_key();
+    let (client_key, client_pubkey) = create_client_key();
 
     // Create a bootstrap request
     let request_id =
-        create_pending_request(&sync, &tree_id, &client_pubkey, Permission::Write(5)).await;
+        create_pending_request(&sync, &tree_id, &client_key, Permission::Write(5)).await;
 
     // Verify request is pending
     let pending = user
@@ -227,11 +235,11 @@ async fn test_user_reject_bootstrap_request() {
         .expect("Failed to setup test");
 
     // Create a client requesting access
-    let (_client_key, client_pubkey) = create_client_key();
+    let (client_key, client_pubkey) = create_client_key();
 
     // Create a bootstrap request
     let request_id =
-        create_pending_request(&sync, &tree_id, &client_pubkey, Permission::Write(5)).await;
+        create_pending_request(&sync, &tree_id, &client_key, Permission::Write(5)).await;
 
     // Verify request is pending
     let pending = user
@@ -294,11 +302,11 @@ async fn test_user_approve_with_nonexistent_key() {
         .expect("Failed to setup test");
 
     // Create a client requesting access
-    let (_client_key, client_pubkey) = create_client_key();
+    let (client_key, _client_pubkey) = create_client_key();
 
     // Create a bootstrap request
     let request_id =
-        create_pending_request(&sync, &tree_id, &client_pubkey, Permission::Write(5)).await;
+        create_pending_request(&sync, &tree_id, &client_key, Permission::Write(5)).await;
 
     // Try to approve with a key the user doesn't own (generate a random one)
     let (_, fake_key) = generate_keypair();
@@ -322,11 +330,11 @@ async fn test_user_reject_with_nonexistent_key() {
         .expect("Failed to setup test");
 
     // Create a client requesting access
-    let (_client_key, client_pubkey) = create_client_key();
+    let (client_key, _client_pubkey) = create_client_key();
 
     // Create a bootstrap request
     let request_id =
-        create_pending_request(&sync, &tree_id, &client_pubkey, Permission::Write(5)).await;
+        create_pending_request(&sync, &tree_id, &client_key, Permission::Write(5)).await;
 
     // Try to reject with a key the user doesn't own (generate a random one)
     let (_, fake_key) = generate_keypair();
@@ -399,11 +407,11 @@ async fn test_user_cannot_approve_twice() {
         .expect("Failed to setup test");
 
     // Create a client requesting access
-    let (_client_key, client_pubkey) = create_client_key();
+    let (client_key, _client_pubkey) = create_client_key();
 
     // Create a bootstrap request
     let request_id =
-        create_pending_request(&sync, &tree_id, &client_pubkey, Permission::Write(5)).await;
+        create_pending_request(&sync, &tree_id, &client_key, Permission::Write(5)).await;
 
     // Approve once
     user.approve_bootstrap_request(&sync, &request_id, &user_key_id)
@@ -431,11 +439,11 @@ async fn test_user_cannot_reject_after_approval() {
         .expect("Failed to setup test");
 
     // Create a client requesting access
-    let (_client_key, client_pubkey) = create_client_key();
+    let (client_key, _client_pubkey) = create_client_key();
 
     // Create a bootstrap request
     let request_id =
-        create_pending_request(&sync, &tree_id, &client_pubkey, Permission::Write(5)).await;
+        create_pending_request(&sync, &tree_id, &client_key, Permission::Write(5)).await;
 
     // Approve first
     user.approve_bootstrap_request(&sync, &request_id, &user_key_id)
@@ -558,13 +566,13 @@ async fn test_multiple_users() {
         .expect("Failed to sync Bob's user data");
 
     // Client requests access to Alice's database
-    let (_client_key, client_pubkey) = create_client_key();
+    let (client_key, _client_pubkey) = create_client_key();
     let alice_request_id =
-        create_pending_request(&sync, &alice_tree_id, &client_pubkey, Permission::Write(5)).await;
+        create_pending_request(&sync, &alice_tree_id, &client_key, Permission::Write(5)).await;
 
     // Client requests access to Bob's database (different request)
     let bob_request_id =
-        create_pending_request(&sync, &bob_tree_id, &client_pubkey, Permission::Read).await;
+        create_pending_request(&sync, &bob_tree_id, &client_key, Permission::Read).await;
 
     // Alice approves her database request
     alice
@@ -649,13 +657,13 @@ async fn test_user_list_pending_bootstrap_requests() {
     assert_eq!(pending.len(), 0);
 
     // Create multiple bootstrap requests
-    let (_client1_key, client1_pubkey) = create_client_key();
-    let (_client2_key, client2_pubkey) = create_client_key();
+    let (client1_key, _client1_pubkey) = create_client_key();
+    let (client2_key, _client2_pubkey) = create_client_key();
 
     let _request_id1 =
-        create_pending_request(&sync, &tree_id, &client1_pubkey, Permission::Write(5)).await;
+        create_pending_request(&sync, &tree_id, &client1_key, Permission::Write(5)).await;
     let _request_id2 =
-        create_pending_request(&sync, &tree_id, &client2_pubkey, Permission::Admin(1)).await;
+        create_pending_request(&sync, &tree_id, &client2_key, Permission::Admin(1)).await;
 
     // List pending requests
     let pending = user
@@ -759,9 +767,9 @@ async fn test_user_without_admin_cannot_modify() {
         .await
         .expect("Failed to sync Alice's user data");
 
-    let (_client_key, client_pubkey) = create_client_key();
+    let (client_key, _client_pubkey) = create_client_key();
     let request_id =
-        create_pending_request(&sync, &tree_id, &client_pubkey, Permission::Write(5)).await;
+        create_pending_request(&sync, &tree_id, &client_key, Permission::Write(5)).await;
 
     // Bob (who only has Write permission, not Admin) tries to reject the request
     let result = bob

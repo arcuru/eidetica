@@ -759,9 +759,9 @@ impl Sync {
         // Get our device public key for automatic peer tracking
         let our_device_pubkey = self.get_device_pubkey().ok();
 
-        // Send unified sync request with auth parameters. The signature proves
-        // we hold our device key; a bootstrap that asks for a *different* key
-        // cannot be proven and stays on the manual approval path.
+        // Send the request with proof from the named requesting key. Calls
+        // without a named-key request still sign with the device key for
+        // authenticated data access where required.
         let instance = self.instance()?;
         let signing_key = requesting_key.unwrap_or(instance.signing_key()?);
         let auth = SyncRequestAuth::sign(
