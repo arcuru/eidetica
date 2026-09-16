@@ -16,6 +16,7 @@ use std::{
 };
 
 use handle_trait::Handle;
+use tokio::sync::watch;
 
 use crate::{
     Clock, Database, Entry, Result, SystemClock,
@@ -24,7 +25,10 @@ use crate::{
     entry::ID,
     snapshot::Snapshot,
     sync::Sync,
-    user::User,
+    user::{
+        AppliedState, DatabaseObservation, ManagementInvalidation, OwnerManagementState,
+        PeerObservation, RuntimeFreshness, User,
+    },
 };
 #[cfg(all(unix, feature = "service"))]
 use crate::{auth::SigKey, service::client::RemoteConnection};
@@ -324,6 +328,12 @@ pub(crate) struct InstanceInternal {
     /// `WriteEvent::previous_tips` is consistent for concurrent writers
     /// to the same tree.
     tree_locks: Mutex<HashMap<ID, Arc<tokio::sync::Mutex<()>>>>,
+    /// Bounded owner-local invalidations for volatile management status.
+    management_runtime: watch::Sender<ManagementInvalidation>,
+    /// Opaque identity for management observations from this process run.
+    management_owner_run: String,
+    /// Per-database observation generations, never exposed across scopes.
+    management_generations: Mutex<HashMap<ID, u64>>,
 }
 
 impl std::fmt::Debug for InstanceInternal {
@@ -827,6 +837,9 @@ impl Instance {
             global_write_callbacks: Mutex::new(Vec::new()),
             next_callback_id: AtomicU64::new(0),
             tree_locks: Mutex::new(HashMap::new()),
+            management_runtime: watch::channel(ManagementInvalidation::default()).0,
+            management_owner_run: uuid::Uuid::new_v4().to_string(),
+            management_generations: Mutex::new(HashMap::new()),
         });
         let instance = Self { inner };
         // Hand the reader task a Weak reference so it can dispatch
@@ -1004,6 +1017,9 @@ impl Instance {
             global_write_callbacks: Mutex::new(Vec::new()),
             next_callback_id: AtomicU64::new(0),
             tree_locks: Mutex::new(HashMap::new()),
+            management_runtime: watch::channel(ManagementInvalidation::default()).0,
+            management_owner_run: uuid::Uuid::new_v4().to_string(),
+            management_generations: Mutex::new(HashMap::new()),
         });
         Ok(Self { inner })
     }
@@ -1036,6 +1052,9 @@ impl Instance {
             global_write_callbacks: Mutex::new(Vec::new()),
             next_callback_id: AtomicU64::new(0),
             tree_locks: Mutex::new(HashMap::new()),
+            management_runtime: watch::channel(ManagementInvalidation::default()).0,
+            management_owner_run: uuid::Uuid::new_v4().to_string(),
+            management_generations: Mutex::new(HashMap::new()),
         });
         Ok(Self { inner })
     }
@@ -1083,6 +1102,9 @@ impl Instance {
                 global_write_callbacks: Mutex::new(Vec::new()),
                 next_callback_id: AtomicU64::new(0),
                 tree_locks: Mutex::new(HashMap::new()),
+                management_runtime: watch::channel(ManagementInvalidation::default()).0,
+                management_owner_run: uuid::Uuid::new_v4().to_string(),
+                management_generations: Mutex::new(HashMap::new()),
             }),
         };
         let users_db = create_users_database(&temp_instance, &device_key).await?;
@@ -1116,6 +1138,9 @@ impl Instance {
             global_write_callbacks: Mutex::new(Vec::new()),
             next_callback_id: AtomicU64::new(0),
             tree_locks: Mutex::new(HashMap::new()),
+            management_runtime: watch::channel(ManagementInvalidation::default()).0,
+            management_owner_run: uuid::Uuid::new_v4().to_string(),
+            management_generations: Mutex::new(HashMap::new()),
         });
 
         let instance = Self { inner };
@@ -1211,6 +1236,103 @@ impl Instance {
     /// Used when passing the clock to components that need ownership (e.g., HeightCalculator).
     pub(crate) fn clock_arc(&self) -> Arc<dyn Clock> {
         self.inner.clock.clone()
+    }
+
+    pub(crate) fn subscribe_management_runtime(&self) -> watch::Receiver<ManagementInvalidation> {
+        self.inner.management_runtime.subscribe()
+    }
+
+    pub(crate) fn invalidate_management_runtime(&self, database: Option<ID>) {
+        let mut generations = self
+            .inner
+            .management_generations
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        match &database {
+            Some(database) => {
+                let generation = generations.entry(database.clone()).or_default();
+                *generation = generation.saturating_add(1);
+            }
+            None => {
+                for generation in generations.values_mut() {
+                    *generation = generation.saturating_add(1);
+                }
+            }
+        }
+        drop(generations);
+        self.inner
+            .management_runtime
+            .send_replace(ManagementInvalidation { database });
+    }
+
+    pub(crate) fn management_generation(&self, database: &ID) -> u64 {
+        let mut generations = self
+            .inner
+            .management_generations
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        *generations.entry(database.clone()).or_default()
+    }
+
+    pub(crate) async fn database_management_state(
+        &self,
+        database_id: &ID,
+        user_uuid: &str,
+        preferences_db_id: &ID,
+    ) -> Result<OwnerManagementState> {
+        let generation = self.management_generation(database_id);
+        let owner_run = self.inner.management_owner_run.clone();
+        let observed_at_ms = self.clock().now_millis();
+        let Some(sync) = self.sync() else {
+            return Ok(OwnerManagementState {
+                effective: None,
+                applied: AppliedState::Unknown,
+                observed: DatabaseObservation {
+                    owner_run,
+                    generation,
+                    freshness: RuntimeFreshness::Unknown,
+                    engine_running: false,
+                    listen_addresses: Vec::new(),
+                    peers: Vec::new(),
+                    observed_at_ms,
+                },
+            });
+        };
+
+        let desired_snapshot = self.backend().snapshot(preferences_db_id).await?;
+        let applied = sync
+            .user_preferences_applied(user_uuid, &desired_snapshot)
+            .await?;
+        let effective = sync.effective_settings(database_id).await?;
+        let listen_addresses = sync
+            .get_all_server_addresses()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(transport, address)| crate::sync::Address::new(transport, address))
+            .collect();
+        let mut peers = Vec::new();
+        for peer in sync.get_tree_peers(database_id).await? {
+            peers.push(PeerObservation {
+                last_success_ms: sync.peer_last_success_ms_for_tree(database_id, &peer),
+                peer,
+                observed_at_ms,
+            });
+        }
+
+        Ok(OwnerManagementState {
+            effective,
+            applied,
+            observed: DatabaseObservation {
+                owner_run,
+                generation,
+                freshness: RuntimeFreshness::Current,
+                engine_running: true,
+                listen_addresses,
+                peers,
+                observed_at_ms,
+            },
+        })
     }
 
     // === Backend pass-through methods (pub(crate) for internal use) ===
@@ -1591,6 +1713,35 @@ impl Instance {
             id,
             last_tips: std::sync::Mutex::new(initial_tips),
             callback: cb,
+        });
+        self.inner
+            .write_callbacks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .entry(tree_id)
+            .or_default()
+            .push(entry);
+        id
+    }
+
+    pub(crate) fn register_management_invalidation_callback(
+        &self,
+        tree_id: ID,
+        initial_tips: Snapshot,
+    ) -> CallbackId {
+        let id = CallbackId(self.inner.next_callback_id.fetch_add(1, Ordering::Relaxed));
+        let instance = self.downgrade();
+        let target = tree_id.clone();
+        let callback: AsyncWriteCallbackFn = Arc::new(move |_event, _database| {
+            if let Some(instance) = instance.upgrade() {
+                instance.invalidate_management_runtime(Some(target.clone()));
+            }
+            Box::pin(async { Ok(()) })
+        });
+        let entry = Arc::new(PerDbCallbackEntry {
+            id,
+            last_tips: std::sync::Mutex::new(initial_tips),
+            callback,
         });
         self.inner
             .write_callbacks

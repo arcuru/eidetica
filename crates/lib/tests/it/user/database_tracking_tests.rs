@@ -592,8 +592,8 @@ async fn test_enable_sync_is_idempotent() -> Result<()> {
     Ok(())
 }
 
-/// share() errors with SyncNotEnabled when the instance has no sync attached,
-/// and leaves the user's sync preference unchanged
+/// share() writes intent without an attached sync engine, then reports ticket
+/// unavailability without rolling the preference back.
 #[tokio::test]
 async fn test_share_without_sync_attached_errors() -> Result<()> {
     let instance = setup_instance().await;
@@ -615,13 +615,14 @@ async fn test_share_without_sync_attached_errors() -> Result<()> {
 
     let err = user.share(&db_id).await.expect_err("share should error");
     match &err {
-        eidetica::Error::Sync(boxed)
-            if matches!(**boxed, eidetica::sync::SyncError::SyncNotEnabled) => {}
-        other => panic!("expected SyncNotEnabled, got: {other:?}"),
+        eidetica::Error::Sync(boxed) => assert!(
+            boxed.to_string().contains("ticket is not ready"),
+            "expected ticket-not-ready compatibility error, got: {boxed:?}"
+        ),
+        other => panic!("expected sync readiness error, got: {other:?}"),
     }
 
-    // Precondition check is before mutation: sync preference unchanged
-    assert!(!user.is_sync_enabled(&db_id).await?);
+    assert!(user.is_sync_enabled(&db_id).await?);
 
     Ok(())
 }
