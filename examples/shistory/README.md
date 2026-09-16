@@ -13,9 +13,25 @@ identity; the host's display name can change without moving its history.
 ## Before setup
 
 Every host needs a running Eidetica daemon and a passwordless daemon user.
-`EIDETICA_SOCKET` selects a non-default socket. A passwordless user's root key
-is unencrypted, so protect the daemon data directory and socket path; socket
-filesystem permissions are the local trust boundary.
+By default, the daemon and `shistory` use
+`$XDG_RUNTIME_DIR/eidetica/service.sock`. If `XDG_RUNTIME_DIR` is absent, they
+fall back to `/tmp/eidetica-$USER/service.sock`. A systemd user service
+commonly resolves the default to `/run/user/$UID/eidetica/service.sock`.
+
+In a restored shell where the runtime directory variable is missing, set the
+socket explicitly instead:
+
+```console
+export EIDETICA_SOCKET=/path/to/eidetica.sock
+```
+
+This is enough on its own; `XDG_RUNTIME_DIR` does not also need to be exported.
+Use the same socket path for the daemon and its clients. A passwordless user's
+root key is unencrypted, so protect the daemon data directory and socket path;
+socket filesystem permissions are the local trust boundary.
+
+`eidetica serve` is a separate HTTP server and dashboard mode, normally on port 3000. It opens the backend directly, so do not run it against the same SQLite
+data directory while `eidetica daemon` owns that directory.
 
 The daemon owns synchronization and advertises the addresses embedded in an
 Eidetica database ticket. A second host needs only that ticket: `setup` sends it
