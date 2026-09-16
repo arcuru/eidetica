@@ -41,7 +41,7 @@ use crate::entry::{Entry, ID};
 use crate::instance::WriteSource;
 use crate::service::error::ServiceError;
 use crate::snapshot::Snapshot;
-use crate::user::UserInfo;
+use crate::user::{DatabaseManagementSnapshot, UserInfo};
 
 /// Protocol version. Version 0 indicates an unstable protocol that may change
 /// without notice between releases.
@@ -52,7 +52,7 @@ use crate::user::UserInfo;
 /// variant to a serialized enum (e.g. [`WriteSource`](crate::instance::WriteSource)
 /// inside [`Notification::DatabaseWrite`]) is therefore a protocol version
 /// bump, not a backward-compatible addition.
-pub const PROTOCOL_VERSION: u32 = 0;
+pub const PROTOCOL_VERSION: u32 = 1;
 
 /// Maximum frame size: 64 MiB.
 pub const MAX_FRAME_SIZE: u32 = 64 * 1024 * 1024;
@@ -303,6 +303,24 @@ pub struct AuthenticatedDbRequest {
     pub op: DatabaseOp,
 }
 
+/// User-scoped daemon status operations, independently gated on the target tree.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ManagementOp {
+    /// Recompute one filtered desired/applied/observed snapshot.
+    Snapshot { tree_id: ID, identity: SigKey },
+    /// Subscribe this connection to scoped invalidations for `tree_id`.
+    Subscribe { tree_id: ID, identity: SigKey },
+}
+
+impl ManagementOp {
+    /// Target database whose Read permission gates this operation.
+    pub fn tree_id(&self) -> &ID {
+        match self {
+            Self::Snapshot { tree_id, .. } | Self::Subscribe { tree_id, .. } => tree_id,
+        }
+    }
+}
+
 /// Top-level request from client to server.
 ///
 /// The shape is intentionally flat: pre-auth lifecycle and queries sit beside
@@ -355,6 +373,8 @@ pub enum ServiceRequest {
     /// `AuthenticatedDbRequest` carries `(root_id, identity, op)` and is boxed
     /// to keep the enum's discriminated size compact.
     AuthenticatedDb(Box<AuthenticatedDbRequest>),
+    /// Database-scoped management status and invalidation subscription.
+    Management(Box<ManagementOp>),
 }
 
 /// Server-initiated push to the client, interleaved with normal responses
@@ -423,6 +443,8 @@ pub enum Notification {
         post_tips: Snapshot,
         source: WriteSource,
     },
+    /// Scoped signal to recompute a fresh authorized management snapshot.
+    ManagementInvalidated { root_id: ID, generation: u64 },
 }
 
 /// Envelope for every frame the server writes to a client.
@@ -475,6 +497,8 @@ pub enum ServiceResponse {
     InstanceMetadata(Option<InstanceMetadata>),
     /// Error response
     Error(ServiceError),
+    /// Filtered management snapshot for one database and one user.
+    DatabaseManagementSnapshot(DatabaseManagementSnapshot),
     /// Challenge bytes returned in response to `TrustedLoginUser`, plus the
     /// user's full record so the client can derive the password→key, decrypt
     /// the root signing key locally, sign the challenge in a single
@@ -832,6 +856,24 @@ mod tests {
             }
             other => panic!("expected ServerFrame::Notification(DatabaseWrite), got {other:?}"),
         }
+    }
+
+    #[test]
+    fn management_wire_is_scoped_and_carries_no_snapshot_in_notifications() {
+        let tree = test_id();
+        let request = ManagementOp::Subscribe {
+            tree_id: tree.clone(),
+            identity: SigKey::default(),
+        };
+        assert_eq!(request.tree_id(), &tree);
+        let frame = ServerFrame::Notification(Notification::ManagementInvalidated {
+            root_id: tree,
+            generation: 7,
+        });
+        let encoded = serde_json::to_string(&frame).unwrap();
+        assert!(encoded.contains("ManagementInvalidated"));
+        assert!(!encoded.contains("desired"));
+        assert!(!encoded.contains("peers"));
     }
 
     #[tokio::test]

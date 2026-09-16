@@ -154,6 +154,12 @@ impl Sync {
         // Track tree/peer relationship for sync_on_commit to work
         // This allows on_local_write() to find this peer when queueing entries
         self.add_tree_sync(peer_pubkey, tree_id).await?;
+        self.peer_state.record_success(
+            &PeerId::from(peer_pubkey),
+            tree_id,
+            instance.clock().now_millis(),
+        );
+        instance.invalidate_management_runtime(Some(tree_id.clone()));
 
         Ok(())
     }

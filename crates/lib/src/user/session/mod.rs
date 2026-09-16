@@ -23,7 +23,8 @@
 //! - **`untrack_database()`** - Remove a database from your tracked list
 //! - **`enable_sync()` / `disable_sync()`** - Toggle this user's sync preference for a tracked database
 //! - **`is_sync_enabled()`** - Check this user's sync preference for a database
-//! - **`share()`** - Atomically enable sync and build a `DatabaseTicket` for handoff
+//! - **`manage_database()`** - Save sharing intent and observe status/ticket readiness
+//! - **`share()`** - Compatibility wrapper that saves intent, then queries a ready ticket
 //!
 //! ## Key-Database Mappings
 //!
@@ -1250,26 +1251,40 @@ impl User {
         })
     }
 
+    /// Open a user-bound management capability for one tracked database.
+    ///
+    /// Construction resolves the tracked key and requires current Read access.
+    /// The returned view keeps private signing material client-side in service
+    /// mode and reauthorizes every snapshot/watch acquisition.
+    pub async fn manage_database(
+        &self,
+        database_id: &ID,
+    ) -> Result<crate::user::DatabaseManagement> {
+        crate::user::DatabaseManagement::new(self, database_id).await
+    }
+
     /// Enable sync for a tracked database.
     ///
     /// Sets `sync_enabled = true` on the user's preference for this database,
     /// preserving `sync_on_commit`, `interval_seconds`, and `properties`.
-    /// Propagates the change to the host-level combined sync state by
-    /// calling [`Sync::sync_user`] if sync is attached to the instance.
-    ///
-    /// No-op if already enabled.
+    /// Owner reconciliation happens independently after the signed preference
+    /// write; inspect it through [`Self::manage_database`].
     ///
     /// # Errors
     /// Returns `DatabaseNotTracked` if the database is not in the user's list.
     pub async fn enable_sync(&mut self, database_id: &ID) -> Result<()> {
-        self.set_sync_enabled(database_id, true).await
+        self.manage_database(database_id)
+            .await?
+            .set_sharing(true)
+            .await?
+            .into_result()
+            .map(|_| ())
     }
 
     /// Disable sync for a tracked database.
     ///
     /// Sets `sync_enabled = false` on the user's preference for this database,
-    /// preserving other sync settings. Propagates to the host via
-    /// [`Sync::sync_user`] if sync is attached.
+    /// preserving other sync settings. Owner reconciliation is independent.
     ///
     /// The host-level combined state is OR'd across all users on the instance,
     /// so another user with sync enabled for the same database will keep the
@@ -1280,23 +1295,20 @@ impl User {
     /// # Errors
     /// Returns `DatabaseNotTracked` if the database is not in the user's list.
     pub async fn disable_sync(&mut self, database_id: &ID) -> Result<()> {
-        self.set_sync_enabled(database_id, false).await
+        self.manage_database(database_id)
+            .await?
+            .set_sharing(false)
+            .await?
+            .into_result()
+            .map(|_| ())
     }
 
-    /// Enable sync for a tracked database and return a [`DatabaseTicket`]
-    /// for handoff.
+    /// Enable sync for a tracked database and return a ready [`DatabaseTicket`].
     ///
-    /// Equivalent to building a ticket via
-    /// [`Sync::create_ticket`](crate::sync::Sync::create_ticket) and then
-    /// calling [`Self::enable_sync`], in a single call. The ticket carries the
-    /// database ID plus any peer addresses that the instance's sync transports
-    /// are currently advertising; a peer that imports the ticket via
-    /// [`Sync::sync_with_ticket`](crate::sync::Sync::sync_with_ticket) will be
-    /// able to fetch the database immediately.
-    ///
-    /// All preconditions (sync attached, transport registered) are checked
-    /// before any user state is mutated, so a failed `share()` leaves the
-    /// user's sync preference unchanged.
+    /// Compatibility wrapper over [`DatabaseManagement`](crate::user::DatabaseManagement):
+    /// the preference is durably written first, then ticket readiness is
+    /// observed separately. A not-ready error therefore does not roll back the
+    /// accepted preference.
     ///
     /// # Errors
     /// - [`SyncError::SyncNotEnabled`] if sync is not attached to the instance
@@ -1306,13 +1318,15 @@ impl User {
     /// - [`UserError::DatabaseNotTracked`] if the database is not in the user's
     ///   tracked list.
     pub async fn share(&mut self, database_id: &ID) -> Result<DatabaseTicket> {
-        // Build the ticket first: this is the only step that can fail with
-        // NoTransportEnabled / SyncNotEnabled, and it doesn't touch user state.
-        // enable_sync runs last so any error path leaves preferences unchanged.
-        let sync = self.instance.sync().ok_or(SyncError::SyncNotEnabled)?;
-        let ticket = sync.create_ticket(database_id).await?;
-        self.enable_sync(database_id).await?;
-        Ok(ticket)
+        let management = self.manage_database(database_id).await?;
+        management.share().await?.into_result()?;
+        match management.ticket().await? {
+            crate::user::TicketStatus::Ready(ticket) => Ok(ticket),
+            crate::user::TicketStatus::NotReady(reason) => Err(SyncError::Network(format!(
+                "sharing preference was written but ticket is not ready: {reason:?}"
+            ))
+            .into()),
+        }
     }
 
     /// Check whether this user has sync enabled for a tracked database.
@@ -1332,57 +1346,6 @@ impl User {
             Ok(tracked) => Ok(tracked.sync_settings.sync_enabled),
             Err(_) => Ok(false),
         }
-    }
-
-    /// Internal helper backing [`Self::enable_sync`] and [`Self::disable_sync`].
-    ///
-    /// Reads the user's existing `TrackedDatabase`, updates only
-    /// `sync_settings.sync_enabled`, and writes it back in a single transaction.
-    /// All other fields on `TrackedDatabase` (`key_id`, `sync_on_commit`,
-    /// `interval_seconds`, `properties`) are preserved as-is.
-    ///
-    /// Short-circuits without touching the user database when `sync_enabled`
-    /// already matches `enabled`, so repeated calls don't create churn in the
-    /// preferences DAG or trigger redundant `Sync::sync_user` propagation.
-    ///
-    /// On a real change, after the preferences commit succeeds, this calls
-    /// [`Sync::sync_user`] when sync is attached to the instance so the
-    /// host-level combined sync state (computed across all users by
-    /// `merge_sync_settings`) updates immediately rather than waiting for
-    /// the background worker.
-    ///
-    /// # Errors
-    /// Returns `DatabaseNotTracked` if the database is not in the user's
-    /// tracked list. The error is intentionally indistinguishable from a
-    /// transaction read error on the tracking table — both are degenerate
-    /// states from the caller's perspective.
-    async fn set_sync_enabled(&mut self, database_id: &ID, enabled: bool) -> Result<()> {
-        let tx = self.user_database.new_transaction().await?;
-        let databases_table = tx.get_store::<Table<TrackedDatabase>>("databases").await?;
-        let db_id_key = database_id.to_string();
-
-        let mut tracked =
-            databases_table
-                .get(&db_id_key)
-                .await
-                .map_err(|_| UserError::DatabaseNotTracked {
-                    database_id: database_id.clone(),
-                })?;
-
-        if tracked.sync_settings.sync_enabled == enabled {
-            return Ok(());
-        }
-
-        tracked.sync_settings.sync_enabled = enabled;
-        databases_table.set(&db_id_key, tracked).await?;
-        tx.commit().await?;
-
-        if let Some(sync) = self.instance.sync() {
-            sync.sync_user(&self.user_uuid, self.user_database.root_id())
-                .await?;
-        }
-
-        Ok(())
     }
 
     /// Stop tracking a database.

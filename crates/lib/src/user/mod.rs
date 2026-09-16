@@ -36,6 +36,7 @@ pub mod admin;
 pub mod crypto;
 pub mod errors;
 pub mod key_manager;
+mod management;
 pub mod session;
 pub mod system_databases;
 pub mod types;
@@ -43,5 +44,11 @@ pub mod types;
 pub use admin::InstanceAdmin;
 pub use errors::UserError;
 pub use key_manager::UserKeyManager;
+pub use management::{
+    AppliedState, DatabaseManagement, DatabaseManagementSnapshot, DatabaseManagementWatch,
+    DatabaseObservation, PeerObservation, PreferenceWriteOutcome, PreferenceWriteReceipt,
+    RuntimeFreshness, TicketNotReady, TicketStatus,
+};
+pub(crate) use management::{ManagementInvalidation, OwnerManagementState};
 pub use session::{DatabaseBuilder, User};
 pub use types::*;
