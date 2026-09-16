@@ -40,8 +40,15 @@ impl Sync {
             .await
             .map_err(|e| SyncError::CommandSendError(e.to_string()))?;
 
-        rx.await
-            .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))?
+        let result = rx
+            .await
+            .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))?;
+        if result.is_ok()
+            && let Ok(instance) = self.instance()
+        {
+            instance.invalidate_management_runtime(None);
+        }
+        result
     }
 
     /// Start accepting incoming connections on all registered transports.
@@ -87,6 +94,9 @@ impl Sync {
 
         rx.await
             .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))??;
+        if let Ok(instance) = self.instance() {
+            instance.invalidate_management_runtime(None);
+        }
 
         info!("Started servers on all registered transports");
         Ok(())

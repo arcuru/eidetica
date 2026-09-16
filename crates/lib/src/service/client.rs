@@ -15,7 +15,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock, Weak};
 
 use tokio::io::{ReadHalf, WriteHalf};
@@ -32,9 +32,9 @@ use crate::entry::{Entry, ID};
 use crate::instance::WeakInstance;
 use crate::service::error::service_error_to_eidetica_error;
 use crate::service::protocol::{
-    AuthenticatedDbRequest, DatabaseOp, Handshake, HandshakeAck, MergeState, Notification,
-    PROTOCOL_VERSION, ReadScope, ServerFrame, ServiceRequest, ServiceResponse, TransactionContext,
-    WireCrdtValue, read_frame, write_frame,
+    AuthenticatedDbRequest, DatabaseOp, Handshake, HandshakeAck, ManagementOp, MergeState,
+    Notification, PROTOCOL_VERSION, ReadScope, ServerFrame, ServiceRequest, ServiceResponse,
+    TransactionContext, WireCrdtValue, read_frame, write_frame,
 };
 use crate::snapshot::Snapshot;
 use crate::user::UserError;
@@ -350,6 +350,8 @@ struct RemoteConnectionInner {
     /// `None`, and workers exit cleanly without prolonging
     /// `inner`'s lifetime.
     tree_workers: std::sync::Mutex<HashMap<ID, mpsc::UnboundedSender<Notification>>>,
+    management_triggers: std::sync::Mutex<HashMap<ID, HashMap<u64, mpsc::Sender<()>>>>,
+    next_management_subscription: AtomicU64,
     /// Abort handle for the background reader task, so [`Self::mark_dead`] can
     /// force the reader out when the connection is torn down against a *wedged*
     /// daemon — one that neither answers nor closes the socket. Without it the
@@ -432,6 +434,10 @@ impl RemoteConnectionInner {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .clear();
+        self.management_triggers
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
         if let Some(handle) = self
             .reader_abort
             .lock()
@@ -440,6 +446,20 @@ impl RemoteConnectionInner {
         {
             handle.abort();
         }
+    }
+}
+
+/// A scoped management notification registration.
+pub(crate) struct ManagementSubscription {
+    connection: RemoteConnection,
+    tree_id: ID,
+    id: u64,
+}
+
+impl Drop for ManagementSubscription {
+    fn drop(&mut self) {
+        self.connection
+            .remove_management_trigger(&self.tree_id, self.id);
     }
 }
 
@@ -533,6 +553,8 @@ impl RemoteConnection {
             subscription_locks: std::sync::Mutex::new(HashMap::new()),
             closed: AtomicBool::new(false),
             tree_workers: std::sync::Mutex::new(HashMap::new()),
+            management_triggers: std::sync::Mutex::new(HashMap::new()),
+            next_management_subscription: AtomicU64::new(0),
             reader_abort: std::sync::Mutex::new(None),
         });
 
@@ -794,6 +816,76 @@ impl RemoteConnection {
         Self::expect_ok(resp)?;
         self.inner.registered_keys.lock().await.insert(pubkey);
         Ok(())
+    }
+
+    pub(crate) async fn database_management_snapshot(
+        &self,
+        tree_id: &ID,
+        identity: SigKey,
+    ) -> crate::Result<crate::user::DatabaseManagementSnapshot> {
+        let response = self
+            .request_ok(ServiceRequest::Management(Box::new(
+                ManagementOp::Snapshot {
+                    tree_id: tree_id.clone(),
+                    identity,
+                },
+            )))
+            .await?;
+        match response {
+            ServiceResponse::DatabaseManagementSnapshot(snapshot) => Ok(snapshot),
+            other => Err(unexpected_response("DatabaseManagementSnapshot", &other)),
+        }
+    }
+
+    pub(crate) async fn subscribe_management(
+        &self,
+        tree_id: ID,
+        identity: SigKey,
+        trigger: mpsc::Sender<()>,
+    ) -> crate::Result<ManagementSubscription> {
+        let id = self
+            .inner
+            .next_management_subscription
+            .fetch_add(1, Ordering::Relaxed);
+        self.inner
+            .management_triggers
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .entry(tree_id.clone())
+            .or_default()
+            .insert(id, trigger);
+        let result = Self::expect_ok(
+            self.request_ok(ServiceRequest::Management(Box::new(
+                ManagementOp::Subscribe {
+                    tree_id: tree_id.clone(),
+                    identity,
+                },
+            )))
+            .await?,
+        );
+        if let Err(error) = result {
+            self.remove_management_trigger(&tree_id, id);
+            return Err(error);
+        }
+        Ok(ManagementSubscription {
+            connection: self.clone(),
+            tree_id,
+            id,
+        })
+    }
+
+    fn remove_management_trigger(&self, tree_id: &ID, id: u64) {
+        let mut triggers = self
+            .inner
+            .management_triggers
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if let Some(tree_triggers) = triggers.get_mut(tree_id) {
+            tree_triggers.remove(&id);
+            if tree_triggers.is_empty() {
+                triggers.remove(tree_id);
+            }
+        }
     }
 
     // === Response extraction helpers ===
@@ -1471,6 +1563,19 @@ async fn run_reader_task(mut reader: ReadHalf<UnixStream>, inner: Arc<RemoteConn
 fn route_notification(inner: &Arc<RemoteConnectionInner>, notif: Notification) {
     let tree_id = match &notif {
         Notification::DatabaseWrite { root_id, .. } => root_id.clone(),
+        Notification::ManagementInvalidated { root_id, .. } => {
+            let triggers = inner
+                .management_triggers
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(root_id)
+                .map(|triggers| triggers.values().cloned().collect::<Vec<_>>())
+                .unwrap_or_default();
+            for trigger in triggers {
+                let _ = trigger.try_send(());
+            }
+            return;
+        }
     };
     let tx = {
         let mut workers = inner.tree_workers.lock().unwrap_or_else(|p| p.into_inner());
@@ -1558,6 +1663,7 @@ async fn run_tree_worker(
                     .fire_write_callbacks(&root_id, &previous_tips, &post_tips, source)
                     .await;
             }
+            Notification::ManagementInvalidated { .. } => unreachable!("routed directly"),
         }
     }
 }
@@ -1737,6 +1843,8 @@ mod tests {
             subscription_locks: std::sync::Mutex::new(HashMap::new()),
             closed: AtomicBool::new(false),
             tree_workers: std::sync::Mutex::new(HashMap::new()),
+            management_triggers: std::sync::Mutex::new(HashMap::new()),
+            next_management_subscription: AtomicU64::new(0),
             reader_abort: std::sync::Mutex::new(None),
         });
         (RemoteConnection { inner, _live: None }, peer)
