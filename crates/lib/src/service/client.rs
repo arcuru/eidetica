@@ -20,7 +20,7 @@ use std::sync::{Arc, RwLock, Weak};
 
 use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::UnixStream;
-use tokio::sync::{Mutex, Notify, mpsc, oneshot};
+use tokio::sync::{Mutex, Notify, mpsc, oneshot, watch};
 
 use crate::auth::crypto::PrivateKey;
 use crate::auth::crypto::{PublicKey, create_challenge_response};
@@ -320,6 +320,14 @@ struct RemoteConnectionInner {
     /// clearing `pending`, so any `Acquire` load that observes `true` is
     /// guaranteed to also observe the empty queue.
     closed: AtomicBool,
+    /// Asynchronous publication of the same fact as [`Self::closed`], fired
+    /// at the end of [`Self::mark_dead`]. `request()` keeps reading the
+    /// atomic (no channel lock on the hot path); this exists so
+    /// [`RemoteConnection::wait_closed_for_test`] can await the transition
+    /// without timing assumptions. `watch` because its
+    /// subscribe-then-`changed()` protocol cannot miss a send that races
+    /// the subscription.
+    closed_watch: watch::Sender<bool>,
     /// Per-tree dispatch lanes. The reader routes each incoming
     /// `Notification::DatabaseWrite` by `root_id` into the matching
     /// tree's `mpsc<Notification>` (lazily creating one + spawning a
@@ -425,6 +433,12 @@ impl RemoteConnectionInner {
     ///    dropping the reader's `Arc<inner>` clone so `inner` can finally drop,
     ///    and stopping it from re-spawning the workers step 3 just cleared.
     ///    The handle is `take`n so a later `mark_dead` is a no-op.
+    /// 5. Publish the closed state on [`Self::closed_watch`] so async
+    ///    observers of the transition wake. Last, so a woken observer
+    ///    sees `mark_dead` fully applied. `send_replace` rather than
+    ///    `send`: the value must latch even when no receiver exists yet
+    ///    (`send` discards it on a receiver-less channel, and a waiter
+    ///    that subscribes after the transition would then hang).
     fn mark_dead(&self) {
         self.closed.store(true, Ordering::Release);
         self.pending_lock().clear();
@@ -440,6 +454,7 @@ impl RemoteConnectionInner {
         {
             handle.abort();
         }
+        self.closed_watch.send_replace(true);
     }
 }
 
@@ -532,6 +547,7 @@ impl RemoteConnection {
             subscribed_trees: std::sync::Mutex::new(HashMap::new()),
             subscription_locks: std::sync::Mutex::new(HashMap::new()),
             closed: AtomicBool::new(false),
+            closed_watch: watch::channel(false).0,
             tree_workers: std::sync::Mutex::new(HashMap::new()),
             reader_abort: std::sync::Mutex::new(None),
         });
@@ -827,6 +843,31 @@ impl RemoteConnection {
             .session_read()
             .as_ref()
             .map(|s| SigKey::from_pubkey(&s.session_pubkey))
+    }
+
+    /// Wait until the connection is dead: the reader task has exited (clean
+    /// EOF, socket error, or deserialisation failure) or teardown forced it,
+    /// and `mark_dead` has fully applied — so every subsequent `request()`
+    /// short-circuits with `ConnectionAborted`.
+    ///
+    /// Test-only seam for the post-reader-exit error contract: waiting on a
+    /// fixed sleep races the reader's EOF processing, and a request landing
+    /// in that gap passes the `closed` checks and fails its frame write
+    /// with `BrokenPipe` instead. Returns immediately when already closed.
+    ///
+    /// The wait itself is unbounded; callers bound it (e.g.
+    /// `tokio::time::timeout`) so a reader that never observes shutdown
+    /// surfaces as the caller's failure rather than a hang here.
+    #[cfg(feature = "testing")]
+    pub async fn wait_closed_for_test(&self) {
+        let mut rx = self.inner.closed_watch.subscribe();
+        if *rx.borrow() {
+            return;
+        }
+        // The sender lives in `inner`, which `self` holds, so `changed()`
+        // cannot see the sender drop; an error here would still imply the
+        // transition fired.
+        let _ = rx.changed().await;
     }
 
     pub async fn get_instance_metadata(&self) -> crate::Result<Option<InstanceMetadata>> {
@@ -1750,6 +1791,7 @@ mod tests {
             subscribed_trees: std::sync::Mutex::new(HashMap::new()),
             subscription_locks: std::sync::Mutex::new(HashMap::new()),
             closed: AtomicBool::new(false),
+            closed_watch: watch::channel(false).0,
             tree_workers: std::sync::Mutex::new(HashMap::new()),
             reader_abort: std::sync::Mutex::new(None),
         });
@@ -1820,5 +1862,42 @@ mod tests {
             ),
             "with no callbacks left the subscription must go Idle"
         );
+    }
+    /// `wait_closed_for_test` must park while the connection is live and
+    /// resolve — and stay resolved — once `mark_dead` publishes the closed
+    /// state. Deterministic (current-thread runtime, `mark_dead` driven
+    /// directly): the integration test that consumes this seam waits on a
+    /// real reader exit, whose timing is load-dependent and cannot serve as
+    /// its own control.
+    ///
+    /// Red paths this pins: a seam that returns early (missed-notification
+    /// bug) fails the first assert; one that never wakes on `mark_dead`
+    /// fails the second; one that wakes but doesn't latch the state fails
+    /// the third.
+    #[cfg(feature = "testing")]
+    #[tokio::test]
+    async fn wait_closed_for_test_parks_until_mark_dead() {
+        use std::time::Duration;
+
+        let (conn, _peer) = test_conn();
+
+        // Live connection: the wait must not complete.
+        let parked =
+            tokio::time::timeout(Duration::from_millis(50), conn.wait_closed_for_test()).await;
+        assert!(
+            parked.is_err(),
+            "wait_closed_for_test must park while the connection is live"
+        );
+
+        // Reader-exit publication: the wait must resolve promptly.
+        conn.inner.mark_dead();
+        tokio::time::timeout(Duration::from_secs(1), conn.wait_closed_for_test())
+            .await
+            .expect("wait_closed_for_test must resolve once mark_dead has run");
+
+        // And stay resolved for callers that arrive after the transition.
+        tokio::time::timeout(Duration::from_secs(1), conn.wait_closed_for_test())
+            .await
+            .expect("wait_closed_for_test must stay resolved once closed is published");
     }
 }
