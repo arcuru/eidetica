@@ -114,6 +114,8 @@ pub mod utils;
 // Private submodules
 mod bootstrap;
 mod bootstrap_request_manager;
+#[cfg(any(test, feature = "testing"))]
+mod dial_testing;
 mod ops;
 mod peer;
 mod peer_state;
@@ -126,6 +128,8 @@ mod user_sync_manager;
 // Re-exports
 use background::SyncCommand;
 pub use bootstrap_request_manager::{BootstrapRequest, RequestStatus};
+#[cfg(any(test, feature = "testing"))]
+pub use dial_testing::{DialAttempt, dial_attempts, reset_dial_attempts};
 pub use error::{SyncError, TimeoutPhase};
 use peer_state::PeerStates;
 pub use peer_types::{Address, ConnectionState, PeerId, PeerInfo, PeerStatus};

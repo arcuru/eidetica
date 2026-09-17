@@ -975,10 +975,13 @@ impl Sync {
     /// Race registration handshakes and return the first usable address, along
     /// with the identity that answered on it.
     ///
-    /// Spawns one detached task per address via [`tokio::spawn`]. Remaining
-    /// tasks are **not** cancelled — they continue running in the background so
-    /// that additional addresses can be registered for future syncs. The real
-    /// operation runs separately and is therefore not bounded by this timeout.
+    /// Spawns one task per address via [`tokio::spawn`]. Once a usable route
+    /// is selected the race's cancel subscription closes: dials that have not
+    /// succeeded are torn down, and attempts that have not started dialing
+    /// never do (RFC 8305 section 5) — a losing attempt holds its socket,
+    /// buffers, and task only until the winner, not until its own deadline.
+    /// The real operation runs separately and is therefore not bounded by
+    /// this timeout.
     ///
     /// `expected` is the peer the caller means to reach, when it knows. A
     /// handshake says who actually answered, and a route that answers as
@@ -1001,17 +1004,23 @@ impl Sync {
         }
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(addresses.len());
+        // Closes when this race is over — the moment a usable route is
+        // selected, or once every attempt has finished on its own. Every
+        // attempt carries a subscription, so closing it abandons the dials
+        // that have not succeeded and stops the ones that have not started
+        // (RFC 8305 section 5).
+        let (cancel, _) = tokio::sync::watch::channel(());
 
         for addr in addresses {
             let tx = tx.clone();
             let sync = self.clone();
             let addr = addr.clone();
             let addr_info = addr.clone();
-            // Detached spawn: the task keeps running even after we return.
+            let cancel = cancel.subscribe();
             tokio::spawn(async move {
                 let result = tokio::time::timeout(
                     Self::ADDRESS_ATTEMPT_TIMEOUT,
-                    sync.connect_to_peer(&addr),
+                    sync.connect_to_peer_with_cancel(&addr, cancel),
                 )
                 .await;
                 let result = match result {
@@ -1034,8 +1043,8 @@ impl Sync {
                     Ok(_) => debug!(address = ?addr_info, "Address attempt succeeded"),
                     Err(e) => debug!(address = ?addr_info, error = %e, "Address attempt failed"),
                 }
-                // Ignore send errors — the receiver is dropped on early success,
-                // but the task still completes its work (peer registration, etc.).
+                // Ignore send errors — the receiver is dropped once a winner
+                // was selected and this loser's dial has been abandoned.
                 let _ = tx.send(result).await;
             });
         }
