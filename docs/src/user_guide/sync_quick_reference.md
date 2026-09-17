@@ -277,13 +277,24 @@ let store = txn.get_store::<DocStore>("messages").await?;
 store.set("welcome", "Welcome to the room!").await?;
 txn.commit().await?;
 
-// Enable sync and produce a shareable ticket in one call. The ticket
-// embeds the database ID plus every running transport's address.
-let ticket = user.share(&database_id).await?;
-println!("Share this ticket with peers: {}", ticket);
+// Save durable sharing intent, then query current ticket readiness.
+let management = user.manage_database(&database_id).await?;
+management.share().await?.into_result()?;
+match management.ticket().await? {
+    eidetica::user::TicketStatus::Ready(ticket) => {
+        println!("Share this ticket with peers: {ticket}");
+    }
+    eidetica::user::TicketStatus::NotReady(reason) => {
+        println!("Sharing is requested; ticket is not ready: {reason:?}");
+    }
+}
 # Ok(())
 # }
 ```
+
+For waiting, watching, typed unknown acknowledgments, and migration from the
+deprecated `User` helpers, see [Database Sharing and
+Management](database_management.md).
 
 ### Bootstrap from Shared Database
 
