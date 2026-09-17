@@ -2660,11 +2660,16 @@ async fn test_request_after_reader_exit_returns_connection_aborted() {
     let _user = instance.login_user("alice", None).await.unwrap();
     let conn = remote_conn(&instance);
 
-    // Shut the daemon down and wait for the reader task to actually drain
-    // the closed socket. 250ms is enormous on a local socket but absorbs
-    // CI jitter and the scheduler hop into `run_reader_task`'s EOF arm.
+    // Shut the daemon down and wait for the reader task to actually observe
+    // the closed socket. The post-exit `ConnectionAborted` contract holds
+    // only once the reader has run `mark_dead`; a request issued before
+    // that passes the `closed` checks and its frame write fails with
+    // `BrokenPipe` against the already-closed socket — the fixed sleep
+    // this test used to rely on loses that race under scheduler load.
     drop(tx_shutdown);
-    tokio::time::sleep(Duration::from_millis(250)).await;
+    tokio::time::timeout(Duration::from_secs(2), conn.wait_closed_for_test())
+        .await
+        .expect("reader must observe server shutdown and mark the connection closed");
 
     // Any new request must bail with `ConnectionAborted` within the
     // timeout — emphatically *not* hang waiting for a response.
