@@ -93,7 +93,7 @@ The returned Instance is fully transparent -- all downstream code (Database, Tra
 ## Security Model
 
 - **Keys and passwords stay client-side.** The daemon sees only encrypted key material and signed entries. Password verification and key derivation (Argon2id) happen in the client process.
-- **No plaintext secrets cross the socket.** Authentication operations (user creation, login, key management) run locally in the client. Only storage operations (get, put, tips, etc.) are forwarded to the daemon.
+- **No plaintext secrets cross the socket.** Authentication operations (user creation, login, key management) run locally in the client. PasswordStore decryption and encrypted-cache materialization are also client-side; a warm encrypted Table point read uses only encrypted point-record requests. Only storage operations (get, put, tips, etc.) are forwarded to the daemon.
 - **The socket is a local Unix domain socket.** Access is controlled by filesystem permissions on the socket file. Only processes that can reach the socket path can connect.
 - **The socket directory defines who is trusted.** Missing directories are created with mode `0700`; the socket is mode `0660`. An existing parent must be owned by the daemon user, must not be writable by group or others, and cannot be reached through a symlink. Its group, setgid bit, and traversal permissions may grant trusted Unix-group members access.
 

@@ -35,6 +35,7 @@
 - [Store State](internal/store_state.md)
 - [Historical Store-state Cache](internal/cache.md)
 - [Authentication](internal/authentication.md)
+- [Encryption](internal/encryption.md)
 - [Sync](internal/sync.md)
 - [Service (Daemon)](internal/service.md)
 - [Bootstrap](internal/bootstrap.md)

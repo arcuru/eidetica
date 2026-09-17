@@ -15,6 +15,14 @@ private build; it does not reconstruct a whole Table. Table mutations are conver
 back into the existing canonical `Doc` delta at historical commit, so Entry
 payload and wire semantics are unchanged.
 
+`PasswordStore` preserves the wrapped Store's state model but namespaces its
+descriptor. For a Table, the cached record key becomes a stable keyed hash of
+the logical key and the value becomes an authenticated encrypted envelope;
+scans and cursors use physical-key order. For DocStore, YDoc, and other opaque
+models, the complete serialized state remains one encrypted record at the
+reserved opaque key. See [Encryption](encryption.md) for the exact formats and
+trust boundary.
+
 Table handles retain only their name and transaction. `get` deserializes one
 row, `scan_page` reads bounded deterministic pages, and `search` collects those
 pages only because its public return type is a `Vec`. Local and service-backed

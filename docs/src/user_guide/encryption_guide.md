@@ -1,8 +1,13 @@
 # Encryption Guide
 
-`PasswordStore<S>` provides transparent password-based encryption for any Store type `S`.
+`PasswordStore<S>` adds password-based encryption to a Store. It protects Store configuration,
+Entry payloads, and derived cached state while preserving the wrapped Store's API.
 
-## Quick Start
+This is separate from password protection for a user's signing key. Logging in unlocks a signing
+key; it does not unlock a `PasswordStore`. Each encrypted Store has its own password and salt and
+must be opened in each transaction that uses it.
+
+## Quick start
 
 ```rust
 # extern crate eidetica;
@@ -20,12 +25,10 @@
 # settings.set("name", "secrets_db");
 # let default_key = user.get_default_key()?;
 # let database = user.create_database(settings, &default_key).await?;
-// Create and initialize an encrypted store
 let tx = database.new_transaction().await?;
 let mut encrypted = tx.get_store::<PasswordStore<DocStore>>("secrets").await?;
 encrypted.initialize("my_password", Doc::new()).await?;
 
-// Use the wrapped store normally
 let docstore = encrypted.inner().await?;
 docstore.set("api_key", "sk-secret-12345").await?;
 tx.commit().await?;
@@ -33,7 +36,13 @@ tx.commit().await?;
 # }
 ```
 
-## Opening Existing Stores
+`initialize` is for a new Store. It records the public encryption parameters and an encrypted copy
+of the wrapped Store's type and configuration. The transaction is then unlocked and can return the
+inner Store.
+
+## Opening an existing Store
+
+Open the wrapper before asking for the inner Store:
 
 ```rust
 # extern crate eidetica;
@@ -59,7 +68,6 @@ tx.commit().await?;
 #     docstore.set("secret", "value").await?;
 #     tx.commit().await?;
 # }
-// Use open() for existing stores instead of initialize()
 let tx = database.new_transaction().await?;
 let mut encrypted = tx.get_store::<PasswordStore<DocStore>>("secrets").await?;
 encrypted.open("my_password")?;
@@ -71,9 +79,97 @@ tx.commit().await?;
 # }
 ```
 
-## Wrapping Other Store Types
+A wrong password cannot decrypt the wrapped Store metadata, so `open` fails before the inner Store
+is available. There is no recovery key or password-reset operation. Losing the password loses
+access to the Store; back up the password separately from the database.
 
-`PasswordStore<S>` wraps any store type `S`. The wrapped type is specified as a type parameter:
+The password and derived key remain in the client process for the lifetime of the opened
+transaction. Their owning buffers are cleared when dropped, but applications should not assume
+that every temporary, allocator copy, serialized result, or plaintext value is erased from memory.
+Keep transactions short and avoid logging passwords or decrypted values.
+
+## Choosing a wrapped Store
+
+`PasswordStore<S>` can wrap any Store type. Its persistent layout depends on the wrapped Store's
+state model.
+
+### `DocStore` and other opaque Stores
+
+Opaque Stores cache one encrypted whole-state value. Reads still return the normal `DocStore`
+values, but a cold read may decrypt and merge the Store's history before publishing that encrypted
+cache value.
+
+```text
+caller                         backend
+"api_key" -> "secret"         reserved cache key 0x00 -> nonce || ciphertext
+```
+
+The backend does not receive the plaintext document through the Store-state cache.
+
+### `Table<T>` row caches
+
+`Table<T>` supports individually addressable cached rows. A password-wrapped Table transforms both
+parts of each cached row:
+
+```text
+logical row                         derived cache record
+"account-42" -> JSON row     =>    keyed_hash("account-42") -> nonce || ciphertext
+```
+
+The ciphertext contains both the logical key and the row bytes. This lets the client verify that a
+record was returned from the physical key where it belongs before returning plaintext to the
+Table.
+
+Point reads compute the 32-byte physical key and fetch one encrypted record. `set`, `insert`,
+`update`, and `delete` operate on logical keys inside the transaction; commit writes the normal
+encrypted Entry delta. They do not edit a published cache generation. A later read at the new tips
+uses another derived generation, built from immutable Entries.
+
+Scans and `search` use physical-key order. This order is deterministic for one encrypted Store but
+is not lexicographic primary-key order. `TablePage::next` is an exclusive cursor in that physical
+order. Treat it as opaque: pass it unchanged to the next `scan_page` call for the same Store and
+password. The cached path and the history fallback use the same physical order, so a continuation
+can cross between them without changing cursor domains.
+
+### Other Store types
+
+A wrapped Store that does not define a row projection uses the opaque whole-state format. For
+example, `PasswordStore<YDoc>` does not expose YDoc fields as cached rows. Wrapping a type does not
+invent a record projection for it.
+
+## Service mode and synchronization
+
+With a connected `Instance`, password derivation, decryption, CRDT merging for encrypted content,
+and row-envelope verification run in the client. Entry payloads and encrypted cache records cross
+the service socket as ciphertext. The daemon can serve a warm encrypted Table point read with
+point-record requests rather than a row scan or Store-history reconstruction.
+
+Encrypted cache materializations uploaded by a client are scoped to that authenticated user. The
+daemon cannot validate their decrypted contents. The signed, content-addressed Entry DAG remains
+the source of truth, and peer synchronization still exchanges Entries rather than treating the
+cache as authoritative data.
+
+## What encryption hides and reveals
+
+`PasswordStore` uses Argon2id and AES-256-GCM. It prevents a backend or relay without the password
+from reading wrapped configuration, Entry payloads, opaque cached state, Table logical keys, or
+Table row values.
+
+It does not hide all metadata. A backend can observe:
+
+- the database and Store receiving an operation;
+- Entry graph structure, timing, and ciphertext sizes;
+- cached record counts, access patterns, and page sizes;
+- equality of repeated Table logical keys within and across cache generations for the same Store,
+  because their keyed physical keys are stable;
+- the public encryption algorithm, KDF parameters, salt, and format version in `_index`.
+
+Authenticated encryption detects modification or relocation of a cached row between physical keys
+or Stores. It does not prove that a cache is fresh or complete, or that the backend returned every
+row. Derived cached state is disposable; when its correctness is in doubt, clear it and rebuild it
+from verified Entries.
+
+## Example: encrypted Table
 
 ```rust
 # extern crate eidetica;
@@ -113,15 +209,9 @@ tx.commit().await?;
 # }
 ```
 
-## Security Notes
+## See also
 
-- **No recovery**: Lost password = lost data (by design)
-- **Encryption**: AES-256-GCM with Argon2id key derivation
-- **Relay-safe**: Encrypted data can sync through untrusted relays
-- **Cached records**: Record-oriented Stores use keyed physical record keys and authenticated encrypted values. Scans are deterministic in physical-key order, not logical primary-key order.
-- **Metadata leakage**: Backends can observe record counts, ciphertext sizes, and access patterns.
-
-## See Also
-
-- [PasswordStore API](../rustdoc/eidetica/store/struct.PasswordStore.html) - Full API documentation
-- [Stores](concepts/stores.md) - Overview of all store types
+- [PasswordStore API](../rustdoc/eidetica/store/struct.PasswordStore.html) — API reference
+- [Stores](concepts/stores.md) — Store types and transaction usage
+- [Service mode](service.md) — local daemon trust boundary
+- [Encryption internals](../internal/encryption.md) — formats, derivation, and security boundaries
