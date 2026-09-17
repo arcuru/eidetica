@@ -30,7 +30,7 @@ use crate::{
     store::DocStore,
 };
 
-mod conn;
+pub(crate) mod conn;
 
 /// Commands that can be sent to the background sync engine
 #[allow(clippy::large_enum_variant)]
@@ -77,6 +77,10 @@ pub enum SyncCommand {
     /// Connect to a peer and perform handshake
     ConnectToPeer {
         address: Address,
+        /// Closes when the race that started this dial no longer needs it:
+        /// a usable route was selected elsewhere. The dial is abandoned
+        /// rather than held to its attempt deadline (RFC 8305 section 5).
+        cancel: tokio::sync::watch::Receiver<()>,
         response: oneshot::Sender<Result<PublicKey>>, // Returns peer pubkey
     },
 
@@ -437,7 +441,11 @@ impl BackgroundSync {
                 let _ = response.send(Ok(addresses));
             }
 
-            SyncCommand::ConnectToPeer { address, response } => {
+            SyncCommand::ConnectToPeer {
+                address,
+                cancel,
+                response,
+            } => {
                 // Served off the loop, for the same reason as SendRequest
                 // below: a handshake is aimed at a peer this engine has never
                 // reached, which is precisely the peer most likely not to be
@@ -445,8 +453,25 @@ impl BackgroundSync {
                 // stranger for a full connect deadline.
                 match self.handshake_ctx(&address) {
                     Ok(ctx) => {
+                        let attempt = conn::DialAttempt::shared(cancel);
+                        #[cfg(any(test, feature = "testing"))]
+                        crate::sync::dial_testing::record(&attempt);
+                        let addr_info = address.clone();
                         tokio::spawn(async move {
-                            let _ = response.send(conn::run_handshake(ctx, address).await);
+                            tokio::select! {
+                                result = conn::run_handshake(ctx, address) => {
+                                    let _ = response.send(result);
+                                }
+                                () = attempt.abandoned() => {
+                                    // Another address won the race: tear this
+                                    // dial down instead of holding its socket,
+                                    // buffers, and task to the deadline.
+                                    debug!(
+                                        address = ?addr_info,
+                                        "Dial abandoned: another address won the race"
+                                    );
+                                }
+                            }
                         });
                     }
                     Err(e) => {
@@ -517,11 +542,12 @@ impl BackgroundSync {
     ///
     /// For each address a transport handle is obtained via
     /// [`TransportManager::handle_for_address`]. One task is spawned per
-    /// address, each subject to [`ADDRESS_ATTEMPT_TIMEOUT`]. Remaining
-    /// handshakes are **not** cancelled — they continue running so that
-    /// additional addresses can be registered by the remote peer. The caller
-    /// performs the real operation once on the selected route, outside this
-    /// timeout.
+    /// address, each subject to [`ADDRESS_ATTEMPT_TIMEOUT`]. Once a usable
+    /// route is selected, every attempt that has not succeeded is cancelled
+    /// and no queued one starts dialing — RFC 8305 section 5 — so a losing
+    /// attempt holds its socket, buffers, and task only until the winner,
+    /// not until its own deadline. The caller performs the real operation
+    /// once on the selected route, outside this timeout.
     ///
     /// A handshake identifies who actually answered, and only a route that
     /// answers as `expected` is selected. A peer's address list only ever grows,
@@ -553,13 +579,14 @@ impl BackgroundSync {
         }
 
         let (tx, mut rx) = mpsc::channel(tasks.len());
+        let mut attempts = Vec::with_capacity(tasks.len());
 
         for (transport, addr) in tasks {
             let tx = tx.clone();
             let mut ctx = self.handshake_ctx(&addr)?;
             ctx.transport = Arc::clone(&transport);
             let addr_info = addr.clone();
-            tokio::spawn(async move {
+            attempts.push(tokio::spawn(async move {
                 let result = tokio::time::timeout(
                     ADDRESS_ATTEMPT_TIMEOUT,
                     conn::run_handshake(ctx, addr.clone()),
@@ -581,7 +608,7 @@ impl BackgroundSync {
                     }
                 };
                 let _ = tx.send(result).await;
-            });
+            }));
         }
         drop(tx);
 
@@ -589,6 +616,18 @@ impl BackgroundSync {
         while let Some(result) = rx.recv().await {
             match result {
                 Ok((transport, addr, answered)) if &answered == expected => {
+                    // Cancel every attempt that has not succeeded and let no
+                    // queued one dial (RFC 8305 section 5). The selected
+                    // attempt's task has already finished, and aborting a
+                    // finished task is a no-op. Awaiting the handles returns
+                    // once each loser's connection and buffers are actually
+                    // dropped, so teardown is complete when the route is.
+                    for attempt in &attempts {
+                        attempt.abort();
+                    }
+                    for attempt in attempts {
+                        let _ = attempt.await;
+                    }
                     return Ok((transport, addr));
                 }
                 Ok((_, addr, answered)) => {

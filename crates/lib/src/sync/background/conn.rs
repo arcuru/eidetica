@@ -3,6 +3,9 @@
 //! This module contains methods for peer connection (handshake) and
 //! handling sync responses (bootstrap and incremental).
 
+use std::sync::Arc;
+
+use tokio::sync::watch;
 use tracing::{debug, info, trace};
 
 use super::BackgroundSync;
@@ -36,6 +39,40 @@ pub(super) struct HandshakeCtx {
     pub(super) instance: crate::instance::WeakInstance,
     pub(super) sync_tree_id: crate::entry::ID,
     pub(super) listen_addresses: Vec<Address>,
+}
+
+/// The cancel subscription and liveness handle for one engine-served dial.
+///
+/// The racer that started this dial holds the sending end of the `watch`
+/// channel and drops it the moment its race is over. Polling
+/// [`DialAttempt::abandoned`] therefore resolves when the attempt must stop:
+/// a dial that has not succeeded is torn down, and a task that has not
+/// dialed yet never does — RFC 8305 section 5's rule for races with a
+/// winner. A `watch` subscription keeps the closed state, so a task that
+/// observes the closure late still resolves immediately instead of dialing.
+///
+/// The shared handle doubles as the attempt's observable lifetime: it lives
+/// exactly as long as the dial's task, so a [`std::sync::Weak`] that fails
+/// `upgrade()` means that task — and the connection, buffers, and
+/// registration work it holds — is gone. The testing registry keys off it.
+pub struct DialAttempt {
+    /// Closes when the race that started this dial is over.
+    cancel: tokio::sync::Mutex<watch::Receiver<()>>,
+}
+
+impl DialAttempt {
+    /// Wrap a dial's cancel subscription in a shared liveness handle.
+    pub(super) fn shared(cancel: watch::Receiver<()>) -> Arc<Self> {
+        Arc::new(Self {
+            cancel: tokio::sync::Mutex::new(cancel),
+        })
+    }
+
+    /// Resolves when the race that started this dial is over.
+    pub(super) async fn abandoned(&self) {
+        let mut cancel = self.cancel.lock().await;
+        let _ = cancel.changed().await;
+    }
 }
 
 /// Connect to a peer and perform the handshake.
