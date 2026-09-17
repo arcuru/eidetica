@@ -41,6 +41,7 @@ use crate::entry::{Entry, ID};
 use crate::instance::WriteSource;
 use crate::service::error::ServiceError;
 use crate::snapshot::Snapshot;
+use crate::sync::{Address, DatabaseTicket};
 use crate::user::UserInfo;
 
 /// Protocol version. Version 0 indicates an unstable protocol that may change
@@ -350,6 +351,21 @@ pub enum ServiceRequest {
         signature: Vec<u8>,
     },
 
+    /// Resolve a database ticket through the daemon-owned sync engine and
+    /// return the peer identity needed for a client-side authorization proof.
+    TicketBootstrapPrepare { ticket: DatabaseTicket },
+    /// Bootstrap a ticket after the client has signed the peer-bound request.
+    TicketBootstrap {
+        ticket: DatabaseTicket,
+        address: Address,
+        peer: PublicKey,
+        requesting_key_name: String,
+        requested_permission: Permission,
+        auth: Box<crate::sync::protocol::SyncRequestAuth>,
+    },
+    /// Build a ticket from the daemon's live transport addresses.
+    CreateDatabaseTicket { tree_id: ID, identity: SigKey },
+
     // === Authenticated wrapper for every storage operation ===
     /// All storage ops travel inside this wrapper. The inner
     /// `AuthenticatedDbRequest` carries `(root_id, identity, op)` and is boxed
@@ -500,6 +516,10 @@ pub enum ServiceResponse {
     /// client signs these with the named pubkey's private key and returns the
     /// signature in `SessionKeyRegister`.
     SessionKeyChallenge { challenge: Vec<u8> },
+    /// Route and peer identity selected from a database ticket.
+    TicketBootstrapPrepared { address: Address, peer: PublicKey },
+    /// Database ticket created by the daemon's sync engine.
+    DatabaseTicket(DatabaseTicket),
 }
 
 /// Write a length-prefixed JSON frame to an async writer.

@@ -177,6 +177,30 @@
       cargoNextestExtraArgs = "--workspace --all-features ${nextestCheckArgs}";
     });
 
+  test-check-shistory-hooks = craneLib.mkCargoDerivation (debugArgs
+    // {
+      pname = "test-check-shistory-hooks";
+      nativeBuildInputs = baseArgs.nativeBuildInputs ++ [pkgs.python3 pkgs.zsh];
+      cargoExtraArgs = "-p shistory";
+      buildPhaseCargoCommand = "cargo build -p shistory";
+      doCheck = true;
+      src = lib.cleanSourceWith {
+        src = ../..;
+        filter = path: type:
+          (baseArgs.src.filter path type)
+          || builtins.match ".*/examples/shistory/tests/hooks\\.zsh" (toString path) != null
+          || builtins.match ".*/examples/shistory/shistory\\.zsh" (toString path) != null;
+      };
+      checkPhase = ''
+        runHook preCheck
+        export SHISTORY_REAL_BIN="$PWD/target/debug/shistory"
+        zsh -d -f "$PWD/examples/shistory/tests/hooks.zsh" | tee summary
+        grep -Fx 'hook checks: 13 passed; 0 failed' summary
+        runHook postCheck
+      '';
+      installPhase = "mkdir -p $out";
+    });
+
   # PostgreSQL backend check (Linux only)
   test-check-postgres = craneLib.cargoNextest (testCheckArgs
     // {
@@ -219,6 +243,7 @@ in {
       inmemory = test-check-inmemory;
       sqlite = test-check-sqlite;
       minimal = test-check-minimal;
+      shistory-hooks = test-check-shistory-hooks;
     }
     // lib.optionalAttrs pkgs.stdenv.isLinux {
       service = test-check-service;

@@ -172,6 +172,30 @@ impl Sync {
         .await
     }
 
+    /// Complete a ticket bootstrap through a route already selected by the
+    /// daemon, using a peer-bound proof created by a connected client.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn bootstrap_with_ticket_proof(
+        &self,
+        address: &Address,
+        peer_pubkey: &crate::auth::crypto::PublicKey,
+        ticket: &DatabaseTicket,
+        requesting_key_name: &str,
+        requested_permission: Permission,
+        auth: crate::sync::protocol::SyncRequestAuth,
+    ) -> Result<()> {
+        self.add_peer_address(peer_pubkey, address.clone()).await?;
+        self.sync_tree_with_peer_auth_proof_at(
+            address,
+            peer_pubkey,
+            ticket.database_id(),
+            requesting_key_name,
+            requested_permission,
+            auth,
+        )
+        .await
+    }
+
     // === Bootstrap Request Management Methods ===
 
     /// Get all pending bootstrap requests.

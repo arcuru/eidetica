@@ -870,6 +870,101 @@ impl Sync {
         Ok(())
     }
 
+    /// Bootstrap one tree with an authorization proof signed outside the
+    /// daemon. This is the service-client counterpart to
+    /// `sync_tree_with_peer_auth_at`; private key material never crosses the
+    /// service socket.
+    pub(crate) async fn sync_tree_with_peer_auth_proof_at(
+        &self,
+        address: &Address,
+        peer_pubkey: &PublicKey,
+        tree_id: &ID,
+        requesting_key_name: &str,
+        requested_permission: Permission,
+        auth: SyncRequestAuth,
+    ) -> Result<()> {
+        if auth.key.to_string() != requesting_key_name {
+            return Err(SyncError::InvalidKeyName {
+                reason: "requesting key name does not match authorization proof".to_string(),
+            }
+            .into());
+        }
+
+        let backend = self.backend()?;
+        let our_tips = backend
+            .snapshot(tree_id)
+            .await
+            .map_err(|e| SyncError::BackendError(format!("Failed to get local tips: {e}")))?;
+        if !our_tips.is_empty() {
+            return Err(SyncError::SyncProtocolError(
+                "ticket bootstrap requires an absent local database".to_string(),
+            )
+            .into());
+        }
+
+        let request = SyncRequest::SyncTree(SyncTreeRequest {
+            tree_id: tree_id.clone(),
+            our_tips,
+            peer_pubkey: self.get_device_pubkey().ok(),
+            requesting_key: Some(auth.key.clone()),
+            requesting_key_name: Some(requesting_key_name.to_string()),
+            requested_permission: Some(requested_permission),
+            metadata: None,
+            auth: Some(auth),
+        });
+        let (tx, rx) = oneshot::channel();
+        self.background_tx
+            .get()
+            .ok_or(SyncError::NoTransportEnabled)?
+            .send(SyncCommand::SendRequest {
+                address: address.clone(),
+                request: Box::new(request),
+                response: tx,
+            })
+            .await
+            .map_err(|_| {
+                SyncError::CommandSendError("Background sync command channel closed".to_string())
+            })?;
+        let response = rx
+            .await
+            .map_err(|_| {
+                SyncError::CommandSendError("Background sync response channel closed".to_string())
+            })?
+            .map_err(|e| SyncError::Network(format!("Sync request failed: {e}")))?;
+
+        match response {
+            SyncResponse::Bootstrap(response) => {
+                let mut entries = Vec::with_capacity(1 + response.all_entries.len());
+                entries.push(response.root_entry);
+                entries.extend(response.all_entries);
+                self.instance()?
+                    .put_remote_entries(tree_id, entries)
+                    .await?;
+            }
+            SyncResponse::BootstrapPending {
+                request_id,
+                message,
+            } => {
+                return Err(SyncError::BootstrapPending {
+                    request_id,
+                    message,
+                }
+                .into());
+            }
+            SyncResponse::Error(error) => {
+                return Err(SyncError::Network(format!("Peer returned error: {error}")).into());
+            }
+            _ => {
+                return Err(SyncError::SyncProtocolError(
+                    "Unexpected response type for ticket bootstrap".to_string(),
+                )
+                .into());
+            }
+        }
+
+        self.add_tree_sync(peer_pubkey, tree_id).await
+    }
+
     // === Flush Operations ===
 
     /// Process all queued entries and retry any failed sends.
@@ -978,7 +1073,7 @@ impl Sync {
     ///
     /// If all tasks fail the last error is returned. If `addresses` is empty
     /// an [`SyncError::InvalidAddress`] error is returned.
-    pub(super) async fn select_address(
+    pub(crate) async fn select_address(
         &self,
         addresses: &[Address],
         expected: Option<&PublicKey>,

@@ -1,0 +1,20 @@
+[package]
+name = "shistory"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Shell history example using an Eidetica daemon"
+publish = false
+
+[dependencies]
+chrono = { workspace = true, features = ["serde"] }
+clap = { workspace = true }
+eidetica = { path = "../../crates/lib", features = ["service"] }
+serde = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true, features = ["serde", "v4"] }
+
+[dev-dependencies]
+eidetica = { path = "../../crates/lib", features = ["service"] }
+tempfile = { workspace = true }

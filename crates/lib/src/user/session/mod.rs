@@ -1066,6 +1066,70 @@ impl User {
             .await
     }
 
+    /// Join an already-authorized database ticket through a connected daemon.
+    ///
+    /// The daemon owns transport selection and synchronization. The client
+    /// signs the peer-bound request with the user's key, then records the
+    /// resulting database mapping and enables background sync.
+    #[cfg(all(unix, feature = "service"))]
+    pub async fn join_database(
+        &mut self,
+        ticket: &DatabaseTicket,
+        requested_permission: Permission,
+    ) -> Result<Database> {
+        let connection =
+            self.instance
+                .remote_connection()
+                .ok_or(InstanceError::OperationNotSupported {
+                    operation: "join database without a service connection".to_string(),
+                })?;
+        let key_id = self.get_default_key()?;
+        let signing_key = self.get_signing_key(&key_id)?;
+        let result = connection
+            .bootstrap_ticket(ticket, &signing_key, requested_permission)
+            .await;
+        self.record_database_access(ticket.database_id(), &key_id, result)
+            .await?;
+        self.track_database(
+            ticket.database_id().clone(),
+            &key_id,
+            SyncSettings::on_commit(),
+        )
+        .await?;
+        self.open_database(ticket.database_id()).await
+    }
+
+    /// Enable sync and build a ticket for a tracked database through a connected daemon.
+    ///
+    /// The ticket is built before the user's sync preference is changed, matching
+    /// [`share`](Self::share): transport failures leave user state unchanged.
+    #[cfg(all(unix, feature = "service"))]
+    pub async fn share_database(&mut self, database_id: &ID) -> Result<DatabaseTicket> {
+        let connection =
+            self.instance
+                .remote_connection()
+                .ok_or(InstanceError::OperationNotSupported {
+                    operation: "share database without a service connection".to_string(),
+                })?;
+        let key_id = self
+            .find_key(database_id)?
+            .ok_or_else(|| UserError::NoKeyForDatabase {
+                database_id: database_id.clone(),
+            })?;
+        let signing_key = self.get_signing_key(&key_id)?;
+        let identity =
+            self.key_mapping(&key_id, database_id)?
+                .ok_or_else(|| UserError::NoSigKeyMapping {
+                    key_id: key_id.to_string(),
+                    database_id: database_id.clone(),
+                })?;
+        let ticket = connection
+            .create_database_ticket(database_id, &signing_key, identity)
+            .await?;
+        self.enable_sync(database_id).await?;
+        Ok(ticket)
+    }
+
     /// Record the User-layer SigKey mapping for a bootstrap whose network phase
     /// has already completed, given the [`Result`] returned by
     /// [`Sync::bootstrap_with_ticket`](crate::sync::Sync::bootstrap_with_ticket).
