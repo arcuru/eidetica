@@ -8,7 +8,7 @@ use eidetica::{
         DatabaseTicket, SyncError,
         transports::{http::HttpTransport, iroh::IrohTransport},
     },
-    user::{User, types::SyncSettings},
+    user::{TicketStatus, User, types::SyncSettings},
 };
 use ratatui::widgets::ScrollbarState;
 use tracing::{debug, info};
@@ -107,9 +107,20 @@ impl App {
 
         // Database from User API already has auth key configured
 
-        // Generate a shareable ticket URL for this room
-        let room_address = match self.user.share(database.root_id()).await {
-            Ok(ticket) => ticket.to_string(),
+        // Save sharing intent, then use a ticket only when the owner reports a
+        // live address. The ID-only fallback preserves the existing handoff UI.
+        let management = self.user.manage_database(database.root_id()).await?;
+        let room_address = match async {
+            management.share().await?.into_result()?;
+            management.ticket().await
+        }
+        .await
+        {
+            Ok(TicketStatus::Ready(ticket)) => ticket.to_string(),
+            Ok(TicketStatus::NotReady(reason)) => {
+                tracing::warn!(?reason, "Room sharing accepted but ticket is not ready");
+                DatabaseTicket::new(database.root_id().clone()).to_string()
+            }
             Err(e) => {
                 tracing::warn!("Failed to share database: {e}");
                 DatabaseTicket::new(database.root_id().clone()).to_string()

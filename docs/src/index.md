@@ -29,6 +29,7 @@ Eidetica is organized as a Cargo workspace:
 - [User Guide](user_guide/index.md): Learn how to use the Eidetica library
 - [Getting Started](user_guide/getting_started.md): Set up your first Eidetica database
 - [Synchronization Guide](user_guide/synchronization_guide.md): Enable peer-to-peer sync
+- [Database Sharing and Management](user_guide/database_management.md): Manage user intent and ticket readiness
 - [Internal Documentation](internal/index.md): Understand the internal design and contribute
 - [Design Documents](design/index.md): Architectural documents used for development
 
