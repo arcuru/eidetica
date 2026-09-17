@@ -662,6 +662,7 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
 /// `user.share()` on an instance with a running HTTP transport returns a
 /// ticket populated with the server's address — verifies the wiring through
 /// `Sync::create_ticket` rather than the empty-fallback branch.
+#[allow(deprecated)] // Compatibility coverage for the deprecated User wrapper.
 #[tokio::test]
 async fn test_share_with_attached_sync_includes_server_addresses() {
     let instance = test_instance().await;

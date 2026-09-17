@@ -639,16 +639,22 @@ impl Peer {
     }
 
     /// Mark `tree` sync-enabled on this peer so its sync handler will serve it to
-    /// bootstrapping peers. Delegates to [`User::enable_sync`], which flips the
-    /// user's preference and recomputes the host's combined sync state — the same
-    /// path a real consumer takes. The database must already be tracked (it is, on
-    /// any peer that created it via `create_database` or joined it via
+    /// bootstrapping peers. Uses [`User::manage_database`] to write the user's
+    /// preference and recompute the host's combined sync state — the same path a
+    /// real consumer takes. The database must already be tracked (it is, on any
+    /// peer that created it via `create_database` or joined it via
     /// [`Cluster::bootstrap`]). Pure plumbing: set whatever auth the test needs on
     /// the database *before* calling this.
     ///
-    /// [`User::enable_sync`]: crate::user::User::enable_sync
+    /// [`User::manage_database`]: crate::user::User::manage_database
     pub async fn serve(&mut self, tree: &ID) -> Result<()> {
-        self.user.enable_sync(tree).await
+        self.user
+            .manage_database(tree)
+            .await?
+            .share()
+            .await?
+            .into_result()
+            .map(|_| ())
     }
 }
 

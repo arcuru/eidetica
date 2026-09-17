@@ -21,10 +21,8 @@
 //! - **`database()`** - Get a specific tracked database
 //! - **`track_database()`** - Add or update a tracked database (upsert)
 //! - **`untrack_database()`** - Remove a database from your tracked list
-//! - **`enable_sync()` / `disable_sync()`** - Toggle this user's sync preference for a tracked database
 //! - **`is_sync_enabled()`** - Check this user's sync preference for a database
 //! - **`manage_database()`** - Save sharing intent and observe status/ticket readiness
-//! - **`share()`** - Compatibility wrapper that saves intent, then queries a ready ticket
 //!
 //! ## Key-Database Mappings
 //!
@@ -1256,6 +1254,53 @@ impl User {
     /// Construction resolves the tracked key and requires current Read access.
     /// The returned view keeps private signing material client-side in service
     /// mode and reauthorizes every snapshot/watch acquisition.
+    ///
+    /// Saving sharing intent, observing owner application, and obtaining a ready
+    /// ticket are separate steps. A successful preference write does not imply
+    /// that the owner has applied it or that a reachable address is available.
+    /// [`PreferenceWriteOutcome::Unknown`](crate::user::PreferenceWriteOutcome::Unknown)
+    /// means submission may have succeeded; read the desired snapshot or retry
+    /// the idempotent write.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use std::time::Duration;
+    /// # use eidetica::{Instance, NewUser, crdt::Doc};
+    /// # use eidetica::user::{AppliedState, PreferenceWriteOutcome, TicketStatus};
+    /// # #[tokio::main]
+    /// # async fn main() -> eidetica::Result<()> {
+    /// let (instance, user) = Instance::connect_or_create(
+    ///     "memory://",
+    ///     NewUser::passwordless("alice"),
+    /// ).await?;
+    /// instance.enable_sync().await?;
+    /// let mut user = user.expect("memory backend is new");
+    /// let key = user.get_default_key()?;
+    /// let database = user.create_database(Doc::new(), &key).await?;
+    /// let management = user.manage_database(database.root_id()).await?;
+    ///
+    /// match management.share().await? {
+    ///     PreferenceWriteOutcome::Written(_) => {}
+    ///     PreferenceWriteOutcome::Unknown { source } => {
+    ///         // Submission may have succeeded. The write is idempotent, so read
+    ///         // the current state or retry rather than assuming it was rejected.
+    ///         eprintln!("sharing outcome unknown: {source}");
+    ///     }
+    /// }
+    ///
+    /// let applied = management.wait_for(Duration::from_secs(1), |snapshot| {
+    ///     snapshot.applied == AppliedState::Current
+    /// }).await?;
+    /// if applied.is_some() {
+    ///     match management.ticket().await? {
+    ///         TicketStatus::Ready(ticket) => println!("{ticket}"),
+    ///         TicketStatus::NotReady(reason) => eprintln!("ticket not ready: {reason:?}"),
+    ///     }
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn manage_database(
         &self,
         database_id: &ID,
@@ -1272,6 +1317,9 @@ impl User {
     ///
     /// # Errors
     /// Returns `DatabaseNotTracked` if the database is not in the user's list.
+    #[deprecated(
+        note = "use User::manage_database(database_id).await?.share().await? and handle PreferenceWriteOutcome"
+    )]
     pub async fn enable_sync(&mut self, database_id: &ID) -> Result<()> {
         self.manage_database(database_id)
             .await?
@@ -1294,6 +1342,9 @@ impl User {
     ///
     /// # Errors
     /// Returns `DatabaseNotTracked` if the database is not in the user's list.
+    #[deprecated(
+        note = "use User::manage_database(database_id).await?.stop_sharing().await? and handle PreferenceWriteOutcome"
+    )]
     pub async fn disable_sync(&mut self, database_id: &ID) -> Result<()> {
         self.manage_database(database_id)
             .await?
@@ -1317,6 +1368,9 @@ impl User {
     ///   has been registered.
     /// - [`UserError::DatabaseNotTracked`] if the database is not in the user's
     ///   tracked list.
+    #[deprecated(
+        note = "use User::manage_database(database_id).await? and handle preference acknowledgment, owner application, and TicketStatus separately"
+    )]
     pub async fn share(&mut self, database_id: &ID) -> Result<DatabaseTicket> {
         let management = self.manage_database(database_id).await?;
         management.share().await?.into_result()?;
