@@ -17,6 +17,7 @@ Other key subsystems include:
 - [Sync](sync.md): Merkle-CRDT based peer-to-peer synchronization
 - [Service (Daemon)](service.md): Local daemon mode for multi-process access over Unix domain sockets
 - [Authentication](authentication.md): Ed25519 signature-based entry verification
+- [Encryption](encryption.md): PasswordStore formats, cache encryption, and security boundaries
 - [Errors](errors.md): Modular error hierarchy with cross-process reconstruction
 
 ## API Reference

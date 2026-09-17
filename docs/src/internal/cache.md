@@ -23,7 +23,16 @@ reads no rows. Point reads fetch one record, and ordered iteration uses bounded
 pages with exclusive continuation while transaction-local changes overlay the
 published record set.
 
+`PasswordStore<Table<T>>` uses the namespaced
+`eidetica/password/eidetica/table/rows` descriptor. Its derived generations
+contain keyed 32-byte physical keys and authenticated encrypted row envelopes;
+ordering and exclusive cursors use those physical keys. The history fallback
+projects, overlays, and pages in the same order. Other wrapped Store types keep
+the encrypted opaque whole-state representation. See [Encryption](encryption.md).
+
 Connected instances use the same cached-state path over the service record
 protocol. The daemon binds each request to the authenticated session. It narrows a
 shared-scope request to the session user, refuses a foreign scope, and falls
-back to shared cached state on a user-scope miss.
+back to shared cached state on a user-scope miss. Encrypted materializations are
+client-computed and user-scoped; a warm encrypted Table point read uses point-record
+requests without scanning the generation or reconstructing history.

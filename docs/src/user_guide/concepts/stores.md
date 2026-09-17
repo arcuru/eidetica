@@ -419,9 +419,9 @@ Use cases for `YDoc`:
 
 ### PasswordStore\<S> (Encrypted Wrapper)
 
-`PasswordStore<S>` wraps any store type `S` with transparent password-based encryption. All data is encrypted using AES-256-GCM before being stored, with keys derived from a password using Argon2id. The type parameter `S` specifies the wrapped store (e.g., `PasswordStore<DocStore>`, `PasswordStore<Table<T>>`).
+`PasswordStore<S>` wraps any store type `S` with transparent password-based encryption. Entry payloads and derived cached state are encrypted with AES-256-GCM using keys derived from a Store password with Argon2id. The type parameter `S` specifies the wrapped store (e.g., `PasswordStore<DocStore>`, `PasswordStore<Table<T>>`). Table caches hide logical row keys behind stable keyed hashes and order scans by those physical keys; other Store types use an encrypted opaque state cache.
 
-For detailed usage and examples, see the [Encryption Guide](../encryption_guide.md).
+For usage, recovery limits, and observable metadata, see the [Encryption Guide](../encryption_guide.md).
 
 ## Subtree Index
 

@@ -318,9 +318,9 @@ Encrypted stores (wrapped in `PasswordStore`) are opaque to the daemon — the d
 
 - **`GetStoreEntries { store, tips, scope }`** — the **universal primitive** for encrypted stores. Returns opaque `Entry` objects reachable from `tips`, ordered by subtree height, already verified against the server's Verified frontier. The client receives encrypted entries it can decrypt and CRDT-merge locally. This works identically for encrypted and unencrypted stores — the server never touches content.
 
-- **Store-state resolve/stage/publish and record reads** provide a merge fast-path that avoids re-folding entries whose merged state is already materialized. The daemon serves them from the shared record substrate under the session's scope. See [Store state](#store-state).
+- **Store-state resolve/stage/publish and record reads** provide a merge fast-path that avoids re-folding entries whose merged state is already materialized. For encrypted Stores, the client decrypts and materializes state, then publishes user-scoped ciphertext. A warm encrypted Table point read uses point-record gets for PasswordStore metadata and the requested row without scanning the row generation or reconstructing history. The daemon cannot validate the plaintext semantics of a client-built encrypted cache. See [Store state](#store-state) and [Encryption](encryption.md).
 
-The encrypted-store-over-service test (`test_database_encrypted_store_roundtrip`) exercises the full path: writes encrypted data server-side via a local `Database`, then reads entries via `RemoteConnection::get_store_entries` and confirms the opaque entries carry the correct subtree markers. Decryption and local merge are client-only.
+The encrypted-store-over-service tests cover both paths: `test_database_encrypted_store_roundtrip` checks opaque Entry retrieval, while `test_warm_encrypted_table_service_point_read_is_lazy` proves a warm Table point read stays on record gets and does not reconstruct Store history. Decryption, local merge, and encrypted row-envelope verification are client-only.
 
 ### Read scope
 
