@@ -44,11 +44,10 @@ pub mod types;
 pub use admin::InstanceAdmin;
 pub use errors::UserError;
 pub use key_manager::UserKeyManager;
+pub(crate) use management::ticket_locator;
 pub use management::{
-    AppliedState, DatabaseManagement, DatabaseManagementSnapshot, DatabaseManagementWatch,
-    DatabaseObservation, PeerObservation, PreferenceWriteOutcome, PreferenceWriteReceipt,
-    RuntimeFreshness, TicketNotReady, TicketStatus,
+    DatabaseManagement, DatabaseManagementSnapshot, DatabaseManagementWatch,
+    PreferenceWriteOutcome, PreferenceWriteReceipt,
 };
-pub(crate) use management::{ManagementInvalidation, OwnerManagementState};
 pub use session::{DatabaseBuilder, User};
 pub use types::*;

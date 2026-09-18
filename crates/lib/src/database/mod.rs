@@ -175,6 +175,16 @@ pub struct Database {
 }
 
 impl Database {
+    pub(crate) fn from_parts(root: ID, instance: WeakInstance, ops: Arc<dyn Backend>) -> Self {
+        Self {
+            root,
+            instance,
+            ops,
+            key: None,
+            allow_unverified: false,
+        }
+    }
+
     /// Creates a new `Database` instance with a user-provided signing key.
     ///
     /// This constructor creates a new database using a signing key that's already in memory

@@ -55,13 +55,12 @@ Tickets embed the database ID, so `sync_with_ticket` requires no separate tree I
 
 ### 4. Share a Database
 
-Sharing has three stages: save this user's durable signed preference, wait for
-the owner to apply it, and query ticket readiness. Use the management view so
-each stage is explicit:
+Sharing has two caller-visible operations: save this user's durable signed
+preference, and separately query point-in-time ticket readiness. The daemon's
+combined configuration remains internal:
 
 ```rust,ignore
-use std::time::Duration;
-use eidetica::user::{AppliedState, PreferenceWriteOutcome, TicketStatus};
+use eidetica::user::PreferenceWriteOutcome;
 
 let management = user.manage_database(&database_id).await?;
 match management.share().await? {
@@ -72,20 +71,18 @@ match management.share().await? {
     }
 }
 
-management.wait_for(Duration::from_secs(5), |snapshot| {
-    snapshot.applied == AppliedState::Current
-}).await?;
+assert!(management.snapshot().await?.settings.sync_enabled);
 
-if let TicketStatus::Ready(ticket) = management.ticket().await? {
-    println!("Send this to your peer: {ticket}");
-}
+let ticket = management.ticket().await?;
+println!("Send this locator to your peer: {ticket}");
 ```
 
-A `Written` result acknowledges durable intent, not owner application or network
-readiness. `Unknown` means the write may have reached the owner; reading the
-snapshot or retrying is safe. A ticket is ready only when current owner runtime
-state includes a live advertised address. See [Database Sharing and
-Management](database_management.md) for snapshot, watch, wait, readiness, and
+A `Written` result acknowledges durable intent, not daemon reconciliation or
+network readiness. `Unknown` means the write may have reached the owner; reading
+the user-scoped snapshot or retrying is safe. A ticket is ready only when the
+owner is currently serving the database at a live advertised address. Runtime
+changes do not advance the settings watch. See [Database Sharing and
+Management](database_management.md) for snapshot, watch, wait, ticket, and
 migration details.
 
 A peer who receives the ticket calls `sync.sync_with_ticket(&ticket)` as

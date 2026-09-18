@@ -597,8 +597,8 @@ async fn test_enable_sync_is_idempotent() -> Result<()> {
     Ok(())
 }
 
-/// share() writes intent without an attached sync engine, then reports ticket
-/// unavailability without rolling the preference back.
+/// share() writes intent without an attached sync engine, then preserves the
+/// existing SyncNotEnabled error without rolling the preference back.
 #[allow(deprecated)] // Compatibility coverage for the deprecated User wrapper.
 #[tokio::test]
 async fn test_share_without_sync_attached_errors() -> Result<()> {
@@ -620,13 +620,11 @@ async fn test_share_without_sync_attached_errors() -> Result<()> {
     assert!(!user.is_sync_enabled(&db_id).await?);
 
     let err = user.share(&db_id).await.expect_err("share should error");
-    match &err {
-        eidetica::Error::Sync(boxed) => assert!(
-            boxed.to_string().contains("ticket is not ready"),
-            "expected ticket-not-ready compatibility error, got: {boxed:?}"
-        ),
-        other => panic!("expected sync readiness error, got: {other:?}"),
-    }
+    assert!(
+        err.to_string().contains("SyncNotEnabled")
+            || err.to_string().contains("Sync is not enabled"),
+        "expected SyncNotEnabled compatibility error, got: {err:?}"
+    );
 
     assert!(user.is_sync_enabled(&db_id).await?);
 
