@@ -32,9 +32,9 @@ use crate::entry::{Entry, ID};
 use crate::instance::WeakInstance;
 use crate::service::error::service_error_to_eidetica_error;
 use crate::service::protocol::{
-    AuthenticatedDbRequest, DatabaseOp, Handshake, HandshakeAck, MergeState, Notification,
-    PROTOCOL_VERSION, ReadScope, ServerFrame, ServiceRequest, ServiceResponse, TransactionContext,
-    WireCrdtValue, read_frame, write_frame,
+    AuthenticatedDbRequest, DatabaseOp, Handshake, HandshakeAck, ManagementOp, MergeState,
+    Notification, PROTOCOL_VERSION, ReadScope, ServerFrame, ServiceRequest, ServiceResponse,
+    TransactionContext, WireCrdtValue, read_frame, write_frame,
 };
 use crate::snapshot::Snapshot;
 use crate::user::UserError;
@@ -794,6 +794,23 @@ impl RemoteConnection {
         Self::expect_ok(resp)?;
         self.inner.registered_keys.lock().await.insert(pubkey);
         Ok(())
+    }
+
+    pub(crate) async fn database_management_ticket(
+        &self,
+        tree_id: &ID,
+        identity: SigKey,
+    ) -> crate::Result<crate::sync::DatabaseTicket> {
+        let response = self
+            .request_ok(ServiceRequest::Management(Box::new(ManagementOp::Ticket {
+                tree_id: tree_id.clone(),
+                identity,
+            })))
+            .await?;
+        match response {
+            ServiceResponse::DatabaseTicket(ticket) => Ok(ticket),
+            other => Err(unexpected_response("DatabaseTicket", &other)),
+        }
     }
 
     // === Response extraction helpers ===

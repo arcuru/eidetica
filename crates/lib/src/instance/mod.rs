@@ -15,8 +15,6 @@ use std::{
     },
 };
 
-use handle_trait::Handle;
-
 use crate::{
     Clock, Database, Entry, Result, SystemClock,
     auth::crypto::{PrivateKey, PublicKey},
@@ -28,6 +26,7 @@ use crate::{
 };
 #[cfg(all(unix, feature = "service"))]
 use crate::{auth::SigKey, service::client::RemoteConnection};
+use handle_trait::Handle;
 
 pub mod backend;
 pub mod errors;
@@ -2091,16 +2090,13 @@ impl Instance {
             return tokio::task::JoinSet::new();
         }
 
-        // Create a Database handle for the callbacks. `Database::open` does
-        // not read tips / trip the auto-verify hook, so it is safe to await
-        // here even when the caller holds this tree's lock.
-        let database = match Database::open(self, tree_id).await {
-            Ok(db) => db,
-            Err(e) => {
-                tracing::error!(tree_id = %tree_id, "Failed to open database for callbacks: {}", e);
-                return tokio::task::JoinSet::new();
-            }
-        };
+        // Callback dispatch is triggered by a write the Instance just accepted,
+        // so the root is already present. Build the keyless handle without a
+        // backend read: on a connected Instance that read would be re-gated as
+        // the client session and could suppress the authorization-change event
+        // that revokes that very session.
+        let database =
+            Database::from_parts(tree_id.clone(), self.downgrade(), self.backend().clone());
 
         // Single JoinSet across per-db + global callbacks. Two things happen
         // synchronously, in arrival order, before any task is spawned — both

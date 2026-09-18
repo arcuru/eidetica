@@ -120,31 +120,32 @@ Collects server addresses from all running transports and bundles them with
 the database ID into a `DatabaseTicket`. Lower-level helper that does not
 touch user-level sync preferences.
 
-### `User::share`
+### User-scoped ticket lookup
 
-Atomic high-level API for the common "make this database shareable and hand
-out a ticket" operation:
+[`User::manage_database`](../user_guide/database_management.md) is the
+high-level API for making a tracked database shareable. It deliberately does
+not combine the process into one atomic call:
 
-<!-- Code block ignored: API signature illustration, not compilable standalone -->
+1. `DatabaseManagement::share` writes the user's signed durable preference.
+2. Owner reconciliation applies the daemon's private combined configuration independently.
+3. `DatabaseManagement::ticket` checks this user's own pinned setting and, when
+   enabled, returns a point-in-time locator built from the owner's current addresses.
 
-```rust,ignore
-pub async fn share(&mut self, database_id: &ID) -> Result<DatabaseTicket>
-```
+The user-scoped snapshot and watch expose only that user's settings. They do not
+expose or consult combined settings, other users, or runtime telemetry, and
+runtime-only address changes do not advance the settings watch. A caller whose
+own setting is disabled receives an error even if another user keeps the daemon
+serving the database. An unknown write acknowledgment is safe to retry or read
+back because setting the preference is idempotent.
 
-Equivalent to calling [`User::enable_sync`](./users.md) followed by
-`Sync::create_ticket`, but as a single call so that a `track_database` →
-`enable_sync` → ticket-build sequence can't be accidentally split. This is
-the recommended way to produce a shareable ticket.
+`User::share` remains as a deprecated compatibility wrapper. It saves intent
+and then asks for the locator, so an address-query error after the write can
+leave sharing enabled. New callers should handle preference acknowledgment and
+locator construction separately.
 
-Preconditions (sync attached to the instance, database tracked by the user)
-are checked before any state is mutated, so a failed `share()` leaves the
-user's sync preference unchanged. Errors:
-
-- `SyncError::SyncNotEnabled` — sync is not attached to the instance.
-- `SyncError::NoTransportEnabled` — sync is attached but no transport
-  has been registered yet.
-- `UserError::DatabaseNotTracked` — the database is not in the user's
-  tracked list.
+A `DatabaseTicket` is a locator, not a capability: its database ID and address
+hints do not grant database permission. Authorization and bootstrap approval
+remain separate.
 
 ## Forward Compatibility
 

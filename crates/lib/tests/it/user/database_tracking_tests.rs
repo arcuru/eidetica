@@ -449,6 +449,7 @@ async fn test_update_tracked_auto_creates_mapping() -> Result<()> {
 }
 
 /// Test enable_sync flips the user's sync preference to true
+#[allow(deprecated)] // Compatibility coverage for the deprecated User wrapper.
 #[tokio::test]
 async fn test_enable_sync_flips_preference() -> Result<()> {
     let instance = setup_instance().await;
@@ -479,6 +480,7 @@ async fn test_enable_sync_flips_preference() -> Result<()> {
 }
 
 /// Test disable_sync flips the user's sync preference to false
+#[allow(deprecated)] // Compatibility coverage for the deprecated User wrapper.
 #[tokio::test]
 async fn test_disable_sync_flips_preference() -> Result<()> {
     let instance = setup_instance().await;
@@ -505,6 +507,7 @@ async fn test_disable_sync_flips_preference() -> Result<()> {
 }
 
 /// Test that toggling sync preserves other sync settings
+#[allow(deprecated)] // Compatibility coverage for the deprecated User wrappers.
 #[tokio::test]
 async fn test_toggle_sync_preserves_other_settings() -> Result<()> {
     let instance = setup_instance().await;
@@ -541,6 +544,7 @@ async fn test_toggle_sync_preserves_other_settings() -> Result<()> {
 }
 
 /// Test enable/disable on an untracked database errors; is_sync_enabled returns false
+#[allow(deprecated)] // Compatibility coverage for the deprecated User wrappers.
 #[tokio::test]
 async fn test_sync_toggle_on_untracked_database() -> Result<()> {
     let instance = setup_instance().await;
@@ -565,6 +569,7 @@ async fn test_sync_toggle_on_untracked_database() -> Result<()> {
 }
 
 /// Test that repeated enable is a no-op (idempotent)
+#[allow(deprecated)] // Compatibility coverage for the deprecated User wrapper.
 #[tokio::test]
 async fn test_enable_sync_is_idempotent() -> Result<()> {
     let instance = setup_instance().await;
@@ -592,8 +597,9 @@ async fn test_enable_sync_is_idempotent() -> Result<()> {
     Ok(())
 }
 
-/// share() errors with SyncNotEnabled when the instance has no sync attached,
-/// and leaves the user's sync preference unchanged
+/// share() writes intent without an attached sync engine, then preserves the
+/// existing SyncNotEnabled error without rolling the preference back.
+#[allow(deprecated)] // Compatibility coverage for the deprecated User wrapper.
 #[tokio::test]
 async fn test_share_without_sync_attached_errors() -> Result<()> {
     let instance = setup_instance().await;
@@ -614,19 +620,19 @@ async fn test_share_without_sync_attached_errors() -> Result<()> {
     assert!(!user.is_sync_enabled(&db_id).await?);
 
     let err = user.share(&db_id).await.expect_err("share should error");
-    match &err {
-        eidetica::Error::Sync(boxed)
-            if matches!(**boxed, eidetica::sync::SyncError::SyncNotEnabled) => {}
-        other => panic!("expected SyncNotEnabled, got: {other:?}"),
-    }
+    assert!(
+        err.to_string().contains("SyncNotEnabled")
+            || err.to_string().contains("Sync is not enabled"),
+        "expected SyncNotEnabled compatibility error, got: {err:?}"
+    );
 
-    // Precondition check is before mutation: sync preference unchanged
-    assert!(!user.is_sync_enabled(&db_id).await?);
+    assert!(user.is_sync_enabled(&db_id).await?);
 
     Ok(())
 }
 
 /// share() on an untracked database errors with DatabaseNotTracked
+#[allow(deprecated)] // Compatibility coverage for the deprecated User wrapper.
 #[tokio::test]
 async fn test_share_on_untracked_database_errors() -> Result<()> {
     let instance = setup_instance().await;

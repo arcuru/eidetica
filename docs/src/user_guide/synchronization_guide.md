@@ -55,23 +55,40 @@ Tickets embed the database ID, so `sync_with_ticket` requires no separate tree I
 
 ### 4. Share a Database
 
-Producing a ticket for a peer to import is one call:
+Sharing has two caller-visible operations: save this user's durable signed
+preference, and separately query point-in-time ticket readiness. The daemon's
+combined configuration remains internal:
 
 ```rust,ignore
-// On the host: enable sync for the database and build a ticket for handoff
-let ticket = user.share(&database_id).await?;
-println!("Send this to your peer: {}", ticket);
+use eidetica::user::PreferenceWriteOutcome;
+
+let management = user.manage_database(&database_id).await?;
+match management.share().await? {
+    PreferenceWriteOutcome::Written(_) => {}
+    PreferenceWriteOutcome::Unknown { source } => {
+        // Submission may have succeeded. Read back or retry the idempotent write.
+        eprintln!("sharing outcome unknown: {source}");
+    }
+}
+
+assert!(management.snapshot().await?.settings.sync_enabled);
+
+let ticket = management.ticket().await?;
+println!("Send this locator to your peer: {ticket}");
 ```
 
-`User::share` atomically flips the user's sync preference on for the
-database and produces a `DatabaseTicket` populated with the addresses of
-every running transport. It errors if sync isn't attached or no transport
-is registered, so a returned ticket is guaranteed to point at something
-reachable. Preconditions are checked before any mutation, so a failed
-`share()` leaves the user's sync state unchanged.
+A `Written` result acknowledges durable intent, not daemon reconciliation or
+network readiness. `Unknown` means the write may have reached the owner; reading
+the user-scoped snapshot or retrying is safe. A ticket is ready only when the
+owner is currently serving the database at a live advertised address. Runtime
+changes do not advance the settings watch. See [Database Sharing and
+Management](database_management.md) for snapshot, watch, wait, ticket, and
+migration details.
 
 A peer who receives the ticket calls `sync.sync_with_ticket(&ticket)` as
-shown in step 3.
+shown in step 3. The ticket identifies the database and address hints; it does
+not grant access, so protected databases still require authorization or the
+bootstrap approval flow.
 
 ## Connection Architecture
 

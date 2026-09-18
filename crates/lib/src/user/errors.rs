@@ -40,6 +40,9 @@ pub enum UserError {
     #[error("Database not tracked: {database_id}")]
     DatabaseNotTracked { database_id: ID },
 
+    #[error("This user is not sharing database: {database_id}")]
+    DatabaseNotShared { database_id: ID },
+
     #[error("Database not found by name: {name}")]
     DatabaseNotFoundByName { name: String },
 

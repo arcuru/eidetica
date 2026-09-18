@@ -125,7 +125,8 @@ impl Sync {
             let users = user_mgr.get_linked_users(&db_id).await?;
 
             if users.is_empty() {
-                // No users tracking this database, remove settings
+                // unlink_user_from_database removes the whole record, including
+                // stale combined settings, when the last user leaves.
                 continue;
             }
 

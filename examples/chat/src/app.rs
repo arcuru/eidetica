@@ -107,8 +107,15 @@ impl App {
 
         // Database from User API already has auth key configured
 
-        // Generate a shareable ticket URL for this room
-        let room_address = match self.user.share(database.root_id()).await {
+        // Save sharing intent, then build a point-in-time locator. The ID-only
+        // fallback preserves the existing handoff UI if address lookup fails.
+        let management = self.user.manage_database(database.root_id()).await?;
+        let room_address = match async {
+            management.share().await?.into_result()?;
+            management.ticket().await
+        }
+        .await
+        {
             Ok(ticket) => ticket.to_string(),
             Err(e) => {
                 tracing::warn!("Failed to share database: {e}");

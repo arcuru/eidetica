@@ -52,7 +52,7 @@ use crate::user::UserInfo;
 /// variant to a serialized enum (e.g. [`WriteSource`](crate::instance::WriteSource)
 /// inside [`Notification::DatabaseWrite`]) is therefore a protocol version
 /// bump, not a backward-compatible addition.
-pub const PROTOCOL_VERSION: u32 = 0;
+pub const PROTOCOL_VERSION: u32 = 1;
 
 /// Maximum frame size: 64 MiB.
 pub const MAX_FRAME_SIZE: u32 = 64 * 1024 * 1024;
@@ -303,6 +303,22 @@ pub struct AuthenticatedDbRequest {
     pub op: DatabaseOp,
 }
 
+/// User-scoped point-in-time ticket operation, gated on the target tree.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ManagementOp {
+    /// Return a ticket only when the owner is currently serving `tree_id`.
+    Ticket { tree_id: ID, identity: SigKey },
+}
+
+impl ManagementOp {
+    /// Target database whose Read permission gates this operation.
+    pub fn tree_id(&self) -> &ID {
+        match self {
+            Self::Ticket { tree_id, .. } => tree_id,
+        }
+    }
+}
+
 /// Top-level request from client to server.
 ///
 /// The shape is intentionally flat: pre-auth lifecycle and queries sit beside
@@ -355,6 +371,8 @@ pub enum ServiceRequest {
     /// `AuthenticatedDbRequest` carries `(root_id, identity, op)` and is boxed
     /// to keep the enum's discriminated size compact.
     AuthenticatedDb(Box<AuthenticatedDbRequest>),
+    /// Database-scoped point-in-time ticket query.
+    Management(Box<ManagementOp>),
 }
 
 /// Server-initiated push to the client, interleaved with normal responses
@@ -475,6 +493,8 @@ pub enum ServiceResponse {
     InstanceMetadata(Option<InstanceMetadata>),
     /// Error response
     Error(ServiceError),
+    /// Point-in-time locator for one authorized database.
+    DatabaseTicket(crate::sync::DatabaseTicket),
     /// Challenge bytes returned in response to `TrustedLoginUser`, plus the
     /// user's full record so the client can derive the password→key, decrypt
     /// the root signing key locally, sign the challenge in a single
@@ -831,6 +851,21 @@ mod tests {
                 assert_eq!(source, WriteSource::Remote);
             }
             other => panic!("expected ServerFrame::Notification(DatabaseWrite), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn management_ticket_wire_remains_tree_scoped() {
+        let tree = test_id();
+        let request = ServiceRequest::Management(Box::new(ManagementOp::Ticket {
+            tree_id: tree.clone(),
+            identity: SigKey::default(),
+        }));
+        let encoded = serde_json::to_string(&request).unwrap();
+        let decoded: ServiceRequest = serde_json::from_str(&encoded).unwrap();
+        match decoded {
+            ServiceRequest::Management(op) => assert_eq!(op.tree_id(), &tree),
+            other => panic!("expected management request, got {other:?}"),
         }
     }
 
