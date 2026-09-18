@@ -1,17 +1,15 @@
 # Database Sharing and Management
 
-Applications manage a tracked database through `User::manage_database`. The
-returned `DatabaseManagement` view works in both embedded and service mode and
-keeps four separate facts explicit:
+Applications manage a tracked database through `User::manage_database`.
+The returned `DatabaseManagement` view works in embedded and service mode while
+keeping two operations separate:
 
-1. **Desired state** is this user's signed, durable sharing preference.
-2. **Applied state** says whether the owner has reconciled that preference.
-3. **Observed state** describes the current owner run, addresses, and peers.
-4. **Ticket readiness** says whether a ticket can currently name a live address.
+1. **User settings** are this user's signed, durable sharing preference.
+2. **Ticket lookup** is a point-in-time query of whether the owner can currently
+   return a usable database locator.
 
-These are not one atomic operation. A durable preference can be accepted before
-the owner applies it, and the owner can apply it before a transport has a live
-address.
+The settings view does not expose the daemon's private combined configuration,
+other users' preferences, peer telemetry, or runtime state.
 
 ## Share a Tracked Database
 
@@ -21,9 +19,8 @@ new database; use `track_database` when adopting an existing one.
 ```rust
 # extern crate eidetica;
 # extern crate tokio;
-# use std::time::Duration;
 # use eidetica::{Instance, NewUser, crdt::Doc};
-# use eidetica::user::{AppliedState, PreferenceWriteOutcome, TicketStatus};
+# use eidetica::user::PreferenceWriteOutcome;
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 let (instance, user) = Instance::connect_or_create(
@@ -36,84 +33,73 @@ let key = user.get_default_key()?;
 let database = user.create_database(Doc::new(), &key).await?;
 
 let management = user.manage_database(database.root_id()).await?;
-let snapshot = management.snapshot().await?;
-let watch = management.watch().await?;
-assert_eq!(
-    watch.current().desired.sync_enabled,
-    snapshot.desired.sync_enabled
-);
+let initial = management.snapshot().await?;
+assert_eq!(initial.source, user.user_database().snapshot().await?);
+
 match management.share().await? {
     PreferenceWriteOutcome::Written(receipt) => {
         println!("sharing preference accepted: {:?}", receipt.entry_id);
     }
     PreferenceWriteOutcome::Unknown { source } => {
-        // The connection failed after submission may have reached the owner.
-        // Read back the preference or retry this idempotent write.
+        // Submission may have reached the owner. Read back this user's
+        // preference or retry the idempotent write.
         eprintln!("sharing outcome unknown: {source}");
     }
 }
 
-let applied = management.wait_for(Duration::from_secs(1), |snapshot| {
-    snapshot.applied == AppliedState::Current
-}).await?;
-
-if applied.is_some() {
-    match management.ticket().await? {
-        TicketStatus::Ready(ticket) => println!("share {ticket}"),
-        TicketStatus::NotReady(reason) => {
-            eprintln!("preference applied, but ticket not ready: {reason:?}");
-        }
-    }
-}
+assert!(management.snapshot().await?.settings.sync_enabled);
+println!("share {}", management.ticket().await?);
 # Ok(())
 # }
 ```
 
 `Written` acknowledges a durable signed preference entry. It does not say that
-the owner has applied the setting or that a ticket is ready. `Unknown` means the
-write may have reached the owner before the connection failed. Because the write
-is idempotent, safely retry it or call `snapshot()` to read back `desired`.
+the daemon has reconciled its internal combined configuration or that a ticket
+is ready. `Unknown` means the write may have reached the owner before the
+connection failed. Safely retry it or call `snapshot()` to read back `settings`.
 
 ## Snapshot, Watch, and Wait
 
-- `snapshot()` returns the current desired, effective, applied, and observed
-  state after checking the caller still has Read access.
-- `watch()` returns an immediate snapshot through `current()` and coalesces
-  later database, preference, and runtime changes through `changed()`.
-- `wait_for(timeout, predicate)` waits without changing preferences and returns
-  `None` on timeout.
-- `ticket()` never changes preferences. `TicketStatus::Ready` contains the
-  database ID and addresses advertised by the current owner run.
+- `snapshot()` reads this user's settings at one real user-database `Snapshot`.
+  The returned `source` is the exact snapshot used for the read.
+- `watch()` returns that initial value through `current()` and uses the normal
+  database callback path for later user-database changes.
+- `wait_for(timeout, predicate)` observes the same stream without changing
+  settings and returns `None` on timeout.
+- Target-database authorization changes end the watch. Dropping a watch removes
+  its normal database callbacks; disconnect cleanup is the same as any other
+  service callback.
 
-Treat `observed.owner_run` as opaque. Generations are monotonic only within that
-run. `RuntimeFreshness::Stale` or `Unknown` means cached runtime fields must not
-be treated as current. `TicketStatus::NotReady` explains whether the blocker is
-owner availability, pending application, disabled effective sharing, no live
-address, or unknown runtime state.
+These methods do not promise cross-database atomicity. Runtime-only changes such
+as a transport starting or stopping do not advance the settings watch.
 
-A ticket is a database locator with address hints. It does not grant access.
-The receiving peer still needs the database's authorization or bootstrap and
-approval flow.
+`ticket()` is separate and never changes settings. It first checks this user's
+pinned sharing setting and returns an error when that setting is disabled, even
+if another user keeps the daemon serving the database. When enabled, it returns
+a point-in-time `DatabaseTicket` with the database ID and whatever owner
+addresses are currently available. It does not inspect daemon combined settings
+or promise serving, reconciliation, or future reachability.
+
+A ticket is a locator with address hints, not an access grant. The receiver still
+needs database authorization or the bootstrap and approval flow.
 
 ## Stop Sharing
 
-`management.stop_sharing()` withdraws only this user's preference. Another user
-on the same instance can keep the owner serving the database, so confirm the
-result through `snapshot().effective` when host-wide state matters.
+`management.stop_sharing()` withdraws only this user's preference and preserves
+their other sync settings. Another user on the same instance can keep the daemon
+serving the database. That combined daemon state is intentionally not exposed by
+this user-scoped view.
 
 ## Migrating from Deprecated User Helpers
 
-The compatibility methods still work, but their single return values hide the
-separate stages above:
-
-| Deprecated method        | Replacement                                            |
-| ------------------------ | ------------------------------------------------------ |
-| `User::enable_sync(id)`  | `User::manage_database(id).await?.share()`             |
-| `User::disable_sync(id)` | `User::manage_database(id).await?.stop_sharing()`      |
-| `User::share(id)`        | `share()`, then `wait_for` or `watch`, then `ticket()` |
+| Deprecated method        | Replacement                                       |
+| ------------------------ | ------------------------------------------------- |
+| `User::enable_sync(id)`  | `User::manage_database(id).await?.share()`        |
+| `User::disable_sync(id)` | `User::manage_database(id).await?.stop_sharing()` |
+| `User::share(id)`        | `share()`, then separately query `ticket()`       |
 
 Handle `PreferenceWriteOutcome` rather than converting `Unknown` into a definite
-failure. Handle `TicketStatus::NotReady` as a current readiness result rather
-than assuming the preference was rolled back. `User::is_sync_enabled`,
+failure. Treat the returned ticket as a point-in-time locator, not proof that the
+preference was applied or that a peer can connect. `User::is_sync_enabled`,
 `track_database`, `untrack_database`, and the lower-level `Sync` APIs remain
 available for their existing purposes.

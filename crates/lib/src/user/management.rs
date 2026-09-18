@@ -1,4 +1,4 @@
-//! User-scoped database sharing and status management.
+//! User-scoped database sharing preferences and ticket lookup.
 
 use std::time::Duration;
 
@@ -7,11 +7,11 @@ use tokio::sync::{mpsc, watch};
 
 use super::{SyncSettings, TrackedDatabase, User, UserError};
 use crate::{
-    Database, Result,
-    auth::{Permission, SigKey, crypto::PrivateKey},
+    Database, Result, Snapshot,
+    auth::{Permission, SigKey},
     entry::ID,
     instance::WriteCallback,
-    sync::{Address, DatabaseTicket, PeerId},
+    sync::{DatabaseTicket, SyncError},
 };
 
 /// Confirmation that a sharing preference was durably accepted.
@@ -41,101 +41,19 @@ impl PreferenceWriteOutcome {
     }
 }
 
-/// Whether owner-side reconciliation includes the current preference snapshot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AppliedState {
-    /// The owner has processed the caller's current preference state.
-    Current,
-    /// The owner has not processed the caller's current preference state yet.
-    Pending,
-    /// Applied state cannot currently be established.
-    Unknown,
-}
-
-/// Runtime freshness relative to the connection that produced the snapshot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum RuntimeFreshness {
-    /// Runtime observations belong to the current owner run.
-    Current,
-    /// The cached observation belongs to a disconnected or replaced run.
-    Stale,
-    /// No owner runtime observation is available.
-    Unknown,
-}
-
-/// Per-peer observation filtered to the managed database.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PeerObservation {
-    /// Peer identity.
-    pub peer: PeerId,
-    /// When this owner run last completed a sync round involving this database.
-    pub last_success_ms: Option<u64>,
-    /// When this peer observation was assembled.
-    pub observed_at_ms: u64,
-}
-
-/// Owner runtime state visible through a database-scoped management view.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DatabaseObservation {
-    /// Opaque identity for one owner process run.
-    pub owner_run: String,
-    /// Monotonic generation for this database within `owner_run`.
-    pub generation: u64,
-    /// Freshness of the runtime fields in this observation.
-    pub freshness: RuntimeFreshness,
-    /// Whether the owner currently has a sync engine.
-    pub engine_running: bool,
-    /// Addresses currently advertised by running transports.
-    pub listen_addresses: Vec<Address>,
-    /// Only peers registered for this database.
-    pub peers: Vec<PeerObservation>,
-    /// Time the owner assembled this observation.
-    pub observed_at_ms: u64,
-}
-
-/// Current desired, applied and observed state for one tracked database.
+/// This user's sharing preference at a specific user-database snapshot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DatabaseManagementSnapshot {
-    /// This user's durable desired setting.
-    pub desired: SyncSettings,
-    /// Owner-combined effective setting across all users.
-    pub effective: Option<SyncSettings>,
-    /// Whether the current desired snapshot has been processed by the owner.
-    pub applied: AppliedState,
-    /// Current owner runtime observation.
-    pub observed: DatabaseObservation,
+    /// The source database snapshot that pins `settings`.
+    pub source: Snapshot,
+    /// This user's durable settings at `source`.
+    pub settings: SyncSettings,
 }
 
-/// Reason a ticket cannot currently be produced.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TicketNotReady {
-    /// No owner sync engine is running.
-    EngineUnavailable,
-    /// The caller's current desired state has not been applied.
-    DesiredNotApplied,
-    /// Effective owner configuration does not serve the database.
-    SharingDisabled,
-    /// No running transport is advertising an address.
-    NoLiveAddress,
-    /// Runtime state is stale or unknown.
-    RuntimeUnknown,
-}
-
-/// Result of a ticket readiness query.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TicketStatus {
-    /// The owner is serving the database at the ticket's current addresses.
-    Ready(DatabaseTicket),
-    /// The owner has not reached a ticket-ready state.
-    NotReady(TicketNotReady),
-}
-
-/// Stream of current database-management state.
+/// Stream of this user's current preference and subsequent database changes.
 pub struct DatabaseManagementWatch {
     receiver: watch::Receiver<DatabaseManagementSnapshot>,
     _callbacks: Vec<WriteCallback>,
-    #[cfg(all(unix, feature = "service"))]
-    _management_subscription: Option<crate::service::client::ManagementSubscription>,
     _task: tokio::task::JoinHandle<()>,
 }
 
@@ -160,18 +78,15 @@ impl DatabaseManagementWatch {
 /// User-bound management capability for one tracked database.
 #[derive(Clone)]
 pub struct DatabaseManagement {
-    user_uuid: String,
     user_database: Database,
     target_database: Database,
     target_id: ID,
-    signing_key: PrivateKey,
     identity: SigKey,
 }
 
 impl DatabaseManagement {
     pub(crate) async fn new(user: &User, database_id: &ID) -> Result<Self> {
         let tracked = user.database(database_id).await?;
-        let signing_key = user.get_signing_key(&tracked.key_id)?;
         let identity = user
             .key_mapping(&tracked.key_id, database_id)?
             .ok_or_else(|| UserError::NoSigKeyMapping {
@@ -186,16 +101,14 @@ impl DatabaseManagement {
         }
 
         Ok(Self {
-            user_uuid: user.user_uuid().to_string(),
             user_database: user.user_database().clone(),
             target_database,
             target_id: database_id.clone(),
-            signing_key,
             identity,
         })
     }
 
-    /// Save this user's sharing enablement without waiting for owner application.
+    /// Save this user's sharing enablement without waiting for owner reconciliation.
     pub async fn set_sharing(&self, enabled: bool) -> Result<PreferenceWriteOutcome> {
         let tx = self.user_database.new_transaction().await?;
         let table = tx
@@ -237,109 +150,72 @@ impl DatabaseManagement {
         self.set_sharing(false).await
     }
 
-    /// Read the current authorized snapshot.
+    /// Read this user's settings from one pinned user-database snapshot.
     pub async fn snapshot(&self) -> Result<DatabaseManagementSnapshot> {
         self.authorize().await?;
+        let source = self.user_database.snapshot().await?;
+        self.snapshot_at(source).await
+    }
+
+    /// Return a point-in-time locator when this user's sharing setting is enabled.
+    pub async fn ticket(&self) -> Result<DatabaseTicket> {
+        self.authorize().await?;
+        if !self.snapshot().await?.settings.sync_enabled {
+            return Err(UserError::DatabaseNotShared {
+                database_id: self.target_id.clone(),
+            }
+            .into());
+        }
         #[cfg(all(unix, feature = "service"))]
         if let Some(conn) = self.target_database.instance()?.remote_connection() {
-            conn.register_session_key(&self.signing_key).await?;
             return conn
-                .database_management_snapshot(&self.target_id, self.identity.clone())
+                .database_management_ticket(&self.target_id, self.identity.clone())
                 .await;
         }
-
-        let instance = self.target_database.instance()?;
-        let desired = self.desired().await?;
-        let state = instance
-            .database_management_state(
-                &self.target_id,
-                &self.user_uuid,
-                self.user_database.root_id(),
-            )
-            .await?;
-        Ok(state.with_desired(desired))
+        ticket_locator(&self.target_database.instance()?, &self.target_id).await
     }
 
-    /// Query a ticket without mutating preferences.
-    pub async fn ticket(&self) -> Result<TicketStatus> {
-        ticket_from_snapshot(&self.target_id, self.snapshot().await?)
-    }
-
-    /// Watch current state and subsequent scoped invalidations.
+    /// Watch this user's settings from an initial pinned snapshot onward.
     pub async fn watch(&self) -> Result<DatabaseManagementWatch> {
         self.authorize().await?;
-        let initial = self.snapshot().await?;
-        let (trigger_tx, mut trigger_rx) = mpsc::channel(1);
+        let source = self.user_database.snapshot().await?;
+        let initial = self.snapshot_at(source.clone()).await?;
+        let (trigger_tx, mut trigger_rx) = mpsc::channel::<Option<Snapshot>>(1);
         let (snapshot_tx, snapshot_rx) = watch::channel(initial);
-        let mut callbacks = Vec::new();
 
-        let desired_tips = self.user_database.snapshot().await?;
         let tx = trigger_tx.clone();
-        callbacks.push(
-            self.user_database
-                .on_write_at_tips(desired_tips, move |_event, _db| {
-                    let tx = tx.clone();
-                    let _ = tx.try_send(());
-                    async move { Ok(()) }
-                })
-                .await?,
-        );
-        let target_tips = self.target_database.snapshot().await?;
+        let callback = self
+            .user_database
+            .on_write_at_tips(source, move |event, _db| {
+                let _ = tx.try_send(Some(event.post_tips().clone()));
+                async move { Ok(()) }
+            })
+            .await?;
+
+        let target_source = self.target_database.snapshot().await?;
         let tx = trigger_tx.clone();
-        callbacks.push(
-            self.target_database
-                .on_write_at_tips(target_tips, move |_event, _db| {
-                    let tx = tx.clone();
-                    let _ = tx.try_send(());
-                    async move { Ok(()) }
-                })
-                .await?,
-        );
-
-        #[cfg(all(unix, feature = "service"))]
-        let remote = self.target_database.instance()?.remote_connection();
-        #[cfg(all(unix, feature = "service"))]
-        let management_subscription = if let Some(conn) = &remote {
-            Some(
-                conn.subscribe_management(
-                    self.target_id.clone(),
-                    self.identity.clone(),
-                    trigger_tx.clone(),
-                )
-                .await?,
-            )
-        } else {
-            None
-        };
-        #[cfg(all(unix, feature = "service"))]
-        let uses_remote = remote.is_some();
-        #[cfg(not(all(unix, feature = "service")))]
-        let uses_remote = false;
-
-        if !uses_remote {
-            let instance = self.target_database.instance()?;
-            let mut runtime = instance.subscribe_management_runtime();
-            let target = self.target_id.clone();
-            let tx = trigger_tx.clone();
-            tokio::spawn(async move {
-                while runtime.changed().await.is_ok() {
-                    if runtime
-                        .borrow()
-                        .database
-                        .as_ref()
-                        .is_none_or(|db| db == &target)
-                    {
-                        let _ = tx.try_send(());
-                    }
-                }
-            });
-        }
+        let target_callback = self
+            .target_database
+            .on_write_at_tips(target_source, move |_event, _db| {
+                let _ = tx.try_send(None);
+                async move { Ok(()) }
+            })
+            .await?;
 
         let view = self.clone();
         let task = tokio::spawn(async move {
-            while trigger_rx.recv().await.is_some() {
-                while trigger_rx.try_recv().is_ok() {}
-                let Ok(snapshot) = view.snapshot().await else {
+            while let Some(trigger) = trigger_rx.recv().await {
+                let mut source = trigger;
+                while let Ok(newer) = trigger_rx.try_recv() {
+                    if newer.is_some() {
+                        source = newer;
+                    }
+                }
+                let snapshot = match source {
+                    Some(source) => view.snapshot_at(source).await,
+                    None => view.snapshot().await,
+                };
+                let Ok(snapshot) = snapshot else {
                     break;
                 };
                 if snapshot_tx.send(snapshot).is_err() {
@@ -348,21 +224,25 @@ impl DatabaseManagement {
             }
         });
 
-        // A change between the initial snapshot and either subscription is folded
-        // into this immediate recomputation; callbacks/runtime invalidations cover
-        // every change after subscription installation.
-        let _ = trigger_tx.try_send(());
+        // Fold a write that landed after the initial read but before callback
+        // registration into the same native Snapshot timeline.
+        let current = self.user_database.snapshot().await?;
+        if current != snapshot_rx.borrow().source {
+            let _ = trigger_tx.try_send(Some(current));
+        }
+        // Close the target read/subscription race: a revocation that landed
+        // while callbacks were being installed makes watch creation fail;
+        // later revocations arrive through the target callback above.
+        self.authorize().await?;
 
         Ok(DatabaseManagementWatch {
             receiver: snapshot_rx,
-            _callbacks: callbacks,
-            #[cfg(all(unix, feature = "service"))]
-            _management_subscription: management_subscription,
+            _callbacks: vec![callback, target_callback],
             _task: task,
         })
     }
 
-    /// Wait until a snapshot matches `predicate`, without mutating preferences.
+    /// Wait until this user's settings match `predicate`.
     pub async fn wait_for<F>(
         &self,
         timeout: Duration,
@@ -389,18 +269,19 @@ impl DatabaseManagement {
         }
     }
 
-    async fn desired(&self) -> Result<SyncSettings> {
-        let table = self
-            .user_database
-            .get_store_viewer::<crate::store::Table<TrackedDatabase>>("databases")
-            .await?;
-        Ok(table
+    async fn snapshot_at(&self, source: Snapshot) -> Result<DatabaseManagementSnapshot> {
+        self.authorize().await?;
+        let tx = self.user_database.new_transaction_at(&source).await?;
+        let settings = tx
+            .get_store::<crate::store::Table<TrackedDatabase>>("databases")
+            .await?
             .get(&self.target_id.to_string())
             .await
             .map_err(|_| UserError::DatabaseNotTracked {
                 database_id: self.target_id.clone(),
             })?
-            .sync_settings)
+            .sync_settings;
+        Ok(DatabaseManagementSnapshot { source, settings })
     }
 
     async fn authorize(&self) -> Result<()> {
@@ -412,54 +293,10 @@ impl DatabaseManagement {
     }
 }
 
-pub(crate) fn ticket_from_snapshot(
+pub(crate) async fn ticket_locator(
+    instance: &crate::Instance,
     database_id: &ID,
-    snapshot: DatabaseManagementSnapshot,
-) -> Result<TicketStatus> {
-    if snapshot.observed.freshness != RuntimeFreshness::Current {
-        return Ok(TicketStatus::NotReady(TicketNotReady::RuntimeUnknown));
-    }
-    if !snapshot.observed.engine_running {
-        return Ok(TicketStatus::NotReady(TicketNotReady::EngineUnavailable));
-    }
-    if snapshot.applied != AppliedState::Current {
-        return Ok(TicketStatus::NotReady(TicketNotReady::DesiredNotApplied));
-    }
-    if !snapshot
-        .effective
-        .as_ref()
-        .is_some_and(|settings| settings.sync_enabled)
-    {
-        return Ok(TicketStatus::NotReady(TicketNotReady::SharingDisabled));
-    }
-    if snapshot.observed.listen_addresses.is_empty() {
-        return Ok(TicketStatus::NotReady(TicketNotReady::NoLiveAddress));
-    }
-    Ok(TicketStatus::Ready(DatabaseTicket::with_addresses(
-        database_id.clone(),
-        snapshot.observed.listen_addresses,
-    )))
-}
-
-pub(crate) struct OwnerManagementState {
-    pub effective: Option<SyncSettings>,
-    pub applied: AppliedState,
-    pub observed: DatabaseObservation,
-}
-
-impl OwnerManagementState {
-    pub(crate) fn with_desired(self, desired: SyncSettings) -> DatabaseManagementSnapshot {
-        DatabaseManagementSnapshot {
-            desired,
-            effective: self.effective,
-            applied: self.applied,
-            observed: self.observed,
-        }
-    }
-}
-
-/// Runtime invalidation emitted by the owner sync engine.
-#[derive(Debug, Clone, Default)]
-pub(crate) struct ManagementInvalidation {
-    pub database: Option<ID>,
+) -> Result<DatabaseTicket> {
+    let sync = instance.sync().ok_or(SyncError::SyncNotEnabled)?;
+    sync.create_ticket(database_id).await
 }

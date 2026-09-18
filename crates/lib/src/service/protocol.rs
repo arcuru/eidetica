@@ -41,7 +41,7 @@ use crate::entry::{Entry, ID};
 use crate::instance::WriteSource;
 use crate::service::error::ServiceError;
 use crate::snapshot::Snapshot;
-use crate::user::{DatabaseManagementSnapshot, UserInfo};
+use crate::user::UserInfo;
 
 /// Protocol version. Version 0 indicates an unstable protocol that may change
 /// without notice between releases.
@@ -303,32 +303,18 @@ pub struct AuthenticatedDbRequest {
     pub op: DatabaseOp,
 }
 
-/// User-scoped daemon status operations, independently gated on the target tree.
+/// User-scoped point-in-time ticket operation, gated on the target tree.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ManagementOp {
-    /// Recompute one filtered desired/applied/observed snapshot.
-    Snapshot { tree_id: ID, identity: SigKey },
-    /// Subscribe this connection to scoped invalidations for `tree_id`.
-    Subscribe {
-        tree_id: ID,
-        identity: SigKey,
-        subscription_id: u64,
-    },
-    /// Stop scoped management invalidations for `tree_id`.
-    Unsubscribe {
-        tree_id: ID,
-        identity: SigKey,
-        subscription_id: u64,
-    },
+    /// Return a ticket only when the owner is currently serving `tree_id`.
+    Ticket { tree_id: ID, identity: SigKey },
 }
 
 impl ManagementOp {
     /// Target database whose Read permission gates this operation.
     pub fn tree_id(&self) -> &ID {
         match self {
-            Self::Snapshot { tree_id, .. }
-            | Self::Subscribe { tree_id, .. }
-            | Self::Unsubscribe { tree_id, .. } => tree_id,
+            Self::Ticket { tree_id, .. } => tree_id,
         }
     }
 }
@@ -385,7 +371,7 @@ pub enum ServiceRequest {
     /// `AuthenticatedDbRequest` carries `(root_id, identity, op)` and is boxed
     /// to keep the enum's discriminated size compact.
     AuthenticatedDb(Box<AuthenticatedDbRequest>),
-    /// Database-scoped management status and invalidation subscription.
+    /// Database-scoped point-in-time ticket query.
     Management(Box<ManagementOp>),
 }
 
@@ -455,8 +441,6 @@ pub enum Notification {
         post_tips: Snapshot,
         source: WriteSource,
     },
-    /// Scoped signal to recompute a fresh authorized management snapshot.
-    ManagementInvalidated { root_id: ID, generation: u64 },
 }
 
 /// Envelope for every frame the server writes to a client.
@@ -509,8 +493,8 @@ pub enum ServiceResponse {
     InstanceMetadata(Option<InstanceMetadata>),
     /// Error response
     Error(ServiceError),
-    /// Filtered management snapshot for one database and one user.
-    DatabaseManagementSnapshot(DatabaseManagementSnapshot),
+    /// Point-in-time locator for one authorized database.
+    DatabaseTicket(crate::sync::DatabaseTicket),
     /// Challenge bytes returned in response to `TrustedLoginUser`, plus the
     /// user's full record so the client can derive the password→key, decrypt
     /// the root signing key locally, sign the challenge in a single
@@ -871,31 +855,11 @@ mod tests {
     }
 
     #[test]
-    fn management_wire_is_scoped_and_carries_no_snapshot_in_notifications() {
+    fn management_ticket_wire_remains_tree_scoped() {
         let tree = test_id();
-        let request = ManagementOp::Subscribe {
+        let request = ServiceRequest::Management(Box::new(ManagementOp::Ticket {
             tree_id: tree.clone(),
             identity: SigKey::default(),
-            subscription_id: 1,
-        };
-        assert_eq!(request.tree_id(), &tree);
-        let frame = ServerFrame::Notification(Notification::ManagementInvalidated {
-            root_id: tree,
-            generation: 7,
-        });
-        let encoded = serde_json::to_string(&frame).unwrap();
-        assert!(encoded.contains("ManagementInvalidated"));
-        assert!(!encoded.contains("desired"));
-        assert!(!encoded.contains("peers"));
-    }
-
-    #[test]
-    fn management_unsubscribe_wire_remains_tree_scoped() {
-        let tree = test_id();
-        let request = ServiceRequest::Management(Box::new(ManagementOp::Unsubscribe {
-            tree_id: tree.clone(),
-            identity: SigKey::default(),
-            subscription_id: 1,
         }));
         let encoded = serde_json::to_string(&request).unwrap();
         let decoded: ServiceRequest = serde_json::from_str(&encoded).unwrap();

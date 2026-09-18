@@ -4,7 +4,7 @@ use eidetica::{
     Instance, Result,
     auth::{AuthKey, Permission},
     sync::{DatabaseTicket, transports::http::HttpTransport},
-    user::{AppliedState, PreferenceWriteOutcome, SyncSettings, TicketNotReady, TicketStatus},
+    user::{PreferenceWriteOutcome, SyncSettings},
 };
 
 use super::helpers::{create_user_database, setup_instance_with_user};
@@ -46,7 +46,24 @@ async fn setup() -> Result<(Instance, eidetica::user::User, eidetica::entry::ID)
 }
 
 #[tokio::test]
-async fn preference_write_is_acknowledged_before_ticket_readiness() -> Result<()> {
+async fn snapshot_pins_the_settings_read_to_the_user_database() -> Result<()> {
+    let (_instance, user, database_id) = setup().await?;
+    let management = user.manage_database(&database_id).await?;
+
+    let before = management.snapshot().await?;
+    assert_eq!(before.source, user.user_database().snapshot().await?);
+    assert!(!before.settings.sync_enabled);
+
+    management.share().await?.into_result()?;
+    let after = management.snapshot().await?;
+    assert_eq!(after.source, user.user_database().snapshot().await?);
+    assert_ne!(after.source, before.source);
+    assert!(after.settings.sync_enabled);
+    Ok(())
+}
+
+#[tokio::test]
+async fn preference_write_is_acknowledged_before_locator_query() -> Result<()> {
     let (_instance, user, database_id) = setup().await?;
     let management = user.manage_database(&database_id).await?;
 
@@ -54,11 +71,46 @@ async fn preference_write_is_acknowledged_before_ticket_readiness() -> Result<()
         management.share().await?,
         PreferenceWriteOutcome::Written(_)
     ));
-    assert!(matches!(
-        management.ticket().await?,
-        TicketStatus::NotReady(TicketNotReady::NoLiveAddress)
-            | TicketStatus::NotReady(TicketNotReady::DesiredNotApplied)
-    ));
+    assert!(management.snapshot().await?.settings.sync_enabled);
+    let ticket = management.ticket().await?;
+    assert_eq!(ticket.database_id(), &database_id);
+    assert!(ticket.addresses().is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn ticket_requires_this_users_sharing_setting() -> Result<()> {
+    let instance = crate::helpers::test_local_instance().await;
+    crate::helpers::create_user(&instance, "alice", None).await?;
+    crate::helpers::create_user(&instance, "bob", None).await?;
+    instance.enable_sync().await?;
+    let mut alice = instance.login_user("alice", None).await?;
+    let database = create_user_database(&mut alice).await;
+    let database_id = database.root_id().clone();
+    let tx = database.new_transaction().await?;
+    tx.get_settings()?
+        .set_global_auth_key(AuthKey::active(None, Permission::Read))
+        .await?;
+    tx.commit().await?;
+    let management = alice.manage_database(&database_id).await?;
+    assert!(management.ticket().await.is_err());
+
+    let sync = instance.sync().unwrap();
+    sync.register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
+        .await?;
+    sync.accept_connections().await?;
+
+    // Another user enables the owner's combined state, but that does not make
+    // this caller eligible for a locator.
+    let mut bob = instance.login_user("bob", None).await?;
+    let bob_key = bob.get_default_key()?;
+    bob.track_database(database_id.clone(), &bob_key, SyncSettings::enabled())
+        .await?;
+    assert!(management.ticket().await.is_err());
+
+    management.share().await?.into_result()?;
+    assert!(!management.ticket().await?.addresses().is_empty());
+    sync.stop_server().await?;
     Ok(())
 }
 
@@ -73,71 +125,44 @@ async fn live_address_makes_ticket_ready_and_stop_preserves_other_settings() -> 
         .await?;
     sync.accept_connections().await?;
 
-    let snapshot = management
-        .wait_for(Duration::from_secs(2), |snapshot| {
-            snapshot.applied == AppliedState::Current
-                && !snapshot.observed.listen_addresses.is_empty()
-        })
-        .await?
-        .expect("owner did not apply sharing with a live address");
-    assert!(snapshot.effective.unwrap().sync_enabled);
-    match management.ticket().await? {
-        TicketStatus::Ready(ticket) => {
-            let encoded = ticket.to_string();
-            let decoded: DatabaseTicket = encoded.parse()?;
-            assert_eq!(decoded.database_id(), &database_id);
-            assert!(!decoded.addresses().is_empty());
-        }
-        other => panic!("expected ready ticket, got {other:?}"),
-    }
+    let ticket = management.ticket().await?;
+    let encoded = ticket.to_string();
+    let decoded: DatabaseTicket = encoded.parse()?;
+    assert_eq!(decoded.database_id(), &database_id);
+    assert!(!decoded.addresses().is_empty());
 
     management.stop_sharing().await?.into_result()?;
-    let stopped = management
-        .wait_for(Duration::from_secs(2), |snapshot| {
-            snapshot.applied == AppliedState::Current && !snapshot.desired.sync_enabled
-        })
-        .await?
-        .expect("owner did not apply stopped sharing");
-    assert!(!stopped.desired.sync_enabled);
+    let stopped = management.snapshot().await?;
+    assert!(!stopped.settings.sync_enabled);
     sync.stop_server().await?;
     Ok(())
 }
 
 #[tokio::test]
-async fn runtime_address_changes_invalidate_watch_without_database_writes() -> Result<()> {
+async fn runtime_address_changes_do_not_advance_settings_watch() -> Result<()> {
     let (instance, user, database_id) = setup().await?;
     let management = user.manage_database(&database_id).await?;
     management.share().await?.into_result()?;
+    let mut watch = management.watch().await?;
     let sync = instance.sync().unwrap();
     sync.register_transport("http", HttpTransport::builder().bind("127.0.0.1:0"))
         .await?;
 
-    let mut watch = management.watch().await?;
     sync.accept_connections().await?;
-    let started = tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            let snapshot = watch.changed().await?;
-            if !snapshot.observed.listen_addresses.is_empty() {
-                return Ok::<_, eidetica::Error>(snapshot);
-            }
-        }
-    })
-    .await
-    .expect("address start did not trigger watch")?;
-    assert!(!started.observed.listen_addresses.is_empty());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), watch.changed())
+            .await
+            .is_err()
+    );
+    assert!(!management.ticket().await?.addresses().is_empty());
 
     sync.stop_server().await?;
-    let stopped = tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            let snapshot = watch.changed().await?;
-            if snapshot.observed.listen_addresses.is_empty() {
-                return Ok::<_, eidetica::Error>(snapshot);
-            }
-        }
-    })
-    .await
-    .expect("address stop did not trigger watch")?;
-    assert!(stopped.observed.listen_addresses.is_empty());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), watch.changed())
+            .await
+            .is_err()
+    );
+    assert!(management.ticket().await?.addresses().is_empty());
     Ok(())
 }
 
@@ -148,17 +173,33 @@ async fn wait_timeout_does_not_change_preference() -> Result<()> {
     assert!(
         management
             .wait_for(Duration::from_millis(20), |snapshot| {
-                !snapshot.observed.listen_addresses.is_empty()
+                snapshot.settings.sync_on_commit
             })
             .await?
             .is_none()
     );
-    assert!(!management.snapshot().await?.desired.sync_enabled);
+    assert!(!management.snapshot().await?.settings.sync_enabled);
     Ok(())
 }
 
 #[tokio::test]
-async fn stop_sharing_preserves_settings_and_another_users_effective_enablement() -> Result<()> {
+async fn watch_observes_actual_preference_write_through_native_callback() -> Result<()> {
+    let (_instance, user, database_id) = setup().await?;
+    let management = user.manage_database(&database_id).await?;
+    let mut watch = management.watch().await?;
+    let before = watch.current().source;
+
+    management.share().await?.into_result()?;
+    let changed = tokio::time::timeout(Duration::from_secs(2), watch.changed())
+        .await
+        .expect("preference write did not reach native callback")?;
+    assert!(changed.settings.sync_enabled);
+    assert_ne!(changed.source, before);
+    Ok(())
+}
+
+#[tokio::test]
+async fn other_users_preferences_are_not_exposed_or_watched() -> Result<()> {
     let instance = crate::helpers::test_local_instance().await;
     crate::helpers::create_user(&instance, "alice", None).await?;
     crate::helpers::create_user(&instance, "bob", None).await?;
@@ -183,39 +224,29 @@ async fn stop_sharing_preserves_settings_and_another_users_effective_enablement(
         .await?;
     let mut bob = instance.login_user("bob", None).await?;
     let bob_key = bob.get_default_key()?;
-    bob.track_database(database_id.clone(), &bob_key, SyncSettings::enabled())
+    bob.track_database(database_id.clone(), &bob_key, SyncSettings::disabled())
         .await?;
 
     let management = alice.manage_database(&database_id).await?;
     management.stop_sharing().await?.into_result()?;
-    let snapshot = management.snapshot().await?;
-    assert!(!snapshot.desired.sync_enabled);
-    assert!(snapshot.desired.sync_on_commit);
-    assert_eq!(snapshot.desired.interval_seconds, Some(17));
+    let mut watch = management.watch().await?;
+    let alice_before = watch.current();
+    bob.manage_database(&database_id)
+        .await?
+        .share()
+        .await?
+        .into_result()?;
+
     assert!(
-        snapshot
-            .effective
-            .is_some_and(|settings| settings.sync_enabled)
+        tokio::time::timeout(Duration::from_millis(50), watch.changed())
+            .await
+            .is_err()
     );
-    Ok(())
-}
-
-#[tokio::test]
-async fn database_generations_do_not_reveal_other_database_activity() -> Result<()> {
-    let (instance, mut user, first_id) = setup().await?;
-    let second = create_user_database(&mut user).await;
-    let second_id = second.root_id().clone();
-    let first = user.manage_database(&first_id).await?;
-    let second = user.manage_database(&second_id).await?;
-
-    let first_before = first.snapshot().await?.observed.generation;
-    second.share().await?.into_result()?;
-    let first_after = first.snapshot().await?.observed.generation;
-    let second_after = second.snapshot().await?.observed.generation;
-
-    assert_eq!(first_after, first_before);
-    assert!(second_after > first_after);
-    drop(instance);
+    let alice_after = management.snapshot().await?;
+    assert_eq!(alice_after.source, alice_before.source);
+    assert!(!alice_after.settings.sync_enabled);
+    assert!(alice_after.settings.sync_on_commit);
+    assert_eq!(alice_after.settings.interval_seconds, Some(17));
     Ok(())
 }
 
@@ -234,118 +265,6 @@ async fn repeated_preference_write_is_idempotent() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn owner_run_changes_across_instance_restart() -> Result<()> {
-    let dir = tempfile::tempdir()?;
-    let snapshot = dir.path().join("owner.json");
-    let url = format!("memory://{}", snapshot.display());
-    let (owner, user) =
-        Instance::connect_or_create(&url, eidetica::NewUser::passwordless("manager")).await?;
-    let mut user = user.expect("new snapshot-backed instance returns its bootstrap user");
-    owner.enable_sync().await?;
-    let database = create_user_database(&mut user).await;
-    let database_id = database.root_id().clone();
-    let before = user
-        .manage_database(&database_id)
-        .await?
-        .snapshot()
-        .await?
-        .observed
-        .owner_run;
-    owner.flush()?;
-    drop(database);
-    drop(user);
-    drop(owner);
-
-    let restarted = Instance::connect(&url).await?;
-    restarted.enable_sync().await?;
-    let user = restarted.login_user("manager", None).await?;
-    let after = user
-        .manage_database(&database_id)
-        .await?
-        .snapshot()
-        .await?
-        .observed
-        .owner_run;
-
-    assert_ne!(after, before);
-    Ok(())
-}
-
-#[tokio::test]
-async fn successful_peer_exchange_updates_only_the_database_observation() -> Result<()> {
-    use eidetica::{crdt::Doc, testing::Cluster};
-
-    let mut cluster = Cluster::builder().peers(2).build().await?;
-    let key = cluster.peer(0).key_id().clone();
-    let mut settings = Doc::new();
-    settings.set("name", "managed");
-    let managed = cluster
-        .peer_mut(0)
-        .user_mut()
-        .create_database(settings, &key)
-        .await?;
-    let managed_id = managed.root_id().clone();
-    let key = cluster.peer(0).key_id().clone();
-    let mut settings = Doc::new();
-    settings.set("name", "unrelated");
-    let unrelated = cluster
-        .peer_mut(0)
-        .user_mut()
-        .create_database(settings, &key)
-        .await?;
-    let unrelated_id = unrelated.root_id().clone();
-    let tx = managed.new_transaction().await?;
-    tx.get_settings()?
-        .set_global_auth_key(AuthKey::active(None, Permission::Write(10)))
-        .await?;
-    tx.commit().await?;
-
-    cluster.peer_mut(0).serve(&managed_id).await?;
-    cluster
-        .bootstrap(0, 1, &managed_id, Permission::Write(10))
-        .await?;
-    cluster.peer_mut(1).serve(&managed_id).await?;
-    let management = cluster.peer(0).user().manage_database(&managed_id).await?;
-    let unrelated = cluster
-        .peer(0)
-        .user()
-        .manage_database(&unrelated_id)
-        .await?;
-    let mut watch = management.watch().await?;
-    let unrelated_generation = unrelated.snapshot().await?.observed.generation;
-
-    cluster.exchange(0, 1, &managed_id).await?;
-    let observed = tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            let snapshot = watch.changed().await?;
-            if snapshot
-                .observed
-                .peers
-                .iter()
-                .any(|peer| peer.last_success_ms.is_some())
-            {
-                return Ok::<_, eidetica::Error>(snapshot);
-            }
-        }
-    })
-    .await
-    .expect("successful peer exchange did not invalidate management watch")?;
-
-    assert!(
-        observed
-            .observed
-            .peers
-            .iter()
-            .all(|peer| peer.observed_at_ms > 0)
-    );
-    assert_eq!(
-        unrelated.snapshot().await?.observed.generation,
-        unrelated_generation
-    );
-    Ok(())
-}
-
 #[cfg(all(unix, feature = "service"))]
 #[tokio::test]
 async fn service_watch_stops_after_read_authority_is_revoked() -> Result<()> {
@@ -354,7 +273,7 @@ async fn service_watch_stops_after_read_authority_is_revoked() -> Result<()> {
     if std::env::var("TEST_BACKEND").as_deref() != Ok("service") {
         return Ok(());
     }
-    let (owner, user, owner_database) = setup_full().await?;
+    let (_owner, user, owner_database) = setup_full().await?;
     let database_id = owner_database.root_id().clone();
     let user_key = user.get_default_key()?;
     let mut watch = user.manage_database(&database_id).await?.watch().await?;
@@ -368,54 +287,24 @@ async fn service_watch_stops_after_read_authority_is_revoked() -> Result<()> {
         .await?;
     tx.commit().await?;
 
-    loop {
-        if watch.changed().await.is_err() {
-            break;
-        }
-    }
     assert!(user.manage_database(&database_id).await.is_err());
-    drop(owner);
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), watch.changed())
+            .await
+            .expect("target authorization change did not reach native callback")
+            .is_err()
+    );
     Ok(())
 }
 
-#[cfg(all(unix, feature = "service"))]
 #[tokio::test]
-async fn service_wait_timeout_releases_management_subscription() -> Result<()> {
-    if std::env::var("TEST_BACKEND").as_deref() != Ok("service") {
-        return Ok(());
-    }
-    let (owner, user, owner_database) = setup_full().await?;
-    let database_id = owner_database.root_id().clone();
+async fn dropped_watch_unregisters_native_callbacks() -> Result<()> {
+    let (_instance, user, database_id) = setup().await?;
     let management = user.manage_database(&database_id).await?;
-    let waiter = tokio::spawn(async move {
-        management
-            .wait_for(Duration::from_millis(50), |snapshot| {
-                !snapshot.observed.listen_addresses.is_empty()
-            })
-            .await
-    });
+    let watch = management.watch().await?;
+    drop(watch);
 
-    tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            if owner.write_callback_count(&database_id) >= 2 {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("wait did not install its daemon management subscription");
-    assert!(waiter.await.expect("wait task panicked")?.is_none());
-
-    tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            if owner.write_callback_count(&database_id) <= 1 {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("timed-out wait left a daemon management subscription behind");
+    management.share().await?.into_result()?;
+    assert!(management.snapshot().await?.settings.sync_enabled);
     Ok(())
 }

@@ -40,15 +40,8 @@ impl Sync {
             .await
             .map_err(|e| SyncError::CommandSendError(e.to_string()))?;
 
-        let result = rx
-            .await
-            .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))?;
-        if result.is_ok()
-            && let Ok(instance) = self.instance()
-        {
-            instance.invalidate_management_runtime(None);
-        }
-        result
+        rx.await
+            .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))?
     }
 
     /// Start accepting incoming connections on all registered transports.
@@ -94,9 +87,6 @@ impl Sync {
 
         rx.await
             .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))??;
-        if let Ok(instance) = self.instance() {
-            instance.invalidate_management_runtime(None);
-        }
 
         info!("Started servers on all registered transports");
         Ok(())
@@ -361,8 +351,7 @@ impl Sync {
     ///
     /// For user-scoped sharing, prefer
     /// [`User::manage_database`](crate::user::User::manage_database), which
-    /// separates durable preference writes, owner application, and ticket
-    /// readiness.
+    /// separates durable preference writes from point-in-time locator construction.
     ///
     /// # Arguments
     /// * `database_id` - The ID of the database to create a ticket for

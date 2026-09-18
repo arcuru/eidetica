@@ -162,12 +162,6 @@ impl Sync {
             }
         }
 
-        let invalidated_databases = old_databases
-            .iter()
-            .cloned()
-            .chain(current_databases.iter().cloned())
-            .collect::<std::collections::HashSet<_>>();
-
         // Update stored tips to reflect processed state
         user_mgr
             .update_tracked_tips(user_uuid_str, current_snapshot.tips())
@@ -175,11 +169,6 @@ impl Sync {
 
         // Commit all changes atomically
         tx.commit().await?;
-        if let Some(instance) = self.instance.upgrade() {
-            for database in invalidated_databases {
-                instance.invalidate_management_runtime(Some(database));
-            }
-        }
 
         info!(user_uuid = %user_uuid_str, affected_count = affected_count, "Updated user database sync configuration");
         Ok(())
