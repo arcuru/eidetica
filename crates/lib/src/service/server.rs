@@ -72,19 +72,12 @@ struct SessionStaging {
 /// (`Instance::register_write_callback`); the daemon's existing
 /// `fire_write_callbacks` dispatch path handles fan-out by walking the
 /// per-tree callback list, no separate fan-out mechanism required.
-struct ManagementTask {
-    subscription_id: u64,
-    task: tokio::task::AbortHandle,
-    callbacks: Vec<(ID, CallbackId)>,
-}
-
 struct ConnectionContext {
     conn_id: ConnectionId,
     tx: mpsc::UnboundedSender<ServerFrame>,
     instance: Instance,
     subscribed: std::sync::Mutex<HashMap<ID, CallbackId>>,
     staging: std::sync::Mutex<HashMap<String, SessionStaging>>,
-    management_tasks: std::sync::Mutex<Vec<ManagementTask>>,
     token_idle_ttl: Duration,
 }
 
@@ -134,18 +127,6 @@ impl Drop for ConnectionGuard {
             self.ctx.instance.remove_write_callback(tree_id, *id);
         }
         drop(subs);
-        for management in std::mem::take(
-            &mut *self
-                .ctx
-                .management_tasks
-                .lock()
-                .unwrap_or_else(|p| p.into_inner()),
-        ) {
-            management.task.abort();
-            for (tree_id, callback) in management.callbacks {
-                self.ctx.instance.remove_write_callback(&tree_id, callback);
-            }
-        }
         let staging = std::mem::take(&mut *self.ctx.staging.lock().unwrap())
             .into_values()
             .filter(|value| !value.published)
@@ -675,7 +656,6 @@ async fn handle_connection(
         instance: instance.clone(),
         subscribed: std::sync::Mutex::new(HashMap::new()),
         staging: std::sync::Mutex::new(HashMap::new()),
-        management_tasks: std::sync::Mutex::new(Vec::new()),
         token_idle_ttl,
     });
     let guard = ConnectionGuard { ctx: ctx.clone() };
@@ -786,17 +766,12 @@ async fn dispatch_inner(
         }
 
         ServiceRequest::Management(op) => {
-            let (login_pubkey, keyset_snapshot, session_user_uuid) = match state {
+            let (login_pubkey, keyset_snapshot) = match state {
                 ConnectionState::Authenticated {
                     login_pubkey,
                     session_keyset,
-                    user_uuid,
                     ..
-                } => (
-                    login_pubkey.clone(),
-                    session_keyset.clone(),
-                    user_uuid.clone(),
-                ),
+                } => (login_pubkey.clone(), session_keyset.clone()),
                 _ => {
                     return Err(crate::Error::Auth(Box::new(
                         AuthError::InvalidAuthConfiguration {
@@ -807,15 +782,7 @@ async fn dispatch_inner(
                 }
             };
             let (tree_id, identity) = match &*op {
-                ManagementOp::Snapshot {
-                    tree_id, identity, ..
-                }
-                | ManagementOp::Subscribe {
-                    tree_id, identity, ..
-                }
-                | ManagementOp::Unsubscribe {
-                    tree_id, identity, ..
-                } => (tree_id, identity),
+                ManagementOp::Ticket { tree_id, identity } => (tree_id, identity),
             };
             let acting_pubkey = resolve_acting_pubkey(identity, &login_pubkey, &keyset_snapshot)?;
             gate_tree_permission(
@@ -828,124 +795,9 @@ async fn dispatch_inner(
             )
             .await?;
             match *op {
-                ManagementOp::Snapshot { tree_id, .. } => {
-                    let user_info = instance
-                        .users_db()
-                        .await?
-                        .get_store_viewer::<crate::store::Table<crate::user::UserInfo>>("users")
-                        .await?
-                        .get(&session_user_uuid)
-                        .await?;
-                    let device_key = instance.signing_key()?.clone();
-                    let preferences = Database::open(instance, &user_info.user_database_id)
-                        .await?
-                        .with_key(device_key);
-                    let desired = preferences
-                        .get_store_viewer::<crate::store::Table<crate::user::TrackedDatabase>>(
-                            "databases",
-                        )
-                        .await?
-                        .get(&tree_id.to_string())
-                        .await?
-                        .sync_settings;
-                    Ok(ServiceResponse::DatabaseManagementSnapshot(
-                        instance
-                            .database_management_state(
-                                &tree_id,
-                                &session_user_uuid,
-                                &user_info.user_database_id,
-                            )
-                            .await?
-                            .with_desired(desired),
-                    ))
-                }
-                ManagementOp::Subscribe {
-                    tree_id,
-                    identity,
-                    subscription_id,
-                } => {
-                    let mut runtime = instance.subscribe_management_runtime();
-                    let tx = ctx.tx.clone();
-                    let target = tree_id.clone();
-                    let instance = instance.clone();
-                    let target_callback = instance.register_management_invalidation_callback(
-                        target.clone(),
-                        instance.snapshot(&target).await?,
-                    );
-                    let task = tokio::spawn(async move {
-                        while runtime.changed().await.is_ok() {
-                            let invalidation = runtime.borrow().clone();
-                            if gate_tree_permission(
-                                &instance,
-                                &acting_pubkey,
-                                &identity,
-                                &target,
-                                Permission::Read,
-                                true,
-                            )
-                            .await
-                            .is_err()
-                            {
-                                let _ = tx.send(ServerFrame::Notification(
-                                    Notification::ManagementInvalidated {
-                                        root_id: target.clone(),
-                                        generation: instance.management_generation(&target),
-                                    },
-                                ));
-                                break;
-                            }
-                            if invalidation
-                                .database
-                                .as_ref()
-                                .is_none_or(|database| database == &target)
-                            {
-                                let _ = tx.send(ServerFrame::Notification(
-                                    Notification::ManagementInvalidated {
-                                        root_id: target.clone(),
-                                        generation: instance.management_generation(&target),
-                                    },
-                                ));
-                            }
-                        }
-                    });
-                    ctx.management_tasks
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .push(ManagementTask {
-                            subscription_id,
-                            task: task.abort_handle(),
-                            callbacks: vec![(tree_id, target_callback)],
-                        });
-                    Ok(ServiceResponse::Ok)
-                }
-                ManagementOp::Unsubscribe {
-                    tree_id,
-                    subscription_id,
-                    ..
-                } => {
-                    let mut tasks = ctx
-                        .management_tasks
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner());
-                    let mut keep = Vec::with_capacity(tasks.len());
-                    for management in std::mem::take(&mut *tasks) {
-                        if management.subscription_id == subscription_id
-                            && management
-                                .callbacks
-                                .iter()
-                                .any(|(database, _)| database == &tree_id)
-                        {
-                            management.task.abort();
-                            for (database, callback) in management.callbacks {
-                                instance.remove_write_callback(&database, callback);
-                            }
-                        } else {
-                            keep.push(management);
-                        }
-                    }
-                    *tasks = keep;
-                    Ok(ServiceResponse::Ok)
-                }
+                ManagementOp::Ticket { tree_id, .. } => Ok(ServiceResponse::DatabaseTicket(
+                    crate::user::ticket_locator(instance, &tree_id).await?,
+                )),
             }
         }
 

@@ -7,7 +7,6 @@
 use std::{collections::HashMap, sync::Mutex};
 
 use super::peer_types::PeerId;
-use crate::entry::ID;
 
 /// When each peer last synced, in milliseconds since the Unix epoch.
 ///
@@ -19,32 +18,22 @@ use crate::entry::ID;
 /// the engine genuinely has no record of a round it did not run.
 #[derive(Debug, Default)]
 pub struct PeerStates {
-    last_success_ms: Mutex<HashMap<(PeerId, ID), u64>>,
+    last_success_ms: Mutex<HashMap<PeerId, u64>>,
 }
 
 impl PeerStates {
     /// When at least one of a peer's trees last synced. `None` until the peer's
     /// first success.
     pub fn last_success_ms(&self, peer_id: &PeerId) -> Option<u64> {
-        self.lock()
-            .iter()
-            .filter_map(|((peer, _), observed)| (peer == peer_id).then_some(*observed))
-            .max()
+        self.lock().get(peer_id).copied()
     }
 
-    pub fn tree_last_success_ms(&self, peer_id: &PeerId, tree_id: &ID) -> Option<u64> {
-        self.lock()
-            .get(&(peer_id.clone(), tree_id.clone()))
-            .copied()
+    /// Stamp a round in which at least one of the peer's trees synced.
+    pub(super) fn record_success(&self, peer_id: &PeerId, now_ms: u64) {
+        self.lock().insert(peer_id.clone(), now_ms);
     }
 
-    /// Stamp one database exchanged successfully with a peer.
-    pub(super) fn record_success(&self, peer_id: &PeerId, tree_id: &ID, now_ms: u64) {
-        self.lock()
-            .insert((peer_id.clone(), tree_id.clone()), now_ms);
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<(PeerId, ID), u64>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<PeerId, u64>> {
         self.last_success_ms
             .lock()
             .expect("peer liveness state mutex poisoned")
@@ -74,11 +63,7 @@ mod tests {
     fn a_recorded_round_is_visible_for_that_peer_alone() {
         let states = PeerStates::default();
         let (synced, other) = (peer(), peer());
-        states.record_success(
-            &synced,
-            &crate::entry::ID::from_bytes("tree"),
-            1_700_000_000_000,
-        );
+        states.record_success(&synced, 1_700_000_000_000);
 
         assert_eq!(states.last_success_ms(&synced), Some(1_700_000_000_000));
         assert_eq!(states.last_success_ms(&other), None);
@@ -90,9 +75,8 @@ mod tests {
     fn a_later_round_replaces_the_earlier_timestamp() {
         let states = PeerStates::default();
         let peer = peer();
-        let tree = crate::entry::ID::from_bytes("tree");
-        states.record_success(&peer, &tree, 1_700_000_000_000);
-        states.record_success(&peer, &tree, 1_700_000_300_000);
+        states.record_success(&peer, 1_700_000_000_000);
+        states.record_success(&peer, 1_700_000_300_000);
 
         assert_eq!(states.last_success_ms(&peer), Some(1_700_000_300_000));
     }

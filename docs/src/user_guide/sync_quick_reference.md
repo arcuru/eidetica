@@ -277,17 +277,11 @@ let store = txn.get_store::<DocStore>("messages").await?;
 store.set("welcome", "Welcome to the room!").await?;
 txn.commit().await?;
 
-// Save durable sharing intent, then query current ticket readiness.
+// Save durable sharing intent, then build a point-in-time locator.
 let management = user.manage_database(&database_id).await?;
 management.share().await?.into_result()?;
-match management.ticket().await? {
-    eidetica::user::TicketStatus::Ready(ticket) => {
-        println!("Share this ticket with peers: {ticket}");
-    }
-    eidetica::user::TicketStatus::NotReady(reason) => {
-        println!("Sharing is requested; ticket is not ready: {reason:?}");
-    }
-}
+let ticket = management.ticket().await?;
+println!("Share this locator with peers: {ticket}");
 # Ok(())
 # }
 ```

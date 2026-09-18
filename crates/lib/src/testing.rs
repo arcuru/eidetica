@@ -640,8 +640,9 @@ impl Peer {
 
     /// Mark `tree` sync-enabled on this peer so its sync handler will serve it to
     /// bootstrapping peers. Uses [`User::manage_database`] to write the user's
-    /// preference and recompute the host's combined sync state — the same path a
-    /// real consumer takes. The database must already be tracked (it is, on any
+    /// preference; the instance callback reconciles the host's combined sync
+    /// state through the same path a real consumer takes. The database must
+    /// already be tracked (it is, on any
     /// peer that created it via `create_database` or joined it via
     /// [`Cluster::bootstrap`]). Pure plumbing: set whatever auth the test needs on
     /// the database *before* calling this.

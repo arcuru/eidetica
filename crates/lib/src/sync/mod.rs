@@ -501,44 +501,6 @@ impl Sync {
         &self.sync_tree
     }
 
-    pub(crate) async fn effective_settings(
-        &self,
-        database_id: &ID,
-    ) -> Result<Option<crate::user::SyncSettings>> {
-        let tx = self.sync_tree.new_transaction().await?;
-        user_sync_manager::UserSyncManager::new(&tx)
-            .get_combined_settings(database_id)
-            .await
-    }
-
-    pub(crate) async fn user_preferences_applied(
-        &self,
-        user_uuid: &str,
-        current: &crate::Snapshot,
-    ) -> Result<crate::user::AppliedState> {
-        let tx = self.sync_tree.new_transaction().await?;
-        Ok(
-            match user_sync_manager::UserSyncManager::new(&tx)
-                .get_tracked_user_state(user_uuid)
-                .await?
-            {
-                Some((_, tips)) if crate::Snapshot::from(tips.clone()) == *current => {
-                    crate::user::AppliedState::Current
-                }
-                Some(_) => crate::user::AppliedState::Pending,
-                None => crate::user::AppliedState::Unknown,
-            },
-        )
-    }
-
-    pub(crate) fn peer_last_success_ms_for_tree(
-        &self,
-        database_id: &ID,
-        peer: &PeerId,
-    ) -> Option<u64> {
-        self.peer_state.tree_last_success_ms(peer, database_id)
-    }
-
     /// Get the device public key for this sync instance.
     ///
     /// # Returns

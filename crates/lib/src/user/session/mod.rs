@@ -22,7 +22,7 @@
 //! - **`track_database()`** - Add or update a tracked database (upsert)
 //! - **`untrack_database()`** - Remove a database from your tracked list
 //! - **`is_sync_enabled()`** - Check this user's sync preference for a database
-//! - **`manage_database()`** - Save sharing intent and observe status/ticket readiness
+//! - **`manage_database()`** - Save and watch this user's sharing settings, or query a ticket
 //!
 //! ## Key-Database Mappings
 //!
@@ -1255,9 +1255,9 @@ impl User {
     /// The returned view keeps private signing material client-side in service
     /// mode and reauthorizes every snapshot/watch acquisition.
     ///
-    /// Saving sharing intent, observing owner application, and obtaining a ready
-    /// ticket are separate steps. A successful preference write does not imply
-    /// that the owner has applied it or that a reachable address is available.
+    /// Saving and watching this user's settings is separate from the point-in-time
+    /// ticket query. A successful preference write does not imply that the owner
+    /// is already serving the database or has a reachable address.
     /// [`PreferenceWriteOutcome::Unknown`](crate::user::PreferenceWriteOutcome::Unknown)
     /// means submission may have succeeded; read the desired snapshot or retry
     /// the idempotent write.
@@ -1265,9 +1265,8 @@ impl User {
     /// # Example
     ///
     /// ```
-    /// # use std::time::Duration;
     /// # use eidetica::{Instance, NewUser, crdt::Doc};
-    /// # use eidetica::user::{AppliedState, PreferenceWriteOutcome, TicketStatus};
+    /// # use eidetica::user::PreferenceWriteOutcome;
     /// # #[tokio::main]
     /// # async fn main() -> eidetica::Result<()> {
     /// let (instance, user) = Instance::connect_or_create(
@@ -1289,15 +1288,9 @@ impl User {
     ///     }
     /// }
     ///
-    /// let applied = management.wait_for(Duration::from_secs(1), |snapshot| {
-    ///     snapshot.applied == AppliedState::Current
-    /// }).await?;
-    /// if applied.is_some() {
-    ///     match management.ticket().await? {
-    ///         TicketStatus::Ready(ticket) => println!("{ticket}"),
-    ///         TicketStatus::NotReady(reason) => eprintln!("ticket not ready: {reason:?}"),
-    ///     }
-    /// }
+    /// let current = management.snapshot().await?;
+    /// assert!(current.settings.sync_enabled);
+    /// println!("{}", management.ticket().await?);
     /// # Ok(())
     /// # }
     /// ```
@@ -1357,9 +1350,9 @@ impl User {
     /// Enable sync for a tracked database and return a ready [`DatabaseTicket`].
     ///
     /// Compatibility wrapper over [`DatabaseManagement`](crate::user::DatabaseManagement):
-    /// the preference is durably written first, then ticket readiness is
-    /// observed separately. A not-ready error therefore does not roll back the
-    /// accepted preference.
+    /// the preference is durably written first, then a point-in-time locator is
+    /// constructed. A locator error therefore does not roll back the accepted
+    /// preference.
     ///
     /// # Errors
     /// - [`SyncError::SyncNotEnabled`] if sync is not attached to the instance
@@ -1369,18 +1362,12 @@ impl User {
     /// - [`UserError::DatabaseNotTracked`] if the database is not in the user's
     ///   tracked list.
     #[deprecated(
-        note = "use User::manage_database(database_id).await? and handle preference acknowledgment, owner application, and TicketStatus separately"
+        note = "use User::manage_database(database_id).await? and handle preference acknowledgment before calling ticket()"
     )]
     pub async fn share(&mut self, database_id: &ID) -> Result<DatabaseTicket> {
         let management = self.manage_database(database_id).await?;
         management.share().await?.into_result()?;
-        match management.ticket().await? {
-            crate::user::TicketStatus::Ready(ticket) => Ok(ticket),
-            crate::user::TicketStatus::NotReady(reason) => Err(SyncError::Network(format!(
-                "sharing preference was written but ticket is not ready: {reason:?}"
-            ))
-            .into()),
-        }
+        management.ticket().await
     }
 
     /// Check whether this user has sync enabled for a tracked database.

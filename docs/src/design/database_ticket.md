@@ -120,26 +120,28 @@ Collects server addresses from all running transports and bundles them with
 the database ID into a `DatabaseTicket`. Lower-level helper that does not
 touch user-level sync preferences.
 
-### User-scoped ticket readiness
+### User-scoped ticket lookup
 
 [`User::manage_database`](../user_guide/database_management.md) is the
 high-level API for making a tracked database shareable. It deliberately does
 not combine the process into one atomic call:
 
 1. `DatabaseManagement::share` writes the user's signed durable preference.
-2. Owner reconciliation applies the combined preferences independently.
-3. `DatabaseManagement::ticket` returns `Ready` only when current owner runtime
-   state advertises at least one live address.
+2. Owner reconciliation applies the daemon's private combined configuration independently.
+3. `DatabaseManagement::ticket` checks this user's own pinned setting and, when
+   enabled, returns a point-in-time locator built from the owner's current addresses.
 
-A preference can therefore be durable while application is pending or while no
-transport is ready. An unknown write acknowledgment is safe to retry or read
-back because setting the preference is idempotent. Likewise, a not-ready ticket
-does not roll back accepted intent.
+The user-scoped snapshot and watch expose only that user's settings. They do not
+expose or consult combined settings, other users, or runtime telemetry, and
+runtime-only address changes do not advance the settings watch. A caller whose
+own setting is disabled receives an error even if another user keeps the daemon
+serving the database. An unknown write acknowledgment is safe to retry or read
+back because setting the preference is idempotent.
 
 `User::share` remains as a deprecated compatibility wrapper. It saves intent
-and then queries readiness, so an error after the write can leave sharing
-enabled. New callers should handle preference acknowledgment, owner application,
-and `TicketStatus` separately.
+and then asks for the locator, so an address-query error after the write can
+leave sharing enabled. New callers should handle preference acknowledgment and
+locator construction separately.
 
 A `DatabaseTicket` is a locator, not a capability: its database ID and address
 hints do not grant database permission. Authorization and bootstrap approval
