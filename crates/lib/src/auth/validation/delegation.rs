@@ -11,7 +11,7 @@ use crate::{
         settings::AuthSettings,
         types::{DelegationStep, KeyHint, PermissionBounds, ResolvedAuth},
     },
-    backend::Reachability,
+    backend::{BackendImpl, Reachability},
 };
 
 /// Maximum number of steps in a single delegation path.
@@ -27,6 +27,40 @@ const MAX_DELEGATION_STEPS: usize = 10;
 /// Tips are wire-supplied and each drives DAG traversal; bound the per-step
 /// fan-out. A legitimate tree frontier is small (concurrent heads only).
 const MAX_DELEGATION_TIPS: usize = 64;
+
+async fn missing_ancestor_history(
+    backend: &dyn BackendImpl,
+    tree: &crate::ID,
+    tips: &[crate::ID],
+) -> Result<Vec<crate::ID>> {
+    let mut stack = tips.to_vec();
+    let mut seen = std::collections::HashSet::new();
+    let mut missing = Vec::new();
+
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        match backend.get(&id).await {
+            Ok(entry) => {
+                if !entry.in_tree(tree) {
+                    return Err(crate::backend::BackendError::EntryNotInTree {
+                        entry_id: id,
+                        tree_id: tree.clone(),
+                    }
+                    .into());
+                }
+                stack.extend(entry.parents()?);
+            }
+            Err(e) if e.is_not_found() => missing.push(id),
+            Err(e) => return Err(e),
+        }
+    }
+
+    missing.sort();
+    missing.dedup();
+    Ok(missing)
+}
 
 /// Delegation resolver for handling complex delegation paths
 pub struct DelegationResolver;
@@ -108,12 +142,23 @@ impl DelegationResolver {
             let delegated_tree_ref = current_auth_settings.get_delegated_tree(&step.tree)?;
 
             let root_id = delegated_tree_ref.tree.root.clone();
-            let delegated_tree = Database::open(instance, &root_id).await.map_err(|e| {
-                AuthError::DelegatedTreeLoadFailed {
-                    tree_id: root_id.clone(),
-                    source: Box::new(e),
+            let delegated_tree = match Database::open(instance, &root_id).await {
+                Ok(tree) => tree,
+                Err(e) if e.is_not_found() => {
+                    return Err(AuthError::DelegatedTreeUnsynced {
+                        tree_id: root_id.clone(),
+                        missing: vec![root_id],
+                    }
+                    .into());
                 }
-            })?;
+                Err(e) => {
+                    return Err(AuthError::DelegatedTreeLoadFailed {
+                        tree_id: root_id,
+                        source: Box::new(e),
+                    }
+                    .into());
+                }
+            };
 
             // Tree-scoped membership + monotonicity floor. The claimed snapshot
             // may not regress below the snapshot the parent committed for this
@@ -176,9 +221,19 @@ impl DelegationResolver {
             // Resolve the delegated tree's auth settings AS OF the claimed tips,
             // not its live head: permissions are evaluated at the state the signer
             // actually observed. This is safe now that the snapshot cannot regress
-            // below the committed floor. `new_transaction_at` re-validates the tips
-            // are in-tree (defence in depth) and is never committed — it is used
-            // purely as a read anchor at the pinned snapshot.
+            // below the committed floor. The reachability walk proves the floor,
+            // but pinned-state reconstruction needs the claimed tips' complete
+            // ancestor history as well. Distinguish that missing history from an
+            // actual foreign tip before creating the read-only transaction.
+            let missing =
+                missing_ancestor_history(current_backend.as_ref(), &root_id, &step.tips).await?;
+            if !missing.is_empty() {
+                return Err(AuthError::DelegatedTreeUnsynced {
+                    tree_id: root_id.clone(),
+                    missing,
+                }
+                .into());
+            }
             let pinned_txn = delegated_tree
                 .new_transaction_at(&Snapshot::from(step.tips.clone()))
                 .await

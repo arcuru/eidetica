@@ -2083,10 +2083,17 @@ impl Database {
                         PinnedSettings::Incomplete => report.still_unverified += 1,
                         PinnedSettings::Complete(auth_settings) => {
                             let mut validator = AuthValidator::new();
-                            let valid = validator
+                            let valid = match validator
                                 .validate_entry(entry, &auth_settings, Some(&instance))
                                 .await
-                                .unwrap_or(false);
+                            {
+                                Ok(valid) => valid,
+                                Err(Error::Auth(e)) if e.is_delegated_tree_unsynced() => {
+                                    report.still_unverified += 1;
+                                    continue;
+                                }
+                                Err(_) => false,
+                            };
                             if valid {
                                 backend
                                     .update_verification_status(id, VerificationStatus::Verified)
