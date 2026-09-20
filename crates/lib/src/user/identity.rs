@@ -111,10 +111,10 @@ impl Identity {
         }
 
         let sigkey = SigKey::from_pubkey(&key_id);
-        let rebound = self
-            .database
-            .clone()
-            .with_key(DatabaseKey::with_identity(signing_key.clone(), sigkey));
+        let instance = self.database.instance()?;
+        let rebound =
+            Self::open_with_identity(&instance, self.root_id(), signing_key.clone(), sigkey)
+                .await?;
         rebound.current_permission().await?;
 
         let tx = self.user_database.new_transaction().await?;

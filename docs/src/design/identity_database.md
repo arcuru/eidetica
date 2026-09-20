@@ -28,8 +28,8 @@ An `Identity` exposes key addition, revocation, local signing-key selection, del
 `Identity::set_key` rejects a private key that does not match the supplied public key and rebinds the wrapped database immediately, so subsequent identity writes use the new signer.
 `Identity::open_database` always constructs a delegation path whose first step is this identity root; it does not silently select a direct, global, or different-identity path held by the same key.
 
-Connected clients register the selected private key in the service connection's proof-of-possession keyset and use an identity-bound remote database handle.
-Delegated entries are validated by the daemon that owns the local engine rather than by the connected client.
+Connected clients prove possession of the selected private key so the service connection can register its public key, then use an identity-bound remote database handle.
+Delegated entries are validated by the daemon that owns the local engine rather than by the connected client, and a daemon-side rejection is returned to the committing client.
 
 ## Scope
 

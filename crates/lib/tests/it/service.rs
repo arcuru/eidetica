@@ -7,9 +7,6 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use eidetica::Entry;
-use eidetica::Instance;
-use eidetica::NewUser;
 use eidetica::auth::crypto::{create_challenge_response, generate_keypair, sign_entry};
 use eidetica::backend::database::InMemory;
 use eidetica::backend::{ProjectionDescriptor, StoreStateRequest};
@@ -20,6 +17,7 @@ use eidetica::service::protocol::{
     ServiceResponse, read_frame, write_frame,
 };
 use eidetica::store::{DocStore, PasswordStore, Table};
+use eidetica::{Entry, Error, Instance, NewUser, transaction::TransactionError};
 use serde::{Deserialize, Serialize};
 use tempfile::TempDir;
 use tokio::io::{AsyncRead, AsyncWriteExt, ReadHalf, WriteHalf};
@@ -625,11 +623,20 @@ async fn test_database_submit_signed_entry() {
 
     let parents: Vec<eidetica::entry::ID> =
         ctx.main_parents.iter().map(|(id, _)| id.clone()).collect();
+    let max_parent_height = ctx.main_parents.iter().map(|(_, h)| *h).max().unwrap_or(0);
+    let metadata = serde_json::to_vec(&serde_json::json!({
+        "settings_tips": ctx.settings_tips,
+        "entropy": serde_json::Value::Null,
+    }))
+    .unwrap();
     let entry = Entry::builder(root_id.clone())
         .set_parents(parents)
         .set_subtree_data("submitted", b"{\"submitted\":true}")
+        .set_metadata(metadata)
+        .set_height(max_parent_height + 1)
         .build()
         .unwrap();
+    let entry = entry.with_auth(|auth| auth.key = identity.clone());
     let signature = sign_entry(&entry, &signing_key).unwrap();
     let entry = entry.with_auth(|auth| auth.signature = Some(signature));
     let entry_id = entry.id();
@@ -1106,10 +1113,9 @@ async fn test_submit_cross_session_signed_by_tree_admin_becomes_verified() {
 }
 
 /// An authenticated session submitting an entry whose signer holds no key
-/// on the target tree's auth: accepted at the socket (Change A skips the
-/// gate), but the server's verification pass marks it `Failed`/leaves
-/// `Unverified`, so it never appears in the Verified frontier or any
-/// default read. Correctness is preserved by verification, not the gate.
+/// on the target tree's auth reaches the verification boundary (Change A
+/// skips the session gate), but the server reports that local verification
+/// rejected it and keeps it outside the Verified frontier.
 #[tokio::test]
 async fn test_submit_unauthorized_signer_stays_invisible_in_default_reads() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
@@ -1146,11 +1152,16 @@ async fn test_submit_unauthorized_signer_stays_invisible_in_default_reads() {
     let entry_id = entry.id();
     let admin_identity = eidetica::auth::types::SigKey::from_pubkey(&admin_pub);
 
-    // Accepted at the socket — Change A's relaxation. Verification is the
-    // boundary the server still enforces.
-    conn.submit_signed_entry(bob_root.clone(), admin_identity, entry)
+    // The request reaches the daemon — Change A's relaxation — but commit
+    // callers must still learn that the daemon rejected the entry.
+    let error = conn
+        .submit_signed_entry(bob_root.clone(), admin_identity, entry)
         .await
-        .expect("submit accepted at socket; verification rejects in-handler");
+        .expect_err("daemon-side verification rejection must reach the client");
+    assert!(
+        matches!(error, Error::Transaction(ref error) if matches!(error.as_ref(), TransactionError::EntryValidationFailed)),
+        "unexpected rejection error: {error}"
+    );
 
     // Bob's Verified frontier is unchanged: the unauthorized entry never
     // graduated past Unverified/Failed and is excluded from default reads.

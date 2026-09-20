@@ -120,6 +120,17 @@ async fn selected_key_changes_identity_and_target_signatures() -> Result<()> {
     ));
     assert_ne!(identity.snapshot().await?, identity_before);
 
+    identity.revoke_key(&old_key).await?;
+    let tx = identity.new_transaction().await?;
+    tx.get_settings()?
+        .set_name("rotated identity again")
+        .await?;
+    let post_revocation_entry_id = tx.commit().await?;
+    assert!(matches!(
+        identity.get_entry(&post_revocation_entry_id).await?.auth().key,
+        SigKey::Direct { ref hint } if hint.pubkey.as_ref() == Some(&new_key)
+    ));
+
     let admin_key = PrivateKey::generate();
     let target = Database::create(&instance, admin_key.clone(), Doc::new()).await?;
     let target = add_delegation(
