@@ -1165,6 +1165,7 @@ async fn dispatch_database_op(
 
         DatabaseOp::SubmitSignedEntry { entry } => {
             let previous_tips = instance.snapshot(&root_id).await?;
+            let entry_id = entry.id();
             // The client signed this entry; the server does NOT trust its
             // claimed validity. Store it `Unverified`, then run our OWN
             // verification pass against the entry's pinned settings. A
@@ -1192,6 +1193,17 @@ async fn dispatch_database_op(
                 .await?
                 .verify_with_source(WriteSource::Local, Some(previous_tips))
                 .await?;
+            if instance
+                .require_local_engine()?
+                .get_verification_status(&entry_id)
+                .await?
+                != VerificationStatus::Verified
+            {
+                // A connected Transaction cannot run delegated validation
+                // locally, but commit must still fail when the daemon rejects
+                // what it submitted.
+                return Err(crate::transaction::TransactionError::EntryValidationFailed.into());
+            }
             Ok(ServiceResponse::Ok)
         }
 

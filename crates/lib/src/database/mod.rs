@@ -636,7 +636,15 @@ impl Database {
                     },
                     Err(_) => continue,
                 };
-                let delegated_sigkeys = delegated_auth.find_all_sigkeys_for_pubkey(pubkey);
+                // A delegated database's global permission makes that database's
+                // metadata readable; it does not make every key a member of the
+                // delegated identity. Only explicit key membership may be carried
+                // through a delegation into this database.
+                let delegated_sigkeys: Vec<_> = delegated_auth
+                    .find_all_sigkeys_for_pubkey(pubkey)
+                    .into_iter()
+                    .filter(|(sigkey, _)| !sigkey.is_global())
+                    .collect();
                 if delegated_sigkeys.is_empty() {
                     continue;
                 }

@@ -1849,13 +1849,29 @@ impl Transaction {
 
         let instance = self.db.instance()?;
 
-        // Validate entry (signature + permissions)
-        let is_valid = validator
-            .validate_entry(&entry, &auth_settings_for_validation, Some(&instance))
-            .await?;
+        // Validate locally when this process owns the storage engine. A connected
+        // client has no local engine with which to resolve delegated trees; its
+        // `SubmitSignedEntry` path stores the entry Unverified and the daemon runs
+        // this same validation against its local engine before exposing it.
+        #[cfg(all(unix, feature = "service"))]
+        let validate_locally = instance.remote_connection().is_none()
+            || !matches!(
+                self.provided_signing_key
+                    .as_ref()
+                    .map(|(_, identity)| identity),
+                Some(SigKey::Delegation { .. })
+            );
+        #[cfg(not(all(unix, feature = "service")))]
+        let validate_locally = true;
 
-        if !is_valid {
-            return Err(TransactionError::EntryValidationFailed.into());
+        if validate_locally {
+            let is_valid = validator
+                .validate_entry(&entry, &auth_settings_for_validation, Some(&instance))
+                .await?;
+
+            if !is_valid {
+                return Err(TransactionError::EntryValidationFailed.into());
+            }
         }
 
         let verification_status = VerificationStatus::Verified;

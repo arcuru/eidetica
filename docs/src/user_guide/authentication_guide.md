@@ -55,7 +55,10 @@ txn.commit().await?;  // Automatically signed
 - **Write**: Can read and write data
 - **Read**: Can only read data
 
-**Key Storage**: Private keys are stored in Instance, public keys in database settings.
+**Key Storage**: User private keys stay in the user's encrypted key storage and are
+decrypted only into the logged-in client session. Database settings contain public keys.
+In service mode, the daemon receives proof that the session holds an additional key but
+does not persist that user's private key.
 
 ## Common Tasks
 
