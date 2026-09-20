@@ -462,9 +462,10 @@ impl BackgroundSync {
                         let addr_info = address.clone();
                         tokio::spawn(async move {
                             tokio::select! {
-                                result = conn::run_handshake(ctx, address) => {
-                                    let _ = response.send(result);
-                                }
+                                // Check the race first: a dial whose race is
+                                // already over never starts, instead of
+                                // opening a connection it is about to drop.
+                                biased;
                                 () = attempt.abandoned() => {
                                     // Another address won the race: tear this
                                     // dial down instead of holding its socket,
@@ -473,6 +474,9 @@ impl BackgroundSync {
                                         address = ?addr_info,
                                         "Dial abandoned: another address won the race"
                                     );
+                                }
+                                result = conn::run_handshake(ctx, address) => {
+                                    let _ = response.send(result);
                                 }
                             }
                         });

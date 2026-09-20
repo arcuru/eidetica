@@ -57,21 +57,20 @@ pub(super) struct HandshakeCtx {
 /// registration work it holds — is gone. The testing registry keys off it.
 pub struct DialAttempt {
     /// Closes when the race that started this dial is over.
-    cancel: tokio::sync::Mutex<watch::Receiver<()>>,
+    cancel: watch::Receiver<()>,
 }
 
 impl DialAttempt {
     /// Wrap a dial's cancel subscription in a shared liveness handle.
     pub(super) fn shared(cancel: watch::Receiver<()>) -> Arc<Self> {
-        Arc::new(Self {
-            cancel: tokio::sync::Mutex::new(cancel),
-        })
+        Arc::new(Self { cancel })
     }
 
     /// Resolves when the race that started this dial is over.
     pub(super) async fn abandoned(&self) {
-        let mut cancel = self.cancel.lock().await;
-        let _ = cancel.changed().await;
+        // `changed` needs a mutable receiver; a clone shares the channel's
+        // closed state, so waiting on it is the same as waiting on ours.
+        let _ = self.cancel.clone().changed().await;
     }
 }
 

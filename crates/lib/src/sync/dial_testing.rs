@@ -7,6 +7,10 @@
 //! winner-cancels-losers semantics (RFC 8305 section 5) every handle from a
 //! race must fail `upgrade()` shortly after the winner is selected.
 //!
+//! The registry only grows between calls to [`reset_dial_attempts`]: a test
+//! counts every attempt its race started, including ones recorded after the
+//! winner, so nothing is pruned behind its back.
+//!
 //! Gated like the other internal testing hooks: never compiled into a
 //! release build.
 
@@ -18,13 +22,10 @@ static DIAL_ATTEMPTS: Mutex<Vec<Weak<DialAttempt>>> = Mutex::new(Vec::new());
 
 /// Record one dial attempt's liveness handle.
 pub(crate) fn record(attempt: &Arc<DialAttempt>) {
-    let mut attempts = DIAL_ATTEMPTS
+    DIAL_ATTEMPTS
         .lock()
-        .expect("dial attempt registry poisoned");
-    // Handles from finished races are not evidence of anything; keep the
-    // registry to the live attempts plus the race currently being recorded.
-    attempts.retain(|attempt| attempt.strong_count() > 0);
-    attempts.push(Arc::downgrade(attempt));
+        .expect("dial attempt registry poisoned")
+        .push(Arc::downgrade(attempt));
 }
 
 /// Every recorded dial attempt, oldest first, as liveness handles.
