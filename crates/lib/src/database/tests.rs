@@ -320,6 +320,23 @@ async fn test_remote_ingest_missing_delegated_root_stays_retryable() {
 
     let target_db = ingest_target_fixture(&receiver, &fixture).await;
     assert_retryable_and_invisible(&receiver, &target_db, &fixture).await;
+
+    ingest_delegated_history(&receiver, fixture.delegated_entries.clone()).await;
+    let report = target_db.verify().await.unwrap();
+    assert_eq!(
+        report.failed, 0,
+        "completed proof must not fail: {report:?}"
+    );
+    assert_eq!(
+        receiver
+            .require_local_engine()
+            .unwrap()
+            .get_verification_status(&fixture.delegated_entry_id)
+            .await
+            .unwrap(),
+        VerificationStatus::Verified,
+        "the retained entry must promote after its delegated tree arrives"
+    );
 }
 
 #[tokio::test]
