@@ -1110,7 +1110,9 @@ async fn test_submit_cross_session_signed_by_tree_admin_becomes_verified() {
     );
 }
 
-async fn service_delegated_entry_fixture(server: &Instance) -> (eidetica::entry::ID, Entry) {
+async fn service_delegated_entry_fixture(
+    server: &Instance,
+) -> (eidetica::entry::ID, Vec<Entry>, eidetica::entry::ID, Entry) {
     let delegated_key = PrivateKey::generate();
     let delegated_pubkey = delegated_key.public_key();
     let delegated_db = eidetica::Database::create(server, delegated_key.clone(), Doc::new())
@@ -1162,13 +1164,24 @@ async fn service_delegated_entry_fixture(server: &Instance) -> (eidetica::entry:
         .unwrap();
     let entry_id = txn.commit().await.unwrap();
     let entry = server.backend().get(&entry_id).await.unwrap();
-    (target_db.root_id().clone(), entry)
+    let delegated_entries = server
+        .backend()
+        .get_tree(delegated_db.root_id())
+        .await
+        .unwrap();
+    (
+        delegated_db.root_id().clone(),
+        delegated_entries,
+        target_db.root_id().clone(),
+        entry,
+    )
 }
 
 #[tokio::test]
 async fn test_submit_missing_delegated_history_stays_retryable_and_invisible() {
     let (_socket_path, _tx, server, _dir) = start_test_server().await;
-    let (target_root, delegated_entry) = service_delegated_entry_fixture(&server).await;
+    let (delegated_root, delegated_entries, target_root, delegated_entry) =
+        service_delegated_entry_fixture(&server).await;
     let entry_id = delegated_entry.id();
 
     let receiver_dir = tempfile::tempdir().unwrap();
@@ -1230,6 +1243,36 @@ async fn test_submit_missing_delegated_history_stays_retryable_and_invisible() {
     assert!(
         !target.snapshot().await.unwrap().contains(&entry_id),
         "incomplete delegated proof must not enter the service's Verified frontier"
+    );
+
+    for entry in delegated_entries {
+        receiver.backend().put(entry).await.unwrap();
+    }
+    eidetica::Database::open(&receiver, &delegated_root)
+        .await
+        .unwrap()
+        .verify()
+        .await
+        .unwrap();
+    let report = target.verify().await.unwrap();
+    assert_eq!(
+        report.failed, 0,
+        "completed proof must not fail: {report:?}"
+    );
+    assert_eq!(
+        receiver
+            .backend()
+            .local_engine()
+            .unwrap()
+            .get_verification_status(&entry_id)
+            .await
+            .unwrap(),
+        VerificationStatus::Verified,
+        "the service-retained entry must promote after its delegated proof arrives"
+    );
+    assert!(
+        target.snapshot().await.unwrap().contains(&entry_id),
+        "the promoted entry must enter the service's Verified frontier"
     );
     drop(shutdown);
 }
