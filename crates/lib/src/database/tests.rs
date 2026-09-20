@@ -147,6 +147,7 @@ async fn setup_callback_test() -> (Instance, Database) {
 }
 
 struct DelegatedVerificationFixture {
+    delegated_signing_key: PrivateKey,
     delegated_entries: Vec<Entry>,
     delegated_entry_id: ID,
     target_root: ID,
@@ -211,7 +212,7 @@ async fn delegated_verification_fixture() -> DelegatedVerificationFixture {
         .await
         .unwrap()
         .with_key(DatabaseKey::with_identity(
-            delegated_signing_key,
+            delegated_signing_key.clone(),
             SigKey::Delegation {
                 path: vec![DelegationStep {
                     tree: delegated_db.root_id().clone(),
@@ -241,6 +242,7 @@ async fn delegated_verification_fixture() -> DelegatedVerificationFixture {
     let target_entry = target_history.remove(target_entry_index);
 
     DelegatedVerificationFixture {
+        delegated_signing_key,
         delegated_entries,
         delegated_entry_id,
         target_root,
@@ -270,7 +272,9 @@ async fn ingest_target_fixture(
         .put_remote_entries(&fixture.target_root, vec![fixture.target_entry.clone()])
         .await
         .unwrap();
-    Database::open(receiver, &fixture.target_root).await.unwrap()
+    Database::open(receiver, &fixture.target_root)
+        .await
+        .unwrap()
 }
 
 async fn assert_retryable_and_invisible(
@@ -304,7 +308,6 @@ async fn ingest_delegated_history(receiver: &Instance, entries: impl IntoIterato
     }
 }
 
-#[should_panic = "assertion `left == right` failed: missing delegated history must remain retryable"]
 #[tokio::test]
 async fn test_remote_ingest_missing_delegated_root_stays_retryable() {
     let fixture = delegated_verification_fixture().await;
@@ -319,7 +322,6 @@ async fn test_remote_ingest_missing_delegated_root_stays_retryable() {
     assert_retryable_and_invisible(&receiver, &target_db, &fixture).await;
 }
 
-#[should_panic = "assertion `left == right` failed: missing delegated history must remain retryable"]
 #[tokio::test]
 async fn test_remote_ingest_missing_delegated_tip_stays_retryable_then_promotes() {
     let fixture = delegated_verification_fixture().await;
@@ -330,21 +332,16 @@ async fn test_remote_ingest_missing_delegated_tip_stays_retryable_then_promotes(
     .await
     .unwrap();
 
-    ingest_delegated_history(
-        &receiver,
-        fixture.delegated_entries.iter().take(1).cloned(),
-    )
-    .await;
+    ingest_delegated_history(&receiver, fixture.delegated_entries.iter().take(1).cloned()).await;
     let target_db = ingest_target_fixture(&receiver, &fixture).await;
     assert_retryable_and_invisible(&receiver, &target_db, &fixture).await;
 
-    ingest_delegated_history(
-        &receiver,
-        fixture.delegated_entries.iter().skip(1).cloned(),
-    )
-    .await;
+    ingest_delegated_history(&receiver, fixture.delegated_entries.iter().skip(1).cloned()).await;
     let report = target_db.verify().await.unwrap();
-    assert_eq!(report.failed, 0, "completed proof must not fail: {report:?}");
+    assert_eq!(
+        report.failed, 0,
+        "completed proof must not fail: {report:?}"
+    );
     assert_eq!(
         receiver
             .require_local_engine()
@@ -357,7 +354,6 @@ async fn test_remote_ingest_missing_delegated_tip_stays_retryable_then_promotes(
     );
 }
 
-#[should_panic = "assertion `left == right` failed: missing delegated history must remain retryable"]
 #[tokio::test]
 async fn test_remote_ingest_missing_delegated_intermediate_stays_retryable_then_promotes() {
     let fixture = delegated_verification_fixture().await;
@@ -390,7 +386,10 @@ async fn test_remote_ingest_missing_delegated_intermediate_stays_retryable_then_
     )
     .await;
     let report = target_db.verify().await.unwrap();
-    assert_eq!(report.failed, 0, "completed proof must not fail: {report:?}");
+    assert_eq!(
+        report.failed, 0,
+        "completed proof must not fail: {report:?}"
+    );
     assert_eq!(
         receiver
             .require_local_engine()
@@ -400,6 +399,52 @@ async fn test_remote_ingest_missing_delegated_intermediate_stays_retryable_then_
             .unwrap(),
         VerificationStatus::Verified,
         "the retained entry must promote after its delegated proof arrives"
+    );
+}
+
+#[tokio::test]
+async fn test_local_commit_missing_delegated_history_is_rejected_without_storage() {
+    let fixture = delegated_verification_fixture().await;
+    let (receiver, _admin) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        crate::NewUser::passwordless("receiver"),
+    )
+    .await
+    .unwrap();
+    for entry in fixture.target_history.clone() {
+        put_verified(&receiver, entry).await;
+    }
+
+    let target = Database::open(&receiver, &fixture.target_root)
+        .await
+        .unwrap()
+        .with_key(DatabaseKey::with_identity(
+            fixture.delegated_signing_key.clone(),
+            fixture.target_entry.auth().key.clone(),
+        ));
+    let txn = target.new_transaction().await.unwrap();
+    txn.get_store::<DocStore>("data")
+        .await
+        .unwrap()
+        .set("local", "missing proof")
+        .await
+        .unwrap();
+    let err = txn
+        .commit()
+        .await
+        .expect_err("local commit must fail closed when delegated proof is unavailable");
+    assert!(
+        matches!(
+            err,
+            Error::Auth(ref auth) if auth.is_delegated_tree_unsynced()
+        ),
+        "local commit should surface the retriable proof error, got: {err}"
+    );
+    let backend = receiver.require_local_engine().unwrap();
+    assert_eq!(
+        backend.get_tree(&fixture.target_root).await.unwrap().len(),
+        fixture.target_history.len(),
+        "a failed local commit must not store an unverifiable entry"
     );
 }
 
