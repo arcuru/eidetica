@@ -256,3 +256,26 @@ pub struct DatabaseTracking {
     /// Additional metadata
     pub metadata: HashMap<String, String>,
 }
+
+/// Whether a locally tracked identity is ready for authenticated use.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum IdentityStatus {
+    /// The selected local key is authorized by the identity database.
+    Active,
+    /// A bootstrap request is awaiting approval or the approved state has not arrived yet.
+    Pending,
+}
+
+/// A named identity tracked in the user's private database.
+///
+/// The identity database remains the source of truth for membership. This record is only
+/// a local name and signing-key selection.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TrackedIdentity {
+    /// Root ID of the identity database.
+    pub root_id: ID,
+    /// Local bootstrap/access state.
+    pub status: IdentityStatus,
+    /// User-held key selected for this identity.
+    pub key_id: PublicKey,
+}

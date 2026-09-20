@@ -78,6 +78,15 @@ pub enum UserError {
 
     #[error("Duplicate store name in DatabaseBuilder: {name}")]
     DuplicateBuilderStore { name: String },
+
+    #[error("Identity already exists: {name}")]
+    IdentityAlreadyExists { name: String },
+
+    #[error("Identity not found: {name}")]
+    IdentityNotFound { name: String },
+
+    #[error("Identity key does not match its signing key: expected {expected}, got {actual}")]
+    IdentityKeyMismatch { expected: String, actual: String },
 }
 
 impl UserError {
@@ -89,6 +98,7 @@ impl UserError {
                 | UserError::KeyNotFound { .. }
                 | UserError::DatabaseNotTracked { .. }
                 | UserError::DatabaseNotFoundByName { .. }
+                | UserError::IdentityNotFound { .. }
         )
     }
 }

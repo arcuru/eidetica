@@ -40,10 +40,14 @@ use std::collections::HashMap;
 
 use std::sync::Arc;
 
-use super::{UserKeyManager, admin::InstanceAdmin, types::UserInfo};
+use super::{
+    Identity, UserKeyManager,
+    admin::InstanceAdmin,
+    types::{IdentityStatus, TrackedIdentity, UserInfo},
+};
 use crate::{
     Database, Error, Instance, Result, Transaction,
-    auth::{Permission, SigKey, crypto::PublicKey},
+    auth::{AuthKey, Permission, SigKey, crypto::PublicKey},
     crdt::Doc,
     database::DatabaseKey,
     entry::ID,
@@ -1125,6 +1129,268 @@ impl User {
                 Err(e)
             }
         }
+    }
+
+    // === Identity Management ===
+
+    async fn identity_tracking(&self, name: &str) -> Result<Option<TrackedIdentity>> {
+        let identities = self
+            .user_database
+            .get_store_viewer::<Table<TrackedIdentity>>("identities")
+            .await?;
+        match identities.get(name).await {
+            Ok(identity) => Ok(Some(identity)),
+            Err(error) if error.is_not_found() => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Create and locally track an identity database.
+    ///
+    /// The selected key is the initial `Admin(0)` member. Identity metadata is
+    /// globally readable, but that global permission is not identity membership.
+    pub async fn create_identity(&mut self, name: &str, key_id: &PublicKey) -> Result<Identity> {
+        if self.identity_tracking(name).await?.is_some() {
+            return Err(UserError::IdentityAlreadyExists {
+                name: name.to_string(),
+            }
+            .into());
+        }
+
+        let database = self.create_database(Doc::new(), key_id).await?;
+        let tx = database.new_transaction().await?;
+        tx.get_settings()?
+            .set_global_auth_key(AuthKey::active(None, Permission::Read))
+            .await?;
+        tx.commit().await?;
+
+        let tx = self.user_database.new_transaction().await?;
+        tx.get_store::<Table<TrackedIdentity>>("identities")
+            .await?
+            .set(
+                name,
+                TrackedIdentity {
+                    root_id: database.root_id().clone(),
+                    status: IdentityStatus::Active,
+                    key_id: key_id.clone(),
+                },
+            )
+            .await?;
+        tx.commit().await?;
+
+        Ok(Identity::new(
+            database,
+            key_id.clone(),
+            self.get_signing_key(key_id)?,
+            name.to_string(),
+            self.user_database.clone(),
+        ))
+    }
+
+    /// Register an existing identity and request membership through bootstrap.
+    ///
+    /// A pending bootstrap is a successful registration outcome. Other failures
+    /// remove the provisional local tracking record before returning the error.
+    pub async fn register_identity(
+        &mut self,
+        name: &str,
+        ticket: &DatabaseTicket,
+        key_id: &PublicKey,
+        auth_key: AuthKey,
+    ) -> Result<()> {
+        if self.identity_tracking(name).await?.is_some() {
+            return Err(UserError::IdentityAlreadyExists {
+                name: name.to_string(),
+            }
+            .into());
+        }
+        if self.key_manager.get_signing_key(key_id).is_none() {
+            return Err(UserError::KeyNotFound {
+                key_id: key_id.to_string(),
+            }
+            .into());
+        }
+        let sync = self
+            .instance
+            .sync()
+            .ok_or_else(|| InstanceError::InvalidOperation {
+                reason: "sync is not enabled on this instance".to_string(),
+            })?;
+
+        let tx = self.user_database.new_transaction().await?;
+        tx.get_store::<Table<TrackedIdentity>>("identities")
+            .await?
+            .set(
+                name,
+                TrackedIdentity {
+                    root_id: ticket.database_id().clone(),
+                    status: IdentityStatus::Pending,
+                    key_id: key_id.clone(),
+                },
+            )
+            .await?;
+        tx.commit().await?;
+
+        let result = self
+            .request_database_access(&sync, ticket, key_id, *auth_key.permissions(), None)
+            .await;
+        match result {
+            Ok(()) => self.activate_identity(name).await.map(|_| ()),
+            Err(Error::Sync(error)) if matches!(*error, SyncError::BootstrapPending { .. }) => {
+                Ok(())
+            }
+            Err(error) => {
+                let _ = self.remove_identity(name).await;
+                Err(error)
+            }
+        }
+    }
+
+    /// Return an active identity without mutating persistent state.
+    ///
+    /// Pending identities return `None`; call [`Self::activate_identity`] after
+    /// syncing an approval to transition one to active.
+    pub async fn get_identity(&self, name: &str) -> Result<Option<Identity>> {
+        let Some(tracked) = self.identity_tracking(name).await? else {
+            return Ok(None);
+        };
+        if tracked.status == IdentityStatus::Pending {
+            return Ok(None);
+        }
+        self.open_tracked_identity(name, tracked).await.map(Some)
+    }
+
+    /// Promote a pending identity after its selected key is visible and authorized.
+    pub async fn activate_identity(&self, name: &str) -> Result<Identity> {
+        let tracked =
+            self.identity_tracking(name)
+                .await?
+                .ok_or_else(|| UserError::IdentityNotFound {
+                    name: name.to_string(),
+                })?;
+        let identity = self.open_tracked_identity(name, tracked.clone()).await?;
+
+        if tracked.status == IdentityStatus::Pending {
+            let tx = self.user_database.new_transaction().await?;
+            tx.get_store::<Table<TrackedIdentity>>("identities")
+                .await?
+                .set(
+                    name,
+                    TrackedIdentity {
+                        status: IdentityStatus::Active,
+                        ..tracked
+                    },
+                )
+                .await?;
+            tx.commit().await?;
+        }
+        Ok(identity)
+    }
+
+    async fn open_tracked_identity(
+        &self,
+        name: &str,
+        tracked: TrackedIdentity,
+    ) -> Result<Identity> {
+        let signing_key = self.get_signing_key(&tracked.key_id)?;
+        let sigkey = SigKey::from_pubkey(&tracked.key_id);
+        let database = self
+            .open_database_with_identity(&tracked.root_id, signing_key.clone(), sigkey)
+            .await?;
+        let member = database
+            .get_settings()
+            .await?
+            .auth_snapshot()
+            .await?
+            .get_key_by_pubkey(&tracked.key_id)
+            .map_err(|_| UserError::NoSigKeyFound {
+                key_id: tracked.key_id.to_string(),
+                database_id: tracked.root_id.clone(),
+            })?;
+        if !member.is_active() {
+            return Err(UserError::NoSigKeyFound {
+                key_id: tracked.key_id.to_string(),
+                database_id: tracked.root_id.clone(),
+            }
+            .into());
+        }
+        #[cfg(all(unix, feature = "service"))]
+        if self.instance.remote_connection().is_none() {
+            database.current_permission().await?;
+        }
+        #[cfg(not(all(unix, feature = "service")))]
+        database.current_permission().await?;
+        Ok(Identity::new(
+            database,
+            tracked.key_id,
+            signing_key,
+            name.to_string(),
+            self.user_database.clone(),
+        ))
+    }
+
+    async fn open_database_with_identity(
+        &self,
+        root_id: &ID,
+        signing_key: crate::auth::crypto::PrivateKey,
+        sigkey: SigKey,
+    ) -> Result<Database> {
+        let key = DatabaseKey::with_identity(signing_key.clone(), sigkey.clone());
+        #[cfg(all(unix, feature = "service"))]
+        if let Some(conn) = self.instance.remote_connection() {
+            conn.register_session_key(&signing_key).await?;
+            return Ok(Database::open_remote(&self.instance, conn, root_id, sigkey)
+                .await?
+                .with_key(key));
+        }
+        Ok(Database::open(&self.instance, root_id).await?.with_key(key))
+    }
+
+    /// Return the root ID of an active or pending tracked identity.
+    pub async fn identity_id(&self, name: &str) -> Result<Option<ID>> {
+        Ok(self
+            .identity_tracking(name)
+            .await?
+            .map(|identity| identity.root_id))
+    }
+
+    /// List typed local identity tracking records.
+    pub async fn identities(&self) -> Result<Vec<(String, TrackedIdentity)>> {
+        self.user_database
+            .get_store_viewer::<Table<TrackedIdentity>>("identities")
+            .await?
+            .search(|_| true)
+            .await
+    }
+
+    /// Return the selected local key for a tracked identity.
+    pub async fn identity_key(&self, name: &str) -> Result<PublicKey> {
+        self.identity_tracking(name)
+            .await?
+            .map(|identity| identity.key_id)
+            .ok_or_else(|| {
+                UserError::IdentityNotFound {
+                    name: name.to_string(),
+                }
+                .into()
+            })
+    }
+
+    /// Remove only the local identity tracking record.
+    pub async fn remove_identity(&mut self, name: &str) -> Result<()> {
+        if self.identity_tracking(name).await?.is_none() {
+            return Err(UserError::IdentityNotFound {
+                name: name.to_string(),
+            }
+            .into());
+        }
+        let tx = self.user_database.new_transaction().await?;
+        tx.get_store::<Table<TrackedIdentity>>("identities")
+            .await?
+            .delete(name)
+            .await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     // === Tracked Databases ===

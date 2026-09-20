@@ -35,6 +35,7 @@
 pub mod admin;
 pub mod crypto;
 pub mod errors;
+pub mod identity;
 pub mod key_manager;
 pub mod session;
 pub mod system_databases;
@@ -42,6 +43,7 @@ pub mod types;
 
 pub use admin::InstanceAdmin;
 pub use errors::UserError;
+pub use identity::Identity;
 pub use key_manager::UserKeyManager;
 pub use session::{DatabaseBuilder, User};
 pub use types::*;

@@ -4,6 +4,7 @@ mod builder_tests;
 mod database_operations_tests;
 mod database_tracking_tests;
 mod helpers;
+mod identity_tests;
 mod integration_tests;
 mod key_management_tests;
 mod multi_user_tests;
