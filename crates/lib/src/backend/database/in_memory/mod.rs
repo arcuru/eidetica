@@ -41,6 +41,20 @@ pub(crate) struct TreeTipsCache {
     pub(crate) subtree_tips: HashMap<String, HashSet<ID>>,
 }
 
+/// Retained verified state of one tree: the ancestor-closed all-`Verified`
+/// prefix plus its maximal frontier.
+///
+/// `frontier` is the set served as the tree's verified [`Snapshot`];
+/// `prefix` membership is what makes out-of-order promotion cheap (a newly
+/// promoted entry is eligible exactly when every parent is in `prefix`).
+/// Both are derived operational state, rebuilt from entries and statuses on
+/// migration, repair, and demotion.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub(crate) struct VerifiedState {
+    pub(crate) prefix: HashSet<ID>,
+    pub(crate) frontier: HashSet<ID>,
+}
+
 /// Core data protected by a single lock.
 ///
 /// All fields that participate in entry storage and tip tracking are grouped
@@ -64,6 +78,9 @@ pub(crate) struct InMemoryInner {
     pub(crate) instance_secrets: Option<InstanceSecrets>,
     /// Cached tips grouped by tree: tree_id -> (tree_tips, subtree_name -> subtree_tips)
     pub(crate) tips: HashMap<ID, TreeTipsCache>,
+    /// Retained verified prefix/frontier per tree, maintained incrementally
+    /// at the `update_verification_status` boundary under this same lock.
+    pub(crate) verified: HashMap<ID, VerifiedState>,
 }
 
 #[derive(Debug)]
@@ -166,6 +183,7 @@ impl InMemory {
                 instance_metadata: None,
                 instance_secrets: None,
                 tips: HashMap::new(),
+                verified: HashMap::new(),
             }),
             store_state_point_reads: AtomicUsize::new(0),
             store_state_scan_reads: AtomicUsize::new(0),
@@ -521,14 +539,7 @@ impl BackendImpl for InMemory {
         verification_status: VerificationStatus,
     ) -> Result<()> {
         let mut inner = self.inner.write().unwrap();
-        if inner.verification_status.contains_key(id) {
-            inner
-                .verification_status
-                .insert(id.clone(), verification_status);
-            Ok(())
-        } else {
-            Err(BackendError::EntryNotFound { id: id.clone() }.into())
-        }
+        storage::update_verification_status(&mut inner, id, verification_status)
     }
 
     /// Gets all entries with a specific verification status.
@@ -566,6 +577,16 @@ impl BackendImpl for InMemory {
         // Slow path: compute and cache with write lock
         let mut inner = self.inner.write().unwrap();
         traversal::snapshot(&mut inner, tree).map(Snapshot::new)
+    }
+
+    async fn verified_snapshot(&self, tree: &ID) -> Result<Snapshot> {
+        let inner = self.inner.read().unwrap();
+        Ok(storage::verified_snapshot(&inner, tree))
+    }
+
+    async fn rebuild_verified_state(&self, tree: &ID) -> Result<Snapshot> {
+        let mut inner = self.inner.write().unwrap();
+        storage::rebuild_verified_state(&mut inner, tree)
     }
 
     async fn store_snapshot(&self, tree: &ID, subtree: &str) -> Result<Snapshot> {

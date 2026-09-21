@@ -726,30 +726,6 @@ async fn update_tips_for_entry(
     Ok(())
 }
 
-/// Update the verification status of an entry.
-pub async fn update_verification_status(
-    backend: &SqlxBackend,
-    id: &ID,
-    verification_status: VerificationStatus,
-) -> Result<()> {
-    let pool = backend.pool();
-
-    let status_int: i64 = verification_status.as_db_int();
-
-    let result = sqlx::query("UPDATE entries SET verification_status = $1 WHERE id = $2")
-        .bind(status_int)
-        .bind(id.to_string())
-        .execute(pool)
-        .await
-        .sql_context("Failed to update verification status")?;
-
-    if result.rows_affected() == 0 {
-        return Err(BackendError::EntryNotFound { id: id.clone() }.into());
-    }
-
-    Ok(())
-}
-
 /// Get all entry IDs with a specific verification status.
 pub async fn get_entries_by_verification_status(
     backend: &SqlxBackend,

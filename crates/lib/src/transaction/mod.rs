@@ -48,24 +48,6 @@ use crate::{
     store::{ProjectionDescriptor, RecordProjection, Registry, SettingsStore, StoreError, state},
 };
 
-/// Creates a synthetic entry ID for multi-tip merged CRDT state caching.
-///
-/// Tips are sorted to ensure deterministic keys regardless of input order.
-/// The resulting ID has format `merge:{tip1}:{tip2}:...` which is distinct
-/// from real content-addressed entry IDs.
-fn create_merge_cache_id(tip_ids: &[ID]) -> ID {
-    let mut sorted_tips = tip_ids.to_vec();
-    sorted_tips.sort();
-
-    // Create a deterministic cache key by hashing the sorted tip IDs
-    let mut key = String::from("merge");
-    for tip in &sorted_tips {
-        key.push(':');
-        key.push_str(&tip.to_string());
-    }
-    ID::from_bytes(key.as_bytes())
-}
-
 /// Trait for encrypting/decrypting subtree data transparently
 ///
 /// Encryptors are registered with a Transaction for specific subtrees, allowing
@@ -981,7 +963,8 @@ impl Transaction {
             .ok_or(TransactionError::TransactionAlreadyCommitted)?
             .subtree_parents(store)
             .unwrap_or_default();
-        let source_key = create_merge_cache_id(&parents).to_string().into_bytes();
+        let boundary = Snapshot::from(&parents);
+        let source_key = boundary.cache_key_bytes();
         let descriptor = self.encrypted_projection_descriptor(store, projection.descriptor());
         let request = state::records_request(
             self.db.root_id(),
@@ -993,7 +976,6 @@ impl Transaction {
         let view = if let Some(view) = self.db.ops().resolve_store_state(&request).await? {
             view
         } else {
-            let boundary = Snapshot::from(parents);
             let entries = self
                 .db
                 .ops()
@@ -1308,14 +1290,14 @@ impl Transaction {
                 .await;
         }
 
-        // Multiple entries: check multi-tip cache first
-        let cache_id = create_merge_cache_id(entry_ids);
-
+        // Multiple entries: check the Snapshot-native cache first. The key is
+        // the canonical tip set itself — no synthetic merge ID.
+        let boundary = Snapshot::from(entry_ids);
         let cache_request = state::opaque_request(
             self.db.root_id(),
             subtree_name,
             descriptor.clone(),
-            cache_id.to_string().into_bytes(),
+            boundary.cache_key_bytes(),
             crate::backend::CacheScope::Shared,
         );
         if let Some(bytes) = state::load_cached(self.db.ops(), &cache_request).await? {
@@ -1393,11 +1375,14 @@ impl Transaction {
         T: CRDT + Send + 'a,
     {
         Box::pin(async move {
+            // One logical cache namespace for single-tip and multi-tip
+            // states: a single entry is a one-element Snapshot.
+            let boundary = Snapshot::from([entry_id.clone()]);
             let request = state::opaque_request(
                 self.db.root_id(),
                 subtree_name,
                 descriptor.clone(),
-                entry_id.to_string().into_bytes(),
+                boundary.cache_key_bytes(),
                 crate::backend::CacheScope::Shared,
             );
             if let Some(bytes) = state::load_cached(self.db.ops(), &request).await? {
@@ -1408,7 +1393,6 @@ impl Transaction {
 
             // Step 2: Batch fetch all ancestors sorted by height (root first)
             // This single query replaces N recursive queries
-            let boundary = Snapshot::from([entry_id.clone()]);
             let entries = self
                 .db
                 .ops()

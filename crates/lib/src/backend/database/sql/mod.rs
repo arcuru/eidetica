@@ -23,6 +23,7 @@
 
 mod storage;
 mod traversal;
+mod verified;
 
 /// Schema definition and migration system.
 pub mod schema;
@@ -872,7 +873,7 @@ impl BackendImpl for SqlxBackend {
         id: &ID,
         verification_status: VerificationStatus,
     ) -> Result<()> {
-        storage::update_verification_status(self, id, verification_status).await
+        verified::update_verification_status(self, id, verification_status).await
     }
 
     async fn get_entries_by_verification_status(
@@ -884,6 +885,14 @@ impl BackendImpl for SqlxBackend {
 
     async fn snapshot(&self, tree: &ID) -> Result<Snapshot> {
         traversal::snapshot(self, tree).await.map(Snapshot::new)
+    }
+
+    async fn verified_snapshot(&self, tree: &ID) -> Result<Snapshot> {
+        verified::verified_snapshot(self, tree).await
+    }
+
+    async fn rebuild_verified_state(&self, tree: &ID) -> Result<Snapshot> {
+        verified::rebuild_verified_state(self, tree).await
     }
 
     async fn store_snapshot(&self, tree: &ID, store: &str) -> Result<Snapshot> {

@@ -15,3 +15,4 @@ mod store_state_records;
 mod subtree_operations;
 mod tree_operations;
 mod verification;
+mod verified_snapshot;

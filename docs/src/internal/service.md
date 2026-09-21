@@ -391,6 +391,6 @@ This is a **fully trusted local-client** v1. Filesystem access to the socket gra
 
 - **PAKE for network transport**: `TrustedLogin` is safe only because the socket is filesystem-gated. A network transport must replace it with a password-authenticated key exchange.
 - **Sync delegation**: as above.
-- **Verified-frontier cursors**: `WriteEvent` cursors are raw DAG frontiers, so a bracket can span `Unverified`/`Failed` tips and `Database::ids_added` enumerates them — consumers must filter on verification status themselves. Narrowing the cursors to the Verified frontier needs an incremental frontier first; `Database::verified_frontier` is an O(N) walk, too expensive on the per-commit path.
+- **Verified-frontier cursors**: `WriteEvent` cursors are raw DAG frontiers, so a bracket can span `Unverified`/`Failed` tips and `Database::ids_added` enumerates them — consumers must filter on verification status themselves. Narrowing the cursors to the Verified frontier can now read the retained frontier (`BackendImpl::verified_snapshot`); wiring it into the per-commit path is still future work.
 - **Notification backpressure**: the per-connection writer channel is `mpsc::unbounded_channel`; a stalled client reader buffers notifications in memory. Switch to a bounded channel with a documented drop-oldest policy if memory growth becomes measurable.
 - **Derived-key caching**: cache the Argon2id-derived encryption key in an OS secret store with a TTL, evolving the daemon into an ssh-agent-like key agent to eliminate repeated password prompts for CLI tools.

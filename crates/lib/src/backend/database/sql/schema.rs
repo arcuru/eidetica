@@ -28,7 +28,7 @@ use super::{SqlxBackend, SqlxResultExt};
 ///
 /// Increment this when making schema changes that require migration.
 /// Version 0 is fully unstable and should not be used in production.
-pub const SCHEMA_VERSION: i64 = 0;
+pub const SCHEMA_VERSION: i64 = 1;
 
 const CREATE_STORE_STATE_TABLES: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS store_state_namespaces (
@@ -112,6 +112,20 @@ pub const CREATE_TABLES: &[&str] = &[
         store_name TEXT NOT NULL DEFAULT '',
         PRIMARY KEY (entry_id, tree_id, store_name)
     )",
+    // Retained verified prefix/frontier - maintained incrementally at the
+    // `update_verification_status` boundary, rebuilt on migration/repair.
+    //
+    // Both ancestor-closed prefix membership and maximal-frontier membership
+    // are stored: frontier-only rows cannot cheaply answer whether every
+    // parent is eligible during out-of-order promotion. `tips` stays the
+    // durable raw frontier; `verified_prefix WHERE is_frontier = 1` is the
+    // durable verified frontier.
+    "CREATE TABLE IF NOT EXISTS verified_prefix (
+        tree_id TEXT NOT NULL,
+        entry_id TEXT NOT NULL,
+        is_frontier BIGINT NOT NULL,
+        PRIMARY KEY (tree_id, entry_id)
+    )",
     // Instance metadata (singleton row pattern)
     // Contains device key and system database IDs.
     // Uses singleton=1 constraint to ensure only one row exists.
@@ -144,6 +158,8 @@ pub const CREATE_INDEXES: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_store_parents_child ON store_parents(store_name, child_id)",
     // Tip lookups
     "CREATE INDEX IF NOT EXISTS idx_tips_tree_store ON tips(tree_id, store_name)",
+    // Retained verified-frontier lookups
+    "CREATE INDEX IF NOT EXISTS idx_verified_prefix_frontier ON verified_prefix(tree_id, is_frontier)",
 ];
 
 /// Initialize the database schema.
@@ -259,14 +275,191 @@ async fn migrate(backend: &SqlxBackend, from: i64, to: i64) -> Result<()> {
 /// The migration function is responsible for persisting the new
 /// `schema_version` itself, inside the same transaction as its schema changes.
 async fn run_migration(backend: &SqlxBackend, from: i64, to: i64) -> Result<()> {
-    let _ = backend;
-
-    Err(BackendError::SqlxError {
-        reason: format!(
-            "Unknown migration path: v{from} to v{to}. \
-             This likely means SCHEMA_VERSION was incremented without adding a migration."
-        ),
-        source: None,
+    match (from, to) {
+        (0, 1) => migrate_v0_to_v1(backend).await,
+        _ => Err(BackendError::SqlxError {
+            reason: format!(
+                "Unknown migration path: v{from} to v{to}. \
+                 This likely means SCHEMA_VERSION was incremented without adding a migration."
+            ),
+            source: None,
+        }
+        .into()),
     }
-    .into())
+}
+
+/// Migrate v0 to v1: add the retained verified prefix/frontier table and
+/// reconstruct every tree's verified state from entries, parent edges, and
+/// statuses in deterministic topological order.
+///
+/// Table creation, per-tree rebuilds, and the `schema_version` write commit
+/// atomically: a crash leaves version 0 behind and the migration simply
+/// re-runs (rebuilds are idempotent — each tree's rows are deleted before
+/// its recomputed rows are inserted).
+async fn migrate_v0_to_v1(backend: &SqlxBackend) -> Result<()> {
+    let mut tx = backend
+        .pool()
+        .begin()
+        .await
+        .sql_context("Failed to begin migration transaction")?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS verified_prefix (
+            tree_id TEXT NOT NULL,
+            entry_id TEXT NOT NULL,
+            is_frontier BIGINT NOT NULL,
+            PRIMARY KEY (tree_id, entry_id)
+        )",
+    )
+    .execute(&mut *tx)
+    .await
+    .sql_context("Migration v0 to v1 failed: could not create verified_prefix")?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_verified_prefix_frontier \
+         ON verified_prefix(tree_id, is_frontier)",
+    )
+    .execute(&mut *tx)
+    .await
+    .sql_context("Migration v0 to v1 failed: could not create verified_prefix index")?;
+
+    let trees: Vec<(String,)> = sqlx::query_as("SELECT DISTINCT tree_id FROM entries")
+        .fetch_all(&mut *tx)
+        .await
+        .sql_context("Migration v0 to v1 failed: could not list trees")?;
+    for (tree_id,) in trees {
+        let tree = crate::entry::ID::parse(&tree_id)?;
+        super::verified::rebuild_in_tx(&mut tx, &tree).await?;
+    }
+
+    sqlx::query("UPDATE schema_version SET version = 1")
+        .execute(&mut *tx)
+        .await
+        .sql_context("Migration v0 to v1 failed: could not update schema version")?;
+
+    tx.commit()
+        .await
+        .sql_context("Migration v0 to v1 failed: could not commit")?;
+    Ok(())
+}
+
+#[cfg(all(test, feature = "sqlite"))]
+mod migration_tests {
+    use super::*;
+    use crate::entry::Entry;
+
+    fn test_chain() -> Vec<Entry> {
+        let root = Entry::root_builder().build().expect("root builds");
+        let root_id = root.id();
+        let a = Entry::builder(root_id.clone())
+            .set_height(1)
+            .add_parent(root_id.clone())
+            .set_subtree_data("test", b"a")
+            .build()
+            .expect("child a builds");
+        let b = Entry::builder(root_id.clone())
+            .set_height(2)
+            .add_parent(a.id())
+            .set_subtree_data("test", b"b")
+            .build()
+            .expect("child b builds");
+        vec![root, a, b]
+    }
+
+    /// v0 databases gain the retained verified state on open: the migration
+    /// rebuilds every tree's frontier from entries, edges, and statuses, and
+    /// records version 1 atomically with the schema change.
+    #[tokio::test]
+    async fn v0_to_v1_rebuilds_verified_frontier() {
+        use crate::backend::VerificationStatus;
+
+        let backend = super::super::Sqlite::in_memory()
+            .await
+            .expect("sqlite backend");
+        let entries = test_chain();
+        let tree = entries[0].id();
+        for entry in &entries {
+            super::super::storage::put(&backend, entry.clone())
+                .await
+                .unwrap();
+        }
+        for entry in &entries {
+            super::super::verified::update_verification_status(
+                &backend,
+                &entry.id(),
+                VerificationStatus::Verified,
+            )
+            .await
+            .unwrap();
+        }
+        let before = super::super::verified::verified_snapshot(&backend, &tree)
+            .await
+            .unwrap();
+        assert_eq!(before.tips(), &[entries[2].id()]);
+
+        // Simulate a v0 database: drop the new table, reset the version.
+        sqlx::query("DROP TABLE verified_prefix")
+            .execute(backend.pool())
+            .await
+            .unwrap();
+        sqlx::query("UPDATE schema_version SET version = 0")
+            .execute(backend.pool())
+            .await
+            .unwrap();
+
+        // Re-open runs the migration.
+        initialize(&backend).await.unwrap();
+
+        let version: (i64,) = sqlx::query_as("SELECT version FROM schema_version")
+            .fetch_one(backend.pool())
+            .await
+            .unwrap();
+        assert_eq!(version.0, 1);
+        let after = super::super::verified::verified_snapshot(&backend, &tree)
+            .await
+            .unwrap();
+        assert_eq!(before, after);
+    }
+
+    /// Reopening a v1 database reads the persisted frontier without
+    /// rebuilding: wiping the table without resetting the version leaves the
+    /// (now empty) retained state in place rather than resurrecting it.
+    #[tokio::test]
+    async fn v1_reopen_reads_persisted_state_without_rebuilding() {
+        use crate::backend::VerificationStatus;
+
+        let backend = super::super::Sqlite::in_memory()
+            .await
+            .expect("sqlite backend");
+        let entries = test_chain();
+        let tree = entries[0].id();
+        for entry in &entries {
+            super::super::storage::put(&backend, entry.clone())
+                .await
+                .unwrap();
+            super::super::verified::update_verification_status(
+                &backend,
+                &entry.id(),
+                VerificationStatus::Verified,
+            )
+            .await
+            .unwrap();
+        }
+        // Wipe retained rows but keep version 1: a plain open must not
+        // rescan history to fill them back in.
+        sqlx::query("DELETE FROM verified_prefix")
+            .execute(backend.pool())
+            .await
+            .unwrap();
+        initialize(&backend).await.unwrap();
+        let snapshot = super::super::verified::verified_snapshot(&backend, &tree)
+            .await
+            .unwrap();
+        assert!(snapshot.is_empty());
+        // Repair restores the same frontier the migration would compute.
+        let repaired = super::super::verified::rebuild_verified_state(&backend, &tree)
+            .await
+            .unwrap();
+        assert_eq!(repaired.tips(), &[entries[2].id()]);
+    }
 }

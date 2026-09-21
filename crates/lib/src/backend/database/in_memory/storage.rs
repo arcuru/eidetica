@@ -1,12 +1,13 @@
 //! Core storage operations for InMemory database
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 
-use super::InMemoryInner;
+use super::{InMemoryInner, VerifiedState};
 use crate::{
     Result,
     backend::{VerificationStatus, errors::BackendError},
     entry::{Entry, ID},
+    snapshot::Snapshot,
 };
 
 use crate::backend::database::sorting;
@@ -130,6 +131,198 @@ pub(crate) fn put(inner: &mut InMemoryInner, entry: Entry) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Updates the verification status of an entry, maintaining the retained
+/// verified prefix/frontier for its tree.
+///
+/// Supported transitions are monotonic (`Unverified -> Verified`,
+/// `Unverified -> Failed`) plus idempotent rewrites. A promotion is admitted
+/// incrementally and recursively activates already-`Verified` descendants
+/// that were waiting on it, so child-before-parent promotion converges
+/// without a read-time scan. Any demotion out of `Verified` funnels into a
+/// per-tree [`rebuild_verified_state`]: removing a prefix member can
+/// re-expose an arbitrarily large subgraph, which the incremental path
+/// cannot cheaply recompute.
+pub(crate) fn update_verification_status(
+    inner: &mut InMemoryInner,
+    id: &ID,
+    status: VerificationStatus,
+) -> Result<()> {
+    let entry = inner
+        .entries
+        .get(id)
+        .cloned()
+        .ok_or_else(|| BackendError::EntryNotFound { id: id.clone() })?;
+    let current = inner
+        .verification_status
+        .get(id)
+        .copied()
+        .unwrap_or(VerificationStatus::Unverified);
+    if current == status {
+        return Ok(());
+    }
+    inner.verification_status.insert(id.clone(), status);
+
+    if status == VerificationStatus::Verified {
+        admit_cascade(inner, id);
+    } else if current == VerificationStatus::Verified {
+        let tree = entry.root().unwrap_or_else(|| id.clone());
+        rebuild_verified_state(inner, &tree)?;
+    }
+    Ok(())
+}
+
+/// Admit `start` into the verified prefix if eligible, then recursively admit
+/// already-`Verified` descendants that were waiting on it.
+///
+/// An entry enters the prefix only when its own status is `Verified` and
+/// every parent is already in the prefix (a root has no parents and is
+/// immediately eligible). A promoted-before-its-parent entry simply waits:
+/// promoting the last missing parent enqueues the children and activates it.
+fn admit_cascade(inner: &mut InMemoryInner, start: &ID) {
+    let mut queue: VecDeque<ID> = VecDeque::from([start.clone()]);
+    while let Some(candidate) = queue.pop_front() {
+        let tree = tree_of(inner, &candidate);
+        {
+            let state = inner.verified.entry(tree).or_default();
+            if state.prefix.contains(&candidate) {
+                continue;
+            }
+            if inner
+                .verification_status
+                .get(&candidate)
+                .copied()
+                .unwrap_or(VerificationStatus::Unverified)
+                != VerificationStatus::Verified
+            {
+                continue;
+            }
+            let parents = inner
+                .entries
+                .get(&candidate)
+                .map(|e| e.parents().unwrap_or_default())
+                .unwrap_or_default();
+            if !parents.iter().all(|p| state.prefix.contains(p)) {
+                continue;
+            }
+            state.prefix.insert(candidate.clone());
+            for p in &parents {
+                state.frontier.remove(p);
+            }
+            state.frontier.insert(candidate.clone());
+        }
+        for child in children_of(inner, &candidate) {
+            queue.push_back(child);
+        }
+    }
+}
+
+/// Tree owning `id`: the entry's declared root, or itself for roots/missing.
+fn tree_of(inner: &InMemoryInner, id: &ID) -> ID {
+    inner
+        .entries
+        .get(id)
+        .and_then(|e| e.root())
+        .unwrap_or_else(|| id.clone())
+}
+
+/// Every held entry listing `parent` as a tree parent.
+fn children_of(inner: &InMemoryInner, parent: &ID) -> Vec<ID> {
+    inner
+        .entries
+        .values()
+        .filter(|e| e.parents().unwrap_or_default().contains(parent))
+        .map(|e| e.id())
+        .collect()
+}
+
+/// Returns the retained verified frontier of `tree` without scanning history.
+///
+/// Unknown trees (or trees whose root is not `Verified`) report empty,
+/// matching the reconstruction oracle.
+pub(crate) fn verified_snapshot(inner: &InMemoryInner, tree: &ID) -> Snapshot {
+    inner
+        .verified
+        .get(tree)
+        .map(|state| Snapshot::new(state.frontier.iter().cloned().collect()))
+        .unwrap_or(Snapshot::EMPTY)
+}
+
+/// Rebuild one tree's verified prefix/frontier from entries and statuses in
+/// deterministic topological order, replacing the retained state.
+///
+/// This is the migration/repair/demotion path and the oracle the incremental
+/// promotion path must equal after every insertion/promotion order.
+pub(crate) fn rebuild_verified_state(inner: &mut InMemoryInner, tree: &ID) -> Result<Snapshot> {
+    // Kahn's topological order, not stored-height order: heights are
+    // commit-time metadata and cannot be trusted on a rebuild path that
+    // must handle whatever history holds. Ready set deterministic in
+    // height-then-ID. In-degree counts only edges inside the held set.
+    let held: Vec<Entry> = inner
+        .entries
+        .values()
+        .filter(|e| e.in_tree(tree))
+        .cloned()
+        .collect();
+    let held_ids: HashSet<ID> = held.iter().map(|e| e.id()).collect();
+    let mut parents_of: HashMap<ID, Vec<ID>> = HashMap::with_capacity(held.len());
+    let mut children_of: HashMap<ID, Vec<ID>> = HashMap::with_capacity(held.len());
+    let mut in_degree: HashMap<ID, usize> = HashMap::with_capacity(held.len());
+    let mut height_of: HashMap<ID, u64> = HashMap::with_capacity(held.len());
+    for e in &held {
+        let id = e.id();
+        height_of.insert(id.clone(), e.height());
+        let parents = e.parents().unwrap_or_default();
+        let mut degree = 0usize;
+        for p in &parents {
+            children_of.entry(p.clone()).or_default().push(id.clone());
+            if held_ids.contains(p) {
+                degree += 1;
+            }
+        }
+        parents_of.insert(id.clone(), parents);
+        in_degree.insert(id, degree);
+    }
+    let mut ready: std::collections::BTreeSet<(u64, ID)> = in_degree
+        .iter()
+        .filter(|&(_, &d)| d == 0)
+        .map(|(id, _)| (height_of[id], id.clone()))
+        .collect();
+
+    let mut rebuilt = VerifiedState::default();
+    while let Some((_, id)) = ready.pop_first() {
+        if let Some(kids) = children_of.get(&id) {
+            for kid in kids.clone() {
+                let d = in_degree.get_mut(&kid).expect("in_degree entry exists");
+                *d -= 1;
+                if *d == 0 {
+                    ready.insert((height_of[&kid], kid));
+                }
+            }
+        }
+        if inner
+            .verification_status
+            .get(&id)
+            .copied()
+            .unwrap_or(VerificationStatus::Unverified)
+            != VerificationStatus::Verified
+        {
+            continue;
+        }
+        let empty = Vec::new();
+        let parents = parents_of.get(&id).unwrap_or(&empty);
+        if parents.iter().all(|p| rebuilt.prefix.contains(p)) {
+            rebuilt.prefix.insert(id.clone());
+            for p in parents {
+                rebuilt.frontier.remove(p);
+            }
+            rebuilt.frontier.insert(id);
+        }
+    }
+    let snapshot = Snapshot::new(rebuilt.frontier.iter().cloned().collect());
+    inner.verified.insert(tree.clone(), rebuilt);
+    Ok(snapshot)
 }
 
 /// Helper function to update tips for a given tree ID.

@@ -1796,10 +1796,11 @@ impl Instance {
         // raw backend snapshots, so an Unverified or Failed entry that is
         // a raw tip still falls inside a subsequent event's bracket and
         // `ids_added` will enumerate it. Narrowing that to the Verified
-        // frontier needs an incremental frontier first — `verified_frontier`
-        // is an O(N) walk, too expensive on the per-commit path.
-        // coding: raw-frontier cursors; switch to the Verified frontier
-        // once an incremental one exists.
+        // frontier needs a retained incremental frontier — now available via
+        // `BackendImpl::verified_snapshot` — but wiring it into this
+        // per-commit path is separate future work.
+        // coding: raw-frontier cursors; the retained frontier exists
+        // (`BackendImpl::verified_snapshot`) — wiring it in here is future work.
         let joins = if !is_connected && verification == VerificationStatus::Verified {
             // Compute the post-write snapshot for cursor advance. Cheap:
             // just re-read the backend snapshot post-put. Each per-callback

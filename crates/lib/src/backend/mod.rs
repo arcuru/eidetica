@@ -495,6 +495,109 @@ pub trait BackendImpl: Send + Sync + Any {
     /// * `tree` - The root ID of the tree to snapshot.
     async fn snapshot(&self, tree: &ID) -> Result<Snapshot>;
 
+    /// Returns the retained verified [`Snapshot`] of `tree` — the tips of the
+    /// maximal ancestor-closed, all-`Verified` prefix of the DAG — without
+    /// scanning history.
+    ///
+    /// Backends maintain this frontier incrementally at the
+    /// [`update_verification_status`](Self::update_verification_status)
+    /// boundary, atomically with the status mutation that moves it. A
+    /// still-`Unverified` tip is replaced by its nearest `Verified`
+    /// ancestors; anything reachable only through an `Unverified` entry is
+    /// excluded. Empty when the root itself is not `Verified`.
+    ///
+    /// The default implementation reconstructs the frontier from history (a
+    /// full-tree load plus one status read per entry). It is the
+    /// migration/repair/test oracle, not a read path: concrete backends
+    /// override it with their retained state. Custom backends inherit correct
+    /// behavior automatically.
+    ///
+    /// # Arguments
+    /// * `tree` - The root ID of the tree to snapshot.
+    async fn verified_snapshot(&self, tree: &ID) -> Result<Snapshot> {
+        use std::collections::{BTreeSet, HashMap, HashSet};
+
+        // `get_tree` order is height-then-ID, but stored heights are not
+        // trusted here: entries built or received without heights order
+        // arbitrarily, so membership runs in Kahn's topological order
+        // (ready set deterministic in height-then-ID) instead of trusting
+        // the load order. In-degree counts only edges inside the held set;
+        // parents outside it are never prefix members, so entries with
+        // missing parents are visited but never admitted.
+        let entries = self.get_tree(tree).await?;
+        let held: HashSet<ID> = entries.iter().map(|e| e.id()).collect();
+        let mut parents_of: HashMap<ID, Vec<ID>> = HashMap::with_capacity(entries.len());
+        let mut children_of: HashMap<ID, Vec<ID>> = HashMap::with_capacity(entries.len());
+        let mut in_degree: HashMap<ID, usize> = HashMap::with_capacity(entries.len());
+        let mut height_of: HashMap<ID, u64> = HashMap::with_capacity(entries.len());
+        for e in &entries {
+            let id = e.id();
+            height_of.insert(id.clone(), e.height());
+            let parents = e.parents().unwrap_or_default();
+            let mut degree = 0usize;
+            for p in &parents {
+                children_of.entry(p.clone()).or_default().push(id.clone());
+                if held.contains(p) {
+                    degree += 1;
+                }
+            }
+            parents_of.insert(id.clone(), parents);
+            in_degree.insert(id, degree);
+        }
+        let mut ready: BTreeSet<(u64, ID)> = in_degree
+            .iter()
+            .filter(|&(_, &d)| d == 0)
+            .map(|(id, _)| (height_of[id], id.clone()))
+            .collect();
+
+        let mut in_prefix: HashSet<ID> = HashSet::new();
+        let mut covered: HashSet<ID> = HashSet::new();
+        while let Some((_, id)) = ready.pop_first() {
+            if let Some(kids) = children_of.get(&id) {
+                for kid in kids.clone() {
+                    let d = in_degree.get_mut(&kid).expect("in_degree entry exists");
+                    *d -= 1;
+                    if *d == 0 {
+                        ready.insert((height_of[&kid], kid));
+                    }
+                }
+            }
+            if self.get_verification_status(&id).await? != VerificationStatus::Verified {
+                continue;
+            }
+            let empty = Vec::new();
+            let parents = parents_of.get(&id).unwrap_or(&empty);
+            if parents.iter().all(|p| in_prefix.contains(p)) {
+                in_prefix.insert(id.clone());
+                // Every parent now has a verified child, so it is interior to
+                // the prefix and cannot itself be a frontier tip.
+                for p in parents {
+                    covered.insert(p.clone());
+                }
+            }
+        }
+
+        Ok(Snapshot::new(
+            in_prefix
+                .into_iter()
+                .filter(|id| !covered.contains(id))
+                .collect(),
+        ))
+    }
+
+    /// Rebuild one tree's retained verified state from entries and statuses,
+    /// replacing whatever is currently retained, and return the rebuilt
+    /// verified [`Snapshot`].
+    ///
+    /// This is the migration/repair path: cold opens load persisted state and
+    /// never call this. Demotion funnels through here because removing a
+    /// prefix member can re-expose an arbitrarily large subgraph, which the
+    /// incremental promotion path cannot cheaply recompute.
+    ///
+    /// # Arguments
+    /// * `tree` - The root ID of the tree to rebuild.
+    async fn rebuild_verified_state(&self, tree: &ID) -> Result<Snapshot>;
+
     /// Returns the snapshot of a specific store within a given tree.
     ///
     /// Store tips are entries within the store that have no children *within
