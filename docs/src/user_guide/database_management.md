@@ -51,7 +51,7 @@ println!("share {}", database.ticket().await?);
 ```
 
 `Written` acknowledges a durable signed preference entry. It does not say that
-the daemon has reconciled its internal configuration or that a ticket is ready.
+the daemon has reconciled its internal configuration or is advertising an address.
 `Unknown` means the write may have reached the owner before the connection
 failed. Safely retry it or read `sync_settings()`.
 
