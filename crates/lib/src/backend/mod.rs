@@ -594,9 +594,16 @@ pub trait BackendImpl: Send + Sync + Any {
     /// prefix member can re-expose an arbitrarily large subgraph, which the
     /// incremental promotion path cannot cheaply recompute.
     ///
+    /// Backends without retained verified state inherit a correct default:
+    /// recomputing the frontier from history is identical to rebuilding it.
+    /// Backends that retain the frontier must override this to replace the
+    /// retained rows/set, not just return them.
+    ///
     /// # Arguments
     /// * `tree` - The root ID of the tree to rebuild.
-    async fn rebuild_verified_state(&self, tree: &ID) -> Result<Snapshot>;
+    async fn rebuild_verified_state(&self, tree: &ID) -> Result<Snapshot> {
+        self.verified_snapshot(tree).await
+    }
 
     /// Returns the snapshot of a specific store within a given tree.
     ///

@@ -123,9 +123,6 @@ pub(crate) async fn rebuild_in_tx(
         .await
         .sql_context("Failed to clear verified prefix")?;
 
-    // Height-then-ID order: every parent precedes its children, so one
-    // forward pass decides prefix membership. Matches
-    // `sorting::sort_entries_by_height`.
     // Kahn's topological order, not stored-height order: heights are
     // commit-time metadata and cannot be trusted on a rebuild path that
     // must handle whatever history holds. Ready set deterministic in
