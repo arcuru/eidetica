@@ -130,7 +130,7 @@ While the request is pending, the client has several options:
 use eidetica::{sync::DatabaseTicket, user::types::SyncSettings};
 
 async fn bootstrap_with_retry(
-    user: &User,
+    user: &mut User,
     sync: &Sync,
     ticket: &DatabaseTicket,
     key_id: &PublicKey,
@@ -242,7 +242,7 @@ match bootstrap_result {
             Ok(_) => {
                 println!("Access granted! Database synchronized.");
                 // Client can now load and use the database
-                let db = user.open_database(&database_id).await?;
+                let db = user.open_database(ticket.database_id()).await?;
             },
             Err(_) => {
                 println!("Still pending or rejected. Check with admin.");

@@ -285,7 +285,7 @@ println!("Share this locator with peers: {ticket}");
 # }
 ```
 
-For typed unknown acknowledgments and migration from the deprecated `User`
+For typed unknown acknowledgments and migration from the removed ID-based `User`
 helpers, see [Database Sharing](database_management.md).
 
 ### Bootstrap from Shared Database
