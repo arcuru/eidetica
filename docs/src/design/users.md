@@ -562,20 +562,9 @@ impl User {
     /// Stop tracking a database.
     pub fn untrack_database(&mut self, database_id: &ID) -> Result<()>;
 
-    /// Deprecated compatibility wrappers around sharing methods on a
-    /// Database opened through this User. Preference reconciliation remains
-    /// independent from the durable write.
-    pub async fn enable_sync(&mut self, database_id: &ID) -> Result<()>;
-    pub async fn disable_sync(&mut self, database_id: &ID) -> Result<()>;
-
     /// Read this user's sync preference. Returns `Ok(false)` for untracked
     /// databases rather than erroring.
     pub async fn is_sync_enabled(&self, database_id: &ID) -> Result<bool>;
-
-    /// Deprecated compatibility wrapper that writes sharing intent, then
-    /// returns a point-in-time locator. A locator error does not roll back an
-    /// accepted preference write.
-    pub async fn share(&mut self, database_id: &ID) -> Result<DatabaseTicket>;
 
     // === Key Management ===
 

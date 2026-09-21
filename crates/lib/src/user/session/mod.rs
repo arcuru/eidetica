@@ -991,11 +991,8 @@ impl User {
     /// On a successful (already-authorized) request the database is synced and its
     /// SigKey mapping is recorded, so [`open_database`](Self::open_database) works
     /// immediately — no separate [`track_database`](Self::track_database) call is
-    /// needed just to open it. Note the database is tracked with sync **disabled**
-    /// by default; to keep it syncing in the background, call
-    /// [`track_database`](Self::track_database) (or [`enable_sync`](Self::enable_sync))
-    /// with your desired settings. Any settings already configured for the
-    /// database are preserved across a repeat request.
+    /// needed just to open it. The supplied `sync_settings` are recorded with
+    /// the database, including when a pending request is retried after approval.
     ///
     /// When approval is still pending the request returns
     /// [`SyncError::BootstrapPending`] but a provisional mapping is recorded;
@@ -1007,6 +1004,8 @@ impl User {
     /// * `ticket` - A ticket containing the database ID and address hints
     /// * `key_id` - The ID of this user's key to use for the request
     /// * `requested_permission` - The permission level being requested
+    /// * `sync_settings` - This user's durable synchronization preferences for
+    ///   the database once its access mapping is recorded
     /// * `metadata` - Optional free-form context for the approver to inspect on
     ///   the stored bootstrap request when deciding whether to grant access
     ///
@@ -1028,6 +1027,8 @@ impl User {
     ///     &ticket,
     ///     &user_key_id,
     ///     Permission::Write(5),
+    ///     SyncSettings::on_commit(),
+    ///     None,
     /// ).await?;
     ///
     /// // After approval, the database can be opened
@@ -1039,6 +1040,7 @@ impl User {
         ticket: &DatabaseTicket,
         key_id: &PublicKey,
         requested_permission: Permission,
+        sync_settings: SyncSettings,
         metadata: Option<Doc>,
     ) -> Result<()> {
         // The request is signed with this key, so the peer can tell an actual
@@ -1064,7 +1066,7 @@ impl User {
             )
             .await;
 
-        self.record_database_access(&database_id, key_id, result)
+        self.record_database_access(&database_id, key_id, sync_settings, result)
             .await
     }
 
@@ -1086,6 +1088,7 @@ impl User {
         &mut self,
         database_id: &ID,
         key_id: &PublicKey,
+        sync_settings: SyncSettings,
         bootstrap_result: Result<()>,
     ) -> Result<()> {
         // Bootstrap grants access at the sync layer (auth + entries) but does not
@@ -1098,14 +1101,6 @@ impl User {
                 // Access was already authorized and the database is now synced, so
                 // its auth settings are local: discover the real SigKey (which may
                 // be a direct, global-wildcard, or delegated key) and record it.
-                // Preserve any sync settings the caller already configured for this
-                // database — a repeat request must not silently disable sync — and
-                // fall back to the default only for a freshly-tracked database.
-                let sync_settings = self
-                    .database(database_id)
-                    .await
-                    .map(|tracked| tracked.sync_settings)
-                    .unwrap_or_default();
                 self.track_database(database_id.clone(), key_id, sync_settings)
                     .await?;
                 Ok(())
@@ -1121,12 +1116,43 @@ impl User {
                 if let Error::Sync(sync_err) = &e
                     && matches!(sync_err.as_ref(), SyncError::BootstrapPending { .. })
                 {
-                    self.map_key(key_id, database_id, SigKey::from_pubkey(key_id))
+                    self.record_pending_database_access(database_id, key_id, sync_settings)
                         .await?;
                 }
                 Err(e)
             }
         }
+    }
+
+    /// Store a pending bootstrap's provisional key mapping and preferences in
+    /// one transaction. Unlike [`Self::track_database`], this does not try to
+    /// discover authorization that cannot exist until approval.
+    async fn record_pending_database_access(
+        &mut self,
+        database_id: &ID,
+        key_id: &PublicKey,
+        sync_settings: SyncSettings,
+    ) -> Result<()> {
+        let tx = self.user_database.new_transaction().await?;
+        self.map_key_in_txn(&tx, key_id, database_id, SigKey::from_pubkey(key_id))
+            .await?;
+        let databases_table = tx.get_store::<Table<TrackedDatabase>>("databases").await?;
+        let tracked = TrackedDatabase {
+            database_id: database_id.clone(),
+            key_id: key_id.clone(),
+            sync_settings,
+        };
+        databases_table
+            .set(&database_id.to_string(), tracked)
+            .await?;
+        tx.commit().await?;
+
+        if let Some(sync) = self.instance.sync() {
+            sync.sync_user(&self.user_uuid, self.user_database.root_id())
+                .await?;
+        }
+
+        Ok(())
     }
 
     // === Tracked Databases ===
@@ -1250,75 +1276,6 @@ impl User {
             }
             .into()
         })
-    }
-
-    /// Enable sync for a tracked database.
-    ///
-    /// Sets `sync_enabled = true` on the user's preference for this database,
-    /// preserving `sync_on_commit`, `interval_seconds`, and `properties`.
-    /// Owner reconciliation happens independently after the signed preference
-    /// write; inspect it through [`Database::sync_settings`](crate::Database::sync_settings).
-    ///
-    /// # Errors
-    /// Returns `DatabaseNotTracked` if the database is not in the user's list.
-    #[deprecated(
-        note = "open the database through User and call Database::share().await?, handling PreferenceWriteOutcome"
-    )]
-    pub async fn enable_sync(&mut self, database_id: &ID) -> Result<()> {
-        self.open_database(database_id)
-            .await?
-            .share()
-            .await?
-            .into_result()
-            .map(|_| ())
-    }
-
-    /// Disable sync for a tracked database.
-    ///
-    /// Sets `sync_enabled = false` on the user's preference for this database,
-    /// preserving other sync settings. Owner reconciliation is independent.
-    ///
-    /// The host-level combined state is OR'd across all users on the instance,
-    /// so another user with sync enabled for the same database will keep the
-    /// host serving it.
-    ///
-    /// No-op if already disabled.
-    ///
-    /// # Errors
-    /// Returns `DatabaseNotTracked` if the database is not in the user's list.
-    #[deprecated(
-        note = "open the database through User and call Database::stop_sharing().await?, handling PreferenceWriteOutcome"
-    )]
-    pub async fn disable_sync(&mut self, database_id: &ID) -> Result<()> {
-        self.open_database(database_id)
-            .await?
-            .stop_sharing()
-            .await?
-            .into_result()
-            .map(|_| ())
-    }
-
-    /// Enable sync for a tracked database and return a ready [`DatabaseTicket`].
-    ///
-    /// Compatibility wrapper over [`Database::share`](crate::Database::share):
-    /// the preference is durably written first, then a point-in-time locator is
-    /// constructed. A locator error therefore does not roll back the accepted
-    /// preference.
-    ///
-    /// # Errors
-    /// - [`SyncError::SyncNotEnabled`] if sync is not attached to the instance
-    ///   (call [`Instance::enable_sync`](crate::Instance::enable_sync) first).
-    /// - [`SyncError::NoTransportEnabled`] if sync is attached but no transport
-    ///   has been registered.
-    /// - [`UserError::DatabaseNotTracked`] if the database is not in the user's
-    ///   tracked list.
-    #[deprecated(
-        note = "open the database through User, handle Database::share(), then call Database::ticket()"
-    )]
-    pub async fn share(&mut self, database_id: &ID) -> Result<DatabaseTicket> {
-        let database = self.open_database(database_id).await?;
-        database.share().await?.into_result()?;
-        database.ticket().await
     }
 
     /// Check whether this user has sync enabled for a tracked database.

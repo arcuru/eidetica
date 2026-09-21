@@ -667,12 +667,11 @@ for (_, msg) in all_messages {
 <!-- Code block ignored: Requires network connectivity and running server -->
 
 ```rust,ignore
-use eidetica::sync::{Address, DatabaseTicket, transports::http::HttpTransport};
+use eidetica::{sync::{DatabaseTicket, transports::http::HttpTransport}, user::types::SyncSettings};
 
 // Join an existing room using a ticket URL
 let ticket: DatabaseTicket = "eidetica:?db=bafyr4i...&pr=http:127.0.0.1:8080".parse()?;
 let room_id = ticket.database_id().clone();
-let address = ticket.addresses().first().unwrap().clone();
 
 // Register sync transport
 if let Some(sync) = instance.sync() {
@@ -682,17 +681,11 @@ if let Some(sync) = instance.sync() {
     let key_id = user.get_default_key()?;
     user.request_database_access(
         &sync,
-        &address,
-        &room_id,
+        &ticket,
         &key_id,
         eidetica::auth::Permission::Write(10),
-    ).await?;
-
-    // Register the database with User's key manager
-    user.track_database(
-        room_id.clone(),
-        &key_id,
-        eidetica::user::types::SyncSettings::on_commit(),
+        SyncSettings::on_commit(),
+        None,
     ).await?;
 
     // Open the synced database

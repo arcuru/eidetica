@@ -11,6 +11,7 @@ use eidetica::{
         Address, DatabaseTicket,
         transports::{http::HttpTransport, iroh::IrohTransport},
     },
+    user::types::SyncSettings,
 };
 use iroh::RelayMode;
 
@@ -324,6 +325,7 @@ async fn test_bootstrap_with_ticket_authenticated() {
             &ticket,
             &client_key_id,
             Permission::Write(5),
+            SyncSettings::disabled(),
             None,
         )
         .await

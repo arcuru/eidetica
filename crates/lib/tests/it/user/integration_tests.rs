@@ -659,10 +659,9 @@ async fn test_collaborative_database_with_sync_and_global_permissions() {
     println!("\n✅ TEST COMPLETED: User API end-to-end collaborative database with sync works!");
 }
 
-/// `user.share()` on an instance with a running HTTP transport returns a
+/// `Database::share()` on an instance with a running HTTP transport returns a
 /// ticket populated with the server's address — verifies the wiring through
 /// `Sync::create_ticket` rather than the empty-fallback branch.
-#[allow(deprecated)] // Compatibility coverage for the deprecated User wrapper.
 #[tokio::test]
 async fn test_share_with_attached_sync_includes_server_addresses() {
     let instance = test_instance().await;
@@ -694,14 +693,16 @@ async fn test_share_with_attached_sync_includes_server_addresses() {
     let db_id = db.root_id().clone();
     set_global_auth_key(&db, AuthKey::active(None, Permission::Write(10))).await;
 
-    let ticket = alice.share(&db_id).await.expect("share should succeed");
+    db.share()
+        .await
+        .expect("share should succeed")
+        .into_result()
+        .expect("share write should be definite");
+    let ticket = db.ticket().await.expect("ticket should succeed");
 
     assert_eq!(ticket.database_id(), &db_id);
     assert!(
-        alice
-            .is_sync_enabled(&db_id)
-            .await
-            .expect("is_sync_enabled"),
+        db.is_shared().await.expect("is_shared"),
         "share() should leave sync enabled for the database"
     );
     assert!(
@@ -712,20 +713,17 @@ async fn test_share_with_attached_sync_includes_server_addresses() {
         "Ticket should include the running HTTP transport's address"
     );
 
-    let ticket2 = alice
-        .share(&db_id)
+    db.share()
         .await
-        .expect("second share should succeed");
+        .expect("second share should succeed")
+        .into_result()
+        .expect("second share write should be definite");
+    let ticket2 = db.ticket().await.expect("second ticket should succeed");
     assert_eq!(
         ticket, ticket2,
         "repeated share() should produce equivalent tickets"
     );
-    assert!(
-        alice
-            .is_sync_enabled(&db_id)
-            .await
-            .expect("is_sync_enabled")
-    );
+    assert!(db.is_shared().await.expect("is_shared"));
 
     sync.stop_server().await.expect("Failed to stop server");
 }

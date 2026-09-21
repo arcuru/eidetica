@@ -555,6 +555,7 @@ async fn handle_track_database(
     // Run the network bootstrap WITHOUT holding the per-session user lock — a
     // slow or hung peer must not freeze the rest of this session's requests.
     let key_name = key_id.to_string();
+    let sync_settings = SyncSettings::enabled().with_interval(13);
     let network_result = sync
         .bootstrap_with_ticket(&ticket, &signing_key, &key_name, permission, None)
         .await;
@@ -562,41 +563,16 @@ async fn handle_track_database(
     // Re-acquire only for the cheap, local SigKey-mapping write.
     let bootstrap_result = {
         let mut user = user_lock.write().await;
-        user.record_database_access(ticket.database_id(), &key_id, network_result)
+        user.record_database_access(ticket.database_id(), &key_id, sync_settings, network_result)
             .await
     };
 
     match bootstrap_result {
         Ok(_) => {
-            let mut user = user_lock.write().await;
-
-            // `record_database_access` already recorded the SigKey mapping (with
-            // sync left disabled). Re-track here only to apply this daemon's sync
-            // policy; the key is unchanged so this skips re-validation and just
-            // updates settings.
-            match user
-                .track_database(
-                    ticket.database_id().clone(),
-                    &key_id,
-                    SyncSettings::enabled().with_interval(13),
-                )
-                .await
-            {
-                Ok(_) => {
-                    tracing::info!(
-                        "Successfully bootstrapped and tracked database {} for user {}",
-                        ticket.database_id(),
-                        user.username()
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "Bootstrapped database {} but failed to add to tracking: {}",
-                        ticket.database_id(),
-                        e
-                    );
-                }
-            }
+            tracing::info!(
+                "Successfully bootstrapped database {}",
+                ticket.database_id()
+            );
             Redirect::to("/dashboard").into_response()
         }
         Err(e) => (

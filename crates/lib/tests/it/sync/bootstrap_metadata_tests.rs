@@ -7,6 +7,7 @@ use eidetica::{
     auth::Permission,
     crdt::Doc,
     sync::{DatabaseTicket, transports::http::HttpTransport},
+    user::types::SyncSettings,
 };
 
 use super::helpers::*;
@@ -37,10 +38,21 @@ async fn bootstrap_request_carries_metadata_to_approver() {
             &ticket,
             &client_key_id,
             Permission::Write(5),
+            SyncSettings::enabled().with_interval(29),
             Some(metadata),
         )
         .await;
     assert!(result.is_err(), "manual-approval request should be pending");
+    assert_eq!(
+        client_user
+            .database(&tree_id)
+            .await
+            .unwrap()
+            .sync_settings
+            .interval_seconds,
+        Some(29),
+        "metadata and sync preferences must remain distinct on a pending request"
+    );
 
     // The approver sees the metadata verbatim on the stored pending request.
     let pending = server_sync.pending_bootstrap_requests().await.unwrap();

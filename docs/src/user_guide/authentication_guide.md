@@ -684,15 +684,16 @@ By default, bootstrap requests are **rejected** for security:
 <!-- Code block ignored: Requires network connectivity to peer server -->
 
 ```rust,ignore
-use eidetica::sync::Address;
+use eidetica::{sync::DatabaseTicket, user::types::SyncSettings};
 
 // Bootstrap will fail without explicit policy configuration
 user.request_database_access(
     &sync,
-    &Address::http("127.0.0.1:8080"),
-    &database_id,
+    &ticket,
     &key_id,  // User's key ID
     Permission::Write(100),
+    SyncSettings::disabled(),
+    None,
 ).await; // Returns PermissionDenied error
 ```
 
