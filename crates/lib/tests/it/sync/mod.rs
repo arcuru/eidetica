@@ -20,6 +20,7 @@ mod concurrent_store_creation_tests;
 mod concurrent_writer_determinism_tests;
 mod dag_sync_tests;
 mod declarative_api_tests;
+mod delegated_dependencies_tests;
 mod device_id_tests;
 mod failed_address_race_lifetime;
 pub mod helpers;

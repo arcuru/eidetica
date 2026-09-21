@@ -101,6 +101,11 @@ pub struct SyncTreeRequest {
     /// public sync omits both fields.
     #[serde(default)]
     pub auth: Option<SyncRequestAuth>,
+    /// Delegation path from the originally authorized database to this one.
+    /// The server checks read authority on the first database and every direct
+    /// delegation edge before serving entries.
+    #[serde(default)]
+    pub dependency_path: Vec<ID>,
 }
 
 /// A caller's proof of key possession for one sync request.
@@ -278,7 +283,7 @@ pub enum SyncResponse {
 /// serialized type in this protocol (handshake, sync requests/responses) is a
 /// version bump, not a backward-compatible addition. See
 /// [`crate::instance::WriteSource`] for the same rule on the service wire.
-pub const PROTOCOL_VERSION: u32 = 0;
+pub const PROTOCOL_VERSION: u32 = 1;
 
 /// Context information about the incoming request.
 ///

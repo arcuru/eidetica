@@ -42,6 +42,7 @@ fn fabricated_tip_request(tree_id: &ID) -> SyncRequest {
         requested_permission: None,
         metadata: None,
         auth: None,
+        dependency_path: vec![],
     })
 }
 
@@ -172,6 +173,7 @@ fn signed_request(
         requested_permission: None,
         metadata: None,
         auth: Some(auth),
+        dependency_path: vec![],
     })
 }
 

@@ -63,7 +63,7 @@ enum PinnedSettings {
 }
 
 /// Summary of a [`Database::verify`] pass.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct VerifyReport {
     /// Entries promoted `Unverified` → `Verified` this pass.
     pub verified: usize,
@@ -71,6 +71,19 @@ pub struct VerifyReport {
     pub failed: usize,
     /// Entries left `Unverified` (pinned `_settings` not yet held locally).
     pub still_unverified: usize,
+    /// Delegated database replicas that must be completed before verification
+    /// can continue. Multiple blocked entries that name the same database are
+    /// coalesced, as are duplicate missing entry IDs.
+    pub dependencies: Vec<VerificationDependency>,
+}
+
+/// A delegated database replica needed by an unverified entry.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct VerificationDependency {
+    /// Root ID of the delegated database.
+    pub database_id: ID,
+    /// First known missing entries in that database's history.
+    pub missing: Vec<ID>,
 }
 
 /// A signing key bound to its identity in a database's auth settings.
@@ -2052,6 +2065,7 @@ impl Database {
                 //    logic as the legacy `get_tree`-walk verify, just
                 //    bounded to the Unverified region.
                 let mut report = VerifyReport::default();
+                let mut dependencies: HashMap<ID, HashSet<ID>> = HashMap::new();
                 let mut any_promoted = false;
                 for id in &order {
                     let entry = unverified.get(id).expect("topo id is in set");
@@ -2089,6 +2103,14 @@ impl Database {
                             {
                                 Ok(valid) => valid,
                                 Err(Error::Auth(e)) if e.is_delegated_tree_unsynced() => {
+                                    if let AuthError::DelegatedTreeUnsynced { tree_id, missing } =
+                                        e.as_ref()
+                                    {
+                                        dependencies
+                                            .entry(tree_id.clone())
+                                            .or_default()
+                                            .extend(missing.iter().cloned());
+                                    }
                                     report.still_unverified += 1;
                                     continue;
                                 }
@@ -2109,6 +2131,21 @@ impl Database {
                         }
                     }
                 }
+
+                report.dependencies = dependencies
+                    .into_iter()
+                    .map(|(database_id, missing)| {
+                        let mut missing: Vec<_> = missing.into_iter().collect();
+                        missing.sort();
+                        VerificationDependency {
+                            database_id,
+                            missing,
+                        }
+                    })
+                    .collect();
+                report
+                    .dependencies
+                    .sort_by(|a, b| a.database_id.cmp(&b.database_id));
 
                 Ok::<_, crate::Error>((report, any_promoted, raw_tips))
             })

@@ -368,6 +368,8 @@ transaction.commit().await?;
 
 Now any key in Alice's personal database can access the project database, with permissions clamped to the specified bounds.
 
+When a peer first receives a project entry signed through this delegation, it may not yet hold Alice's database. Sync automatically fetches that database from the same peer, including nested delegated databases, before retrying the project entry. These dependency replicas are durable and may be served onward under the project's sync policy. Tracking Alice's database directly later reuses the same local replica and applies the direct tracking settings.
+
 ### Understanding Delegation Paths
 
 **Critical concept**: A delegation path traverses through databases using **two different types of identifiers**:

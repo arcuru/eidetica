@@ -393,6 +393,7 @@ pub fn create_signed_bootstrap_request(
         requested_permission: Some(permission),
         metadata: None,
         auth: Some(auth),
+        dependency_path: vec![],
     })
 }
 
@@ -411,6 +412,7 @@ pub fn create_bootstrap_request(
         requested_permission: Some(permission),
         metadata: None,
         auth: None,
+        dependency_path: vec![],
     })
 }
 

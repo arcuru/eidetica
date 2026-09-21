@@ -360,6 +360,15 @@ async fn test_remote_ingest_missing_delegated_root_stays_retryable() {
     .unwrap();
 
     let target_db = ingest_target_fixture(&receiver, &fixture).await;
+    let report = target_db.verify().await.unwrap();
+    assert_eq!(
+        report.dependencies,
+        vec![VerificationDependency {
+            database_id: fixture.delegated_root.clone(),
+            missing: vec![fixture.delegated_root.clone()],
+        }],
+        "verification must expose a durable-sync dependency to its caller"
+    );
     assert_retryable_and_invisible(&receiver, &target_db, &fixture).await;
     assert_delegated_dependency(
         &delegated_dependency_error(&receiver, &fixture).await,

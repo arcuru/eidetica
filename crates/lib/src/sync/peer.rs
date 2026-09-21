@@ -202,6 +202,18 @@ impl Sync {
         })
     }
 
+    /// Direct delegated-database dependencies recorded for `database_id`.
+    ///
+    /// This is primarily an observability hook for applications and tests. The
+    /// sync engine uses the same durable graph to retain replicas across
+    /// restarts and inherit serving policy from their parents.
+    pub async fn database_dependencies(&self, database_id: &ID) -> Result<Vec<ID>> {
+        let txn = self.sync_tree.new_transaction().await?;
+        super::peer_manager::PeerManager::new(&txn)
+            .get_dependencies(database_id)
+            .await
+    }
+
     /// When the background engine last synced with a peer.
     ///
     /// Reads the shared liveness state directly rather than going through the

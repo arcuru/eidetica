@@ -1865,9 +1865,9 @@ impl Instance {
         &self,
         tree_id: &ID,
         entries: Vec<Entry>,
-    ) -> Result<usize> {
+    ) -> Result<crate::database::VerifyReport> {
         if entries.is_empty() {
-            return Ok(0);
+            return Ok(crate::database::VerifyReport::default());
         }
 
         // Store the batch under the tree lock; release before calling
@@ -1895,10 +1895,10 @@ impl Instance {
         // subscribers see the promotion without needing to schedule
         // their own verify pass.
         if stored_count > 0 {
-            Database::open(self, tree_id).await?.verify().await?;
+            return Database::open(self, tree_id).await?.verify().await;
         }
 
-        Ok(stored_count)
+        Ok(crate::database::VerifyReport::default())
     }
 
     /// Demote `entry_id` to [`VerificationStatus::Unverified`] and

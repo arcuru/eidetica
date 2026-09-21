@@ -124,6 +124,7 @@ async fn create_pending_request(
         requested_permission: Some(permission),
         metadata: None,
         auth: Some(auth),
+        dependency_path: vec![],
     });
 
     let context = RequestContext::default();

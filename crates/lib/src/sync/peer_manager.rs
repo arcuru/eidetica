@@ -17,6 +17,7 @@ use crate::{
 /// Private constants for peer management subtree names
 pub(super) const PEERS_SUBTREE: &str = "peers"; // Maps peer pubkey -> PeerInfo
 pub(super) const TREES_SUBTREE: &str = "trees"; // Maps tree ID -> list of peer pubkeys
+pub(super) const DEPENDENCIES_SUBTREE: &str = "dependencies"; // Maps parent tree -> delegated database roots
 
 /// Internal peer manager for the sync module.
 ///
@@ -460,6 +461,81 @@ impl<'a> PeerManager<'a> {
         }
 
         Ok(())
+    }
+
+    /// Persist a delegated-database dependency and inherit the parent's peer
+    /// relationships onto it. The edge remains after the immediate acquisition
+    /// so serving policy and future periodic sync continue to follow the parent.
+    pub(super) async fn add_dependency(&self, parent: &ID, dependency: &ID) -> Result<()> {
+        let dependencies = self.txn.get_store::<DocStore>(DEPENDENCIES_SUBTREE).await?;
+        let parent_str = parent.to_string();
+        let dependency_str = dependency.to_string();
+        let list_path = path!(&parent_str, "database_ids");
+        let mut database_ids: Vec<String> = dependencies
+            .get_path_as::<String>(&list_path)
+            .await
+            .ok()
+            .and_then(|json| serde_json::from_str(&json).ok())
+            .unwrap_or_default();
+        if !database_ids.contains(&dependency_str) {
+            database_ids.push(dependency_str);
+            database_ids.sort();
+            dependencies
+                .set_path(&list_path, serde_json::to_string(&database_ids).unwrap())
+                .await?;
+        }
+
+        for peer in self.get_tree_peers(parent).await? {
+            self.add_tree_sync(peer.public_key(), dependency).await?;
+        }
+        Ok(())
+    }
+
+    /// Get the direct delegated-database dependencies of a database.
+    pub(super) async fn get_dependencies(&self, parent: &ID) -> Result<Vec<ID>> {
+        let dependencies = self.txn.get_store::<DocStore>(DEPENDENCIES_SUBTREE).await?;
+        let list_path = path!(&parent.to_string(), "database_ids");
+        let database_ids: Vec<String> = dependencies
+            .get_path_as::<String>(&list_path)
+            .await
+            .ok()
+            .and_then(|json| serde_json::from_str(&json).ok())
+            .unwrap_or_default();
+        database_ids.into_iter().map(|id| ID::parse(&id)).collect()
+    }
+
+    /// Resolve the effective sync settings for a database, inheriting from any
+    /// tracked parent dependency edge when the database has no direct setting.
+    pub(super) async fn inherited_settings(
+        &self,
+        database_id: &ID,
+        user_mgr: &super::user_sync_manager::UserSyncManager<'_>,
+    ) -> Result<Option<crate::user::types::SyncSettings>> {
+        let dependencies = self.txn.get_store::<DocStore>(DEPENDENCIES_SUBTREE).await?;
+        let all = dependencies.get_all().await?;
+        let mut current = vec![database_id.clone()];
+        let mut seen = std::collections::HashSet::new();
+        while let Some(candidate) = current.pop() {
+            if !seen.insert(candidate.clone()) {
+                continue;
+            }
+            if let Some(settings) = user_mgr.get_combined_settings(&candidate).await? {
+                return Ok(Some(settings));
+            }
+            for parent in all.keys() {
+                let Ok(parent_id) = ID::parse(parent) else {
+                    continue;
+                };
+                if self
+                    .get_dependencies(&parent_id)
+                    .await?
+                    .contains(&candidate)
+                {
+                    current.push(parent_id);
+                }
+            }
+        }
+        Ok(None)
     }
 
     /// Remove a tree from the sync relationship with a peer.

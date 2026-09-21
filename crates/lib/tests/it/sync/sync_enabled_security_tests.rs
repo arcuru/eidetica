@@ -228,6 +228,7 @@ async fn test_incremental_sync_rejected_when_sync_disabled() {
         requested_permission: None,
         metadata: None,
         auth: None,
+        dependency_path: vec![],
     });
 
     let context = RequestContext::default();
