@@ -411,21 +411,22 @@ async fn lower_schema_version_keeps_unknown_migration_error() {
     let Some(db) = TestDatabase::new().await else {
         return;
     };
-    db.marker(Some(SCHEMA_VERSION - 1)).await;
+    // v0 is the oldest migratable schema; nothing migrates from below it.
+    let unsupported = -1;
+    db.marker(Some(unsupported)).await;
     let error = match db.open().await {
         Ok(backend) => {
             db.close_backend(backend).await;
-            panic!("no lower-version migration is implemented");
+            panic!("no migration from below v0 is implemented");
         }
         Err(error) => error,
     };
     assert!(
-        error.to_string().contains(&format!(
-            "Unknown migration path: v{} to v{SCHEMA_VERSION}",
-            SCHEMA_VERSION - 1
-        )),
+        error
+            .to_string()
+            .contains(&format!("Unknown migration path: v{unsupported} to v0")),
         "unexpected error: {error}"
     );
-    assert_eq!(db.versions().await, vec![(SCHEMA_VERSION - 1,)]);
+    assert_eq!(db.versions().await, vec![(unsupported,)]);
     db.cleanup().await;
 }

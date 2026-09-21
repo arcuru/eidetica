@@ -1145,9 +1145,23 @@ async fn explicit_trust_reset_reverifies_entire_local_prefix() {
             VerificationStatus::Unverified
         );
     }
+    // The retained frontier read by accepted-only callers is cleared with
+    // the statuses, not left serving the pre-reset tip.
+    assert!(
+        backend
+            .engine()
+            .verified_snapshot(&root)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     let report = tree.verify().await.unwrap();
     assert_eq!(report.failed, 0, "{report:?}");
     assert_eq!(report.still_unverified, 0, "{report:?}");
+    assert_eq!(
+        backend.engine().verified_snapshot(&root).await.unwrap(),
+        eidetica::Snapshot::from([b.clone()])
+    );
     assert_eq!(
         backend.get_verification_status(&b).await.unwrap(),
         VerificationStatus::Verified

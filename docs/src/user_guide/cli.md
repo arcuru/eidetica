@@ -202,7 +202,8 @@ eidetica db reset-local-verification --backend sqlite --data-dir /var/lib/eideti
 
 The command does not run during startup or schema migration. **Skipping it can
 leave old `Verified` labels trusted under the new rules.** It resets _all_
-local statuses (`Verified` and `Failed` included) to `Unverified`, discards
+local statuses (`Verified` and `Failed` included) to `Unverified`, clears the
+retained Verified frontier in the same step, discards
 derived and incomplete Store-state namespaces, and keeps every immutable Entry
 and authoritative Store state. It does not verify entries itself. Start the new
 version only after the command succeeds, and follow the

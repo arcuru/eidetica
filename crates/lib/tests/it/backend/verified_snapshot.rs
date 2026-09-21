@@ -15,7 +15,7 @@ use std::{
 };
 
 use eidetica::{
-    Instance, NewUser, Snapshot,
+    Instance, NewAccount, Snapshot,
     backend::{
         BackendImpl, InstanceMetadata, InstanceSecrets, RecordMutations, RecordPage, RecordRange,
         RecordView, StagingToken, StoreStateRequest, VerificationStatus,
@@ -26,7 +26,7 @@ use eidetica::{
 };
 
 use super::helpers::test_backend;
-use crate::helpers::{TestVerify, create_user};
+use crate::helpers::{TestVerify, create_account};
 
 /// Promote each entry to `Verified`, in order.
 async fn promote(backend: &dyn BackendImpl, ids: &[ID]) {
@@ -330,6 +330,98 @@ async fn demotion_rebuilds_and_repromotion_recovers() {
     // Verified descendant.
     promote(&*backend, std::slice::from_ref(&a_id)).await;
     assert_verified(&*backend, &root_id, std::slice::from_ref(&b_id)).await;
+}
+
+/// Build `root ← a ← b` plus a fork `root ← c`, all promoted to Verified.
+async fn verified_fork(backend: &dyn BackendImpl) -> (ID, ID, ID, ID) {
+    let root = root_entry();
+    let root_id = root.id();
+    backend.put_verified(root).await.unwrap();
+    let a = child_entry(&root_id, std::slice::from_ref(&root_id), "a", 1);
+    let a_id = a.id();
+    backend.put_verified(a).await.unwrap();
+    let b = child_entry(&root_id, std::slice::from_ref(&a_id), "b", 2);
+    let b_id = b.id();
+    backend.put_verified(b).await.unwrap();
+    let c = child_entry(&root_id, std::slice::from_ref(&root_id), "c", 1);
+    let c_id = c.id();
+    backend.put_verified(c).await.unwrap();
+    assert_verified(backend, &root_id, &[b_id.clone(), c_id.clone()]).await;
+    (root_id, a_id, b_id, c_id)
+}
+
+/// The offline trust reset clears the retained frontier atomically with the
+/// status reset (a stale retained frontier would keep serving tips nothing
+/// vouches for), and re-verification then rebuilds it incrementally: valid
+/// ancestors become visible while a dependent suffix is still excluded.
+#[tokio::test]
+async fn trust_reset_clears_retained_frontier_and_reverify_recovers() {
+    let backend = test_backend().await;
+    let (root_id, a_id, b_id, c_id) = verified_fork(&*backend).await;
+
+    backend.reset_local_verification().await.unwrap();
+    // Retained state first (no rebuild masking a stale frontier), then oracle.
+    assert_retained(&*backend, &root_id, &[]).await;
+    assert_verified(&*backend, &root_id, &[]).await;
+
+    // Re-verify a prefix; `b` stays Unverified and `c` fails.
+    promote(&*backend, &[root_id.clone(), a_id.clone()]).await;
+    backend
+        .update_verification_status(&c_id, VerificationStatus::Failed)
+        .await
+        .unwrap();
+    assert_retained(&*backend, &root_id, std::slice::from_ref(&a_id)).await;
+    assert_verified(&*backend, &root_id, std::slice::from_ref(&a_id)).await;
+
+    promote(&*backend, std::slice::from_ref(&b_id)).await;
+    assert_verified(&*backend, &root_id, std::slice::from_ref(&b_id)).await;
+}
+
+/// SQLite: a reset frontier stays cleared across reopen (the durable rows
+/// were deleted in the reset transaction), and re-verification after reopen
+/// publishes durably again.
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn sqlite_trust_reset_frontier_survives_reopen() {
+    use eidetica::backend::database::Sqlite;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("eidetica.db");
+    let backend = Sqlite::open(&path).await.unwrap();
+    let (root_id, a_id, _b_id, _c_id) = verified_fork(&backend).await;
+    backend.reset_local_verification().await.unwrap();
+    drop(backend);
+
+    let reopened = Sqlite::open(&path).await.unwrap();
+    assert_retained(&reopened, &root_id, &[]).await;
+    promote(&reopened, &[root_id.clone(), a_id.clone()]).await;
+    drop(reopened);
+
+    let reopened = Sqlite::open(&path).await.unwrap();
+    assert_retained(&reopened, &root_id, std::slice::from_ref(&a_id)).await;
+    assert_verified(&reopened, &root_id, std::slice::from_ref(&a_id)).await;
+}
+
+/// InMemory file persistence: a saved reset does not resurrect the retained
+/// frontier on load, and re-verification after load persists again.
+#[tokio::test]
+#[cfg_attr(miri, ignore)] // file I/O not available with Miri isolation enabled
+async fn in_memory_trust_reset_frontier_survives_save_load() {
+    use eidetica::backend::database::InMemory;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("eidetica.json");
+    let backend = InMemory::new();
+    let (root_id, a_id, _b_id, _c_id) = verified_fork(&backend).await;
+    backend.reset_local_verification().await.unwrap();
+    backend.save_to_file(&path).unwrap();
+
+    let loaded = InMemory::try_load_from_file(&path).await.unwrap().unwrap();
+    assert_retained(&loaded, &root_id, &[]).await;
+    promote(&loaded, &[root_id.clone(), a_id.clone()]).await;
+    loaded.save_to_file(&path).unwrap();
+
+    let reopened = InMemory::try_load_from_file(&path).await.unwrap().unwrap();
+    assert_retained(&reopened, &root_id, std::slice::from_ref(&a_id)).await;
+    assert_verified(&reopened, &root_id, std::slice::from_ref(&a_id)).await;
 }
 
 /// Deterministic PRNG (LCG) — no extra dev-dependency for property coverage.
@@ -693,12 +785,12 @@ async fn settled_snapshot_reads_are_scan_free() {
             inner: test_backend().await,
             counters: counters.clone(),
         }),
-        NewUser::passwordless("admin"),
+        NewAccount::passwordless("admin"),
     )
     .await
     .unwrap();
-    create_user(&instance, "reader", None).await.unwrap();
-    let mut user = instance.login_user("reader", None).await.unwrap();
+    create_account(&instance, "reader", None).await.unwrap();
+    let mut user = instance.login_account("reader", None).await.unwrap();
     let key = user.get_default_key().expect("default key");
 
     let mut settings = Doc::new();

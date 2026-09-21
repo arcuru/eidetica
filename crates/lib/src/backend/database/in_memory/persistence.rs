@@ -146,6 +146,13 @@ impl<'de> Deserialize<'de> for InMemory {
             store_state_scan_reads: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(feature = "testing")]
             store_history_reads: std::sync::atomic::AtomicUsize::new(0),
+            // Derived Store-state namespaces are disposable performance
+            // state and are never persisted; the policy resets to defaults
+            // and recency restarts empty on load.
+            derived_cache_policy: std::sync::RwLock::new(
+                crate::backend::DerivedCachePolicy::default(),
+            ),
+            cache_recency: std::sync::Mutex::new(super::super::recency::RecencyState::default()),
         })
     }
 }

@@ -115,12 +115,12 @@ surfaced by the safe-default getter.
 
 These are deliberate consequences of the model, not defects:
 
-- **Verified-frontier computation cost.** Resolving the Verified frontier on
-  a default read walks verification status across the relevant DAG region
-  rather than returning raw tips directly. This is the price of a
-  safe-by-default read; it is a known performance characteristic of the
-  disclosure posture, optimisable behind the same API without changing
-  semantics.
+- **Verified-frontier maintenance cost.** The backend retains the Verified
+  prefix and its frontier beside the raw tips, updated atomically with each
+  verification-status change, so a settled default read is a retained lookup
+  rather than a history walk. The price moves to the status-update boundary
+  (promotion admits waiting descendants; a demotion or repair rebuilds the
+  tree's prefix), without changing read semantics.
 - **Sync no longer makes data visible by default.** Before this model, a
   synced entry was immediately readable. Now freshly synced or freshly
   bootstrapped data is **invisible to default reads until verified** — a
