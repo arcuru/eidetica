@@ -78,6 +78,10 @@ Then whenever they need access to a database, the db will authenticate them by g
 
 To keep remote delegated databases up to date, writes update the known tips of the delegated database. This is necessary to ensure that the primary tree sees the latest tips of the delegated tree and knows which keys to allow/block.
 
+Delegated authentication depends on having the delegated database history needed to reconstruct each claimed snapshot. If that replica is incomplete, the signed entry remains unverified and outside the verified frontier rather than failing permanently. Validation reports the delegated database root and the first known missing entries so sync can satisfy that dependency and retry verification.
+
+Automatic dependency tracking and fetching are not implemented yet. A future implementation can replicate delegated databases as ordinary databases that remain available to peers and may also be tracked directly for local edits.
+
 ## Conflict Resolution
 
 Auth changes use **Last-Write-Wins** via DAG structure:

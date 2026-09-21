@@ -1291,11 +1291,12 @@ async fn test_delegation_indeterminate_when_tips_unsynced() {
         .await
         .expect_err("unsynced claimed tips must not resolve");
 
-    // Must be the retriable sync-state signal, and must hand back the exact
-    // want-list so a re-verification pass knows what to fetch.
+    // Must be the retriable replica-state signal, name the delegated database,
+    // and hand back the exact initial want-list for a future dependency fetch.
     match err {
         Error::Auth(ref boxed) => match &**boxed {
-            AuthError::DelegatedTreeUnsynced { missing, .. } => {
+            AuthError::DelegatedTreeUnsynced { tree_id, missing } => {
+                assert_eq!(tree_id, delegated_tree.root_id());
                 assert_eq!(missing, &vec![ghost], "want-list must name the missing tip");
                 assert!(
                     !boxed.is_delegation_error(),
