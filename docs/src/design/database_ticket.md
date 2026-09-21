@@ -122,18 +122,17 @@ touch user-level sync preferences.
 
 ### User-scoped ticket lookup
 
-[`User::manage_database`](../user_guide/database_management.md) is the
-high-level API for making a tracked database shareable. It deliberately does
-not combine the process into one atomic call:
+A `Database` opened or created by a `User` is the high-level API for making a
+tracked database shareable. It deliberately does not combine the process into
+one atomic call:
 
-1. `DatabaseManagement::share` writes the user's signed durable preference.
+1. `Database::share` writes the user's signed durable preference.
 2. Owner reconciliation applies the daemon's private combined configuration independently.
-3. `DatabaseManagement::ticket` checks this user's own pinned setting and, when
-   enabled, returns a point-in-time locator built from the owner's current addresses.
+3. `Database::ticket` checks this user's setting and, when enabled, returns a
+   point-in-time locator built from the owner's current addresses.
 
-The user-scoped snapshot and watch expose only that user's settings. They do not
-expose or consult combined settings, other users, or runtime telemetry, and
-runtime-only address changes do not advance the settings watch. A caller whose
+`Database::sync_settings` exposes only that user's settings. It does not expose
+or consult combined settings, other users, or runtime telemetry. A caller whose
 own setting is disabled receives an error even if another user keeps the daemon
 serving the database. An unknown write acknowledgment is safe to retry or read
 back because setting the preference is idempotent.

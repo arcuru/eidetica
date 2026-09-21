@@ -247,6 +247,10 @@ pub enum DatabaseOp {
     /// connection. Idempotent: unsubscribing a tree that wasn't subscribed
     /// is a no-op. Gate Read on `root_id`.
     UnsubscribeWrites,
+
+    /// Return a point-in-time locator for the request's `root_id`.
+    /// Gate Read.
+    CreateTicket,
 }
 
 impl DatabaseOp {
@@ -280,7 +284,8 @@ impl DatabaseOp {
             | DatabaseOp::StoreStateRecordGet { .. }
             | DatabaseOp::StoreStateRecordScan { .. }
             | DatabaseOp::SubscribeWrites { .. }
-            | DatabaseOp::UnsubscribeWrites => Permission::Read,
+            | DatabaseOp::UnsubscribeWrites
+            | DatabaseOp::CreateTicket => Permission::Read,
         }
     }
 }
@@ -301,22 +306,6 @@ pub struct AuthenticatedDbRequest {
     pub identity: SigKey,
     /// Database operation to execute.
     pub op: DatabaseOp,
-}
-
-/// User-scoped point-in-time ticket operation, gated on the target tree.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ManagementOp {
-    /// Return a ticket only when the owner is currently serving `tree_id`.
-    Ticket { tree_id: ID, identity: SigKey },
-}
-
-impl ManagementOp {
-    /// Target database whose Read permission gates this operation.
-    pub fn tree_id(&self) -> &ID {
-        match self {
-            Self::Ticket { tree_id, .. } => tree_id,
-        }
-    }
 }
 
 /// Top-level request from client to server.
@@ -371,8 +360,6 @@ pub enum ServiceRequest {
     /// `AuthenticatedDbRequest` carries `(root_id, identity, op)` and is boxed
     /// to keep the enum's discriminated size compact.
     AuthenticatedDb(Box<AuthenticatedDbRequest>),
-    /// Database-scoped point-in-time ticket query.
-    Management(Box<ManagementOp>),
 }
 
 /// Server-initiated push to the client, interleaved with normal responses
@@ -855,17 +842,18 @@ mod tests {
     }
 
     #[test]
-    fn management_ticket_wire_remains_tree_scoped() {
+    fn ticket_wire_remains_tree_scoped() {
         let tree = test_id();
-        let request = ServiceRequest::Management(Box::new(ManagementOp::Ticket {
-            tree_id: tree.clone(),
+        let request = ServiceRequest::AuthenticatedDb(Box::new(AuthenticatedDbRequest {
+            root_id: tree.clone(),
             identity: SigKey::default(),
+            op: DatabaseOp::CreateTicket,
         }));
         let encoded = serde_json::to_string(&request).unwrap();
         let decoded: ServiceRequest = serde_json::from_str(&encoded).unwrap();
         match decoded {
-            ServiceRequest::Management(op) => assert_eq!(op.tree_id(), &tree),
-            other => panic!("expected management request, got {other:?}"),
+            ServiceRequest::AuthenticatedDb(request) => assert_eq!(request.root_id, tree),
+            other => panic!("expected database request, got {other:?}"),
         }
     }
 

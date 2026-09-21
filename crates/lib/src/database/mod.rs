@@ -28,7 +28,11 @@ use crate::{
     crdt::{CRDT, Doc},
     entry::{Entry, ID},
     instance::{WriteCallback, WriteEvent, WriteSource, backend::Backend, errors::InstanceError},
-    store::{SettingsStore, Store},
+    store::{SettingsStore, Store, Table},
+    sync::DatabaseTicket,
+    user::{
+        PreferenceWriteOutcome, PreferenceWriteReceipt, SyncSettings, TrackedDatabase, UserError,
+    },
 };
 
 #[cfg(test)]
@@ -167,6 +171,10 @@ pub struct Database {
     ops: Arc<dyn Backend>,
     /// Signing key bound to its auth identity for this database
     key: Option<DatabaseKey>,
+    /// Private user context carried only by handles opened or created through
+    /// a [`User`](crate::user::User) session. This owns caller-local sharing
+    /// preferences; ordinary database handles remain context-free.
+    user_database: Option<Box<Database>>,
     /// When `false` (default), reads expose only the maximal all-`Verified`
     /// prefix of the DAG (the "Verified frontier"). When `true`, reads also
     /// include `Unverified` entries. `Failed` entries are dropped regardless.
@@ -181,6 +189,7 @@ impl Database {
             instance,
             ops,
             key: None,
+            user_database: None,
             allow_unverified: false,
         }
     }
@@ -307,6 +316,7 @@ impl Database {
             instance: instance.downgrade(),
             ops: instance.backend().clone(),
             key: Some(DatabaseKey::new(signing_key.clone())),
+            user_database: None,
             allow_unverified: false,
         };
 
@@ -368,6 +378,7 @@ impl Database {
                     Some(SigKey::from_pubkey(&pubkey_for_identity)),
                 )),
                 key: Some(DatabaseKey::new(signing_key)),
+                user_database: None,
                 allow_unverified: false,
             });
         }
@@ -377,6 +388,7 @@ impl Database {
             instance: instance.downgrade(),
             ops: instance.backend().clone(),
             key: Some(DatabaseKey::new(signing_key)),
+            user_database: None,
             allow_unverified: false,
         })
     }
@@ -423,6 +435,7 @@ impl Database {
             instance: instance.downgrade(),
             ops: instance.backend().clone(),
             key: None,
+            user_database: None,
             allow_unverified: false,
         })
     }
@@ -460,6 +473,7 @@ impl Database {
             instance: instance.downgrade(),
             ops,
             key: None,
+            user_database: None,
             allow_unverified: false,
         })
     }
@@ -478,6 +492,13 @@ impl Database {
     pub fn with_key(self, key: impl Into<DatabaseKey>) -> Self {
         Self {
             key: Some(key.into()),
+            ..self
+        }
+    }
+
+    pub(crate) fn with_user_database(self, user_database: Database) -> Self {
+        Self {
+            user_database: Some(Box::new(user_database)),
             ..self
         }
     }
@@ -1024,6 +1045,125 @@ impl Database {
     pub async fn get_settings(&self) -> Result<SettingsStore> {
         let txn = self.new_transaction().await?;
         txn.get_settings()
+    }
+
+    /// Read this handle owner's private synchronization preferences.
+    ///
+    /// Database settings belong to the replicated database. Synchronization
+    /// preferences instead live in the owning user's private database, so only
+    /// handles returned by [`User::create_database`](crate::user::User::create_database)
+    /// or [`User::open_database`](crate::user::User::open_database) carry this
+    /// capability.
+    pub async fn sync_settings(&self) -> Result<SyncSettings> {
+        self.authorize_sharing().await?;
+        Ok(self.tracked_database().await?.sync_settings)
+    }
+
+    /// Whether this handle owner has enabled sharing for this database.
+    pub async fn is_shared(&self) -> Result<bool> {
+        Ok(self.sync_settings().await?.sync_enabled)
+    }
+
+    /// Set this handle owner's durable sharing preference.
+    ///
+    /// A connection failure after submission is ambiguous: callers receive
+    /// [`PreferenceWriteOutcome::Unknown`] and can safely retry this idempotent
+    /// write or read [`Self::sync_settings`] again.
+    pub async fn set_shared(&self, shared: bool) -> Result<PreferenceWriteOutcome> {
+        self.authorize_sharing().await?;
+        let user_database = self.user_database()?;
+        let tx = user_database.new_transaction().await?;
+        let table = tx.get_store::<Table<TrackedDatabase>>("databases").await?;
+        let key = self.root_id().to_string();
+        let mut tracked = table
+            .get(&key)
+            .await
+            .map_err(|_| UserError::DatabaseNotTracked {
+                database_id: self.root_id().clone(),
+            })?;
+
+        if tracked.sync_settings.sync_enabled == shared {
+            return Ok(PreferenceWriteOutcome::Written(PreferenceWriteReceipt {
+                entry_id: None,
+            }));
+        }
+
+        tracked.sync_settings.sync_enabled = shared;
+        table.set(&key, tracked).await?;
+        match tx.commit().await {
+            Ok(entry_id) => Ok(PreferenceWriteOutcome::Written(PreferenceWriteReceipt {
+                entry_id: Some(entry_id),
+            })),
+            Err(source) if source.is_io_error() || source.is_network_error() => {
+                Ok(PreferenceWriteOutcome::Unknown { source })
+            }
+            Err(source) => Err(source),
+        }
+    }
+
+    /// Enable this handle owner's sharing preference.
+    pub async fn share(&self) -> Result<PreferenceWriteOutcome> {
+        self.set_shared(true).await
+    }
+
+    /// Disable this handle owner's sharing preference.
+    pub async fn stop_sharing(&self) -> Result<PreferenceWriteOutcome> {
+        self.set_shared(false).await
+    }
+
+    /// Return a point-in-time locator when this handle owner is sharing.
+    pub async fn ticket(&self) -> Result<DatabaseTicket> {
+        if !self.is_shared().await? {
+            return Err(UserError::DatabaseNotShared {
+                database_id: self.root_id().clone(),
+            }
+            .into());
+        }
+
+        #[cfg(all(unix, feature = "service"))]
+        if let Some(conn) = self.instance()?.remote_connection() {
+            return conn
+                .database_ticket(
+                    self.root_id(),
+                    self.auth_identity().cloned().unwrap_or_default(),
+                )
+                .await;
+        }
+
+        crate::user::ticket_locator(&self.instance()?, self.root_id()).await
+    }
+
+    fn user_database(&self) -> Result<&Database> {
+        self.user_database.as_deref().ok_or_else(|| {
+            UserError::MissingDatabaseCapability {
+                database_id: self.root_id().clone(),
+            }
+            .into()
+        })
+    }
+
+    async fn tracked_database(&self) -> Result<TrackedDatabase> {
+        let user_database = self.user_database()?;
+        user_database
+            .get_store_viewer::<Table<TrackedDatabase>>("databases")
+            .await?
+            .get(&self.root_id().to_string())
+            .await
+            .map_err(|_| {
+                UserError::DatabaseNotTracked {
+                    database_id: self.root_id().clone(),
+                }
+                .into()
+            })
+    }
+
+    async fn authorize_sharing(&self) -> Result<()> {
+        self.user_database()?;
+        if self.current_permission().await? >= Permission::Read {
+            Ok(())
+        } else {
+            Err(UserError::InsufficientPermissions.into())
+        }
     }
 
     /// Get the name of the database from its settings store
