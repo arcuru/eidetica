@@ -148,6 +148,7 @@ async fn setup_callback_test() -> (Instance, Database) {
 
 struct DelegatedVerificationFixture {
     delegated_signing_key: PrivateKey,
+    delegated_root: ID,
     delegated_entries: Vec<Entry>,
     delegated_entry_id: ID,
     target_root: ID,
@@ -243,6 +244,7 @@ async fn delegated_verification_fixture() -> DelegatedVerificationFixture {
 
     DelegatedVerificationFixture {
         delegated_signing_key,
+        delegated_root,
         delegated_entries,
         delegated_entry_id,
         target_root,
@@ -308,6 +310,45 @@ async fn ingest_delegated_history(receiver: &Instance, entries: impl IntoIterato
     }
 }
 
+async fn delegated_dependency_error(
+    receiver: &Instance,
+    fixture: &DelegatedVerificationFixture,
+) -> Error {
+    let target_db = Database::open(receiver, &fixture.target_root)
+        .await
+        .unwrap();
+    let settings = target_db
+        .get_settings()
+        .await
+        .unwrap()
+        .auth_snapshot()
+        .await
+        .unwrap();
+    AuthValidator::new()
+        .validate_entry(&fixture.target_entry, &settings, Some(receiver))
+        .await
+        .expect_err("incomplete delegated history must surface its dependency")
+}
+
+fn assert_delegated_dependency(err: &Error, expected_tree: &ID, expected_missing: &[ID]) {
+    match err {
+        Error::Auth(auth) => match &**auth {
+            crate::auth::errors::AuthError::DelegatedTreeUnsynced { tree_id, missing } => {
+                assert_eq!(
+                    tree_id, expected_tree,
+                    "dependency must name the delegated database"
+                );
+                assert_eq!(
+                    missing, expected_missing,
+                    "dependency must name the exact known gaps"
+                );
+            }
+            other => panic!("expected DelegatedTreeUnsynced, got: {other:?}"),
+        },
+        other => panic!("expected DelegatedTreeUnsynced, got: {other:?}"),
+    }
+}
+
 #[tokio::test]
 async fn test_remote_ingest_missing_delegated_root_stays_retryable() {
     let fixture = delegated_verification_fixture().await;
@@ -320,6 +361,11 @@ async fn test_remote_ingest_missing_delegated_root_stays_retryable() {
 
     let target_db = ingest_target_fixture(&receiver, &fixture).await;
     assert_retryable_and_invisible(&receiver, &target_db, &fixture).await;
+    assert_delegated_dependency(
+        &delegated_dependency_error(&receiver, &fixture).await,
+        &fixture.delegated_root,
+        std::slice::from_ref(&fixture.delegated_root),
+    );
 
     ingest_delegated_history(&receiver, fixture.delegated_entries.clone()).await;
     let report = target_db.verify().await.unwrap();
@@ -352,6 +398,12 @@ async fn test_remote_ingest_missing_delegated_tip_stays_retryable_then_promotes(
     ingest_delegated_history(&receiver, fixture.delegated_entries.iter().take(1).cloned()).await;
     let target_db = ingest_target_fixture(&receiver, &fixture).await;
     assert_retryable_and_invisible(&receiver, &target_db, &fixture).await;
+    let missing_tip = fixture.delegated_entries.last().unwrap().id();
+    assert_delegated_dependency(
+        &delegated_dependency_error(&receiver, &fixture).await,
+        &fixture.delegated_root,
+        std::slice::from_ref(&missing_tip),
+    );
 
     ingest_delegated_history(&receiver, fixture.delegated_entries.iter().skip(1).cloned()).await;
     let report = target_db.verify().await.unwrap();
@@ -391,6 +443,18 @@ async fn test_remote_ingest_missing_delegated_intermediate_stays_retryable_then_
     ingest_delegated_history(&receiver, [tip]).await;
     let target_db = ingest_target_fixture(&receiver, &fixture).await;
     assert_retryable_and_invisible(&receiver, &target_db, &fixture).await;
+    let missing_intermediate: Vec<ID> = fixture
+        .delegated_entries
+        .iter()
+        .skip(1)
+        .take(fixture.delegated_entries.len() - 2)
+        .map(Entry::id)
+        .collect();
+    assert_delegated_dependency(
+        &delegated_dependency_error(&receiver, &fixture).await,
+        &fixture.delegated_root,
+        &missing_intermediate,
+    );
 
     ingest_delegated_history(
         &receiver,
