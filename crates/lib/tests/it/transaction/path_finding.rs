@@ -14,7 +14,7 @@ use super::helpers::*;
 use crate::helpers::*;
 
 /// The derived namespace the opaque projection publishes a merge result into.
-fn opaque_cache_request(database: &ID, store: &str, cache_id: &ID) -> StoreStateRequest {
+fn opaque_cache_request(database: &ID, store: &str, snapshot: &Snapshot) -> StoreStateRequest {
     StoreStateRequest {
         database: database.clone(),
         store: store.to_string(),
@@ -24,7 +24,7 @@ fn opaque_cache_request(database: &ID, store: &str, cache_id: &ID) -> StoreState
             name: "eidetica/opaque".to_string(),
             version: 0,
         },
-        source_key: cache_id.to_string().into_bytes(),
+        source_key: snapshot.cache_key_bytes(),
     }
 }
 
@@ -664,7 +664,7 @@ async fn test_find_merge_base_with_bypass_path() {
 /// Test that multi-tip merge state is cached and reused.
 ///
 /// This verifies that when reading from multiple tips, the computed merge state
-/// is cached using a synthetic ID based on sorted tip IDs, and subsequent reads
+/// is cached under the canonical Snapshot key, and subsequent reads
 /// hit the cache instead of recomputing.
 #[tokio::test]
 async fn test_multi_tip_merge_state_caching() {
@@ -681,21 +681,11 @@ async fn test_multi_tip_merge_state_caching() {
         .await
         .unwrap();
 
-    // Create the expected cache key (sorted by ID ordering, then converted to strings)
-    let mut sorted_ids = [diamond.left.clone(), diamond.right.clone()];
-    sorted_ids.sort();
-    let cache_key = format!(
-        "merge:{}",
-        sorted_ids
-            .iter()
-            .map(|id| id.to_string())
-            .collect::<Vec<_>>()
-            .join(":")
-    );
-    let cache_id = ID::from_bytes(cache_key);
+    // Canonical Snapshot key for the two-tip state.
+    let merge_snapshot = Snapshot::from([diamond.left.clone(), diamond.right.clone()]);
 
     // Verify cache is empty before read
-    let cache_request = opaque_cache_request(ctx.database().root_id(), "data", &cache_id);
+    let cache_request = opaque_cache_request(ctx.database().root_id(), "data", &merge_snapshot);
     let cached_before = ctx
         .database()
         .backend()
@@ -794,21 +784,11 @@ async fn test_multi_tip_cache_key_is_order_independent() {
     let store1 = tx1.get_store::<DocStore>("data").await.unwrap();
     let _ = store1.get_all().await.unwrap();
 
-    // Get the cache key (sorted by ID ordering, then converted to strings)
-    let mut sorted_ids = [diamond.left.clone(), diamond.right.clone()];
-    sorted_ids.sort();
-    let cache_key = format!(
-        "merge:{}",
-        sorted_ids
-            .iter()
-            .map(|id| id.to_string())
-            .collect::<Vec<_>>()
-            .join(":")
-    );
-    let cache_id = ID::from_bytes(cache_key);
+    // Canonical Snapshot key: construction order must not matter.
+    let merge_snapshot = Snapshot::from([diamond.left.clone(), diamond.right.clone()]);
 
     // Verify cache was populated
-    let cache_request = opaque_cache_request(ctx.database().root_id(), "data", &cache_id);
+    let cache_request = opaque_cache_request(ctx.database().root_id(), "data", &merge_snapshot);
     let cached = ctx
         .database()
         .backend()
