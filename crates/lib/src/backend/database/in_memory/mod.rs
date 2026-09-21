@@ -24,14 +24,15 @@ use serde::{Deserialize, Serialize};
 use crate::{
     Result,
     backend::{
-        BackendImpl, InstanceMetadata, InstanceSecrets, RecordMutations, RecordPage, RecordRange,
-        RecordView, StagingToken, StoreStateLifecycle, StoreStateRequest, VerificationStatus,
-        errors::BackendError,
+        BackendImpl, DerivedCachePolicy, InstanceMetadata, InstanceSecrets, RecordMutations,
+        RecordPage, RecordRange, RecordView, StagingToken, StoreStateLifecycle, StoreStateRequest,
+        VerificationStatus, errors::BackendError,
     },
     entry::{Entry, ID},
     snapshot::Snapshot,
 };
 
+use super::recency::RecencyState;
 use crate::backend::database::sorting;
 
 /// Grouped tree tips cache: (tree_tips, subtree_name -> subtree_tips)
@@ -88,9 +89,17 @@ pub(crate) struct RecordNamespace {
     request: StoreStateRequest,
     ready: bool,
     /// Unlinked by a derived clear: no longer resolvable, still readable
-    /// through views resolved before the clear.
+    /// through views resolved before the clear. Reclaimed only by the
+    /// following clear — eviction never touches this generation.
     unlinked: bool,
+    /// Unlinked by cache eviction: no longer resolvable, still readable
+    /// through views resolved before the eviction. Reclaimed by the next
+    /// eviction pass (or any clear).
+    evicted: bool,
     records: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
+    /// Total record bytes (key plus value) at publish time. Bounds the
+    /// derived cache by bytes without rescanning records on eviction.
+    size_bytes: u64,
 }
 
 /// A simple in-memory database implementation using a `HashMap` for storage.
@@ -115,6 +124,13 @@ pub struct InMemory {
     store_state_scan_reads: AtomicUsize,
     #[cfg(feature = "testing")]
     store_history_reads: AtomicUsize,
+    /// Bounds for the derived Store-state materialization cache (one policy
+    /// surface; see [`DerivedCachePolicy`]).
+    derived_cache_policy: std::sync::RwLock<DerivedCachePolicy>,
+    /// Exact access order while open. A leaf lock: never acquire `inner`
+    /// while holding it (publish/eviction take it under the `inner` write
+    /// lock; reads take it alone).
+    cache_recency: std::sync::Mutex<RecencyState>,
 }
 
 impl InMemory {
@@ -189,7 +205,111 @@ impl InMemory {
             store_state_scan_reads: AtomicUsize::new(0),
             #[cfg(feature = "testing")]
             store_history_reads: AtomicUsize::new(0),
+            derived_cache_policy: std::sync::RwLock::new(DerivedCachePolicy::default()),
+            cache_recency: std::sync::Mutex::new(RecencyState::default()),
         }
+    }
+
+    /// Test-only knob shrinking the derived-cache bounds so eviction is
+    /// reachable without publishing a thousand namespaces. Production
+    /// always runs the safe defaults.
+    #[cfg(feature = "testing")]
+    pub fn testing_set_derived_cache_policy(&self, policy: DerivedCachePolicy) {
+        *self.derived_cache_policy.write().unwrap() = policy;
+    }
+
+    /// Record a derived-namespace hit in memory (exact LRU while open).
+    fn cache_touch(&self, namespace_id: &str) {
+        self.cache_recency.lock().unwrap().touch(namespace_id);
+    }
+
+    /// Assign a fresh recency tick and record it as already accounted for
+    /// (the caller persists it; InMemory namespaces are ephemeral, so the
+    /// live order simply stores it).
+    fn cache_assign_tick(&self, namespace_id: &str) -> u64 {
+        let mut recency = self.cache_recency.lock().unwrap();
+        let tick = recency.now().saturating_add(1);
+        recency.touch_with_tick(namespace_id, tick);
+        tick
+    }
+
+    /// Trim live derived namespaces to the cache policy; the caller holds
+    /// the `inner` write lock.
+    ///
+    /// Mirrors the SQL eviction order semantics: reclaim the generation
+    /// evicted by the previous pass, then unlink the oldest live derived
+    /// namespaces (untouched-while-open sorts as 0, coldest) until both
+    /// the row and byte bounds hold. Rows unlinked by a clear are never
+    /// reclaimed here — the clear contract keeps them readable until the
+    /// following clear. `protect` (the namespace just published) is never
+    /// a victim; the hot current frontiers survive by recency because
+    /// every read re-touches them.
+    fn evict_derived_locked(&self, inner: &mut InMemoryInner, protect: Option<&str>) {
+        let policy = *self.derived_cache_policy.read().unwrap();
+        inner.store_state_namespaces.retain(|_, namespace| {
+            !(namespace.evicted
+                && !namespace.unlinked
+                && namespace.request.lifecycle == StoreStateLifecycle::Derived)
+        });
+        let is_live = |namespace: &RecordNamespace| {
+            namespace.ready
+                && !namespace.unlinked
+                && !namespace.evicted
+                && namespace.request.lifecycle == StoreStateLifecycle::Derived
+        };
+        let live_bytes: u64 = inner
+            .store_state_namespaces
+            .values()
+            .filter(|namespace| is_live(namespace))
+            .map(|namespace| namespace.size_bytes)
+            .sum();
+        let live_count = inner
+            .store_state_namespaces
+            .values()
+            .filter(|namespace| is_live(namespace))
+            .count();
+        let over_rows = live_count.saturating_sub(policy.max_namespaces);
+        let over_bytes = live_bytes.saturating_sub(policy.max_bytes);
+        if over_rows > 0 || over_bytes > 0 {
+            let recency = self.cache_recency.lock().unwrap();
+            let mut candidates: Vec<(String, u64, u64)> = inner
+                .store_state_namespaces
+                .iter()
+                .filter(|(_, namespace)| is_live(namespace))
+                .map(|(id, namespace)| {
+                    (
+                        id.clone(),
+                        recency.live_tick(id).unwrap_or(0),
+                        namespace.size_bytes,
+                    )
+                })
+                .collect();
+            drop(recency);
+            candidates.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+            let mut freed_bytes: u64 = 0;
+            let mut victims: Vec<String> = Vec::new();
+            for (id, _, size) in &candidates {
+                if victims.len() >= over_rows && freed_bytes >= over_bytes {
+                    break;
+                }
+                if protect == Some(id.as_str()) {
+                    continue;
+                }
+                victims.push(id.clone());
+                freed_bytes += *size;
+            }
+            for id in &victims {
+                if let Some(namespace) = inner.store_state_namespaces.get_mut(id) {
+                    namespace.evicted = true;
+                }
+            }
+        }
+        let live_ids: std::collections::HashSet<String> =
+            inner.store_state_namespaces.keys().cloned().collect();
+        self.cache_recency
+            .lock()
+            .unwrap()
+            .retain_existing(&live_ids);
     }
 
     /// Returns a vector containing the IDs of all entries currently stored in the database.
@@ -290,16 +410,26 @@ impl Default for InMemory {
 #[async_trait]
 impl BackendImpl for InMemory {
     async fn resolve_store_state(&self, request: &StoreStateRequest) -> Result<Option<RecordView>> {
-        let inner = self.inner.read().unwrap();
-        Ok(inner
-            .store_state_namespaces
-            .iter()
-            .find(|(_, namespace)| {
-                namespace.ready && !namespace.unlinked && namespace.request == *request
-            })
-            .map(|(namespace_id, _)| RecordView {
-                namespace_id: namespace_id.clone(),
-            }))
+        let view = {
+            let inner = self.inner.read().unwrap();
+            inner
+                .store_state_namespaces
+                .iter()
+                .find(|(_, namespace)| {
+                    namespace.ready
+                        && !namespace.unlinked
+                        && !namespace.evicted
+                        && namespace.request == *request
+                })
+                .map(|(namespace_id, _)| RecordView {
+                    namespace_id: namespace_id.clone(),
+                })
+        };
+        // Recency only: in-memory touch, no storage write of any kind.
+        if let Some(view) = &view {
+            self.cache_touch(&view.namespace_id);
+        }
+        Ok(view)
     }
 
     async fn begin_store_state_staging(
@@ -318,7 +448,9 @@ impl BackendImpl for InMemory {
                 request,
                 ready: false,
                 unlinked: false,
+                evicted: false,
                 records: BTreeMap::new(),
+                size_bytes: 0,
             },
         );
         Ok(StagingToken {
@@ -345,6 +477,7 @@ impl BackendImpl for InMemory {
     }
 
     async fn publish_store_state(&self, token: StagingToken) -> Result<RecordView> {
+        let target_lifecycle = token.target.lifecycle;
         let mut inner = self.inner.write().unwrap();
         // A repeat publish of an already-published token is idempotent: the
         // namespace is still ready for the same target, so hand back its view.
@@ -362,11 +495,9 @@ impl BackendImpl for InMemory {
         // A concurrent materializer may have made this exact target ready
         // first. Both derived the same state from the same source, so adopt the
         // winner and discard this namespace rather than failing the loser.
-        if let Some((winner_id, _)) = inner
-            .store_state_namespaces
-            .iter()
-            .find(|(_, ready)| ready.ready && !ready.unlinked && ready.request == token.target)
-        {
+        if let Some((winner_id, _)) = inner.store_state_namespaces.iter().find(|(_, ready)| {
+            ready.ready && !ready.unlinked && !ready.evicted && ready.request == token.target
+        }) {
             return Ok(RecordView {
                 namespace_id: winner_id.clone(),
             });
@@ -389,9 +520,25 @@ impl BackendImpl for InMemory {
         }
         namespace.request = token.target;
         namespace.ready = true;
+        namespace.size_bytes = namespace
+            .records
+            .iter()
+            .map(|(key, value)| {
+                key.len() as u64 + value.as_ref().map_or(0, |bytes| bytes.len() as u64)
+            })
+            .sum();
+        let namespace_id = token.namespace_id.clone();
         inner
             .store_state_namespaces
             .insert(token.namespace_id.clone(), namespace);
+        let is_derived = target_lifecycle == StoreStateLifecycle::Derived;
+        if is_derived {
+            // Single write lock held throughout: sizing, recency, and
+            // eviction commit together, so concurrent publishers cannot
+            // interleave a miss between them.
+            self.cache_assign_tick(&namespace_id);
+            self.evict_derived_locked(&mut inner, Some(namespace_id.as_str()));
+        }
         Ok(RecordView {
             namespace_id: token.namespace_id,
         })
@@ -415,13 +562,18 @@ impl BackendImpl for InMemory {
         key: &[u8],
     ) -> Result<Option<Vec<u8>>> {
         self.store_state_point_reads.fetch_add(1, Ordering::Relaxed);
-        let inner = self.inner.read().unwrap();
-        let namespace = inner
-            .store_state_namespaces
-            .get(&view.namespace_id)
-            .filter(|namespace| namespace.ready)
-            .ok_or(BackendError::InvalidStoreStateView)?;
-        Ok(namespace.records.get(key).and_then(Clone::clone))
+        let value = {
+            let inner = self.inner.read().unwrap();
+            let namespace = inner
+                .store_state_namespaces
+                .get(&view.namespace_id)
+                .filter(|namespace| namespace.ready)
+                .ok_or(BackendError::InvalidStoreStateView)?;
+            namespace.records.get(key).and_then(Clone::clone)
+        };
+        // Recency only: in-memory touch, no storage write of any kind.
+        self.cache_touch(&view.namespace_id);
+        Ok(value)
     }
 
     async fn store_state_record_scan(
@@ -431,56 +583,66 @@ impl BackendImpl for InMemory {
         after: Option<&[u8]>,
         limit: usize,
     ) -> Result<RecordPage> {
-        let inner = self.inner.read().unwrap();
-        let namespace = inner
-            .store_state_namespaces
-            .get(&view.namespace_id)
-            .filter(|namespace| namespace.ready)
-            .ok_or(BackendError::InvalidStoreStateView)?;
-        if limit == 0 {
-            return Ok(RecordPage::default());
-        }
-        self.store_state_scan_reads.fetch_add(1, Ordering::Relaxed);
-        let mut records = namespace
-            .records
-            .iter()
-            .filter(|(key, value)| {
-                value.is_some()
-                    && range
-                        .start
-                        .as_deref()
-                        .is_none_or(|start| key.as_slice() >= start)
-                    && range.end.as_deref().is_none_or(|end| key.as_slice() < end)
-                    && after.is_none_or(|after| key.as_slice() > after)
-            })
-            .take(limit.saturating_add(1))
-            .filter_map(|(key, value)| value.clone().map(|value| (key.clone(), value)))
-            .collect::<Vec<_>>();
-        let has_more = records.len() > limit;
-        records.truncate(limit);
-        let next = if has_more {
-            records.last().map(|record| record.0.clone())
-        } else {
-            None
+        let page = {
+            let inner = self.inner.read().unwrap();
+            let namespace = inner
+                .store_state_namespaces
+                .get(&view.namespace_id)
+                .filter(|namespace| namespace.ready)
+                .ok_or(BackendError::InvalidStoreStateView)?;
+            if limit == 0 {
+                return Ok(RecordPage::default());
+            }
+            self.store_state_scan_reads.fetch_add(1, Ordering::Relaxed);
+            let mut records = namespace
+                .records
+                .iter()
+                .filter(|(key, value)| {
+                    value.is_some()
+                        && range
+                            .start
+                            .as_deref()
+                            .is_none_or(|start| key.as_slice() >= start)
+                        && range.end.as_deref().is_none_or(|end| key.as_slice() < end)
+                        && after.is_none_or(|after| key.as_slice() > after)
+                })
+                .take(limit.saturating_add(1))
+                .filter_map(|(key, value)| value.clone().map(|value| (key.clone(), value)))
+                .collect::<Vec<_>>();
+            let has_more = records.len() > limit;
+            records.truncate(limit);
+            let next = if has_more {
+                records.last().map(|record| record.0.clone())
+            } else {
+                None
+            };
+            RecordPage { records, next }
         };
-        Ok(RecordPage { records, next })
+        // Recency only: in-memory touch, no storage write of any kind.
+        self.cache_touch(&view.namespace_id);
+        Ok(page)
     }
 
-    /// Unlink every ready derived namespace and reclaim the previously
-    /// unlinked generation.
+    /// Unlink every live derived namespace and reclaim the previously
+    /// unlinked generation (clear-unlinked and evicted alike).
     ///
     /// Clearing is two-phase because a reader that already resolved a view
     /// keeps reading through it: unlinking removes the namespace from
     /// resolution, so the next miss rebuilds, while the records stay readable
     /// until the following clear reclaims them. Authoritative namespaces are
-    /// never selected.
+    /// never selected. Evicted namespaces are already unresolvable, so the
+    /// unlink pass leaves their flag alone; the reclaim pass collects them.
     async fn clear_derived_store_state(&self) -> Result<()> {
         let mut inner = self.inner.write().unwrap();
         inner.store_state_namespaces.retain(|_, namespace| {
-            !(namespace.unlinked && namespace.request.lifecycle == StoreStateLifecycle::Derived)
+            !((namespace.unlinked || namespace.evicted)
+                && namespace.request.lifecycle == StoreStateLifecycle::Derived)
         });
         for namespace in inner.store_state_namespaces.values_mut() {
-            if namespace.ready && namespace.request.lifecycle == StoreStateLifecycle::Derived {
+            if namespace.ready
+                && !namespace.evicted
+                && namespace.request.lifecycle == StoreStateLifecycle::Derived
+            {
                 namespace.unlinked = true;
             }
         }

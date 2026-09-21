@@ -3,6 +3,7 @@
 //! These backends provide persistent, queryable storage similar to traditional databases.
 
 mod in_memory;
+pub(crate) mod recency;
 mod sorting;
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub mod sql;

@@ -156,6 +156,37 @@ impl CacheScope {
     }
 }
 
+/// Bounds for the disposable derived Store-state materialization cache.
+///
+/// This is the one backend cache policy surface: it applies across all
+/// historical Snapshots held as derived (`Derived`) namespaces. Eviction is
+/// performance-only and never changes semantics — an evicted entry is
+/// recomputed from history on the next miss.
+///
+/// Both bounds apply together: eviction trims the least-recently-used live
+/// derived namespaces until the live count is at most `max_namespaces` AND
+/// their total bytes are at most `max_bytes`. Authoritative and staging
+/// namespaces are never counted and never evicted.
+///
+/// The defaults are deliberately generous so ordinary use never evicts;
+/// tests shrink them through backend test knobs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DerivedCachePolicy {
+    /// Maximum live derived namespaces retained.
+    pub max_namespaces: usize,
+    /// Maximum total record bytes across live derived namespaces.
+    pub max_bytes: u64,
+}
+
+impl Default for DerivedCachePolicy {
+    fn default() -> Self {
+        Self {
+            max_namespaces: 1024,
+            max_bytes: 256 * 1024 * 1024,
+        }
+    }
+}
+
 /// Persistent public metadata for an Eidetica instance.
 ///
 /// This struct consolidates all instance-level state that needs to persist across restarts:

@@ -42,6 +42,16 @@ const CREATE_STORE_STATE_TABLES: &[&str] = &[
         projection_version BIGINT NOT NULL,
         source_key BYTEA NOT NULL,
         created_revision BIGINT,
+        -- Total record bytes (key plus value) of the published namespace.
+        -- Computed atomically in the publish transaction; bounds the cache
+        -- by bytes without scanning records on every eviction check.
+        size_bytes BIGINT NOT NULL DEFAULT 0,
+        -- Last-access tick for durable approximate LRU. Assigned from a
+        -- per-backend monotonic clock, touched in memory on every hit and
+        -- flushed in batches (never one write per hit). A crash loses only
+        -- recent recency metadata, never cached values. Rows predating this
+        -- column read as 0 and sort as coldest.
+        last_access_tick BIGINT NOT NULL DEFAULT 0,
         UNIQUE (database_id, store_name, lifecycle, status, scope_user_uuid,
                 projection_name, projection_version, source_key)
     )",
@@ -224,9 +234,81 @@ async fn initialize_store_state_tables(backend: &SqlxBackend) -> Result<()> {
             .await
             .sql_context("Failed to create Store-state tables")?;
     }
+    ensure_store_state_cache_columns(backend, &mut tx).await?;
     tx.commit()
         .await
         .sql_context("Failed to commit Store-state table initialization")
+}
+
+/// Bring pre-existing `store_state_namespaces` tables up to the cache-bound
+/// columns without touching their rows.
+///
+/// Fresh databases already have the columns from `CREATE_STORE_STATE_TABLES`,
+/// so this is a no-op for them. Databases created before the bounded-cache
+/// work keep every derived row (warm entries stay warm); missing columns are
+/// added and `size_bytes` is backfilled from the records themselves, while
+/// `last_access_tick` starts at 0 (coldest) for those rows. Deliberately not
+/// a `schema_version` bump: the versioned chain rebuilds verified state,
+/// which this change has no reason to redo.
+async fn ensure_store_state_cache_columns(
+    backend: &SqlxBackend,
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+) -> Result<()> {
+    let existing: Vec<(String,)> = if backend.is_sqlite() {
+        sqlx::query_as("SELECT name FROM pragma_table_info('store_state_namespaces')")
+            .fetch_all(&mut **tx)
+            .await
+            .sql_context("Failed to inspect Store-state columns")?
+    } else {
+        sqlx::query_as(
+            "SELECT column_name::text FROM information_schema.columns
+             WHERE table_schema = current_schema()
+               AND table_name = 'store_state_namespaces'",
+        )
+        .fetch_all(&mut **tx)
+        .await
+        .sql_context("Failed to inspect Store-state columns")?
+    };
+    for (column, ddl) in [
+        (
+            "size_bytes",
+            "ALTER TABLE store_state_namespaces ADD COLUMN size_bytes BIGINT NOT NULL DEFAULT 0",
+        ),
+        (
+            "last_access_tick",
+            "ALTER TABLE store_state_namespaces ADD COLUMN last_access_tick BIGINT NOT NULL DEFAULT 0",
+        ),
+    ] {
+        if !existing.iter().any(|(name,)| name == column) {
+            sqlx::query(ddl)
+                .execute(&mut **tx)
+                .await
+                .sql_context("Failed to add Store-state cache column")?;
+        }
+    }
+    // Backfill sizes for ready rows that predate the column. Staging rows
+    // get their true size in the publish transaction; recomputing them here
+    // would only be overwritten.
+    let key_len = if backend.is_sqlite() {
+        "length(r.record_key)"
+    } else {
+        "octet_length(r.record_key)"
+    };
+    let value_len = if backend.is_sqlite() {
+        "length(r.record_value)"
+    } else {
+        "octet_length(r.record_value)"
+    };
+    sqlx::query(&format!(
+        "UPDATE store_state_namespaces AS n SET size_bytes = COALESCE(
+             (SELECT SUM({key_len} + {value_len}) FROM store_state_records AS r
+              WHERE r.namespace_id = n.namespace_id), 0)
+         WHERE n.size_bytes = 0 AND n.status IN (1, 2, 3)"
+    ))
+    .execute(&mut **tx)
+    .await
+    .sql_context("Failed to backfill Store-state sizes")?;
+    Ok(())
 }
 
 /// Run migrations sequentially from one schema version to another.
@@ -461,5 +543,72 @@ mod migration_tests {
             .await
             .unwrap();
         assert_eq!(repaired.tips(), &[entries[2].id()]);
+    }
+
+    /// A table predating the cache-bound columns gains them on open without
+    /// losing rows: derived entries stay warm and sizes are backfilled.
+    #[tokio::test]
+    async fn legacy_store_state_table_gains_cache_columns_and_keeps_rows() {
+        use std::collections::BTreeMap;
+
+        use crate::backend::{
+            CacheScope, ProjectionDescriptor, StoreStateLifecycle, StoreStateRequest,
+        };
+
+        let backend = super::super::Sqlite::in_memory()
+            .await
+            .expect("sqlite backend");
+        let request = StoreStateRequest {
+            database: crate::entry::ID::from_bytes("legacy-db"),
+            store: "legacy-store".to_string(),
+            lifecycle: StoreStateLifecycle::Derived,
+            scope: CacheScope::Shared,
+            projection: ProjectionDescriptor {
+                name: "test/legacy".to_string(),
+                version: 1,
+            },
+            source_key: b"legacy-snapshot".to_vec(),
+        };
+        let token = super::super::storage::begin_store_state_staging(&backend, request.clone())
+            .await
+            .unwrap();
+        super::super::storage::stage_store_state_records(
+            &backend,
+            &token,
+            BTreeMap::from([(b"v".to_vec(), Some(b"legacy".to_vec()))]),
+        )
+        .await
+        .unwrap();
+        super::super::storage::publish_store_state(&backend, token)
+            .await
+            .unwrap();
+
+        // Simulate a pre-bound database: drop the new columns.
+        sqlx::query("ALTER TABLE store_state_namespaces DROP COLUMN size_bytes")
+            .execute(backend.pool())
+            .await
+            .unwrap();
+        sqlx::query("ALTER TABLE store_state_namespaces DROP COLUMN last_access_tick")
+            .execute(backend.pool())
+            .await
+            .unwrap();
+
+        // Re-open brings the columns back; the row survives with its value.
+        initialize(&backend).await.unwrap();
+        let view = super::super::storage::resolve_store_state(&backend, &request)
+            .await
+            .unwrap()
+            .expect("legacy derived row must stay warm");
+        let value = super::super::storage::store_state_record_get(&backend, &view, b"v")
+            .await
+            .unwrap();
+        assert_eq!(value, Some(b"legacy".to_vec()));
+        let size: (i64,) =
+            sqlx::query_as("SELECT size_bytes FROM store_state_namespaces WHERE namespace_id = $1")
+                .bind(&view.namespace_id)
+                .fetch_one(backend.pool())
+                .await
+                .unwrap();
+        assert_eq!(size.0, 1 + 6, "size must be backfilled from the records");
     }
 }
