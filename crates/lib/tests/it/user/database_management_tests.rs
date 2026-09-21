@@ -1,8 +1,8 @@
 use eidetica::{
-    Instance, Result,
+    Error, Instance, Result,
     auth::{AuthKey, Permission},
-    sync::transports::http::HttpTransport,
-    user::{PreferenceWriteOutcome, SyncSettings},
+    sync::{SyncError, transports::http::HttpTransport},
+    user::{PreferenceWriteOutcome, SyncSettings, UserError},
 };
 
 use super::helpers::{create_user_database, setup_instance_with_user};
@@ -70,6 +70,34 @@ async fn preference_write_is_acknowledged_before_locator_query() -> Result<()> {
     let ticket = database.ticket().await?;
     assert_eq!(ticket.database_id(), database.root_id());
     assert!(ticket.addresses().is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn sharing_intent_does_not_require_an_attached_sync_engine() -> Result<()> {
+    let instance = crate::helpers::test_local_instance().await;
+    crate::helpers::create_user(&instance, "manager", None).await?;
+    let mut user = instance.login_user("manager", None).await?;
+    let database = create_user_database(&mut user).await;
+
+    database.share().await?.into_result()?;
+    assert!(database.is_shared().await?);
+    assert!(matches!(
+        database.ticket().await,
+        Err(Error::Sync(error)) if matches!(*error, SyncError::SyncNotEnabled)
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn sharing_rejects_a_handle_after_its_database_is_untracked() -> Result<()> {
+    let (_instance, mut user, database) = setup_full().await?;
+    user.untrack_database(database.root_id()).await?;
+
+    assert!(matches!(
+        database.share().await,
+        Err(Error::User(error)) if matches!(*error, UserError::DatabaseNotTracked { .. })
+    ));
     Ok(())
 }
 

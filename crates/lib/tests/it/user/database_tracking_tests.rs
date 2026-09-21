@@ -447,3 +447,16 @@ async fn test_update_tracked_auto_creates_mapping() -> Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn test_is_sync_enabled_returns_false_for_untracked_database() -> Result<()> {
+    let instance = setup_instance().await;
+
+    crate::helpers::create_user(&instance, "test_user", None).await?;
+    let user = login_user(&instance, "test_user", None).await;
+    let (signing_key, _) = generate_keypair();
+    let database = Database::create(&instance, signing_key, Doc::new()).await?;
+
+    assert!(!user.is_sync_enabled(database.root_id()).await?);
+    Ok(())
+}

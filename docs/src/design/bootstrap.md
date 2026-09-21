@@ -326,7 +326,7 @@ impl User {
 
     /// Request database access via bootstrap (client-side with user-managed keys)
     pub async fn request_database_access(
-        &self,
+        &mut self,
         sync: &Sync,
         ticket: &DatabaseTicket,
         key_id: &PublicKey,
