@@ -56,8 +56,8 @@ Tickets embed the database ID, so `sync_with_ticket` requires no separate tree I
 ### 4. Share a Database
 
 Sharing has two caller-visible operations: save this user's durable signed
-preference, and separately query point-in-time ticket readiness. The daemon's
-combined configuration remains internal:
+preference, and separately create a point-in-time locator. The daemon's combined
+configuration remains internal:
 
 ```rust,ignore
 use eidetica::user::PreferenceWriteOutcome;
@@ -78,8 +78,8 @@ println!("Send this locator to your peer: {ticket}");
 
 A `Written` result acknowledges durable intent, not daemon reconciliation or
 network readiness. `Unknown` means the write may have reached the owner; reading
-the user-scoped settings or retrying is safe. A ticket is ready only when the
-owner is currently serving the database at a live advertised address. See
+the user-scoped settings or retrying is safe. A ticket is a point-in-time locator
+and may contain no addresses when the owner is not currently advertising one. See
 [Database Sharing](database_management.md) for settings, ticket, and migration details.
 
 A peer who receives the ticket calls `sync.sync_with_ticket(&ticket)` as

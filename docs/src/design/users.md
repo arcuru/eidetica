@@ -562,10 +562,9 @@ impl User {
     /// Stop tracking a database.
     pub fn untrack_database(&mut self, database_id: &ID) -> Result<()>;
 
-    /// Toggle this user's sync preference for a tracked database. Propagates
-    /// to the host-level combined sync state via `Sync::sync_user` if sync
-    /// is attached. Errors with `DatabaseNotTracked` if the database isn't
-    /// in the user's tracked list.
+    /// Deprecated compatibility wrappers around sharing methods on a
+    /// Database opened through this User. Preference reconciliation remains
+    /// independent from the durable write.
     pub async fn enable_sync(&mut self, database_id: &ID) -> Result<()>;
     pub async fn disable_sync(&mut self, database_id: &ID) -> Result<()>;
 
@@ -573,11 +572,9 @@ impl User {
     /// databases rather than erroring.
     pub async fn is_sync_enabled(&self, database_id: &ID) -> Result<bool>;
 
-    /// Atomically enable sync and return a `DatabaseTicket` for handoff.
-    /// Preconditions are checked before mutation, so a failed `share()`
-    /// leaves the user's sync preference unchanged. Errors with
-    /// `SyncError::SyncNotEnabled` if sync isn't attached to the instance,
-    /// or `DatabaseNotTracked` if the database isn't tracked.
+    /// Deprecated compatibility wrapper that writes sharing intent, then
+    /// returns a point-in-time locator. A locator error does not roll back an
+    /// accepted preference write.
     pub async fn share(&mut self, database_id: &ID) -> Result<DatabaseTicket>;
 
     // === Key Management ===
@@ -600,6 +597,11 @@ impl User {
     pub fn logout(self) -> Result<()>;
 }
 ```
+
+Database handles opened or created through a `User` carry the private user
+context required by `Database::sync_settings`, `is_shared`, `set_shared`,
+`share`, `stop_sharing`, and `ticket`. Context-free handles remain valid for
+normal database access but return a missing-capability error from these methods.
 
 ### UserKeyManager (Internal)
 
