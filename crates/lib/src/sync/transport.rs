@@ -349,9 +349,9 @@ impl Sync {
     /// The ticket contains the database ID and address hints from all running
     /// transport servers.
     ///
-    /// For user-scoped sharing, prefer
-    /// [`User::manage_database`](crate::user::User::manage_database), which
-    /// separates durable preference writes from point-in-time locator construction.
+    /// For user-scoped sharing, prefer [`Database::share`](crate::Database::share)
+    /// followed by [`Database::ticket`](crate::Database::ticket), which separates
+    /// durable preference writes from point-in-time locator construction.
     ///
     /// # Arguments
     /// * `database_id` - The ID of the database to create a ticket for

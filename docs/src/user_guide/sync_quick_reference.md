@@ -269,7 +269,6 @@ settings.set("description", "A room for team discussions");
 
 let default_key = user.get_default_key()?;
 let database = user.create_database(settings, &default_key).await?;
-let database_id = database.root_id().clone();
 
 // Add some initial data
 let txn = database.new_transaction().await?;
@@ -278,17 +277,15 @@ store.set("welcome", "Welcome to the room!").await?;
 txn.commit().await?;
 
 // Save durable sharing intent, then build a point-in-time locator.
-let management = user.manage_database(&database_id).await?;
-management.share().await?.into_result()?;
-let ticket = management.ticket().await?;
+database.share().await?.into_result()?;
+let ticket = database.ticket().await?;
 println!("Share this locator with peers: {ticket}");
 # Ok(())
 # }
 ```
 
-For waiting, watching, typed unknown acknowledgments, and migration from the
-deprecated `User` helpers, see [Database Sharing and
-Management](database_management.md).
+For typed unknown acknowledgments and migration from the deprecated `User`
+helpers, see [Database Sharing](database_management.md).
 
 ### Bootstrap from Shared Database
 

@@ -36,18 +36,15 @@ pub mod admin;
 pub mod crypto;
 pub mod errors;
 pub mod key_manager;
-mod management;
 pub mod session;
+mod sharing;
 pub mod system_databases;
 pub mod types;
 
 pub use admin::InstanceAdmin;
 pub use errors::UserError;
 pub use key_manager::UserKeyManager;
-pub(crate) use management::ticket_locator;
-pub use management::{
-    DatabaseManagement, DatabaseManagementSnapshot, DatabaseManagementWatch,
-    PreferenceWriteOutcome, PreferenceWriteReceipt,
-};
 pub use session::{DatabaseBuilder, User};
+pub(crate) use sharing::ticket_locator;
+pub use sharing::{PreferenceWriteOutcome, PreferenceWriteReceipt};
 pub use types::*;

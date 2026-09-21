@@ -23,7 +23,7 @@ This user guide is structured to guide you from basic setup to advanced concepts
     - [Stores](concepts/stores.md): Where structured data lives (`DocStore`, `Table`, `YDoc`).
     - [Transactions](transactions.md): How atomic changes are made.
 4.  [**Service (Daemon) Mode**](service.md): Share an Instance across processes via a local daemon.
-5.  [**Database Sharing and Management**](database_management.md): Save and watch user settings, then query ticket readiness separately.
+5.  [**Database Sharing**](database_management.md): Save user settings, then query ticket readiness separately.
 6.  [**Tutorial: Todo App**](tutorial_todo_app.md): A step-by-step walkthrough using a simple application.
 7.  [**Code Examples**](examples_snippets.md): Focused code snippets for common tasks.
 

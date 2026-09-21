@@ -62,8 +62,7 @@ combined configuration remains internal:
 ```rust,ignore
 use eidetica::user::PreferenceWriteOutcome;
 
-let management = user.manage_database(&database_id).await?;
-match management.share().await? {
+match database.share().await? {
     PreferenceWriteOutcome::Written(_) => {}
     PreferenceWriteOutcome::Unknown { source } => {
         // Submission may have succeeded. Read back or retry the idempotent write.
@@ -71,19 +70,17 @@ match management.share().await? {
     }
 }
 
-assert!(management.snapshot().await?.settings.sync_enabled);
+assert!(database.is_shared().await?);
 
-let ticket = management.ticket().await?;
+let ticket = database.ticket().await?;
 println!("Send this locator to your peer: {ticket}");
 ```
 
 A `Written` result acknowledges durable intent, not daemon reconciliation or
 network readiness. `Unknown` means the write may have reached the owner; reading
-the user-scoped snapshot or retrying is safe. A ticket is ready only when the
-owner is currently serving the database at a live advertised address. Runtime
-changes do not advance the settings watch. See [Database Sharing and
-Management](database_management.md) for snapshot, watch, wait, ticket, and
-migration details.
+the user-scoped settings or retrying is safe. A ticket is ready only when the
+owner is currently serving the database at a live advertised address. See
+[Database Sharing](database_management.md) for settings, ticket, and migration details.
 
 A peer who receives the ticket calls `sync.sync_with_ticket(&ticket)` as
 shown in step 3. The ticket identifies the database and address hints; it does

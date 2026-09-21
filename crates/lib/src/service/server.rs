@@ -28,8 +28,8 @@ use crate::entry::ID;
 use crate::instance::{CallbackId, WriteSource};
 use crate::service::error::ServiceError;
 use crate::service::protocol::{
-    AuthenticatedDbRequest, DatabaseOp, HandshakeAck, ManagementOp, MergeState, Notification,
-    PROTOCOL_VERSION, ServerFrame, ServiceRequest, ServiceResponse, read_frame, write_frame,
+    AuthenticatedDbRequest, DatabaseOp, HandshakeAck, MergeState, Notification, PROTOCOL_VERSION,
+    ServerFrame, ServiceRequest, ServiceResponse, read_frame, write_frame,
 };
 use crate::user::system_databases::lookup_user_record;
 
@@ -765,42 +765,6 @@ async fn dispatch_inner(
             handle_session_key_register(state, pubkey, &signature)
         }
 
-        ServiceRequest::Management(op) => {
-            let (login_pubkey, keyset_snapshot) = match state {
-                ConnectionState::Authenticated {
-                    login_pubkey,
-                    session_keyset,
-                    ..
-                } => (login_pubkey.clone(), session_keyset.clone()),
-                _ => {
-                    return Err(crate::Error::Auth(Box::new(
-                        AuthError::InvalidAuthConfiguration {
-                            reason: "management operation requires an authenticated connection"
-                                .to_string(),
-                        },
-                    )));
-                }
-            };
-            let (tree_id, identity) = match &*op {
-                ManagementOp::Ticket { tree_id, identity } => (tree_id, identity),
-            };
-            let acting_pubkey = resolve_acting_pubkey(identity, &login_pubkey, &keyset_snapshot)?;
-            gate_tree_permission(
-                instance,
-                &acting_pubkey,
-                identity,
-                tree_id,
-                Permission::Read,
-                true,
-            )
-            .await?;
-            match *op {
-                ManagementOp::Ticket { tree_id, .. } => Ok(ServiceResponse::DatabaseTicket(
-                    crate::user::ticket_locator(instance, &tree_id).await?,
-                )),
-            }
-        }
-
         // === Authenticated storage operations ===
         //
         // Gate 1: the connection must have completed `TrustedLogin*`. Gate 2:
@@ -1427,6 +1391,10 @@ async fn dispatch_database_op(
             }
             Ok(ServiceResponse::Ok)
         }
+
+        DatabaseOp::CreateTicket => Ok(ServiceResponse::DatabaseTicket(
+            crate::user::ticket_locator(instance, &root_id).await?,
+        )),
     }
 }
 

@@ -22,7 +22,6 @@
 //! - **`track_database()`** - Add or update a tracked database (upsert)
 //! - **`untrack_database()`** - Remove a database from your tracked list
 //! - **`is_sync_enabled()`** - Check this user's sync preference for a database
-//! - **`manage_database()`** - Save and watch this user's sharing settings, or query a ticket
 //!
 //! ## Key-Database Mappings
 //!
@@ -382,7 +381,7 @@ impl User {
         // Update the in-memory key manager with the updated metadata
         self.key_manager.add_key(metadata)?;
 
-        Ok(database)
+        Ok(database.with_user_database(self.user_database.clone()))
     }
 
     /// Open an existing database by its root ID using this user's keys.
@@ -481,7 +480,9 @@ impl User {
         if let Some(conn) = self.instance.remote_connection() {
             conn.register_session_key(signing_key).await?;
             return match Database::open_remote(&self.instance, conn, root_id, sigkey).await {
-                Ok(database) => Ok(database.with_key(key)),
+                Ok(database) => Ok(database
+                    .with_key(key)
+                    .with_user_database(self.user_database.clone())),
                 Err(e) if e.is_not_found() => {
                     Err(super::errors::UserError::DatabaseAccessPending {
                         database_id: root_id.clone(),
@@ -492,7 +493,9 @@ impl User {
             };
         }
         match Database::open(&self.instance, root_id).await {
-            Ok(database) => Ok(database.with_key(key)),
+            Ok(database) => Ok(database
+                .with_key(key)
+                .with_user_database(self.user_database.clone())),
             Err(e) if e.is_not_found() => Err(super::errors::UserError::DatabaseAccessPending {
                 database_id: root_id.clone(),
             }
@@ -1249,74 +1252,22 @@ impl User {
         })
     }
 
-    /// Open a user-bound management capability for one tracked database.
-    ///
-    /// Construction resolves the tracked key and requires current Read access.
-    /// The returned view keeps private signing material client-side in service
-    /// mode and reauthorizes every snapshot/watch acquisition.
-    ///
-    /// Saving and watching this user's settings is separate from the point-in-time
-    /// ticket query. A successful preference write does not imply that the owner
-    /// is already serving the database or has a reachable address.
-    /// [`PreferenceWriteOutcome::Unknown`](crate::user::PreferenceWriteOutcome::Unknown)
-    /// means submission may have succeeded; read the desired snapshot or retry
-    /// the idempotent write.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use eidetica::{Instance, NewUser, crdt::Doc};
-    /// # use eidetica::user::PreferenceWriteOutcome;
-    /// # #[tokio::main]
-    /// # async fn main() -> eidetica::Result<()> {
-    /// let (instance, user) = Instance::connect_or_create(
-    ///     "memory://",
-    ///     NewUser::passwordless("alice"),
-    /// ).await?;
-    /// instance.enable_sync().await?;
-    /// let mut user = user.expect("memory backend is new");
-    /// let key = user.get_default_key()?;
-    /// let database = user.create_database(Doc::new(), &key).await?;
-    /// let management = user.manage_database(database.root_id()).await?;
-    ///
-    /// match management.share().await? {
-    ///     PreferenceWriteOutcome::Written(_) => {}
-    ///     PreferenceWriteOutcome::Unknown { source } => {
-    ///         // Submission may have succeeded. The write is idempotent, so read
-    ///         // the current state or retry rather than assuming it was rejected.
-    ///         eprintln!("sharing outcome unknown: {source}");
-    ///     }
-    /// }
-    ///
-    /// let current = management.snapshot().await?;
-    /// assert!(current.settings.sync_enabled);
-    /// println!("{}", management.ticket().await?);
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn manage_database(
-        &self,
-        database_id: &ID,
-    ) -> Result<crate::user::DatabaseManagement> {
-        crate::user::DatabaseManagement::new(self, database_id).await
-    }
-
     /// Enable sync for a tracked database.
     ///
     /// Sets `sync_enabled = true` on the user's preference for this database,
     /// preserving `sync_on_commit`, `interval_seconds`, and `properties`.
     /// Owner reconciliation happens independently after the signed preference
-    /// write; inspect it through [`Self::manage_database`].
+    /// write; inspect it through [`Database::sync_settings`](crate::Database::sync_settings).
     ///
     /// # Errors
     /// Returns `DatabaseNotTracked` if the database is not in the user's list.
     #[deprecated(
-        note = "use User::manage_database(database_id).await?.share().await? and handle PreferenceWriteOutcome"
+        note = "open the database through User and call Database::share().await?, handling PreferenceWriteOutcome"
     )]
     pub async fn enable_sync(&mut self, database_id: &ID) -> Result<()> {
-        self.manage_database(database_id)
+        self.open_database(database_id)
             .await?
-            .set_sharing(true)
+            .share()
             .await?
             .into_result()
             .map(|_| ())
@@ -1336,12 +1287,12 @@ impl User {
     /// # Errors
     /// Returns `DatabaseNotTracked` if the database is not in the user's list.
     #[deprecated(
-        note = "use User::manage_database(database_id).await?.stop_sharing().await? and handle PreferenceWriteOutcome"
+        note = "open the database through User and call Database::stop_sharing().await?, handling PreferenceWriteOutcome"
     )]
     pub async fn disable_sync(&mut self, database_id: &ID) -> Result<()> {
-        self.manage_database(database_id)
+        self.open_database(database_id)
             .await?
-            .set_sharing(false)
+            .stop_sharing()
             .await?
             .into_result()
             .map(|_| ())
@@ -1349,7 +1300,7 @@ impl User {
 
     /// Enable sync for a tracked database and return a ready [`DatabaseTicket`].
     ///
-    /// Compatibility wrapper over [`DatabaseManagement`](crate::user::DatabaseManagement):
+    /// Compatibility wrapper over [`Database::share`](crate::Database::share):
     /// the preference is durably written first, then a point-in-time locator is
     /// constructed. A locator error therefore does not roll back the accepted
     /// preference.
@@ -1362,12 +1313,12 @@ impl User {
     /// - [`UserError::DatabaseNotTracked`] if the database is not in the user's
     ///   tracked list.
     #[deprecated(
-        note = "use User::manage_database(database_id).await? and handle preference acknowledgment before calling ticket()"
+        note = "open the database through User, handle Database::share(), then call Database::ticket()"
     )]
     pub async fn share(&mut self, database_id: &ID) -> Result<DatabaseTicket> {
-        let management = self.manage_database(database_id).await?;
-        management.share().await?.into_result()?;
-        management.ticket().await
+        let database = self.open_database(database_id).await?;
+        database.share().await?.into_result()?;
+        database.ticket().await
     }
 
     /// Check whether this user has sync enabled for a tracked database.

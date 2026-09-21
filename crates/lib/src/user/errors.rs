@@ -43,6 +43,9 @@ pub enum UserError {
     #[error("This user is not sharing database: {database_id}")]
     DatabaseNotShared { database_id: ID },
 
+    #[error("Database handle lacks the user capability required to manage sharing: {database_id}")]
+    MissingDatabaseCapability { database_id: ID },
+
     #[error("Database not found by name: {name}")]
     DatabaseNotFoundByName { name: String },
 
