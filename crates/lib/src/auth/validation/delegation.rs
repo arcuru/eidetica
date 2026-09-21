@@ -181,10 +181,10 @@ impl DelegationResolver {
             // write on the parent tree.
             //
             // A three-state verdict keeps a *proven* regression (Unreachable →
-            // reject) distinct from "the delegated tree hasn't synced far enough
-            // to decide" (Indeterminate → surface a retriable error so the entry
-            // stays unverified and is re-checked once `missing` arrives, instead
-            // of being rejected as a forgery).
+            // reject) distinct from "the delegated database replica is incomplete"
+            // (Indeterminate → surface the database root and first known missing
+            // entries so sync can satisfy the dependency and retry verification,
+            // instead of rejecting the entry as a forgery).
             //
             // FIXME(security): the floor is the only monotonicity guarantee today
             // and is a known partial fix. It enforces neither strict per-entry
