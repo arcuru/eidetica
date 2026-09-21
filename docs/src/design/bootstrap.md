@@ -328,10 +328,11 @@ impl User {
     pub async fn request_database_access(
         &self,
         sync: &Sync,
-        address: &Address,
-        database_id: &ID,
+        ticket: &DatabaseTicket,
         key_id: &PublicKey,
         requested_permission: Permission,
+        sync_settings: SyncSettings,
+        metadata: Option<Doc>,
     ) -> Result<()>;
 }
 ```

@@ -77,13 +77,11 @@ still needs database authorization or the bootstrap and approval flow.
 their other sync settings. Another user on the same instance can keep the daemon
 serving the database. The combined daemon state is intentionally not exposed.
 
-## Migrating from Deprecated User Helpers
+## Database-Centric Sharing
 
-| Deprecated method        | Replacement                                           |
-| ------------------------ | ----------------------------------------------------- |
-| `User::enable_sync(id)`  | `user.open_database(id).await?.share().await?`        |
-| `User::disable_sync(id)` | `user.open_database(id).await?.stop_sharing().await?` |
-| `User::share(id)`        | `share()`, then separately call `ticket()`            |
+Sharing controls live on the `Database` handle returned by `User`. Use
+`share`, `stop_sharing`, `sync_settings`, and `ticket` on that handle; `User`
+does not expose ID-based sharing helpers.
 
 Handle `PreferenceWriteOutcome` rather than converting `Unknown` into a
 definite failure. Treat the returned ticket as a point-in-time locator, not

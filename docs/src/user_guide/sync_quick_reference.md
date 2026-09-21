@@ -133,15 +133,16 @@ handle.add_address(Address {
 <!-- Code block ignored: Requires network connectivity and authentication flow -->
 
 ```rust,ignore
-use eidetica::sync::Address;
+use eidetica::{sync::DatabaseTicket, user::types::SyncSettings};
 
 // For new devices joining existing databases with authentication.
 user.request_database_access(
     &sync,
-    &Address::http("peer.example.com:8080"),
-    &database_id,
+    &ticket,
     &key_id,                         // User's key ID from user.add_private_key()
-    eidetica::auth::Permission::Write // Requested permission level
+    eidetica::auth::Permission::Write, // Requested permission level
+    SyncSettings::on_commit(),
+    None,
 ).await?;
 
 // This automatically:

@@ -77,10 +77,11 @@ The client initiates a bootstrap request when it needs access to a synchronized 
 // Request database access through User API
 user.request_database_access(
     &sync,
-    &server_address,
-    &database_id,
+    &ticket,
     &key_id,                 // Client's key ID (from user.add_private_key())
-    Permission::Write(5)     // Requested permission level
+    Permission::Write(5),    // Requested permission level
+    SyncSettings::on_commit(),
+    None,
 ).await
 ```
 
@@ -111,9 +112,9 @@ While the request is pending, the client has several options:
 
 **If Approved:**
 
-- The initial `user.request_database_access()` will still return an error
-- Client must use normal `sync_with_peer()` to access the database
-- Once synced, client can load and use the database normally
+- Retry `user.request_database_access()` with the same `SyncSettings`
+- The retry records the selected settings while it synchronizes the database
+- Once it succeeds, client can load and use the database normally
 
 **If Rejected:**
 
@@ -126,18 +127,17 @@ While the request is pending, the client has several options:
 <!-- Code block ignored: Example retry logic implementation for bootstrap workflow -->
 
 ```rust,ignore
-use eidetica::sync::Address;
+use eidetica::{sync::DatabaseTicket, user::types::SyncSettings};
 
 async fn bootstrap_with_retry(
     user: &User,
     sync: &Sync,
-    server_addr: &Address,
-    database_id: &ID,
+    ticket: &DatabaseTicket,
     key_id: &PublicKey,
 ) -> Result<()> {
     // Initial bootstrap request
     if let Err(_) = user.request_database_access(
-        sync, server_addr, database_id, key_id, Permission::Write(5)
+        sync, ticket, key_id, Permission::Write(5), SyncSettings::on_commit(), None
     ).await {
         println!("Bootstrap request pending approval...");
 
@@ -145,8 +145,10 @@ async fn bootstrap_with_retry(
         for attempt in 0..10 {
             tokio::time::sleep(Duration::from_secs(30 * (attempt + 1))).await;
 
-            // Try normal sync after potential approval
-            if sync.sync_with_peer(server_addr, Some(database_id)).await.is_ok() {
+            // Retry with the same explicit preferences after potential approval.
+            if user.request_database_access(
+                sync, ticket, key_id, Permission::Write(5), SyncSettings::on_commit(), None
+            ).await.is_ok() {
                 println!("Access granted!");
                 return Ok(());
             }
@@ -202,10 +204,11 @@ user.reject_bootstrap_request(
 // Step 1: Initial bootstrap attempt with authentication
 let bootstrap_result = user.request_database_access(
     &sync,
-    &server_address,
-    &database_id,
+    &ticket,
     &key_id,  // User's key ID from user.add_private_key()
-    Permission::Write(5)
+    Permission::Write(5),
+    SyncSettings::on_commit(),
+    None,
 ).await;
 
 // Step 2: Handle the response based on approval method
@@ -225,12 +228,17 @@ match bootstrap_result {
         // b) Wait for out-of-band notification
         // c) User-triggered retry
 
-        // Step 4: After admin approval, retry with normal sync
-        // (bootstrap sync will still fail, use regular sync instead)
+        // Step 4: After admin approval, retry with the same sync preferences.
         tokio::time::sleep(Duration::from_secs(30)).await;
 
-        // After approval, normal sync will succeed
-        match sync.sync_with_peer(&server_address, Some(&database_id)).await {
+        match user.request_database_access(
+            &sync,
+            &ticket,
+            &key_id,
+            Permission::Write(5),
+            SyncSettings::on_commit(),
+            None,
+        ).await {
             Ok(_) => {
                 println!("Access granted! Database synchronized.");
                 // Client can now load and use the database

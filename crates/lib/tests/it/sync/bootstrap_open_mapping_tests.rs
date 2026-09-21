@@ -11,11 +11,64 @@ use eidetica::{
     Error,
     auth::Permission,
     store::DocStore,
-    sync::{DatabaseTicket, transports::http::HttpTransport},
-    user::UserError,
+    sync::{DatabaseTicket, SyncError, transports::http::HttpTransport},
+    user::{UserError, types::SyncSettings},
 };
 
 use super::helpers::*;
+
+#[tokio::test]
+async fn record_access_preserves_explicit_settings_for_pending_and_retry() {
+    let (_server_instance, _server_user, _server_key_id, _database, database_id, _server_sync) =
+        setup_sync_enabled_server_with_auto_approve("server_user", "server_key", "test_db").await;
+    let (_client_instance, mut client_user, client_key_id, _client_sync) =
+        setup_sync_enabled_client("client_user", "client_key").await;
+    let pending_settings = SyncSettings::on_commit().with_interval(31);
+
+    let result = client_user
+        .record_database_access(
+            &database_id,
+            &client_key_id,
+            pending_settings.clone(),
+            Err(SyncError::BootstrapPending {
+                request_id: "request-1".into(),
+                message: "awaiting approval".into(),
+            }
+            .into()),
+        )
+        .await;
+    assert!(
+        matches!(result, Err(Error::Sync(error)) if matches!(*error, SyncError::BootstrapPending { .. }))
+    );
+    assert_eq!(
+        client_user
+            .database(&database_id)
+            .await
+            .unwrap()
+            .sync_settings
+            .interval_seconds,
+        Some(31),
+        "the split pending path must store the supplied settings"
+    );
+
+    let retry_settings = SyncSettings::enabled().with_interval(37);
+    let result = client_user
+        .record_database_access(
+            &database_id,
+            &client_key_id,
+            retry_settings,
+            Err(SyncError::BootstrapPending {
+                request_id: "request-1".into(),
+                message: "still awaiting approval".into(),
+            }
+            .into()),
+        )
+        .await;
+    assert!(result.is_err());
+    let tracked = client_user.database(&database_id).await.unwrap();
+    assert!(tracked.sync_settings.sync_enabled);
+    assert_eq!(tracked.sync_settings.interval_seconds, Some(37));
+}
 
 /// Auto-approve server -> client `request_database_access` -> the database is
 /// immediately openable and usable WITHOUT a manual `track_database` call.
@@ -51,10 +104,22 @@ async fn request_access_makes_database_openable_without_manual_track() {
             &ticket,
             &client_key_id,
             Permission::Write(5),
+            SyncSettings::on_commit().with_interval(17),
             None,
         )
         .await
         .expect("request_database_access should succeed");
+
+    assert_eq!(
+        client_user
+            .database(&tree_id)
+            .await
+            .unwrap()
+            .sync_settings
+            .interval_seconds,
+        Some(17),
+        "successful bootstrap must persist the explicit sync preferences"
+    );
 
     // No manual `track_database` call here — that omission is exactly the
     // regression being guarded against.
@@ -92,6 +157,7 @@ async fn pending_access_reports_clear_error_then_opens_after_approval() {
         .unwrap();
 
     let ticket = DatabaseTicket::with_addresses(tree_id.clone(), vec![server_addr.clone()]);
+    let sync_settings = SyncSettings::on_commit().with_interval(23);
 
     // The request is stored pending and returns an error, but the provisional
     // key mapping is still recorded.
@@ -101,12 +167,23 @@ async fn pending_access_reports_clear_error_then_opens_after_approval() {
             &ticket,
             &client_key_id,
             Permission::Write(5),
+            sync_settings.clone(),
             None,
         )
         .await;
     assert!(
         result.is_err(),
         "request against a manual-approval server should be pending"
+    );
+    assert_eq!(
+        client_user
+            .database(&tree_id)
+            .await
+            .unwrap()
+            .sync_settings
+            .interval_seconds,
+        Some(23),
+        "pending bootstrap must retain the explicit sync preferences for a retry"
     );
 
     // find_key now resolves the provisional mapping, so opening reaches the data
@@ -140,11 +217,16 @@ async fn pending_access_reports_clear_error_then_opens_after_approval() {
             &ticket,
             &client_key_id,
             Permission::Write(5),
+            sync_settings,
             None,
         )
         .await
         .expect("access should be granted after approval");
     client_sync.flush().await.ok();
+
+    let tracked = client_user.database(&tree_id).await.unwrap();
+    assert!(tracked.sync_settings.sync_on_commit);
+    assert_eq!(tracked.sync_settings.interval_seconds, Some(23));
 
     // The pubkey-identity mapping matches the by-pubkey grant created on
     // approval, so the database now opens and the key is authorized for writes.

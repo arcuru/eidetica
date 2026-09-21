@@ -137,11 +137,6 @@ own setting is disabled receives an error even if another user keeps the daemon
 serving the database. An unknown write acknowledgment is safe to retry or read
 back because setting the preference is idempotent.
 
-`User::share` remains as a deprecated compatibility wrapper. It saves intent
-and then asks for the locator, so an address-query error after the write can
-leave sharing enabled. New callers should handle preference acknowledgment and
-locator construction separately.
-
 A `DatabaseTicket` is a locator, not a capability: its database ID and address
 hints do not grant database permission. Authorization and bootstrap approval
 remain separate.

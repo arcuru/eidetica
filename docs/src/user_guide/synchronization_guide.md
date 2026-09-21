@@ -253,15 +253,16 @@ user.track_database(
 For joining databases that require authentication:
 
 ```rust,ignore
-use eidetica::sync::Address;
+use eidetica::{sync::DatabaseTicket, user::types::SyncSettings};
 
 // Request database access through User API
 user.request_database_access(
     &sync,
-    &Address::http("127.0.0.1:8080"),
-    &database_id,
+    &ticket,
     &key_id,  // User's key ID from user.add_private_key()
     eidetica::auth::Permission::Write,
+    SyncSettings::on_commit(),
+    None,
 ).await?;
 ```
 

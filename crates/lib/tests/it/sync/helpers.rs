@@ -612,16 +612,19 @@ pub async fn request_and_map_database_access(
             .await?;
 
         let ticket = DatabaseTicket::with_addresses(tree_id.clone(), vec![server_addr.clone()]);
-        user.request_database_access(&client_sync, &ticket, key_id, permission, None)
-            .await?;
+        user.request_database_access(
+            &client_sync,
+            &ticket,
+            key_id,
+            permission,
+            SyncSettings::disabled(),
+            None,
+        )
+        .await?;
     } // Drop Arc before sleep
 
     // Wait for sync to complete
     tokio::time::sleep(Duration::from_millis(sync_delay_ms)).await;
-
-    // Track the database, which discovers the correct sigkey from auth settings
-    user.track_database(tree_id.clone(), key_id, SyncSettings::disabled())
-        .await?;
 
     Ok(())
 }
