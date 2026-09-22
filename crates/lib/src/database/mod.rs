@@ -30,9 +30,7 @@ use crate::{
     instance::{WriteCallback, WriteEvent, WriteSource, backend::Backend, errors::InstanceError},
     store::{SettingsStore, Store, Table},
     sync::DatabaseTicket,
-    user::{
-        PreferenceWriteOutcome, PreferenceWriteReceipt, SyncSettings, TrackedDatabase, UserError,
-    },
+    user::{SyncSettings, TrackedDatabase, UserError},
 };
 
 #[cfg(test)]
@@ -1066,10 +1064,10 @@ impl Database {
 
     /// Set this handle owner's durable sharing preference.
     ///
-    /// A connection failure after submission is ambiguous: callers receive
-    /// [`PreferenceWriteOutcome::Unknown`] and can safely retry this idempotent
-    /// write or read [`Self::sync_settings`] again.
-    pub async fn set_shared(&self, shared: bool) -> Result<PreferenceWriteOutcome> {
+    /// If the connection fails while committing, the write may have succeeded.
+    /// Callers can safely retry this idempotent write or read
+    /// [`Self::sync_settings`] again.
+    pub async fn set_shared(&self, shared: bool) -> Result<()> {
         self.authorize_sharing().await?;
         let user_database = self.user_database()?;
         let tx = user_database.new_transaction().await?;
@@ -1083,31 +1081,22 @@ impl Database {
             })?;
 
         if tracked.sync_settings.sync_enabled == shared {
-            return Ok(PreferenceWriteOutcome::Written(PreferenceWriteReceipt {
-                entry_id: None,
-            }));
+            return Ok(());
         }
 
         tracked.sync_settings.sync_enabled = shared;
         table.set(&key, tracked).await?;
-        match tx.commit().await {
-            Ok(entry_id) => Ok(PreferenceWriteOutcome::Written(PreferenceWriteReceipt {
-                entry_id: Some(entry_id),
-            })),
-            Err(source) if source.is_io_error() || source.is_network_error() => {
-                Ok(PreferenceWriteOutcome::Unknown { source })
-            }
-            Err(source) => Err(source),
-        }
+        tx.commit().await?;
+        Ok(())
     }
 
     /// Enable this handle owner's sharing preference.
-    pub async fn share(&self) -> Result<PreferenceWriteOutcome> {
+    pub async fn share(&self) -> Result<()> {
         self.set_shared(true).await
     }
 
     /// Disable this handle owner's sharing preference.
-    pub async fn stop_sharing(&self) -> Result<PreferenceWriteOutcome> {
+    pub async fn stop_sharing(&self) -> Result<()> {
         self.set_shared(false).await
     }
 

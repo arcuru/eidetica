@@ -2,7 +2,7 @@ use eidetica::{
     Error, Instance, Result,
     auth::{AuthKey, Permission},
     sync::{SyncError, transports::http::HttpTransport},
-    user::{PreferenceWriteOutcome, SyncSettings, UserError},
+    user::{SyncSettings, UserError},
 };
 
 use super::helpers::{create_user_database, setup_instance_with_user};
@@ -44,7 +44,7 @@ async fn database_handle_reads_and_writes_its_owners_preference() -> Result<()> 
     assert!(!database.is_shared().await?);
     assert!(!database.sync_settings().await?.sync_enabled);
 
-    database.share().await?.into_result()?;
+    database.share().await?;
     assert!(database.is_shared().await?);
     assert!(database.sync_settings().await?.sync_enabled);
     assert!(
@@ -54,7 +54,7 @@ async fn database_handle_reads_and_writes_its_owners_preference() -> Result<()> 
             .sync_enabled
     );
 
-    database.stop_sharing().await?.into_result()?;
+    database.stop_sharing().await?;
     assert!(!database.is_shared().await?);
     Ok(())
 }
@@ -63,10 +63,7 @@ async fn database_handle_reads_and_writes_its_owners_preference() -> Result<()> 
 async fn preference_write_is_acknowledged_before_locator_query() -> Result<()> {
     let (_instance, _user, database) = setup_full().await?;
 
-    assert!(matches!(
-        database.share().await?,
-        PreferenceWriteOutcome::Written(_)
-    ));
+    database.share().await?;
     let ticket = database.ticket().await?;
     assert_eq!(ticket.database_id(), database.root_id());
     assert!(ticket.addresses().is_empty());
@@ -80,7 +77,7 @@ async fn sharing_intent_does_not_require_an_attached_sync_engine() -> Result<()>
     let mut user = instance.login_user("manager", None).await?;
     let database = create_user_database(&mut user).await;
 
-    database.share().await?.into_result()?;
+    database.share().await?;
     assert!(database.is_shared().await?);
     assert!(matches!(
         database.ticket().await,
@@ -127,10 +124,10 @@ async fn ticket_requires_this_users_sharing_setting() -> Result<()> {
     bob.track_database(database_id.clone(), &bob_key, SyncSettings::enabled())
         .await?;
     let bob_database = bob.open_database(&database_id).await?;
-    bob_database.share().await?.into_result()?;
+    bob_database.share().await?;
     assert!(database.ticket().await.is_err());
 
-    database.share().await?.into_result()?;
+    database.share().await?;
     assert!(!database.ticket().await?.addresses().is_empty());
     sync.stop_server().await?;
     Ok(())
@@ -148,7 +145,7 @@ async fn stop_sharing_preserves_other_sync_settings() -> Result<()> {
     .await?;
     let database = user.open_database(database.root_id()).await?;
 
-    database.stop_sharing().await?.into_result()?;
+    database.stop_sharing().await?;
     let settings = database.sync_settings().await?;
     assert!(!settings.sync_enabled);
     assert!(settings.sync_on_commit);
@@ -160,12 +157,10 @@ async fn stop_sharing_preserves_other_sync_settings() -> Result<()> {
 async fn repeated_preference_write_is_idempotent() -> Result<()> {
     let (_instance, user, database) = setup_full().await?;
 
-    let first = database.share().await?.into_result()?;
+    database.share().await?;
     let tips = user.user_database().snapshot().await?;
-    let second = database.share().await?.into_result()?;
+    database.share().await?;
 
-    assert!(first.entry_id.is_some());
-    assert!(second.entry_id.is_none());
     assert_eq!(user.user_database().snapshot().await?, tips);
     Ok(())
 }
@@ -210,7 +205,7 @@ async fn service_database_handle_uses_its_registered_identity() -> Result<()> {
         return Ok(());
     }
     let (_owner, _user, database) = setup_full().await?;
-    database.share().await?.into_result()?;
+    database.share().await?;
     assert_eq!(database.ticket().await?.database_id(), database.root_id());
     Ok(())
 }

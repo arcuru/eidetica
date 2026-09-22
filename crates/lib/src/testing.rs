@@ -648,13 +648,7 @@ impl Peer {
     /// the database *before* calling this.
     ///
     pub async fn serve(&mut self, tree: &ID) -> Result<()> {
-        self.user
-            .open_database(tree)
-            .await?
-            .share()
-            .await?
-            .into_result()
-            .map(|_| ())
+        self.user.open_database(tree).await?.share().await
     }
 }
 

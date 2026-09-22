@@ -21,7 +21,6 @@ tracked database, use `User::open_database`.
 # extern crate eidetica;
 # extern crate tokio;
 # use eidetica::{Instance, NewUser, crdt::Doc};
-# use eidetica::user::PreferenceWriteOutcome;
 # #[tokio::main]
 # async fn main() -> eidetica::Result<()> {
 let (instance, user) = Instance::connect_or_create(
@@ -33,16 +32,7 @@ let mut user = user.expect("memory backend is new");
 let key = user.get_default_key()?;
 let database = user.create_database(Doc::new(), &key).await?;
 
-match database.share().await? {
-    PreferenceWriteOutcome::Written(receipt) => {
-        println!("sharing preference accepted: {:?}", receipt.entry_id);
-    }
-    PreferenceWriteOutcome::Unknown { source } => {
-        // Submission may have reached the owner. Read back the setting or
-        // retry the idempotent write.
-        eprintln!("sharing outcome unknown: {source}");
-    }
-}
+database.share().await?;
 
 assert!(database.is_shared().await?);
 println!("share {}", database.ticket().await?);
@@ -50,10 +40,10 @@ println!("share {}", database.ticket().await?);
 # }
 ```
 
-`Written` acknowledges a durable signed preference entry. It does not say that
-the daemon has reconciled its internal configuration or is advertising an address.
-`Unknown` means the write may have reached the owner before the connection
-failed. Safely retry it or read `sync_settings()`.
+A successful call acknowledges durable signed preference state. It does not say
+that the daemon has reconciled its internal configuration or is advertising an
+address. If the connection fails while committing, the write may have reached
+the owner. Safely retry it or read `sync_settings()`.
 
 ## Settings and Tickets
 
@@ -83,6 +73,5 @@ Sharing controls live on the `Database` handle returned by `User`. Use
 `share`, `stop_sharing`, `sync_settings`, and `ticket` on that handle; `User`
 does not expose ID-based sharing helpers.
 
-Handle `PreferenceWriteOutcome` rather than converting `Unknown` into a
-definite failure. Treat the returned ticket as a point-in-time locator, not
-proof that the preference was applied or that a peer can connect.
+Treat the returned ticket as a point-in-time locator, not proof that the
+preference was applied or that a peer can connect.
