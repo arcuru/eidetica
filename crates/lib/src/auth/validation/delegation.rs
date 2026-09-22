@@ -12,7 +12,7 @@ use crate::{
         settings::AuthSettings,
         types::{DelegationStep, KeyHint, PermissionBounds, ResolvedAuth},
     },
-    backend::{BackendError, Reachability},
+    backend::{BackendError, BackendImpl, Reachability},
 };
 
 /// Maximum number of steps in a single delegation path.
@@ -28,6 +28,33 @@ const MAX_DELEGATION_STEPS: usize = 10;
 /// Tips are wire-supplied and each drives DAG traversal; bound the per-step
 /// fan-out. A legitimate tree frontier is small (concurrent heads only).
 const MAX_DELEGATION_TIPS: usize = 64;
+
+/// Check the entries named directly by a delegation step before traversing
+/// between them. This preserves the useful initial dependency set (including
+/// an absent database root) without forcing the reachability check to use the
+/// root as its floor and walk the whole history a second time.
+async fn missing_delegation_entries(
+    backend: &dyn BackendImpl,
+    tree: &crate::ID,
+    ids: &Snapshot,
+) -> Result<Vec<crate::ID>> {
+    let mut missing = Vec::new();
+    for id in ids {
+        match backend.get(id).await {
+            Ok(entry) if entry.in_tree(tree) => {}
+            Ok(_) => {
+                return Err(BackendError::EntryNotInTree {
+                    entry_id: id.clone(),
+                    tree_id: tree.clone(),
+                }
+                .into());
+            }
+            Err(e) if e.is_not_found() => missing.push(id.clone()),
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(missing)
+}
 
 /// Delegation resolver for handling complex delegation paths
 pub struct DelegationResolver;
@@ -143,6 +170,13 @@ impl DelegationResolver {
             let delegated_tree_ref = current_auth_settings.get_delegated_tree(&step.tree)?;
 
             let root_id = delegated_tree_ref.tree.root.clone();
+            if step.tips.is_empty() {
+                return Err(AuthError::InvalidDelegationTips {
+                    tree_id: root_id,
+                    claimed_tips: Vec::new(),
+                }
+                .into());
+            }
             // Tree-scoped membership + monotonicity floor. The claimed snapshot
             // may not regress below the snapshot the parent committed for this
             // delegation (`delegated_tree_ref.tree.tips`, the "floor"): every floor
@@ -174,15 +208,39 @@ impl DelegationResolver {
             // checked just below when an entry is being validated. The pointer
             // itself may only move forward (`AuthValidator` gates `_settings`
             // writes), so together they pin the snapshot per entry.
-            let floor = Snapshot::from(
-                delegated_tree_ref
-                    .tree
-                    .tips
-                    .iter()
-                    .cloned()
-                    .chain(std::iter::once(root_id.clone()))
+            let floor = Snapshot::from(delegated_tree_ref.tree.tips.to_vec());
+            let directly_referenced = Snapshot::from(
+                std::iter::once(root_id.clone())
+                    .chain(step.tips.iter().cloned())
+                    .chain(floor.iter().cloned())
                     .collect::<Vec<_>>(),
             );
+            match missing_delegation_entries(
+                current_backend.as_ref(),
+                &root_id,
+                &directly_referenced,
+            )
+            .await
+            {
+                Ok(missing) if !missing.is_empty() => {
+                    return Err(AuthError::DelegatedTreeUnsynced {
+                        tree_id: root_id.clone(),
+                        missing,
+                    }
+                    .into());
+                }
+                Ok(_) => {}
+                Err(Error::Backend(error))
+                    if matches!(*error, BackendError::EntryNotInTree { .. }) =>
+                {
+                    return Err(AuthError::InvalidDelegationTips {
+                        tree_id: root_id.clone(),
+                        claimed_tips: step.tips.clone(),
+                    }
+                    .into());
+                }
+                Err(error) => return Err(error),
+            }
             match current_backend
                 .check_targets_reachable_from(&root_id, &step.tips, &floor)
                 .await
@@ -280,7 +338,16 @@ impl DelegationResolver {
                 .get_tree_from_tips(&root_id, &snapshot)
                 .await
             {
-                Ok(entries) => crate::database::fold_settings_entries(&entries)?,
+                Ok(entries) => {
+                    if !entries.iter().any(|entry| entry.id() == root_id) {
+                        return Err(AuthError::InvalidDelegationTips {
+                            tree_id: root_id.clone(),
+                            claimed_tips: step.tips.clone(),
+                        }
+                        .into());
+                    }
+                    crate::database::fold_settings_entries(&entries)?
+                }
                 Err(e) if e.is_not_found() => {
                     let missing = e
                         .entry_id()

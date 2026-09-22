@@ -286,22 +286,26 @@ pub(crate) fn get_tree_from_tips(
             continue;
         }
 
-        if let Some(entry) = inner.entries.get(&current_id) {
-            // Entry must be in the specified tree to be included
-            if entry.in_tree(tree) {
-                // Add parents to be processed
-                if let Ok(parents) = entry.parents() {
-                    for parent in parents {
-                        if !processed.contains(&parent) {
-                            to_process.push_back(parent);
-                        }
+        let entry = inner
+            .entries
+            .get(&current_id)
+            .ok_or_else(|| BackendError::EntryNotFound {
+                id: current_id.clone(),
+            })?;
+        // Entry must be in the specified tree to be included
+        if entry.in_tree(tree) {
+            // Add parents to be processed
+            if let Ok(parents) = entry.parents() {
+                for parent in parents {
+                    if !processed.contains(&parent) {
+                        to_process.push_back(parent);
                     }
                 }
-
-                // Include this entry in the result
-                result.push(entry.clone());
-                processed.insert(current_id);
             }
+
+            // Include this entry in the result
+            result.push(entry.clone());
+            processed.insert(current_id);
         }
     }
 
