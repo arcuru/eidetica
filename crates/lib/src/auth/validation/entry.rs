@@ -3,7 +3,7 @@
 //! This module provides the main entry point for validating entries
 //! and the AuthValidator struct that coordinates all validation operations.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use tracing::debug;
 
@@ -96,7 +96,7 @@ impl AuthValidator {
         // before key resolution; it touches the backend only when the write
         // actually changes a pointer.
         if !self
-            .check_delegation_pointers_forward(entry, auth_settings, instance)
+            .check_delegation_pointers_forward(entry, instance)
             .await?
         {
             return Ok(false);
@@ -134,10 +134,11 @@ impl AuthValidator {
             Err(Error::Auth(e)) if e.is_delegated_tree_unsynced() => {
                 return Err(Error::Auth(e));
             }
-            Err(e) => {
+            Err(Error::Auth(e)) => {
                 debug!("Key resolution failed: {:?}", e);
                 return Ok(false);
             }
+            Err(e) => return Err(e),
         };
 
         // Determine operation type from entry content
@@ -197,7 +198,6 @@ impl AuthValidator {
     async fn check_delegation_pointers_forward(
         &self,
         entry: &Entry,
-        auth_settings: &AuthSettings,
         instance: Option<&Instance>,
     ) -> Result<bool> {
         if !entry.in_subtree(SETTINGS) {
@@ -206,10 +206,7 @@ impl AuthValidator {
         let Ok(data) = entry.data(SETTINGS) else {
             return Ok(true);
         };
-        let Ok(settings) = serde_json::from_slice::<Doc>(data) else {
-            debug!("Malformed _settings data");
-            return Ok(false);
-        };
+        let settings = serde_json::from_slice::<Doc>(data)?;
         if settings.is_tombstone("auth.delegations") {
             return Ok(true);
         }
@@ -221,7 +218,6 @@ impl AuthValidator {
             return Ok(false);
         };
 
-        let previous = auth_settings.get_all_delegated_trees()?;
         let mut engine: Option<std::sync::Arc<dyn BackendImpl>> = None;
 
         for (key, value) in delegations.iter() {
@@ -258,23 +254,6 @@ impl AuthValidator {
                 },
             };
 
-            let mut previous_tips: Vec<ID> = previous
-                .values()
-                .filter(|tree_ref| tree_ref.tree.root == root)
-                .flat_map(|tree_ref| tree_ref.tree.tips.iter().cloned())
-                .collect();
-            previous_tips.sort();
-            previous_tips.dedup();
-            if previous_tips.is_empty() {
-                continue;
-            }
-            let mut sorted_new = new_tips.clone();
-            sorted_new.sort();
-            sorted_new.dedup();
-            if sorted_new == previous_tips {
-                continue;
-            }
-
             let engine = match &engine {
                 Some(engine) => engine,
                 None => {
@@ -284,13 +263,14 @@ impl AuthValidator {
                     engine.insert(inst.require_local_engine()?)
                 }
             };
-            let targets = crate::Snapshot::from(
-                previous_tips
-                    .iter()
-                    .cloned()
-                    .chain(std::iter::once(root.clone()))
-                    .collect::<Vec<_>>(),
-            );
+            let targets = committed_pointer_floor(engine.as_ref(), entry, &root).await?;
+            if targets.is_empty() {
+                continue;
+            }
+            let new_snapshot = crate::Snapshot::from(&new_tips);
+            if new_snapshot == targets {
+                continue;
+            }
             match engine
                 .check_targets_reachable_from(&root, &new_tips, &targets)
                 .await
@@ -301,7 +281,7 @@ impl AuthValidator {
                         "{}",
                         AuthError::DelegationPointerRegressed {
                             tree_id: Box::new(root),
-                            previous_tips: previous_tips.into_boxed_slice(),
+                            previous_tips: targets.into_tips().into_boxed_slice(),
                             new_tips: new_tips.into_boxed_slice(),
                         }
                     );
@@ -362,6 +342,92 @@ impl AuthValidator {
         self.auth_cache.clear();
         self.resolver.clear_cache();
     }
+}
+
+/// Join the last committed pointer for `root` on every parent path.
+///
+/// Reading only the CRDT-resolved auth pre-state is insufficient at a merge:
+/// an atomic delegation reference chooses one concurrent sibling and forgets
+/// the other. Walking to the nearest pointer write on each path preserves both
+/// causal floors, and also prevents remove-then-readd from resetting a pointer.
+async fn committed_pointer_floor(
+    backend: &dyn BackendImpl,
+    entry: &Entry,
+    root: &ID,
+) -> Result<crate::Snapshot> {
+    let tree_id = entry.root().unwrap_or_else(|| entry.id());
+    let mut stack = entry.parents()?;
+    let mut visited = HashSet::new();
+    let mut tips = Vec::new();
+    let mut missing = Vec::new();
+
+    while let Some(id) = stack.pop() {
+        if !visited.insert(id.clone()) {
+            continue;
+        }
+        let ancestor = match backend.get(&id).await {
+            Ok(ancestor) => ancestor,
+            Err(e) if e.is_not_found() => {
+                missing.push(id);
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
+        let pointer = ancestor
+            .data(SETTINGS)
+            .ok()
+            .map(|data| serde_json::from_slice::<Doc>(data))
+            .transpose()?
+            .map(|settings| delegation_pointer_for_root(&settings, root))
+            .transpose()?
+            .flatten();
+        if let Some(pointer) = pointer {
+            tips.extend(pointer);
+        } else {
+            stack.extend(ancestor.parents()?);
+        }
+    }
+
+    if !missing.is_empty() {
+        missing.sort();
+        missing.dedup();
+        return Err(AuthError::DelegatedTreeUnsynced { tree_id, missing }.into());
+    }
+    Ok(crate::Snapshot::from(tips))
+}
+
+/// Return the pointer tips written for `root` in one raw settings delta.
+/// Deletions and bounds-only writes return `None`, so the prior pointer keeps
+/// carrying forward through them.
+fn delegation_pointer_for_root(settings: &Doc, root: &ID) -> Result<Option<Vec<ID>>> {
+    let Some(Value::Doc(delegations)) = settings.get("auth.delegations") else {
+        return Ok(None);
+    };
+    let mut tips = Vec::new();
+    let mut found = false;
+    for (key, value) in delegations.iter() {
+        let Value::Doc(delegation) = value else {
+            continue;
+        };
+        let Some(Value::Doc(tree)) = delegation.get("tree") else {
+            continue;
+        };
+        let written_root = match tree.get("root") {
+            Some(Value::Text(value)) => ID::parse(value)?,
+            Some(_) => continue,
+            None => match ID::parse(key) {
+                Ok(value) => value,
+                Err(_) => continue,
+            },
+        };
+        if &written_root == root
+            && let Some(written_tips) = delegation_pointer_tips(tree)?
+        {
+            found = true;
+            tips.extend(written_tips);
+        }
+    }
+    Ok(found.then_some(tips))
 }
 
 /// The `tips` a `_settings` delegation write commits, read leniently from
