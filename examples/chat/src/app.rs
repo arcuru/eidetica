@@ -110,7 +110,7 @@ impl App {
         // Save sharing intent, then build a point-in-time locator. The ID-only
         // fallback preserves the existing handoff UI if address lookup fails.
         let room_address = match async {
-            database.share().await?.into_result()?;
+            database.share().await?;
             database.ticket().await
         }
         .await

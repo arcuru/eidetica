@@ -693,11 +693,7 @@ async fn test_share_with_attached_sync_includes_server_addresses() {
     let db_id = db.root_id().clone();
     set_global_auth_key(&db, AuthKey::active(None, Permission::Write(10))).await;
 
-    db.share()
-        .await
-        .expect("share should succeed")
-        .into_result()
-        .expect("share write should be definite");
+    db.share().await.expect("share should succeed");
     let ticket = db.ticket().await.expect("ticket should succeed");
 
     assert_eq!(ticket.database_id(), &db_id);
@@ -713,11 +709,7 @@ async fn test_share_with_attached_sync_includes_server_addresses() {
         "Ticket should include the running HTTP transport's address"
     );
 
-    db.share()
-        .await
-        .expect("second share should succeed")
-        .into_result()
-        .expect("second share write should be definite");
+    db.share().await.expect("second share should succeed");
     let ticket2 = db.ticket().await.expect("second ticket should succeed");
     assert_eq!(
         ticket, ticket2,

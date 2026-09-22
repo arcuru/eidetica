@@ -278,15 +278,15 @@ store.set("welcome", "Welcome to the room!").await?;
 txn.commit().await?;
 
 // Save durable sharing intent, then build a point-in-time locator.
-database.share().await?.into_result()?;
+database.share().await?;
 let ticket = database.ticket().await?;
 println!("Share this locator with peers: {ticket}");
 # Ok(())
 # }
 ```
 
-For typed unknown acknowledgments and migration from the removed ID-based `User`
-helpers, see [Database Sharing](database_management.md).
+For failure handling and migration from the removed ID-based `User` helpers, see
+[Database Sharing](database_management.md).
 
 ### Bootstrap from Shared Database
 

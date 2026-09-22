@@ -46,5 +46,4 @@ pub use errors::UserError;
 pub use key_manager::UserKeyManager;
 pub use session::{DatabaseBuilder, User};
 pub(crate) use sharing::ticket_locator;
-pub use sharing::{PreferenceWriteOutcome, PreferenceWriteReceipt};
 pub use types::*;

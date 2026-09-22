@@ -60,15 +60,7 @@ preference, and separately create a point-in-time locator. The daemon's combined
 configuration remains internal:
 
 ```rust,ignore
-use eidetica::user::PreferenceWriteOutcome;
-
-match database.share().await? {
-    PreferenceWriteOutcome::Written(_) => {}
-    PreferenceWriteOutcome::Unknown { source } => {
-        // Submission may have succeeded. Read back or retry the idempotent write.
-        eprintln!("sharing outcome unknown: {source}");
-    }
-}
+database.share().await?;
 
 assert!(database.is_shared().await?);
 
@@ -76,11 +68,12 @@ let ticket = database.ticket().await?;
 println!("Send this locator to your peer: {ticket}");
 ```
 
-A `Written` result acknowledges durable intent, not daemon reconciliation or
-network readiness. `Unknown` means the write may have reached the owner; reading
-the user-scoped settings or retrying is safe. A ticket is a point-in-time locator
-and may contain no addresses when the owner is not currently advertising one. See
-[Database Sharing](database_management.md) for settings, ticket, and migration details.
+A successful write acknowledges durable intent, not daemon reconciliation or
+network readiness. If the connection fails while committing, the write may have
+succeeded; reading the user-scoped settings or retrying is safe. A ticket is a
+point-in-time locator and may contain no addresses when the owner is not currently
+advertising one. See [Database Sharing](database_management.md) for settings,
+ticket, and migration details.
 
 A peer who receives the ticket calls `sync.sync_with_ticket(&ticket)` as
 shown in step 3. The ticket identifies the database and address hints; it does
