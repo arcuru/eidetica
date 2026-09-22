@@ -11,7 +11,9 @@ mod postgres_ownership;
 mod save_load;
 #[cfg(feature = "sqlite")]
 mod sqlite_ownership;
+mod store_state_cache_bounds;
 mod store_state_records;
 mod subtree_operations;
 mod tree_operations;
 mod verification;
+mod verified_snapshot;

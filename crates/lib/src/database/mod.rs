@@ -1440,8 +1440,8 @@ impl Database {
         // placeholder root — `EntryNotFound` is mapped to empty to match
         // `Backend::snapshot`'s contract). Return it directly: the local
         // verification machinery below (status probe, auto-verify,
-        // `verified_frontier`) is local-only and would fail on a remote
-        // backend anyway (e.g. `verified_frontier`'s `backend.get_tree(...)`).
+        // retained verified reads) is local-only and would fail on a remote
+        // backend anyway.
         //
         // Delegate to `self.ops()` rather than calling the connection
         // directly: when this handle was built via `Database::create` or
@@ -1464,107 +1464,84 @@ impl Database {
 
         // Local path: verification-status probing needs the concrete engine.
         let backend = instance.require_local_engine()?;
-        let tips = self.ops().snapshot(&self.root).await?.into_tips();
+        let raw = self.ops().snapshot(&self.root).await?;
+
+        // While a verify pass is on the stack its reads must see the raw DAG
+        // to reconstruct pinned `_settings` (the frontier filter itself
+        // depends on verification status, which is exactly what verify is
+        // computing): keep Unverified tips, drop only Failed.
+        if auto_verify_suppressed() {
+            return self.drop_failed(&raw.into_tips()).await;
+        }
+
+        let verified = backend.verified_snapshot(self.root_id()).await?;
+
+        // Hot path: raw and verified agree, so nothing new can need
+        // verification (an Unverified or Failed entry always surfaces a
+        // non-verified raw tip) and there is nothing to cut. Two retained
+        // lookups, no history scan, no per-entry status reads.
+        if raw == verified {
+            return Ok(verified);
+        }
 
         // Verification status ops are local-only. On a remote backend the
         // server owns verification (and stores everything Unverified until
         // it verifies); the client returns verified tips unchanged.
-        if let Some(first) = tips.first()
+        if let Some(first) = raw.tips().first()
             && backend.get_verification_status(first).await.is_err()
         {
-            return Ok(Snapshot::new(tips));
+            return Ok(raw);
         }
 
         // Access-time opportunistic verification: if any tip is still
         // Unverified, attempt to resolve it now. Best-effort — a failure or a
-        // still-incomplete pin must not block the read. Suppressed while a
-        // verify pass is already on the stack (its own reads land here).
-        let tips = if auto_verify_suppressed() {
-            tips
-        } else {
-            let mut any_unverified = false;
-            for t in &tips {
-                if backend
-                    .get_verification_status(t)
-                    .await
-                    .unwrap_or(VerificationStatus::Unverified)
-                    == VerificationStatus::Unverified
-                {
-                    any_unverified = true;
-                    break;
-                }
+        // still-incomplete pin must not block the read.
+        let mut any_unverified = false;
+        for t in raw.tips() {
+            if backend
+                .get_verification_status(t)
+                .await
+                .unwrap_or(VerificationStatus::Unverified)
+                == VerificationStatus::Unverified
+            {
+                any_unverified = true;
+                break;
             }
-            if any_unverified {
-                // Boxed: this call closes a snapshot → verify →
-                // validate_entry → delegation → get_settings → snapshot
-                // async cycle; the box gives it a finite future size.
-                let _ = Box::pin(self.verify()).await;
-                self.ops().snapshot(&self.root).await?.into_tips()
-            } else {
-                tips
+        }
+        if any_unverified {
+            // Boxed: this call closes a snapshot → verify →
+            // validate_entry → delegation → get_settings → snapshot
+            // async cycle; the box gives it a finite future size.
+            let _ = Box::pin(self.verify()).await;
+            if !self.allow_unverified {
+                return backend.verified_snapshot(self.root_id()).await;
             }
-        };
+            return self
+                .drop_failed(&self.ops().snapshot(&self.root).await?.into_tips())
+                .await;
+        }
 
-        // Default view: cut to the Verified frontier. Suppressed while a
-        // verify pass is on the stack — its reads must see the raw DAG to
-        // reconstruct pinned `_settings` (the frontier filter itself depends
-        // on verification status, which is exactly what verify is computing).
-        if !self.allow_unverified && !auto_verify_suppressed() {
-            return self.verified_frontier().await.map(Snapshot::new);
+        // Default view: the retained Verified frontier — a single indexed
+        // lookup maintained incrementally at the status-update boundary.
+        if !self.allow_unverified {
+            return Ok(verified);
         }
 
         // `allow_unverified` view: keep Unverified tips, drop only Failed.
+        self.drop_failed(&raw.into_tips()).await
+    }
+
+    /// Keep every tip except `Failed` ones.
+    async fn drop_failed(&self, tips: &[ID]) -> Result<Snapshot> {
+        let instance = self.instance()?;
+        let backend = instance.require_local_engine()?;
         let mut visible = Vec::with_capacity(tips.len());
         for t in tips {
-            if backend.get_verification_status(&t).await? != VerificationStatus::Failed {
-                visible.push(t);
+            if backend.get_verification_status(t).await? != VerificationStatus::Failed {
+                visible.push(t.clone());
             }
         }
         Ok(Snapshot::new(visible))
-    }
-
-    /// Compute the tips of the maximal all-`Verified` prefix of the DAG.
-    ///
-    /// An entry is in the prefix iff it is `Verified` **and** every one of its
-    /// parents is in the prefix (the prefix is ancestor-closed). The frontier
-    /// is the set of prefix entries that are not the parent of any other
-    /// prefix entry — i.e. the tips of the verified subgraph.
-    ///
-    /// Returns an empty vector if the root itself is not `Verified` (nothing
-    /// is observable in the default view until verification reaches the root).
-    async fn verified_frontier(&self) -> Result<Vec<ID>> {
-        let instance = self.instance()?;
-        let backend = instance.require_local_engine()?;
-
-        // Topologically sorted (height then ID): every parent precedes its
-        // children, so a single forward pass can decide prefix membership.
-        let entries = backend.get_tree(self.root_id()).await?;
-
-        let mut in_prefix: std::collections::HashSet<ID> = std::collections::HashSet::new();
-        let mut covered: std::collections::HashSet<ID> = std::collections::HashSet::new();
-
-        for e in &entries {
-            let id = e.id();
-            if backend.get_verification_status(&id).await? != VerificationStatus::Verified {
-                continue;
-            }
-            let parents = e.parents().unwrap_or_default();
-            if parents.iter().all(|p| in_prefix.contains(p)) {
-                in_prefix.insert(id);
-                // Every parent now has a verified child, so it is interior to
-                // the prefix and cannot itself be a frontier tip.
-                for p in parents {
-                    covered.insert(p);
-                }
-            }
-        }
-
-        let frontier: Vec<ID> = entries
-            .into_iter()
-            .map(|e| e.id())
-            .filter(|id| in_prefix.contains(id) && !covered.contains(id))
-            .collect();
-        Ok(frontier)
     }
 
     /// Get the full `Entry` objects for the current tips of the main database branch.

@@ -4,7 +4,7 @@
 //! encryption/decryption, DocStore integration, and Table integration.
 
 use eidetica::{
-    Registered, Store,
+    Registered, Snapshot, Store,
     crdt::{Doc, doc::Value},
     store::{DocStore, PasswordStore, Table},
 };
@@ -210,7 +210,7 @@ async fn test_password_store_cache_is_encrypted() {
             name: "eidetica/opaque".to_string(),
             version: 0,
         },
-        source_key: entry_id2.to_string().into_bytes(),
+        source_key: Snapshot::from([entry_id2]).cache_key_bytes(),
     };
     let view = backend
         .resolve_store_state(&request)

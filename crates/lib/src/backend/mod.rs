@@ -156,6 +156,37 @@ impl CacheScope {
     }
 }
 
+/// Bounds for the disposable derived Store-state materialization cache.
+///
+/// This is the one backend cache policy surface: it applies across all
+/// historical Snapshots held as derived (`Derived`) namespaces. Eviction is
+/// performance-only and never changes semantics — an evicted entry is
+/// recomputed from history on the next miss.
+///
+/// Both bounds apply together: eviction trims the least-recently-used live
+/// derived namespaces until the live count is at most `max_namespaces` AND
+/// their total bytes are at most `max_bytes`. Authoritative and staging
+/// namespaces are never counted and never evicted.
+///
+/// The defaults are deliberately generous so ordinary use never evicts;
+/// tests shrink them through backend test knobs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DerivedCachePolicy {
+    /// Maximum live derived namespaces retained.
+    pub max_namespaces: usize,
+    /// Maximum total record bytes across live derived namespaces.
+    pub max_bytes: u64,
+}
+
+impl Default for DerivedCachePolicy {
+    fn default() -> Self {
+        Self {
+            max_namespaces: 1024,
+            max_bytes: 256 * 1024 * 1024,
+        }
+    }
+}
+
 /// Persistent public metadata for an Eidetica instance.
 ///
 /// This struct consolidates all instance-level state that needs to persist across restarts:
@@ -494,6 +525,116 @@ pub trait BackendImpl: Send + Sync + Any {
     /// # Arguments
     /// * `tree` - The root ID of the tree to snapshot.
     async fn snapshot(&self, tree: &ID) -> Result<Snapshot>;
+
+    /// Returns the retained verified [`Snapshot`] of `tree` — the tips of the
+    /// maximal ancestor-closed, all-`Verified` prefix of the DAG — without
+    /// scanning history.
+    ///
+    /// Backends maintain this frontier incrementally at the
+    /// [`update_verification_status`](Self::update_verification_status)
+    /// boundary, atomically with the status mutation that moves it. A
+    /// still-`Unverified` tip is replaced by its nearest `Verified`
+    /// ancestors; anything reachable only through an `Unverified` entry is
+    /// excluded. Empty when the root itself is not `Verified`.
+    ///
+    /// The default implementation reconstructs the frontier from history (a
+    /// full-tree load plus one status read per entry). It is the
+    /// migration/repair/test oracle, not a read path: concrete backends
+    /// override it with their retained state. Custom backends inherit correct
+    /// behavior automatically.
+    ///
+    /// # Arguments
+    /// * `tree` - The root ID of the tree to snapshot.
+    async fn verified_snapshot(&self, tree: &ID) -> Result<Snapshot> {
+        use std::collections::{BTreeSet, HashMap, HashSet};
+
+        // `get_tree` order is height-then-ID, but stored heights are not
+        // trusted here: entries built or received without heights order
+        // arbitrarily, so membership runs in Kahn's topological order
+        // (ready set deterministic in height-then-ID) instead of trusting
+        // the load order. In-degree counts only edges inside the held set;
+        // parents outside it are never prefix members, so entries with
+        // missing parents are visited but never admitted.
+        let entries = self.get_tree(tree).await?;
+        let held: HashSet<ID> = entries.iter().map(|e| e.id()).collect();
+        let mut parents_of: HashMap<ID, Vec<ID>> = HashMap::with_capacity(entries.len());
+        let mut children_of: HashMap<ID, Vec<ID>> = HashMap::with_capacity(entries.len());
+        let mut in_degree: HashMap<ID, usize> = HashMap::with_capacity(entries.len());
+        let mut height_of: HashMap<ID, u64> = HashMap::with_capacity(entries.len());
+        for e in &entries {
+            let id = e.id();
+            height_of.insert(id.clone(), e.height());
+            let parents = e.parents().unwrap_or_default();
+            let mut degree = 0usize;
+            for p in &parents {
+                children_of.entry(p.clone()).or_default().push(id.clone());
+                if held.contains(p) {
+                    degree += 1;
+                }
+            }
+            parents_of.insert(id.clone(), parents);
+            in_degree.insert(id, degree);
+        }
+        let mut ready: BTreeSet<(u64, ID)> = in_degree
+            .iter()
+            .filter(|&(_, &d)| d == 0)
+            .map(|(id, _)| (height_of[id], id.clone()))
+            .collect();
+
+        let mut in_prefix: HashSet<ID> = HashSet::new();
+        let mut covered: HashSet<ID> = HashSet::new();
+        while let Some((_, id)) = ready.pop_first() {
+            if let Some(kids) = children_of.get(&id) {
+                for kid in kids.clone() {
+                    let d = in_degree.get_mut(&kid).expect("in_degree entry exists");
+                    *d -= 1;
+                    if *d == 0 {
+                        ready.insert((height_of[&kid], kid));
+                    }
+                }
+            }
+            if self.get_verification_status(&id).await? != VerificationStatus::Verified {
+                continue;
+            }
+            let empty = Vec::new();
+            let parents = parents_of.get(&id).unwrap_or(&empty);
+            if parents.iter().all(|p| in_prefix.contains(p)) {
+                in_prefix.insert(id.clone());
+                // Every parent now has a verified child, so it is interior to
+                // the prefix and cannot itself be a frontier tip.
+                for p in parents {
+                    covered.insert(p.clone());
+                }
+            }
+        }
+
+        Ok(Snapshot::new(
+            in_prefix
+                .into_iter()
+                .filter(|id| !covered.contains(id))
+                .collect(),
+        ))
+    }
+
+    /// Rebuild one tree's retained verified state from entries and statuses,
+    /// replacing whatever is currently retained, and return the rebuilt
+    /// verified [`Snapshot`].
+    ///
+    /// This is the migration/repair path: cold opens load persisted state and
+    /// never call this. Demotion funnels through here because removing a
+    /// prefix member can re-expose an arbitrarily large subgraph, which the
+    /// incremental promotion path cannot cheaply recompute.
+    ///
+    /// Backends without retained verified state inherit a correct default:
+    /// recomputing the frontier from history is identical to rebuilding it.
+    /// Backends that retain the frontier must override this to replace the
+    /// retained rows/set, not just return them.
+    ///
+    /// # Arguments
+    /// * `tree` - The root ID of the tree to rebuild.
+    async fn rebuild_verified_state(&self, tree: &ID) -> Result<Snapshot> {
+        self.verified_snapshot(tree).await
+    }
 
     /// Returns the snapshot of a specific store within a given tree.
     ///

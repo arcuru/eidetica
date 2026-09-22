@@ -83,7 +83,12 @@ pub async fn resolve_store_state(
     .fetch_optional(backend.pool())
     .await
     .sql_context("Failed to resolve Store-state namespace")?;
-    Ok(row.map(|(namespace_id,)| RecordView { namespace_id }))
+    let view = row.map(|(namespace_id,)| RecordView { namespace_id });
+    // Recency only: in-memory touch, never a storage write per hit.
+    if let Some(view) = &view {
+        super::cache::touch(backend, &view.namespace_id).await?;
+    }
+    Ok(view)
 }
 
 pub async fn begin_store_state_staging(
@@ -173,9 +178,20 @@ pub async fn stage_store_state_records(
 /// winner's namespace is adopted and this one is discarded. Any other failure
 /// also discards the staging namespace, because the caller has surrendered its
 /// token and can no longer abort it.
+///
+/// On success of a derived publish, the freshly committed namespace is
+/// recorded in recency and the cache is opportunistically trimmed to the
+/// cache policy (see `super::cache::evict_derived`).
 pub async fn publish_store_state(backend: &SqlxBackend, token: StagingToken) -> Result<RecordView> {
+    let target_lifecycle = token.target.lifecycle;
     match publish_staged_namespace(backend, &token).await {
-        Ok(view) => Ok(view),
+        Ok((view, tick)) => {
+            if target_lifecycle == StoreStateLifecycle::Derived {
+                super::cache::record_published(backend, &view.namespace_id, tick);
+                super::cache::evict_derived(backend, Some(&view.namespace_id)).await?;
+            }
+            Ok(view)
+        }
         Err(err) => {
             let winner = resolve_store_state(backend, &token.target).await?;
             discard_staging_namespace(backend, &token.namespace_id).await?;
@@ -184,10 +200,29 @@ pub async fn publish_store_state(backend: &SqlxBackend, token: StagingToken) -> 
     }
 }
 
+/// Total published record bytes (key plus value) for one namespace.
+///
+/// Ready namespaces hold no NULL values (publish rejects them), so plain
+/// `SUM` lengths need only a `COALESCE` for the empty-record case.
+fn published_size_expr(backend: &SqlxBackend, namespace_param: &str) -> String {
+    let (key_len, value_len) = if backend.is_sqlite() {
+        ("length(record_key)", "length(record_value)")
+    } else {
+        ("octet_length(record_key)", "octet_length(record_value)")
+    };
+    format!(
+        "(SELECT COALESCE(SUM({key_len} + {value_len}), 0) FROM store_state_records \
+         WHERE namespace_id = {namespace_param})"
+    )
+}
+
 async fn publish_staged_namespace(
     backend: &SqlxBackend,
     token: &StagingToken,
-) -> Result<RecordView> {
+) -> Result<(RecordView, u64)> {
+    // Assigned before the transaction so the tick commits atomically with
+    // the publish itself; gaps from a rolled-back publish are harmless.
+    let tick = super::cache::assign_publish_tick(backend).await?;
     let mut tx = backend
         .pool()
         .begin()
@@ -210,13 +245,16 @@ async fn publish_staged_namespace(
     if deletes.0 != 0 {
         return Err(BackendError::InvalidStoreStateStagingToken.into());
     }
-    let result = sqlx::query(
-        "UPDATE store_state_namespaces SET lifecycle = $1, status = 1, source_key = $2
-         WHERE namespace_id = $3 AND lifecycle = $4 AND status = 0",
-    )
+    let size_expr = published_size_expr(backend, "$3");
+    let result = sqlx::query(&format!(
+        "UPDATE store_state_namespaces SET lifecycle = $1, status = 1, source_key = $2,
+         size_bytes = {size_expr}, last_access_tick = $4
+         WHERE namespace_id = $3 AND lifecycle = $5 AND status = 0"
+    ))
     .bind(token.target.lifecycle.as_db_int())
     .bind(&token.target.source_key)
     .bind(&token.namespace_id)
+    .bind(tick as i64)
     .bind(StoreStateLifecycle::Staging.as_db_int())
     .execute(&mut *tx)
     .await
@@ -227,9 +265,12 @@ async fn publish_staged_namespace(
     tx.commit()
         .await
         .sql_context("Failed to commit Store-state publish")?;
-    Ok(RecordView {
-        namespace_id: token.namespace_id.clone(),
-    })
+    Ok((
+        RecordView {
+            namespace_id: token.namespace_id.clone(),
+        },
+        tick,
+    ))
 }
 
 /// Drop an unpublished namespace. Its records go with it through the schema's
@@ -272,9 +313,14 @@ pub async fn store_state_record_get(
     let Some((status, value)) = row else {
         return Err(BackendError::InvalidStoreStateView.into());
     };
-    if !matches!(status, 1 | 2) {
+    // Live (1), clear-unlinked (2), and evicted (3) namespaces all stay
+    // readable through resolved views; only eviction reclaims generation 3,
+    // and only a clear reclaims generation 2.
+    if !matches!(status, 1..=3) {
         return Err(BackendError::InvalidStoreStateView.into());
     }
+    // Recency only: in-memory touch, never a storage write per hit.
+    super::cache::touch(backend, &view.namespace_id).await?;
     Ok(value)
 }
 
@@ -306,7 +352,7 @@ pub async fn store_state_record_scan(
         .fetch_optional(&mut *tx)
         .await
         .sql_context("Failed to validate Store-state view")?;
-    if !matches!(status, Some((1 | 2,))) {
+    if !matches!(status, Some((1..=3,))) {
         return Err(BackendError::InvalidStoreStateView.into());
     }
     if limit == 0 {
@@ -316,7 +362,7 @@ pub async fn store_state_record_scan(
     let rows: Vec<(Vec<u8>, Vec<u8>)> = sqlx::query_as(
         "SELECT r.record_key, r.record_value FROM store_state_records r
          JOIN store_state_namespaces n ON n.namespace_id = r.namespace_id
-         WHERE r.namespace_id = $1 AND n.status IN (1, 2)
+         WHERE r.namespace_id = $1 AND n.status IN (1, 2, 3)
            AND ($2 IS NULL OR r.record_key >= $2)
            AND ($3 IS NULL OR r.record_key < $3)
            AND ($4 IS NULL OR r.record_key > $4)
@@ -333,6 +379,8 @@ pub async fn store_state_record_scan(
     tx.commit()
         .await
         .sql_context("Failed to commit Store-state record scan")?;
+    // Recency only: in-memory touch, never a storage write per hit.
+    super::cache::touch(backend, &view.namespace_id).await?;
     let mut records = rows;
     let has_more = records.len() > limit;
     records.truncate(limit);
@@ -344,8 +392,8 @@ pub async fn store_state_record_scan(
     Ok(RecordPage { records, next })
 }
 
-/// Unlink every ready derived namespace and reclaim the previously unlinked
-/// generation.
+/// Unlink every live derived namespace and reclaim the previously
+/// unlinked generation (clear-unlinked and evicted alike).
 ///
 /// Clearing is two-phase because a reader that already resolved a view keeps
 /// reading through it: unlinking removes the namespace from resolution, so the
@@ -363,7 +411,7 @@ pub async fn clear_derived_store_state(backend: &SqlxBackend) -> Result<()> {
             .await
             .sql_context("Failed to lock derived Store-state clear")?;
     }
-    sqlx::query("DELETE FROM store_state_namespaces WHERE lifecycle = $1 AND status = 2")
+    sqlx::query("DELETE FROM store_state_namespaces WHERE lifecycle = $1 AND status IN (2, 3)")
         .bind(StoreStateLifecycle::Derived.as_db_int())
         .execute(&mut *tx)
         .await
@@ -721,30 +769,6 @@ async fn update_tips_for_entry(
                 .sql_context("Failed to delete store tip")?;
             }
         }
-    }
-
-    Ok(())
-}
-
-/// Update the verification status of an entry.
-pub async fn update_verification_status(
-    backend: &SqlxBackend,
-    id: &ID,
-    verification_status: VerificationStatus,
-) -> Result<()> {
-    let pool = backend.pool();
-
-    let status_int: i64 = verification_status.as_db_int();
-
-    let result = sqlx::query("UPDATE entries SET verification_status = $1 WHERE id = $2")
-        .bind(status_int)
-        .bind(id.to_string())
-        .execute(pool)
-        .await
-        .sql_context("Failed to update verification status")?;
-
-    if result.rows_affected() == 0 {
-        return Err(BackendError::EntryNotFound { id: id.clone() }.into());
     }
 
     Ok(())

@@ -21,8 +21,10 @@
 //!
 //! See [`schema`] module documentation for details on adding migrations.
 
+mod cache;
 mod storage;
 mod traversal;
+mod verified;
 
 /// Schema definition and migration system.
 pub mod schema;
@@ -52,11 +54,13 @@ use sqlx::{AnyPool, Executor};
 use crate::Result;
 use crate::backend::errors::BackendError;
 use crate::backend::{
-    BackendImpl, InstanceMetadata, InstanceSecrets, RecordMutations, RecordPage, RecordRange,
-    RecordView, StagingToken, StoreStateRequest, VerificationStatus,
+    BackendImpl, DerivedCachePolicy, InstanceMetadata, InstanceSecrets, RecordMutations,
+    RecordPage, RecordRange, RecordView, StagingToken, StoreStateRequest, VerificationStatus,
 };
 use crate::entry::{Entry, ID};
 use crate::snapshot::Snapshot;
+
+use super::recency::RecencyState;
 
 /// Extension trait for sqlx Result types to simplify error handling.
 ///
@@ -117,6 +121,17 @@ pub struct SqlxBackend {
     _owner: Option<StorageOwner>,
     #[cfg(all(feature = "postgres", feature = "testing"))]
     postgres_token: Option<String>,
+    /// Bounds for the derived Store-state materialization cache (one policy
+    /// surface; see [`DerivedCachePolicy`]).
+    pub(crate) derived_cache_policy: std::sync::RwLock<DerivedCachePolicy>,
+    /// Exact access order while open; reads touch only this map.
+    pub(crate) cache_recency: std::sync::Mutex<RecencyState>,
+    /// Whether the recency clock was seeded above the persisted maximum.
+    pub(crate) cache_tick_seeded: std::sync::atomic::AtomicBool,
+    /// Durable recency flushes performed (test-only observable for the
+    /// no-write-per-hit gate).
+    #[cfg(feature = "testing")]
+    pub(crate) recency_flushes: std::sync::atomic::AtomicU64,
 }
 
 impl Drop for SqlxBackend {
@@ -308,6 +323,32 @@ impl SqlxBackend {
     /// Check if this backend is using PostgreSQL.
     pub fn is_postgres(&self) -> bool {
         self.kind == DbKind::Postgres
+    }
+
+    /// Current bounds for the derived Store-state materialization cache.
+    pub(crate) fn cache_policy(&self) -> DerivedCachePolicy {
+        *self.derived_cache_policy.read().unwrap()
+    }
+
+    /// Test-only knob shrinking the derived-cache bounds so eviction is
+    /// reachable without publishing a thousand namespaces.
+    ///
+    /// Production always runs the safe defaults; this is compiled out of
+    /// every non-`testing` build.
+    #[cfg(feature = "testing")]
+    pub fn testing_set_derived_cache_policy(&self, policy: DerivedCachePolicy) {
+        *self.derived_cache_policy.write().unwrap() = policy;
+    }
+
+    /// Test-only count of durable recency flushes performed.
+    ///
+    /// The no-write-per-hit gate asserts this grows far slower than the
+    /// number of cache reads.
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub fn testing_recency_flush_count(&self) -> u64 {
+        self.recency_flushes
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     #[cfg(all(feature = "postgres", feature = "testing"))]
@@ -565,6 +606,11 @@ impl SqlxBackend {
             _owner: storage,
             #[cfg(all(feature = "postgres", feature = "testing"))]
             postgres_token: None,
+            derived_cache_policy: std::sync::RwLock::new(DerivedCachePolicy::default()),
+            cache_recency: std::sync::Mutex::new(RecencyState::default()),
+            cache_tick_seeded: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "testing")]
+            recency_flushes: std::sync::atomic::AtomicU64::new(0),
         };
 
         // Initialize schema
@@ -768,6 +814,11 @@ impl SqlxBackend {
             }),
             #[cfg(feature = "testing")]
             postgres_token: Some(token),
+            derived_cache_policy: std::sync::RwLock::new(DerivedCachePolicy::default()),
+            cache_recency: std::sync::Mutex::new(RecencyState::default()),
+            cache_tick_seeded: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "testing")]
+            recency_flushes: std::sync::atomic::AtomicU64::new(0),
         };
 
         // Initialize schema (tables will be created in the current search_path)
@@ -872,7 +923,7 @@ impl BackendImpl for SqlxBackend {
         id: &ID,
         verification_status: VerificationStatus,
     ) -> Result<()> {
-        storage::update_verification_status(self, id, verification_status).await
+        verified::update_verification_status(self, id, verification_status).await
     }
 
     async fn get_entries_by_verification_status(
@@ -884,6 +935,14 @@ impl BackendImpl for SqlxBackend {
 
     async fn snapshot(&self, tree: &ID) -> Result<Snapshot> {
         traversal::snapshot(self, tree).await.map(Snapshot::new)
+    }
+
+    async fn verified_snapshot(&self, tree: &ID) -> Result<Snapshot> {
+        verified::verified_snapshot(self, tree).await
+    }
+
+    async fn rebuild_verified_state(&self, tree: &ID) -> Result<Snapshot> {
+        verified::rebuild_verified_state(self, tree).await
     }
 
     async fn store_snapshot(&self, tree: &ID, store: &str) -> Result<Snapshot> {
