@@ -382,6 +382,7 @@ pub fn create_signed_bootstrap_request(
         server_pubkey,
         tree_id,
         &our_tips,
+        &[],
         eidetica::Clock::now_millis(&eidetica::FixedClock::default()),
     );
     SyncRequest::SyncTree(SyncTreeRequest {

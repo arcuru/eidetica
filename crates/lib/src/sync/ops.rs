@@ -160,6 +160,7 @@ impl Sync {
             peer_pubkey,
             tree_id,
             &our_tips,
+            dependency_path,
             instance.clock().now_millis(),
         );
         let request = SyncRequest::SyncTree(SyncTreeRequest {
@@ -517,7 +518,10 @@ impl Sync {
         let user_mgr = UserSyncManager::new(&tx);
         let peer_mgr = PeerManager::new(&tx);
 
-        let combined_settings = match user_mgr.get_combined_settings(database.root_id()).await? {
+        let combined_settings = match peer_mgr
+            .inherited_settings(database.root_id(), &user_mgr)
+            .await?
+        {
             Some(settings) => settings,
             None => {
                 // No settings configured for this database - no sync needed
@@ -830,6 +834,7 @@ impl Sync {
             peer_pubkey,
             tree_id,
             &our_tips,
+            &[],
             instance.clock().now_millis(),
         );
         let request = SyncRequest::SyncTree(SyncTreeRequest {

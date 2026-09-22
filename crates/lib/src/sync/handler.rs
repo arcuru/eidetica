@@ -130,10 +130,13 @@ impl SyncHandlerImpl {
             .as_ref()
             .ok_or_else(|| SyncError::AuthenticationRequired(request.tree_id.to_string()))?;
         let instance = self.instance()?;
-        auth.verify(&instance.id(), &request.tree_id, &request.our_tips)
-            .map_err(|_| {
-                SyncError::AuthenticationFailed("invalid request signature".to_string())
-            })?;
+        auth.verify(
+            &instance.id(),
+            &request.tree_id,
+            &request.our_tips,
+            &request.dependency_path,
+        )
+        .map_err(|_| SyncError::AuthenticationFailed("invalid request signature".to_string()))?;
         let now = instance.clock().now_millis();
         if now.abs_diff(auth.timestamp_ms) > MAX_REQUEST_AGE_MS {
             return Err(SyncError::AuthenticationFailed(
@@ -152,6 +155,13 @@ impl SyncHandlerImpl {
     /// directly, through the global grant, or through a delegated tree.
     async fn authorize_read(&self, request: &SyncTreeRequest) -> Result<()> {
         if let Some(root) = request.dependency_path.first() {
+            if request.dependency_path.len() > super::MAX_DEPENDENCY_DEPTH {
+                return Err(SyncError::PermissionDenied(format!(
+                    "delegated database dependency path exceeds {} steps",
+                    super::MAX_DEPENDENCY_DEPTH
+                ))
+                .into());
+            }
             if !self.is_database_sync_enabled(root).await {
                 return Err(SyncError::PermissionDenied(format!(
                     "parent database {root} is not available for sync"

@@ -11,7 +11,7 @@ use super::{
 };
 use crate::{
     Error, Result, Transaction, auth::crypto::PublicKey, crdt::doc::path, entry::ID,
-    store::DocStore, sync::PeerId,
+    instance::settings_merge::merge_sync_settings, store::DocStore, sync::PeerId,
 };
 
 /// Private constants for peer management subtree names
@@ -504,8 +504,8 @@ impl<'a> PeerManager<'a> {
         database_ids.into_iter().map(|id| ID::parse(&id)).collect()
     }
 
-    /// Resolve the effective sync settings for a database, inheriting from any
-    /// tracked parent dependency edge when the database has no direct setting.
+    /// Resolve the effective sync settings for a database, inheriting from all
+    /// tracked parent dependency edges when the database has no direct setting.
     pub(super) async fn inherited_settings(
         &self,
         database_id: &ID,
@@ -515,12 +515,16 @@ impl<'a> PeerManager<'a> {
         let all = dependencies.get_all().await?;
         let mut current = vec![database_id.clone()];
         let mut seen = std::collections::HashSet::new();
+        let mut inherited = Vec::new();
         while let Some(candidate) = current.pop() {
             if !seen.insert(candidate.clone()) {
                 continue;
             }
             if let Some(settings) = user_mgr.get_combined_settings(&candidate).await? {
-                return Ok(Some(settings));
+                if candidate == *database_id {
+                    return Ok(Some(settings));
+                }
+                inherited.push(settings);
             }
             for parent in all.keys() {
                 let Ok(parent_id) = ID::parse(parent) else {
@@ -535,7 +539,7 @@ impl<'a> PeerManager<'a> {
                 }
             }
         }
-        Ok(None)
+        Ok((!inherited.is_empty()).then(|| merge_sync_settings(inherited)))
     }
 
     /// Remove a tree from the sync relationship with a peer.
@@ -786,5 +790,68 @@ impl<'a> PeerManager<'a> {
         } else {
             Ok(Vec::new())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        Database, Instance, NewUser, auth::crypto::PrivateKey, backend::database::InMemory,
+        crdt::Doc,
+    };
+
+    #[tokio::test]
+    async fn inherited_settings_merge_shared_parents_and_prefer_direct_tracking() {
+        let (instance, _) =
+            Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless("admin"))
+                .await
+                .unwrap();
+        let sync_tree = Database::create(&instance, PrivateKey::generate(), Doc::new())
+            .await
+            .unwrap();
+        let txn = sync_tree.new_transaction().await.unwrap();
+        let peers = PeerManager::new(&txn);
+        let users = super::super::user_sync_manager::UserSyncManager::new(&txn);
+        let parent_a = ID::from_bytes("parent-a");
+        let parent_b = ID::from_bytes("parent-b");
+        let dependency = ID::from_bytes("shared-dependency");
+
+        users
+            .set_combined_settings(
+                &parent_a,
+                &crate::user::types::SyncSettings::enabled().with_interval(300),
+            )
+            .await
+            .unwrap();
+        users
+            .set_combined_settings(
+                &parent_b,
+                &crate::user::types::SyncSettings::on_commit().with_interval(60),
+            )
+            .await
+            .unwrap();
+        peers.add_dependency(&parent_a, &dependency).await.unwrap();
+        peers.add_dependency(&parent_b, &dependency).await.unwrap();
+
+        let inherited = peers
+            .inherited_settings(&dependency, &users)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(inherited.sync_enabled);
+        assert!(inherited.sync_on_commit);
+        assert_eq!(inherited.interval_seconds, Some(60));
+
+        users
+            .set_combined_settings(&dependency, &crate::user::types::SyncSettings::disabled())
+            .await
+            .unwrap();
+        let direct = peers
+            .inherited_settings(&dependency, &users)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!direct.sync_enabled, "direct settings must take precedence");
     }
 }

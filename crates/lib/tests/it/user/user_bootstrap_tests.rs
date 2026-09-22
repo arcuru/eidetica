@@ -113,6 +113,7 @@ async fn create_pending_request(
         &sync.instance().expect("Failed to get instance").id(),
         tree_id,
         &our_tips,
+        &[],
         eidetica::Clock::now_millis(&eidetica::FixedClock::default()),
     );
     let request = SyncRequest::SyncTree(SyncTreeRequest {

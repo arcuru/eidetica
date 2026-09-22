@@ -395,6 +395,7 @@ async fn test_relationship_tracking_skipped_without_peer_pubkey() {
             &server_pubkey,
             &tree_id,
             &our_tips,
+            &[],
             FixedClock::default().now_millis(),
         )),
     };
@@ -674,6 +675,7 @@ async fn test_bootstrap_auto_detects_permission_for_authorized_key() {
             &instance.id(),
             &tree_id,
             &our_tips,
+            &[],
             FixedClock::default().now_millis(),
         )),
     };
@@ -752,6 +754,7 @@ async fn test_bootstrap_rejects_unauthorized_key_when_permission_not_specified()
             &server_pubkey,
             &tree_id,
             &our_tips,
+            &[],
             FixedClock::default().now_millis(),
         )),
     };
@@ -837,6 +840,7 @@ async fn test_bootstrap_auto_detects_global_wildcard_permission() {
             &server_pubkey,
             &tree_id,
             &our_tips,
+            &[],
             FixedClock::default().now_millis(),
         )),
     };
@@ -934,6 +938,7 @@ async fn test_bootstrap_uses_highest_permission_when_key_has_multiple() {
             &server_pubkey,
             &tree_id,
             &our_tips,
+            &[],
             FixedClock::default().now_millis(),
         )),
     };

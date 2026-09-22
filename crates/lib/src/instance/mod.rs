@@ -1847,7 +1847,7 @@ impl Instance {
     ///
     /// Entries that fail to store are logged and skipped — remaining entries
     /// are still stored and callbacks still fire for whatever was persisted.
-    /// Returns the number of entries that were successfully persisted.
+    /// Returns the verification report for the resulting unverified region.
     ///
     /// Serialized per-tree against [`Self::put_entry`] and other concurrent
     /// `put_remote_entries` calls so `previous_tips` is consistent across

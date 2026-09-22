@@ -110,9 +110,10 @@ pub struct SyncTreeRequest {
 
 /// A caller's proof of key possession for one sync request.
 ///
-/// The signature covers the responding server, the tree, the claimed tips, and
-/// a timestamp/nonce pair, so a captured request cannot be replayed to the same
-/// server, redirected to a different one, or reused for a different tree.
+/// The signature covers the responding server, the tree, the claimed tips, the
+/// delegated dependency path, and a timestamp/nonce pair, so a captured request
+/// cannot be replayed to the same server, redirected to a different one, or
+/// rewritten to claim another tree or trust path.
 ///
 /// # What this does not defend against
 ///
@@ -140,11 +141,19 @@ impl SyncRequestAuth {
         server_pubkey: &PublicKey,
         tree_id: &ID,
         tips: &Snapshot,
+        dependency_path: &[ID],
         timestamp_ms: u64,
     ) -> Self {
         let nonce = generate_challenge();
         let signature = create_challenge_response(
-            Self::signing_bytes(server_pubkey, tree_id, tips, timestamp_ms, &nonce),
+            Self::signing_bytes(
+                server_pubkey,
+                tree_id,
+                tips,
+                dependency_path,
+                timestamp_ms,
+                &nonce,
+            ),
             signing_key,
         );
         Self {
@@ -164,9 +173,17 @@ impl SyncRequestAuth {
         server_pubkey: &PublicKey,
         tree_id: &ID,
         tips: &Snapshot,
+        dependency_path: &[ID],
     ) -> Result<(), AuthError> {
         verify_challenge_response(
-            Self::signing_bytes(server_pubkey, tree_id, tips, self.timestamp_ms, &self.nonce),
+            Self::signing_bytes(
+                server_pubkey,
+                tree_id,
+                tips,
+                dependency_path,
+                self.timestamp_ms,
+                &self.nonce,
+            ),
             &self.signature,
             &self.key,
         )
@@ -180,6 +197,7 @@ impl SyncRequestAuth {
         server_pubkey: &PublicKey,
         tree_id: &ID,
         tips: &Snapshot,
+        dependency_path: &[ID],
         timestamp_ms: u64,
         nonce: &[u8],
     ) -> Vec<u8> {
@@ -195,6 +213,10 @@ impl SyncRequestAuth {
         push(&(tips.len() as u64).to_be_bytes());
         for tip in tips.tips() {
             push(tip.to_string().as_bytes());
+        }
+        push(&(dependency_path.len() as u64).to_be_bytes());
+        for dependency in dependency_path {
+            push(dependency.to_string().as_bytes());
         }
         push(&timestamp_ms.to_be_bytes());
         push(nonce);

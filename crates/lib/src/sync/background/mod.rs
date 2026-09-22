@@ -1034,6 +1034,7 @@ impl BackgroundSync {
                 peer_id.public_key(),
                 tree_id,
                 &our_tips,
+                dependency_path,
                 instance.clock().now_millis(),
             );
             let request = SyncRequest::SyncTree(SyncTreeRequest {
