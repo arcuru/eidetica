@@ -139,6 +139,45 @@ pub enum AuthError {
         missing: Vec<ID>,
     },
 
+    /// A delegation step claims a snapshot that regresses below the floor
+    /// inherited from the entry's ancestors for that delegated tree.
+    ///
+    /// Every ancestor signature that used the same delegated tree pinned a
+    /// snapshot of it; the join of those snapshots is the floor a new
+    /// signature must cover (ancestry-cover, equality allowed). This is
+    /// distinct from [`AuthError::InvalidDelegationTips`], which reports a
+    /// regression below the pointer the parent database *committed* in its
+    /// settings, or a tip that is not a member of the delegated tree.
+    #[error(
+        "Delegation snapshot for tree {tree_id} regresses below the floor inherited from \
+         ancestor entries: claimed tips {claimed_tips:?}"
+    )]
+    DelegationSnapshotRegressed {
+        /// The delegated tree root ID
+        tree_id: Box<ID>,
+        /// The tips that were claimed but do not cover the inherited floor
+        claimed_tips: Vec<ID>,
+    },
+
+    /// A `_settings` write moves a committed delegation pointer backwards.
+    ///
+    /// The `tips` a parent database commits for a delegation
+    /// (`TreeReference.tips`) are a floor for every signature through that
+    /// delegation, so the pointer may only move forward: the new tips must
+    /// ancestry-cover the previously committed tips (equality allowed).
+    #[error(
+        "Delegation pointer for tree {tree_id} moved backwards: new tips {new_tips:?} do not \
+         cover the committed tips {previous_tips:?}"
+    )]
+    DelegationPointerRegressed {
+        /// The delegated tree root ID
+        tree_id: Box<ID>,
+        /// The tips committed before this write
+        previous_tips: Box<[ID]>,
+        /// The tips this write commits
+        new_tips: Box<[ID]>,
+    },
+
     /// Attempted to revoke an entry that is not a key.
     #[error("Cannot revoke non-key entry: {key_name}")]
     CannotRevokeNonKey {
@@ -288,6 +327,8 @@ impl AuthError {
                 | AuthError::DelegationNotFound { .. }
                 | AuthError::DelegationPathTooLong { .. }
                 | AuthError::DelegationTipsTooMany { .. }
+                | AuthError::DelegationSnapshotRegressed { .. }
+                | AuthError::DelegationPointerRegressed { .. }
         )
     }
 

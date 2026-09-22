@@ -361,10 +361,14 @@ async fn test_remote_ingest_missing_delegated_root_stays_retryable() {
 
     let target_db = ingest_target_fixture(&receiver, &fixture).await;
     assert_retryable_and_invisible(&receiver, &target_db, &fixture).await;
+    let missing = Snapshot::from(vec![
+        fixture.delegated_root.clone(),
+        fixture.delegated_entries.last().unwrap().id(),
+    ]);
     assert_delegated_dependency(
         &delegated_dependency_error(&receiver, &fixture).await,
         &fixture.delegated_root,
-        std::slice::from_ref(&fixture.delegated_root),
+        &missing,
     );
 
     ingest_delegated_history(&receiver, fixture.delegated_entries.clone()).await;

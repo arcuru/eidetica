@@ -62,6 +62,24 @@ enum PinnedSettings {
     Incomplete,
 }
 
+/// Reconstruct a settings document from a complete, root-first sequence of
+/// `_settings` entries. This is shared by ordinary historical validation and
+/// delegated snapshot resolution so both paths classify missing history and
+/// deserialize settings identically.
+pub(crate) fn fold_settings_entries(entries: &[Entry]) -> Result<AuthSettings> {
+    let mut settings_doc = Doc::default();
+    for entry in entries {
+        if let Ok(data) = entry.data(SETTINGS) {
+            let part: Doc = serde_json::from_slice(data)?;
+            settings_doc = settings_doc.merge(&part)?;
+        }
+    }
+    Ok(match settings_doc.get("auth") {
+        Some(crate::crdt::doc::Value::Doc(auth_doc)) => auth_doc.clone().into(),
+        _ => AuthSettings::new(),
+    })
+}
+
 /// Summary of a [`Database::verify`] pass.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct VerifyReport {
@@ -1723,19 +1741,7 @@ impl Database {
         let entries = backend
             .store_at(self.root_id(), SETTINGS, &effective_snapshot)
             .await?;
-        let mut settings_doc = Doc::default();
-        for e in &entries {
-            if let Ok(data) = e.data(SETTINGS) {
-                let part: Doc = serde_json::from_slice(data)?;
-                settings_doc = settings_doc.merge(&part)?;
-            }
-        }
-
-        let auth_settings = match settings_doc.get("auth") {
-            Some(crate::crdt::doc::Value::Doc(auth_doc)) => auth_doc.clone().into(),
-            _ => AuthSettings::new(),
-        };
-        Ok(PinnedSettings::Complete(auth_settings))
+        Ok(PinnedSettings::Complete(fold_settings_entries(&entries)?))
     }
 
     /// Return the IDs of entries reachable from `post_tips` but not from
@@ -2092,7 +2098,7 @@ impl Database {
                                     report.still_unverified += 1;
                                     continue;
                                 }
-                                Err(_) => false,
+                                Err(e) => return Err(e),
                             };
                             if valid {
                                 backend

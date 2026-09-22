@@ -1110,14 +1110,30 @@ async fn test_submit_cross_session_signed_by_tree_admin_becomes_verified() {
     );
 }
 
-async fn service_delegated_entry_fixture(
-    server: &Instance,
-) -> (eidetica::entry::ID, Vec<Entry>, eidetica::entry::ID, Entry) {
+struct ServiceDelegatedFixture {
+    key: PrivateKey,
+    delegated_root: eidetica::entry::ID,
+    delegated_entries: Vec<Entry>,
+    old_snapshot: Vec<eidetica::entry::ID>,
+    target_root: eidetica::entry::ID,
+    target_entries: Vec<Entry>,
+    delegated_entry: Entry,
+}
+
+async fn service_delegated_entry_fixture(server: &Instance) -> ServiceDelegatedFixture {
     let delegated_key = PrivateKey::generate();
     let delegated_pubkey = delegated_key.public_key();
     let delegated_db = eidetica::Database::create(server, delegated_key.clone(), Doc::new())
         .await
         .unwrap();
+    let old_snapshot = delegated_db.snapshot().await.unwrap().into_tips();
+    let txn = delegated_db.new_transaction().await.unwrap();
+    txn.get_settings()
+        .unwrap()
+        .set_name("advanced delegated authority")
+        .await
+        .unwrap();
+    txn.commit().await.unwrap();
     let delegated_tips = delegated_db.snapshot().await.unwrap().into_tips();
 
     let target_key = PrivateKey::generate();
@@ -1134,7 +1150,7 @@ async fn service_delegated_entry_fixture(
             },
             tree: TreeReference {
                 root: delegated_db.root_id().clone(),
-                tips: delegated_tips.clone(),
+                tips: old_snapshot.clone(),
             },
         })
         .await
@@ -1152,7 +1168,7 @@ async fn service_delegated_entry_fixture(
         .await
         .unwrap()
         .with_key(eidetica::database::DatabaseKey::with_identity(
-            delegated_key,
+            delegated_key.clone(),
             delegated_identity,
         ));
     let txn = target.new_transaction().await.unwrap();
@@ -1169,20 +1185,27 @@ async fn service_delegated_entry_fixture(
         .get_tree(delegated_db.root_id())
         .await
         .unwrap();
-    (
-        delegated_db.root_id().clone(),
+    let target_entries = server
+        .backend()
+        .get_tree(target_db.root_id())
+        .await
+        .unwrap();
+    ServiceDelegatedFixture {
+        key: delegated_key,
+        delegated_root: delegated_db.root_id().clone(),
         delegated_entries,
-        target_db.root_id().clone(),
-        entry,
-    )
+        old_snapshot,
+        target_root: target_db.root_id().clone(),
+        target_entries,
+        delegated_entry: entry,
+    }
 }
 
 #[tokio::test]
 async fn test_submit_missing_delegated_history_stays_retryable_and_invisible() {
     let (_socket_path, _tx, server, _dir) = start_test_server().await;
-    let (delegated_root, delegated_entries, target_root, delegated_entry) =
-        service_delegated_entry_fixture(&server).await;
-    let entry_id = delegated_entry.id();
+    let fixture = service_delegated_entry_fixture(&server).await;
+    let entry_id = fixture.delegated_entry.id();
 
     let receiver_dir = tempfile::tempdir().unwrap();
     std::fs::set_permissions(receiver_dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -1193,7 +1216,7 @@ async fn test_submit_missing_delegated_history_stays_retryable_and_invisible() {
     )
     .await
     .unwrap();
-    for entry in server.backend().get_tree(&target_root).await.unwrap() {
+    for entry in fixture.target_entries.clone() {
         if entry.id() == entry_id {
             continue;
         }
@@ -1219,9 +1242,9 @@ async fn test_submit_missing_delegated_history_stays_retryable_and_invisible() {
     let _admin_user = client.login_user("admin", None).await.unwrap();
     remote_conn(&client)
         .submit_signed_entry(
-            target_root.clone(),
-            delegated_entry.auth().key.clone(),
-            delegated_entry,
+            fixture.target_root.clone(),
+            fixture.delegated_entry.auth().key.clone(),
+            fixture.delegated_entry,
         )
         .await
         .expect("submission stays accepted while verification remains incomplete");
@@ -1237,7 +1260,7 @@ async fn test_submit_missing_delegated_history_stays_retryable_and_invisible() {
         VerificationStatus::Unverified,
         "service submission must retain incomplete delegated proof for retry"
     );
-    let target = eidetica::Database::open(&receiver, &target_root)
+    let target = eidetica::Database::open(&receiver, &fixture.target_root)
         .await
         .unwrap();
     assert!(
@@ -1245,10 +1268,10 @@ async fn test_submit_missing_delegated_history_stays_retryable_and_invisible() {
         "incomplete delegated proof must not enter the service's Verified frontier"
     );
 
-    for entry in delegated_entries {
+    for entry in fixture.delegated_entries {
         receiver.backend().put(entry).await.unwrap();
     }
-    eidetica::Database::open(&receiver, &delegated_root)
+    eidetica::Database::open(&receiver, &fixture.delegated_root)
         .await
         .unwrap()
         .verify()
@@ -1273,6 +1296,92 @@ async fn test_submit_missing_delegated_history_stays_retryable_and_invisible() {
     assert!(
         target.snapshot().await.unwrap().contains(&entry_id),
         "the promoted entry must enter the service's Verified frontier"
+    );
+    drop(shutdown);
+}
+
+#[tokio::test]
+async fn test_submit_delegated_snapshot_regression_is_failed() {
+    let (_socket_path, _tx, server, _dir) = start_test_server().await;
+    let fixture = service_delegated_entry_fixture(&server).await;
+    let parent_id = fixture.delegated_entry.id();
+
+    let mut target_tip = fixture
+        .target_entries
+        .iter()
+        .find(|entry| entry.id() == parent_id)
+        .unwrap()
+        .clone();
+    target_tip = target_tip.with_auth(|auth| {
+        auth.key = SigKey::Delegation {
+            path: vec![DelegationStep {
+                tree: fixture.delegated_root.clone(),
+                tips: fixture.old_snapshot.clone(),
+            }],
+            hint: KeyHint::from_pubkey(&fixture.key.public_key()),
+        };
+        auth.signature = None;
+    });
+    let metadata = target_tip.metadata().unwrap().to_vec();
+    let regressed = Entry::builder(fixture.target_root.clone())
+        .set_parents(vec![parent_id])
+        .set_subtree_data("note", b"{\"service\":\"regressed\"}")
+        .set_metadata(metadata)
+        .set_height(target_tip.height() + 1)
+        .set_auth(target_tip.auth().clone())
+        .build()
+        .unwrap();
+    let signature = sign_entry(&regressed, &fixture.key).unwrap();
+    let regressed = regressed.with_auth(|auth| auth.signature = Some(signature));
+    let regressed_id = regressed.id();
+
+    let receiver_dir = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(receiver_dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let receiver_socket = receiver_dir.path().join("receiver-regression.sock");
+    let (receiver, _admin) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        eidetica::NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    for entry in fixture.delegated_entries {
+        receiver.backend().put(entry).await.unwrap();
+    }
+    for entry in fixture.target_entries {
+        let id = entry.id();
+        receiver.backend().put(entry).await.unwrap();
+        receiver
+            .backend()
+            .local_engine()
+            .unwrap()
+            .update_verification_status(&id, VerificationStatus::Verified)
+            .await
+            .unwrap();
+    }
+    let (shutdown, rx) = watch::channel(());
+    let daemon = ServiceServer::bind(receiver.clone(), receiver_socket.clone())
+        .await
+        .unwrap();
+    tokio::spawn(daemon.run(rx));
+
+    let client = Instance::connect(format!("unix://{}", receiver_socket.display()))
+        .await
+        .unwrap();
+    let _admin_user = client.login_user("admin", None).await.unwrap();
+    remote_conn(&client)
+        .submit_signed_entry(fixture.target_root, regressed.auth().key.clone(), regressed)
+        .await
+        .unwrap();
+    assert_eq!(
+        receiver
+            .backend()
+            .local_engine()
+            .unwrap()
+            .get_verification_status(&regressed_id)
+            .await
+            .unwrap(),
+        VerificationStatus::Failed,
+        "the service must quarantine a proven snapshot regression"
     );
     drop(shutdown);
 }

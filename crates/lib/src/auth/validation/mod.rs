@@ -5,6 +5,7 @@
 
 pub mod delegation;
 pub mod entry;
+pub(crate) mod floors;
 pub mod permissions;
 pub mod resolver;
 
@@ -13,3 +14,6 @@ mod tests;
 
 // Re-export the main validator
 pub use entry::AuthValidator;
+
+#[cfg(test)]
+mod floor_tests;
