@@ -144,7 +144,7 @@ The idea is that an "overlay" adds information to a database, backups for exampl
 2. **Distributed Consistency**: Authentication rules must merge deterministically across network partitions
 3. **Cryptographic Security**: All authentication based on Ed25519 public/private key cryptography
 4. **Hierarchical Access Control**: Support admin, read/write, and read-only permission levels
-5. **Delegation**: Support for delegating authentication to other databases without granting admin privileges (infrastructure built, activation pending)
+5. **Delegation**: Support snapshot-pinned delegation to other databases without granting admin privileges; automatic dependency tracking remains future work
 6. **Auditability**: All authentication changes are tracked in the immutable DAG history
 
 ### Non-Goals
@@ -755,7 +755,7 @@ graph TD
 - **Administrative Hierarchy Violations**: Lower priority keys cannot modify higher priority keys (but can modify equal priority keys)
 - **Permission Boundary Violations**: Delegated database permissions are constrained within their specified min/max bounds
 - **Cross-Tree Tip Forgery**: Claimed delegation tips are validated as members of the referenced delegated database, not merely as entries existing somewhere in the backend
-- **Delegated-Tree Snapshot Regression (bounded)**: Auth resolution is pinned to the snapshot the signer claimed, and that snapshot may not regress below the parent's committed floor (see §Implementation Status). Note the residual gaps documented there — this is not yet a full per-entry pin
+- **Delegated-Tree Snapshot Regression (bounded)**: Auth resolution is pinned to the snapshot the signer claimed, which must cover both the forward-only committed pointer and the per-root floors inherited through every parent. This does not establish live-head freshness or retroactive authority reduction (see §Implementation Status)
 - **Race Conditions**: Last Write Wins provides deterministic conflict resolution
 
 #### Requires Manual Recovery

@@ -76,7 +76,7 @@ Then whenever they need access to a database, the db will authenticate them by g
 
 Delegated snapshot floors are causal and keyed by delegated database root. A delegated signature must ancestry-cover the snapshots inherited through all parent paths for that root, even if direct-key entries, signer changes, or another delegated identity intervene. Siblings can name different snapshots; a merge descendant must cover every inherited sibling snapshot.
 
-The `tips` on a `DelegatedTreeRef` are a separately committed floor. A claimed snapshot must cover it, and `_settings` writes can only move that pointer forward. At a merge, the new pointer must cover the committed pointers inherited from all parents.
+The `tips` on a `DelegatedTreeRef` are a separately committed floor, not an automatically advanced high-water mark for observed signatures. A claimed snapshot must cover it, and `_settings` writes can only move that pointer forward. At a merge, the new pointer must cover the committed pointers inherited from all parents.
 
 Delegated authentication depends on having the history needed to reconstruct each claimed snapshot and inherited floor. If that proof is incomplete, the signed entry remains `Unverified` and outside the verified frontier rather than failing permanently. Validation reports the delegated database root and first known missing entries so sync can satisfy that dependency and retry verification. Proven invalid signatures, wrong-tree claims, and regressions still fail.
 
