@@ -492,27 +492,34 @@ pub async fn get_tree_from_tips(
             FROM ancestors a
             JOIN tree_parents tp ON tp.child_id = a.id
         )
-        SELECT e.entry_cbor, e.height
+        SELECT a.id, e.entry_cbor, e.height
         FROM ancestors a
-        JOIN entries e ON e.id = a.id"
+        LEFT JOIN entries e ON e.id = a.id"
     );
 
     // SAFETY: `starts_union` contains only numbered bind placeholders generated
     // from `tips.len()`; entry identifiers remain bind parameters.
     let mut query =
-        sqlx::query_as::<_, (Vec<u8>, i64)>(sqlx::AssertSqlSafe(sql)).bind(tree.to_string());
+        sqlx::query_as::<_, (String, Option<Vec<u8>>, Option<i64>)>(sqlx::AssertSqlSafe(sql))
+            .bind(tree.to_string());
 
     for tip in tips {
         query = query.bind(tip.to_string());
     }
 
-    let rows = query
+    let rows: Vec<(String, Option<Vec<u8>>, Option<i64>)> = query
         .fetch_all(pool)
         .await
         .sql_context("Failed to get tree entries from tips")?;
 
     let mut entries = Vec::with_capacity(rows.len());
-    for (bytes, _height) in rows {
+    for (id, bytes, _height) in rows {
+        let Some(bytes) = bytes else {
+            return Err(BackendError::EntryNotFound {
+                id: ID::parse(&id)?,
+            }
+            .into());
+        };
         let entry: Entry =
             serde_ipld_dagcbor::from_slice(&bytes).map_err(|e| BackendError::SqlxError {
                 reason: format!("CBOR deserialization failed: {e}"),

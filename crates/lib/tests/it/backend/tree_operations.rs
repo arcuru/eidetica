@@ -82,16 +82,16 @@ async fn test_backend_complex_tree_structure() {
 #[tokio::test]
 async fn test_backend_get_tree_from_tips() {
     let backend = test_backend().await;
-    let root_id = ID::from_bytes("tree_root");
 
     // Create entries: root -> e1 -> e2a, e2b
     // Set heights explicitly since we're using EntryBuilder directly
-    let root_entry = Entry::builder(root_id.clone())
-        .add_parent(root_id.clone())
+    let root_entry = Entry::builder(ID::default())
+        .set_subtree_data("_root", b"\"\"")
         .set_height(0) // Root level
         .build()
         .expect("Root entry should build successfully");
-    let root_entry_id = root_entry.id();
+    let root_id = root_entry.id();
+    let root_entry_id = root_id.clone();
     backend.put_verified(root_entry).await.unwrap();
 
     let e1_entry = Entry::builder(root_id.clone())
@@ -198,6 +198,36 @@ async fn test_backend_get_tree_from_tips() {
     assert!(full_tree_ids.contains(&e1_id));
     assert!(full_tree_ids.contains(&e2a_id));
     assert!(full_tree_ids.contains(&e2b_id));
+}
+
+#[tokio::test]
+async fn test_backend_get_tree_from_tips_rejects_missing_intermediate() {
+    let backend = test_backend().await;
+    let root_id = ID::from_bytes("missing_intermediate_root");
+    let root_entry = Entry::builder(root_id.clone())
+        .add_parent(root_id.clone())
+        .set_height(0)
+        .build()
+        .unwrap();
+    backend.put_verified(root_entry).await.unwrap();
+
+    let missing = ID::from_bytes("missing_intermediate_parent");
+    let tip = Entry::builder(root_id.clone())
+        .add_parent(missing.clone())
+        .set_height(2)
+        .build()
+        .unwrap();
+    let tip_id = tip.id();
+    backend.put_verified(tip).await.unwrap();
+
+    let err = backend
+        .get_tree_from_tips(&root_id, &[tip_id])
+        .await
+        .expect_err("a missing intermediate must not yield a partial tree");
+    assert!(
+        matches!(err, Error::Backend(ref e) if matches!(**e, BackendError::EntryNotFound { ref id } if id == &missing)),
+        "expected the missing intermediate ID, got: {err:?}"
+    );
 }
 
 #[tokio::test]

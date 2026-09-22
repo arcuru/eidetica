@@ -549,6 +549,32 @@ async fn floor_carries_through_other_identity_intermediate() {
     fx.accept(&ok, "c via I at i1 behind b via J").await;
 }
 
+/// Missing history for an unrelated identity used by an intermediate entry
+/// must not make the floor for this identity indeterminate. The ancestor's
+/// path names the delegated roots explicitly; resolving I does not require
+/// materializing J's claimed snapshot.
+#[tokio::test]
+async fn floor_ignores_missing_other_identity_snapshot() {
+    let fx = fixture().await;
+    let j_member = PrivateKey::generate();
+    let a = fx.via_identity(&fx.tips().await, &fx.i1).await;
+    let a = fx.accept(&a, "a via I at i1").await;
+    // A verified ancestor from an older peer may name J by root while the
+    // local node no longer holds J's claimed tip. Its signature is irrelevant
+    // to the floor for I, which must carry through to c.
+    let missing_j = ID::from_bytes("missing-j-root");
+    let missing_j_tip = ID::from_bytes("missing-j-tip");
+    let synthetic_b = fx
+        .delegated(&[a], &[(&missing_j, &[missing_j_tip])], &j_member)
+        .await;
+    let synthetic_b = fx.store(&synthetic_b).await;
+    let c = fx.via_identity(&[synthetic_b], &fx.i1).await;
+    assert!(
+        fx.validate(&c).await.unwrap(),
+        "missing J history must not block I's inherited floor"
+    );
+}
+
 /// Changing the signing key does not erase the floor for the same identity.
 #[tokio::test]
 async fn floor_is_keyed_by_tree_not_signer() {
@@ -908,4 +934,93 @@ async fn pointer_advance_raises_committed_floor_for_descendants() {
     // A sibling branch that does not descend from the advance still pins i0
     // legitimately — its pinned settings carry the old pointer.
     let _ = root_tips;
+}
+
+/// Concurrent pointer advances are both causal floors of a merge. Atomic CRDT
+/// resolution may select one sibling's reference, but the security gate must
+/// require the merged write to cover both.
+#[tokio::test]
+async fn pointer_merge_joins_both_parent_floors() {
+    let fx = fixture().await;
+    let txn = fx
+        .identity
+        .new_transaction_at(&crate::Snapshot::from(fx.i1.clone()))
+        .await
+        .unwrap();
+    txn.get_settings()
+        .unwrap()
+        .set_name("pointer-x")
+        .await
+        .unwrap();
+    let ix = vec![txn.commit().await.unwrap()];
+    let txn = fx
+        .identity
+        .new_transaction_at(&crate::Snapshot::from(fx.i1.clone()))
+        .await
+        .unwrap();
+    txn.get_settings()
+        .unwrap()
+        .set_name("pointer-y")
+        .await
+        .unwrap();
+    let it = vec![txn.commit().await.unwrap()];
+
+    let base = crate::Snapshot::from(fx.tips().await);
+    let tx = fx.target.new_transaction_at(&base).await.unwrap();
+    tx.get_settings()
+        .unwrap()
+        .add_delegated_tree(delegation_ref(fx.identity.root_id(), ix.clone()))
+        .await
+        .unwrap();
+    let px = tx.commit().await.unwrap();
+    let tx = fx.target.new_transaction_at(&base).await.unwrap();
+    tx.get_settings()
+        .unwrap()
+        .add_delegated_tree(delegation_ref(fx.identity.root_id(), it.clone()))
+        .await
+        .unwrap();
+    let py = tx.commit().await.unwrap();
+
+    let only_x = settings_entry(&fx, pointer_write(fx.identity.root_id(), ix)).await;
+    let only_x = Entry::builder(fx.target.root_id().clone())
+        .set_parents(vec![px.clone(), py.clone()])
+        .set_subtree_data(SETTINGS, only_x.data(SETTINGS).unwrap().clone())
+        .set_subtree_parents(SETTINGS, vec![px, py])
+        .set_metadata(only_x.metadata().unwrap().to_vec())
+        .set_height(only_x.height() + 1)
+        .set_auth(only_x.auth().clone())
+        .build()
+        .unwrap();
+    let signature = sign_entry(&only_x, &fx.target_admin).unwrap();
+    let only_x = only_x.with_auth(|auth| auth.signature = Some(signature));
+    fx.reject(&only_x, "merge pointer covering only one parent floor")
+        .await;
+
+    let txn = fx.identity.new_transaction().await.unwrap();
+    txn.get_settings()
+        .unwrap()
+        .set_name("pointer-merged")
+        .await
+        .unwrap();
+    let merged = vec![txn.commit().await.unwrap()];
+    let both = settings_entry(&fx, pointer_write(fx.identity.root_id(), merged)).await;
+    assert!(fx.validate(&both).await.unwrap());
+}
+
+/// Removing and later re-adding a delegation does not erase the last
+/// committed pointer. The forward-only floor carries through the removal.
+#[tokio::test]
+async fn pointer_removal_does_not_reset_floor() {
+    let fx = fixture().await;
+    let forward = settings_entry(&fx, pointer_write(fx.identity.root_id(), fx.i1.clone())).await;
+    fx.accept(&forward, "advance to i1").await;
+
+    let mut removal = Doc::new();
+    removal.remove(format!("auth.delegations.{}", fx.identity.root_id()));
+    let removal = settings_entry(&fx, removal).await;
+    fx.accept(&removal, "remove delegation").await;
+
+    let readd = settings_entry(&fx, pointer_write(fx.identity.root_id(), fx.i0.clone())).await;
+    fx.reject(&readd, "re-add below the last committed pointer")
+        .await;
 }

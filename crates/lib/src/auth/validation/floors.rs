@@ -106,6 +106,12 @@ impl<'a> FloorWalker<'a> {
             let mut named_root = false;
             if let SigKey::Delegation { path, .. } = &entry.auth().key {
                 for step in path {
+                    // A floor for one delegated tree must not depend on the
+                    // continued local availability of an unrelated delegated
+                    // tree used by an intervening ancestor.
+                    if &step.tree != root {
+                        continue;
+                    }
                     let snapshot = Snapshot::from(&step.tips);
                     if snapshot.is_empty() {
                         continue;
