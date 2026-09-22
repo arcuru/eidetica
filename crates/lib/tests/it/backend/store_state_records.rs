@@ -374,6 +374,152 @@ async fn repeat_publish_of_a_cloned_token_keeps_published_state() {
     );
 }
 
+/// A cancelled builder cannot make its partial records resolvable, and a
+/// replacement can safely start for that same target.
+#[tokio::test]
+async fn cancelled_build_stays_private_and_replacement_publishes() {
+    let backend = test_backend().await;
+    let request = request("cancel", "store", StoreStateLifecycle::Derived);
+    let token = backend
+        .begin_store_state_staging(request.clone())
+        .await
+        .unwrap();
+    backend
+        .stage_store_state_records(
+            &token,
+            BTreeMap::from([(b"partial".to_vec(), Some(b"not-ready".to_vec()))]),
+        )
+        .await
+        .unwrap();
+    assert_eq!(backend.resolve_store_state(&request).await.unwrap(), None);
+    backend.abort_store_state(token.clone()).await.unwrap();
+    backend.abort_store_state(token.clone()).await.unwrap();
+    assert!(backend.publish_store_state(token).await.is_err());
+    assert_eq!(backend.resolve_store_state(&request).await.unwrap(), None);
+
+    let view = publish(
+        backend.as_ref(),
+        request.clone(),
+        [(b"complete".to_vec(), b"ready".to_vec())],
+    )
+    .await;
+    assert_eq!(
+        backend.resolve_store_state(&request).await.unwrap(),
+        Some(view.clone())
+    );
+    assert_eq!(
+        backend
+            .store_state_record_get(&view, b"partial")
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        backend
+            .store_state_record_get(&view, b"complete")
+            .await
+            .unwrap(),
+        Some(b"ready".to_vec())
+    );
+}
+
+/// A response may disappear after publication commits. A retry of that token
+/// must return the same generation, even after a harmless abort request.
+#[tokio::test]
+async fn lost_publish_response_is_resolved_by_token_retry() {
+    let backend = test_backend().await;
+    let request = request("lost-response", "store", StoreStateLifecycle::Derived);
+    let token = backend
+        .begin_store_state_staging(request.clone())
+        .await
+        .unwrap();
+    backend
+        .stage_store_state_records(
+            &token,
+            BTreeMap::from([(b"key".to_vec(), Some(b"original".to_vec()))]),
+        )
+        .await
+        .unwrap();
+    let _lost_response = backend.publish_store_state(token.clone()).await.unwrap();
+    let recovered = backend.publish_store_state(token.clone()).await.unwrap();
+    backend.abort_store_state(token).await.unwrap();
+    assert_eq!(
+        backend.resolve_store_state(&request).await.unwrap(),
+        Some(recovered.clone())
+    );
+    assert_eq!(
+        backend
+            .store_state_record_get(&recovered, b"key")
+            .await
+            .unwrap(),
+        Some(b"original".to_vec())
+    );
+}
+
+/// Concurrent abort and publish have only two legal outcomes: an unpublished
+/// build or one complete immutable generation.
+#[tokio::test]
+async fn abort_racing_publish_has_one_visible_outcome() {
+    let backend: Arc<dyn BackendImpl> = test_backend().await.into();
+    let request = request("abort-race", "store", StoreStateLifecycle::Derived);
+    let token = backend
+        .begin_store_state_staging(request.clone())
+        .await
+        .unwrap();
+    backend
+        .stage_store_state_records(
+            &token,
+            BTreeMap::from([(b"key".to_vec(), Some(b"complete".to_vec()))]),
+        )
+        .await
+        .unwrap();
+    let barrier = Arc::new(Barrier::new(2));
+    let publish_task = {
+        let backend = Arc::clone(&backend);
+        let barrier = Arc::clone(&barrier);
+        let token = token.clone();
+        tokio::spawn(async move {
+            barrier.wait().await;
+            backend.publish_store_state(token).await
+        })
+    };
+    let abort_task = {
+        let backend = Arc::clone(&backend);
+        tokio::spawn(async move {
+            barrier.wait().await;
+            backend.abort_store_state(token).await
+        })
+    };
+    let published = publish_task.await.unwrap();
+    abort_task.await.unwrap().unwrap();
+    let resolved = backend.resolve_store_state(&request).await.unwrap();
+    match (published, resolved) {
+        (Ok(view), Some(ready)) => {
+            assert_eq!(view, ready);
+            assert_eq!(
+                backend
+                    .store_state_record_get(&ready, b"key")
+                    .await
+                    .unwrap(),
+                Some(b"complete".to_vec())
+            );
+        }
+        (Err(_), None) => {
+            let view = publish(
+                backend.as_ref(),
+                request.clone(),
+                [(b"key".to_vec(), b"replacement".to_vec())],
+            )
+            .await;
+            assert_eq!(
+                backend.resolve_store_state(&request).await.unwrap(),
+                Some(view)
+            );
+        }
+        other => panic!("publish/abort produced inconsistent visibility: {other:?}"),
+    }
+}
+
 /// A view whose namespace was cleared (or was never ready) is an explicit
 /// error — never a missing key and never an empty page. A missing key on a
 /// live view still reads as absent, and a published-but-empty snapshot still

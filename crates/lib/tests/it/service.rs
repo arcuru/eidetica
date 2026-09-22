@@ -1516,6 +1516,154 @@ async fn test_remote_store_state_stores_ciphertext_verbatim() {
     );
 }
 
+/// A lost service publication response must be recoverable using the original
+/// token, not by creating an ambiguous second build.
+#[tokio::test]
+async fn test_remote_publish_retry_returns_the_same_view() {
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    let (instance, root, identity) = setup_db(&server, &socket_path, "alice").await;
+    let conn = remote_conn(&instance);
+    let request = derived_request(&root, "lost-publish-response");
+    let token = conn
+        .begin_store_state_staging(identity.clone(), request.clone())
+        .await
+        .unwrap();
+    conn.stage_store_state_records(
+        root.clone(),
+        identity.clone(),
+        token.clone(),
+        0,
+        BTreeMap::from([(b"key".to_vec(), Some(b"value".to_vec()))]),
+    )
+    .await
+    .unwrap();
+    let _lost_view = conn
+        .publish_store_state(root.clone(), identity.clone(), token.clone())
+        .await
+        .unwrap();
+    let recovered = conn
+        .publish_store_state(root.clone(), identity.clone(), token.clone())
+        .await
+        .unwrap();
+    assert!(
+        conn.stage_store_state_records(
+            root.clone(),
+            identity.clone(),
+            token.clone(),
+            1,
+            BTreeMap::from([(b"key".to_vec(), Some(b"changed".to_vec()))]),
+        )
+        .await
+        .is_err(),
+        "published token cannot accept another chunk"
+    );
+    conn.abort_store_state(root.clone(), identity.clone(), token)
+        .await
+        .unwrap();
+    assert_eq!(
+        conn.store_state_record_get(root, identity.clone(), recovered, b"key".to_vec())
+            .await
+            .unwrap(),
+        Some(b"value".to_vec())
+    );
+    assert!(
+        conn.resolve_store_state(identity, request)
+            .await
+            .unwrap()
+            .is_some()
+    );
+}
+
+/// The Backend adapter must not restart its sequence at zero when a second
+/// staging call uploads another batch for the same token.
+#[tokio::test]
+async fn test_remote_backend_sequences_across_stage_calls() {
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    let (instance, root, _identity) = setup_db(&server, &socket_path, "alice").await;
+    let backend = instance.backend();
+    let request = derived_request(&root, "separate-stage-calls");
+    let token = backend
+        .begin_store_state_staging(request.clone())
+        .await
+        .unwrap();
+    backend
+        .stage_store_state_records(
+            &token,
+            BTreeMap::from([(b"key".to_vec(), Some(b"first".to_vec()))]),
+        )
+        .await
+        .unwrap();
+    backend
+        .stage_store_state_records(
+            &token,
+            BTreeMap::from([(b"key".to_vec(), Some(b"second".to_vec()))]),
+        )
+        .await
+        .unwrap();
+    let view = backend.publish_store_state(token).await.unwrap();
+    assert_eq!(
+        backend.store_state_record_get(&view, b"key").await.unwrap(),
+        Some(b"second".to_vec())
+    );
+    assert!(
+        backend
+            .resolve_store_state(&request)
+            .await
+            .unwrap()
+            .is_some()
+    );
+}
+
+/// Chunk sequence is token-wide, not reset for each client stage call. A late
+/// put must never resurrect a row removed by a later accepted chunk.
+#[tokio::test]
+async fn test_remote_staging_rejects_late_and_conflicting_replays() {
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    let (instance, root, identity) = setup_db(&server, &socket_path, "alice").await;
+    let conn = remote_conn(&instance);
+    let request = derived_request(&root, "ordered-chunks");
+    let token = conn
+        .begin_store_state_staging(identity.clone(), request.clone())
+        .await
+        .unwrap();
+    let put = BTreeMap::from([(b"key".to_vec(), Some(b"first".to_vec()))]);
+    let delete = BTreeMap::from([(b"key".to_vec(), None)]);
+    let send = |sequence, records| {
+        conn.stage_store_state_records(
+            root.clone(),
+            identity.clone(),
+            token.clone(),
+            sequence,
+            records,
+        )
+    };
+    assert!(
+        send(1, put.clone()).await.is_err(),
+        "future sequence must be refused"
+    );
+    send(0, put.clone()).await.unwrap();
+    send(0, put.clone()).await.unwrap();
+    assert!(
+        send(0, delete.clone()).await.is_err(),
+        "conflicting digest must be refused"
+    );
+    send(1, delete).await.unwrap();
+    assert!(send(0, put).await.is_err(), "late replay must be refused");
+    assert!(
+        send(3, BTreeMap::new()).await.is_err(),
+        "gaps must be refused"
+    );
+    conn.abort_store_state(root.clone(), identity.clone(), token)
+        .await
+        .unwrap();
+    assert!(
+        conn.resolve_store_state(identity, request)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
 /// An idle private-build capability is reclaimed: the build it was staging is
 /// aborted, so the token stops working and nothing was published.
 #[tokio::test]

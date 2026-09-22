@@ -51,7 +51,9 @@ struct SessionStaging {
     user_uuid: String,
     database: ID,
     published: bool,
-    chunks: HashMap<u64, Vec<u8>>,
+    published_view: Option<String>,
+    next_sequence: u64,
+    last_chunk: Option<(u64, blake3::Hash)>,
     last_used: Instant,
 }
 
@@ -963,7 +965,9 @@ async fn dispatch_database_op(
                         user_uuid: user_uuid.to_string(),
                         database: request.database.clone(),
                         published: true,
-                        chunks: HashMap::new(),
+                        published_view: None,
+                        next_sequence: 0,
+                        last_chunk: None,
                         last_used: Instant::now(),
                     },
                 );
@@ -985,7 +989,9 @@ async fn dispatch_database_op(
                     user_uuid: user_uuid.to_string(),
                     database: request.database,
                     published: false,
-                    chunks: HashMap::new(),
+                    published_view: None,
+                    next_sequence: 0,
+                    last_chunk: None,
                     last_used: Instant::now(),
                 },
             );
@@ -996,18 +1002,19 @@ async fn dispatch_database_op(
             chunk_id,
             records,
         } => {
-            let digest = serde_json::to_vec(&records)?;
-            if digest.len() > crate::service::protocol::MAX_RECORD_CHUNK_BYTES as usize {
+            let encoded = serde_json::to_vec(&records)?;
+            if encoded.len() > crate::service::protocol::MAX_RECORD_CHUNK_BYTES as usize {
                 return Err(crate::backend::BackendError::RecordTooLarge {
-                    encoded_bytes: digest.len(),
+                    encoded_bytes: encoded.len(),
                 }
                 .into());
             }
+            let digest = blake3::hash(&encoded);
             let records = records
                 .into_iter()
                 .collect::<crate::backend::RecordMutations>();
             let (backend, duplicate) =
-                session_staging(ctx, user_uuid, &root_id, &token, chunk_id, &digest)?;
+                session_staging(ctx, user_uuid, &root_id, &token, chunk_id, digest)?;
             if duplicate {
                 return Ok(ServiceResponse::Ok);
             }
@@ -1017,32 +1024,36 @@ async fn dispatch_database_op(
                 .await
             {
                 if let Some(value) = ctx.staging.lock().unwrap().get_mut(&token) {
-                    value.chunks.remove(&chunk_id);
+                    value.next_sequence = chunk_id;
+                    value.last_chunk = None;
                 }
                 return Err(error);
             }
             Ok(ServiceResponse::Ok)
         }
         DatabaseOp::PublishStoreState { token } => {
-            let staged = ctx
-                .staging
-                .lock()
-                .unwrap()
-                .remove(&token)
-                .filter(|value| value.user_uuid == user_uuid && value.database == root_id)
-                .ok_or(crate::backend::BackendError::InvalidStoreStateStagingToken)?;
-            let backend_token = staged.backend;
-            let view = match instance
-                .backend()
-                .publish_store_state(backend_token.clone())
-                .await
-            {
-                Ok(view) => view,
-                Err(error) => {
-                    let _ = instance.backend().abort_store_state(backend_token).await;
-                    return Err(error);
+            let backend_token = {
+                let mut staging = ctx.staging.lock().unwrap();
+                let staged = staging
+                    .get_mut(&token)
+                    .filter(|value| value.user_uuid == user_uuid && value.database == root_id)
+                    .ok_or(crate::backend::BackendError::InvalidStoreStateStagingToken)?;
+                staged.last_used = Instant::now();
+                if let Some(view) = &staged.published_view {
+                    return Ok(ServiceResponse::RecordView(Some(view.clone())));
                 }
+                if staged.published {
+                    return Err(crate::backend::BackendError::InvalidStoreStateStagingToken.into());
+                }
+                staged.backend.clone()
             };
+            // Preserve the token on error: a lost backend response may have
+            // committed the namespace. Retrying or querying status must not
+            // abort that generation or start an ambiguous replacement.
+            let view = instance
+                .backend()
+                .publish_store_state(backend_token)
+                .await?;
             let view_token = random_token();
             let database = root_id.clone();
             ctx.staging.lock().unwrap().insert(
@@ -1065,20 +1076,31 @@ async fn dispatch_database_op(
                     user_uuid: user_uuid.to_string(),
                     database,
                     published: true,
-                    chunks: HashMap::new(),
+                    published_view: None,
+                    next_sequence: 0,
+                    last_chunk: None,
                     last_used: Instant::now(),
                 },
             );
+            if let Some(staged) = ctx.staging.lock().unwrap().get_mut(&token) {
+                staged.published = true;
+                staged.published_view = Some(view_token.clone());
+            }
             Ok(ServiceResponse::RecordView(Some(view_token)))
         }
         DatabaseOp::AbortStoreState { token } => {
             let staged = {
                 let mut staging = ctx.staging.lock().unwrap();
-                if staging
-                    .get(&token)
-                    .is_some_and(|value| value.user_uuid != user_uuid || value.database != root_id)
-                {
-                    return Err(crate::backend::BackendError::InvalidStoreStateStagingToken.into());
+                if let Some(value) = staging.get_mut(&token) {
+                    if value.user_uuid != user_uuid || value.database != root_id {
+                        return Err(
+                            crate::backend::BackendError::InvalidStoreStateStagingToken.into()
+                        );
+                    }
+                    if value.published {
+                        value.last_used = Instant::now();
+                        return Ok(ServiceResponse::Ok);
+                    }
                 }
                 staging.remove(&token)
             };
@@ -1472,28 +1494,36 @@ fn session_store_state_request(
     Ok(request)
 }
 
-/// Resolve a session staging token, recording the chunk digest so a retried
-/// upload is idempotent and a changed one is refused.
+/// Accept the next chunk or acknowledge only the most recent identical chunk.
+/// The digest is over the encoded wire mutations, before key collapse.
 fn session_staging(
     ctx: &ConnectionContext,
     user_uuid: &str,
     database: &ID,
     token: &str,
     chunk_id: u64,
-    digest: &[u8],
+    digest: blake3::Hash,
 ) -> crate::Result<(StagingToken, bool)> {
     let mut staging = ctx.staging.lock().unwrap();
     let value = staging
         .get_mut(token)
         .filter(|value| value.user_uuid == user_uuid && value.database == *database)
         .ok_or(crate::backend::BackendError::InvalidStoreStateStagingToken)?;
-    if let Some(existing) = value.chunks.get(&chunk_id) {
-        if existing != digest {
-            return Err(crate::backend::BackendError::InvalidStoreStateStagingToken.into());
-        }
+    if value.published {
+        return Err(crate::backend::BackendError::StoreStateNamespaceImmutable.into());
+    }
+    if value.last_chunk == Some((chunk_id, digest)) {
+        value.last_used = Instant::now();
         return Ok((value.backend.clone(), true));
     }
-    value.chunks.insert(chunk_id, digest.to_vec());
+    if chunk_id != value.next_sequence {
+        return Err(crate::backend::BackendError::InvalidStoreStateStagingToken.into());
+    }
+    value.next_sequence = value
+        .next_sequence
+        .checked_add(1)
+        .ok_or(crate::backend::BackendError::InvalidStoreStateStagingToken)?;
+    value.last_chunk = Some((chunk_id, digest));
     value.last_used = Instant::now();
     Ok((value.backend.clone(), false))
 }
