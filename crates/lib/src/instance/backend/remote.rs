@@ -1,7 +1,7 @@
 //! [`RemoteBackend`]: the seam backed by a service connection.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     sync::{Arc, Mutex},
 };
 
@@ -44,6 +44,7 @@ pub struct RemoteBackend {
     conn: RemoteConnection,
     identity: Option<SigKey>,
     views: Arc<Mutex<BTreeMap<String, ID>>>,
+    staging_sequences: Arc<tokio::sync::Mutex<HashMap<String, u64>>>,
 }
 
 impl RemoteBackend {
@@ -52,6 +53,7 @@ impl RemoteBackend {
             conn,
             identity,
             views: Arc::new(Mutex::new(BTreeMap::new())),
+            staging_sequences: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -86,6 +88,10 @@ impl Backend for RemoteBackend {
             .conn
             .begin_store_state_staging(self.identity(), request.clone())
             .await?;
+        self.staging_sequences
+            .lock()
+            .await
+            .insert(namespace_id.clone(), 0);
         Ok(StagingToken {
             namespace_id,
             target: request,
@@ -97,7 +103,12 @@ impl Backend for RemoteBackend {
         token: &StagingToken,
         records: RecordMutations,
     ) -> Result<()> {
-        let mut chunk_id = 0;
+        // coding: one handle-wide upload lock keeps token sequences ordered;
+        // use per-token locks if concurrent builds need more throughput.
+        let mut sequences = self.staging_sequences.lock().await;
+        let chunk_id = sequences
+            .get_mut(&token.namespace_id)
+            .ok_or(crate::backend::BackendError::InvalidStoreStateStagingToken)?;
         let mut chunk = RecordMutations::new();
         let mut encoded = 0usize;
         for (key, value) in records {
@@ -116,11 +127,11 @@ impl Backend for RemoteBackend {
                         token.target.database.clone(),
                         self.identity(),
                         token.namespace_id.clone(),
-                        chunk_id,
+                        *chunk_id,
                         std::mem::take(&mut chunk),
                     )
                     .await?;
-                chunk_id += 1;
+                *chunk_id += 1;
                 encoded = 0;
             }
             encoded += size;
@@ -132,20 +143,23 @@ impl Backend for RemoteBackend {
                     token.target.database.clone(),
                     self.identity(),
                     token.namespace_id.clone(),
-                    chunk_id,
+                    *chunk_id,
                     chunk,
                 )
                 .await?;
+            *chunk_id += 1;
         }
         Ok(())
     }
 
     async fn publish_store_state(&self, token: StagingToken) -> Result<RecordView> {
         let database = token.target.database.clone();
+        let token_id = token.namespace_id.clone();
         let namespace_id = self
             .conn
             .publish_store_state(token.target.database, self.identity(), token.namespace_id)
             .await?;
+        self.staging_sequences.lock().await.remove(&token_id);
         self.views
             .lock()
             .unwrap()
@@ -154,9 +168,12 @@ impl Backend for RemoteBackend {
     }
 
     async fn abort_store_state(&self, token: StagingToken) -> Result<()> {
+        let token_id = token.namespace_id.clone();
         self.conn
             .abort_store_state(token.target.database, self.identity(), token.namespace_id)
-            .await
+            .await?;
+        self.staging_sequences.lock().await.remove(&token_id);
+        Ok(())
     }
 
     async fn store_state_record_get(
