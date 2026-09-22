@@ -630,7 +630,7 @@ This allows:
 
 1. **Use descriptive key names**: `"alice_laptop"`, `"deploy_bot"` for keys that will be looked up by name
 2. **Set appropriate permission bounds**: Don't grant more access than needed
-3. **Update delegation tips**: Keep tips current to ensure revocations are respected
+3. **Advance delegation tips causally**: A committed pointer may move forward only to a snapshot that covers its prior floor; merge settings must cover every parent pointer. This is not a live-head freshness or general revocation mechanism
 4. **Track delegated database root IDs**: Delegation paths use root IDs, so document which IDs correspond to which databases
 5. **Document delegation chains**: Complex hierarchies can be hard to debug
 
