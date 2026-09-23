@@ -97,6 +97,10 @@ harness = false
 name = "iroh_benchmarks"
 harness = false
 
+[[example]]
+name = "table_rebuild_probe"
+required-features = ["sqlite"]
+
 [[bench]]
 name = "table_cache_benchmarks"
 harness = false
