@@ -930,6 +930,30 @@ async fn test_database_encrypted_store_roundtrip() {
     assert_eq!(decrypted, secret_data, "decrypted data must match original");
 }
 
+struct PasswordDocProjection;
+
+impl eidetica::store::RecordProjection<Doc> for PasswordDocProjection {
+    fn descriptor(&self) -> ProjectionDescriptor {
+        <DocStore as eidetica::Store>::state_model().descriptor()
+    }
+
+    fn mutations<'a>(
+        &'a self,
+        delta: &'a Doc,
+    ) -> eidetica::Result<
+        Box<dyn Iterator<Item = eidetica::Result<eidetica::backend::RecordMutation>> + Send + 'a>,
+    > {
+        Ok(Box::new(delta.iter().filter_map(|(key, value)| {
+            value.as_text().map(|value| {
+                Ok(eidetica::backend::RecordMutation::Put {
+                    key: key.as_bytes().to_vec(),
+                    value: value.as_bytes().to_vec(),
+                })
+            })
+        })))
+    }
+}
+
 /// A read-only client unlocks locally and folds the actual encrypted Entry
 /// stream when the daemon declines encrypted projection maintenance.
 #[tokio::test]
@@ -974,12 +998,79 @@ async fn read_only_password_store_folds_authenticated_remote_history() {
         .unwrap();
     let wrong = encrypted.open("wrong").unwrap_err();
     assert!(
+        encrypted
+            .projected_get(&PasswordDocProjection, b"a")
+            .await
+            .is_err()
+    );
+    assert!(
         !matches!(wrong, eidetica::Error::Store(ref e) if matches!(**e, eidetica::store::StoreError::RecordMaintenanceUnavailable { .. }))
     );
     encrypted.open("correct").unwrap();
     let state = encrypted.get_state().await.unwrap();
     assert_eq!(state.get_as::<&str>("a"), Some("first"));
     assert_eq!(state.get_as::<&str>("b"), Some("second"));
+    assert_eq!(
+        encrypted
+            .projected_get(&PasswordDocProjection, b"a")
+            .await
+            .unwrap(),
+        Some(b"first".to_vec())
+    );
+    let (first, cursor) = encrypted
+        .projected_scan_page(&PasswordDocProjection, None, 1)
+        .await
+        .unwrap();
+    assert_eq!(first.records.len(), 1);
+    let (second, end) = encrypted
+        .projected_scan_page(&PasswordDocProjection, cursor.as_ref(), 1)
+        .await
+        .unwrap();
+    assert!(end.is_none());
+    let mut rows = [first.records[0].clone(), second.records[0].clone()];
+    rows.sort();
+    assert_eq!(
+        rows,
+        [
+            (b"a".to_vec(), b"first".to_vec()),
+            (b"b".to_vec(), b"second".to_vec())
+        ]
+    );
+    let other_tx = read_db.new_transaction().await.unwrap();
+    let mut other = other_tx
+        .get_store::<PasswordStore<DocStore>>("secrets")
+        .await
+        .unwrap();
+    other.open("correct").unwrap();
+    assert!(
+        matches!(other.projected_scan_page(&PasswordDocProjection, cursor.as_ref(), 1).await,
+        Err(eidetica::Error::Store(error)) if matches!(*error, eidetica::store::StoreError::StaleCursor { .. }))
+    );
+    struct WrongProjection;
+    impl eidetica::store::RecordProjection<Doc> for WrongProjection {
+        fn descriptor(&self) -> ProjectionDescriptor {
+            ProjectionDescriptor {
+                name: "wrong".into(),
+                version: 0,
+            }
+        }
+        fn mutations<'a>(
+            &'a self,
+            _: &'a Doc,
+        ) -> eidetica::Result<
+            Box<
+                dyn Iterator<Item = eidetica::Result<eidetica::backend::RecordMutation>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            unreachable!()
+        }
+    }
+    assert!(
+        matches!(encrypted.projected_get(&WrongProjection, b"a").await,
+        Err(eidetica::Error::Store(error)) if matches!(*error, eidetica::store::StoreError::TypeMismatch { .. }))
+    );
     // The same bytes through the public typed API are ciphertext without
     // this transaction's decryptor; they must not masquerade as a valid Doc.
     let bob_identity = eidetica::auth::types::SigKey::from_pubkey(&bob.get_default_key().unwrap());
@@ -1057,6 +1148,76 @@ async fn read_only_password_store_folds_authenticated_remote_history() {
         ServiceResponse::Error(error) => assert_eq!(error.kind, "TypeMismatch"),
         other => panic!("encrypted descriptor accepted: {other:?}"),
     }
+
+    // An owner can sign a structurally valid Entry with corrupt *opaque*
+    // ciphertext. The daemon verifies its signature, not the password AEAD;
+    // read-only clients must surface the decrypt failure after the Read gate.
+    let ctx = db
+        .transaction_context(&["secrets".into()], ReadScope::Verified)
+        .await
+        .unwrap();
+    let owner_key = alice.get_default_key().unwrap();
+    let owner_signing = alice.get_signing_key(&owner_key).unwrap();
+    let owner_identity = eidetica::auth::types::SigKey::from_pubkey(&owner_key);
+    let entry = Entry::builder(root.clone())
+        .set_parents(ctx.main_parents.iter().map(|(id, _)| id.clone()).collect())
+        .set_subtree_data("secrets", vec![0u8; 28])
+        .set_subtree_parents(
+            "secrets",
+            ctx.subtree_parents["secrets"]
+                .iter()
+                .map(|(id, _)| id.clone())
+                .collect(),
+        )
+        .set_metadata(
+            serde_json::to_vec(&serde_json::json!({
+                "settings_tips": ctx.settings_tips,
+                "entropy": serde_json::Value::Null,
+            }))
+            .unwrap(),
+        )
+        .set_height(ctx.main_parents.iter().map(|(_, h)| *h).max().unwrap_or(0) + 1)
+        .build()
+        .unwrap()
+        .with_auth(|auth| auth.key = owner_identity.clone());
+    let signature = sign_entry(&entry, &owner_signing).unwrap();
+    let entry = entry.with_auth(|auth| auth.signature = Some(signature));
+    let entry_id = entry.id();
+    remote_conn(&remote)
+        .submit_signed_entry(root.clone(), owner_identity, entry)
+        .await
+        .unwrap();
+    let tips = conn
+        .get_verified_tips(
+            root.clone(),
+            eidetica::auth::types::SigKey::from_pubkey(&bob.get_default_key().unwrap()),
+        )
+        .await
+        .unwrap();
+    assert!(
+        tips.tips().contains(&entry_id),
+        "corrupt opaque payload must be in verified history"
+    );
+    let tx = read_db.new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<DocStore>>("secrets")
+        .await
+        .unwrap();
+    encrypted.open("correct").unwrap();
+    let error = encrypted
+        .projected_get(&PasswordDocProjection, b"a")
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, eidetica::Error::Store(ref e) if matches!(**e, eidetica::store::StoreError::ImplementationError { .. }))
+    );
+    let error = encrypted
+        .projected_scan_page(&PasswordDocProjection, None, 1)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, eidetica::Error::Store(ref e) if matches!(**e, eidetica::store::StoreError::ImplementationError { .. }))
+    );
 }
 
 /// Positive control: owner can read via `get_verified_tips`.

@@ -449,3 +449,56 @@ Intended: allow a caller owning credentials to supply a newly authenticated conn
 Performed: `RemoteConnection::send_staging_chunk_with_recovery` retains the caller's request bytes, queries scoped status only after I/O ambiguity, sends those bytes again only for Active and resolves Published/Adopted by idempotent publish on the supplied connection. `publish_store_state_with_recovery` similarly resolves an ambiguous publish. Neither reconnects nor authenticates internally; the caller supplies the already authenticated connection. A real socket fixture restarts the daemon with the same backend, denies unauthenticated, wrong-user and wrong-database recovery, acknowledges an identical retry, uploads the next ordered chunk without starting another build, recovers ambiguous publication and checks the fresh view reads the intended row. Negative control bypassing recovery failed 0 passed / 1 failed (exit 101) at the unauthenticated denial; restored focused fixture passed 1/1. This is an explicit opt-in coordination seam, not automatic recovery of arbitrary `RemoteBackend` calls; the latter cannot own login credentials. Failure on a second ambiguous response remains caller-visible with the original payload for subsequent retry.
 
 Final `nix develop -c nix run .#fix` succeeded; formatted-source `nix develop -c just nix full` exited 0. In-memory, SQLite, PostgreSQL and service nextest each reported 1532 tests run / 1532 passed / 5 skipped (SQLite 1 leaky); minimal 1378/1378 / 5 skipped. The named socket test PASS appears in all four full-feature runners (its daemon uses InMemory); NixOS and OCI VM integration passed. Doc Table and table:v0 remain unchanged. Remaining Phase 0: stronger typed descriptor dispatch and encrypted projected get/scan/tampered Entry socket fixture; whole redesign, parity and benchmarks remain incomplete. No push/PR.
+
+## Phase 0 continuation: password-projected read-only history and signed tamper
+
+Intended: exercise real `PasswordStore<S>` encryption, not a test envelope, for
+point and physical-order paged typed projection on an authenticated read-only
+socket. Preserve the existing descriptor mismatch, password, and cursor
+contracts. Never stage client maintenance or switch the Doc-backed Table format.
+
+Performed: `PasswordStore<S>::projected_get` and `projected_scan_page` require an
+unlocked handle and a projection matching the wrapped Store descriptor. On a
+remote instance they use the existing canonical Read-gated typed ensure request,
+fold authorized verified Entry history with the locally registered decryptor,
+project physical keyed records and decode through the password record AEAD.
+The socket fixture reads two real encrypted DocStore Entries as a second user
+with global Read and no Write; point get returns the right row and two pages
+return both rows in opaque physical order. A cursor from another transaction
+returns StaleCursor. Wrong password fails at open; a locked handle cannot use
+the projected API; an incorrect projection returns TypeMismatch, not
+RecordMaintenanceUnavailable. A malformed descriptor sent to the authenticated
+socket is rejected before the maintenance refusal.
+
+The same fixture signs an Entry with an intentionally invalid opaque encrypted
+payload using the authorized owner key, submits it over the socket, confirms
+its ID occurs in Bob's Verified frontier, and then confirms both point and page
+reads on a fresh unlocked read-only handle propagate the actual decrypt error
+(`ImplementationError`), not the capability refusal. This is not corruption
+of an existing immutable Entry: the forged Entry has a distinct content ID and
+valid signature, and the fixture's isolated in-memory daemon is disposable.
+Negative controls: removing the projection-descriptor check failed the socket
+test (0 passed/1 failed, exit 101); removing submission and frontier assertion
+from the tamper fixture caused the decrypt-error assertion to fail on the old
+valid plaintext (0/1, exit 101). Restored focused test passed 1/1. An initial
+negative run omitted a larger segment and failed compilation; it was discarded
+and the second negative run reached the intended downstream assertion.
+
+`nix develop -c nix run .#fix` succeeded; full `nix develop -c just nix full`
+on formatted dirty source succeeded after one retry. First run: 1532/1532
+in-memory, SQLite, service, and 1378/1378 minimal (5 skipped each), but
+PostgreSQL ownership-release timing test failed 1531/1532 (unrelated test,
+`StorageAlreadyOwned` immediately after dropping its backend). Retry of the
+unchanged source completed 1532/1532 PostgreSQL, 5 skipped; full gate and both
+NixOS/OCI VM integrations passed. Nix logs for all five derivations confirm
+the complete counts and socket fixture PASS in every full-feature runner; the
+service fixture uses an in-memory daemon under each outer runner. `nix flake
+metadata` identified the formatted dirty source snapshot, containing the
+signed corrupt Entry test and typed API. No Table format change (`table:v0`).
+
+Remaining: currently remote projected reads fold full decrypted history per
+point/page; an independently authenticated read-only record view could avoid
+that cost later. Page cursors detect local transaction overlay/view changes,
+not a remote frontier changing between page calls. Server codec dispatch for
+additional plaintext typed Stores, automatic high-level staging recovery,
+full Table redesign/parity/benchmarks and another full gate are still open.
