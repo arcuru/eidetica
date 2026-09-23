@@ -22,6 +22,7 @@ mod tests;
 
 use std::{
     collections::{BTreeMap, HashMap},
+    future::Future,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -45,7 +46,11 @@ use crate::{
     entry::{Entry, EntryBuilder, ID},
     height::HeightStrategy,
     instance::WriteSource,
-    store::{ProjectionDescriptor, RecordProjection, Registry, SettingsStore, StoreError, state},
+    store::table::CursorKind,
+    store::{
+        ProjectionDescriptor, RecordProjection, Registry, SettingsStore, StoreError, TableCursor,
+        state,
+    },
 };
 
 /// Creates a synthetic entry ID for multi-tip merged CRDT state caching.
@@ -176,6 +181,8 @@ pub(crate) struct EntryMetadata {
 /// `Transaction` instances are typically created via `Database::new_transaction()`.
 #[derive(Clone)]
 pub struct Transaction {
+    /// Shared by clones, never by separately opened transaction views.
+    view_id: uuid::Uuid,
     /// The entry builder being modified, wrapped in Option to support consuming on commit
     entry_builder: Arc<Mutex<Option<EntryBuilder>>>,
     /// The database this transaction belongs to
@@ -272,6 +279,7 @@ impl Transaction {
         }
 
         Ok(Self {
+            view_id: uuid::Uuid::new_v4(),
             entry_builder: Arc::new(Mutex::new(Some(builder))),
             db: database.clone(),
             provided_signing_key: None,
@@ -716,6 +724,137 @@ impl Transaction {
             );
             return Ok(());
         }
+    }
+
+    /// Scan a typed projection over one immutable transaction overlay. The
+    /// fetcher supplies persisted physical-key pages; it must honor exclusive
+    /// `after` and return pages in physical order. Phase 3 wires the backend
+    /// view into this boundary, before the Table format changes.
+    #[allow(dead_code)]
+    pub(crate) async fn projected_scan_page<F, Fut>(
+        &self,
+        store: &str,
+        descriptor: ProjectionDescriptor,
+        cursor: Option<&TableCursor>,
+        limit: usize,
+        mut fetch: F,
+    ) -> Result<(crate::backend::RecordPage, Option<TableCursor>)>
+    where
+        F: FnMut(Option<Vec<u8>>, usize) -> Fut,
+        Fut: Future<Output = Result<crate::backend::RecordPage>>,
+    {
+        let context = self.encrypted_projection_descriptor(store, descriptor.clone());
+        let snapshot = self.projected.lock().unwrap().get(store).cloned();
+        let revision = snapshot.as_ref().map_or(0, |state| state.revision);
+        if snapshot
+            .as_ref()
+            .is_some_and(|state| state.descriptor != context)
+        {
+            return Err(StoreError::StaleCursor {
+                store: store.into(),
+            }
+            .into());
+        }
+        let after = match cursor.map(|cursor| &cursor.0) {
+            None => None,
+            Some(CursorKind::Projected {
+                view,
+                revision: cursor_revision,
+                store: cursor_store,
+                projection,
+                last_physical_key,
+            }) if *view == self.view_id
+                && *cursor_revision == revision
+                && cursor_store == store
+                && projection == &context =>
+            {
+                Some(last_physical_key.clone())
+            }
+            _ => {
+                return Err(StoreError::StaleCursor {
+                    store: store.into(),
+                }
+                .into());
+            }
+        };
+        let check_revision = || -> Result<()> {
+            let stages = self.projected.lock().unwrap();
+            if stages.get(store).map_or(0, |state| state.revision) != revision
+                || self.encrypted_projection_descriptor(store, descriptor.clone()) != context
+            {
+                return Err(StoreError::StaleCursor {
+                    store: store.into(),
+                }
+                .into());
+            }
+            Ok(())
+        };
+        if limit == 0 {
+            check_revision()?;
+            return Ok((crate::backend::RecordPage::default(), None));
+        }
+        let mut merged = snapshot
+            .as_ref()
+            .map(|state| &state.physical)
+            .into_iter()
+            .flat_map(|mutations| mutations.iter())
+            .filter_map(|(key, value)| {
+                (after.as_ref().is_none_or(|after| key > after))
+                    .then(|| value.as_ref().map(|value| (key.clone(), value.clone())))
+                    .flatten()
+            })
+            .collect::<BTreeMap<_, _>>();
+        let mut backend_after = after;
+        let mut backend_has_more = true;
+        while backend_has_more {
+            let page = fetch(backend_after.clone(), limit.max(1)).await;
+            check_revision()?; // A racing mutation wins even if the fetch failed.
+            let page = page?;
+            for (key, value) in page.records {
+                if let Some(staged) = snapshot.as_ref().and_then(|state| state.physical.get(&key)) {
+                    if let Some(staged) = staged {
+                        merged.insert(key, staged.clone());
+                    }
+                } else {
+                    merged.insert(key, value);
+                }
+            }
+            backend_after = page.next;
+            backend_has_more = backend_after.is_some();
+            if merged
+                .keys()
+                .nth(limit)
+                .is_some_and(|end| backend_after.as_ref().is_some_and(|last| last >= end))
+            {
+                break;
+            }
+        }
+        let mut records = merged
+            .into_iter()
+            .take(limit.saturating_add(1))
+            .collect::<Vec<_>>();
+        let has_more = records.len() > limit || backend_has_more;
+        records.truncate(limit);
+        let next = has_more.then(|| {
+            TableCursor(CursorKind::Projected {
+                view: self.view_id,
+                revision,
+                store: store.into(),
+                projection: context.clone(),
+                last_physical_key: records.last().unwrap().0.clone(),
+            })
+        });
+        for (key, value) in &mut records {
+            (*key, *value) = self.decrypt_record(store, key, value)?;
+        }
+        check_revision()?;
+        Ok((
+            crate::backend::RecordPage {
+                records,
+                next: None,
+            },
+            next,
+        ))
     }
 
     pub(crate) fn stage_record(

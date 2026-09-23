@@ -136,6 +136,176 @@ fn row(key: &str, value: &str) -> StagedRows {
     StagedRows(rows)
 }
 
+fn is_stale(
+    result: crate::Result<(
+        crate::backend::RecordPage,
+        Option<crate::store::TableCursor>,
+    )>,
+) {
+    assert!(
+        matches!(result, Err(crate::Error::Store(error)) if matches!(*error, StoreError::StaleCursor { .. }))
+    );
+}
+
+#[tokio::test]
+async fn projected_page_cursor_rejects_put_delete_and_other_view() {
+    let (instance, _) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        crate::NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let (key, _) = generate_keypair();
+    let db = Database::create(&instance, key, Doc::new()).await.unwrap();
+    let tx = db.new_transaction().await.unwrap();
+    tx.stage_projected_delta("rows", &RowsProjection, row("b", "two"))
+        .await
+        .unwrap();
+    let backend = || async {
+        Ok(crate::backend::RecordPage {
+            records: vec![
+                (b"a".to_vec(), b"one".to_vec()),
+                (b"c".to_vec(), b"three".to_vec()),
+            ],
+            next: None,
+        })
+    };
+    let (first, cursor) = tx
+        .projected_scan_page("rows", RowsProjection.descriptor(), None, 1, |_, _| {
+            backend()
+        })
+        .await
+        .unwrap();
+    assert_eq!(first.records, vec![(b"a".to_vec(), b"one".to_vec())]);
+    let cursor = cursor.unwrap();
+    let physical = [
+        (b"a".to_vec(), b"one".to_vec()),
+        (b"c".to_vec(), b"three".to_vec()),
+    ];
+    let (second, next) = tx
+        .projected_scan_page(
+            "rows",
+            RowsProjection.descriptor(),
+            Some(&cursor),
+            1,
+            |after, _| {
+                let records = physical
+                    .iter()
+                    .filter(|(key, _)| after.as_ref().is_none_or(|after| key > after))
+                    .cloned()
+                    .collect();
+                async move {
+                    Ok(crate::backend::RecordPage {
+                        records,
+                        next: None,
+                    })
+                }
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(second.records, vec![(b"b".to_vec(), b"two".to_vec())]);
+    assert!(next.is_some());
+    let other = db.new_transaction().await.unwrap();
+    other
+        .stage_projected_delta("rows", &RowsProjection, row("b", "two"))
+        .await
+        .unwrap();
+    is_stale(
+        other
+            .projected_scan_page(
+                "rows",
+                RowsProjection.descriptor(),
+                Some(&cursor),
+                1,
+                |_, _| backend(),
+            )
+            .await,
+    );
+    let mut different = RowsProjection.descriptor();
+    different.version += 1;
+    is_stale(
+        tx.projected_scan_page("rows", different, Some(&cursor), 1, |_, _| backend())
+            .await,
+    );
+    tx.stage_projected_delta("rows", &RowsProjection, row("d", "four"))
+        .await
+        .unwrap();
+    is_stale(
+        tx.projected_scan_page(
+            "rows",
+            RowsProjection.descriptor(),
+            Some(&cursor),
+            1,
+            |_, _| backend(),
+        )
+        .await,
+    );
+    let (_, cursor) = tx
+        .projected_scan_page("rows", RowsProjection.descriptor(), None, 1, |_, _| {
+            backend()
+        })
+        .await
+        .unwrap();
+    let mut deletion = crate::crdt::LwwMap::new();
+    deletion.delete("b".to_string());
+    tx.stage_projected_delta("rows", &RowsProjection, StagedRows(deletion))
+        .await
+        .unwrap();
+    is_stale(
+        tx.projected_scan_page(
+            "rows",
+            RowsProjection.descriptor(),
+            cursor.as_ref(),
+            1,
+            |_, _| backend(),
+        )
+        .await,
+    );
+}
+
+#[tokio::test]
+async fn projected_page_discards_awaited_fetch_after_racing_mutation() {
+    let (instance, _) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        crate::NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let (key, _) = generate_keypair();
+    let db = Database::create(&instance, key, Doc::new()).await.unwrap();
+    let tx = db.new_transaction().await.unwrap();
+    tx.stage_projected_delta("rows", &RowsProjection, row("a", "one"))
+        .await
+        .unwrap();
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let reader = tx.clone();
+    let task = tokio::spawn(async move {
+        let mut entered = Some(entered_tx);
+        let mut release = Some(release_rx);
+        reader
+            .projected_scan_page("rows", RowsProjection.descriptor(), None, 1, move |_, _| {
+                entered.take().unwrap().send(()).unwrap();
+                let wait = release.take().unwrap();
+                async move {
+                    wait.await.unwrap();
+                    Ok(crate::backend::RecordPage {
+                        records: vec![(b"b".to_vec(), b"old".to_vec())],
+                        next: None,
+                    })
+                }
+            })
+            .await
+    });
+    entered_rx.await.unwrap();
+    tx.stage_projected_delta("rows", &RowsProjection, row("b", "new"))
+        .await
+        .unwrap();
+    release_tx.send(()).unwrap();
+    is_stale(task.await.unwrap());
+}
+
 #[tokio::test]
 async fn projected_staging_installs_concurrent_writes_in_canonical_and_both_overlays() {
     let (instance, _) = Instance::create_backend(
