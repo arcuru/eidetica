@@ -1181,7 +1181,7 @@ async fn dispatch_database_op(
             Ok(ServiceResponse::TransactionContext(ctx))
         }
 
-        DatabaseOp::GetStoreState {
+        DatabaseOp::EnsureStoreStateGeneration {
             store,
             expected_type,
             projection,
@@ -1205,9 +1205,26 @@ async fn dispatch_database_op(
                 DocStore::state_model().descriptor()
             } else if actual == Table::<serde_json::Value>::type_id() {
                 Table::<serde_json::Value>::state_model().descriptor()
+            } else if actual == crate::store::PasswordStore::<DocStore>::type_id() {
+                // PasswordStore's registry identity does not reveal its wrapped
+                // codec. Both known wrappers have distinct effective descriptors;
+                // validate the claim, but never materialize encrypted history
+                // without the key or accept a caller-produced projection.
+                let candidates = [
+                    crate::store::PasswordStore::<DocStore>::state_model().descriptor(),
+                    crate::store::PasswordStore::<Table<serde_json::Value>>::state_model()
+                        .descriptor(),
+                ];
+                if !candidates.contains(&projection) {
+                    return Err(StoreError::TypeMismatch {
+                        store,
+                        expected: format!("{candidates:?}"),
+                        actual: format!("{projection:?}"),
+                    }
+                    .into());
+                }
+                return Err(StoreError::RecordMaintenanceUnavailable { store }.into());
             } else {
-                // Includes unknown codecs and password-wrapped Stores: no
-                // server-side decoder or independently verifiable projection.
                 return Err(StoreError::RecordMaintenanceUnavailable { store }.into());
             };
             if projection != known {

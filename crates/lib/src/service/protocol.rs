@@ -192,10 +192,11 @@ pub enum DatabaseOp {
     /// The database's Verified-frontier tips (server runs `Database::snapshot`
     /// on its local instance). Gate Read.
     GetVerifiedTips,
-    /// Typed Store state for registered plaintext codecs. The client supplies
-    /// its expected registry type and effective projection descriptor; the
-    /// server verifies both after the canonical Read gate. Gate Read.
-    GetStoreState {
+    /// Read-scoped server maintenance for registered plaintext codecs. The
+    /// server verifies registry identity and projection after the canonical
+    /// Read gate, builds any missing generation itself, and returns typed
+    /// state without exposing a staging token. Gate Read.
+    EnsureStoreStateGeneration {
         store: String,
         expected_type: String,
         projection: crate::backend::ProjectionDescriptor,
@@ -290,7 +291,7 @@ impl DatabaseOp {
             DatabaseOp::SetInstanceMetadata { .. } => Permission::Admin(0),
             DatabaseOp::BeginTransaction { .. }
             | DatabaseOp::GetVerifiedTips
-            | DatabaseOp::GetStoreState { .. }
+            | DatabaseOp::EnsureStoreStateGeneration { .. }
             | DatabaseOp::GetStoreEntries { .. }
             | DatabaseOp::GetStoreTipsUpToEntries { .. }
             | DatabaseOp::ComputeMergeState { .. }
@@ -487,7 +488,7 @@ pub enum ServiceResponse {
     Token(String),
     /// Transaction-build context (response to `DatabaseOp::BeginTransaction`).
     TransactionContext(TransactionContext),
-    /// Materialized CRDT store state (response to `DatabaseOp::GetStoreState`).
+    /// Materialized CRDT store state (response to `DatabaseOp::EnsureStoreStateGeneration`).
     CrdtValue(WireCrdtValue),
     /// Merge state: lowest common ancestor + path to tips (response to
     /// `DatabaseOp::ComputeMergeState`).

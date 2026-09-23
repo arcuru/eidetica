@@ -4,10 +4,12 @@ Stores define how their CRDT state is represented for reading.
 The default `StoreStateModel` caches state in one opaque record: it folds ordered Store deltas with the Store's `CRDT` implementation and stores the serialized result under a reserved key.
 This default applies to any Store data type and does not assume `Doc`.
 `Database::get_store_state::<S>` validates the registered Store type and returns `S::Data`; `get_doc_store_state` is explicitly DocStore-specific JSON convenience.
-The service read request carries the expected Store type and effective projection descriptor; the server checks both against `_index` and its known codecs after the ordinary canonical Read gate.
-Only supported plaintext DocStore and the existing Doc-backed Table are materialized server-side today.
+The read-scoped `EnsureStoreStateGeneration` request carries the expected Store type and effective projection descriptor; the server checks both against `_index` and its known plaintext codecs after the ordinary canonical Read gate.
+For DocStore and the existing Doc-backed Table, the server resolves or builds the derived state internally and returns the typed value, never a staging token.
+An authenticated read-only user can invoke this maintenance, but cannot invoke the separate Write-gated staging operation.
 Unknown codecs and recordless storage report `RecordMaintenanceUnavailable`, which selects a typed, ordered Entry-history fold on the client; descriptor mismatch and authorization failures never do.
-Password-wrapped Stores remain opaque to server maintenance, and their client decrypting fallback is not part of this path yet.
+Password-wrapped Stores remain opaque to server maintenance: known wrapper descriptor claims are checked against supported forms before returning `RecordMaintenanceUnavailable`, but `_index` does not expose the encrypted wrapped codec, so the server cannot authenticate which wrapped form is in use.
+The generic client history fallback cannot decrypt password-wrapped entries; encrypted typed fallback needs a separate client-side decrypting path before it is usable.
 
 Backends persist each Store state as an opaque byte-keyed record set.
 Keys use unsigned lexicographic byte order, point reads address one key, and scans use half-open ranges with an exclusive continuation key.

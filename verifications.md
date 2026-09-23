@@ -233,3 +233,31 @@ and automatic high-level ambiguous-response retry; then Phases 2-6 including
 Table switch, encryption parity, benchmarks, and full gate again. This service
 RPC remains a plaintext whole-state read for known Doc-backed types, not a
 shared-generation publication grant. No Table format switch was made.
+
+## Phase 0 continuation: read-scoped known-codec maintenance boundary
+
+Intended: expose a named read-scoped ensure-generation operation for the two
+known plaintext Store codecs, keep all staging tokens behind Write, reject
+mismatched descriptors before maintenance, and refuse encrypted/unknown codecs
+without accepting a client projection. Keep Doc-backed Table/table:v0 unchanged.
+
+Performed: real socket read-only user with a global canonical Read grant reads
+Doc state via server maintenance and cannot begin staging; unauthorized user and
+unauthenticated socket still cannot read, wrong plaintext Store/descriptor is
+rejected, and encrypted Store with plaintext descriptor is rejected while its
+known wrapper descriptor returns RecordMaintenanceUnavailable. Negative control:
+temporarily requiring Write for ensure-generation made the read-only fixture
+fail 0 passed / 1 failed at PermissionDenied; restored source and reran.
+
+Remaining: `_index` does not reveal PasswordStore's wrapped codec (encrypted
+metadata), so a matching known wrapper descriptor is a claim, not independently
+verified; the server refuses maintenance regardless. The generic fallback cannot
+decrypt password-wrapped history, so encrypted typed read needs a separate
+client-side decrypting path. Automatic remote retry/recovery, atomic revision
+staging, stale cursors and subsequent phases remain; no Table switch.
+
+`nix develop -c nix run .#fix` and `nix develop -c just nix full` succeeded
+on the formatted source. Nix nextest: in-memory, SQLite, PostgreSQL and service
+each 1519 tests run: 1519 passed, 5 skipped; minimal 1367 tests run: 1367
+passed, 5 skipped. Both changed live-socket fixtures reported PASS on all four
+full-feature runners. NixOS service and OCI container VM integration passed.

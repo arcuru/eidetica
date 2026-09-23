@@ -1106,7 +1106,7 @@ impl RemoteConnection {
             .db_request(
                 root_id.clone(),
                 identity.clone(),
-                DatabaseOp::GetStoreState {
+                DatabaseOp::EnsureStoreStateGeneration {
                     store: store.clone(),
                     expected_type: S::type_id().to_string(),
                     projection: S::state_model().descriptor(),
