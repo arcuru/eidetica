@@ -198,7 +198,10 @@ for (id, user) in active_users {
 
 Table keys are exact opaque UTF-8 strings: `a`, `a.b`, `.` and the empty key are independent.
 Rows persist as RFC 8785 canonical JSON within ordered LWW map deltas, regardless of the
-Rust type used to read them. Existing Doc-backed `table:v0` data must be regenerated;
+Rust type used to read them. Reads decode only the requested rows into `T`; a mismatched type
+returns a decode error instead of changing stored bytes. Plain scans follow exact UTF-8 key
+order in bounded pages, while encrypted scans follow opaque physical-key order.
+Existing Doc-backed `table:v0` data must be regenerated;
 there is no old-format compatibility despite the unchanged type ID.
 
 Use cases for `Table`:
