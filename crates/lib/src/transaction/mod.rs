@@ -1522,13 +1522,12 @@ impl Transaction {
                 // A read-only client cannot publish its own generation. The
                 // daemon validates the registered plaintext codec and builds
                 // under its narrowly scoped internal maintenance capability.
-                if self.encryptors.lock().unwrap().contains_key(store) {
-                    return Err(StoreError::RecordMaintenanceUnavailable {
-                        store: store.into(),
-                    }
-                    .into());
-                }
-                let Some(type_id) = projection.server_store_type() else {
+                if self.encryptors.lock().unwrap().contains_key(store)
+                    || projection.server_store_type().is_none()
+                {
+                    // Encrypted and unregistered projections must never be
+                    // dispatched to a plaintext server codec. Keep their
+                    // existing client-side build path.
                     let boundary = Snapshot::from(parents);
                     let entries = self
                         .db
@@ -1538,7 +1537,8 @@ impl Transaction {
                     return self
                         .publish_record_view(store, projection, request, &entries)
                         .await;
-                };
+                }
+                let type_id = projection.server_store_type().expect("checked above");
 
                 match conn
                     .ensure_record_generation(
