@@ -1,5 +1,5 @@
 //! Tests for delegated-auth snapshot floors: transitive per-entry
-//! non-regression of pinned delegated-tree snapshots, and forward-only
+//! non-regression of pinned delegated-tree snapshots, and operator-managed
 //! committed delegation pointers.
 //!
 //! Entries are built by hand (parents, claimed tips, signer) and validated
@@ -682,8 +682,7 @@ async fn floor_applies_to_every_step_of_a_nested_path() {
     fx.accept(&ok, "child at (m1, i1)").await;
 }
 
-/// The floor walk does not stop at an ancestor that names a *different*
-/// delegated tree with a snapshot pinned even further back on this one.
+/// A direct-key chain does not erase a root's cached derived frontier.
 #[tokio::test]
 async fn floor_uses_nearest_same_tree_ancestor_on_each_path() {
     let fx = fixture().await;
@@ -767,10 +766,9 @@ fn pointer_write(root: &ID, tips: Vec<ID>) -> Doc {
     doc
 }
 
-/// The convenience API commit path: moving the pointer backwards fails the
-/// transaction; forward and equal succeed.
+/// Direct-key Admin may intentionally rewind a valid configured pointer.
 #[tokio::test]
-async fn pointer_add_delegated_tree_must_move_forward() {
+async fn pointer_add_delegated_tree_allows_admin_rewind() {
     let fx = fixture().await;
     let admin_target = Database::open(&fx.instance, fx.target.root_id())
         .await
@@ -806,14 +804,7 @@ async fn pointer_add_delegated_tree_must_move_forward() {
         .add_delegated_tree(delegation_ref(fx.identity.root_id(), fx.i0.clone()))
         .await
         .unwrap();
-    let err = txn
-        .commit()
-        .await
-        .expect_err("moving the pointer backwards must not commit");
-    assert!(
-        err.to_string().contains("validation failed"),
-        "expected entry validation failure, got: {err}"
-    );
+    txn.commit().await.expect("admin rewind commits");
     let committed = admin_target
         .get_settings()
         .await
@@ -823,27 +814,26 @@ async fn pointer_add_delegated_tree_must_move_forward() {
         .unwrap()
         .get_delegated_tree(fx.identity.root_id())
         .unwrap();
-    assert_eq!(as_set(&committed.tree.tips), as_set(&fx.i1));
+    assert_eq!(as_set(&committed.tree.tips), as_set(&fx.i0));
 }
 
-/// A raw `_settings` write (bypassing `add_delegated_tree`) is gated the
-/// same way — this is the seam remote ingest also goes through.
+/// A raw `_settings` Admin write (also used by remote ingest) may rewind.
 #[tokio::test]
-async fn pointer_raw_settings_write_must_move_forward() {
+async fn pointer_raw_settings_write_allows_admin_rewind() {
     let fx = fixture().await;
     // Advance to i1 first.
     let forward = settings_entry(&fx, pointer_write(fx.identity.root_id(), fx.i1.clone())).await;
     fx.accept(&forward, "raw write advancing i0 → i1").await;
 
     let backwards = settings_entry(&fx, pointer_write(fx.identity.root_id(), fx.i0.clone())).await;
-    fx.reject(&backwards, "raw write regressing i1 → i0").await;
+    fx.accept(&backwards, "admin raw write rewinds i1 → i0")
+        .await;
 
     let equal = settings_entry(&fx, pointer_write(fx.identity.root_id(), fx.i1.clone())).await;
     fx.accept(&equal, "raw write re-committing i1").await;
 }
 
-/// A partial raw write that sets only `tree.tips` under the delegation key
-/// is still a pointer move and is gated.
+/// A partial raw write may also rewind an Admin-managed pointer.
 #[tokio::test]
 async fn pointer_partial_tips_write_is_gated() {
     let fx = fixture().await;
@@ -860,12 +850,11 @@ async fn pointer_partial_tips_write_is_gated() {
         tips,
     );
     let entry = settings_entry(&fx, partial).await;
-    fx.reject(&entry, "partial tips-only write regressing to i0")
+    fx.accept(&entry, "admin may rewind with partial tips-only write")
         .await;
 }
 
-/// Re-spelling the settings key does not reset the pointer: the floor is
-/// matched by the delegated tree's root inside the reference.
+/// An invalid delegation key cannot be used to evade canonical root identity.
 #[tokio::test]
 async fn pointer_is_matched_by_tree_root_not_settings_key() {
     let fx = fixture().await;
@@ -878,8 +867,10 @@ async fn pointer_is_matched_by_tree_root_not_settings_key() {
         delegation_ref(fx.identity.root_id(), fx.i0.clone()),
     );
     let entry = settings_entry(&fx, respelled).await;
-    fx.reject(&entry, "same root under a new key regressing to i0")
-        .await;
+    assert!(
+        !fx.validate(&entry).await.unwrap_or(false),
+        "invalid alias must not validate"
+    );
 }
 
 /// A pointer naming tips of some other tree is unusable and rejected.
@@ -892,17 +883,17 @@ async fn pointer_to_wrong_tree_is_rejected() {
         .await;
 }
 
-/// Adding a delegation for the first time has no prior pointer to cover, and
-/// touching only the bounds is not a pointer move: neither needs the
-/// delegated tree's history locally.
+/// An unsynced first pointer is retryable. Malformed partial references fail,
+/// but a complete bounds update at the same verified pointer succeeds.
 #[tokio::test]
 async fn pointer_first_declaration_and_bounds_only_writes_pass() {
     let fx = fixture().await;
     let unknown_root = ID::from_bytes("some-unsynced-tree");
     let unknown_tip = ID::from_bytes("some-unsynced-tip");
     let first = settings_entry(&fx, pointer_write(&unknown_root, vec![unknown_tip])).await;
-    fx.accept(&first, "first declaration of an unsynced tree")
-        .await;
+    assert!(
+        matches!(fx.validate(&first).await, Err(Error::Auth(e)) if e.is_delegated_tree_unsynced())
+    );
 
     let mut bounds_only = Doc::new();
     bounds_only.set(
@@ -913,12 +904,20 @@ async fn pointer_first_declaration_and_bounds_only_writes_pass() {
         "write:3",
     );
     let entry = settings_entry(&fx, bounds_only).await;
-    fx.accept(&entry, "bounds-only write").await;
+    fx.reject(&entry, "incomplete delegation reference is invalid")
+        .await;
+    let mut complete = delegation_ref(fx.identity.root_id(), fx.i0.clone());
+    complete.permission_bounds.max = Permission::Write(3);
+    let mut doc = Doc::new();
+    doc.set(
+        format!("auth.delegations.{}", fx.identity.root_id()),
+        complete,
+    );
+    let entry = settings_entry(&fx, doc).await;
+    fx.accept(&entry, "complete bounds-only update").await;
 }
 
-/// The gate is decided against the pre-state the entry pins: a signature
-/// through the delegation on a sibling branch still resolves at the old
-/// pointer, and a descendant of the advance must cover the new one.
+/// A descendant of an Admin pointer write must cover its inherited floor.
 #[tokio::test]
 async fn pointer_advance_raises_committed_floor_for_descendants() {
     let fx = fixture().await;
@@ -936,9 +935,8 @@ async fn pointer_advance_raises_committed_floor_for_descendants() {
     let _ = root_tips;
 }
 
-/// Concurrent pointer advances are both causal floors of a merge. Atomic CRDT
-/// resolution may select one sibling's reference, but the security gate must
-/// require the merged write to cover both.
+/// A direct-key Admin may rewind the configured pointer even at a merge;
+/// inherited signed claims remain floors for subsequent delegated entries.
 #[tokio::test]
 async fn pointer_merge_joins_both_parent_floors() {
     let fx = fixture().await;
@@ -993,7 +991,7 @@ async fn pointer_merge_joins_both_parent_floors() {
         .unwrap();
     let signature = sign_entry(&only_x, &fx.target_admin).unwrap();
     let only_x = only_x.with_auth(|auth| auth.signature = Some(signature));
-    fx.reject(&only_x, "merge pointer covering only one parent floor")
+    fx.accept(&only_x, "admin can rewind one branch pointer at a merge")
         .await;
 
     let txn = fx.identity.new_transaction().await.unwrap();
@@ -1007,10 +1005,9 @@ async fn pointer_merge_joins_both_parent_floors() {
     assert!(fx.validate(&both).await.unwrap());
 }
 
-/// Removing and later re-adding a delegation does not erase the last
-/// committed pointer. The forward-only floor carries through the removal.
+/// An effective removal clears the direct delegation floor, so re-addition starts fresh.
 #[tokio::test]
-async fn pointer_removal_does_not_reset_floor() {
+async fn pointer_effective_removal_resets_floor() {
     let fx = fixture().await;
     let forward = settings_entry(&fx, pointer_write(fx.identity.root_id(), fx.i1.clone())).await;
     fx.accept(&forward, "advance to i1").await;
@@ -1021,6 +1018,234 @@ async fn pointer_removal_does_not_reset_floor() {
     fx.accept(&removal, "remove delegation").await;
 
     let readd = settings_entry(&fx, pointer_write(fx.identity.root_id(), fx.i0.clone())).await;
-    fx.reject(&readd, "re-add below the last committed pointer")
+    fx.accept(&readd, "re-add after an effective removal starts fresh")
         .await;
+}
+
+/// A present but not locally Verified dependency is not a proof, even when
+/// all of its bytes and its main-tree ancestry are already held locally.
+#[tokio::test]
+async fn delegated_present_unverified_tip_is_retryable() {
+    let fx = fixture().await;
+    let tip = &fx.i1[0];
+    fx.engine()
+        .update_verification_status(tip, VerificationStatus::Unverified)
+        .await
+        .unwrap();
+    let entry = fx.via_identity(&fx.tips().await, &fx.i1).await;
+    assert!(
+        matches!(fx.validate(&entry).await, Err(Error::Auth(e)) if e.is_delegated_tree_unsynced())
+    );
+    let pointer = settings_entry(&fx, pointer_write(fx.identity.root_id(), fx.i1.clone())).await;
+    assert!(
+        matches!(fx.validate(&pointer).await, Err(Error::Auth(e)) if e.is_delegated_tree_unsynced())
+    );
+    fx.engine()
+        .update_verification_status(tip, VerificationStatus::Verified)
+        .await
+        .unwrap();
+    fx.accept(&entry, "explicit retry after verifying dependency")
+        .await;
+}
+
+/// Clearing a disposable projection must reconstruct a Verified parent's
+/// state, never supply an empty floor for its descendant.
+#[tokio::test]
+async fn verified_parent_cache_miss_rebuilds_floor() {
+    let fx = fixture().await;
+    let parent = fx.via_identity(&fx.tips().await, &fx.i1).await;
+    let parent = fx.accept(&parent, "advanced parent").await;
+    fx.engine().clear_derived_store_state().await.unwrap();
+    let child = fx.via_identity(&[parent], &fx.i0).await;
+    fx.reject(&child, "cold Verified parent still pins i1")
+        .await;
+}
+
+/// A stale delta that loses to an active sibling does not remove the
+/// delegation from the resulting merged settings state.
+#[tokio::test]
+async fn losing_removal_does_not_clear_active_branch_floor() {
+    let fx = fixture().await;
+    let base = crate::Snapshot::from(fx.tips().await);
+    let admin_target = Database::open(&fx.instance, fx.target.root_id())
+        .await
+        .unwrap()
+        .with_key(crate::database::DatabaseKey::new(fx.target_admin.clone()));
+    let mut deletion = Doc::new();
+    deletion.remove(format!("auth.delegations.{}", fx.identity.root_id()));
+    let removal = settings_entry(&fx, deletion).await;
+    let tx = admin_target.new_transaction_at(&base).await.unwrap();
+    tx.get_settings()
+        .unwrap()
+        .set_name("active precursor")
+        .await
+        .unwrap();
+    let precursor = tx.commit().await.unwrap();
+    let tx = admin_target
+        .new_transaction_at(&crate::Snapshot::from(vec![precursor]))
+        .await
+        .unwrap();
+    tx.get_settings()
+        .unwrap()
+        .add_delegated_tree(delegation_ref(fx.identity.root_id(), fx.i1.clone()))
+        .await
+        .unwrap();
+    let active = tx.commit().await.unwrap();
+    let removed = fx.accept(&removal, "concurrent removal").await;
+    let merged = fx.direct(&[active, removed]).await;
+    let merged = fx.accept(&merged, "merged direct entry").await;
+    let ancestry = fx
+        .engine()
+        .get_tree_from_tips(
+            fx.target.root_id(),
+            &crate::Snapshot::from(vec![merged.clone()]),
+        )
+        .await
+        .unwrap();
+    let effective = crate::database::fold_settings_entries(&ancestry).unwrap();
+    assert!(
+        effective.get_delegated_tree(fx.identity.root_id()).is_ok(),
+        "removal must lose to the active sibling for this regression"
+    );
+    let stale = fx.via_identity(&[merged], &fx.i0).await;
+    fx.reject(&stale, "active branch's configured i1 survives")
+        .await;
+}
+
+#[tokio::test]
+async fn same_entry_delegated_pointer_write_must_cover_new_pointer() {
+    let fx = fixture().await;
+    let write = settings_entry(&fx, pointer_write(fx.identity.root_id(), fx.i1.clone())).await;
+    for (claim, expected) in [(&fx.i0, false), (&fx.i1, true)] {
+        let key = SigKey::Delegation {
+            path: vec![DelegationStep {
+                tree: fx.identity.root_id().clone(),
+                tips: claim.clone(),
+            }],
+            hint: KeyHint::from_pubkey(&fx.member_pub),
+        };
+        let entry = Fixture::sign(write.clone(), key, &fx.member);
+        assert_eq!(fx.validate(&entry).await.unwrap(), expected);
+    }
+}
+
+/// A nested I observation persists across first-hop M removal/re-addition.
+#[tokio::test]
+async fn nested_floor_survives_first_hop_removal_and_readd() {
+    let fx = fixture().await;
+    let m_admin = PrivateKey::generate();
+    let m = Database::create(&fx.instance, m_admin, Doc::new())
+        .await
+        .unwrap();
+    let txn = m.new_transaction().await.unwrap();
+    txn.get_settings()
+        .unwrap()
+        .add_delegated_tree(delegation_ref(fx.identity.root_id(), fx.i0.clone()))
+        .await
+        .unwrap();
+    txn.commit().await.unwrap();
+    let m0 = m.snapshot().await.unwrap().into_tips();
+    let admin_target = Database::open(&fx.instance, fx.target.root_id())
+        .await
+        .unwrap()
+        .with_key(crate::database::DatabaseKey::new(fx.target_admin.clone()));
+    let txn = admin_target.new_transaction().await.unwrap();
+    txn.get_settings()
+        .unwrap()
+        .add_delegated_tree(delegation_ref(m.root_id(), m0.clone()))
+        .await
+        .unwrap();
+    txn.commit().await.unwrap();
+
+    let nested = fx
+        .delegated(
+            &fx.tips().await,
+            &[(m.root_id(), &m0), (fx.identity.root_id(), &fx.i1)],
+            &fx.member,
+        )
+        .await;
+    fx.accept(&nested, "nested i1 observation").await;
+    let mut deletion = Doc::new();
+    deletion.remove(format!("auth.delegations.{}", m.root_id()));
+    let removal = settings_entry(&fx, deletion).await;
+    fx.accept(&removal, "remove M").await;
+    let readd = settings_entry(&fx, pointer_write(m.root_id(), m0.clone())).await;
+    let readd = fx.accept(&readd, "re-add M at m0").await;
+    let stale_i = fx
+        .delegated(
+            &[readd],
+            &[(m.root_id(), &m0), (fx.identity.root_id(), &fx.i0)],
+            &fx.member,
+        )
+        .await;
+    fx.reject(&stale_i, "nested I floor survives M removal")
+        .await;
+}
+
+#[tokio::test]
+async fn merged_absence_clears_even_an_active_branch_claim() {
+    let fx = fixture().await;
+    let base = fx.tips().await;
+    let signed = fx.via_identity(&base, &fx.i1).await;
+    assert!(fx.validate(&signed).await.unwrap());
+    let precursor = fx.direct(&base).await;
+    fx.accept(&precursor, "removal branch precursor").await;
+    let mut deletion = Doc::new();
+    deletion.remove(format!("auth.delegations.{}", fx.identity.root_id()));
+    let removal = settings_entry(&fx, deletion).await;
+    let removed = fx.accept(&removal, "later-height removal branch").await;
+    let signed = fx.store(&signed).await;
+    let merge = fx.direct(&[removed, signed]).await;
+    let merge = fx.accept(&merge, "merge with effective absence").await;
+    let entries = fx
+        .engine()
+        .get_tree_from_tips(fx.target.root_id(), &crate::Snapshot::from(vec![merge]))
+        .await
+        .unwrap();
+    assert!(
+        crate::database::fold_settings_entries(&entries)
+            .unwrap()
+            .get_delegated_tree(fx.identity.root_id())
+            .is_err()
+    );
+    let readd = settings_entry(&fx, pointer_write(fx.identity.root_id(), fx.i0.clone())).await;
+    fx.accept(&readd, "i0 is allowed after effective merged absence")
+        .await;
+}
+
+#[tokio::test]
+async fn published_projection_cannot_promote_unverified_parent() {
+    let fx = fixture().await;
+    let parent = fx.via_identity(&fx.tips().await, &fx.i1).await;
+    assert!(
+        fx.validate(&parent).await.unwrap(),
+        "validation publishes projection"
+    );
+    let parent_id = parent.id();
+    // Build before storing: fixture snapshot reads auto-verify raw tips.
+    let child = fx
+        .via_identity(std::slice::from_ref(&parent_id), &fx.i0)
+        .await;
+    fx.engine().put(parent).await.unwrap();
+    assert_eq!(
+        fx.engine()
+            .get_verification_status(&parent_id)
+            .await
+            .unwrap(),
+        VerificationStatus::Unverified
+    );
+    let mut projection = super::floors::DerivedFloors::for_entry(fx.engine(), &child);
+    assert!(
+        matches!(projection.prepare(&child).await, Err(Error::Auth(e))
+        if e.is_delegated_tree_unsynced())
+    );
+    fx.engine()
+        .update_verification_status(&parent_id, VerificationStatus::Verified)
+        .await
+        .unwrap();
+    projection.prepare(&child).await.unwrap();
+    assert_eq!(
+        projection.floor_for(fx.identity.root_id()),
+        crate::Snapshot::from(fx.i1)
+    );
 }

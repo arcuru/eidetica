@@ -3,7 +3,7 @@
 //! This module handles the complex logic of resolving delegation paths,
 //! including multi-tree traversal and permission clamping.
 
-use super::floors::FloorWalker;
+use super::floors::DerivedFloors;
 use crate::{
     Error, Instance, Result, Snapshot,
     auth::{
@@ -27,7 +27,7 @@ const MAX_DELEGATION_STEPS: usize = 10;
 ///
 /// Tips are wire-supplied and each drives DAG traversal; bound the per-step
 /// fan-out. A legitimate tree frontier is small (concurrent heads only).
-const MAX_DELEGATION_TIPS: usize = 64;
+pub(super) const MAX_DELEGATION_TIPS: usize = 64;
 
 /// Check the entries named directly by a delegation step before traversing
 /// between them. This preserves the useful initial dependency set (including
@@ -99,14 +99,14 @@ impl DelegationResolver {
     /// [`resolve_delegation_path`](Self::resolve_delegation_path) for a
     /// concrete entry: each step's claimed snapshot must also ancestry-cover
     /// every snapshot of the same delegated tree pinned by the entry's
-    /// ancestors (see [`FloorWalker`]).
+    /// ancestors (see [`DerivedFloors`]).
     pub(crate) async fn resolve_delegation_path_for_entry(
         &mut self,
         steps: &[DelegationStep],
         final_hint: &KeyHint,
         auth_settings: &AuthSettings,
         instance: &Instance,
-        floors: &mut FloorWalker<'_>,
+        floors: &mut DerivedFloors,
     ) -> Result<Vec<ResolvedAuth>> {
         self.resolve_delegation_path_inner(steps, final_hint, auth_settings, instance, Some(floors))
             .await
@@ -118,7 +118,7 @@ impl DelegationResolver {
         final_hint: &KeyHint,
         auth_settings: &AuthSettings,
         instance: &Instance,
-        mut floors: Option<&mut FloorWalker<'_>>,
+        mut floors: Option<&mut DerivedFloors>,
     ) -> Result<Vec<ResolvedAuth>> {
         if steps.is_empty() {
             return Err(AuthError::EmptyDelegationPath.into());
@@ -163,13 +163,18 @@ impl DelegationResolver {
 
             // Look up the delegation declaration in the *parent's* settings. The
             // declaration carries `tree.tips` — the snapshot the parent tree has
-            // committed for this delegation — which is the monotonicity floor
-            // enforced below. Because the parent's auth settings here are taken
-            // at the validating entry's own settings snapshot, the floor is the
-            // historically-correct one, not a global "now".
+            // committed for this delegation — a floor for this signature.
+            // The parent's auth settings here are taken at this entry's pin,
+            // so the floor is historical, not the live head.
             let delegated_tree_ref = current_auth_settings.get_delegated_tree(&step.tree)?;
 
             let root_id = delegated_tree_ref.tree.root.clone();
+            if step.tree != root_id {
+                return Err(AuthError::InvalidAuthConfiguration {
+                    reason: "delegation key differs from its tree root".to_string(),
+                }
+                .into());
+            }
             if step.tips.is_empty() {
                 return Err(AuthError::InvalidDelegationTips {
                     tree_id: root_id,
@@ -177,37 +182,13 @@ impl DelegationResolver {
                 }
                 .into());
             }
-            // Tree-scoped membership + monotonicity floor. The claimed snapshot
-            // may not regress below the snapshot the parent committed for this
-            // delegation (`delegated_tree_ref.tree.tips`, the "floor"): every floor
-            // tip must be an ancestor-or-equal of the claimed tips.
-            // `check_targets_reachable_from` answers exactly that, and in doing so
-            // validates that each claimed tip is a real entry of this delegated
-            // tree (rejecting foreign or fabricated tips). It is bounded by the
-            // target floor height, so the cost tracks the floor distance rather
-            // than the whole tree on both the reachable and unreachable paths —
-            // which matters because this runs on every delegated-entry validation
-            // (and re-validation). Membership here is *presence in the tree*, not
-            // `VerificationStatus::Verified`: a delegation can legitimately resolve
-            // against a delegated tree whose entries are still unverified locally
-            // (e.g. just arrived over sync and not yet re-verified).
-            //
-            // The floor stops an entry time-travelling the delegated tree backwards
-            // to resurrect auth state the parent has already advanced past (e.g. a
-            // since-revoked key). Advancing the floor is an admin-gated `_settings`
-            // write on the parent tree.
-            //
-            // A three-state verdict keeps a *proven* regression (Unreachable →
-            // reject) distinct from "the delegated tree hasn't synced far enough
-            // to decide" (Indeterminate → surface a retriable error so the entry
-            // stays unverified and is re-checked once `missing` arrives, instead
-            // of being rejected as a forgery).
-            //
-            // This committed pointer is one of two floors. The other — the
-            // snapshots the entry's own ancestors pinned for this tree — is
-            // checked just below when an entry is being validated. The pointer
-            // itself may only move forward (`AuthValidator` gates `_settings`
-            // writes), so together they pin the snapshot per entry.
+            // A claim must cover the configured pointer of its immediate
+            // parent database. This is historical state, never the live head.
+            // Main-tree validation also checks the per-entry parent-joined
+            // derived floor (including same-entry first-hop pointer writes).
+            // Membership and complete locally Verified ancestry are checked
+            // below. Missing and present-but-Unverified history is retryable;
+            // a proven regression or foreign-tree tip is not.
             let floor = Snapshot::from(delegated_tree_ref.tree.tips.to_vec());
             let directly_referenced = Snapshot::from(
                 std::iter::once(root_id.clone())
@@ -276,22 +257,13 @@ impl DelegationResolver {
             // snapshot of this same delegated tree that the entry's ancestors
             // pinned, joined across all parents. Equality is allowed (an old
             // branch may keep using an old snapshot); regression is not, so a
-            // snapshot in which an identity member has since been removed cannot
-            // be resurrected below a parent that already acknowledged the
-            // removal. Keyed by tree root, so it is unaffected by which key
+            // snapshot cannot be resurrected below a still-active inherited
+            // floor. Keyed by tree root, so it is unaffected by which key
             // signs or by intervening direct-key / other-tree signatures. The
             // committed pointer above is checked first, so the claimed tips are
             // already known to be members of this tree.
             if let Some(floors) = floors.as_deref_mut() {
-                let targets = Snapshot::from(
-                    floors
-                        .floor_for(&root_id)
-                        .await?
-                        .iter()
-                        .flat_map(|snapshot| snapshot.iter())
-                        .cloned()
-                        .collect::<Vec<_>>(),
-                );
+                let targets = floors.floor_for(&root_id);
                 if !targets.is_empty() {
                     match current_backend
                         .check_targets_reachable_from(&root_id, &step.tips, &targets)
@@ -324,6 +296,16 @@ impl DelegationResolver {
                         }
                     }
                 }
+            }
+
+            DerivedFloors::proof_on(
+                current_backend.as_ref(),
+                &root_id,
+                &Snapshot::from(&step.tips),
+            )
+            .await?;
+            if steps.first().is_some_and(|first| std::ptr::eq(first, step)) {
+                DerivedFloors::proof_on(current_backend.as_ref(), &root_id, &floor).await?;
             }
 
             // Resolve the delegated tree's auth settings AS OF the claimed tips,

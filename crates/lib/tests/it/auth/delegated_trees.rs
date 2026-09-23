@@ -50,12 +50,9 @@ async fn test_delegated_tree_basic_validation() -> Result<()> {
     )
     .await?;
 
-    // Create main tree with delegation
-    let (_, _main_user, main_tree, _) = setup_complete_auth_environment_with_user(
-        "main_admin_user",
-        &[("main_admin", Permission::Admin(0), KeyStatus::Active)],
-    )
-    .await;
+    // Both trees must be locally present and Verified before committing the pointer.
+    let main_admin_key = user.add_private_key(Some("main_admin")).await?;
+    let main_tree = user.create_database(Doc::new(), &main_admin_key).await?;
 
     // Add delegation to main tree auth settings
     let txn = main_tree.new_transaction().await?;
@@ -109,12 +106,8 @@ async fn test_delegated_tree_permission_clamping() -> Result<()> {
     )
     .await?;
 
-    // Create main tree with Read-only delegation
-    let (_, _main_user, main_tree, _) = setup_complete_auth_environment_with_user(
-        "main_admin_user",
-        &[("main_admin", Permission::Admin(0), KeyStatus::Active)],
-    )
-    .await;
+    let main_admin_key = user.add_private_key(Some("main_admin")).await?;
+    let main_tree = user.create_database(Doc::new(), &main_admin_key).await?;
 
     // Add read-only delegation
     let txn = main_tree.new_transaction().await?;
@@ -663,7 +656,7 @@ async fn test_delegation_depth_limit_exact() -> Result<()> {
 /// Test that invalid (unknown) tips cause delegation validation to fail
 #[tokio::test]
 async fn test_delegated_tree_invalid_tips() -> Result<()> {
-    let (db, mut user) = crate::helpers::test_local_instance_with_user("test_user").await;
+    let (_db, mut user) = crate::helpers::test_local_instance_with_user("test_user").await;
 
     // Keys and delegated tree setup using SettingsStore API
     let main_admin_key = user.add_private_key(Some("main_admin")).await?;
@@ -726,23 +719,14 @@ async fn test_delegated_tree_invalid_tips() -> Result<()> {
         };
         settings.add_delegated_tree(delegation_ref).await?;
     }
-    txn.commit().await?;
-
-    let mut validator = AuthValidator::new();
-    let main_auth_settings = main_tree.get_settings().await?.auth_snapshot().await?;
-
-    let auth_id = SigKey::Delegation {
-        path: vec![DelegationStep {
-            tree: delegated_tree_root.clone(),
-            tips: vec![bogus_tip],
-        }],
-        hint: KeyHint::from_pubkey(&delegated_user_key),
-    };
-
-    let result = validator
-        .resolve_sig_key(&auth_id, &main_auth_settings, Some(&db))
-        .await;
-    assert!(result.is_err());
+    let error = txn
+        .commit()
+        .await
+        .expect_err("unknown configured tip must not commit");
+    assert!(
+        matches!(error, eidetica::Error::Auth(ref e) if e.is_delegated_tree_unsynced()),
+        "missing configured tip is retryable: {error}"
+    );
 
     Ok(())
 }
@@ -1093,13 +1077,31 @@ async fn test_delegated_entry_synced_unverified_then_verified() -> Result<()> {
         "synced entry must start Unverified on B"
     );
 
-    // A single verify() on the target DB must cascade the whole target
-    // history to Verified — including the delegation-signed entry, whose
-    // validation resolves the delegation into the (still-Unverified on B)
-    // identity DB.
+    // Target verification cannot recursively verify a delegated database
+    // while holding the target tree lock. A present-but-Unverified proof
+    // remains retryable until the identity tree is explicitly verified.
     let target_db_b = Database::open(&instance_b, pair.target_db.root_id()).await?;
     let report = target_db_b.verify().await?;
-    assert_eq!(report.failed, 0, "nothing should fail: {report:?}");
+    assert_eq!(
+        report.failed, 0,
+        "incomplete proof is not a verdict: {report:?}"
+    );
+    assert_eq!(
+        instance_b
+            .backend()
+            .get_verification_status(&delegated_entry)
+            .await?,
+        VerificationStatus::Unverified
+    );
+    Database::open(&instance_b, pair.identity_db.root_id())
+        .await?
+        .verify()
+        .await?;
+    let report = target_db_b.verify().await?;
+    assert_eq!(
+        report.failed, 0,
+        "verified dependency permits retry: {report:?}"
+    );
     assert_eq!(
         instance_b
             .backend()

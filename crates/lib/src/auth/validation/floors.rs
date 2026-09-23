@@ -1,201 +1,426 @@
-//! Inherited delegation snapshot floors
-//!
-//! A delegated signature pins a snapshot (a set of tips) of the delegated
-//! tree it resolves through. Those snapshots must not regress along the
-//! signed tree's history: for a given delegated tree, every signature on an
-//! entry must ancestry-cover every snapshot pinned by the entry's ancestors
-//! for that same tree. Equality is allowed — this is non-regression, not
-//! freshness.
-//!
-//! The floor is keyed by delegated tree root, never by signer or by how the
-//! delegation path spells the step, and it survives intervening entries that
-//! were signed by a direct key or through some other delegated tree. This
-//! module derives it from the entry DAG rather than serializing anything new
-//! into entries.
-//!
-//! Derivation. Because every valid delegated entry already covers its own
-//! inherited floor, the floor an entry inherits for tree `R` is exactly the
-//! set of snapshots pinned by its *nearest* ancestors that used `R` — the
-//! first `R`-using entry reached along each ancestry path. Anything further
-//! back is covered transitively by those. The walk therefore starts at the
-//! entry's parents, stops on each path at the first entry whose delegation
-//! path names `R`, and otherwise continues through the parents. Its cost is
-//! the distance back to the previous `R`-using entries on each branch, and it
-//! only runs for entries that themselves carry a delegated signature.
+//! Disposable, per-entry authorization frontiers. Only locally Verified parents
+//! can contribute to a child's floor; the cache is never an authority.
 
 use std::collections::{HashMap, HashSet};
 
+use serde::{Deserialize, Serialize};
+
 use crate::{
-    Entry, Result, Snapshot,
-    auth::{errors::AuthError, types::SigKey},
-    backend::BackendImpl,
+    Entry, Error, Result, Snapshot,
+    auth::{
+        errors::AuthError,
+        settings::AuthSettings,
+        types::{DelegatedTreeRef, SigKey},
+    },
+    backend::{
+        BackendError, BackendImpl, CacheScope, ProjectionDescriptor, RecordMutations,
+        StoreStateLifecycle, StoreStateRequest, VerificationStatus,
+    },
+    constants::SETTINGS,
+    crdt::doc::Value,
     entry::ID,
 };
 
-/// Lazily derives, per delegated tree root, the snapshot floor an entry
-/// inherits from its ancestors.
-///
-/// One walker serves one entry: it caches loaded ancestors and resolved tip
-/// roots across the (usually single) delegated tree the entry's path names.
-pub(crate) struct FloorWalker<'a> {
-    backend: &'a dyn BackendImpl,
-    /// Root of the tree the entry being validated belongs to.
-    tree: ID,
-    /// Main-tree parents of the entry being validated.
-    parents: Vec<ID>,
-    /// Loaded ancestors, shared across per-root walks.
-    entries: HashMap<ID, Entry>,
-    /// Claimed snapshot → root of the tree it belongs to.
-    snapshot_roots: HashMap<Snapshot, ID>,
-    /// Memoized floors per delegated tree root.
-    floors: HashMap<ID, Vec<Snapshot>>,
+#[derive(Clone, Default, Serialize, Deserialize)]
+struct State {
+    // One frontier per observed delegated database, including nested steps.
+    tips: HashMap<ID, Snapshot>,
+    // Roots ever used as first-hop delegations; only these are reset on removal.
+    direct: HashSet<ID>,
+    active: HashSet<ID>,
 }
 
-impl<'a> FloorWalker<'a> {
-    /// Prepare a walker for `entry`. Does no backend work until
-    /// [`floor_for`](Self::floor_for) is called.
-    pub(crate) fn for_entry(backend: &'a dyn BackendImpl, entry: &Entry) -> Self {
-        // A root entry is its own tree and has no ancestors.
-        let tree = entry.root().unwrap_or_else(|| entry.id());
+pub(crate) struct DerivedFloors {
+    backend: std::sync::Arc<dyn BackendImpl>,
+    tree: ID,
+    state: State,
+}
+
+impl DerivedFloors {
+    pub(crate) fn for_entry(backend: std::sync::Arc<dyn BackendImpl>, entry: &Entry) -> Self {
         Self {
             backend,
-            tree,
-            parents: entry.parents().unwrap_or_default(),
-            entries: HashMap::new(),
-            snapshot_roots: HashMap::new(),
-            floors: HashMap::new(),
+            tree: entry.root().unwrap_or_else(|| entry.id()),
+            state: State::default(),
         }
     }
 
-    /// The snapshots pinned for delegated tree `root` by the entry's nearest
-    /// `root`-using ancestors. Every returned snapshot must be ancestry-covered
-    /// by a new signature through `root`. Empty when no ancestor used `root`.
-    ///
-    /// Fails closed with [`AuthError::DelegatedTreeUnsynced`] (naming the
-    /// signed tree and the absent entries) when an ancestor, or a tip an
-    /// ancestor claimed, is not held locally: the floor cannot be established
-    /// from partial history, and that is a retriable condition, not a verdict.
-    /// On the normal verification paths this cannot trigger — an entry is only
-    /// validated once its parents are `Verified`, and verification is
-    /// prefix-closed — but a direct caller may ask about an entry whose history
-    /// it does not hold.
-    pub(crate) async fn floor_for(&mut self, root: &ID) -> Result<&[Snapshot]> {
-        if !self.floors.contains_key(root) {
-            let floor = self.walk(root).await?;
-            self.floors.insert(root.clone(), floor);
+    fn request(&self, id: &ID) -> StoreStateRequest {
+        StoreStateRequest {
+            database: self.tree.clone(),
+            store: "_auth_floors".to_string(),
+            lifecycle: StoreStateLifecycle::Derived,
+            scope: CacheScope::Shared,
+            projection: ProjectionDescriptor {
+                name: "auth-frontier".to_string(),
+                version: 1,
+            },
+            source_key: id.to_string().into_bytes(),
         }
-        Ok(self.floors.get(root).map(Vec::as_slice).unwrap_or(&[]))
     }
 
-    async fn walk(&mut self, root: &ID) -> Result<Vec<Snapshot>> {
-        let mut snapshots = Vec::new();
-        let mut seen_snapshots = HashSet::new();
-        let mut visited: HashSet<ID> = HashSet::new();
-        let mut missing: Vec<ID> = Vec::new();
-        let mut stack: Vec<ID> = self.parents.clone();
-
-        while let Some(id) = stack.pop() {
-            if !visited.insert(id.clone()) {
-                continue;
+    async fn cached(&self, id: &ID) -> Result<Option<State>> {
+        match self.backend.resolve_store_state(&self.request(id)).await {
+            Ok(Some(view)) => {
+                let bytes = self
+                    .backend
+                    .store_state_record_get(&view, b"state")
+                    .await?
+                    .ok_or(BackendError::InvalidStoreStateView)?;
+                Ok(Some(serde_json::from_slice(&bytes)?))
             }
-            let Some(entry) = self.load(&id).await? else {
-                missing.push(id);
-                continue;
-            };
-
-            let mut named_root = false;
-            if let SigKey::Delegation { path, .. } = &entry.auth().key {
-                for step in path {
-                    // A floor for one delegated tree must not depend on the
-                    // continued local availability of an unrelated delegated
-                    // tree used by an intervening ancestor.
-                    if &step.tree != root {
-                        continue;
-                    }
-                    let snapshot = Snapshot::from(&step.tips);
-                    if snapshot.is_empty() {
-                        continue;
-                    }
-                    let Some(step_root) = self.snapshot_root(&snapshot).await? else {
-                        missing.extend(snapshot.iter().cloned());
-                        continue;
-                    };
-                    if &step_root != root {
-                        continue;
-                    }
-                    named_root = true;
-                    if seen_snapshots.insert(snapshot.clone()) {
-                        snapshots.push(snapshot);
-                    }
-                }
+            Ok(None) => Ok(None),
+            Err(Error::Backend(e)) if matches!(*e, BackendError::StoreStateStorageUnsupported) => {
+                Ok(None)
             }
-
-            // An ancestor that pinned `root` covers everything behind it on
-            // this path; stop here. Otherwise the floor carries through.
-            if !named_root {
-                stack.extend(entry.parents()?);
-            }
-        }
-
-        if !missing.is_empty() {
-            missing.sort();
-            missing.dedup();
-            return Err(AuthError::DelegatedTreeUnsynced {
-                tree_id: self.tree.clone(),
-                missing,
-            }
-            .into());
-        }
-
-        Ok(snapshots)
-    }
-
-    /// Load an ancestor, caching it. `Ok(None)` when it is not held locally.
-    async fn load(&mut self, id: &ID) -> Result<Option<Entry>> {
-        if let Some(entry) = self.entries.get(id) {
-            return Ok(Some(entry.clone()));
-        }
-        match self.backend.get(id).await {
-            Ok(entry) => {
-                self.entries.insert(id.clone(), entry.clone());
-                Ok(Some(entry))
-            }
-            Err(e) if e.is_not_found() => Ok(None),
             Err(e) => Err(e),
         }
     }
 
-    /// The root shared by every tip in a claimed snapshot, read from the tips
-    /// themselves so the answer does not depend on how the ancestor's path
-    /// spelled the step. `Ok(None)` when any tip is not held locally. A mixed-
-    /// root snapshot is invalid and fails closed.
-    async fn snapshot_root(&mut self, snapshot: &Snapshot) -> Result<Option<ID>> {
-        if let Some(root) = self.snapshot_roots.get(snapshot) {
-            return Ok(Some(root.clone()));
+    async fn publish(&self, id: &ID, state: &State) -> Result<()> {
+        let token = match self
+            .backend
+            .begin_store_state_staging(self.request(id))
+            .await
+        {
+            Ok(token) => token,
+            Err(Error::Backend(e)) if matches!(*e, BackendError::StoreStateStorageUnsupported) => {
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        };
+        let mut records = RecordMutations::new();
+        records.insert(b"state".to_vec(), Some(serde_json::to_vec(state)?));
+        let result = async {
+            self.backend
+                .stage_store_state_records(&token, records)
+                .await?;
+            self.backend.publish_store_state(token.clone()).await?;
+            Ok(())
         }
-        let mut root: Option<ID> = None;
-        for tip in snapshot {
-            let entry = match self.backend.get(tip).await {
-                Ok(entry) => entry,
-                Err(e) if e.is_not_found() => return Ok(None),
-                Err(e) => return Err(e),
-            };
-            // A tree's root entry has no `root` of its own; it *is* the tree.
-            let tip_root = entry.root().unwrap_or_else(|| entry.id());
-            if root.as_ref().is_some_and(|root| root != &tip_root) {
-                return Err(AuthError::InvalidDelegationTips {
-                    tree_id: tip_root,
-                    claimed_tips: snapshot.tips().to_vec(),
+        .await;
+        if result.is_err() {
+            self.backend.abort_store_state(token).await?;
+        }
+        result
+    }
+
+    fn unsynced(&self, missing: Vec<ID>) -> Error {
+        AuthError::DelegatedTreeUnsynced {
+            tree_id: self.tree.clone(),
+            missing,
+        }
+        .into()
+    }
+
+    async fn verified(&self, id: &ID) -> Result<()> {
+        match self.backend.get_verification_status(id).await {
+            Ok(VerificationStatus::Verified) => Ok(()),
+            Ok(VerificationStatus::Unverified) => Err(self.unsynced(vec![id.clone()])),
+            Err(e) if e.is_not_found() => Err(self.unsynced(vec![id.clone()])),
+            Err(e) => Err(e),
+            Ok(VerificationStatus::Failed) => Err(AuthError::InvalidDelegationTips {
+                tree_id: self.tree.clone(),
+                claimed_tips: vec![id.clone()],
+            }
+            .into()),
+        }
+    }
+
+    /// Complete locally verified ancestry, not just tip membership. A bad
+    /// entry is a verdict; an existing Unverified one is a retry dependency.
+    pub(crate) async fn proof_on(
+        backend: &dyn BackendImpl,
+        root: &ID,
+        tips: &Snapshot,
+    ) -> Result<()> {
+        if tips.is_empty() {
+            return Err(AuthError::InvalidDelegationTips {
+                tree_id: root.clone(),
+                claimed_tips: vec![],
+            }
+            .into());
+        }
+        let entries = match backend.get_tree_from_tips(root, tips).await {
+            Ok(entries) => entries,
+            Err(e) if e.is_not_found() => {
+                return Err(AuthError::DelegatedTreeUnsynced {
+                    tree_id: root.clone(),
+                    missing: e
+                        .entry_id()
+                        .cloned()
+                        .map_or_else(|| tips.tips().to_vec(), |id| vec![id]),
                 }
                 .into());
             }
-            root = Some(tip_root);
+            Err(Error::Backend(e)) if matches!(*e, BackendError::EntryNotInTree { .. }) => {
+                return Err(AuthError::InvalidDelegationTips {
+                    tree_id: root.clone(),
+                    claimed_tips: tips.tips().to_vec(),
+                }
+                .into());
+            }
+            Err(e) => return Err(e),
+        };
+        if !entries.iter().any(|entry| entry.id() == *root) {
+            return Err(AuthError::InvalidDelegationTips {
+                tree_id: root.clone(),
+                claimed_tips: tips.tips().to_vec(),
+            }
+            .into());
         }
-        if let Some(root) = root {
-            self.snapshot_roots.insert(snapshot.clone(), root.clone());
-            Ok(Some(root))
+        let mut pending = Vec::new();
+        for entry in &entries {
+            match backend.get_verification_status(&entry.id()).await? {
+                VerificationStatus::Verified => {}
+                VerificationStatus::Unverified => pending.push(entry.id()),
+                VerificationStatus::Failed => {
+                    return Err(AuthError::InvalidDelegationTips {
+                        tree_id: root.clone(),
+                        claimed_tips: tips.tips().to_vec(),
+                    }
+                    .into());
+                }
+            }
+        }
+        if !pending.is_empty() {
+            return Err(AuthError::DelegatedTreeUnsynced {
+                tree_id: root.clone(),
+                missing: pending,
+            }
+            .into());
+        }
+        Ok(())
+    }
+
+    // Complete main ancestry is required to fold the effective _settings.
+    // Do not use the signed pre-write pin, live head or store_snapshot_at:
+    // neither identifies the state at this entry's main causal boundary.
+    async fn settings_at(&self, entry: &Entry) -> Result<AuthSettings> {
+        let parents = entry.parents()?;
+        let mut entries = if parents.is_empty() {
+            vec![]
         } else {
-            Ok(None)
+            match self
+                .backend
+                .get_tree_from_tips(&self.tree, &Snapshot::from(parents))
+                .await
+            {
+                Ok(entries) => entries,
+                Err(e) if e.is_not_found() => {
+                    return Err(self.unsynced(e.entry_id().cloned().into_iter().collect()));
+                }
+                Err(e) => return Err(e),
+            }
+        };
+        entries.push(entry.clone());
+        crate::database::fold_settings_entries(&entries)
+    }
+
+    fn claim(entry: &Entry) -> impl Iterator<Item = (ID, Snapshot)> + '_ {
+        let steps = match &entry.auth().key {
+            SigKey::Delegation { path, .. } => path.as_slice(),
+            _ => &[],
+        };
+        steps
+            .iter()
+            .map(|step| (step.tree.clone(), Snapshot::from(&step.tips)))
+    }
+
+    fn active(settings: &AuthSettings) -> Result<HashMap<ID, DelegatedTreeRef>> {
+        let mut active = HashMap::new();
+        let Some(value) = settings.as_doc().get("delegations") else {
+            return Ok(active);
+        };
+        let Value::Doc(delegations) = value else {
+            return Err(AuthError::InvalidAuthConfiguration {
+                reason: "delegations must be a document".to_string(),
+            }
+            .into());
+        };
+        for (key, value) in delegations.iter() {
+            let root = ID::parse(key).map_err(|_| AuthError::InvalidAuthConfiguration {
+                reason: "delegation key must be a tree root ID".to_string(),
+            })?;
+            let Value::Doc(doc) = value else {
+                return Err(AuthError::InvalidAuthConfiguration {
+                    reason: "delegation must be a document".to_string(),
+                }
+                .into());
+            };
+            let reference = DelegatedTreeRef::try_from(doc).map_err(|_| {
+                AuthError::InvalidAuthConfiguration {
+                    reason: "invalid delegation reference".to_string(),
+                }
+            })?;
+            if root != reference.tree.root {
+                return Err(AuthError::InvalidAuthConfiguration {
+                    reason: "delegation key differs from its tree root".to_string(),
+                }
+                .into());
+            }
+            active.insert(root, reference);
         }
+        Ok(active)
+    }
+
+    fn apply_claims(entry: &Entry, state: &mut State) {
+        let mut claims: HashMap<ID, Vec<ID>> = HashMap::new();
+        for (root, tips) in Self::claim(entry) {
+            claims.entry(root).or_default().extend(tips.into_tips());
+        }
+        // A verified claim already covers its inherited floor. Multiple
+        // occurrences of the same root in one signature retain every claim.
+        for (root, tips) in claims {
+            state.tips.insert(root, Snapshot::from(tips));
+        }
+    }
+
+    async fn transition(
+        &self,
+        entry: &Entry,
+        mut state: State,
+        check_pointer: bool,
+    ) -> Result<State> {
+        let settings = self.settings_at(entry).await?;
+        let active = Self::active(&settings)?;
+        // A removal is effective only if the merged resulting document is
+        // absent. Retain unrelated nested roots even when their first hop is removed.
+        for root in &state.direct {
+            if !active.contains_key(root) {
+                state.tips.remove(root);
+            }
+        }
+        state.active = active.keys().cloned().collect();
+        state.direct.extend(active.keys().cloned());
+        if entry.in_subtree(SETTINGS) || entry.parents()?.is_empty() {
+            for (root, reference) in &active {
+                let pointer = Snapshot::from(reference.tree.tips.clone());
+                if check_pointer {
+                    if pointer.len() > super::delegation::MAX_DELEGATION_TIPS {
+                        return Err(AuthError::DelegationTipsTooMany {
+                            tree_id: root.clone(),
+                            len: pointer.len(),
+                            max: super::delegation::MAX_DELEGATION_TIPS,
+                        }
+                        .into());
+                    }
+                    Self::proof_on(self.backend.as_ref(), root, &pointer).await?;
+                }
+                let old = state.tips.remove(root).unwrap_or_default();
+                state.tips.insert(
+                    root.clone(),
+                    Snapshot::from(
+                        old.iter()
+                            .chain(pointer.iter())
+                            .cloned()
+                            .collect::<Vec<_>>(),
+                    ),
+                );
+            }
+        }
+        // Cold Verified parents already passed their signature gate. For the
+        // entry being validated, keep inherited tips until its claim is checked.
+        if !check_pointer {
+            Self::apply_claims(entry, &mut state);
+        }
+        state
+            .tips
+            .retain(|root, _| !state.direct.contains(root) || state.active.contains(root));
+        Ok(state)
+    }
+
+    /// Rebuild a cold Verified parent's state from its own Verified parents,
+    /// never from an empty default at a non-root. No partial state is published.
+    async fn parent_state(&self, id: &ID) -> Result<State> {
+        let mut built: HashMap<ID, State> = HashMap::new();
+        let mut stack = vec![(id.clone(), false)];
+        let mut seen = HashSet::new();
+        while let Some((current, ready)) = stack.pop() {
+            if built.contains_key(&current) {
+                continue;
+            }
+            self.verified(&current).await?;
+            if let Some(state) = self.cached(&current).await? {
+                built.insert(current, state);
+                continue;
+            }
+            let entry = match self.backend.get(&current).await {
+                Ok(entry) => entry,
+                Err(e) if e.is_not_found() => return Err(self.unsynced(vec![current])),
+                Err(e) => return Err(e),
+            };
+            if !entry.in_tree(&self.tree) {
+                return Err(BackendError::EntryNotInTree {
+                    entry_id: current,
+                    tree_id: self.tree.clone(),
+                }
+                .into());
+            }
+            let parents = entry.parents()?;
+            if !ready {
+                if !seen.insert(current.clone()) {
+                    continue;
+                }
+                stack.push((current, true));
+                for parent in parents {
+                    stack.push((parent, false));
+                }
+                continue;
+            }
+            let state = self.join(
+                parents
+                    .iter()
+                    .map(|p| built.get(p).expect("verified parent was built")),
+            );
+            let state = self.transition(&entry, state, false).await?;
+            self.publish(&current, &state).await?;
+            built.insert(current, state);
+        }
+        built
+            .remove(id)
+            .ok_or_else(|| self.unsynced(vec![id.clone()]))
+    }
+
+    fn join<'b>(&self, parents: impl Iterator<Item = &'b State>) -> State {
+        let mut state = State::default();
+        for parent in parents {
+            state.direct.extend(parent.direct.iter().cloned());
+            state.active.extend(parent.active.iter().cloned());
+            for (root, tips) in &parent.tips {
+                let old = state.tips.remove(root).unwrap_or_default();
+                state.tips.insert(
+                    root.clone(),
+                    Snapshot::from(old.iter().chain(tips.iter()).cloned().collect::<Vec<_>>()),
+                );
+            }
+        }
+        state
+    }
+
+    /// Load all immediate-parent states, then account for this entry's
+    /// resulting settings before checking its signed claims.
+    pub(crate) async fn prepare(&mut self, entry: &Entry) -> Result<()> {
+        let mut parents = Vec::new();
+        for parent in entry.parents()? {
+            parents.push(self.parent_state(&parent).await?);
+        }
+        self.state = self
+            .transition(entry, self.join(parents.iter()), true)
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) fn floor_for(&self, root: &ID) -> Snapshot {
+        self.state.tips.get(root).cloned().unwrap_or_default()
+    }
+
+    /// Called only after the entry passed signature and permission checks.
+    pub(crate) async fn finish(&mut self, entry: &Entry) -> Result<()> {
+        Self::apply_claims(entry, &mut self.state);
+        self.state.tips.retain(|root, _| {
+            !self.state.direct.contains(root) || self.state.active.contains(root)
+        });
+        self.publish(&entry.id(), &self.state).await
     }
 }

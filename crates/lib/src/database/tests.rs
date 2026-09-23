@@ -372,6 +372,12 @@ async fn test_remote_ingest_missing_delegated_root_stays_retryable() {
     );
 
     ingest_delegated_history(&receiver, fixture.delegated_entries.clone()).await;
+    Database::open(&receiver, &fixture.delegated_root)
+        .await
+        .unwrap()
+        .verify()
+        .await
+        .unwrap();
     let report = target_db.verify().await.unwrap();
     assert_eq!(
         report.failed, 0,
@@ -410,6 +416,12 @@ async fn test_remote_ingest_missing_delegated_tip_stays_retryable_then_promotes(
     );
 
     ingest_delegated_history(&receiver, fixture.delegated_entries.iter().skip(1).cloned()).await;
+    Database::open(&receiver, &fixture.delegated_root)
+        .await
+        .unwrap()
+        .verify()
+        .await
+        .unwrap();
     let report = target_db.verify().await.unwrap();
     assert_eq!(
         report.failed, 0,
@@ -470,6 +482,12 @@ async fn test_remote_ingest_missing_delegated_intermediate_stays_retryable_then_
             .cloned(),
     )
     .await;
+    Database::open(&receiver, &fixture.delegated_root)
+        .await
+        .unwrap()
+        .verify()
+        .await
+        .unwrap();
     let report = target_db.verify().await.unwrap();
     assert_eq!(
         report.failed, 0,
@@ -543,6 +561,12 @@ async fn test_remote_ingest_invalid_delegated_signature_fails_definitively() {
     .await
     .unwrap();
     ingest_delegated_history(&receiver, fixture.delegated_entries.clone()).await;
+    Database::open(&receiver, &fixture.delegated_root)
+        .await
+        .unwrap()
+        .verify()
+        .await
+        .unwrap();
     for entry in fixture.target_history.clone() {
         put_verified(&receiver, entry).await;
     }
