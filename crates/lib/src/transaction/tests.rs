@@ -1030,7 +1030,7 @@ async fn projected_staging_installs_concurrent_writes_in_canonical_and_both_over
                     &RacingProjection,
                     RacingRows {
                         rows: row(key, value),
-                        barrier: Some(barrier),
+                        barrier: Some((barrier, std::sync::Arc::new(AtomicBool::new(false)))),
                     },
                 ))
             })
@@ -1057,14 +1057,19 @@ async fn projected_staging_installs_concurrent_writes_in_canonical_and_both_over
 struct RacingRows {
     rows: StagedRows,
     #[serde(skip)]
-    barrier: Option<std::sync::Arc<std::sync::Barrier>>,
+    barrier: Option<(
+        std::sync::Arc<std::sync::Barrier>,
+        std::sync::Arc<AtomicBool>,
+    )>,
 }
 impl Serialize for RacingRows {
     fn serialize<S: serde::Serializer>(
         &self,
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error> {
-        if let Some(barrier) = &self.barrier {
+        if let Some((barrier, visited)) = &self.barrier
+            && !visited.swap(true, Ordering::SeqCst)
+        {
             barrier.wait();
         }
         #[derive(Serialize)]
@@ -1229,7 +1234,10 @@ async fn projected_staging_failures_leave_canonical_and_overlays_unchanged() {
         .get("rows")
         .unwrap()
         .clone();
-    assert_eq!(prior.canonical, unchanged.canonical);
+    assert_eq!(
+        prior.canonical.bytes().unwrap(),
+        unchanged.canonical.bytes().unwrap()
+    );
     assert_eq!(prior.logical, unchanged.logical);
     assert_eq!(prior.physical, unchanged.physical);
     assert_eq!(prior.revision, unchanged.revision);
@@ -1258,7 +1266,10 @@ async fn projected_staging_failures_leave_canonical_and_overlays_unchanged() {
     );
     let after = tx.projected.lock().unwrap().get("rows").unwrap().clone();
     assert_eq!(after.revision, before.revision);
-    assert_eq!(after.canonical, before.canonical);
+    assert_eq!(
+        after.canonical.bytes().unwrap(),
+        before.canonical.bytes().unwrap()
+    );
     assert_eq!(after.logical, before.logical);
     assert_eq!(after.physical, before.physical);
     assert!(
@@ -1268,6 +1279,108 @@ async fn projected_staging_failures_leave_canonical_and_overlays_unchanged() {
     assert_eq!(
         tx.get_local_data::<StagedRows>("rows").unwrap().unwrap(),
         row("a", "one")
+    );
+}
+
+#[derive(Clone, Default, Deserialize)]
+struct CommitFailRows {
+    rows: StagedRows,
+    #[serde(skip)]
+    calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+impl Serialize for CommitFailRows {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        if self.calls.fetch_add(1, Ordering::SeqCst) > 0 {
+            return Err(serde::ser::Error::custom(
+                "injected commit serialization failure",
+            ));
+        }
+        self.rows.serialize(serializer)
+    }
+}
+impl Data for CommitFailRows {}
+impl CRDT for CommitFailRows {
+    fn merge(&self, other: &Self) -> Result<Self> {
+        Ok(Self {
+            rows: self.rows.merge(&other.rows)?,
+            calls: self.calls.clone(),
+        })
+    }
+}
+struct CommitFailProjection;
+impl RecordProjection<CommitFailRows> for CommitFailProjection {
+    fn descriptor(&self) -> ProjectionDescriptor {
+        RowsProjection.descriptor()
+    }
+    fn mutations<'a>(
+        &'a self,
+        delta: &'a CommitFailRows,
+    ) -> Result<Box<dyn Iterator<Item = Result<RecordMutation>> + Send + 'a>> {
+        RowsProjection.mutations(&delta.rows)
+    }
+}
+
+#[tokio::test]
+async fn projected_commit_serialization_failure_leaves_builder_and_overlays_atomic() {
+    let (instance, _) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        crate::NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let (key, _) = generate_keypair();
+    let db = Database::create(&instance, key, Doc::new()).await.unwrap();
+    let tx = db.new_transaction().await.unwrap();
+    let observer = tx.clone();
+    tx.stage_projected_delta(
+        "rows",
+        &CommitFailProjection,
+        CommitFailRows {
+            rows: row("a", "one"),
+            calls: Default::default(),
+        },
+    )
+    .await
+    .unwrap();
+    let before = observer
+        .projected
+        .lock()
+        .unwrap()
+        .get("rows")
+        .unwrap()
+        .clone();
+    assert!(tx.commit().await.is_err());
+    let after = observer
+        .projected
+        .lock()
+        .unwrap()
+        .get("rows")
+        .unwrap()
+        .clone();
+    assert_eq!(before.revision, after.revision);
+    assert_eq!(before.logical, after.logical);
+    assert_eq!(before.physical, after.physical);
+    assert!(
+        observer
+            .entry_builder
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .data("rows")
+            .is_err()
+    );
+    assert!(!observer.projected_sealed.load(Ordering::Acquire));
+    assert!(
+        db.ops()
+            .store_snapshot(db.root_id(), "rows")
+            .await
+            .unwrap()
+            .tips()
+            .is_empty()
     );
 }
 

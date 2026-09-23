@@ -364,7 +364,23 @@ async fn test_table_exact_keys_multi_operation_and_cold_warm_reads() {
     assert!(table.delete("...").await.unwrap());
     assert!(!table.delete("missing").await.unwrap());
     assert_eq!(table.get("a").await.unwrap().value, 42);
-    tx.commit().await.unwrap();
+    let id = tx.commit().await.unwrap();
+    let entry = ctx.database().backend().unwrap().get(&id).await.unwrap();
+    let delta: LwwMap<String, CanonicalJson> =
+        serde_json::from_slice(entry.data("exact_keys").unwrap()).unwrap();
+    assert_eq!(delta.operations().count(), keys.len());
+    assert_eq!(
+        delta.get(&"a".to_string()).unwrap().as_bytes(),
+        br#"{"value":42}"#
+    );
+    assert_eq!(
+        delta.get(&"a.b".to_string()).unwrap().as_bytes(),
+        br#"{"value":99}"#
+    );
+    assert!(matches!(
+        delta.operation(&"...".to_string()),
+        Some(eidetica::crdt::Lww::Delete)
+    ));
 
     for cold in [true, false] {
         if cold {

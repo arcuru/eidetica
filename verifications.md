@@ -985,3 +985,68 @@ summaries were in-memory, SQLite, PostgreSQL, service **1547 tests run:
 runners; both NixOS service and OCI container integrations passed. Signed-tip
 recheck follows. Remaining Phase 6 cold RSS/churn/encrypted point and final
 handoff still belong to the parent task; no push/PR or version bump.
+
+## Phase 6 continuation: serialize canonical transaction delta once (2026-09-23)
+
+Intended: diagnose the measured 32-row write regression, keep revision-atomic
+canonical Entry bytes and logical/physical overlay with last operation per key,
+no await under the install lock, concurrent writers, encrypted Table and failed
+serialization atomicity. Keep `table:v0` unchanged; compare identical InMemory
+32-row fresh-commit Criterion runs before and after.
+
+Performed: `stage_projected_delta` retains an erased typed CRDT accumulator
+alongside the overlay at one revision instead of decoding and reserializing the
+full canonical delta on every row. It validates each incoming delta's serializer
+and projection before install. At commit, serialize the accumulator outside the
+install lock, compare all store revisions, clone the Entry builder, apply all
+canonical bytes and subtree tips, then install the new builder and seal projected
+writes under the lock. Failed serialization or builder cleanup leaves the old
+builder and overlays intact. Subsequent commit encryption and Entry signing use
+the sealed builder; get_local_data still serializes on demand, so callers can
+read typed staged data without mutating the builder. All awaits occur outside
+the revision/install critical section. Existing generic `RecordProjection` and
+`CRDT::merge` remain supported; no Table-specific serialization shortcut.
+
+Before (the clean parent tip), after (working candidate, same bench source):
+`TEST_BACKEND=inmemory nix develop -c cargo bench -p eidetica --bench
+table_cache_benchmarks -- 'table_write/commit/32' --sample-size 15
+--warm-up-time 0.3 --measurement-time 0.5`. Ryzen 9 7900 shared host, load
+not quiescent (~2.88/13.62/16.48 at final read; 51 GiB available RAM).
+Criterion 95% time CIs: **[823.97, 880.39] µs before** vs **[257.60,
+260.30] µs after final changes**, ~3.3x lower point estimate with nonoverlapping
+intervals, but still >2x the earlier old-Doc baseline [110.48, 114.27] µs.
+An intermediate candidate measured [253.19, 256.01] µs; final comparison is
+the final candidate. 15 samples, 0.5s measurement target and shared-host clocks
+limit external generalization. Payload printed 2113 B for both; no SQL/socket
+throughput claim. Tradeoff: stage still serializes each incoming delta once,
+clones the growing accumulator and logical/physical overlays, and commit retries
+on concurrent revisions; the accumulator replaces stored bytes in projected
+state, with on-demand serialization for get_local_data. Residual write overhead
+and cold RSS/churn/encrypted-point Phase 6 measurements remain open.
+
+Correctness: strengthened the existing exact-key integration test to inspect
+the persisted Entry after set/delete/set in one transaction: ten canonical
+operations, latest `a` and resurrected `a.b` values and the `...` tombstone;
+then cold/warm reads and physical-order pages. Test negative control replacing
+the expected operation count with 1 failed **0 passed; 1 failed**, restored
+**1 passed; 0 failed**. Concurrent same-revision disjoint writers' existing
+barrier test required one-shot serializer synchronization after the new
+per-delta validation; it still proves both overlay revisions and persisted
+canonical rows. New fail-on-second-serialization fixture fails commit after a
+successful stage and checks unchanged builder, logical/physical overlays,
+revision, seal and absent persisted history. Focused projected suite **12 passed;
+0 failed**. Actual encrypted 260-row Table cold builds, corruption/identity,
+and authenticated socket fixtures remain in the accumulated Nix matrix.
+
+One intermediate gate failed the mixed-height-strategy integration fixture
+**1547/1548** in each full backend and **1382/1383** minimal: sealing an
+unrelated `init_subtree_parents` after commit's read-scoped get_index blocked
+loading per-store height settings, so the independent store inherited timestamp
+height. Removed only that new seal check; direct fixture **1 passed; 0 failed**.
+Final `nix develop -c nix run .#fix` passed clippy, deadnix, markdownlint,
+statix and treefmt; final formatted-source `nix develop -c just nix full` exit
+0: in-memory, SQLite, PostgreSQL and service each **1548 tests run: 1548
+passed, 5 skipped**; minimal **1383 tests run: 1383 passed, 5 skipped**;
+NixOS service and OCI VM integration tests passed. `git diff --check` clean.
+These gate fixtures validate actual backend and socket behavior; committed-tip
+gate and handoff remain to follow. No push/PR.

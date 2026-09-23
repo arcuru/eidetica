@@ -222,16 +222,32 @@ pub struct Transaction {
     system_subtrees_locked: Arc<AtomicBool>,
     record_views: Arc<Mutex<HashMap<(String, ProjectionDescriptor), RecordView>>>,
     projected: Arc<Mutex<HashMap<String, ProjectedStage>>>,
+    projected_sealed: Arc<AtomicBool>,
 }
 
-/// Canonical delta and both read-your-writes overlays share one revision.
+/// Canonical typed delta and both read-your-writes overlays share one revision.
 #[derive(Clone)]
 struct ProjectedStage {
     revision: u64,
     descriptor: ProjectionDescriptor,
-    canonical: Vec<u8>,
+    canonical: Arc<dyn StagedDelta>,
     logical: RecordMutations,
     physical: RecordMutations,
+}
+
+trait StagedDelta: Send + Sync {
+    fn as_any(&self) -> &dyn std::any::Any;
+    fn bytes(&self) -> Result<Vec<u8>>;
+}
+
+impl<D: CRDT + Send + Sync + 'static> StagedDelta for D {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn bytes(&self) -> Result<Vec<u8>> {
+        Ok(serde_json::to_vec(self)?)
+    }
 }
 
 /// RAII guard returned by [`Transaction::lock_system_subtrees`]. Releases the
@@ -301,6 +317,7 @@ impl Transaction {
             system_subtrees_locked: Arc::new(AtomicBool::new(false)),
             record_views: Arc::new(Mutex::new(HashMap::new())),
             projected: Arc::new(Mutex::new(HashMap::new())),
+            projected_sealed: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -393,6 +410,9 @@ impl Transaction {
     ) -> Result<()> {
         let subtree = subtree.into();
         let stages = self.projected.lock().unwrap();
+        if self.projected_sealed.load(Ordering::Acquire) {
+            return Err(TransactionError::TransactionAlreadyCommitted.into());
+        }
         if stages.contains_key(&subtree) {
             return Err(StoreError::InvalidOperation {
                 store: subtree,
@@ -520,6 +540,10 @@ impl Transaction {
     /// # Arguments
     /// * `root` - The tree root ID to set (use `ID::default()` for top-level roots)
     pub(crate) fn set_entry_root(&self, root: ID) -> Result<()> {
+        let stages = self.projected.lock().unwrap();
+        if !stages.is_empty() || self.projected_sealed.load(Ordering::Acquire) {
+            return Err(TransactionError::TransactionAlreadyCommitted.into());
+        }
         let mut builder_ref = self.entry_builder.lock().unwrap();
         let builder = builder_ref
             .as_mut()
@@ -536,6 +560,10 @@ impl Transaction {
     /// # Arguments
     /// * `entropy` - Random entropy value
     pub(crate) fn set_metadata_entropy(&self, entropy: u64) -> Result<()> {
+        let stages = self.projected.lock().unwrap();
+        if !stages.is_empty() || self.projected_sealed.load(Ordering::Acquire) {
+            return Err(TransactionError::TransactionAlreadyCommitted.into());
+        }
         let mut builder_ref = self.entry_builder.lock().unwrap();
         let builder = builder_ref
             .as_mut()
@@ -607,6 +635,10 @@ impl Transaction {
             None
         };
 
+        let stages = self.projected.lock().unwrap();
+        if stages.contains_key(subtree) || self.projected_sealed.load(Ordering::Acquire) {
+            return Err(TransactionError::TransactionAlreadyCommitted.into());
+        }
         let mut builder_ref = self.entry_builder.lock().unwrap();
         let builder = builder_ref
             .as_mut()
@@ -623,7 +655,7 @@ impl Transaction {
     /// Stage one typed delta and its logical/physical read overlay at one revision.
     /// All fallible work happens outside the state lock; a competing writer forces
     /// recomputation rather than allowing an unlocked snapshot to overwrite it.
-    pub(crate) async fn stage_projected_delta<D: CRDT + Send>(
+    pub(crate) async fn stage_projected_delta<D: CRDT + Send + Sync + 'static>(
         &self,
         store: &str,
         projection: &dyn RecordProjection<D>,
@@ -646,13 +678,23 @@ impl Transaction {
                 }
                 .into());
             }
+            // Validate each incoming value before installing it; the accumulated
+            // canonical Entry bytes are only produced once at commit.
+            serde_json::to_vec(&delta)?;
             let canonical = if let Some(state) = &snapshot {
-                let current: D = serde_json::from_slice(&state.canonical)?;
+                let current = state
+                    .canonical
+                    .as_any()
+                    .downcast_ref::<D>()
+                    .ok_or_else(|| StoreError::TypeMismatch {
+                        store: store.to_string(),
+                        expected: format!("{:?}", state.descriptor),
+                        actual: format!("{descriptor:?} (different delta type)"),
+                    })?;
                 current.merge(&delta)?
             } else {
                 delta.clone()
             };
-            let bytes = serde_json::to_vec(&canonical)?;
             let mut logical = snapshot
                 .as_ref()
                 .map_or_else(RecordMutations::new, |s| s.logical.clone());
@@ -690,6 +732,9 @@ impl Transaction {
                 physical.insert(physical_key, encrypted);
             }
             let mut stages = self.projected.lock().unwrap();
+            if self.projected_sealed.load(Ordering::Acquire) {
+                return Err(TransactionError::TransactionAlreadyCommitted.into());
+            }
             if stages.get(store).map(|s| s.revision) != snapshot.as_ref().map(|s| s.revision) {
                 continue;
             }
@@ -697,11 +742,7 @@ impl Transaction {
             let builder = builder_ref
                 .as_mut()
                 .ok_or(TransactionError::TransactionAlreadyCommitted)?;
-            if builder.data(store).is_ok()
-                && snapshot
-                    .as_ref()
-                    .is_none_or(|state| builder.data(store).ok() != Some(&state.canonical))
-            {
+            if builder.data(store).is_ok() {
                 return Err(StoreError::InvalidOperation {
                     store: store.to_string(),
                     operation: "stage_projected_delta".to_string(),
@@ -711,13 +752,12 @@ impl Transaction {
                 .into());
             }
             // No await or fallible transformation between canonical and overlay install.
-            builder.set_subtree_data_mut(store, bytes.clone());
             stages.insert(
                 store.to_string(),
                 ProjectedStage {
                     revision: snapshot.map_or(1, |s| s.revision + 1),
                     descriptor: descriptor.clone(),
-                    canonical: bytes,
+                    canonical: Arc::new(canonical),
                     logical,
                     physical,
                 },
@@ -1624,11 +1664,23 @@ impl Transaction {
         T: Data,
     {
         let subtree_name = subtree_name.as_ref();
+        let stages = self.projected.lock().unwrap();
         let builder_ref = self.entry_builder.lock().unwrap();
         let builder = builder_ref
             .as_ref()
             .ok_or(TransactionError::TransactionAlreadyCommitted)?;
 
+        if let Some(stage) = stages.get(subtree_name) {
+            return stage.canonical.bytes().and_then(|data| {
+                serde_json::from_slice(&data).map(Some).map_err(|e| {
+                    TransactionError::StoreDeserializationFailed {
+                        store: subtree_name.to_string(),
+                        reason: e.to_string(),
+                    }
+                    .into()
+                })
+            });
+        }
         if let Ok(data) = builder.data(subtree_name) {
             if data.is_empty() {
                 Ok(None)
@@ -2091,18 +2143,37 @@ impl Transaction {
             subtree_tips.push((subtree_name, tips));
         }
 
-        // Now update the builder with the tips
-        {
-            let mut builder_ref = self.entry_builder.lock().unwrap();
-            let builder = builder_ref
-                .as_mut()
-                .ok_or(TransactionError::TransactionAlreadyCommitted)?;
-
-            for (subtree_name, tips) in subtree_tips {
-                builder.set_subtree_parents_mut(&subtree_name, tips);
+        // Serialize outside the install lock, then seal exactly the revision
+        // whose canonical bytes were serialized. No await under either lock.
+        loop {
+            let snapshot = self.projected.lock().unwrap().clone();
+            let bytes = snapshot
+                .iter()
+                .map(|(store, stage)| Ok((store.clone(), stage.canonical.bytes()?)))
+                .collect::<Result<Vec<_>>>()?;
+            let stages = self.projected.lock().unwrap();
+            if stages.len() != snapshot.len()
+                || stages.iter().any(|(store, stage)| {
+                    snapshot.get(store).map(|old| old.revision) != Some(stage.revision)
+                })
+            {
+                continue;
             }
-
+            let mut builder_ref = self.entry_builder.lock().unwrap();
+            let mut builder = builder_ref
+                .as_ref()
+                .ok_or(TransactionError::TransactionAlreadyCommitted)?
+                .clone();
+            for (subtree_name, tips) in &subtree_tips {
+                builder.set_subtree_parents_mut(subtree_name, tips.clone());
+            }
+            for (store, data) in bytes {
+                builder.set_subtree_data_mut(store, data);
+            }
             builder.remove_empty_subtrees_mut()?;
+            *builder_ref = Some(builder);
+            self.projected_sealed.store(true, Ordering::Release);
+            break;
         }
 
         // Add metadata with settings snapshot for all entries
@@ -2114,13 +2185,13 @@ impl Transaction {
             .store_snapshot_at(self.db.root_id(), SETTINGS, &db_snapshot)
             .await?;
 
-        // Clone the builder from RefCell (limit borrow scope to avoid holding across await)
+        // Clone the sealed builder (no borrow held across awaits below).
         let mut builder = {
             let builder_cell = self.entry_builder.lock().unwrap();
-            let builder_from_cell = builder_cell
+            builder_cell
                 .as_ref()
-                .ok_or(TransactionError::TransactionAlreadyCommitted)?;
-            builder_from_cell.clone()
+                .ok_or(TransactionError::TransactionAlreadyCommitted)?
+                .clone()
         };
 
         // Parse existing metadata if present, or create new
