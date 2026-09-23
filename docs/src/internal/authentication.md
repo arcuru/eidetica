@@ -74,9 +74,13 @@ This can be used for building groups containing multiple keys/identities, or man
 Instead of a separate custom way of users managing and authenticating multiple keys, an individual can use the same authentication scheme as any other database.
 Then whenever they need access to a database, the db will authenticate them by granting access to their 'identity' database. This allows granting people/entities access to a database while letting them manage their own keys using all the same facilities as a typical database, including key rotation and revocation.
 
-**Tip tracking** ensures revocations are respected, entries must use equal or newer tips than previously seen.
+Delegated snapshot floors are causal and keyed by delegated database root. A delegated signature must ancestry-cover the snapshots inherited through all parent paths for that root, even if direct-key entries, signer changes, or another delegated identity intervene. Siblings can name different snapshots; a merge descendant must cover every inherited sibling snapshot.
 
-To keep remote delegated databases up to date, writes update the known tips of the delegated database. This is necessary to ensure that the primary tree sees the latest tips of the delegated tree and knows which keys to allow/block.
+The `tips` on a `DelegatedTreeRef` are a separately committed floor, not an automatically advanced high-water mark for observed signatures. A claimed snapshot must cover it, and `_settings` writes can only move that pointer forward. At a merge, the new pointer must cover the committed pointers inherited from all parents.
+
+Delegated authentication depends on having the history needed to reconstruct each claimed snapshot and inherited floor. If that proof is incomplete, the signed entry remains `Unverified` and outside the verified frontier rather than failing permanently. Validation reports the delegated database root and first known missing entries so sync can satisfy that dependency and retry verification. Proven invalid signatures, wrong-tree claims, and regressions still fail.
+
+These checks pin historical snapshots; they do not claim a snapshot is a live head or make later authority reduction retroactive. Automatic dependency tracking and recursive fetching are not implemented yet. A future implementation can replicate delegated databases as ordinary databases that remain available to peers and may also be tracked directly for local edits.
 
 ## Conflict Resolution
 

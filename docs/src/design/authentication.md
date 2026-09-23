@@ -39,8 +39,9 @@ This document outlines the authentication and authorization scheme for Eidetica,
     - [Permission Clamping](#permission-clamping)
     - [Multi-Level References](#multi-level-references)
     - [Delegated Database References](#delegated-database-references)
-      - [Latest Known Tips](#latest-known-tips)
-      - [Tip Tracking and Validation](#tip-tracking-and-validation)
+      - [Committed Delegation Pointers](#committed-delegation-pointers)
+      - [Causal Snapshot Validation](#causal-snapshot-validation)
+      - [Incomplete Delegated Proof](#incomplete-delegated-proof)
     - [Key Revocation](#key-revocation)
   - [Conflict Resolution and Merging](#conflict-resolution-and-merging)
     - [Key Status Changes in Delegated Databases: Examples](#key-status-changes-in-delegated-databases-examples)
@@ -143,7 +144,7 @@ The idea is that an "overlay" adds information to a database, backups for exampl
 2. **Distributed Consistency**: Authentication rules must merge deterministically across network partitions
 3. **Cryptographic Security**: All authentication based on Ed25519 public/private key cryptography
 4. **Hierarchical Access Control**: Support admin, read/write, and read-only permission levels
-5. **Delegation**: Support for delegating authentication to other databases without granting admin privileges (infrastructure built, activation pending)
+5. **Delegation**: Support snapshot-pinned delegation to other databases without granting admin privileges; automatic dependency tracking remains future work
 6. **Auditability**: All authentication changes are tracked in the immutable DAG history
 
 ### Non-Goals
@@ -569,46 +570,31 @@ Delegated databases can reference other delegated databases, creating delegation
 
 The main database must validate the delegated database structure as well as the main database.
 
-#### Latest Known Tips
+#### Committed Delegation Pointers
 
-"Latest known tips" refers to the latest tips of a delegated database that have been seen used in valid key signatures within the current database. This creates a "high water mark" for each delegated database:
+Each delegated signature carries the delegated database snapshot it observed. The parent database can also commit a delegation pointer in `DelegatedTreeRef.tree.tips`; that pointer is a floor, not an automatically-maintained record of every observed signature. A claimed snapshot must ancestry-cover the committed pointer, and an `_settings` write may only move that pointer forward. At a merge, the new pointer must cover the join of the last committed pointers inherited from every parent path.
 
-1. When an entry uses a delegated database key, it includes the delegated database's tips at signing time
-2. The database tracks these tips as the "latest known tips" for that delegated database
-3. Future entries using that delegated database must reference tips that are equal to or newer than the latest known tips, or must be valid at the latest known tips
-4. This ensures that key revocations in delegated databases are respected once observed
+#### Causal Snapshot Validation
 
-#### Tip Tracking and Validation
+Validation is snapshot-pinned and causal, per delegated database root:
 
-To validate entries with delegated database keys:
+1. **Tree-membership validation.** Every claimed tip must be a real entry in that delegated database.
+2. **Snapshot-pinned resolution.** Permissions are resolved from the claimed snapshot, rather than from a live head. A later delegated-database change therefore does not retroactively change how an already-signed entry resolves.
+3. **Committed-pointer floor.** The claimed snapshot must ancestry-cover the parent database's committed pointer. Pointer updates are forward-only, including at merges as described above.
+4. **Inherited entry floor.** A delegated signature must also ancestry-cover every snapshot of that same delegated root inherited through its entry's parent paths. Siblings may validly name different snapshots; a descendant of a merge must cover every inherited sibling snapshot. An intervening direct-key entry, signer change, or signature through another delegated identity does not reset this floor.
+5. **Permission validation.** The resolved key must exist and have sufficient permission at the claimed snapshot, after delegation bounds are applied.
 
-1. Check that the referenced tips are descendants of (or equal to) the latest known tips for that delegated database
-2. If they're not, check that the entry validates at the latest known tips
-3. Verify the key exists and has appropriate permissions at those tips
-4. Update the latest known tips if these are newer
-5. Apply permission clamping based on the delegation reference
+These rules prevent a delegated signature from regressing below either committed or causally inherited snapshots. They do not assert that a claimed snapshot is a live head, automatically advance a high-water mark for every observed entry, or make authority reduction retroactive.
 
-This mechanism ensures that once a key revocation is observed in a delegated database, no entry can use an older version of that database where the key was still valid.
+#### Incomplete Delegated Proof
 
-#### Implementation Status: Snapshot Pinning and the Monotonicity Floor
+Delegated authentication requires the history needed to reconstruct each claimed snapshot and its inherited floors. When that proof is incomplete, validation leaves the signed entry `Unverified` and outside the verified frontier rather than treating it as permanently invalid. It reports the delegated database root and first known missing entries so synchronization can obtain the dependency and retry validation. A bad signature, a wrong-tree claim, or a proven regression remains a definitive failure.
 
-The "latest known tips" high-water-mark above describes the intended end state. The validation path implemented today (`crates/lib/src/auth/validation/delegation.rs`) realizes a related but narrower guarantee. It is documented here explicitly so the design above is not mistaken for the current behavior.
+Automatic dependency tracking and recursive fetching remain future work. Delegated databases can be replicated as ordinary databases, served to peers, and directly tracked when local edits are needed.
 
-**What is enforced today**, per delegation step:
+#### Implementation Status: Snapshot Pinning and Causal Floors
 
-1. **Tree-membership validation.** Every claimed tip must be a real entry belonging to _that_ delegated database, verified via `get_tree_from_tips`. The earlier implementation only checked that a tip existed _somewhere_ in the backend, so a tip from an unrelated tree was accepted; that hole is closed.
-2. **Snapshot-pinned resolution.** The delegated database's auth settings are read **as of the claimed tips**, not its live head. Permissions are evaluated at the state the signer actually observed, so a later change in the delegated database does not retroactively alter how an already-signed entry resolves.
-3. **Monotonicity floor.** The claimed snapshot may not regress below the snapshot the parent database has **committed** for that delegation — the `tips` field of the `DelegatedTreeRef` (`TreeReference.tips`), which was previously dead data in validation. Equivalently, every committed-floor tip must be reachable from the claimed tips. This stops an entry from time-travelling the delegated database backwards to resurrect auth state the parent has already advanced past (for example a since-revoked key). Advancing the floor is an admin-gated `_settings` write on the parent database.
-4. **Bounded fan-out.** The wire-supplied delegation path length (`MAX_DELEGATION_STEPS`) and per-step claimed-tip count (`MAX_DELEGATION_TIPS`) are bounded, so a single signature key cannot force unbounded backend work before the authorization gate decides.
-
-**How this differs from "latest known tips" above.** The floor is a pointer the parent database commits by an explicit admin settings write, _not_ an automatically-tracked high-water-mark advanced by every observing entry (design step 4 of §Tip Tracking and Validation). It bounds regression against the last committed pointer; it does not yet pin the snapshot fully.
-
-**Known gaps (tracked follow-ups, not yet implemented):**
-
-- **Strict per-entry monotonicity.** The floor is the only monotonicity guarantee. Two sibling entries under the same parent state may still pin _different_ snapshots, provided both are at or above the committed floor.
-- **Settings-write monotonic gate.** Nothing yet forces the committed floor pointer itself to move only forward; an admin settings write could move it backwards, re-opening the regression window. Gating delegation-pointer updates to be monotonic is required to fully close this.
-
-Both gaps are marked `FIXME(security)` in `auth/validation/entry.rs` and `auth/validation/delegation.rs`.
+The validation path (`crates/lib/src/auth/validation/delegation.rs`) implements the rules above. Delegation path length (`MAX_DELEGATION_STEPS`) and per-step claimed-tip count (`MAX_DELEGATION_TIPS`) are bounded, so a single signature key cannot force unbounded backend work before authorization is decided.
 
 ### Key Revocation
 
@@ -769,7 +755,7 @@ graph TD
 - **Administrative Hierarchy Violations**: Lower priority keys cannot modify higher priority keys (but can modify equal priority keys)
 - **Permission Boundary Violations**: Delegated database permissions are constrained within their specified min/max bounds
 - **Cross-Tree Tip Forgery**: Claimed delegation tips are validated as members of the referenced delegated database, not merely as entries existing somewhere in the backend
-- **Delegated-Tree Snapshot Regression (bounded)**: Auth resolution is pinned to the snapshot the signer claimed, and that snapshot may not regress below the parent's committed floor (see §Implementation Status). Note the residual gaps documented there — this is not yet a full per-entry pin
+- **Delegated-Tree Snapshot Regression (bounded)**: Auth resolution is pinned to the snapshot the signer claimed, which must cover both the forward-only committed pointer and the per-root floors inherited through every parent. This does not establish live-head freshness or retroactive authority reduction (see §Implementation Status)
 - **Race Conditions**: Last Write Wins provides deterministic conflict resolution
 
 #### Requires Manual Recovery
@@ -797,7 +783,7 @@ graph TD
 
 - **DoS via Large Histories**: Priority system limits damage from compromised lower-priority keys
 - **DoS via Delegation Amplification**: Delegation path length and per-step claimed-tip count are bounded, capping the backend work an unauthenticated signature key can force before authorization; deeper amplification within those bounds is still possible
-- **Delegated-Tree Snapshot Regression**: The monotonicity floor bounds regression against the parent's committed pointer, but strict per-entry monotonicity and a monotonic gate on the committed pointer itself are not yet implemented (see §Implementation Status)
+- **Delegated-Tree Snapshot Regression**: Claimed snapshots must cover both forward-only committed pointers and per-root floors inherited through every parent; this does not assert live-head freshness or make later authority reduction retroactive (see §Implementation Status)
 - **Social Engineering**: Administrative hierarchy limits scope of individual key compromise
 - **Timestamp Manipulation**: LWW conflict resolution is deterministic but may be influenced by the chosen timestamp resolution algorithm
 - **Administrative Confusion**: Network partitions may result in unexpected administrative states due to LWW resolution
@@ -820,7 +806,7 @@ The current validation process:
 4. **Validate Signature**: Verify the Ed25519 signature against the entry content hash
 5. **Check Permissions**: Ensure the key has sufficient permissions for the operation
 
-**Current features include**: Direct key validation, delegated database resolution, snapshot-pinned tip validation (tree-membership checks plus the monotonicity floor described in §Implementation Status), and permission clamping.
+**Current features include**: Direct key validation, delegated database resolution, snapshot-pinned tip validation (tree-membership checks plus committed and causal inherited floors described in §Implementation Status), and permission clamping.
 
 ### Verification Status vs. Signature Validity
 

@@ -3,15 +3,16 @@
 //! This module handles the complex logic of resolving delegation paths,
 //! including multi-tree traversal and permission clamping.
 
+use super::floors::FloorWalker;
 use crate::{
-    Database, Instance, Result, Snapshot,
+    Error, Instance, Result, Snapshot,
     auth::{
         errors::AuthError,
         permission::clamp_permission,
         settings::AuthSettings,
         types::{DelegationStep, KeyHint, PermissionBounds, ResolvedAuth},
     },
-    backend::Reachability,
+    backend::{BackendError, BackendImpl, Reachability},
 };
 
 /// Maximum number of steps in a single delegation path.
@@ -27,6 +28,33 @@ const MAX_DELEGATION_STEPS: usize = 10;
 /// Tips are wire-supplied and each drives DAG traversal; bound the per-step
 /// fan-out. A legitimate tree frontier is small (concurrent heads only).
 const MAX_DELEGATION_TIPS: usize = 64;
+
+/// Check the entries named directly by a delegation step before traversing
+/// between them. This preserves the useful initial dependency set (including
+/// an absent database root) without forcing the reachability check to use the
+/// root as its floor and walk the whole history a second time.
+async fn missing_delegation_entries(
+    backend: &dyn BackendImpl,
+    tree: &crate::ID,
+    ids: &Snapshot,
+) -> Result<Vec<crate::ID>> {
+    let mut missing = Vec::new();
+    for id in ids {
+        match backend.get(id).await {
+            Ok(entry) if entry.in_tree(tree) => {}
+            Ok(_) => {
+                return Err(BackendError::EntryNotInTree {
+                    entry_id: id.clone(),
+                    tree_id: tree.clone(),
+                }
+                .into());
+            }
+            Err(e) if e.is_not_found() => missing.push(id.clone()),
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(missing)
+}
 
 /// Delegation resolver for handling complex delegation paths
 pub struct DelegationResolver;
@@ -51,12 +79,46 @@ impl DelegationResolver {
     /// Returns all matching ResolvedAuth entries. For name hints that match
     /// multiple keys at the final step, all matches are returned with the
     /// same permission clamping applied to each.
+    ///
+    /// This entry-less form enforces the committed settings-pointer floor
+    /// only. Entry validation goes through
+    /// [`resolve_delegation_path_for_entry`](Self::resolve_delegation_path_for_entry),
+    /// which additionally enforces the floor inherited from the entry's
+    /// ancestors.
     pub async fn resolve_delegation_path(
         &mut self,
         steps: &[DelegationStep],
         final_hint: &KeyHint,
         auth_settings: &AuthSettings,
         instance: &Instance,
+    ) -> Result<Vec<ResolvedAuth>> {
+        self.resolve_delegation_path_inner(steps, final_hint, auth_settings, instance, None)
+            .await
+    }
+
+    /// [`resolve_delegation_path`](Self::resolve_delegation_path) for a
+    /// concrete entry: each step's claimed snapshot must also ancestry-cover
+    /// every snapshot of the same delegated tree pinned by the entry's
+    /// ancestors (see [`FloorWalker`]).
+    pub(crate) async fn resolve_delegation_path_for_entry(
+        &mut self,
+        steps: &[DelegationStep],
+        final_hint: &KeyHint,
+        auth_settings: &AuthSettings,
+        instance: &Instance,
+        floors: &mut FloorWalker<'_>,
+    ) -> Result<Vec<ResolvedAuth>> {
+        self.resolve_delegation_path_inner(steps, final_hint, auth_settings, instance, Some(floors))
+            .await
+    }
+
+    async fn resolve_delegation_path_inner(
+        &mut self,
+        steps: &[DelegationStep],
+        final_hint: &KeyHint,
+        auth_settings: &AuthSettings,
+        instance: &Instance,
+        mut floors: Option<&mut FloorWalker<'_>>,
     ) -> Result<Vec<ResolvedAuth>> {
         if steps.is_empty() {
             return Err(AuthError::EmptyDelegationPath.into());
@@ -108,13 +170,13 @@ impl DelegationResolver {
             let delegated_tree_ref = current_auth_settings.get_delegated_tree(&step.tree)?;
 
             let root_id = delegated_tree_ref.tree.root.clone();
-            let delegated_tree = Database::open(instance, &root_id).await.map_err(|e| {
-                AuthError::DelegatedTreeLoadFailed {
-                    tree_id: root_id.clone(),
-                    source: Box::new(e),
+            if step.tips.is_empty() {
+                return Err(AuthError::InvalidDelegationTips {
+                    tree_id: root_id,
+                    claimed_tips: Vec::new(),
                 }
-            })?;
-
+                .into());
+            }
             // Tree-scoped membership + monotonicity floor. The claimed snapshot
             // may not regress below the snapshot the parent committed for this
             // delegation (`delegated_tree_ref.tree.tips`, the "floor"): every floor
@@ -141,30 +203,67 @@ impl DelegationResolver {
             // stays unverified and is re-checked once `missing` arrives, instead
             // of being rejected as a forgery).
             //
-            // FIXME(security): the floor is the only monotonicity guarantee today
-            // and is a known partial fix. It enforces neither strict per-entry
-            // non-regression (siblings above the floor may still differ) nor a
-            // forward-only gate on the committed pointer itself. Both remain to be
-            // done.
-            let floor = &delegated_tree_ref.tree.tips;
-            match current_backend
-                .check_targets_reachable_from(&root_id, &step.tips, floor)
-                .await
-                // A foreign (wrong-tree) claimed tip surfaces as a backend
-                // integrity error — treat it as an invalid delegation tip.
-                .map_err(|_| AuthError::InvalidDelegationTips {
-                    tree_id: root_id.clone(),
-                    claimed_tips: step.tips.clone(),
-                })? {
-                Reachability::Reachable => {}
-                Reachability::Unreachable => {
+            // This committed pointer is one of two floors. The other — the
+            // snapshots the entry's own ancestors pinned for this tree — is
+            // checked just below when an entry is being validated. The pointer
+            // itself may only move forward (`AuthValidator` gates `_settings`
+            // writes), so together they pin the snapshot per entry.
+            let floor = Snapshot::from(delegated_tree_ref.tree.tips.to_vec());
+            let directly_referenced = Snapshot::from(
+                std::iter::once(root_id.clone())
+                    .chain(step.tips.iter().cloned())
+                    .chain(floor.iter().cloned())
+                    .collect::<Vec<_>>(),
+            );
+            match missing_delegation_entries(
+                current_backend.as_ref(),
+                &root_id,
+                &directly_referenced,
+            )
+            .await
+            {
+                Ok(missing) if !missing.is_empty() => {
+                    return Err(AuthError::DelegatedTreeUnsynced {
+                        tree_id: root_id.clone(),
+                        missing,
+                    }
+                    .into());
+                }
+                Ok(_) => {}
+                Err(Error::Backend(error))
+                    if matches!(*error, BackendError::EntryNotInTree { .. }) =>
+                {
                     return Err(AuthError::InvalidDelegationTips {
                         tree_id: root_id.clone(),
                         claimed_tips: step.tips.clone(),
                     }
                     .into());
                 }
-                Reachability::Indeterminate { missing } => {
+                Err(error) => return Err(error),
+            }
+            match current_backend
+                .check_targets_reachable_from(&root_id, &step.tips, &floor)
+                .await
+            {
+                Err(Error::Backend(error))
+                    if matches!(*error, BackendError::EntryNotInTree { .. }) =>
+                {
+                    return Err(AuthError::InvalidDelegationTips {
+                        tree_id: root_id.clone(),
+                        claimed_tips: step.tips.clone(),
+                    }
+                    .into());
+                }
+                Err(error) => return Err(error),
+                Ok(Reachability::Reachable) => {}
+                Ok(Reachability::Unreachable) => {
+                    return Err(AuthError::InvalidDelegationTips {
+                        tree_id: root_id.clone(),
+                        claimed_tips: step.tips.clone(),
+                    }
+                    .into());
+                }
+                Ok(Reachability::Indeterminate { missing }) => {
                     return Err(AuthError::DelegatedTreeUnsynced {
                         tree_id: root_id.clone(),
                         missing,
@@ -173,29 +272,95 @@ impl DelegationResolver {
                 }
             }
 
+            // Inherited floor: the claimed snapshot must ancestry-cover every
+            // snapshot of this same delegated tree that the entry's ancestors
+            // pinned, joined across all parents. Equality is allowed (an old
+            // branch may keep using an old snapshot); regression is not, so a
+            // snapshot in which an identity member has since been removed cannot
+            // be resurrected below a parent that already acknowledged the
+            // removal. Keyed by tree root, so it is unaffected by which key
+            // signs or by intervening direct-key / other-tree signatures. The
+            // committed pointer above is checked first, so the claimed tips are
+            // already known to be members of this tree.
+            if let Some(floors) = floors.as_deref_mut() {
+                let targets = Snapshot::from(
+                    floors
+                        .floor_for(&root_id)
+                        .await?
+                        .iter()
+                        .flat_map(|snapshot| snapshot.iter())
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                );
+                if !targets.is_empty() {
+                    match current_backend
+                        .check_targets_reachable_from(&root_id, &step.tips, &targets)
+                        .await
+                    {
+                        Err(Error::Backend(error))
+                            if matches!(*error, BackendError::EntryNotInTree { .. }) =>
+                        {
+                            return Err(AuthError::InvalidDelegationTips {
+                                tree_id: root_id.clone(),
+                                claimed_tips: step.tips.clone(),
+                            }
+                            .into());
+                        }
+                        Err(error) => return Err(error),
+                        Ok(Reachability::Reachable) => {}
+                        Ok(Reachability::Unreachable) => {
+                            return Err(AuthError::DelegationSnapshotRegressed {
+                                tree_id: Box::new(root_id.clone()),
+                                claimed_tips: step.tips.clone(),
+                            }
+                            .into());
+                        }
+                        Ok(Reachability::Indeterminate { missing }) => {
+                            return Err(AuthError::DelegatedTreeUnsynced {
+                                tree_id: root_id.clone(),
+                                missing,
+                            }
+                            .into());
+                        }
+                    }
+                }
+            }
+
             // Resolve the delegated tree's auth settings AS OF the claimed tips,
             // not its live head: permissions are evaluated at the state the signer
             // actually observed. This is safe now that the snapshot cannot regress
-            // below the committed floor. `new_transaction_at` re-validates the tips
-            // are in-tree (defence in depth) and is never committed — it is used
-            // purely as a read anchor at the pinned snapshot.
-            let pinned_txn = delegated_tree
-                .new_transaction_at(&Snapshot::from(step.tips.clone()))
+            // below the committed floor. Fetching the tree snapshot is both the
+            // completeness check and the materialization input, so this replaces
+            // the old extra full-history probe. Backends may satisfy it in one
+            // traversal/query; non-NotFound failures propagate unchanged.
+            let snapshot = Snapshot::from(&step.tips);
+            current_auth_settings = match current_backend
+                .get_tree_from_tips(&root_id, &snapshot)
                 .await
-                .map_err(|_| AuthError::InvalidDelegationTips {
-                    tree_id: root_id.clone(),
-                    claimed_tips: step.tips.clone(),
-                })?;
-            current_auth_settings =
-                pinned_txn
-                    .get_settings()?
-                    .auth_snapshot()
-                    .await
-                    .map_err(|e| AuthError::InvalidAuthConfiguration {
-                        reason: format!(
-                            "Failed to read delegated tree auth settings at claimed tips: {e}"
-                        ),
-                    })?;
+            {
+                Ok(entries) => {
+                    if !entries.iter().any(|entry| entry.id() == root_id) {
+                        return Err(AuthError::InvalidDelegationTips {
+                            tree_id: root_id.clone(),
+                            claimed_tips: step.tips.clone(),
+                        }
+                        .into());
+                    }
+                    crate::database::fold_settings_entries(&entries)?
+                }
+                Err(e) if e.is_not_found() => {
+                    let missing = e
+                        .entry_id()
+                        .cloned()
+                        .map_or_else(|| snapshot.tips().to_vec(), |id| vec![id]);
+                    return Err(AuthError::DelegatedTreeUnsynced {
+                        tree_id: root_id.clone(),
+                        missing,
+                    }
+                    .into());
+                }
+                Err(e) => return Err(e),
+            };
 
             // Accumulate permission bounds
             cumulative_bounds = Some(match cumulative_bounds {

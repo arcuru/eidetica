@@ -4,7 +4,15 @@ use std::sync::{Arc, Mutex};
 
 use super::*;
 use crate::{
-    auth::crypto::generate_keypair, backend::database::InMemory, instance::WriteSource,
+    auth::{
+        crypto::{PrivateKey, generate_keypair, sign_entry},
+        types::{
+            AuthKey, DelegatedTreeRef, DelegationStep, KeyHint, Permission, PermissionBounds,
+            SigKey, TreeReference,
+        },
+    },
+    backend::database::InMemory,
+    instance::WriteSource,
     store::DocStore,
 };
 
@@ -136,6 +144,429 @@ async fn setup_callback_test() -> (Instance, Database) {
         .await
         .unwrap();
     (instance, db)
+}
+
+struct DelegatedVerificationFixture {
+    delegated_signing_key: PrivateKey,
+    delegated_root: ID,
+    delegated_entries: Vec<Entry>,
+    delegated_entry_id: ID,
+    target_root: ID,
+    target_history: Vec<Entry>,
+    target_entry: Entry,
+}
+
+async fn delegated_verification_fixture() -> DelegatedVerificationFixture {
+    let (source, _admin) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        crate::NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+
+    let delegated_signing_key = PrivateKey::generate();
+    let delegated_pubkey = delegated_signing_key.public_key();
+    let delegated_db = Database::create(&source, delegated_signing_key.clone(), Doc::new())
+        .await
+        .unwrap();
+    let txn = delegated_db.new_transaction().await.unwrap();
+    txn.get_settings()
+        .unwrap()
+        .set_auth_key(
+            &delegated_pubkey,
+            AuthKey::active(Some("delegate"), Permission::Admin(0)),
+        )
+        .await
+        .unwrap();
+    txn.commit().await.unwrap();
+    let txn = delegated_db.new_transaction().await.unwrap();
+    txn.get_settings()
+        .unwrap()
+        .set_name("delegated authority")
+        .await
+        .unwrap();
+    txn.commit().await.unwrap();
+    let delegated_tips = delegated_db.snapshot().await.unwrap().into_tips();
+
+    let target_signing_key = PrivateKey::generate();
+    let target_db = Database::create(&source, target_signing_key.clone(), Doc::new())
+        .await
+        .unwrap();
+    let txn = target_db.new_transaction().await.unwrap();
+    txn.get_settings()
+        .unwrap()
+        .add_delegated_tree(DelegatedTreeRef {
+            permission_bounds: PermissionBounds {
+                max: Permission::Write(0),
+                min: None,
+            },
+            tree: TreeReference {
+                root: delegated_db.root_id().clone(),
+                tips: delegated_tips.clone(),
+            },
+        })
+        .await
+        .unwrap();
+    txn.commit().await.unwrap();
+
+    let target_via_delegation = Database::open(&source, target_db.root_id())
+        .await
+        .unwrap()
+        .with_key(DatabaseKey::with_identity(
+            delegated_signing_key.clone(),
+            SigKey::Delegation {
+                path: vec![DelegationStep {
+                    tree: delegated_db.root_id().clone(),
+                    tips: delegated_tips,
+                }],
+                hint: KeyHint::from_pubkey(&delegated_pubkey),
+            },
+        ));
+    let txn = target_via_delegation.new_transaction().await.unwrap();
+    txn.get_store::<DocStore>("data")
+        .await
+        .unwrap()
+        .set("delegated", "entry")
+        .await
+        .unwrap();
+    let delegated_entry_id = txn.commit().await.unwrap();
+
+    let backend = source.require_local_engine().unwrap();
+    let delegated_root = delegated_db.root_id().clone();
+    let delegated_entries = backend.get_tree(&delegated_root).await.unwrap();
+    let target_root = target_db.root_id().clone();
+    let mut target_history = backend.get_tree(&target_root).await.unwrap();
+    let target_entry_index = target_history
+        .iter()
+        .position(|entry| entry.id() == delegated_entry_id)
+        .unwrap();
+    let target_entry = target_history.remove(target_entry_index);
+
+    DelegatedVerificationFixture {
+        delegated_signing_key,
+        delegated_root,
+        delegated_entries,
+        delegated_entry_id,
+        target_root,
+        target_history,
+        target_entry,
+    }
+}
+
+async fn put_verified(instance: &Instance, entry: Entry) {
+    let backend = instance.require_local_engine().unwrap();
+    let id = entry.id();
+    backend.put(entry).await.unwrap();
+    backend
+        .update_verification_status(&id, VerificationStatus::Verified)
+        .await
+        .unwrap();
+}
+
+async fn ingest_target_fixture(
+    receiver: &Instance,
+    fixture: &DelegatedVerificationFixture,
+) -> Database {
+    for entry in fixture.target_history.clone() {
+        put_verified(receiver, entry).await;
+    }
+    receiver
+        .put_remote_entries(&fixture.target_root, vec![fixture.target_entry.clone()])
+        .await
+        .unwrap();
+    Database::open(receiver, &fixture.target_root)
+        .await
+        .unwrap()
+}
+
+async fn assert_retryable_and_invisible(
+    receiver: &Instance,
+    target_db: &Database,
+    fixture: &DelegatedVerificationFixture,
+) {
+    let backend = receiver.require_local_engine().unwrap();
+    assert_eq!(
+        backend
+            .get_verification_status(&fixture.delegated_entry_id)
+            .await
+            .unwrap(),
+        VerificationStatus::Unverified,
+        "missing delegated history must remain retryable"
+    );
+    assert!(
+        !target_db
+            .snapshot()
+            .await
+            .unwrap()
+            .contains(&fixture.delegated_entry_id),
+        "an entry with incomplete delegated proof must stay outside the Verified frontier"
+    );
+}
+
+async fn ingest_delegated_history(receiver: &Instance, entries: impl IntoIterator<Item = Entry>) {
+    let backend = receiver.require_local_engine().unwrap();
+    for entry in entries {
+        backend.put(entry).await.unwrap();
+    }
+}
+
+async fn delegated_dependency_error(
+    receiver: &Instance,
+    fixture: &DelegatedVerificationFixture,
+) -> Error {
+    let target_db = Database::open(receiver, &fixture.target_root)
+        .await
+        .unwrap();
+    let settings = target_db
+        .get_settings()
+        .await
+        .unwrap()
+        .auth_snapshot()
+        .await
+        .unwrap();
+    AuthValidator::new()
+        .validate_entry(&fixture.target_entry, &settings, Some(receiver))
+        .await
+        .expect_err("incomplete delegated history must surface its dependency")
+}
+
+fn assert_delegated_dependency(err: &Error, expected_tree: &ID, expected_missing: &[ID]) {
+    match err {
+        Error::Auth(auth) => match &**auth {
+            crate::auth::errors::AuthError::DelegatedTreeUnsynced { tree_id, missing } => {
+                assert_eq!(
+                    tree_id, expected_tree,
+                    "dependency must name the delegated database"
+                );
+                assert_eq!(
+                    missing, expected_missing,
+                    "dependency must name the exact known gaps"
+                );
+            }
+            other => panic!("expected DelegatedTreeUnsynced, got: {other:?}"),
+        },
+        other => panic!("expected DelegatedTreeUnsynced, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_remote_ingest_missing_delegated_root_stays_retryable() {
+    let fixture = delegated_verification_fixture().await;
+    let (receiver, _admin) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        crate::NewUser::passwordless("receiver"),
+    )
+    .await
+    .unwrap();
+
+    let target_db = ingest_target_fixture(&receiver, &fixture).await;
+    assert_retryable_and_invisible(&receiver, &target_db, &fixture).await;
+    let missing = Snapshot::from(vec![
+        fixture.delegated_root.clone(),
+        fixture.delegated_entries.last().unwrap().id(),
+    ]);
+    assert_delegated_dependency(
+        &delegated_dependency_error(&receiver, &fixture).await,
+        &fixture.delegated_root,
+        &missing,
+    );
+
+    ingest_delegated_history(&receiver, fixture.delegated_entries.clone()).await;
+    let report = target_db.verify().await.unwrap();
+    assert_eq!(
+        report.failed, 0,
+        "completed proof must not fail: {report:?}"
+    );
+    assert_eq!(
+        receiver
+            .require_local_engine()
+            .unwrap()
+            .get_verification_status(&fixture.delegated_entry_id)
+            .await
+            .unwrap(),
+        VerificationStatus::Verified,
+        "the retained entry must promote after its delegated tree arrives"
+    );
+}
+
+#[tokio::test]
+async fn test_remote_ingest_missing_delegated_tip_stays_retryable_then_promotes() {
+    let fixture = delegated_verification_fixture().await;
+    let (receiver, _admin) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        crate::NewUser::passwordless("receiver"),
+    )
+    .await
+    .unwrap();
+
+    ingest_delegated_history(&receiver, fixture.delegated_entries.iter().take(1).cloned()).await;
+    let target_db = ingest_target_fixture(&receiver, &fixture).await;
+    assert_retryable_and_invisible(&receiver, &target_db, &fixture).await;
+    let missing_tip = fixture.delegated_entries.last().unwrap().id();
+    assert_delegated_dependency(
+        &delegated_dependency_error(&receiver, &fixture).await,
+        &fixture.delegated_root,
+        std::slice::from_ref(&missing_tip),
+    );
+
+    ingest_delegated_history(&receiver, fixture.delegated_entries.iter().skip(1).cloned()).await;
+    let report = target_db.verify().await.unwrap();
+    assert_eq!(
+        report.failed, 0,
+        "completed proof must not fail: {report:?}"
+    );
+    assert_eq!(
+        receiver
+            .require_local_engine()
+            .unwrap()
+            .get_verification_status(&fixture.delegated_entry_id)
+            .await
+            .unwrap(),
+        VerificationStatus::Verified,
+        "the retained entry must promote after its delegated proof arrives"
+    );
+}
+
+#[tokio::test]
+async fn test_remote_ingest_missing_delegated_intermediate_stays_retryable_then_promotes() {
+    let fixture = delegated_verification_fixture().await;
+    assert!(
+        fixture.delegated_entries.len() >= 2,
+        "fixture needs delegated root and a descendant tip"
+    );
+    let (receiver, _admin) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        crate::NewUser::passwordless("receiver"),
+    )
+    .await
+    .unwrap();
+
+    let root = fixture.delegated_entries.first().unwrap().clone();
+    let tip = fixture.delegated_entries.last().unwrap().clone();
+    ingest_delegated_history(&receiver, [root]).await;
+    ingest_delegated_history(&receiver, [tip]).await;
+    let target_db = ingest_target_fixture(&receiver, &fixture).await;
+    assert_retryable_and_invisible(&receiver, &target_db, &fixture).await;
+    let missing_intermediate: Vec<ID> = fixture
+        .delegated_entries
+        .iter()
+        .skip(1)
+        .take(fixture.delegated_entries.len() - 2)
+        .map(Entry::id)
+        .collect();
+    assert_delegated_dependency(
+        &delegated_dependency_error(&receiver, &fixture).await,
+        &fixture.delegated_root,
+        &missing_intermediate,
+    );
+
+    ingest_delegated_history(
+        &receiver,
+        fixture
+            .delegated_entries
+            .iter()
+            .skip(1)
+            .take(fixture.delegated_entries.len() - 2)
+            .cloned(),
+    )
+    .await;
+    let report = target_db.verify().await.unwrap();
+    assert_eq!(
+        report.failed, 0,
+        "completed proof must not fail: {report:?}"
+    );
+    assert_eq!(
+        receiver
+            .require_local_engine()
+            .unwrap()
+            .get_verification_status(&fixture.delegated_entry_id)
+            .await
+            .unwrap(),
+        VerificationStatus::Verified,
+        "the retained entry must promote after its delegated proof arrives"
+    );
+}
+
+#[tokio::test]
+async fn test_local_commit_missing_delegated_history_is_rejected_without_storage() {
+    let fixture = delegated_verification_fixture().await;
+    let (receiver, _admin) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        crate::NewUser::passwordless("receiver"),
+    )
+    .await
+    .unwrap();
+    for entry in fixture.target_history.clone() {
+        put_verified(&receiver, entry).await;
+    }
+
+    let target = Database::open(&receiver, &fixture.target_root)
+        .await
+        .unwrap()
+        .with_key(DatabaseKey::with_identity(
+            fixture.delegated_signing_key.clone(),
+            fixture.target_entry.auth().key.clone(),
+        ));
+    let txn = target.new_transaction().await.unwrap();
+    txn.get_store::<DocStore>("data")
+        .await
+        .unwrap()
+        .set("local", "missing proof")
+        .await
+        .unwrap();
+    let err = txn
+        .commit()
+        .await
+        .expect_err("local commit must fail closed when delegated proof is unavailable");
+    assert!(
+        matches!(
+            err,
+            Error::Auth(ref auth) if auth.is_delegated_tree_unsynced()
+        ),
+        "local commit should surface the retriable proof error, got: {err}"
+    );
+    let backend = receiver.require_local_engine().unwrap();
+    assert_eq!(
+        backend.get_tree(&fixture.target_root).await.unwrap().len(),
+        fixture.target_history.len(),
+        "a failed local commit must not store an unverifiable entry"
+    );
+}
+
+#[tokio::test]
+async fn test_remote_ingest_invalid_delegated_signature_fails_definitively() {
+    let fixture = delegated_verification_fixture().await;
+    let (receiver, _admin) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        crate::NewUser::passwordless("receiver"),
+    )
+    .await
+    .unwrap();
+    ingest_delegated_history(&receiver, fixture.delegated_entries.clone()).await;
+    for entry in fixture.target_history.clone() {
+        put_verified(&receiver, entry).await;
+    }
+
+    let wrong_key = PrivateKey::generate();
+    let invalid = fixture.target_entry.clone().with_auth(|auth| {
+        auth.signature = Some(sign_entry(&fixture.target_entry, &wrong_key).unwrap())
+    });
+    let invalid_id = invalid.id();
+    receiver
+        .put_remote_entries(&fixture.target_root, vec![invalid])
+        .await
+        .unwrap();
+
+    assert_eq!(
+        receiver
+            .require_local_engine()
+            .unwrap()
+            .get_verification_status(&invalid_id)
+            .await
+            .unwrap(),
+        VerificationStatus::Failed,
+        "a definitively invalid signature must remain terminal"
+    );
 }
 
 #[tokio::test]
