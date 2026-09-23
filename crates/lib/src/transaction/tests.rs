@@ -672,6 +672,7 @@ async fn projected_real_backend_fetch_rejects_racing_overlay() {
                 RowsProjection.descriptor(),
                 None,
                 1,
+                None,
                 move |after, limit| {
                     entered.take().unwrap().send(()).unwrap();
                     let wait = release.take().unwrap();
@@ -701,6 +702,44 @@ async fn projected_real_backend_fetch_rejects_racing_overlay() {
     is_stale(task.await.unwrap());
 }
 
+#[cfg(all(unix, feature = "service"))]
+#[tokio::test]
+async fn remote_scan_rejects_overlay_mutation_during_final_frontier_await() {
+    let (instance, _) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        crate::NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let (key, _) = generate_keypair();
+    let db = Database::create(&instance, key, Doc::new()).await.unwrap();
+    let tx = db.new_transaction().await.unwrap();
+    let frontier = db.snapshot().await.unwrap();
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let reader = tx.clone();
+    let expected = frontier.clone();
+    let task = tokio::spawn(async move {
+        reader
+            .check_remote_scan_frontier("rows", 0, &expected, async {
+                entered_tx.send(()).unwrap();
+                release_rx.await.unwrap();
+                Ok(expected.clone())
+            })
+            .await
+    });
+    entered_rx.await.unwrap();
+    tx.stage_projected_delta("rows", &RowsProjection, row("a", "new"))
+        .await
+        .unwrap();
+    release_tx.send(()).unwrap();
+    assert!(
+        matches!(task.await.unwrap(), Err(crate::Error::Store(error)) if matches!(*error, StoreError::StaleCursor { .. }))
+    );
+    // The unchanged remote tips alone cannot justify returning the old page.
+    assert_eq!(db.snapshot().await.unwrap(), frontier);
+}
+
 #[tokio::test]
 async fn projected_page_cursor_rejects_put_delete_and_other_view() {
     let (instance, _) = Instance::create_backend(
@@ -725,9 +764,14 @@ async fn projected_page_cursor_rejects_put_delete_and_other_view() {
         })
     };
     let (first, cursor) = tx
-        .projected_scan_page("rows", RowsProjection.descriptor(), None, 1, |_, _| {
-            backend()
-        })
+        .projected_scan_page(
+            "rows",
+            RowsProjection.descriptor(),
+            None,
+            1,
+            None,
+            |_, _| backend(),
+        )
         .await
         .unwrap();
     assert_eq!(first.records, vec![(b"a".to_vec(), b"one".to_vec())]);
@@ -742,6 +786,7 @@ async fn projected_page_cursor_rejects_put_delete_and_other_view() {
             RowsProjection.descriptor(),
             Some(&cursor),
             1,
+            None,
             |after, _| {
                 let records = physical
                     .iter()
@@ -772,6 +817,7 @@ async fn projected_page_cursor_rejects_put_delete_and_other_view() {
                 RowsProjection.descriptor(),
                 Some(&cursor),
                 1,
+                None,
                 |_, _| backend(),
             )
             .await,
@@ -779,7 +825,7 @@ async fn projected_page_cursor_rejects_put_delete_and_other_view() {
     let mut different = RowsProjection.descriptor();
     different.version += 1;
     is_stale(
-        tx.projected_scan_page("rows", different, Some(&cursor), 1, |_, _| backend())
+        tx.projected_scan_page("rows", different, Some(&cursor), 1, None, |_, _| backend())
             .await,
     );
     tx.stage_projected_delta("rows", &RowsProjection, row("d", "four"))
@@ -791,14 +837,20 @@ async fn projected_page_cursor_rejects_put_delete_and_other_view() {
             RowsProjection.descriptor(),
             Some(&cursor),
             1,
+            None,
             |_, _| backend(),
         )
         .await,
     );
     let (_, cursor) = tx
-        .projected_scan_page("rows", RowsProjection.descriptor(), None, 1, |_, _| {
-            backend()
-        })
+        .projected_scan_page(
+            "rows",
+            RowsProjection.descriptor(),
+            None,
+            1,
+            None,
+            |_, _| backend(),
+        )
         .await
         .unwrap();
     let mut deletion = crate::crdt::LwwMap::new();
@@ -812,6 +864,7 @@ async fn projected_page_cursor_rejects_put_delete_and_other_view() {
             RowsProjection.descriptor(),
             cursor.as_ref(),
             1,
+            None,
             |_, _| backend(),
         )
         .await,
@@ -839,17 +892,24 @@ async fn projected_page_discards_awaited_fetch_after_racing_mutation() {
         let mut entered = Some(entered_tx);
         let mut release = Some(release_rx);
         reader
-            .projected_scan_page("rows", RowsProjection.descriptor(), None, 1, move |_, _| {
-                entered.take().unwrap().send(()).unwrap();
-                let wait = release.take().unwrap();
-                async move {
-                    wait.await.unwrap();
-                    Ok(crate::backend::RecordPage {
-                        records: vec![(b"b".to_vec(), b"old".to_vec())],
-                        next: None,
-                    })
-                }
-            })
+            .projected_scan_page(
+                "rows",
+                RowsProjection.descriptor(),
+                None,
+                1,
+                None,
+                move |_, _| {
+                    entered.take().unwrap().send(()).unwrap();
+                    let wait = release.take().unwrap();
+                    async move {
+                        wait.await.unwrap();
+                        Ok(crate::backend::RecordPage {
+                            records: vec![(b"b".to_vec(), b"old".to_vec())],
+                            next: None,
+                        })
+                    }
+                },
+            )
             .await
     });
     entered_rx.await.unwrap();

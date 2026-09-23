@@ -546,3 +546,43 @@ Remaining: automatic high-level remote staging retry/recovery, remote-frontier
 cursor snapshot and full Table redesign/encryption parity/benchmarks. Re-run
 complete accumulated checks on final implementation; no Table switch before
 Phase 0 fixtures are complete.
+
+## Phase 0 — remote projected cursor frontier (2026-09-23)
+
+Intended: read-only unlocked PasswordStore scans on a live authenticated socket
+must never continue a previous page against a newly Verified source frontier;
+local overlay changes during the last network await also reject the page.
+Preserve the Doc-backed Table and `table:v0`.
+
+Recovered and evaluated the previous worker's two uncommitted files without
+reset: the new client helper had not yet returned a frontier (and its tuple
+return did not compile); the cursor field had no producer or checker. Completed
+the helper by returning the Verified tips used to fetch authorized Entry
+history, compared them with the next page's cursor, and checked the current
+Verified tips and overlay revision after the last await before returning.
+The pre-existing get-verified-tips helper needed the authenticated session
+identity when the database supplies its default identity; otherwise the
+read-only socket request was denied. No remote record maintenance or Table
+format switch was added. A frontier change between the final tip check and
+caller observation remains inherently possible; this is a stale-check, not a
+server-pinned multi-request snapshot.
+
+The live socket fixture reads two pages with no writer, commits a third
+PasswordStore Entry via the owner between pages, rejects the old read-only
+client cursor with StaleCursor, and sees three records on a fresh page.
+Negative control removing the cursor frontier comparison failed at this
+assertion (0 passed / 1 failed, exit 101); restored fixture passed 1/1.
+A deterministic unit fixture pauses the final tip-check future while the
+transaction overlay changes, and rejects even when returned tips are
+unchanged; bypassing the post-await revision comparison failed 0/1 (exit
+101), restored 1/1.
+
+`nix develop -c nix run .#fix` succeeded (clippy, deadnix, markdownlint,
+statix, treefmt). Final formatted-source `nix develop -c just nix full`
+succeeded: in-memory 1534/1534 (1 leaky), SQLite 1534/1534,
+PostgreSQL 1534/1534, service 1534/1534, minimal 1378/1378; 5 skipped
+each. Both new/extended fixtures PASS in the four full-feature runners;
+the socket daemon uses InMemory under each runner. NixOS service and OCI
+container VM integrations passed. No push/PR. Remaining: automatic high-level
+remote staging recovery, full Table redesign/parity/benchmarks and complete
+accumulated verification before delivery.

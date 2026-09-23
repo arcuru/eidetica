@@ -1337,6 +1337,25 @@ async fn read_only_password_store_folds_authenticated_remote_history() {
             (b"b".to_vec(), b"second".to_vec())
         ]
     );
+    // A fresh read-only scan sees a writer's next Verified Entry; its old
+    // cursor cannot silently continue that newly folded history.
+    db.with_transaction(|tx| async move {
+        let mut writer = tx.get_store::<PasswordStore<DocStore>>("secrets").await?;
+        writer.open("correct")?;
+        writer.inner().await?.set("c", "third").await?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    assert!(matches!(
+        encrypted.projected_scan_page(&PasswordDocProjection, cursor.as_ref(), 1).await,
+        Err(eidetica::Error::Store(error)) if matches!(*error, eidetica::store::StoreError::StaleCursor { .. })
+    ));
+    let (fresh, _) = encrypted
+        .projected_scan_page(&PasswordDocProjection, None, 8)
+        .await
+        .unwrap();
+    assert_eq!(fresh.records.len(), 3);
     let other_tx = read_db.new_transaction().await.unwrap();
     let mut other = other_tx
         .get_store::<PasswordStore<DocStore>>("secrets")

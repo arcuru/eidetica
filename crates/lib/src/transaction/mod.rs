@@ -790,29 +790,84 @@ impl Transaction {
                 .unwrap()
                 .get(store)
                 .map_or(0, |s| s.revision);
-            let state = self
-                .unlocked_store_state::<crate::store::PasswordStore<S>>(store)
+            let conn = self.db.instance()?.remote_connection().unwrap();
+            let root = self.db.root_id().clone();
+            let identity = self.db.auth_identity().cloned().unwrap_or_default();
+            let (state, frontier) = conn
+                .get_store_state_with_decrypt_and_frontier::<S::Data>(
+                    root.clone(),
+                    identity.clone(),
+                    store.to_string(),
+                    <crate::store::PasswordStore<S> as crate::store::Registered>::type_id(),
+                    S::state_model().descriptor(),
+                    |bytes| self.decrypt_if_needed(store, bytes),
+                )
                 .await?;
             let history = self.project_state(store, projection, &state)?;
-            if self
-                .projected
-                .lock()
-                .unwrap()
-                .get(store)
-                .map_or(0, |s| s.revision)
-                != revision
-            {
-                return Err(StoreError::StaleCursor {
+            let Some(frontier) = frontier else {
+                return Err(StoreError::RecordMaintenanceUnavailable {
                     store: store.into(),
                 }
                 .into());
-            }
-            return self
-                .projected_scan_with_history(store, projection, cursor, limit, history)
-                .await;
+            };
+            let (page, next) = self
+                .projected_scan_with_history(
+                    store,
+                    projection,
+                    cursor,
+                    limit,
+                    history,
+                    Some(frontier.clone()),
+                )
+                .await?;
+            // The fold is pinned to its source tips, but a new Verified tip can
+            // arrive during any await. Never return a page for a mixed frontier.
+            self.check_remote_scan_frontier(
+                store,
+                revision,
+                &frontier,
+                conn.get_verified_tips(root, identity),
+            )
+            .await?;
+            return Ok((page, next));
         }
         self.projected_record_scan_page(store, projection, cursor, limit)
             .await
+    }
+
+    #[cfg(all(unix, feature = "service"))]
+    async fn check_remote_scan_frontier<F>(
+        &self,
+        store: &str,
+        revision: u64,
+        frontier: &Snapshot,
+        check: F,
+    ) -> Result<()>
+    where
+        F: Future<Output = Result<Snapshot>>,
+    {
+        let current = check.await;
+        // Check the overlay after the network await, including when it fails.
+        if self
+            .projected
+            .lock()
+            .unwrap()
+            .get(store)
+            .map_or(0, |s| s.revision)
+            != revision
+        {
+            return Err(StoreError::StaleCursor {
+                store: store.into(),
+            }
+            .into());
+        }
+        if current? != *frontier {
+            return Err(StoreError::StaleCursor {
+                store: store.into(),
+            }
+            .into());
+        }
+        Ok(())
     }
 
     /// Read a typed row from the fixed historical view, overlaid with staged changes.
@@ -1017,6 +1072,7 @@ impl Transaction {
             projection.descriptor(),
             cursor,
             limit,
+            None,
             |after, count| {
                 let view = view.clone();
                 let history = history.clone();
@@ -1057,12 +1113,14 @@ impl Transaction {
         cursor: Option<&TableCursor>,
         limit: usize,
         history: BTreeMap<Vec<u8>, Vec<u8>>,
+        frontier: Option<crate::Snapshot>,
     ) -> Result<(crate::backend::RecordPage, Option<TableCursor>)> {
         self.projected_scan_page(
             store,
             projection.descriptor(),
             cursor,
             limit,
+            frontier,
             |after, count| {
                 let mut rows = history
                     .iter()
@@ -1092,6 +1150,7 @@ impl Transaction {
         descriptor: ProjectionDescriptor,
         cursor: Option<&TableCursor>,
         limit: usize,
+        frontier: Option<crate::Snapshot>,
         mut fetch: F,
     ) -> Result<(crate::backend::RecordPage, Option<TableCursor>)>
     where
@@ -1117,11 +1176,13 @@ impl Transaction {
                 revision: cursor_revision,
                 store: cursor_store,
                 projection,
+                frontier: cursor_frontier,
                 last_physical_key,
             }) if *view == self.view_id
                 && *cursor_revision == revision
                 && cursor_store == store
-                && projection == &context =>
+                && projection == &context
+                && cursor_frontier == &frontier =>
             {
                 Some(last_physical_key.clone())
             }
@@ -1196,6 +1257,7 @@ impl Transaction {
                 revision,
                 store: store.into(),
                 projection: context.clone(),
+                frontier: frontier.clone(),
                 last_physical_key: records.last().unwrap().0.clone(),
             })
         });
