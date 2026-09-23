@@ -101,6 +101,23 @@ pub struct StoreStateRequest {
     pub source_key: Vec<u8>,
 }
 
+/// Five-minute lease, five-minute grace, and a 24-hour maximum retry window.
+/// A forgotten token cannot authorize replacement until all three have elapsed.
+pub const STAGING_RETENTION_SECS: i64 = 24 * 60 * 60 + 600;
+
+/// Timestamp carried by newly minted opaque IDs; legacy/random IDs are
+/// deliberately ambiguous and never qualify for unknown-token recovery.
+/// A forged old ID is not authority to inspect a foreign target: callers of
+/// this backend API must authorize the target before invoking recovery.
+pub(crate) fn forgotten_token_is_old(id: &str, now: i64) -> bool {
+    uuid::Uuid::parse_str(id)
+        .ok()
+        .filter(|id| id.get_version() == Some(uuid::Version::SortRand))
+        .and_then(|id| id.get_timestamp())
+        .and_then(|stamp| i64::try_from(stamp.to_unix().0).ok())
+        .is_some_and(|created| created <= now - STAGING_RETENTION_SECS)
+}
+
 /// Opaque token for one private unpublished build.
 ///
 /// Minted by [`BackendImpl::begin_store_state_staging`] and used to stage,
@@ -112,7 +129,8 @@ pub struct StagingToken {
 }
 
 /// Backend-owned outcome of a staging token. Terminal outcomes remain queryable
-/// even after the private records have been reclaimed.
+/// through the retry/lease/reclamation horizon; after pruning, unknown requires
+/// an atomic target check before a replacement build.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StagingStatus {
     Active,
@@ -124,6 +142,23 @@ pub enum StagingStatus {
 
 #[cfg(feature = "testing")]
 impl StagingToken {
+    /// Simulate an old, forgotten token without waiting for the retention horizon.
+    pub fn testing_unknown_aged(target: StoreStateRequest, seconds_ago: u64) -> Self {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        Self {
+            namespace_id: uuid::Uuid::new_v7(uuid::Timestamp::from_unix(
+                uuid::NoContext,
+                now - seconds_ago,
+                0,
+            ))
+            .to_string(),
+            target,
+        }
+    }
+
     /// Test-only accessor for the pause-gate registry key.
     ///
     /// Exists so integration tests can register a stage pause for a token
@@ -370,6 +405,16 @@ pub trait BackendImpl: Send + Sync + Any {
     /// Start a private build for a later atomic publish. The build is invisible
     /// to readers until published.
     async fn begin_store_state_staging(&self, _request: StoreStateRequest) -> Result<StagingToken> {
+        Err(BackendError::StoreStateStorageUnsupported.into())
+    }
+
+    /// Start a replacement for a forgotten token only after its encoded creation
+    /// horizon, and only if no live build or published target exists. The check
+    /// and insert must serialize with publication and new builds for the target.
+    async fn replace_unknown_store_state_staging(
+        &self,
+        _previous: &StagingToken,
+    ) -> Result<Option<StagingToken>> {
         Err(BackendError::StoreStateStorageUnsupported.into())
     }
 
