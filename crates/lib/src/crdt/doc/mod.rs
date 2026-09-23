@@ -506,11 +506,6 @@ impl Doc {
             .filter(|(_, v)| !matches!(v, Value::Deleted))
     }
 
-    /// Returns all top-level key-value pairs, including tombstones.
-    pub(crate) fn iter_all(&self) -> impl Iterator<Item = (&String, &Value)> {
-        self.children.iter()
-    }
-
     /// Returns an iterator over all keys (excluding tombstones)
     pub fn keys(&self) -> impl Iterator<Item = &String> {
         self.children

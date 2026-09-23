@@ -4,21 +4,27 @@ Stores define how their CRDT state is represented for reading.
 The default `StoreStateModel` caches state in one opaque record: it folds ordered Store deltas with the Store's `CRDT` implementation and stores the serialized result under a reserved key.
 This default applies to any Store data type and does not assume `Doc`.
 `Database::get_store_state::<S>` validates the registered Store type and returns `S::Data`; `get_doc_store_state` is explicitly DocStore-specific JSON convenience.
-The read-scoped `EnsureStoreStateGeneration` request carries the expected Store type and effective projection descriptor; after the ordinary canonical Read gate the server checks `_index` and its explicitly registered plaintext Store codecs. `ServiceServer::register_store::<S>` admits a concrete Store type and its effective projection descriptor before serving; the caller cannot register a codec over the socket or choose its descriptor. DocStore and the existing Doc-backed Table are registered by default. A matching type and descriptor resolve or build derived state internally and return the typed value, never a staging token.
+The read-scoped `EnsureStoreStateGeneration` request carries the expected Store type and effective projection descriptor; after the ordinary canonical Read gate the server checks `_index` and its explicitly registered plaintext Store codecs. `ServiceServer::register_store::<S>` admits a concrete Store type and its effective projection descriptor before serving; the caller cannot register a codec over the socket or choose its descriptor. DocStore and canonical LwwMap Table are registered by default. For registered record projections, this read also ensures the row generation before returning typed state. A matching type and descriptor resolve or build derived state internally and return the typed value, never a staging token.
 An authenticated read-only user can invoke this maintenance, but cannot invoke the separate Write-gated staging operation.
 Unknown codecs and recordless storage report `RecordMaintenanceUnavailable`, which selects a typed, ordered Entry-history fold on the client; a verifiable registered descriptor mismatch or authorization failure never does.
-Password-wrapped Stores remain opaque to server maintenance: `_index` does not expose the encrypted wrapped codec, so the server cannot authenticate even a claimed known wrapper descriptor. Any such claim yields `RecordMaintenanceUnavailable` after Read authorization and type identity validation, including a claimed plaintext descriptor; it cannot select a plaintext codec or publish a poisoned generation. An unlocked `PasswordStore<S>::get_state` on a service connection sends the expected wrapper descriptor through the canonical Read gate, then folds authorized Entry deltas after local decryption; it neither receives a staging token nor publishes records. Wrong passwords fail during `open`, and ciphertext/authentication errors during folding propagate rather than becoming capability refusals. The generic remote `get_store_state::<PasswordStore<S>>` cannot supply a password; callers use the unlocked Store handle. Its `projected_get` and `projected_scan_page` accept a projection matching the wrapped Store descriptor, fold read-authorized decrypted history into physical-key order locally, and decode authenticated records through the registered password encryptor. Pages carry transaction-view/revision-bound cursors for local overlay mutations, not a durable snapshot of a changing remote frontier. This is a client-side read-only path, not server maintenance, and callers must supply the wrapped Store's projection; Doc-backed Table itself has not switched formats. Existing Doc-backed Table continues to use its current record path and `table:v0`.
+Password-wrapped Stores remain opaque to server maintenance: `_index` does not expose the encrypted wrapped codec, so the server cannot authenticate even a claimed known wrapper descriptor. Any such claim yields `RecordMaintenanceUnavailable` after Read authorization and type identity validation, including a claimed plaintext descriptor; it cannot select a plaintext codec or publish a poisoned generation. An unlocked `PasswordStore<S>::get_state` on a service connection sends the expected wrapper descriptor through the canonical Read gate, then folds authorized Entry deltas after local decryption; it neither receives a staging token nor publishes records. Wrong passwords fail during `open`, and ciphertext/authentication errors during folding propagate rather than becoming capability refusals. The generic remote `get_store_state::<PasswordStore<S>>` cannot supply a password; callers use the unlocked Store handle. Its `projected_get` and `projected_scan_page` accept a projection matching the wrapped Store descriptor, fold read-authorized decrypted history into physical-key order locally, and decode authenticated records through the registered password encryptor. Pages carry transaction-view/revision-bound cursors for local overlay mutations, not a durable snapshot of a changing remote frontier. This is a client-side read-only path, not server maintenance, and callers must supply the wrapped Store's projection; The Table row format uses canonical LwwMap deltas under the unchanged `table:v0` type ID.
 
 Backends persist each Store state as an opaque byte-keyed record set.
 Keys use unsigned lexicographic byte order, point reads address one key, and scans use half-open ranges with an exclusive continuation key.
 The backend does not parse record keys or values and does not know Store types.
 
-`Table` uses the cached record format named `eidetica/table/rows` version 0.
-UTF-8 primary keys are record keys and each JSON row is one record value.
-Building historical cached state streams canonical `Doc` Entry deltas into a
-private build; it does not reconstruct a whole Table. Table mutations are converted
-back into the existing canonical `Doc` delta at historical commit, so Entry
-payload and wire semantics are unchanged.
+`Table` retains the `table:v0` type ID, but its incompatible Entry data is now
+`LwwMap<String, CanonicalJson>` with the `canonical-json:v0` row codec.
+There is no decoder or migration for old Doc-backed `table:v0` histories: recreate
+old test data and databases. Its projection descriptor is
+`eidetica/table/rows/canonical-json:v0`, version 0. The exact UTF-8 bytes of an
+opaque primary key (including empty strings, dots and Unicode) address one row;
+no path normalization or ancestor conflict exists. Values are validated RFC 8785
+JSON bytes; historical reductions and projections never deserialize them into
+Rust `T`. A cold generation streams set/delete operations into bounded private
+chunks, while typed reads decode only the requested rows. Repeated operations
+on a key in one transaction reduce to the final LWW operation and atomically
+update the canonical builder and read-your-writes overlays.
 
 `PasswordStore` preserves the wrapped Store's state model but namespaces its
 descriptor. For a Table, the cached record key becomes a stable keyed hash of
@@ -32,7 +38,7 @@ Table handles retain only their name and transaction. `get` deserializes one
 row, `scan_page` reads bounded deterministic pages, and `search` collects those
 pages only because its public return type is a `Vec`. Local and service-backed
 Tables use the same point and page operations. Custom backends without cached-record
-support keep the existing whole-state behavior.
+support fold typed history and project rows locally.
 
 A record set has one lifecycle:
 
@@ -46,7 +52,7 @@ A builder creates private state, writes record chunks, then publishes atomically
 Aborting records a terminal token outcome and removes private records. A failed publication leaves the private build invisible; a caller may correct the error or abort it. An abandoned build remains private until lease-based reclamation. Two builders can derive the same target concurrently. Publication resolves that race to one shared record set and records `Adopted` for the loser.
 Format descriptors identify the Store-owned record format and version, so cached state from different formats or historical sources cannot collide.
 
-An explicit ordered staging chunk applies physical `Put` and `Delete` mutations in message order. Deleting a missing key succeeds; deleting a previously staged key removes its row rather than storing a null marker. A later put resurrects it, including across chunks. An empty private namespace can publish a resolvable empty generation. The existing Doc-backed Table still uses its collapsed overlay and legacy tombstone validation; the new physical path does not switch Table's format.
+An explicit ordered staging chunk applies physical `Put` and `Delete` mutations in message order. Deleting a missing key succeeds; deleting a previously staged key removes its row rather than storing a null marker. A later put resurrects it, including across chunks. An empty private namespace can publish a resolvable empty generation. Table uses this physical path directly.
 
 Remote record operations use session-scoped read views and backend-owned opaque staging tokens. The latter retain `Active`, `Published`, `Adopted`, `Aborted`, or `Expired` status across socket reconnects and service restarts when the backend is persisted. Chunk sequence and the digest of the last encoded wire chunk are stored with the backend token; an identical immediate retry is acknowledged without replay, while gaps, older retries and conflicting digests fail. SQL stores the token atomically with its namespace, and in-memory snapshots include both. `RemoteConnection::encode_staging_chunk` and `send_staging_chunk` let a caller retain and resend the exact encoded request after an ambiguous response, including on a newly authenticated connection. The high-level `RemoteBackend` keeps the exact encoded unacknowledged chunk (and any remaining pre-encoded chunks in its batch) with the token's sequence, target and original acting/session identities. An ambiguous I/O error includes the token and optional chunk sequence; further staging or publication is refused until the caller supplies a freshly authenticated `RemoteConnection` to `resume_staging`. Recovery checks the database/user-scoped token status, replays only the exact retained bytes against an Active token, resolves Published/Adopted to a fresh view, and never begins a second build or saves login credentials. Unknown, expired and mismatched tokens refuse recovery. Recovery replaces the backend handle's connection only after authorization and successful replay; it does not reconnect by itself. An ambiguous abort can also be resolved by status; a terminal Aborted token cannot be uploaded again.
 
@@ -56,13 +62,12 @@ Pages have exclusive continuation keys and encoded-byte bounds; one record that 
 
 Typed record projections now yield an iterator of ordered physical `Put` and
 `Delete` mutations from a canonical `D: CRDT` delta, without reconstructing
-an Entry from cached records. Non-legacy cold materialization consumes one
+an Entry from cached records. Cold materialization consumes one
 Entry delta and bounded mutation chunks (128 changes or 1 MiB), then publishes
 one immutable generation. History retrieval itself still returns `Vec<Entry>`.
 Typed transaction point reads and physical-order pages resolve a real backend
 record view, merge the revisioned local overlay, and reject a page if that
 overlay changes while a backend fetch is awaited. On a backend without records,
 typed history is folded locally and projected for point reads and scans.
-The existing Doc-backed Table remains on a collapsed compatibility projection
-and its canonical commit adapter until the Table format switch; this path is
-not a claim that Doc's hierarchical semantics can be streamed as flat rows.
+Table uses this projection directly; `Transaction::commit_inner` does not
+synthesize Table deltas from cached records.

@@ -132,7 +132,8 @@ impl InMemory {
                     && record_set.request.store == store
                     && matches!(
                         record_set.request.projection.name.as_str(),
-                        "eidetica/table/rows" | "eidetica/password/eidetica/table/rows"
+                        "eidetica/table/rows/canonical-json:v0"
+                            | "eidetica/password/eidetica/table/rows/canonical-json:v0"
                     )
             })
             .map(|record_set| record_set.records.len())

@@ -49,30 +49,6 @@ pub(crate) async fn publish_records<'a, D: CRDT>(
 ) -> Result<RecordView> {
     let token = backend.begin_store_state_staging(request).await?;
     let result = async {
-        if projection.legacy_collapsed() {
-            // Compatibility path for the Doc-backed Table; remove with its format switch.
-            let mut records: crate::backend::RecordMutations = BTreeMap::new();
-            for bytes in deltas {
-                let delta: D = serde_json::from_slice(bytes)?;
-                for mutation in projection.mutations(&delta)? {
-                    match mutation? {
-                        RecordMutation::Put { key, value } => {
-                            records.retain(|old, _| !projection.staged_keys_conflict(old, &key));
-                            records.insert(key, Some(value));
-                        }
-                        RecordMutation::Delete { key } => {
-                            records.retain(|old, _| !projection.staged_keys_conflict(old, &key));
-                            records.insert(key, None);
-                        }
-                    }
-                }
-            }
-            records.retain(|_, value| value.is_some());
-            if !records.is_empty() {
-                backend.stage_store_state_records(&token, records).await?;
-            }
-            return backend.publish_store_state(token.clone()).await;
-        }
         let mut chunk = Vec::new();
         let mut chunk_bytes = 0;
         let mut sequence = 0;

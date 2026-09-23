@@ -266,7 +266,7 @@ Teardown is refcounted with hysteresis rather than immediate. Dropping the last 
 
 ## Store state
 
-Historical current state is materialized into derived record sets in the shared Store-state record substrate (see [Store state](store_state.md)). The daemon owns those records; clients resolve views and read points or bounded pages through them, so a `Table` read fetches the rows it asks for rather than a whole materialized `Doc`.
+Historical current state is materialized into derived record sets in the shared Store-state record substrate (see [Store state](store_state.md)). The daemon owns those records; clients resolve views and read points or bounded pages through them, so a `Table` read fetches the rows it asks for rather than a whole materialized Table.
 
 Cached state is scoped by [`CacheScope`](crate::backend::CacheScope):
 
@@ -316,7 +316,7 @@ ops: Arc::new(RemoteBackend::new(conn, Some(identity))),
 
 Encrypted stores (wrapped in `PasswordStore`) are opaque to the daemon — the daemon stores and syncs `EncryptedBlob` entries without ever holding a content encryption key. The `DatabaseOp` surface handles the encryption boundary with two complementary primitives:
 
-- **`GetStoreState { store, expected_type, projection }`** — the **registered plaintext path** (DocStore and current Doc-backed Table). After canonical Read authorization, the server validates `_index` type and effective projection, then reduces typed Store history and returns `WireCrdtValue` (`serde_json::Value`). Unsupported maintenance yields `RecordMaintenanceUnavailable` for typed client-side history folding, never for invalid credentials or descriptors. Password-wrapped Stores cannot be decrypted by this server path.
+- **`GetStoreState { store, expected_type, projection }`** — the **registered plaintext path** (DocStore and canonical LwwMap Table). After canonical Read authorization, the server validates `_index` type and effective projection, then reduces typed Store history and returns `WireCrdtValue` (`serde_json::Value`). Unsupported maintenance yields `RecordMaintenanceUnavailable` for typed client-side history folding, never for invalid credentials or descriptors. Password-wrapped Stores cannot be decrypted by this server path.
 
 - **`GetStoreEntries { store, tips, scope }`** — the **universal primitive** for encrypted stores. Returns opaque `Entry` objects reachable from `tips`, ordered by subtree height, already verified against the server's Verified frontier. The client receives encrypted entries it can decrypt and CRDT-merge locally. This works identically for encrypted and unencrypted stores — the server never touches content. The current typed `get_store_state` history fallback folds plaintext; encrypted callers still use their Store-specific decrypting path.
 

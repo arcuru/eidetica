@@ -736,3 +736,62 @@ forced. Existing Table remains Doc-backed, `table:v0` and `canonical-json:v0`
 remain unchanged, and no old/new compatibility or migration is provided.
 Remaining Phases 3-6: Table switch, encryption/service Table parity, docs,
 benchmarks, and a final accumulated gate; no push or PR.
+
+## Phase 4: incompatible canonical LwwMap Table switch (2026-09-23)
+
+Intended: replace Doc-backed `Table<T>` Entry data with `LwwMap<String,
+CanonicalJson>` without changing the `table:v0` or `canonical-json:v0` IDs; no
+compatibility decoder for old Doc histories. Use exact UTF-8 keys, stream typed
+set/delete deltas into physical records, keep transaction-local overlay and
+encrypted/recordless/service reads, and remove the legacy commit adapter.
+
+Performed: Table now stages RFC 8785 rows and tombstones through the existing
+atomic revision-checked projected staging path; typed `T` appears only on
+set/insert and get/page/search. Direct LWW projection uses exact keys (including
+empty, dot, prefix and distinct Unicode spellings). Removed hierarchical Table
+projection, path normalization, collapsed publication, legacy transaction
+record staging and Table-specific commit reconstruction. A new projection
+identity includes `canonical-json:v0`; service read-scoped registered Table
+maintenance ensures the record generation instead of only reducing whole-state
+JSON. Expired cached views are re-resolved for point and page reads, with
+recordless history fallback after unsupported reads. Existing password row
+cache and real authenticated Unix socket fixtures pass; cursor tests now compare
+rows across different transaction view identities instead of equating opaque
+view-bound cursors. Old Doc-path-conflict fixture expectations were replaced.
+
+New fixtures: `test_table_entry_delta_has_inline_canonical_json_and_tombstone`
+checks persisted Entry bytes, strict old Doc payload rejection and descriptor;
+`test_table_exact_keys_multi_operation_and_cold_warm_reads` checks exact
+empty/dotted/prefix/slash/composed/decomposed/emoji keys, multi-op overwrite,
+delete/resurrection, ordered pages, search and cache clearing; and
+`test_table_delete_does_not_swallow_typed_decode_failure` checks that typed
+boundary errors propagate. Existing password physical-order, encrypted
+recordless fallback and service cold/warm/expired-view fixtures exercise the
+changed paths. Negative controls: corrupting the expected `a` value in the
+exact-key test yielded 0 passed / 1 failed, then restored; swallowing the typed
+delete error yielded 0 passed / 1 failed, then restored. First direct full
+integration run yielded 1037 passed / 10 failed (legacy Doc expectations,
+cache-count descriptor, stale view). Second run yielded 1040 passed / 5 failed;
+third 1044 passed / 1 failed (cross-view cursor equality). Diagnosed and
+repaired those rather than accepting a partial gate.
+
+Final formatted-source `nix develop -c nix run .#fix` succeeded with clippy,
+deadnix, markdownlint, statix and treefmt (0 changed). Final
+`nix develop -c just nix full` exited 0: InMemory, SQLite, PostgreSQL and
+service each **1540 tests run: 1540 passed, 5 skipped**; minimal **1379
+tests run: 1379 passed, 5 skipped**. Nix logs show PASS for all three named
+new fixtures in the full runners, the service warm encrypted Table test, and
+encrypted recordless pagination; NixOS service and OCI container integration
+VMs passed. `git diff --check` clean. Signed committed-tip gate to follow.
+
+Scope ceiling: this is the Table **format switch**, not completion of Phases
+5-6. Encrypted projection's existing cold builder still gathers a logical
+`RecordMutations` map before writing one physical batch (not bounded streaming
+for very large password tables). A read-only unlocked PasswordStore's remote
+projected path folds authenticated full history client-side, rather than using
+a server-maintained encrypted generation. New Table-specific encrypted
+wrong-password/tamper, real service ordered-delete/recordless-on-socket and
+large encrypted chunk fixtures, docs/benchmarks and final accumulated parity
+are still required before the todo can be handed off. No mixed old/new
+`table:v0` data is supported; regenerate old databases/fixtures, never bump
+silently to `v1`. Branch remains local, no push/PR.

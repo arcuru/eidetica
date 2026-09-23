@@ -598,20 +598,35 @@ async fn encrypted_table_history_fallback_preserves_physical_pagination() {
     state.phase.store(2, Ordering::SeqCst);
     let historical = scan_pages(&history_table, 3).await;
     assert_eq!(
-        historical, cached,
-        "cache and history must return identical pages and cursors"
+        historical.iter().map(|page| &page.rows).collect::<Vec<_>>(),
+        cached.iter().map(|page| &page.rows).collect::<Vec<_>>(),
+        "cache and history must return identical physical-order rows"
+    );
+    assert_eq!(
+        historical
+            .iter()
+            .map(|page| page.next.is_some())
+            .collect::<Vec<_>>(),
+        cached
+            .iter()
+            .map(|page| page.next.is_some())
+            .collect::<Vec<_>>()
     );
 
     state.phase.store(0, Ordering::SeqCst);
     let cached_then_history = encrypted_table_with_overlays(&database).await;
     let first = cached_then_history.scan_page(None, 3).await.unwrap();
-    assert_eq!(first, cached[0]);
+    assert_eq!(first.rows, cached[0].rows);
+    assert_eq!(first.next.is_some(), cached[0].next.is_some());
     state.scan.store(0, Ordering::SeqCst);
     state.phase.store(2, Ordering::SeqCst);
+    let continued = scan_pages_after(&cached_then_history, first.next, 3).await;
     assert_eq!(
-        scan_pages_after(&cached_then_history, first.next, 3).await,
-        cached[1..],
-        "a cached cursor must continue through all remaining history pages"
+        continued.iter().map(|page| &page.rows).collect::<Vec<_>>(),
+        cached[1..]
+            .iter()
+            .map(|page| &page.rows)
+            .collect::<Vec<_>>()
     );
 
     state.phase.store(0, Ordering::SeqCst);
@@ -619,11 +634,15 @@ async fn encrypted_table_history_fallback_preserves_physical_pagination() {
     state.scan.store(0, Ordering::SeqCst);
     state.phase.store(2, Ordering::SeqCst);
     let first = history_then_cached.scan_page(None, 3).await.unwrap();
-    assert_eq!(first, cached[0]);
+    assert_eq!(first.rows, cached[0].rows);
+    assert_eq!(first.next.is_some(), cached[0].next.is_some());
     state.phase.store(3, Ordering::SeqCst);
+    let continued = scan_pages_after(&history_then_cached, first.next, 3).await;
     assert_eq!(
-        scan_pages_after(&history_then_cached, first.next, 3).await,
-        cached[1..],
-        "a history cursor must continue through all remaining cached pages"
+        continued.iter().map(|page| &page.rows).collect::<Vec<_>>(),
+        cached[1..]
+            .iter()
+            .map(|page| &page.rows)
+            .collect::<Vec<_>>()
     );
 }

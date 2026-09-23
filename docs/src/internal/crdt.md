@@ -43,9 +43,9 @@ key-ordered sequences of unique key/operation pairs, not JSON objects.
 `CanonicalJson` holds RFC 8785 canonical row bytes (`canonical-json:v0`). It
 rejects duplicate member names and invalid JSON number inputs. A typed reader
 may deserialize a row, but its schema never rewrites the canonical row bytes.
-The existing Table remains Doc-backed until record staging and projection
-contracts are implemented; no mixed old/new `table:v0` histories are supported
-once that format changes.
+Table now reduces `LwwMap<String, CanonicalJson>` Entry deltas in deterministic Entry order.
+Its `table:v0` type ID is retained, but the old Doc-backed wire format is incompatible;
+no mixed old/new history or migration is supported.
 
 ## Doc Merge Semantics
 

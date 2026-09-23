@@ -91,19 +91,6 @@ impl CRDT for StagedRows {
     }
 }
 
-struct LegacyRowsProjection;
-impl RecordProjection<Doc> for LegacyRowsProjection {
-    fn descriptor(&self) -> ProjectionDescriptor {
-        RowsProjection.descriptor()
-    }
-    fn mutations<'a>(
-        &'a self,
-        _: &'a Doc,
-    ) -> Result<Box<dyn Iterator<Item = Result<RecordMutation>> + Send + 'a>> {
-        unreachable!()
-    }
-}
-
 struct RowsProjection;
 impl RecordProjection<StagedRows> for RowsProjection {
     fn descriptor(&self) -> ProjectionDescriptor {
@@ -963,10 +950,6 @@ async fn projected_staging_installs_concurrent_writes_in_canonical_and_both_over
     assert_eq!(state.revision, 2);
     assert_eq!(state.logical.len(), 2);
     assert_eq!(state.physical, state.logical);
-    assert!(
-        matches!(tx.stage_record("rows", &LegacyRowsProjection, b"x".to_vec(), Some(b"x".to_vec())),
-        Err(crate::Error::Store(error)) if matches!(*error, StoreError::InvalidOperation { .. }))
-    );
     let staged: RacingRows = tx.get_local_data("rows").unwrap().unwrap();
     assert_eq!(staged.rows.0.get(&"a".to_string()).unwrap(), "one");
     assert_eq!(staged.rows.0.get(&"b".to_string()).unwrap(), "two");

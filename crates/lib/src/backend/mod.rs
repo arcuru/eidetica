@@ -170,9 +170,8 @@ impl StagingToken {
 
 /// Ordered record changes.
 ///
-/// Legacy collapsed record overlay used by the current Doc-backed Table.
-/// `None` is a tombstone in this overlay; the explicit staging API below
-/// instead removes a physical row.
+/// `None` is a tombstone in a transaction overlay; the explicit staging API
+/// below instead removes a physical row.
 pub type RecordMutations = BTreeMap<Vec<u8>, Option<Vec<u8>>>;
 
 /// One physical change to a private generation. Order is significant even for

@@ -211,7 +211,13 @@ fn read_store<'a, S: crate::store::Store>(
 where
     S::Data: Send,
 {
-    Box::pin(async move { Ok(serde_json::to_value(db.get_store_state::<S>(name).await?)?) })
+    Box::pin(async move {
+        if let crate::store::StoreStateModel::Records(projection) = S::state_model() {
+            let txn = db.new_transaction().await?;
+            txn.ensure_record_view(name, projection.as_ref()).await?;
+        }
+        Ok(serde_json::to_value(db.get_store_state::<S>(name).await?)?)
+    })
 }
 
 #[derive(Clone, Copy)]
