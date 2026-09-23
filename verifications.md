@@ -138,3 +138,38 @@ permissions/status validation across users and databases, transaction revision
 atomicity, stale-cursor race and typed state/capability fixtures; then Phases
 2-6 with encryption/service parity and benchmarks. Do not switch Table until
 all Phase 0 contracts are executable; `table:v0` stays unchanged.
+
+## Phase 0 continuation: retained encoded staging request slice
+
+Intended: retain a complete encoded staging request for an ambiguous transport
+response and replay precisely those bytes on a newly authenticated socket; reject
+older puts after a later delete and conflicting same-sequence retries. This is a
+manual replay API at the connection layer, **not** automatic retry in the high-level
+RemoteBackend, durable token pruning, or unknown-after-horizon recovery.
+
+Performed: `nix develop -c cargo test -p eidetica --all-features --test it
+test_exact_staging_chunk_retry_after_reconnect_and_delete -- --nocapture`:
+1 passed, 0 failed. The real service fixture sends the original encoded put,
+tears down the daemon connection, observes a failed send, restarts the daemon
+against the same backend, resends the same bytes, sends a delete, and verifies
+both the older replay and the conflicting delete-sequence put are refused;
+published point read is `None`. Backend-neutral ordered physical staging fixture
+still covers earlier put/delete/put and older/conflicting/gapped rejection
+across in-memory, SQLite, PostgreSQL and service. `nix develop -c nix run .#fix`
+completed. Final dirty-tree `nix develop -c just nix full` succeeded:
+in-memory 1515/1515 (1 leaky), SQLite 1515/1515, PostgreSQL 1515/1515,
+service 1515/1515 (1 leaky), minimal 1365/1365, five skipped each;
+NixOS service and OCI integration tests passed. The live fixture reported PASS
+in all four full-feature Nix runners. The existing Table remains Doc-backed;
+table:v0 is unchanged.
+
+Negative control: temporarily disabled immediate duplicate acknowledgement in
+the in-memory backend; the reconnect fixture failed 0 passed / 1 failed
+(exit 101) at the exact replay. Restored the backend source byte-for-byte and
+reran the focused fixture: 1 passed / 0 failed. No backend change is retained.
+
+Newly required: automatic retry coordination in the high-level remote adapter
+after ambiguous transport (and reconnect ownership), bounded terminal-token
+retention with safe unknown-after-horizon replacement, typed state/capability,
+revision/cursor races, service authorization/fallback; then later phases and
+another complete Nix gate. Do not claim Phase 0 complete or switch Table.
