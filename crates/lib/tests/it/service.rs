@@ -14,12 +14,14 @@ use eidetica::auth::crypto::{create_challenge_response, generate_keypair, sign_e
 use eidetica::backend::database::InMemory;
 use eidetica::backend::{ProjectionDescriptor, StoreStateRequest};
 use eidetica::crdt::Doc;
+use eidetica::crdt::{CRDT, Data};
 use eidetica::service::ServiceServer;
 use eidetica::service::protocol::{
     Handshake, HandshakeAck, PROTOCOL_VERSION, ReadScope, ServerFrame, ServiceRequest,
     ServiceResponse, read_frame, write_frame,
 };
 use eidetica::store::{DocStore, PasswordStore, Table};
+use eidetica::store::{Registered, Store, StoreStateModel};
 use serde::{Deserialize, Serialize};
 use tempfile::TempDir;
 use tokio::io::{AsyncRead, AsyncWriteExt, ReadHalf, WriteHalf};
@@ -46,6 +48,305 @@ async fn read_response<R: AsyncRead + Unpin>(reader: &mut R) -> ServiceResponse 
 /// state both locally and over the wire.
 async fn start_test_server() -> (PathBuf, watch::Sender<()>, Instance, TempDir) {
     start_test_server_with_token_ttl(Duration::from_secs(5 * 60)).await
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct SocketCounter(u64);
+impl Default for SocketCounter {
+    fn default() -> Self {
+        Self(7)
+    }
+}
+impl Data for SocketCounter {}
+impl CRDT for SocketCounter {
+    fn merge(&self, other: &Self) -> eidetica::Result<Self> {
+        Ok(Self(self.0.max(other.0)))
+    }
+}
+
+struct CounterStore {
+    name: String,
+    txn: eidetica::Transaction,
+}
+impl Registered for CounterStore {
+    fn type_id() -> &'static str {
+        "test:socket-counter"
+    }
+}
+#[async_trait::async_trait]
+impl Store for CounterStore {
+    type Data = SocketCounter;
+    fn state_model() -> StoreStateModel<Self::Data> {
+        StoreStateModel::opaque("test/counter", 1)
+    }
+    async fn load(txn: &eidetica::Transaction, name: String) -> eidetica::Result<Self> {
+        Ok(Self {
+            name,
+            txn: txn.clone(),
+        })
+    }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn transaction(&self) -> &eidetica::Transaction {
+        &self.txn
+    }
+}
+
+/// Registration supplies a concrete non-Doc decoder, not a caller-chosen
+/// descriptor. A Read-only principal may use it, but cannot stage records.
+#[tokio::test]
+async fn registered_typed_socket_maintenance_is_read_scoped() {
+    use eidetica::auth::types::{AuthKey, Permission, SigKey};
+    use eidetica::service::protocol::{AuthenticatedDbRequest, DatabaseOp};
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let socket = dir.path().join("typed.sock");
+    let (server, _) =
+        Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless("admin"))
+            .await
+            .unwrap();
+    create_user_via_admin(&server, "alice").await;
+    create_user_via_admin(&server, "bob").await;
+    let mut alice = server.login_user("alice", None).await.unwrap();
+    let key = alice.get_default_key().unwrap();
+    let db = alice.create_database(Doc::new(), &key).await.unwrap();
+    let root = db.root_id().clone();
+    db.with_transaction(|tx| async move {
+        tx.get_store::<CounterStore>("counter").await?;
+        tx.get_store::<DocStore>("known")
+            .await?
+            .set("key", "value")
+            .await?;
+        let mut secrets = tx.get_store::<PasswordStore<DocStore>>("secrets").await?;
+        secrets.initialize("password", Doc::new()).await?;
+        secrets.inner().await?.set("hidden", "value").await?;
+        tx.get_settings()?
+            .set_global_auth_key(AuthKey::active(None, Permission::Read))
+            .await?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let unknown_socket = dir.path().join("unknown.sock");
+    let (unknown_stop, unknown_rx) = watch::channel(());
+    let unknown_daemon = ServiceServer::bind(server.clone(), &unknown_socket)
+        .await
+        .unwrap();
+    tokio::spawn(unknown_daemon.run(unknown_rx));
+    let (stop, rx) = watch::channel(());
+    let mut daemon = ServiceServer::bind(server, &socket).await.unwrap();
+    daemon.register_store::<CounterStore>().unwrap();
+    assert!(daemon.register_store::<CounterStore>().is_err());
+    tokio::spawn(daemon.run(rx));
+    let remote = Instance::connect(format!("unix://{}", socket.display()))
+        .await
+        .unwrap();
+    let bob = remote.login_user("bob", None).await.unwrap();
+    let identity = SigKey::from_pubkey(&bob.get_default_key().unwrap());
+    let conn = remote_conn(&remote);
+    assert_eq!(
+        conn.get_store_state::<CounterStore>(root.clone(), identity.clone(), "counter".into())
+            .await
+            .unwrap(),
+        SocketCounter(7)
+    );
+    assert_eq!(
+        conn.get_store_state::<DocStore>(root.clone(), identity.clone(), "known".into())
+            .await
+            .unwrap()
+            .get_as::<&str>("key"),
+        Some("value")
+    );
+
+    let request = |store: &str, expected_type: &str, projection| {
+        ServiceRequest::AuthenticatedDb(Box::new(AuthenticatedDbRequest {
+            root_id: root.clone(),
+            identity: identity.clone(),
+            op: DatabaseOp::EnsureStoreStateGeneration {
+                store: store.into(),
+                expected_type: expected_type.into(),
+                projection,
+            },
+        }))
+    };
+    let (mut reader, mut writer) = raw_handshake(&socket).await;
+    let signing = bob
+        .get_signing_key(&bob.get_default_key().unwrap())
+        .unwrap();
+    write_frame(
+        &mut writer,
+        &ServiceRequest::TrustedLoginUser {
+            username: "bob".into(),
+        },
+    )
+    .await
+    .unwrap();
+    let challenge = match read_response(&mut reader).await {
+        ServiceResponse::TrustedLoginChallenge { challenge, .. } => challenge,
+        other => panic!("expected challenge: {other:?}"),
+    };
+    write_frame(
+        &mut writer,
+        &ServiceRequest::TrustedLoginProve {
+            signature: create_challenge_response(&challenge, &signing),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        read_response(&mut reader).await,
+        ServiceResponse::TrustedLoginOk
+    ));
+    for (store, ty, descriptor, expected_kind) in [
+        (
+            "counter",
+            CounterStore::type_id(),
+            ProjectionDescriptor {
+                name: "test/counter".into(),
+                version: 2,
+            },
+            "TypeMismatch",
+        ),
+        (
+            "counter",
+            DocStore::type_id(),
+            CounterStore::state_model().descriptor(),
+            "TypeMismatch",
+        ),
+        (
+            "counter",
+            CounterStore::type_id(),
+            DocStore::state_model().descriptor(),
+            "TypeMismatch",
+        ),
+        (
+            "known",
+            DocStore::type_id(),
+            CounterStore::state_model().descriptor(),
+            "TypeMismatch",
+        ),
+        (
+            "secrets",
+            PasswordStore::<DocStore>::type_id(),
+            DocStore::state_model().descriptor(),
+            "RecordMaintenanceUnavailable",
+        ),
+        (
+            "secrets",
+            PasswordStore::<DocStore>::type_id(),
+            PasswordStore::<DocStore>::state_model().descriptor(),
+            "RecordMaintenanceUnavailable",
+        ),
+    ] {
+        write_frame(&mut writer, &request(store, ty, descriptor))
+            .await
+            .unwrap();
+        match read_response(&mut reader).await {
+            ServiceResponse::Error(err) => assert_eq!(err.kind, expected_kind),
+            other => panic!("incorrect descriptor accepted: {other:?}"),
+        }
+    }
+    // A rejected descriptor never replaces the canonical generation.
+    assert_eq!(
+        conn.get_store_state::<CounterStore>(root.clone(), identity.clone(), "counter".into())
+            .await
+            .unwrap(),
+        SocketCounter(7)
+    );
+    // The same _index identity is unknown to a daemon without registration.
+    let unknown = Instance::connect(format!("unix://{}", unknown_socket.display()))
+        .await
+        .unwrap();
+    unknown.login_user("bob", None).await.unwrap();
+    let fallback = remote_conn(&unknown)
+        .get_store_state::<CounterStore>(root.clone(), identity.clone(), "counter".into())
+        .await
+        .unwrap();
+    // The unavailable response selects a typed history fold (non-Doc default).
+    assert_eq!(fallback, SocketCounter(7));
+    let (mut unknown_reader, mut unknown_writer) = raw_handshake(&unknown_socket).await;
+    write_frame(
+        &mut unknown_writer,
+        &request(
+            "counter",
+            CounterStore::type_id(),
+            CounterStore::state_model().descriptor(),
+        ),
+    )
+    .await
+    .unwrap();
+    match read_response(&mut unknown_reader).await {
+        ServiceResponse::Error(err) => assert_ne!(err.kind, "RecordMaintenanceUnavailable"),
+        other => panic!("unauthenticated request accepted: {other:?}"),
+    }
+    write_frame(
+        &mut unknown_writer,
+        &ServiceRequest::TrustedLoginUser {
+            username: "bob".into(),
+        },
+    )
+    .await
+    .unwrap();
+    let challenge = match read_response(&mut unknown_reader).await {
+        ServiceResponse::TrustedLoginChallenge { challenge, .. } => challenge,
+        other => panic!("expected challenge: {other:?}"),
+    };
+    write_frame(
+        &mut unknown_writer,
+        &ServiceRequest::TrustedLoginProve {
+            signature: create_challenge_response(&challenge, &signing),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        read_response(&mut unknown_reader).await,
+        ServiceResponse::TrustedLoginOk
+    ));
+    write_frame(
+        &mut unknown_writer,
+        &request(
+            "counter",
+            CounterStore::type_id(),
+            CounterStore::state_model().descriptor(),
+        ),
+    )
+    .await
+    .unwrap();
+    match read_response(&mut unknown_reader).await {
+        ServiceResponse::Error(err) => assert_eq!(err.kind, "RecordMaintenanceUnavailable"),
+        other => panic!("unknown codec was maintained: {other:?}"),
+    }
+    write_frame(
+        &mut unknown_writer,
+        &request(
+            "counter",
+            CounterStore::type_id(),
+            DocStore::state_model().descriptor(),
+        ),
+    )
+    .await
+    .unwrap();
+    match read_response(&mut unknown_reader).await {
+        ServiceResponse::Error(err) => assert_eq!(err.kind, "RecordMaintenanceUnavailable"),
+        other => panic!("unverifiable descriptor was accepted: {other:?}"),
+    }
+    let staging = StoreStateRequest {
+        database: root,
+        store: "counter".into(),
+        lifecycle: eidetica::backend::StoreStateLifecycle::Derived,
+        scope: eidetica::backend::CacheScope::Shared,
+        projection: CounterStore::state_model().descriptor(),
+        source_key: vec![],
+    };
+    assert!(
+        conn.begin_store_state_staging(identity, staging)
+            .await
+            .is_err()
+    );
+    drop(stop);
+    drop(unknown_stop);
 }
 
 /// Same as [`start_test_server`], with the session-token idle lifetime under
@@ -703,8 +1004,8 @@ async fn store_state_read_rejects_wrong_descriptor_and_unauthorized_reader() {
     .await
     .unwrap();
     match read_response(&mut reader).await {
-        ServiceResponse::Error(err) => assert_eq!(err.kind, "TypeMismatch"),
-        other => panic!("unencrypted descriptor accepted for encrypted store: {other:?}"),
+        ServiceResponse::Error(err) => assert_eq!(err.kind, "RecordMaintenanceUnavailable"),
+        other => panic!("unencrypted descriptor maintained for encrypted store: {other:?}"),
     }
     write_frame(
         &mut writer,
@@ -1114,8 +1415,8 @@ async fn read_only_password_store_folds_authenticated_remote_history() {
         ServiceResponse::Error(error) => assert_ne!(error.kind, "RecordMaintenanceUnavailable"),
         other => panic!("unauthenticated descriptor request succeeded: {other:?}"),
     }
-    // Authenticate the raw socket and verify that an authorized malformed
-    // descriptor is rejected as a mismatch, not a capability fallback.
+    // Authenticate the raw socket: the encrypted wrapped codec is opaque,
+    // so even a plaintext descriptor claim is a capability refusal.
     let bob_signing = bob
         .get_signing_key(&bob.get_default_key().unwrap())
         .unwrap();
@@ -1145,8 +1446,8 @@ async fn read_only_password_store_folds_authenticated_remote_history() {
     ));
     write_frame(&mut writer, &wrong_descriptor).await.unwrap();
     match read_response(&mut reader).await {
-        ServiceResponse::Error(error) => assert_eq!(error.kind, "TypeMismatch"),
-        other => panic!("encrypted descriptor accepted: {other:?}"),
+        ServiceResponse::Error(error) => assert_eq!(error.kind, "RecordMaintenanceUnavailable"),
+        other => panic!("encrypted descriptor maintained: {other:?}"),
     }
 
     // An owner can sign a structurally valid Entry with corrupt *opaque*
