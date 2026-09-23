@@ -10,6 +10,12 @@ on:
 permissions:
   contents: read
 
+# A new PR revision supersedes older checks; main pushes must each complete
+# independently because Publish follows a successful main CI run.
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   ci:
     name: CI (x86_64-linux)

@@ -54,10 +54,8 @@ jobs:
 
       - name: Lint and format
         run: |
-          nix-fast-build --skip-cached --no-nom --no-link \
-            -f '.#legacyPackages.x86_64-linux.lint.default'
-          nix-fast-build --skip-cached --no-nom --no-link \
-            -f '.#checks.x86_64-linux.treefmt'
+          nix build --no-link --print-build-logs \
+            '.#lint.default' '.#checks.x86_64-linux.treefmt'
 
   doc:
     name: Doc
@@ -104,14 +102,8 @@ jobs:
 
       - name: Build and test
         run: |
-          nix-fast-build --skip-cached --no-nom --no-link \
-            -f '.#legacyPackages.x86_64-linux.eidetica.bin'
-          nix-fast-build --skip-cached --no-nom --no-link \
-            -f '.#legacyPackages.x86_64-linux.test.sqlite'
-          nix-fast-build --skip-cached --no-nom --no-link \
-            -f '.#legacyPackages.x86_64-linux.test.minimal'
-          nix-fast-build --skip-cached --no-nom --no-link \
-            -f '.#legacyPackages.x86_64-linux.eval.default'
+          nix build --no-link --print-build-logs \
+            '.#eidetica.bin' '.#test.sqlite' '.#test.minimal' '.#eval.default'
 
   test-backends:
     name: Test Backends (${{ matrix.backend }})
