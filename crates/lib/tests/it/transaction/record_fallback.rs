@@ -83,9 +83,15 @@ async fn recordless_backend_can_serve_a_client_without_reclamation() {
 }
 
 /// A pre-record-substrate backend: full entry storage, no record support.
-struct Recordless<B>(B, Option<Arc<StaleThenUnsupported>>);
+pub(crate) struct Recordless<B>(B, Option<Arc<StaleThenUnsupported>>);
 
-struct StaleThenUnsupported {
+impl<B> Recordless<B> {
+    pub(crate) fn new(backend: B) -> Self {
+        Self(backend, None)
+    }
+}
+
+pub(crate) struct StaleThenUnsupported {
     phase: AtomicU8,
     get: AtomicU8,
     scan: AtomicU8,
