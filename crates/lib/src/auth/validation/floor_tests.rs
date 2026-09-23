@@ -281,6 +281,32 @@ fn as_set(ids: &[ID]) -> HashSet<ID> {
 
 // ===== Inherited floor =====
 
+/// A remote entry cannot drop an authenticated parent's pin by omitting
+/// metadata, even if it does not modify `_settings` itself.
+#[tokio::test]
+async fn empty_pin_cannot_promote_unsigned_child() {
+    let fx = fixture().await;
+    let entry = Entry::builder(fx.target.root_id().clone())
+        .set_parents(fx.tips().await)
+        .set_subtree_data("data", b"unsigned")
+        .build()
+        .unwrap();
+    assert_eq!(fx.submit_remote(entry).await, VerificationStatus::Failed);
+}
+
+/// A Verified foreign main parent cannot provide a shortcut around the
+/// target tree's authenticated history.
+#[tokio::test]
+async fn foreign_main_parent_cannot_promote_unsigned_child() {
+    let fx = fixture().await;
+    let entry = Entry::builder(fx.target.root_id().clone())
+        .set_parents([fx.tips().await, fx.i0.clone()].concat())
+        .set_subtree_data("data", b"unsigned foreign-parent")
+        .build()
+        .unwrap();
+    assert_eq!(fx.submit_remote(entry).await, VerificationStatus::Failed);
+}
+
 /// Equality: a child may pin exactly the snapshot its parent pinned.
 #[tokio::test]
 async fn floor_allows_equal_snapshot() {

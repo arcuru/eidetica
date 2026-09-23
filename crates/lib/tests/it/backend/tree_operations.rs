@@ -200,6 +200,36 @@ async fn test_backend_get_tree_from_tips() {
 }
 
 #[tokio::test]
+async fn test_backend_get_tree_from_tips_rejects_foreign_ancestor() {
+    let backend = test_backend().await;
+    let root = Entry::root_builder().build().unwrap();
+    let root_id = root.id();
+    backend.put_verified(root).await.unwrap();
+    let foreign = Entry::root_builder()
+        .set_subtree_data("_settings", b"foreign grant")
+        .build()
+        .unwrap();
+    let foreign_id = foreign.id();
+    backend.put_verified(foreign).await.unwrap();
+    let child = Entry::builder(root_id.clone())
+        .add_parent(root_id.clone())
+        .add_parent(foreign_id.clone())
+        .set_height(1)
+        .build()
+        .unwrap();
+    let child_id = child.id();
+    backend.put_verified(child).await.unwrap();
+    let err = backend
+        .get_tree_from_tips(&root_id, &[child_id])
+        .await
+        .expect_err("foreign ancestry is not proof");
+    assert!(
+        matches!(err, Error::Backend(ref e) if matches!(**e, BackendError::EntryNotInTree { ref entry_id, ref tree_id } if entry_id == &foreign_id && tree_id == &root_id)),
+        "expected foreign ancestor ID, got: {err:?}"
+    );
+}
+
+#[tokio::test]
 async fn test_backend_get_tree_from_tips_rejects_missing_intermediate() {
     let backend = test_backend().await;
     let root_id = ID::from_bytes("missing_intermediate_root");
