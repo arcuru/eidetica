@@ -1362,42 +1362,44 @@ impl Transaction {
 
         let token = self.db.ops().begin_store_state_staging(request).await?;
         let result = async {
-            let mut logical = RecordMutations::new();
+            let mut chunk = Vec::new();
+            let mut chunk_bytes = 0;
+            let mut sequence = 0;
             for entry in entries {
                 if let Ok(bytes) = entry.data(store) {
                     let plaintext = self.decrypt_if_needed(store, bytes)?;
                     let delta: D = serde_json::from_slice(&plaintext)?;
                     for mutation in projection.mutations(&delta)? {
-                        match mutation? {
-                            RecordMutation::Put { key, value } => {
-                                logical
-                                    .retain(|old, _| !projection.staged_keys_conflict(old, &key));
-                                logical.insert(key, Some(value));
+                        let mutation = match mutation? {
+                            RecordMutation::Put { key, value } => RecordMutation::Put {
+                                key: self.physical_record_key(store, &key)?,
+                                value: self.encrypt_record(store, &key, &value)?,
+                            },
+                            RecordMutation::Delete { key } => RecordMutation::Delete {
+                                key: self.physical_record_key(store, &key)?,
+                            },
+                        };
+                        let size = serde_json::to_vec(&mutation)?.len();
+                        if size > state::CHUNK_BYTES {
+                            return Err(crate::backend::BackendError::RecordTooLarge {
+                                encoded_bytes: size,
                             }
-                            RecordMutation::Delete { key } => {
-                                logical
-                                    .retain(|old, _| !projection.staged_keys_conflict(old, &key));
-                                logical.insert(key, None);
-                            }
+                            .into());
                         }
+                        if !chunk.is_empty()
+                            && (chunk.len() == 128 || chunk_bytes + size > state::CHUNK_BYTES)
+                        {
+                            state::stage_chunk(self.db.ops(), &token, &mut sequence, &mut chunk)
+                                .await?;
+                            chunk_bytes = 0;
+                        }
+                        chunk_bytes += size;
+                        chunk.push(mutation);
                     }
                 }
             }
-            logical.retain(|_, value| value.is_some());
-            let mut physical = RecordMutations::new();
-            for (key, value) in logical {
-                if let Some(value) = value {
-                    physical.insert(
-                        self.physical_record_key(store, &key)?,
-                        Some(self.encrypt_record(store, &key, &value)?),
-                    );
-                }
-            }
-            if !physical.is_empty() {
-                self.db
-                    .ops()
-                    .stage_store_state_records(&token, physical)
-                    .await?;
+            if !chunk.is_empty() {
+                state::stage_chunk(self.db.ops(), &token, &mut sequence, &mut chunk).await?;
             }
             self.db.ops().publish_store_state(token.clone()).await
         }

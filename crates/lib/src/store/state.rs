@@ -41,6 +41,8 @@ pub(crate) fn records_request(
     opaque_request(database, store, descriptor, source_key, scope)
 }
 
+pub(crate) const CHUNK_BYTES: usize = 1024 * 1024;
+
 pub(crate) async fn publish_records<'a, D: CRDT>(
     backend: &dyn Backend,
     request: StoreStateRequest,
@@ -58,7 +60,6 @@ pub(crate) async fn publish_records<'a, D: CRDT>(
                 let mutation = mutation?;
                 let size = serde_json::to_vec(&mutation)?.len();
                 // Leave room for the service RPC envelope, not just the mutation JSON.
-                const CHUNK_BYTES: usize = 1024 * 1024;
                 if size > CHUNK_BYTES {
                     return Err(crate::backend::BackendError::RecordTooLarge {
                         encoded_bytes: size,
@@ -85,7 +86,7 @@ pub(crate) async fn publish_records<'a, D: CRDT>(
     result
 }
 
-async fn stage_chunk(
+pub(crate) async fn stage_chunk(
     backend: &dyn Backend,
     token: &crate::backend::StagingToken,
     sequence: &mut u64,

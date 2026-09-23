@@ -498,6 +498,148 @@ async fn test_password_table_uses_lazy_encrypted_record_cache() {
 }
 
 #[tokio::test]
+async fn test_password_table_cold_streams_overwrite_delete_and_resurrection() {
+    let (instance, database, _key) = setup_tree_with_user_key_local().await;
+    let store = "streamed_rows";
+    let tx = database.new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<Table<PasswordTestRecord>>>(store)
+        .await
+        .unwrap();
+    encrypted.initialize("pass", Doc::new()).await.unwrap();
+    let table = encrypted.inner().await.unwrap();
+    for i in 0..260 {
+        let key = format!("row-{i:03}");
+        table
+            .set(
+                &key,
+                PasswordTestRecord {
+                    name: key.clone(),
+                    value: i,
+                },
+            )
+            .await
+            .unwrap();
+    }
+    tx.commit().await.unwrap();
+
+    // Each transaction is an Entry. Later changes must be applied in order,
+    // including a tombstone and resurrection after the first 128 mutations.
+    let tx = database.new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<Table<PasswordTestRecord>>>(store)
+        .await
+        .unwrap();
+    encrypted.open("pass").unwrap();
+    let table = encrypted.inner().await.unwrap();
+    for i in 0..260 {
+        let key = format!("row-{i:03}");
+        if i % 3 == 0 {
+            table.delete(&key).await.unwrap();
+        } else {
+            table
+                .set(
+                    &key,
+                    PasswordTestRecord {
+                        name: key.clone(),
+                        value: i + 1000,
+                    },
+                )
+                .await
+                .unwrap();
+        }
+    }
+    tx.commit().await.unwrap();
+
+    let tx = database.new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<Table<PasswordTestRecord>>>(store)
+        .await
+        .unwrap();
+    encrypted.open("pass").unwrap();
+    let table = encrypted.inner().await.unwrap();
+    for i in (0..260).step_by(6) {
+        let key = format!("row-{i:03}");
+        table
+            .set(
+                &key,
+                PasswordTestRecord {
+                    name: key.clone(),
+                    value: i + 2000,
+                },
+            )
+            .await
+            .unwrap();
+    }
+    tx.commit().await.unwrap();
+
+    let memory = instance.backend().local_engine().unwrap();
+    let memory = memory
+        .as_any()
+        .downcast_ref::<eidetica::backend::database::InMemory>()
+        .unwrap();
+    instance
+        .backend()
+        .clear_derived_store_state()
+        .await
+        .unwrap();
+    instance
+        .backend()
+        .clear_derived_store_state()
+        .await
+        .unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let mut wrong = tx
+        .get_store::<PasswordStore<Table<PasswordTestRecord>>>(store)
+        .await
+        .unwrap();
+    assert!(wrong.open("wrong").is_err());
+    assert!(
+        memory
+            .store_state_records(database.root_id(), store)
+            .is_none()
+    );
+    let mut encrypted = tx
+        .get_store::<PasswordStore<Table<PasswordTestRecord>>>(store)
+        .await
+        .unwrap();
+    encrypted.open("pass").unwrap();
+    let table = encrypted.inner().await.unwrap();
+    assert_eq!(table.get("row-000").await.unwrap().value, 2000);
+    assert_eq!(
+        memory.store_state_record_count(database.root_id(), store),
+        217
+    );
+    assert!(table.get("row-003").await.is_err());
+    assert_eq!(table.get("row-257").await.unwrap().value, 1257);
+    let mut cursor = None;
+    let mut keys = Vec::new();
+    loop {
+        let page = table.scan_page(cursor.as_ref(), 37).await.unwrap();
+        keys.extend(page.rows.into_iter().map(|(key, _)| key));
+        if page.next.is_none() {
+            break;
+        }
+        cursor = page.next;
+    }
+    assert_eq!(keys.len(), 217);
+    assert_ne!(keys, {
+        let mut sorted = keys.clone();
+        sorted.sort();
+        sorted
+    });
+    let records = memory
+        .store_state_records(database.root_id(), store)
+        .unwrap();
+    assert_eq!(records.len(), 217);
+    assert!(
+        records
+            .iter()
+            .all(|(key, value)| key.len() == 32 && value.is_some())
+    );
+}
+
+#[tokio::test]
 async fn test_password_table_staged_parent_child_independent() {
     let (_instance, database) = setup_tree().await;
     let tx = database.new_transaction().await.unwrap();
