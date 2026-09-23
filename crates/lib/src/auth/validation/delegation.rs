@@ -190,6 +190,13 @@ impl DelegationResolver {
             // below. Missing and present-but-Unverified history is retryable;
             // a proven regression or foreign-tree tip is not.
             let floor = Snapshot::from(delegated_tree_ref.tree.tips.to_vec());
+            if floor.is_empty() {
+                return Err(AuthError::InvalidDelegationTips {
+                    tree_id: root_id.clone(),
+                    claimed_tips: vec![],
+                }
+                .into());
+            }
             let directly_referenced = Snapshot::from(
                 std::iter::once(root_id.clone())
                     .chain(step.tips.iter().cloned())
@@ -304,7 +311,9 @@ impl DelegationResolver {
                 &Snapshot::from(&step.tips),
             )
             .await?;
-            if steps.first().is_some_and(|first| std::ptr::eq(first, step)) {
+            // Each parent tree's configured pointer needs a complete locally
+            // verified proof, including the middle steps of a nested path.
+            if floor != Snapshot::from(&step.tips) {
                 DerivedFloors::proof_on(current_backend.as_ref(), &root_id, &floor).await?;
             }
 

@@ -23,11 +23,10 @@ use crate::{
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct State {
-    // One frontier per observed delegated database, including nested steps.
-    tips: HashMap<ID, Snapshot>,
-    // Roots ever used as first-hop delegations; only these are reset on removal.
-    direct: HashSet<ID>,
-    active: HashSet<ID>,
+    // Direct declarations/claims are reset on effective removal. Observations
+    // through deeper paths survive even when the same root is also direct.
+    direct: HashMap<ID, Snapshot>,
+    nested: HashMap<ID, Snapshot>,
 }
 
 pub(crate) struct DerivedFloors {
@@ -53,7 +52,7 @@ impl DerivedFloors {
             scope: CacheScope::Shared,
             projection: ProjectionDescriptor {
                 name: "auth-frontier".to_string(),
-                version: 1,
+                version: 2,
             },
             source_key: id.to_string().into_bytes(),
         }
@@ -193,9 +192,9 @@ impl DerivedFloors {
         Ok(())
     }
 
-    // Complete main ancestry is required to fold the effective _settings.
-    // Do not use the signed pre-write pin, live head or store_snapshot_at:
-    // neither identifies the state at this entry's main causal boundary.
+    // A complete main ancestry scan supplies the expected causal settings
+    // frontier. Check signed subtree edges before trusting the post-entry
+    // settings state; then fold only the actual settings DAG, not main ancestry.
     async fn settings_at(&self, entry: &Entry) -> Result<AuthSettings> {
         let parents = entry.parents()?;
         let mut entries = if parents.is_empty() {
@@ -214,7 +213,81 @@ impl DerivedFloors {
             }
         };
         entries.push(entry.clone());
-        crate::database::fold_settings_entries(&entries)
+
+        // One pass over the complete main DAG. Each node carries the nearest
+        // settings frontier of its parents; a merge prunes settings ancestors
+        // already superseded by another candidate (without backend rescans).
+        let mut frontiers: HashMap<ID, Snapshot> = HashMap::new();
+        let mut settings_nodes: HashMap<ID, &Entry> = HashMap::new();
+        for node in &entries {
+            let mut candidates = Vec::new();
+            for parent in node.parents()? {
+                let frontier = frontiers
+                    .get(&parent)
+                    .ok_or_else(|| self.unsynced(vec![parent]))?;
+                candidates.extend(frontier.iter().cloned());
+            }
+            let candidates = Snapshot::from(candidates);
+            let mut dominated = HashSet::new();
+            for tip in &candidates {
+                let mut stack = vec![tip.clone()];
+                let mut seen = HashSet::new();
+                while let Some(id) = stack.pop() {
+                    if !seen.insert(id.clone()) {
+                        continue;
+                    }
+                    if id != *tip && candidates.tips().contains(&id) {
+                        dominated.insert(id.clone());
+                    }
+                    if let Some(ancestor) = settings_nodes.get(&id) {
+                        stack.extend(ancestor.subtree_parents(SETTINGS)?);
+                    }
+                }
+            }
+            let expected = Snapshot::from(
+                candidates
+                    .iter()
+                    .filter(|id| !dominated.contains(*id))
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            );
+            let frontier = if node.in_subtree(SETTINGS) {
+                if Snapshot::from(node.subtree_parents(SETTINGS)?) != expected {
+                    return Err(AuthError::InvalidAuthConfiguration {
+                        reason: "settings parents differ from main-parent causal frontier"
+                            .to_string(),
+                    }
+                    .into());
+                }
+                settings_nodes.insert(node.id(), node);
+                Snapshot::from(vec![node.id()])
+            } else {
+                expected
+            };
+            frontiers.insert(node.id(), frontier);
+        }
+
+        let mut reachable = HashSet::new();
+        let mut stack = frontiers
+            .get(&entry.id())
+            .into_iter()
+            .flat_map(|snapshot| snapshot.iter())
+            .cloned()
+            .collect::<Vec<_>>();
+        while let Some(id) = stack.pop() {
+            if reachable.insert(id.clone()) {
+                let node = settings_nodes
+                    .get(&id)
+                    .ok_or_else(|| self.unsynced(vec![id]))?;
+                stack.extend(node.subtree_parents(SETTINGS)?);
+            }
+        }
+        crate::database::fold_settings_entries(
+            &entries
+                .into_iter()
+                .filter(|e| reachable.contains(&e.id()))
+                .collect::<Vec<_>>(),
+        )
     }
 
     fn claim(entry: &Entry) -> impl Iterator<Item = (ID, Snapshot)> + '_ {
@@ -265,14 +338,19 @@ impl DerivedFloors {
     }
 
     fn apply_claims(entry: &Entry, state: &mut State) {
-        let mut claims: HashMap<ID, Vec<ID>> = HashMap::new();
-        for (root, tips) in Self::claim(entry) {
+        let mut direct: HashMap<ID, Vec<ID>> = HashMap::new();
+        let mut nested: HashMap<ID, Vec<ID>> = HashMap::new();
+        for (index, (root, tips)) in Self::claim(entry).enumerate() {
+            let claims = if index == 0 { &mut direct } else { &mut nested };
             claims.entry(root).or_default().extend(tips.into_tips());
         }
-        // A verified claim already covers its inherited floor. Multiple
-        // occurrences of the same root in one signature retain every claim.
-        for (root, tips) in claims {
-            state.tips.insert(root, Snapshot::from(tips));
+        for (root, tips) in direct {
+            if state.direct.contains_key(&root) {
+                state.direct.insert(root, Snapshot::from(tips));
+            }
+        }
+        for (root, tips) in nested {
+            state.nested.insert(root, Snapshot::from(tips));
         }
     }
 
@@ -284,15 +362,9 @@ impl DerivedFloors {
     ) -> Result<State> {
         let settings = self.settings_at(entry).await?;
         let active = Self::active(&settings)?;
-        // A removal is effective only if the merged resulting document is
-        // absent. Retain unrelated nested roots even when their first hop is removed.
-        for root in &state.direct {
-            if !active.contains_key(root) {
-                state.tips.remove(root);
-            }
-        }
-        state.active = active.keys().cloned().collect();
-        state.direct.extend(active.keys().cloned());
+        // Only the direct component is reset by effective absence. A nested
+        // observation of that same root is independent of the direct grant.
+        state.direct.retain(|root, _| active.contains_key(root));
         if entry.in_subtree(SETTINGS) || entry.parents()?.is_empty() {
             for (root, reference) in &active {
                 let pointer = Snapshot::from(reference.tree.tips.clone());
@@ -307,8 +379,8 @@ impl DerivedFloors {
                     }
                     Self::proof_on(self.backend.as_ref(), root, &pointer).await?;
                 }
-                let old = state.tips.remove(root).unwrap_or_default();
-                state.tips.insert(
+                let old = state.direct.remove(root).unwrap_or_default();
+                state.direct.insert(
                     root.clone(),
                     Snapshot::from(
                         old.iter()
@@ -324,9 +396,6 @@ impl DerivedFloors {
         if !check_pointer {
             Self::apply_claims(entry, &mut state);
         }
-        state
-            .tips
-            .retain(|root, _| !state.direct.contains(root) || state.active.contains(root));
         Ok(state)
     }
 
@@ -385,14 +454,17 @@ impl DerivedFloors {
     fn join<'b>(&self, parents: impl Iterator<Item = &'b State>) -> State {
         let mut state = State::default();
         for parent in parents {
-            state.direct.extend(parent.direct.iter().cloned());
-            state.active.extend(parent.active.iter().cloned());
-            for (root, tips) in &parent.tips {
-                let old = state.tips.remove(root).unwrap_or_default();
-                state.tips.insert(
-                    root.clone(),
-                    Snapshot::from(old.iter().chain(tips.iter()).cloned().collect::<Vec<_>>()),
-                );
+            for (ours, theirs) in [
+                (&mut state.direct, &parent.direct),
+                (&mut state.nested, &parent.nested),
+            ] {
+                for (root, tips) in theirs {
+                    let old = ours.remove(root).unwrap_or_default();
+                    ours.insert(
+                        root.clone(),
+                        Snapshot::from(old.iter().chain(tips.iter()).cloned().collect::<Vec<_>>()),
+                    );
+                }
             }
         }
         state
@@ -412,15 +484,21 @@ impl DerivedFloors {
     }
 
     pub(crate) fn floor_for(&self, root: &ID) -> Snapshot {
-        self.state.tips.get(root).cloned().unwrap_or_default()
+        Snapshot::from(
+            self.state
+                .direct
+                .get(root)
+                .into_iter()
+                .chain(self.state.nested.get(root))
+                .flat_map(|snapshot| snapshot.iter())
+                .cloned()
+                .collect::<Vec<_>>(),
+        )
     }
 
     /// Called only after the entry passed signature and permission checks.
     pub(crate) async fn finish(&mut self, entry: &Entry) -> Result<()> {
         Self::apply_claims(entry, &mut self.state);
-        self.state.tips.retain(|root, _| {
-            !self.state.direct.contains(root) || self.state.active.contains(root)
-        });
         self.publish(&entry.id(), &self.state).await
     }
 }

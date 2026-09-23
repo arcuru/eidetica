@@ -682,6 +682,78 @@ async fn floor_applies_to_every_step_of_a_nested_path() {
     fx.accept(&ok, "child at (m1, i1)").await;
 }
 
+/// An empty configured pointer on the second hop cannot authorize a claim,
+/// even though the claim itself names a complete, verified identity snapshot.
+#[tokio::test]
+async fn nested_empty_configured_pointer_is_invalid() {
+    let fx = fixture().await;
+    let m = Database::create(&fx.instance, PrivateKey::generate(), Doc::new())
+        .await
+        .unwrap();
+    let mut doc = Doc::new();
+    doc.set(
+        format!("auth.delegations.{}", fx.identity.root_id()),
+        delegation_ref(fx.identity.root_id(), vec![]),
+    );
+    let parent = m.snapshot().await.unwrap().into_tips();
+    let settings_parents = fx
+        .engine()
+        .store_snapshot_at(
+            m.root_id(),
+            SETTINGS,
+            &crate::Snapshot::from(parent.clone()),
+        )
+        .await
+        .unwrap()
+        .into_tips();
+    // Simulate an older, already-Verified middle tree whose signed settings
+    // contain an empty pointer. This tests resolution rather than validating
+    // the middle tree's own new pointer write.
+    let entry = Entry::builder(m.root_id().clone())
+        .set_parents(parent)
+        .set_subtree_parents(SETTINGS, settings_parents)
+        .set_subtree_data(SETTINGS, serde_json::to_vec(&doc).unwrap())
+        .set_height(10)
+        .build()
+        .unwrap();
+    let middle = entry.id();
+    fx.engine().put(entry).await.unwrap();
+    fx.engine()
+        .update_verification_status(&middle, VerificationStatus::Verified)
+        .await
+        .unwrap();
+    let admin = Database::open(&fx.instance, fx.target.root_id())
+        .await
+        .unwrap()
+        .with_key(crate::database::DatabaseKey::new(fx.target_admin.clone()));
+    let txn = admin.new_transaction().await.unwrap();
+    txn.get_settings()
+        .unwrap()
+        .add_delegated_tree(delegation_ref(m.root_id(), vec![middle.clone()]))
+        .await
+        .unwrap();
+    txn.commit().await.unwrap();
+    let attempt = fx
+        .delegated(
+            &fx.tips().await,
+            &[(m.root_id(), &[middle]), (fx.identity.root_id(), &fx.i0)],
+            &fx.member,
+        )
+        .await;
+    let (_, auth) = fx.pinned_settings().await;
+    let mut resolver = super::delegation::DelegationResolver::new();
+    let SigKey::Delegation { path, hint } = &attempt.auth().key else {
+        panic!("expected delegation")
+    };
+    let result = resolver
+        .resolve_delegation_path(path, hint, &auth, &fx.instance)
+        .await;
+    assert!(matches!(result, Err(Error::Auth(e))
+        if matches!(&*e, AuthError::InvalidDelegationTips { claimed_tips, .. } if claimed_tips.is_empty())));
+    fx.reject(&attempt, "empty nested pointer cannot authorize a claim")
+        .await;
+}
+
 /// A direct-key chain does not erase a root's cached derived frontier.
 #[tokio::test]
 async fn floor_uses_nearest_same_tree_ancestor_on_each_path() {
@@ -815,6 +887,65 @@ async fn pointer_add_delegated_tree_allows_admin_rewind() {
         .get_delegated_tree(fx.identity.root_id())
         .unwrap();
     assert_eq!(as_set(&committed.tree.tips), as_set(&fx.i0));
+}
+
+/// Signed settings edges must represent the main-parent causal frontier.
+/// The resulting floor must not be inferred by folding main ancestry when
+/// the actual settings store would see a different DAG.
+#[tokio::test]
+async fn settings_parent_frontier_omission_and_extraneous_edge_fail_remote() {
+    let fx = fixture().await;
+    let base = fx.tips().await;
+    let write = settings_entry(&fx, pointer_write(fx.identity.root_id(), fx.i1.clone())).await;
+    let raw = write.data(SETTINGS).unwrap().clone();
+    let metadata = write.metadata().unwrap().to_vec();
+    let height = write.height();
+    let make = |parents: Vec<ID>, subtree_parents: Vec<ID>| {
+        let e = Entry::builder(fx.target.root_id().clone())
+            .set_parents(parents)
+            .set_subtree_data(SETTINGS, raw.clone())
+            .set_subtree_parents(SETTINGS, subtree_parents)
+            .set_metadata(metadata.clone())
+            .set_height(height + 1)
+            .build()
+            .unwrap();
+        Fixture::sign(
+            e,
+            SigKey::from_pubkey(&fx.target_admin.public_key()),
+            &fx.target_admin,
+        )
+    };
+    let omitted = make(base.clone(), vec![]);
+    assert_eq!(
+        fx.submit_remote(omitted.clone()).await,
+        VerificationStatus::Failed
+    );
+    assert!(
+        !fx.target
+            .snapshot()
+            .await
+            .unwrap()
+            .tips()
+            .contains(&omitted.id())
+    );
+
+    // A concurrent settings write exists locally but is not a main ancestor
+    // of the entry whose settings parents forge a link to it.
+    let sibling = settings_entry(&fx, Doc::new()).await;
+    let sibling = fx.accept(&sibling, "valid settings sibling").await;
+    let extraneous = make(base, vec![sibling]);
+    assert_eq!(
+        fx.submit_remote(extraneous.clone()).await,
+        VerificationStatus::Failed
+    );
+    assert!(
+        !fx.target
+            .snapshot()
+            .await
+            .unwrap()
+            .tips()
+            .contains(&extraneous.id())
+    );
 }
 
 /// A raw `_settings` Admin write (also used by remote ingest) may rewind.
@@ -1180,6 +1311,69 @@ async fn nested_floor_survives_first_hop_removal_and_readd() {
         .await;
     fx.reject(&stale_i, "nested I floor survives M removal")
         .await;
+}
+
+/// Removing a direct R declaration resets only direct observations. A still
+/// active T -> M -> R route continues to inherit the nested R observation.
+#[tokio::test]
+async fn overlapping_direct_and_nested_root_removal_keeps_nested_floor() {
+    let fx = fixture().await;
+    let m = Database::create(&fx.instance, PrivateKey::generate(), Doc::new())
+        .await
+        .unwrap();
+    let txn = m.new_transaction().await.unwrap();
+    txn.get_settings()
+        .unwrap()
+        .add_delegated_tree(delegation_ref(fx.identity.root_id(), fx.i0.clone()))
+        .await
+        .unwrap();
+    txn.commit().await.unwrap();
+    let m0 = m.snapshot().await.unwrap().into_tips();
+    let admin = Database::open(&fx.instance, fx.target.root_id())
+        .await
+        .unwrap()
+        .with_key(crate::database::DatabaseKey::new(fx.target_admin.clone()));
+    let txn = admin.new_transaction().await.unwrap();
+    txn.get_settings()
+        .unwrap()
+        .add_delegated_tree(delegation_ref(m.root_id(), m0.clone()))
+        .await
+        .unwrap();
+    txn.commit().await.unwrap();
+
+    let nested = fx
+        .delegated(
+            &fx.tips().await,
+            &[(m.root_id(), &m0), (fx.identity.root_id(), &fx.i1)],
+            &fx.member,
+        )
+        .await;
+    let nested = fx.accept(&nested, "observe R at i1 through M").await;
+    let mut deletion = Doc::new();
+    deletion.remove(format!("auth.delegations.{}", fx.identity.root_id()));
+    let removal = settings_entry(&fx, deletion).await;
+    let removal = fx.accept(&removal, "remove direct R only").await;
+    let merge = fx.direct(&[nested, removal]).await;
+    let merge = fx
+        .accept(&merge, "carry nested floor through removal merge")
+        .await;
+    let stale = fx
+        .delegated(
+            std::slice::from_ref(&merge),
+            &[(m.root_id(), &m0), (fx.identity.root_id(), &fx.i0)],
+            &fx.member,
+        )
+        .await;
+    fx.reject(&stale, "nested i1 must survive direct R removal")
+        .await;
+    let current = fx
+        .delegated(
+            &[merge],
+            &[(m.root_id(), &m0), (fx.identity.root_id(), &fx.i1)],
+            &fx.member,
+        )
+        .await;
+    fx.accept(&current, "nested i1 remains usable").await;
 }
 
 #[tokio::test]
