@@ -3092,6 +3092,125 @@ async fn test_remote_ordered_physical_staging() {
     );
 }
 
+/// Preserve an encoded request across a lost acknowledgement and reconnect.
+/// Replaying a pre-delete put must not resurrect the row after a newer delete.
+#[tokio::test]
+async fn test_exact_staging_chunk_retry_after_reconnect_and_delete() {
+    use eidetica::backend::{RecordMutation as M, StagingStatus};
+    use eidetica::service::client::RemoteConnection;
+    use eidetica::service::protocol::DatabaseOp;
+
+    let (socket, shutdown, server, _dir) = start_test_server().await;
+    let (instance, root, identity) = setup_db(&server, &socket, "alice").await;
+    let request = derived_request(&root, "replay-after-delete");
+    let token = remote_conn(&instance)
+        .begin_store_state_staging(identity.clone(), request.clone())
+        .await
+        .unwrap();
+    let put = RemoteConnection::encode_staging_chunk(
+        root.clone(),
+        identity.clone(),
+        DatabaseOp::StageStoreStateOrdered {
+            token: token.clone(),
+            chunk_id: 0,
+            mutations: vec![M::Put {
+                key: b"row".to_vec(),
+                value: b"first".to_vec(),
+            }],
+        },
+    )
+    .unwrap();
+    remote_conn(&instance)
+        .send_staging_chunk(&put)
+        .await
+        .unwrap();
+    // The caller cannot distinguish an acknowledgement lost during teardown
+    // from a request that never arrived. Restart the daemon with its backend.
+    shutdown.send(()).unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let failed = tokio::time::timeout(
+        Duration::from_secs(2),
+        remote_conn(&instance).send_staging_chunk(&put),
+    )
+    .await
+    .expect("old connection must fail promptly on shutdown");
+    assert!(
+        failed.is_err(),
+        "closed connection cannot acknowledge a chunk"
+    );
+    drop(instance);
+    let mut restarted = None;
+    for _ in 0..50 {
+        if let Ok(service) = ServiceServer::bind(server.clone(), socket.clone()).await {
+            restarted = Some(service);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let (_tx, rx) = watch::channel(());
+    tokio::spawn(restarted.expect("old daemon must release socket").run(rx));
+    let instance = Instance::connect(format!("unix://{}", socket.display()))
+        .await
+        .unwrap();
+    instance.login_user("alice", None).await.unwrap();
+    let conn = remote_conn(&instance);
+    assert_eq!(
+        conn.store_state_staging_status(root.clone(), identity.clone(), token.clone())
+            .await
+            .unwrap(),
+        Some(StagingStatus::Active)
+    );
+    conn.send_staging_chunk(&put).await.unwrap();
+
+    let delete = RemoteConnection::encode_staging_chunk(
+        root.clone(),
+        identity.clone(),
+        DatabaseOp::StageStoreStateOrdered {
+            token: token.clone(),
+            chunk_id: 1,
+            mutations: vec![M::Delete {
+                key: b"row".to_vec(),
+            }],
+        },
+    )
+    .unwrap();
+    conn.send_staging_chunk(&delete).await.unwrap();
+    assert!(
+        conn.send_staging_chunk(&put).await.is_err(),
+        "older put must be rejected"
+    );
+    assert!(
+        conn.send_staging_chunk(
+            &RemoteConnection::encode_staging_chunk(
+                root.clone(),
+                identity.clone(),
+                DatabaseOp::StageStoreStateOrdered {
+                    token: token.clone(),
+                    chunk_id: 1,
+                    mutations: vec![M::Put {
+                        key: b"row".to_vec(),
+                        value: b"conflict".to_vec()
+                    }],
+                },
+            )
+            .unwrap()
+        )
+        .await
+        .is_err(),
+        "conflicting retry must be rejected"
+    );
+    let view = conn
+        .publish_store_state(root.clone(), identity.clone(), token)
+        .await
+        .unwrap();
+    assert_eq!(
+        conn.store_state_record_get(root, identity, view, b"row".to_vec())
+            .await
+            .unwrap(),
+        None
+    );
+}
+
 /// A token is backend-owned: reconnecting the client cannot reset its sequence
 /// or lose its terminal result. The view is re-resolved after publication.
 #[tokio::test]

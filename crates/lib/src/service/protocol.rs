@@ -528,7 +528,15 @@ pub async fn write_frame<W: AsyncWrite + Unpin, T: Serialize>(
     value: &T,
 ) -> crate::Result<()> {
     let payload = serde_json::to_vec(value)?;
-    let len = payload.len() as u32;
+    write_encoded_frame(writer, &payload).await
+}
+
+/// Send previously encoded bytes unchanged (including on a retry).
+pub(crate) async fn write_encoded_frame<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    payload: &[u8],
+) -> crate::Result<()> {
+    let len = u32::try_from(payload.len()).unwrap_or(u32::MAX);
     if len > MAX_FRAME_SIZE {
         return Err(crate::Error::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -536,7 +544,7 @@ pub async fn write_frame<W: AsyncWrite + Unpin, T: Serialize>(
         )));
     }
     writer.write_all(&len.to_be_bytes()).await?;
-    writer.write_all(&payload).await?;
+    writer.write_all(payload).await?;
     writer.flush().await?;
     Ok(())
 }
