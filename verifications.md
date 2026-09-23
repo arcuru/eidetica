@@ -301,3 +301,38 @@ validation when the projection context evolves. Complete stale cursor/race,
 encrypted decrypting fallback, authorized remote recovery and automatic
 high-level retry fixtures before Table switches; then Phases 3-6 including
 actual Table/encryption/service behavior and benchmarks.
+
+## Phase 0 continuation: typed projection cursor and deterministic page race
+
+Intended: opaque transaction-view cursor with overlay revision, effective projection
+context and exclusive physical last key; reject stale continuations after typed
+put/delete or a racing mutation while a backend page is awaited. Preserve the
+Doc-backed table:v0 scan via an internal legacy cursor variant; do not switch
+Table's format or claim typed scans are wired to a backend yet.
+
+Performed: `nix develop -c cargo test -p eidetica --all-features --lib
+projected_page -- --nocapture`: 2 passed, 0 failed. The focused tests exercise
+physical-order continuation with staged overlay, cross-view and descriptor
+rejection, put/delete invalidation and a one-shot-channel-controlled backend
+fetch that releases only after a competing stage completes. Negative control
+removing both post-fetch and pre-return revision checks: race test failed
+0 passed / 1 failed (exit 101); restored source passed 2/2. The first negative
+control removing only the immediate post-fetch check stayed green because the
+final pre-return check also guards the path; it was not a valid kill. No typed
+Table scan is exposed yet; the fetcher boundary is internal and is exercised
+with a deterministic in-memory page provider, not a real backend.
+
+Newly required: route the typed projection's persisted RecordView and transaction
+read-your-writes into this scanner, validate physical-key shadowing and encrypted
+key identity against backend-neutral fixtures, and test real backend page races
+before the Table switch. Encrypted client decrypting fallback, authorized remote
+recovery/automatic retry, subsequent phases, service/encryption parity and
+benchmarks remain.
+
+Final formatted-source gate: `nix develop -c nix run .#fix` succeeded;
+`nix develop -c just nix full` exited 0. Nix nextest summary: in-memory,
+SQLite, PostgreSQL and service each 1523 tests run: 1523 passed, 5 skipped;
+minimal 1371 tests run: 1371 passed, 5 skipped. Both cursor fixtures
+reported PASS in each runner; NixOS service and OCI container VM integration
+passed. These fixtures use the internal deterministic provider in every runner,
+not those runners' remote/backend record scanners. No deployed Table switch.
