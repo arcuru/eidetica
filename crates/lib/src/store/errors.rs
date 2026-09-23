@@ -32,6 +32,11 @@ pub enum StoreError {
     #[error("Record maintenance unavailable for store '{store}'")]
     RecordMaintenanceUnavailable { store: String },
 
+    /// Continuation belongs to a different transaction view, overlay revision,
+    /// or effective projection context.
+    #[error("Stale cursor for store '{store}'")]
+    StaleCursor { store: String },
+
     /// Type mismatch in store operation
     #[error("Type mismatch in store '{store}': expected {expected}, found {actual}")]
     TypeMismatch {
@@ -106,6 +111,7 @@ impl StoreError {
     pub fn store_name(&self) -> &str {
         match self {
             StoreError::RecordMaintenanceUnavailable { store }
+            | StoreError::StaleCursor { store }
             | StoreError::KeyNotFound { store, .. }
             | StoreError::SerializationFailed { store, .. }
             | StoreError::DeserializationFailed { store, .. }

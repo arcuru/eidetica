@@ -110,9 +110,22 @@ impl RecordProjection<Doc> for TableProjection {
     }
 }
 
-/// Exclusive continuation for ordered Table scans.
+/// Opaque exclusive continuation for ordered Table scans.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TableCursor(Vec<u8>);
+pub struct TableCursor(pub(crate) CursorKind);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CursorKind {
+    // table:v0 remains Doc-backed until the format switch.
+    Legacy(Vec<u8>),
+    Projected {
+        view: Uuid,
+        revision: u64,
+        store: String,
+        projection: ProjectionDescriptor,
+        last_physical_key: Vec<u8>,
+    },
+}
 
 /// One bounded page of rows in the Store's persisted record-key order.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -380,7 +393,16 @@ where
             .record_scan(
                 &self.name,
                 &projection,
-                cursor.map(|cursor| cursor.0.as_slice()),
+                match cursor.map(|cursor| &cursor.0) {
+                    Some(CursorKind::Legacy(key)) => Some(key.as_slice()),
+                    Some(CursorKind::Projected { .. }) => {
+                        return Err(StoreError::StaleCursor {
+                            store: self.name.clone(),
+                        }
+                        .into());
+                    }
+                    None => None,
+                },
                 limit,
             )
             .await?;
@@ -401,7 +423,7 @@ where
         }
         Ok(TablePage {
             rows,
-            next: page.next.map(TableCursor),
+            next: page.next.map(|key| TableCursor(CursorKind::Legacy(key))),
         })
     }
 }
