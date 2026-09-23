@@ -696,10 +696,11 @@ pub trait BackendImpl: Send + Sync + Any {
                     floor_height = floor_height.min(entry.height());
                     unmet.insert(target.clone());
                 }
-                Err(_) => {
+                Err(e) if e.is_not_found() => {
                     unmet.insert(target.clone());
                     missing.push(target.clone());
                 }
+                Err(e) => return Err(e),
             }
         }
 
@@ -725,7 +726,8 @@ pub trait BackendImpl: Send + Sync + Any {
                         }
                     }
                 }
-                Err(_) => missing.push(tip.clone()),
+                Err(e) if e.is_not_found() => missing.push(tip.clone()),
+                Err(e) => return Err(e),
             }
         }
 
@@ -746,7 +748,8 @@ pub trait BackendImpl: Send + Sync + Any {
                         stack.extend(entry.parents()?);
                     }
                 }
-                Err(_) => missing.push(current.clone()),
+                Err(e) if e.is_not_found() => missing.push(current.clone()),
+                Err(e) => return Err(e),
             }
         }
 

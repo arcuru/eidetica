@@ -142,6 +142,10 @@ const TRANSPORTS_SUBTREE: &str = "transports";
 /// Private constant for the transport state store name (persisted identity/state per transport instance)
 const TRANSPORT_STATE_STORE: &str = "transport_state";
 
+/// Maximum delegated-database dependency depth followed by one sync operation.
+/// This mirrors authentication's delegation-path limit.
+const MAX_DEPENDENCY_DEPTH: usize = 10;
+
 /// Authentication parameters for sync operations.
 #[derive(Debug, Clone)]
 pub struct AuthParams {

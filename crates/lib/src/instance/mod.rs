@@ -1846,7 +1846,7 @@ impl Instance {
     ///
     /// Entries that fail to store are logged and skipped — remaining entries
     /// are still stored and callbacks still fire for whatever was persisted.
-    /// Returns the number of entries that were successfully persisted.
+    /// Returns the verification report for the resulting unverified region.
     ///
     /// Serialized per-tree against [`Self::put_entry`] and other concurrent
     /// `put_remote_entries` calls so `previous_tips` is consistent across
@@ -1864,9 +1864,9 @@ impl Instance {
         &self,
         tree_id: &ID,
         entries: Vec<Entry>,
-    ) -> Result<usize> {
+    ) -> Result<crate::database::VerifyReport> {
         if entries.is_empty() {
-            return Ok(0);
+            return Ok(crate::database::VerifyReport::default());
         }
 
         // Store the batch under the tree lock; release before calling
@@ -1894,10 +1894,10 @@ impl Instance {
         // subscribers see the promotion without needing to schedule
         // their own verify pass.
         if stored_count > 0 {
-            Database::open(self, tree_id).await?.verify().await?;
+            return Database::open(self, tree_id).await?.verify().await;
         }
 
-        Ok(stored_count)
+        Ok(crate::database::VerifyReport::default())
     }
 
     /// Demote `entry_id` to [`VerificationStatus::Unverified`] and
