@@ -3,6 +3,11 @@
 Stores define how their CRDT state is represented for reading.
 The default `StoreStateModel` caches state in one opaque record: it folds ordered Store deltas with the Store's `CRDT` implementation and stores the serialized result under a reserved key.
 This default applies to any Store data type and does not assume `Doc`.
+`Database::get_store_state::<S>` validates the registered Store type and returns `S::Data`; `get_doc_store_state` is explicitly DocStore-specific JSON convenience.
+The service read request carries the expected Store type and effective projection descriptor; the server checks both against `_index` and its known codecs after the ordinary canonical Read gate.
+Only supported plaintext DocStore and the existing Doc-backed Table are materialized server-side today.
+Unknown codecs and recordless storage report `RecordMaintenanceUnavailable`, which selects a typed, ordered Entry-history fold on the client; descriptor mismatch and authorization failures never do.
+Password-wrapped Stores remain opaque to server maintenance, and their client decrypting fallback is not part of this path yet.
 
 Backends persist each Store state as an opaque byte-keyed record set.
 Keys use unsigned lexicographic byte order, point reads address one key, and scans use half-open ranges with an exclusive continuation key.

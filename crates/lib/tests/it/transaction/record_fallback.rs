@@ -54,6 +54,30 @@ async fn recordless_backend_can_serve_a_client_without_reclamation() {
     assert_eq!(client.id(), server.id());
     let user = client.login_user("admin", None).await.unwrap();
     assert!(user.get_default_key().is_ok());
+    let mut admin = server.login_user("admin", None).await.unwrap();
+    let key = admin.get_default_key().unwrap();
+    let db = admin.create_database(Doc::new(), &key).await.unwrap();
+    let tx = db.new_transaction().await.unwrap();
+    tx.get_store::<DocStore>("data")
+        .await
+        .unwrap()
+        .set("key", "value")
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let identity = Database::find_sigkeys(&server, db.root_id(), &key)
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap()
+        .0;
+    let conn = client.remote_connection().unwrap();
+    let state = conn
+        .get_store_state::<DocStore>(db.root_id().clone(), identity, "data".into())
+        .await
+        .unwrap();
+    assert_eq!(state.get_as::<&str>("key"), Some("value"));
     shutdown.send(()).unwrap();
     task.await.unwrap().unwrap();
 }

@@ -1181,14 +1181,68 @@ async fn dispatch_database_op(
             Ok(ServiceResponse::TransactionContext(ctx))
         }
 
-        DatabaseOp::GetStoreState { store } => {
-            // Server-materialized merged state (unencrypted stores only).
-            // Encrypted stores must use GetStoreEntries instead — the
-            // ephemeral transaction here has no encryptor, and Doc
-            // deserialization would fail on ciphertext.
+        DatabaseOp::GetStoreState {
+            store,
+            expected_type,
+            projection,
+        } => {
+            use crate::store::{DocStore, Registered, Store, StoreError, Table};
+
+            // The per-tree Read gate above runs before looking up metadata or
+            // doing internal cache maintenance. Never trust the caller's codec.
             let db = Database::open(instance, &root_id).await?;
-            let value = db.get_store_state(&store).await?;
-            Ok(ServiceResponse::CrdtValue(value))
+            let txn = db.new_transaction().await?;
+            let actual = txn.get_index().await?.get_entry(&store).await?.type_id;
+            if actual != expected_type {
+                return Err(StoreError::TypeMismatch {
+                    store,
+                    expected: actual.clone(),
+                    actual: expected_type,
+                }
+                .into());
+            }
+            let known = if actual == DocStore::type_id() {
+                DocStore::state_model().descriptor()
+            } else if actual == Table::<serde_json::Value>::type_id() {
+                Table::<serde_json::Value>::state_model().descriptor()
+            } else {
+                // Includes unknown codecs and password-wrapped Stores: no
+                // server-side decoder or independently verifiable projection.
+                return Err(StoreError::RecordMaintenanceUnavailable { store }.into());
+            };
+            if projection != known {
+                return Err(StoreError::TypeMismatch {
+                    store,
+                    expected: format!("{known:?}"),
+                    actual: format!("{projection:?}"),
+                }
+                .into());
+            }
+            // Probe the substrate only after authorization and descriptor
+            // validation. A recordless daemon cannot publish a generation.
+            let probe = crate::store::state::opaque_request(
+                &root_id,
+                &store,
+                known,
+                Vec::new(),
+                CacheScope::Shared,
+            );
+            match instance.backend().resolve_store_state(&probe).await {
+                Err(err) if err.is_unsupported_store_state() => {
+                    return Err(StoreError::RecordMaintenanceUnavailable { store }.into());
+                }
+                Err(err) => return Err(err),
+                Ok(_) => {}
+            }
+            // Both supported plaintext codecs currently encode Doc. A new
+            // canonical Data type must get its own registered dispatch here.
+            let value = if actual == DocStore::type_id() {
+                db.get_store_state::<DocStore>(&store).await?
+            } else {
+                db.get_store_state::<Table<serde_json::Value>>(&store)
+                    .await?
+            };
+            Ok(ServiceResponse::CrdtValue(serde_json::to_value(value)?))
         }
 
         DatabaseOp::GetStoreEntries { store, tips, scope } => {

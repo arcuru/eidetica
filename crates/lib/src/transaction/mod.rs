@@ -1200,7 +1200,7 @@ impl Transaction {
         .await
     }
 
-    async fn get_full_state_with_descriptor<T>(
+    pub(crate) async fn get_full_state_with_descriptor<T>(
         &self,
         subtree_name: impl AsRef<str> + Send,
         descriptor: ProjectionDescriptor,
