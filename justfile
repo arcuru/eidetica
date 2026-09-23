@@ -486,13 +486,19 @@ nix action='check':
         build)
             nix build
             ;;
-        check)
+        check|full)
             if ! command -v nix-fast-build >/dev/null 2>&1; then
                 echo "error: nix-fast-build is not on PATH" >&2
                 echo "Enter the dev shell first ('nix develop' or 'direnv allow')," >&2
                 exit 127
             fi
-            nix-fast-build --no-link --skip-cached ${CI:+--no-nom}
+            target='.#checks'
+            if [ "{{ action }}" = full ]; then
+                # Push CI already combines checks and all integrations in one graph.
+                system=$(nix eval --raw --impure --expr builtins.currentSystem)
+                target=".#legacyPackages.${system}.ci"
+            fi
+            nix-fast-build --no-link --skip-cached ${CI:+--no-nom} -f "$target"
             ;;
         test)
             nix run .#test
@@ -506,12 +512,7 @@ nix action='check':
             nix build .#bench --rebuild --print-build-logs --no-link
             ;;
         integration)
-            nix build .#integration.nixos .#integration.container --print-build-logs --no-link
-            ;;
-        full)
-            just nix check
-            nix build .#eidetica.bin --no-link
-            just nix integration
+            nix build .#integration.default --print-build-logs --no-link
             ;;
         *)
             echo "Unknown action: {{ action }}"
