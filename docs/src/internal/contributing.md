@@ -21,15 +21,18 @@ just   # See all available commands
 
 ### Common Commands
 
-| Command       | Description                                     |
-| ------------- | ----------------------------------------------- |
-| `just dev`    | Fast local tests and Clippy (no separate build) |
-| `just build`  | Build all targets explicitly                    |
-| `just test`   | Run tests with cargo nextest                    |
-| `just lint`   | Linting (clippy, audit, etc.)                   |
-| `just fmt`    | Multi-language formatting                       |
-| `just ci`     | Full local check-only pipeline                  |
-| `just ci nix` | Push-CI graph: checks and all integrations      |
+| Command                | Description                                     |
+| ---------------------- | ----------------------------------------------- |
+| `just dev`             | Fast local tests and Clippy (no separate build) |
+| `just build`           | Build all targets explicitly                    |
+| `just test`            | Run tests with cargo nextest                    |
+| `just lint`            | Linting (clippy, audit, etc.)                   |
+| `just fmt`             | Multi-language formatting                       |
+| `just ci`              | Full local check-only pipeline                  |
+| `just ci nix`          | Push-CI graph: checks and all integrations      |
+| `just nix test sqlite` | Hermetic SQLite check only                      |
+| `just nix lint clippy` | Hermetic Clippy check only                      |
+| `just nix doc links`   | Offline documentation link check                |
 
 ### Testing
 

@@ -33,7 +33,7 @@ A dedicated Forgejo runner provides CI redundancy on [code.jackson.dev](https://
 
 ## Nix Flake
 
-The Nix flake defines reproducible builds and CI checks that run identically locally and in CI. `just nix full` builds the existing combined push-CI graph (checks and all integration tests) in one `nix-fast-build` invocation, sharing dependencies and overlapping integration with other checks. `just nix check` runs checks only; `just nix integration` runs all integration tests, including the real daemon smoke test.
+The Nix flake defines reproducible builds and CI checks that run identically locally and in CI. `just nix full` builds the existing combined push-CI graph (checks and all integration tests) in one `nix-fast-build` invocation, sharing dependencies and overlapping integration with other checks. `just nix check` runs checks only; `just nix integration` runs all integration tests, including the real daemon smoke test. For one hermetic target, use `just nix test sqlite`, `just nix lint clippy`, `just nix doc links`, or `just nix integration service`. Bare `just nix test` retains the interactive archive runner; `just nix test sqlite` builds the cached Nix check.
 
 - `nix build` - Build the default package
 - `nix flake check` - Run all CI checks (audit, clippy, doc, test, etc.)
