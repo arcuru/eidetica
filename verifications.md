@@ -83,7 +83,12 @@ Focused `TEST_BACKEND=sqlite` fixture passed 1/1; live socket fixture passed
 1/1. `nix develop -c nix run .#fix` succeeded. Final formatted-source `nix develop -c just nix full` succeeded: in-memory,
 SQLite, PostgreSQL and service each 1514 passed / 5 skipped; minimal 1365
 passed / 5 skipped; NixOS service and OCI container integration passed. A
-committed-tip rerun is recorded below after the signed commit.
+committed-tip `nix develop -c just nix full` also exited 0. Its Nix
+`test-all` derivation reused the verified backend outputs; `nix log` for each
+input confirmed the ordered physical fixture PASS on in-memory, SQLite,
+PostgreSQL and service (and minimal), the socket fixture PASS on all four
+full-feature runners, and the same nextest summaries: 1514/1514 with 5 skipped
+for each full-feature runner, 1365/1365 with 5 skipped for minimal.
 
 Newly required: exact encoded-chunk replay after ambiguous transport (adapter
 still lacks it), bounded terminal-token retention and unknown-token safety,
