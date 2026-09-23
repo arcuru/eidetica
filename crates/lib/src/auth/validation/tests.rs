@@ -509,7 +509,7 @@ async fn test_delegated_tree_requires_tips() {
             },
             tree: TreeReference {
                 root: delegated_tree.root_id().clone(),
-                tips: vec![ID::from_bytes("some_tip")],
+                tips: delegated_tree.snapshot().await.unwrap().into_tips(),
             },
         })
         .await

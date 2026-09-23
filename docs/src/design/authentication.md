@@ -572,25 +572,25 @@ The main database must validate the delegated database structure as well as the 
 
 #### Committed Delegation Pointers
 
-Each delegated signature carries the delegated database snapshot it observed. The parent database can also commit a delegation pointer in `DelegatedTreeRef.tree.tips`; that pointer is a floor, not an automatically-maintained record of every observed signature. A claimed snapshot must ancestry-cover the committed pointer, and an `_settings` write may only move that pointer forward. At a merge, the new pointer must cover the join of the last committed pointers inherited from every parent path.
+Each delegated signature carries the snapshot it observed at every delegation step. The primary database also has a configured first-hop pointer in `DelegatedTreeRef.tree.tips`. A direct-key Admin may rewind that pointer to any valid delegated snapshot. Its write adds the new pointer to that entry's causal floor for descendants; a signature through the same delegation on that entry must already cover it. A delegated claim must also cover the inherited frontiers of all immediate main-tree parents. Configured pointers at deeper steps belong to their own delegated trees.
 
 #### Causal Snapshot Validation
 
 Validation is snapshot-pinned and causal, per delegated database root:
 
-1. **Tree-membership validation.** Every claimed tip must be a real entry in that delegated database.
-2. **Snapshot-pinned resolution.** Permissions are resolved from the claimed snapshot, rather than from a live head. A later delegated-database change therefore does not retroactively change how an already-signed entry resolves.
-3. **Committed-pointer floor.** The claimed snapshot must ancestry-cover the parent database's committed pointer. Pointer updates are forward-only, including at merges as described above.
-4. **Inherited entry floor.** A delegated signature must also ancestry-cover every snapshot of that same delegated root inherited through its entry's parent paths. Siblings may validly name different snapshots; a descendant of a merge must cover every inherited sibling snapshot. An intervening direct-key entry, signer change, or signature through another delegated identity does not reset this floor.
-5. **Permission validation.** The resolved key must exist and have sufficient permission at the claimed snapshot, after delegation bounds are applied.
+1. **Tree membership and proof.** Every claimed and newly configured tip belongs to the referenced database and has complete locally `Verified` ancestry.
+2. **Snapshot-pinned resolution.** Permissions come from the claimed snapshot, not a live head; later changes do not retroactively change older signatures.
+3. **Derived per-entry floors.** Every signature step contributes a frontier keyed by delegated root. The entry joins its immediate parents' frontiers and each claim must cover its inherited frontier. At a merge, the claim must cover every parent; a validated claim replaces dominated tips. This state is a disposable Entry-ID-keyed projection, rebuilt from `Verified` parents on a cache miss.
+4. **First-hop settings pointer.** A first-hop configured pointer contributes to the floor. A direct-key Admin may rewind it without covering previous claims or configured pointers; later delegated signatures still must cover any retained inherited signature floors. Effective removal in the entry's **resulting merged** `_settings` clears only the removed first-hop root's accumulated floor. A concurrent removal that loses the settings merge does not clear it. Nested roots remain pinned across first-hop removal/re-addition, limiting this last-resort recovery path.
+5. **Permission validation.** The resolved key has sufficient permission at the claimed snapshot, subject to delegation bounds.
 
-These rules prevent a delegated signature from regressing below either committed or causally inherited snapshots. They do not assert that a claimed snapshot is a live head, automatically advance a high-water mark for every observed entry, or make authority reduction retroactive.
+The signed Entry/AuthInfo encoding is unchanged. Before trusting an existing database under these rules, operators must explicitly reset all legacy verification statuses and derived caches with the separate local reset utility and reverify immutable Entries. No automatic migration/version marker is provided: omitting the reset may leave old `Verified` labels trusted. Snapshot floors do not establish live-head freshness or retroactive revocation.
 
 #### Incomplete Delegated Proof
 
-Delegated authentication requires the history needed to reconstruct each claimed snapshot and its inherited floors. When that proof is incomplete, validation leaves the signed entry `Unverified` and outside the verified frontier rather than treating it as permanently invalid. It reports the delegated database root and first known missing entries so synchronization can obtain the dependency and retry validation. A bad signature, a wrong-tree claim, or a proven regression remains a definitive failure.
+Delegated authentication requires the history needed to reconstruct each claimed snapshot and its inherited floors. When a required entry is missing **or present but `Unverified`**, validation leaves the signed entry `Unverified` and outside the verified frontier. It reports the delegated root and dependency IDs so a later verification pass can retry without recursively verifying another tree under a per-tree lock. A bad signature, a wrong-tree claim, or a proven regression remains a definitive failure.
 
-Automatic dependency tracking and recursive fetching remain future work. Delegated databases can be replicated as ordinary databases, served to peers, and directly tracked when local edits are needed.
+Fetching and dependency-first automatic retries are separate sync work; this validator supports explicit later re-verification. Delegated databases can be replicated as ordinary databases, served to peers, and directly tracked when local edits are needed.
 
 #### Implementation Status: Snapshot Pinning and Causal Floors
 
@@ -755,7 +755,7 @@ graph TD
 - **Administrative Hierarchy Violations**: Lower priority keys cannot modify higher priority keys (but can modify equal priority keys)
 - **Permission Boundary Violations**: Delegated database permissions are constrained within their specified min/max bounds
 - **Cross-Tree Tip Forgery**: Claimed delegation tips are validated as members of the referenced delegated database, not merely as entries existing somewhere in the backend
-- **Delegated-Tree Snapshot Regression (bounded)**: Auth resolution is pinned to the snapshot the signer claimed, which must cover both the forward-only committed pointer and the per-root floors inherited through every parent. This does not establish live-head freshness or retroactive authority reduction (see §Implementation Status)
+- **Delegated-Tree Snapshot Regression (bounded)**: Auth resolution is pinned to the snapshot the signer claimed, which must cover both the configured first-hop pointer and per-root derived floors inherited through every parent. This does not establish live-head freshness or retroactive authority reduction (see §Implementation Status)
 - **Race Conditions**: Last Write Wins provides deterministic conflict resolution
 
 #### Requires Manual Recovery
@@ -783,7 +783,7 @@ graph TD
 
 - **DoS via Large Histories**: Priority system limits damage from compromised lower-priority keys
 - **DoS via Delegation Amplification**: Delegation path length and per-step claimed-tip count are bounded, capping the backend work an unauthenticated signature key can force before authorization; deeper amplification within those bounds is still possible
-- **Delegated-Tree Snapshot Regression**: Claimed snapshots must cover both forward-only committed pointers and per-root floors inherited through every parent; this does not assert live-head freshness or make later authority reduction retroactive (see §Implementation Status)
+- **Delegated-Tree Snapshot Regression**: Claimed snapshots must cover the configured first-hop pointer and per-root derived floors inherited through every parent; this does not assert live-head freshness or make later authority reduction retroactive (see §Implementation Status)
 - **Social Engineering**: Administrative hierarchy limits scope of individual key compromise
 - **Timestamp Manipulation**: LWW conflict resolution is deterministic but may be influenced by the chosen timestamp resolution algorithm
 - **Administrative Confusion**: Network partitions may result in unexpected administrative states due to LWW resolution

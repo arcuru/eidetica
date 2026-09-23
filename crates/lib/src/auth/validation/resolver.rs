@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use super::{delegation::DelegationResolver, floors::FloorWalker};
+use super::{delegation::DelegationResolver, floors::DerivedFloors};
 use crate::{
     Instance, Result,
     auth::{
@@ -70,7 +70,7 @@ impl KeyResolver {
         sig_key: &SigKey,
         auth_settings: &AuthSettings,
         instance: Option<&Instance>,
-        floors: &mut FloorWalker<'_>,
+        floors: &mut DerivedFloors,
     ) -> Result<Vec<ResolvedAuth>> {
         match sig_key {
             SigKey::Direct { hint } => self.resolve_direct_key(hint, auth_settings),

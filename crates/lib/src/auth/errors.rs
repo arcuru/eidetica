@@ -159,12 +159,8 @@ pub enum AuthError {
         claimed_tips: Vec<ID>,
     },
 
-    /// A `_settings` write moves a committed delegation pointer backwards.
-    ///
-    /// The `tips` a parent database commits for a delegation
-    /// (`TreeReference.tips`) are a floor for every signature through that
-    /// delegation, so the pointer may only move forward: the new tips must
-    /// ancestry-cover the previously committed tips (equality allowed).
+    /// Legacy error for a backwards configured pointer (no longer emitted).
+    /// Direct-key Admin rewinds are valid; retained for API compatibility.
     #[error(
         "Delegation pointer for tree {tree_id} moved backwards: new tips {new_tips:?} do not \
          cover the committed tips {previous_tips:?}"

@@ -626,11 +626,15 @@ This allows:
 - Readable key names for human-friendly lookups
 - Fine-grained access control based on how the key is referenced
 
+### Upgrade prerequisite
+
+Before upgrading an existing database to the derived delegated-auth rules, explicitly run the separate local verification-reset utility to clear **every** old verification label and derived cache, then reverify immutable Entries. This is an operator-managed step, not an automatic migration. Skipping it may trust legacy `Verified` entries under the old rules. Missing and present-but-`Unverified` delegated history remains retryable; synchronize and explicitly reverify dependencies before retrying the dependent database.
+
 ### Best Practices
 
 1. **Use descriptive key names**: `"alice_laptop"`, `"deploy_bot"` for keys that will be looked up by name
 2. **Set appropriate permission bounds**: Don't grant more access than needed
-3. **Advance delegation tips causally**: A committed pointer may move forward only to a snapshot that covers its prior floor; merge settings must cover every parent pointer. This is not a live-head freshness or general revocation mechanism
+3. **Manage delegation tips deliberately**: An Admin can set any valid first-hop snapshot, including an older one. Delegated signatures must cover their inherited causal floors; removing and re-adding a first-hop delegation resets only that root's floor, not nested roots. This is a last-resort recovery tool, not live-head freshness or retroactive revocation
 4. **Track delegated database root IDs**: Delegation paths use root IDs, so document which IDs correspond to which databases
 5. **Document delegation chains**: Complex hierarchies can be hard to debug
 
