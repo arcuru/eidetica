@@ -908,6 +908,100 @@ async fn projected_page_discards_awaited_fetch_after_racing_mutation() {
 }
 
 #[tokio::test]
+async fn projected_unstaged_page_keeps_cursor_and_rejects_racing_stage() {
+    let (instance, _) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        crate::NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let (key, _) = generate_keypair();
+    let db = Database::create(&instance, key, Doc::new()).await.unwrap();
+    let tx = db.new_transaction().await.unwrap();
+    let (page, cursor) = tx
+        .projected_scan_page(
+            "rows",
+            RowsProjection.descriptor(),
+            None,
+            1,
+            None,
+            |after, _| async move {
+                assert!(after.is_none());
+                Ok(crate::backend::RecordPage {
+                    records: vec![(b"a".to_vec(), b"one".to_vec())],
+                    next: Some(b"a".to_vec()),
+                })
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(page.records, vec![(b"a".to_vec(), b"one".to_vec())]);
+    assert!(page.next.is_none());
+    let cursor = cursor.unwrap();
+    let (page, next) = tx
+        .projected_scan_page(
+            "rows",
+            RowsProjection.descriptor(),
+            Some(&cursor),
+            1,
+            None,
+            |after, _| async move {
+                assert_eq!(after, Some(b"a".to_vec()));
+                Ok(crate::backend::RecordPage {
+                    records: vec![(b"b".to_vec(), b"two".to_vec())],
+                    next: None,
+                })
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(page.records, vec![(b"b".to_vec(), b"two".to_vec())]);
+    assert!(next.is_none());
+
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let reader = tx.clone();
+    let task = tokio::spawn(async move {
+        let mut entered = Some(entered_tx);
+        let mut release = Some(release_rx);
+        reader
+            .projected_scan_page(
+                "rows",
+                RowsProjection.descriptor(),
+                None,
+                1,
+                None,
+                move |_, _| {
+                    entered.take().unwrap().send(()).unwrap();
+                    let wait = release.take().unwrap();
+                    async move {
+                        wait.await.unwrap();
+                        Ok(crate::backend::RecordPage::default())
+                    }
+                },
+            )
+            .await
+    });
+    entered_rx.await.unwrap();
+    tx.stage_projected_delta("rows", &RowsProjection, row("c", "three"))
+        .await
+        .unwrap();
+    release_tx.send(()).unwrap();
+    is_stale(task.await.unwrap());
+    is_stale(
+        tx.projected_scan_page(
+            "rows",
+            RowsProjection.descriptor(),
+            Some(&cursor),
+            1,
+            None,
+            |_, _| async { unreachable!("stale cursor must be rejected before fetching") },
+        )
+        .await,
+    );
+}
+
+#[tokio::test]
 async fn projected_staging_installs_concurrent_writes_in_canonical_and_both_overlays() {
     let (instance, _) = Instance::create_backend(
         Box::new(InMemory::new()),

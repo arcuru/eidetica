@@ -1262,6 +1262,28 @@ impl Transaction {
             check_revision()?;
             return Ok((crate::backend::RecordPage::default(), None));
         }
+        // Without staged rows, the backend already supplies a bounded ordered
+        // page. Avoid copying it into a merge map, but keep the race checks.
+        if snapshot.is_none() {
+            let result = fetch(after, limit).await;
+            check_revision()?;
+            let mut page = result?;
+            let next = page.next.take().map(|last_physical_key| {
+                TableCursor(CursorKind::Projected {
+                    view: self.view_id,
+                    revision,
+                    store: store.into(),
+                    projection: context.clone(),
+                    frontier: frontier.clone(),
+                    last_physical_key,
+                })
+            });
+            for (key, value) in &mut page.records {
+                (*key, *value) = self.decode_projected_record(store, key, value)?;
+            }
+            check_revision()?;
+            return Ok((page, next));
+        }
         let mut merged = snapshot
             .as_ref()
             .map(|state| &state.physical)
