@@ -52,8 +52,8 @@ use sqlx::{AnyPool, Executor};
 use crate::Result;
 use crate::backend::errors::BackendError;
 use crate::backend::{
-    BackendImpl, InstanceMetadata, InstanceSecrets, RecordMutations, RecordPage, RecordRange,
-    RecordView, StagingToken, StoreStateRequest, VerificationStatus,
+    BackendImpl, InstanceMetadata, InstanceSecrets, RecordMutation, RecordMutations, RecordPage,
+    RecordRange, RecordView, StagingToken, StoreStateRequest, VerificationStatus,
 };
 use crate::entry::{Entry, ID};
 use crate::snapshot::Snapshot;
@@ -840,6 +840,16 @@ impl BackendImpl for SqlxBackend {
         records: RecordMutations,
     ) -> Result<()> {
         storage::stage_store_state_chunk(self, token, sequence, digest, records).await
+    }
+
+    async fn stage_store_state_ordered_chunk(
+        &self,
+        token: &StagingToken,
+        sequence: u64,
+        digest: &[u8],
+        mutations: Vec<RecordMutation>,
+    ) -> Result<()> {
+        storage::stage_store_state_ordered_chunk(self, token, sequence, digest, mutations).await
     }
 
     async fn renew_store_state_staging(&self, token: &StagingToken) -> Result<()> {

@@ -892,6 +892,146 @@ async fn clearing_derived_records_preserves_an_active_reader_and_rebuilds() {
 /// Conformance over the same backend trait used by the daemon. A failed chunk
 /// cannot advance the sequence; terminal status survives record removal.
 #[tokio::test]
+async fn ordered_physical_staging_and_empty_generation() {
+    use eidetica::backend::{RecordMutation as M, StagingStatus};
+    let backend = test_backend().await;
+    let target = request("ordered", "store", StoreStateLifecycle::Derived);
+    let token = backend.begin_store_state_staging(target).await.unwrap();
+    let put = vec![M::Put {
+        key: b"row".to_vec(),
+        value: b"first".to_vec(),
+    }];
+    backend
+        .stage_store_state_ordered_chunk(&token, 0, b"first", put.clone())
+        .await
+        .unwrap();
+    // The backend's digest is trusted here; the service computes it from the
+    // full ordered wire chunk before accepting a client replay.
+    backend
+        .stage_store_state_ordered_chunk(&token, 0, b"first", put.clone())
+        .await
+        .unwrap();
+    backend
+        .stage_store_state_ordered_chunk(
+            &token,
+            1,
+            b"delete",
+            vec![
+                M::Delete {
+                    key: b"row".to_vec(),
+                },
+                M::Delete {
+                    key: b"missing".to_vec(),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+    assert!(
+        backend
+            .stage_store_state_ordered_chunk(&token, 0, b"first", put)
+            .await
+            .is_err()
+    );
+    assert!(
+        backend
+            .stage_store_state_ordered_chunk(&token, 3, b"gap", vec![])
+            .await
+            .is_err()
+    );
+    assert!(
+        backend
+            .stage_store_state_ordered_chunk(&token, 1, b"conflict", vec![])
+            .await
+            .is_err()
+    );
+    backend
+        .stage_store_state_ordered_chunk(
+            &token,
+            2,
+            b"resurrect",
+            vec![M::Put {
+                key: b"row".to_vec(),
+                value: b"last".to_vec(),
+            }],
+        )
+        .await
+        .unwrap();
+    let view = backend.publish_store_state(token.clone()).await.unwrap();
+    assert_eq!(
+        backend.store_state_record_get(&view, b"row").await.unwrap(),
+        Some(b"last".to_vec())
+    );
+    assert_eq!(
+        backend
+            .store_state_record_get(&view, b"missing")
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        backend.store_state_staging_status(&token).await.unwrap(),
+        Some(StagingStatus::Published(view.clone()))
+    );
+    assert!(
+        backend
+            .stage_store_state_ordered_chunk(&token, 3, b"late", vec![])
+            .await
+            .is_err()
+    );
+
+    let empty = request("empty-generation", "store", StoreStateLifecycle::Derived);
+    let token = backend
+        .begin_store_state_staging(empty.clone())
+        .await
+        .unwrap();
+    backend
+        .stage_store_state_ordered_chunk(
+            &token,
+            0,
+            b"same-chunk",
+            vec![
+                M::Put {
+                    key: b"row".to_vec(),
+                    value: b"temporary".to_vec(),
+                },
+                M::Delete {
+                    key: b"row".to_vec(),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+    let view = backend.publish_store_state(token).await.unwrap();
+    assert_eq!(
+        backend.resolve_store_state(&empty).await.unwrap(),
+        Some(view.clone())
+    );
+    assert!(
+        backend
+            .store_state_record_scan(&view, &RecordRange::default(), None, 10)
+            .await
+            .unwrap()
+            .records
+            .is_empty()
+    );
+    let never_written = request("never-written", "store", StoreStateLifecycle::Derived);
+    let token = backend
+        .begin_store_state_staging(never_written.clone())
+        .await
+        .unwrap();
+    let view = backend.publish_store_state(token).await.unwrap();
+    assert_eq!(
+        backend.resolve_store_state(&never_written).await.unwrap(),
+        Some(view.clone())
+    );
+    assert_eq!(
+        backend.store_state_record_get(&view, b"row").await.unwrap(),
+        None
+    );
+}
+
+#[tokio::test]
 async fn sequenced_token_status_adoption_and_abort() {
     use eidetica::backend::StagingStatus;
     let backend = test_backend().await;

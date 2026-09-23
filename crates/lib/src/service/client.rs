@@ -1311,6 +1311,28 @@ impl RemoteConnection {
         .and_then(Self::expect_ok)
     }
 
+    /// Upload one ordered physical chunk without collapsing repeated keys.
+    pub async fn stage_store_state_ordered_chunk(
+        &self,
+        root: ID,
+        identity: SigKey,
+        token: String,
+        chunk_id: u64,
+        mutations: Vec<crate::backend::RecordMutation>,
+    ) -> crate::Result<()> {
+        self.db_request(
+            root,
+            identity,
+            DatabaseOp::StageStoreStateOrdered {
+                token,
+                chunk_id,
+                mutations,
+            },
+        )
+        .await
+        .and_then(Self::expect_ok)
+    }
+
     /// Publish the private build and return a view onto the published record set.
     pub async fn publish_store_state(
         &self,

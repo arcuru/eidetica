@@ -2990,6 +2990,108 @@ async fn test_open_database_with_unheld_key_is_rejected() {
     );
 }
 
+/// The real socket must preserve mutation order even when one chunk touches
+/// the same physical key more than once; an empty generation is resolvable.
+#[tokio::test]
+async fn test_remote_ordered_physical_staging() {
+    use eidetica::backend::RecordMutation as M;
+    let (socket, _tx, server, _dir) = start_test_server().await;
+    let (instance, root, identity) = setup_db(&server, &socket, "alice").await;
+    let conn = remote_conn(&instance);
+    let request = derived_request(&root, "ordered-physical");
+    let token = conn
+        .begin_store_state_staging(identity.clone(), request.clone())
+        .await
+        .unwrap();
+    let put = vec![M::Put {
+        key: b"row".to_vec(),
+        value: b"first".to_vec(),
+    }];
+    conn.stage_store_state_ordered_chunk(
+        root.clone(),
+        identity.clone(),
+        token.clone(),
+        0,
+        put.clone(),
+    )
+    .await
+    .unwrap();
+    conn.stage_store_state_ordered_chunk(
+        root.clone(),
+        identity.clone(),
+        token.clone(),
+        1,
+        vec![
+            M::Delete {
+                key: b"row".to_vec(),
+            },
+            M::Delete {
+                key: b"absent".to_vec(),
+            },
+        ],
+    )
+    .await
+    .unwrap();
+    assert!(
+        conn.stage_store_state_ordered_chunk(root.clone(), identity.clone(), token.clone(), 0, put)
+            .await
+            .is_err()
+    );
+    conn.stage_store_state_ordered_chunk(
+        root.clone(),
+        identity.clone(),
+        token.clone(),
+        2,
+        vec![M::Put {
+            key: b"row".to_vec(),
+            value: b"last".to_vec(),
+        }],
+    )
+    .await
+    .unwrap();
+    let view = conn
+        .publish_store_state(root.clone(), identity.clone(), token)
+        .await
+        .unwrap();
+    assert_eq!(
+        conn.store_state_record_get(root.clone(), identity.clone(), view, b"row".to_vec())
+            .await
+            .unwrap(),
+        Some(b"last".to_vec())
+    );
+    let token = conn
+        .begin_store_state_staging(identity.clone(), derived_request(&root, "empty-physical"))
+        .await
+        .unwrap();
+    conn.stage_store_state_ordered_chunk(
+        root.clone(),
+        identity.clone(),
+        token.clone(),
+        0,
+        vec![
+            M::Put {
+                key: b"row".to_vec(),
+                value: b"temporary".to_vec(),
+            },
+            M::Delete {
+                key: b"row".to_vec(),
+            },
+        ],
+    )
+    .await
+    .unwrap();
+    let view = conn
+        .publish_store_state(root.clone(), identity.clone(), token)
+        .await
+        .unwrap();
+    assert_eq!(
+        conn.store_state_record_get(root, identity, view, b"row".to_vec())
+            .await
+            .unwrap(),
+        None
+    );
+}
+
 /// A token is backend-owned: reconnecting the client cannot reset its sequence
 /// or lose its terminal result. The view is re-resolved after publication.
 #[tokio::test]

@@ -68,6 +68,17 @@ impl Backend for LocalBackend {
             .stage_store_state_chunk(token, sequence, digest, records)
             .await
     }
+    async fn stage_store_state_ordered_chunk(
+        &self,
+        token: &StagingToken,
+        sequence: u64,
+        digest: &[u8],
+        mutations: Vec<crate::backend::RecordMutation>,
+    ) -> Result<()> {
+        self.0
+            .stage_store_state_ordered_chunk(token, sequence, digest, mutations)
+            .await
+    }
     async fn reclaim_expired_store_state(&self) -> Result<u64> {
         self.0.reclaim_expired_store_state().await
     }

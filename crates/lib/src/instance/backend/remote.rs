@@ -152,6 +152,26 @@ impl Backend for RemoteBackend {
         Ok(())
     }
 
+    async fn stage_store_state_ordered_chunk(
+        &self,
+        token: &StagingToken,
+        sequence: u64,
+        _digest: &[u8],
+        mutations: Vec<crate::backend::RecordMutation>,
+    ) -> Result<()> {
+        // The service computes the digest of its encoded wire representation.
+        // This adapter does not yet recover an ambiguous transport response.
+        self.conn
+            .stage_store_state_ordered_chunk(
+                token.target.database.clone(),
+                self.identity(),
+                token.namespace_id.clone(),
+                sequence,
+                mutations,
+            )
+            .await
+    }
+
     async fn publish_store_state(&self, token: StagingToken) -> Result<RecordView> {
         let database = token.target.database.clone();
         let token_id = token.namespace_id.clone();

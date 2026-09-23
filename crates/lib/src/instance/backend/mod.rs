@@ -98,6 +98,16 @@ pub trait Backend: Send + Sync + std::fmt::Debug {
     async fn reclaim_expired_store_state(&self) -> Result<u64> {
         Err(BackendError::StoreStateStorageUnsupported.into())
     }
+    async fn stage_store_state_ordered_chunk(
+        &self,
+        _token: &StagingToken,
+        _sequence: u64,
+        _digest: &[u8],
+        _mutations: Vec<crate::backend::RecordMutation>,
+    ) -> Result<()> {
+        Err(BackendError::StoreStateStorageUnsupported.into())
+    }
+
     async fn stage_store_state_records(
         &self,
         _token: &StagingToken,
