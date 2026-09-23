@@ -85,8 +85,7 @@ async fn test_backend_get_tree_from_tips() {
 
     // Create entries: root -> e1 -> e2a, e2b
     // Set heights explicitly since we're using EntryBuilder directly
-    let root_entry = Entry::builder(ID::default())
-        .set_subtree_data("_root", b"\"\"")
+    let root_entry = Entry::root_builder()
         .set_height(0) // Root level
         .build()
         .expect("Root entry should build successfully");
