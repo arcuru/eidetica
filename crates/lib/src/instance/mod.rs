@@ -1212,6 +1212,27 @@ impl Instance {
         self.inner.clock.clone()
     }
 
+    /// Age a private build and run the daemon's normal reclamation operation.
+    /// Test-only, local backend only: no client or service protocol entry point.
+    #[cfg(feature = "testing")]
+    pub async fn testing_age_store_state_staging(&self, id: &str, seconds: i64) -> Result<()> {
+        let (token, _) = self
+            .inner
+            .backend
+            .store_state_staging_token(id)
+            .await?
+            .ok_or(crate::backend::BackendError::InvalidStoreStateStagingToken)?;
+        self.inner
+            .backend
+            .testing_age_store_state_staging(&token, seconds)
+            .await
+    }
+
+    #[cfg(feature = "testing")]
+    pub async fn testing_reclaim_expired_store_state(&self) -> Result<u64> {
+        self.inner.backend.reclaim_expired_store_state().await
+    }
+
     // === Backend pass-through methods (pub(crate) for internal use) ===
 
     /// Get an entry from the backend
