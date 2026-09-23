@@ -667,3 +667,72 @@ minimal `1379 tests run: 1379 passed, 5 skipped`. Nix logs show PASS for
 both changed backend fixtures in all five runners and for the new socket
 fixture in all four full-feature runners. NixOS service and OCI container
 integration VMs passed. The signed-tip gate is recorded after commit below.
+
+## Phase 0 service parity — persistent SQLite RPC (2026-09-23)
+
+Intended: close the fixture inventory's SQL-backed daemon gap without exposing a
+clock-control request or bypassing authenticated scope. The `testing` feature
+adds only a local Instance-to-backend token-aging/reclaim seam; it retrieves the
+backend-owned target for the opaque token instead of accepting a caller's
+claimed target. Production builds and the service protocol have no such method.
+The daemon's ordinary request dispatch also reclaims expired builds. The
+fixture explicitly drives reclamation locally when a precise count matters.
+
+Performed: `sqlite_service_lost_publication_request_expires_and_restarts`
+starts an authenticated Unix socket backed by a file SQLite database; stages a
+partial row but drops the publication request, advances the private lease to
+599 seconds (not reclaimable), then to 601 seconds (Expired). It rejects late
+publish, checks the partial row never resolves, denies pre-auth, wrong-database
+and wrong-user status and replacement, and stages/publishes a complete
+replacement. It shuts down the daemon, releases exclusive ownership, opens the
+same SQLite file and socket anew, then verifies Expired and Published outcomes
+and the exact published row through authenticated RPC. This checks persistent
+token state, not a fresh in-memory backend behind a socket.
+
+`sqlite_service_publish_vs_reclaim_has_one_terminal_result` synchronizes
+publication RPC and local reclamation against the same aged SQLite token,
+accepting only Expired with no published view or Published with the complete
+row resolvable. The service may reclaim before the explicit sweep during its
+normal dispatch, so its sweep count is not a winner oracle. It also publishes
+another complete token before aging it, and checks a subsequent sweep cannot
+expire or remove it. Wire view IDs are session handles, not generation IDs;
+therefore compare readable content/status instead of equality of two view IDs.
+This barrier establishes competing whole operations, not an artificially
+paused SQL statement; the existing PostgreSQL stage/publish pause tests cover
+an internal critical section separately.
+
+Focused `nix develop -c cargo test -p eidetica --all-features --test it
+sqlite_service_ -- --nocapture` on the formatted source: **2 passed, 0
+failed**, no ignored, 1049 filtered out. During construction the fixture
+initially failed 0/2 because a service user scope changes the backend target;
+the seam now fetches the actual target by token ID. A second assertion failed
+1/2 because wire handles are freshly minted on each resolution; it now checks
+actual record contents. Negative control in the published-first branch
+asserting an incorrect reclaim count of 1 failed **0 passed / 1 failed** at
+`left: 0 right: 1`; restored 2/2. The final suite reaches actual service
+authorization, SQLite lease transition, restart persistence and both terminal
+race branches' acceptance predicate (published-first independently exercised).
+
+`nix develop -c nix run .#fix` succeeded (clippy, deadnix, markdownlint,
+statix, treefmt). Formatted-source `nix develop -c just nix full` passed:
+in-memory, SQLite, PostgreSQL and service each **1540 tests run: 1540 passed,
+5 skipped**; minimal **1379 tests run: 1379 passed, 5 skipped**. Both new
+named tests reported PASS in each full-feature runner; each explicitly creates
+its own file-backed SQLite daemon, regardless of outer `TEST_BACKEND`. NixOS
+service and OCI container integration tests passed. `git diff --check` clean.
+Signed committed-tip gate to follow. A file-backed PostgreSQL service daemon
+was not added: hermetic PostgreSQL backend conformance already exercises the
+lease/race in its Nix runner, while the added service test covers persistent
+SQL ownership and restart with SQLite. This does **not** establish a
+PostgreSQL-backed RPC restart test; add one if that extra parity is required.
+
+**Phase 0 readiness for the Table format switch:** the six approved Phase 0
+contract groups in the preceding inventory now have executable fixtures,
+including the previously missing authenticated persistent-SQL service lease,
+orphan, restart and publication-vs-reclamation path. This is readiness to
+_begin_ the incompatible Table format switch, not a claim that the Table
+redesign is delivered or that every scheduling order was deterministically
+forced. Existing Table remains Doc-backed, `table:v0` and `canonical-json:v0`
+remain unchanged, and no old/new compatibility or migration is provided.
+Remaining Phases 3-6: Table switch, encryption/service Table parity, docs,
+benchmarks, and a final accumulated gate; no push or PR.

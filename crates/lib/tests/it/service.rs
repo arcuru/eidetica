@@ -4734,3 +4734,393 @@ async fn test_remote_staging_survives_service_restart() {
         Some(StagingStatus::Published(_))
     ));
 }
+
+/// The lease clock is changed only through the daemon's local testing backend
+/// seam; all token, authorization and record observations use authenticated RPC.
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn sqlite_service_lost_publication_request_expires_and_restarts() {
+    use eidetica::backend::database::Sqlite;
+    use eidetica::backend::{RecordMutation as M, StagingStatus};
+
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("persistent.db");
+    let socket = dir.path().join("service.sock");
+    let (server, _) = Instance::create_backend(
+        Box::new(Sqlite::open(&file).await.unwrap()),
+        NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let (stop, rx) = watch::channel(());
+    let daemon = tokio::spawn(
+        ServiceServer::bind(server.clone(), &socket)
+            .await
+            .unwrap()
+            .run(rx),
+    );
+    let (client, root, identity) = setup_db(&server, &socket, "alice").await;
+    create_user_via_admin(&server, "bob").await;
+    let conn = remote_conn(&client);
+    let target = derived_request(&root, "orphan");
+    let id = conn
+        .begin_store_state_staging(identity.clone(), target.clone())
+        .await
+        .unwrap();
+    conn.stage_store_state_ordered_chunk(
+        root.clone(),
+        identity.clone(),
+        id.clone(),
+        0,
+        vec![M::Put {
+            key: b"partial".to_vec(),
+            value: b"invisible".to_vec(),
+        }],
+    )
+    .await
+    .unwrap();
+    assert!(
+        conn.resolve_store_state(identity.clone(), target.clone())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    server
+        .testing_age_store_state_staging(&id, 599)
+        .await
+        .unwrap();
+    assert_eq!(
+        server.testing_reclaim_expired_store_state().await.unwrap(),
+        0
+    );
+    assert_eq!(
+        conn.store_state_staging_status(root.clone(), identity.clone(), id.clone())
+            .await
+            .unwrap(),
+        Some(StagingStatus::Active)
+    );
+
+    // A lost request, not a lost reply: never call publish for the partial token.
+    server
+        .testing_age_store_state_staging(&id, 2)
+        .await
+        .unwrap();
+    assert_eq!(
+        server.testing_reclaim_expired_store_state().await.unwrap(),
+        1
+    );
+    assert_eq!(
+        conn.store_state_staging_status(root.clone(), identity.clone(), id.clone())
+            .await
+            .unwrap(),
+        Some(StagingStatus::Expired)
+    );
+    assert!(
+        conn.publish_store_state(root.clone(), identity.clone(), id.clone())
+            .await
+            .is_err()
+    );
+    assert!(
+        conn.resolve_store_state(identity.clone(), target.clone())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let unauth = Instance::connect(format!("unix://{}", socket.display()))
+        .await
+        .unwrap();
+    assert!(
+        remote_conn(&unauth)
+            .store_state_staging_status(root.clone(), identity.clone(), id.clone())
+            .await
+            .is_err()
+    );
+    assert!(
+        conn.store_state_staging_status(
+            eidetica::entry::ID::from_bytes("wrong-database"),
+            identity.clone(),
+            id.clone()
+        )
+        .await
+        .is_err()
+    );
+    drop(unauth);
+    let other = login_client(&socket, "bob").await;
+    assert!(
+        remote_conn(&other)
+            .store_state_staging_status(root.clone(), identity.clone(), id.clone())
+            .await
+            .is_err()
+    );
+    assert!(
+        remote_conn(&other)
+            .begin_store_state_staging(identity.clone(), target.clone())
+            .await
+            .is_err()
+    );
+    let id2 = conn
+        .begin_store_state_staging(identity.clone(), target.clone())
+        .await
+        .unwrap();
+    conn.stage_store_state_ordered_chunk(
+        root.clone(),
+        identity.clone(),
+        id2.clone(),
+        0,
+        vec![M::Put {
+            key: b"complete".to_vec(),
+            value: b"visible".to_vec(),
+        }],
+    )
+    .await
+    .unwrap();
+    let view = conn
+        .publish_store_state(root.clone(), identity.clone(), id2.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        conn.store_state_record_get(
+            root.clone(),
+            identity.clone(),
+            view.clone(),
+            b"partial".to_vec()
+        )
+        .await
+        .unwrap(),
+        None
+    );
+    assert_eq!(
+        conn.store_state_record_get(root.clone(), identity.clone(), view, b"complete".to_vec())
+            .await
+            .unwrap(),
+        Some(b"visible".to_vec())
+    );
+
+    drop(other);
+    drop(client);
+    stop.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), daemon)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    drop(conn);
+    drop(server);
+    let reopened = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match Sqlite::open(&file).await {
+                Ok(backend) => break backend,
+                Err(_) => tokio::time::sleep(Duration::from_millis(10)).await,
+            }
+        }
+    })
+    .await
+    .unwrap();
+    let server = Instance::open_backend(Box::new(reopened)).await.unwrap();
+    let (_stop, rx) = watch::channel(());
+    tokio::spawn(ServiceServer::bind(server, &socket).await.unwrap().run(rx));
+    let client = login_client(&socket, "alice").await;
+    let conn = remote_conn(&client);
+    assert_eq!(
+        conn.store_state_staging_status(root.clone(), identity.clone(), id)
+            .await
+            .unwrap(),
+        Some(StagingStatus::Expired)
+    );
+    assert!(matches!(
+        conn.store_state_staging_status(root.clone(), identity.clone(), id2)
+            .await
+            .unwrap(),
+        Some(StagingStatus::Published(_))
+    ));
+    let view = conn
+        .resolve_store_state(identity.clone(), target)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        conn.store_state_record_get(
+            root.clone(),
+            identity.clone(),
+            view.clone(),
+            b"partial".to_vec()
+        )
+        .await
+        .unwrap(),
+        None
+    );
+    assert_eq!(
+        conn.store_state_record_get(root, identity, view, b"complete".to_vec())
+            .await
+            .unwrap(),
+        Some(b"visible".to_vec())
+    );
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn sqlite_service_publish_vs_reclaim_has_one_terminal_result() {
+    use eidetica::backend::database::Sqlite;
+    use eidetica::backend::{RecordMutation as M, StagingStatus};
+    use std::sync::Arc;
+    use tokio::sync::Barrier;
+
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("race.sock");
+    let (server, _) = Instance::create_backend(
+        Box::new(Sqlite::open(dir.path().join("race.db")).await.unwrap()),
+        NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let (_stop, rx) = watch::channel(());
+    tokio::spawn(
+        ServiceServer::bind(server.clone(), &socket)
+            .await
+            .unwrap()
+            .run(rx),
+    );
+    let (client, root, identity) = setup_db(&server, &socket, "alice").await;
+    let conn = remote_conn(&client);
+    let target = derived_request(&root, "race");
+    let id = conn
+        .begin_store_state_staging(identity.clone(), target.clone())
+        .await
+        .unwrap();
+    conn.stage_store_state_ordered_chunk(
+        root.clone(),
+        identity.clone(),
+        id.clone(),
+        0,
+        vec![M::Put {
+            key: b"row".to_vec(),
+            value: b"whole".to_vec(),
+        }],
+    )
+    .await
+    .unwrap();
+    server
+        .testing_age_store_state_staging(&id, 601)
+        .await
+        .unwrap();
+    let gate = Arc::new(Barrier::new(3));
+    let publish = {
+        let gate = gate.clone();
+        let conn = conn.clone();
+        let root = root.clone();
+        let identity = identity.clone();
+        let id = id.clone();
+        tokio::spawn(async move {
+            gate.wait().await;
+            conn.publish_store_state(root, identity, id).await
+        })
+    };
+    let sweep = {
+        let gate = gate.clone();
+        let server = server.clone();
+        tokio::spawn(async move {
+            gate.wait().await;
+            server.testing_reclaim_expired_store_state().await
+        })
+    };
+    gate.wait().await;
+    let result = publish.await.unwrap();
+    let swept = sweep.await.unwrap().unwrap();
+    let status = conn
+        .store_state_staging_status(root.clone(), identity.clone(), id.clone())
+        .await
+        .unwrap()
+        .unwrap();
+    let resolved = conn
+        .resolve_store_state(identity.clone(), target)
+        .await
+        .unwrap();
+    match status {
+        StagingStatus::Expired => {
+            assert!(result.is_err());
+            assert!(resolved.is_none());
+            assert!(swept <= 1); // the dispatch pre-sweep may already have reclaimed it
+        }
+        StagingStatus::Published(_) => {
+            let view = result.unwrap();
+            // Each RPC issues a session-scoped view id; the persisted backend
+            // generation, not the wire handle, is the stable identity.
+            let resolved_view = resolved.expect("published target must resolve");
+            assert_eq!(
+                conn.store_state_record_get(
+                    root.clone(),
+                    identity.clone(),
+                    resolved_view,
+                    b"row".to_vec()
+                )
+                .await
+                .unwrap(),
+                Some(b"whole".to_vec())
+            );
+            assert_eq!(swept, 0);
+            assert_eq!(
+                conn.store_state_record_get(root.clone(), identity.clone(), view, b"row".to_vec())
+                    .await
+                    .unwrap(),
+                Some(b"whole".to_vec())
+            );
+        }
+        other => panic!("nonterminal outcome: {other:?}"),
+    }
+    assert_eq!(
+        conn.publish_store_state(root.clone(), identity.clone(), id)
+            .await
+            .is_ok(),
+        matches!(status, StagingStatus::Published(_))
+    );
+
+    // The opposite serialization order: publication commits before aging and
+    // reclamation. The sweeper cannot turn a published generation into Expired.
+    let live = derived_request(&root, "race-published-first");
+    let published_id = conn
+        .begin_store_state_staging(identity.clone(), live.clone())
+        .await
+        .unwrap();
+    conn.stage_store_state_ordered_chunk(
+        root.clone(),
+        identity.clone(),
+        published_id.clone(),
+        0,
+        vec![M::Put {
+            key: b"row".to_vec(),
+            value: b"whole".to_vec(),
+        }],
+    )
+    .await
+    .unwrap();
+    let published_view = conn
+        .publish_store_state(root.clone(), identity.clone(), published_id.clone())
+        .await
+        .unwrap();
+    server
+        .testing_age_store_state_staging(&published_id, 601)
+        .await
+        .unwrap();
+    assert_eq!(
+        server.testing_reclaim_expired_store_state().await.unwrap(),
+        0
+    );
+    assert!(matches!(
+        conn.store_state_staging_status(root.clone(), identity.clone(), published_id)
+            .await
+            .unwrap(),
+        Some(StagingStatus::Published(_))
+    ));
+    assert!(
+        conn.resolve_store_state(identity.clone(), live)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(
+        conn.store_state_record_get(root, identity, published_view, b"row".to_vec())
+            .await
+            .unwrap(),
+        Some(b"whole".to_vec())
+    );
+}

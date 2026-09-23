@@ -98,6 +98,15 @@ pub trait Backend: Send + Sync + std::fmt::Debug {
     async fn reclaim_expired_store_state(&self) -> Result<u64> {
         Err(BackendError::StoreStateStorageUnsupported.into())
     }
+    /// Internal test-only lease aging; never a wire operation.
+    #[cfg(feature = "testing")]
+    async fn testing_age_store_state_staging(
+        &self,
+        _token: &StagingToken,
+        _seconds: i64,
+    ) -> Result<()> {
+        Err(BackendError::StoreStateStorageUnsupported.into())
+    }
     async fn stage_store_state_ordered_chunk(
         &self,
         _token: &StagingToken,
