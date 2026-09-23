@@ -38,10 +38,11 @@ A record set has one lifecycle:
 Clearing derived state unlinks published record sets and reclaims the generation unlinked by the previous clear. An active reader keeps its view, while a new lookup misses and rebuilds. Authoritative record sets are never selected.
 
 A builder creates private state, writes record chunks, then publishes atomically.
-Aborting or failing publication leaves no published record set and no private build behind.
-Two builders can derive the same target concurrently. Publication resolves that race to one shared record set rather than failing the other builder.
+Aborting records a terminal token outcome and removes private records. A failed publication leaves the private build invisible; a caller may correct the error or abort it. An abandoned build remains private until lease-based reclamation. Two builders can derive the same target concurrently. Publication resolves that race to one shared record set and records `Adopted` for the loser.
 Format descriptors identify the Store-owned record format and version, so cached state from different formats or historical sources cannot collide.
 
-Remote record operations use opaque server-issued views and staging tokens.
-Pages have exclusive continuation keys and encoded-byte bounds; one record that
-cannot fit fails with `RecordTooLarge`.
+Remote record operations use session-scoped read views and backend-owned opaque staging tokens. The latter retain `Active`, `Published`, `Adopted`, `Aborted`, or `Expired` status across socket reconnects and service restarts when the backend is persisted. Chunk sequence and the digest of the last encoded wire chunk are stored with the backend token; an identical immediate retry is acknowledged without replay, while gaps, older retries and conflicting digests fail. SQL stores the token atomically with its namespace, and in-memory snapshots include both. A client must retain exact encoded chunks after ambiguous responses; the high-level remote upload adapter still keeps its sequence cursor only in the current handle and does not yet recover a lost acknowledgement automatically.
+
+Each accepted chunk renews a five-minute lease. Expiry stops staging or publication; a sweeper marks an unpublished build `Expired` and removes its private records only after five minutes of additional grace. It keeps terminal token rows rather than silently forgetting outcomes (no bounded retention window has been implemented yet). Publication, abort and reclamation serialize per target; only one terminal outcome can win. Session view expiry does not abort a durable build. Sweeping currently runs on service requests or via the backend reclamation method, not on an independent timer. A backend without persistent storage must persist its in-memory snapshot explicitly to retain state through process loss.
+
+Pages have exclusive continuation keys and encoded-byte bounds; one record that cannot fit fails with `RecordTooLarge`.
