@@ -27,6 +27,11 @@ pub enum StoreError {
     #[error("Deserialization failed in store '{store}': {reason}")]
     DeserializationFailed { store: String, reason: String },
 
+    /// Server cannot maintain this Store's derived record representation.
+    /// Callers may fold authorized typed history locally instead.
+    #[error("Record maintenance unavailable for store '{store}'")]
+    RecordMaintenanceUnavailable { store: String },
+
     /// Type mismatch in store operation
     #[error("Type mismatch in store '{store}': expected {expected}, found {actual}")]
     TypeMismatch {
@@ -100,7 +105,8 @@ impl StoreError {
     /// Get the store name associated with this error
     pub fn store_name(&self) -> &str {
         match self {
-            StoreError::KeyNotFound { store, .. }
+            StoreError::RecordMaintenanceUnavailable { store }
+            | StoreError::KeyNotFound { store, .. }
             | StoreError::SerializationFailed { store, .. }
             | StoreError::DeserializationFailed { store, .. }
             | StoreError::TypeMismatch { store, .. }

@@ -54,6 +54,34 @@ impl Store for CounterStore {
     }
 }
 
+#[tokio::test]
+async fn typed_store_state_folds_custom_crdt_without_doc_conversion() {
+    let (instance, _admin) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        crate::NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let (key, _) = generate_keypair();
+    let db = Database::create(&instance, key, Doc::new()).await.unwrap();
+    for value in [4, 9, 2] {
+        let tx = db.new_transaction().await.unwrap();
+        tx.get_store::<CounterStore>("counter").await.unwrap();
+        tx.update_subtree("counter", serde_json::to_vec(&MaxCounter(value)).unwrap())
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
+    assert_eq!(
+        db.get_store_state::<CounterStore>("counter").await.unwrap(),
+        MaxCounter(9)
+    );
+    assert!(matches!(
+        db.get_store_state::<DocStore>("counter").await.unwrap_err(),
+        crate::Error::Store(ref error) if matches!(**error, StoreError::TypeMismatch { .. })
+    ));
+}
+
 /// Test that corrupted auth configuration prevents commit
 ///
 /// Validates that transactions reject changes that would corrupt the auth configuration,

@@ -1270,26 +1270,33 @@ impl Database {
         })
     }
 
-    /// Server-materialized merged state of an **unencrypted** store, as a
-    /// `serde_json::Value` against the database's Verified frontier.
-    ///
-    /// Creates an ephemeral transaction, deserializes every entry's
-    /// store data as [`Doc`], and merges them via Doc's LWW merge —
-    /// the same merge `Store<T>` would perform client-side. All current
-    /// store types (DocStore, Table, Settings) serialize their data as
-    /// JSON, so `Doc`-typed deserialization works universally.
-    ///
-    /// # Encrypted stores
-    ///
-    /// Encrypted stores cannot be materialized this way (the ephemeral
-    /// transaction has no encryptor, so `serde_json::from_slice::<Doc>`
-    /// would fail on ciphertext). The caller must use
-    /// [`get_store_entries`](Self::get_store_entries) for encrypted
-    /// stores and decrypt+merge client-side.
-    pub async fn get_store_state(&self, store: &str) -> Result<serde_json::Value> {
+    /// Return the merged canonical state of a registered, unencrypted Store.
+    /// Recordless backends fold the typed history instead of requiring a cache.
+    pub async fn get_store_state<S: crate::store::Store>(&self, store: &str) -> Result<S::Data>
+    where
+        S::Data: Send,
+    {
         let txn = self.new_transaction().await?;
-        let state: Doc = txn.get_full_state(store).await?;
-        Ok(serde_json::to_value(&state)?)
+        let entry = txn.get_index().await?.get_entry(store).await?;
+        if !S::supports_type_id(&entry.type_id) {
+            return Err(crate::store::StoreError::TypeMismatch {
+                store: store.to_string(),
+                expected: S::type_id().to_string(),
+                actual: entry.type_id,
+            }
+            .into());
+        }
+        txn.get_full_state_with_descriptor(store, S::state_model().descriptor())
+            .await
+    }
+
+    /// DocStore-specific convenience for callers expecting JSON on the wire.
+    /// Other Store types must use [`get_store_state`](Self::get_store_state).
+    pub async fn get_doc_store_state(&self, store: &str) -> Result<serde_json::Value> {
+        Ok(serde_json::to_value(
+            self.get_store_state::<crate::store::DocStore>(store)
+                .await?,
+        )?)
     }
 
     /// Ordered (by subtree height), verifiable, opaque store entries

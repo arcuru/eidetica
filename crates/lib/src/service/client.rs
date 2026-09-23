@@ -34,7 +34,7 @@ use crate::service::error::service_error_to_eidetica_error;
 use crate::service::protocol::{
     AuthenticatedDbRequest, DatabaseOp, Handshake, HandshakeAck, MergeState, Notification,
     PROTOCOL_VERSION, ReadScope, ServerFrame, ServiceRequest, ServiceResponse, TransactionContext,
-    WireCrdtValue, read_frame, write_encoded_frame, write_frame,
+    read_frame, write_encoded_frame, write_frame,
 };
 use crate::snapshot::Snapshot;
 use crate::user::UserError;
@@ -1094,20 +1094,72 @@ impl RemoteConnection {
         }
     }
 
-    /// Fetch the server-materialized merged state of an unencrypted store.
-    pub async fn get_store_state(
+    /// Fetch a registered Store's state; only an explicit maintenance
+    /// capability refusal selects client-side typed history reduction.
+    pub async fn get_store_state<S: crate::store::Store>(
         &self,
         root_id: ID,
         identity: SigKey,
         store: String,
-    ) -> crate::Result<WireCrdtValue> {
-        let resp = self
-            .db_request(root_id, identity, DatabaseOp::GetStoreState { store })
-            .await?;
-        match resp {
-            ServiceResponse::CrdtValue(v) => Ok(v),
-            other => Err(unexpected_response("CrdtValue", &other)),
+    ) -> crate::Result<S::Data> {
+        let response = self
+            .db_request(
+                root_id.clone(),
+                identity.clone(),
+                DatabaseOp::GetStoreState {
+                    store: store.clone(),
+                    expected_type: S::type_id().to_string(),
+                    projection: S::state_model().descriptor(),
+                },
+            )
+            .await;
+        match response {
+            Ok(ServiceResponse::CrdtValue(value)) => Ok(serde_json::from_value(value)?),
+            Err(crate::Error::Store(error))
+                if matches!(
+                    *error,
+                    crate::store::StoreError::RecordMaintenanceUnavailable { .. }
+                ) =>
+            {
+                use crate::crdt::CRDT;
+                let tips = self
+                    .get_verified_tips(root_id.clone(), identity.clone())
+                    .await?;
+                let entries = self
+                    .get_store_entries(
+                        root_id,
+                        identity,
+                        store.clone(),
+                        tips.into_tips(),
+                        ReadScope::Verified,
+                    )
+                    .await?;
+                // The fallback may not publish: it owns no server maintenance
+                // capability. Fold only authorized, ordered canonical history.
+                let mut state = S::Data::default();
+                for entry in entries {
+                    if let Ok(data) = entry.data(&store) {
+                        state = state.merge(&serde_json::from_slice(data)?)?;
+                    }
+                }
+                Ok(state)
+            }
+            Err(error) => Err(error),
+            Ok(other) => Err(unexpected_response("CrdtValue", &other)),
         }
+    }
+
+    /// DocStore-specific JSON convenience; other Stores use typed retrieval.
+    pub async fn get_doc_store_state(
+        &self,
+        root_id: ID,
+        identity: SigKey,
+        store: String,
+    ) -> crate::Result<serde_json::Value> {
+        Ok(serde_json::to_value(
+            self.get_store_state::<crate::store::DocStore>(root_id, identity, store)
+                .await?,
+        )?)
     }
 
     /// Fetch ordered, verified, opaque store entries reachable from `tips`.

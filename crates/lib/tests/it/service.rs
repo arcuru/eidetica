@@ -538,14 +538,131 @@ async fn test_database_get_store_state() {
 
     let conn = remote_conn(&instance);
     let state = conn
-        .get_store_state(root_id.clone(), identity, "entries".to_string())
+        .get_store_state::<DocStore>(root_id.clone(), identity, "entries".to_string())
         .await
         .unwrap();
+    let state = serde_json::to_value(state).unwrap();
 
     assert!(
         state.is_object() || state.is_null(),
         "get_store_state must return a JSON value, got: {:?}",
         state
+    );
+}
+
+/// Descriptor and registry identity are checked after the canonical read gate.
+#[tokio::test]
+async fn store_state_read_rejects_wrong_descriptor_and_unauthorized_reader() {
+    use eidetica::service::protocol::{AuthenticatedDbRequest, DatabaseOp};
+    use eidetica::store::Registered;
+    let (socket, _tx, server, _dir) = start_test_server().await;
+    let (_alice, root, identity) = setup_db(&server, &socket, "alice").await;
+    let server_user = server.login_user("alice", None).await.unwrap();
+    let db = server_user.open_database(&root).await.unwrap();
+    db.with_transaction(|tx| async move {
+        tx.get_store::<DocStore>("entries")
+            .await?
+            .set("k", "v")
+            .await?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let remote = Instance::connect(format!("unix://{}", socket.display()))
+        .await
+        .unwrap();
+    remote.login_user("alice", None).await.unwrap();
+    let conn = remote_conn(&remote);
+    let value = conn
+        .get_store_state::<DocStore>(root.clone(), identity.clone(), "entries".into())
+        .await
+        .unwrap();
+    assert_eq!(value.get_as::<&str>("k"), Some("v"));
+
+    let wrong = eidetica::backend::ProjectionDescriptor {
+        name: "wrong".into(),
+        version: 0,
+    };
+    let request = ServiceRequest::AuthenticatedDb(Box::new(AuthenticatedDbRequest {
+        root_id: root.clone(),
+        identity: identity.clone(),
+        op: DatabaseOp::GetStoreState {
+            store: "entries".into(),
+            expected_type: DocStore::type_id().into(),
+            projection: wrong,
+        },
+    }));
+    let (mut reader, mut writer) = raw_handshake(&socket).await;
+    // An unauthenticated raw request cannot reach descriptor validation.
+    write_frame(&mut writer, &request).await.unwrap();
+    match read_response(&mut reader).await {
+        ServiceResponse::Error(err) => assert_ne!(err.kind, "RecordMaintenanceUnavailable"),
+        other => panic!("unauthenticated request succeeded: {other:?}"),
+    }
+    let alice = server.login_user("alice", None).await.unwrap();
+    let signing = alice
+        .get_signing_key(&alice.get_default_key().unwrap())
+        .unwrap();
+    write_frame(
+        &mut writer,
+        &ServiceRequest::TrustedLoginUser {
+            username: "alice".into(),
+        },
+    )
+    .await
+    .unwrap();
+    let challenge = match read_response(&mut reader).await {
+        ServiceResponse::TrustedLoginChallenge { challenge, .. } => challenge,
+        other => panic!("expected challenge: {other:?}"),
+    };
+    write_frame(
+        &mut writer,
+        &ServiceRequest::TrustedLoginProve {
+            signature: create_challenge_response(&challenge, &signing),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        read_response(&mut reader).await,
+        ServiceResponse::TrustedLoginOk
+    ));
+    write_frame(&mut writer, &request).await.unwrap();
+    match read_response(&mut reader).await {
+        ServiceResponse::Error(err) => assert_eq!(err.kind, "TypeMismatch"),
+        other => panic!("wrong descriptor accepted: {other:?}"),
+    }
+    // Authenticated wrong descriptor and type cannot trigger history fallback.
+    let result = conn
+        .get_store_state::<Table<serde_json::Value>>(
+            root.clone(),
+            identity.clone(),
+            "entries".into(),
+        )
+        .await;
+    let error = result.unwrap_err();
+    assert!(error.to_string().contains("TypeMismatch"), "{error}");
+    assert!(
+        !matches!(error, eidetica::Error::Store(ref e) if matches!(**e, eidetica::store::StoreError::RecordMaintenanceUnavailable { .. }))
+    );
+
+    create_user_via_admin(&server, "bob").await;
+    let bob = Instance::connect(format!("unix://{}", socket.display()))
+        .await
+        .unwrap();
+    let bob_user = bob.login_user("bob", None).await.unwrap();
+    let bob_identity =
+        eidetica::auth::types::SigKey::from_pubkey(&bob_user.get_default_key().unwrap());
+    let denied = remote_conn(&bob)
+        .get_store_state::<DocStore>(root, bob_identity, "entries".into())
+        .await;
+    let error = denied.unwrap_err();
+    assert!(
+        error.to_string().to_lowercase().contains("permission"),
+        "{error}"
+    );
+    assert!(
+        !matches!(error, eidetica::Error::Store(ref e) if matches!(**e, eidetica::store::StoreError::RecordMaintenanceUnavailable { .. }))
     );
 }
 
