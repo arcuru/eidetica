@@ -205,14 +205,13 @@ impl crate::instance::backend::Backend for RecordlessOps {
 
 #[tokio::test]
 async fn projected_recordless_fallback_reduces_typed_history() {
-    let (instance, _) = Instance::create_backend(
-        Box::new(InMemory::new()),
-        crate::NewUser::passwordless("admin"),
-    )
-    .await
-    .unwrap();
-    let (key, _) = generate_keypair();
-    let db = Database::create(&instance, key, Doc::new()).await.unwrap();
+    let (instance, _daemon) = projection_backend().await;
+    let mut admin = instance.login_user("admin", None).await.unwrap();
+    let key = match admin.get_default_key() {
+        Ok(key) => key,
+        Err(_) => admin.add_private_key(Some("projection")).await.unwrap(),
+    };
+    let db = admin.create_database(Doc::new(), &key).await.unwrap();
     let tx = db.new_transaction().await.unwrap();
     tx.stage_projected_delta("rows", &RowsProjection, row("a", "old"))
         .await
@@ -258,6 +257,240 @@ async fn projected_recordless_fallback_reduces_typed_history() {
         .unwrap();
     assert_eq!(page.records, vec![(b"c".to_vec(), b"new".to_vec())]);
     assert!(end.is_none());
+}
+
+// Unlike unit fixtures exercised by every runner, this factory selects the real
+// backend named by the matrix. Service uses an authenticated socket, not its engine.
+async fn projection_backend() -> (
+    Instance,
+    Option<(tokio::sync::watch::Sender<()>, tempfile::TempDir)>,
+) {
+    let backend: Box<dyn crate::backend::BackendImpl> =
+        match std::env::var("TEST_BACKEND").as_deref() {
+            #[cfg(feature = "sqlite")]
+            Ok("sqlite") => Box::new(crate::backend::database::Sqlite::in_memory().await.unwrap()),
+            #[cfg(feature = "postgres")]
+            Ok("postgres") => Box::new(
+                crate::backend::database::Postgres::connect_isolated(
+                    &std::env::var("TEST_POSTGRES_URL")
+                        .unwrap_or_else(|_| "postgres://localhost/eidetica_test".into()),
+                )
+                .await
+                .unwrap(),
+            ),
+            #[cfg(all(unix, feature = "service"))]
+            Ok("service") => {
+                let dir = tempfile::tempdir().unwrap();
+                let socket = dir.path().join("projection.sock");
+                let (server, _) = Instance::create_backend(
+                    Box::new(InMemory::new()),
+                    crate::NewUser::passwordless("admin"),
+                )
+                .await
+                .unwrap();
+                let mut admin = server.login_user("admin", None).await.unwrap();
+                admin.add_private_key(Some("projection")).await.unwrap();
+                let daemon = crate::service::ServiceServer::bind(server, socket.clone())
+                    .await
+                    .unwrap();
+                let (stop, rx) = tokio::sync::watch::channel(());
+                tokio::spawn(daemon.run(rx));
+                let client = Instance::connect(format!("unix://{}", socket.display()))
+                    .await
+                    .unwrap();
+                client.login_user("admin", None).await.unwrap();
+                return (client, Some((stop, dir)));
+            }
+            Ok("inmemory") | Err(_) => Box::new(InMemory::new()),
+            Ok(other) => panic!("unsupported projection backend: {other}"),
+        };
+    let (instance, _) = Instance::create_backend(backend, crate::NewUser::passwordless("admin"))
+        .await
+        .unwrap();
+    (instance, None)
+}
+
+#[tokio::test]
+async fn projected_backend_matrix_physical_pages_and_cold_delete() {
+    let (instance, _daemon) = projection_backend().await;
+    let mut admin = instance.login_user("admin", None).await.unwrap();
+    let key = match admin.get_default_key() {
+        Ok(key) => key,
+        Err(_) => admin.add_private_key(Some("projection")).await.unwrap(),
+    };
+    let db = admin.create_database(Doc::new(), &key).await.unwrap();
+    let tx = db.new_transaction().await.unwrap();
+    let mut rows = crate::crdt::LwwMap::new();
+    for i in 0..140 {
+        rows.set(format!("{i:03}"), "old".to_string());
+    }
+    tx.stage_projected_delta("rows", &RowsProjection, StagedRows(rows))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let tx = db.new_transaction().await.unwrap();
+    let mut deleted = crate::crdt::LwwMap::new();
+    deleted.delete("000".to_string());
+    deleted.delete("139".to_string());
+    tx.stage_projected_delta("rows", &RowsProjection, StagedRows(deleted))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let tx = db.new_transaction().await.unwrap();
+    assert_eq!(
+        tx.projected_get("rows", &RowsProjection, b"000")
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        tx.projected_get("rows", &RowsProjection, b"128")
+            .await
+            .unwrap(),
+        Some(b"old".to_vec())
+    );
+    let view = tx.record_view("rows", &RowsProjection).await.unwrap();
+    assert_eq!(
+        db.ops()
+            .store_state_record_get(&view, b"139")
+            .await
+            .unwrap(),
+        None
+    );
+    tx.stage_projected_delta("rows", &RowsProjection, row("001", "updated"))
+        .await
+        .unwrap();
+    tx.stage_projected_delta("rows", &RowsProjection, row("zzz", "new"))
+        .await
+        .unwrap();
+    let mut after = None;
+    let mut keys = Vec::new();
+    loop {
+        let (page, next) = tx
+            .projected_record_scan_page("rows", &RowsProjection, after.as_ref(), 7)
+            .await
+            .unwrap();
+        keys.extend(page.records);
+        after = next;
+        if after.is_none() {
+            break;
+        }
+    }
+    assert_eq!(keys.len(), 139);
+    assert_eq!(keys.first(), Some(&(b"001".to_vec(), b"updated".to_vec())));
+    assert_eq!(keys.last(), Some(&(b"zzz".to_vec(), b"new".to_vec())));
+    assert!(!keys.iter().any(|(k, _)| k == b"139"));
+    assert_eq!(
+        db.ops()
+            .store_state_record_get(&view, b"001")
+            .await
+            .unwrap(),
+        Some(b"old".to_vec())
+    );
+}
+
+// Deliberately simple test-only transform: authenticates the logical key in the
+// record envelope and makes its physical order different from logical order.
+struct KeyedRows;
+impl Encryptor for KeyedRows {
+    fn encrypt(&self, bytes: &[u8]) -> Result<Vec<u8>> {
+        Ok(bytes.iter().map(|byte| byte ^ 0x5a).collect())
+    }
+    fn decrypt(&self, bytes: &[u8]) -> Result<Vec<u8>> {
+        self.encrypt(bytes)
+    }
+    fn physical_record_key(&self, key: &[u8]) -> Result<Vec<u8>> {
+        Ok(key.iter().map(|byte| !byte).collect())
+    }
+    fn encrypt_record(&self, key: &[u8], value: &[u8]) -> Result<Vec<u8>> {
+        let mut envelope = vec![key.len() as u8];
+        envelope.extend_from_slice(key);
+        envelope.extend_from_slice(value);
+        self.encrypt(&envelope)
+    }
+    fn decrypt_record(&self, _: &[u8], bytes: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
+        let envelope = self.decrypt(bytes)?;
+        let (len, rest) = envelope.split_first().unwrap();
+        let (key, value) = rest.split_at(*len as usize);
+        Ok((key.to_vec(), value.to_vec()))
+    }
+    fn projection_descriptor(&self, descriptor: ProjectionDescriptor) -> ProjectionDescriptor {
+        ProjectionDescriptor {
+            name: format!("keyed/{}", descriptor.name),
+            version: descriptor.version,
+        }
+    }
+}
+
+#[tokio::test]
+async fn projected_encrypted_physical_identity_and_recordless_fallback() {
+    let (instance, _daemon) = projection_backend().await;
+    let mut admin = instance.login_user("admin", None).await.unwrap();
+    let key = match admin.get_default_key() {
+        Ok(key) => key,
+        Err(_) => admin.add_private_key(Some("projection")).await.unwrap(),
+    };
+    let db = admin.create_database(Doc::new(), &key).await.unwrap();
+    let tx = db.new_transaction().await.unwrap();
+    tx.register_encryptor("rows", Box::new(KeyedRows)).unwrap();
+    tx.stage_projected_delta("rows", &RowsProjection, row("a", "one"))
+        .await
+        .unwrap();
+    tx.stage_projected_delta("rows", &RowsProjection, row("b", "two"))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let tx = db.new_transaction().await.unwrap();
+    tx.register_encryptor("rows", Box::new(KeyedRows)).unwrap();
+    assert_eq!(
+        tx.projected_get("rows", &RowsProjection, b"a")
+            .await
+            .unwrap(),
+        Some(b"one".to_vec())
+    );
+    let view = tx.record_view("rows", &RowsProjection).await.unwrap();
+    let physical_a = KeyedRows.physical_record_key(b"a").unwrap();
+    let physical_b = KeyedRows.physical_record_key(b"b").unwrap();
+    let ciphertext = db
+        .ops()
+        .store_state_record_get(&view, &physical_a)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(ciphertext, b"one");
+    assert!(
+        matches!(tx.decode_projected_record("rows", &physical_b, &ciphertext), Err(crate::Error::Store(error)) if matches!(*error, StoreError::DataCorruption { .. }))
+    );
+    let (page, end) = tx
+        .projected_record_scan_page("rows", &RowsProjection, None, 1)
+        .await
+        .unwrap();
+    assert_eq!(page.records, vec![(b"b".to_vec(), b"two".to_vec())]);
+    let (page, end) = tx
+        .projected_record_scan_page("rows", &RowsProjection, end.as_ref(), 1)
+        .await
+        .unwrap();
+    assert_eq!(page.records, vec![(b"a".to_vec(), b"one".to_vec())]);
+    assert!(end.is_none());
+
+    let recordless = db
+        .clone()
+        .with_test_ops(std::sync::Arc::new(RecordlessOps(db.backend().unwrap())));
+    let tx = recordless.new_transaction().await.unwrap();
+    tx.register_encryptor("rows", Box::new(KeyedRows)).unwrap();
+    assert_eq!(
+        tx.projected_get("rows", &RowsProjection, b"a")
+            .await
+            .unwrap(),
+        Some(b"one".to_vec())
+    );
+    let (page, next) = tx
+        .projected_record_scan_page("rows", &RowsProjection, None, 1)
+        .await
+        .unwrap();
+    assert_eq!(page.records, vec![(b"b".to_vec(), b"two".to_vec())]);
+    assert!(next.is_some());
 }
 
 #[tokio::test]
@@ -412,14 +645,13 @@ async fn projected_real_record_view_physical_scan_and_overlay() {
 
 #[tokio::test]
 async fn projected_real_backend_fetch_rejects_racing_overlay() {
-    let (instance, _) = Instance::create_backend(
-        Box::new(InMemory::new()),
-        crate::NewUser::passwordless("admin"),
-    )
-    .await
-    .unwrap();
-    let (key, _) = generate_keypair();
-    let db = Database::create(&instance, key, Doc::new()).await.unwrap();
+    let (instance, _daemon) = projection_backend().await;
+    let mut admin = instance.login_user("admin", None).await.unwrap();
+    let key = match admin.get_default_key() {
+        Ok(key) => key,
+        Err(_) => admin.add_private_key(Some("projection")).await.unwrap(),
+    };
+    let db = admin.create_database(Doc::new(), &key).await.unwrap();
     let tx = db.new_transaction().await.unwrap();
     tx.stage_projected_delta("rows", &RowsProjection, row("a", "old"))
         .await
