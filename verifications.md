@@ -917,3 +917,71 @@ VMs both reported passed. The gate exercises Table/encryption/socket behavior
 from preceding phases; Criterion results are separate InMemory measurements.
 `git diff --check` clean. Signed-tip recheck follows the local commit. No
 push/PR.
+
+## Phase 6 follow-up: batch and plain-scan regression diagnosis (2026-09-23)
+
+Intended: reproduce 32-row write and plain-scan regressions against the unchanged
+baseline with an identical harness; isolate cost before selecting a narrow safe
+optimization, preserve canonical Entry bytes, revision-atomic staging, Table
+semantics and stale-cursor checks. Do not infer a broad performance win.
+
+Performed: reused the existing identical, uncommitted benchmark harness on old
+`e0f4645178` and the signed candidate `44f8849584`. Both ran sequentially on
+this host with `TEST_BACKEND=inmemory`, release profile under `nix develop`,
+Criterion CLI `--sample-size 15 --warm-up-time 0.3 --measurement-time 0.5`;
+no source-level Criterion sample overrides in this bench. Available RAM ~50 GiB,
+load 5.06/7.37/10.29: shared host not quiescent. Exact benchmark filter:
+`table_(write|page|encrypted_page)`. Timing is full fresh write/commit, warm
+100-row scan in 10/50-row pages, and fresh 32-row plain/encrypted scan,
+respectively. All reported intervals below are Criterion time 95% CIs.
+
+| Workload                                                   |            Baseline |    Candidate before |         Candidate after |
+| ---------------------------------------------------------- | ------------------: | ------------------: | ----------------------: |
+| 32-row fresh write                                         | [110.48, 114.27] µs | [826.25, 834.34] µs | not changed/re-measured |
+| warm 100-row scan / 10                                     | [90.389, 91.373] µs | [183.96, 187.11] µs |     [173.09, 175.20] µs |
+| warm 100-row scan / 50                                     | [89.073, 90.986] µs | [176.60, 182.59] µs |     [166.86, 169.01] µs |
+| fresh plain 32-row scan                                    | [37.164, 37.808] µs | [106.09, 107.48] µs |     [102.24, 105.46] µs |
+| fresh encrypted 32-row scan (includes password derivation) | [18.049, 19.802] ms | [17.850, 19.294] ms |     [17.917, 19.332] ms |
+
+Read-side path inspection: on the new path every page (even with no staged
+rows) copies the backend page into a BTreeMap and re-collects it, while the old
+scan returned the backend page directly. A narrow unstaged fast path returns
+the backend's bounded ordered page directly, wrapping its physical continuation
+in the same opaque transaction/view/revision/projection/frontier cursor; keeps
+revision checks after the await (including failed fetch) and after decoding.
+The fresh plain interval moves down slightly and warm 100-row intervals move
+down ~5-7% in this run, but the ~2x scan regression remains. The evidence does
+not isolate the other costs of typed record resolution, canonical decoding,
+revision validation and backend page iteration. Do not eliminate their safety
+checks merely for speed. An added regression exercises exact continuation,
+end-of-scan, a stage racing the await, and stale continuation after a stage;
+restoring old code makes it fail (old merge calls fetch twice with a backend
+that returns a continuation), fixed path passes.
+
+Write-side discriminating ablations were deliberately temporary and reverted.
+Replacing the generic all-staged-key conflict predicate with an exact-key lookup
+(no valid general projection semantics) measured 32-row write
+[829.92, 840.10] µs: not the cause. Bypassing canonical cumulative
+merge/deserialization and writing only the latest delta (invalid history/row
+semantics) measured [222.09, 228.15] µs, compared to [826.25, 834.34] µs
+before. This identifies repeated full canonical state merge/serialization in
+`stage_projected_delta` on every row as the dominant measured batch cost; it
+cannot be simply skipped without losing prior rows in the committed Entry.
+A mutable accumulator, deferred serialization, or batched staging API would
+alter the revision-atomic contract and require design/edge testing; this bounded
+diagnosis leaves batch writes unchanged rather than landing a speculative fix.
+One-row commits stayed near baseline. Do not generalize the read fast path to
+staged overlays or encrypted fallback: they still require merge/decrypt and
+cursor checks. Backend numbers are InMemory only, not SQL or live RPC.
+
+Verification: restoring original scanner with the new focused fixture produced
+`0 passed; 1 failed` (second fetch on backend continuation); repaired scanner
+produced `1 passed; 0 failed`. `nix develop -c nix run .#fix` passed
+clippy/deadnix/markdownlint/statix/treefmt; `git diff --check` clean.
+Formatted-source `nix develop -c just nix full` exited 0: actual Nix runner
+summaries were in-memory, SQLite, PostgreSQL, service **1547 tests run:
+1547 passed, 5 skipped** each (SQLite 1 leaky); minimal **1382 tests run:
+1382 passed, 5 skipped**. The new cursor/race fixture was PASS in all five
+runners; both NixOS service and OCI container integrations passed. Signed-tip
+recheck follows. Remaining Phase 6 cold RSS/churn/encrypted point and final
+handoff still belong to the parent task; no push/PR or version bump.
