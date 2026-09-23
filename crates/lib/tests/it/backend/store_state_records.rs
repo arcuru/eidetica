@@ -1316,6 +1316,190 @@ async fn expired_orphan_is_reclaimed_and_terminal_result_is_retained() {
 
 #[cfg(feature = "testing")]
 #[tokio::test]
+async fn terminal_horizon_and_unknown_replacement_guards() {
+    use eidetica::backend::{STAGING_RETENTION_SECS, StagingStatus, StagingToken};
+    let backend = test_backend().await;
+    let target = request("horizon", "store", StoreStateLifecycle::Derived);
+    let active = backend
+        .begin_store_state_staging(target.clone())
+        .await
+        .unwrap();
+    let recent_unknown = StagingToken::testing_unknown_aged(target.clone(), 60);
+    let old_unknown =
+        StagingToken::testing_unknown_aged(target.clone(), STAGING_RETENTION_SECS as u64 + 60);
+    assert!(
+        backend
+            .replace_unknown_store_state_staging(&recent_unknown)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        backend
+            .replace_unknown_store_state_staging(&old_unknown)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    backend.abort_store_state(active.clone()).await.unwrap();
+    assert_eq!(
+        backend.store_state_staging_status(&active).await.unwrap(),
+        Some(StagingStatus::Aborted)
+    );
+    assert!(
+        backend
+            .replace_unknown_store_state_staging(&active)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    backend
+        .testing_age_store_state_staging(&active, STAGING_RETENTION_SECS - 2)
+        .await
+        .unwrap();
+    backend.reclaim_expired_store_state().await.unwrap();
+    assert_eq!(
+        backend.store_state_staging_status(&active).await.unwrap(),
+        Some(StagingStatus::Aborted)
+    );
+    backend
+        .testing_age_store_state_staging(&active, 3)
+        .await
+        .unwrap();
+    backend.reclaim_expired_store_state().await.unwrap();
+    assert_eq!(
+        backend.store_state_staging_status(&active).await.unwrap(),
+        None
+    );
+    assert!(
+        backend
+            .replace_unknown_store_state_staging(&recent_unknown)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let backend: Arc<dyn BackendImpl> = Arc::from(backend);
+    let gate = Arc::new(Barrier::new(3));
+    let mut attempts = Vec::new();
+    for _ in 0..2 {
+        let backend = backend.clone();
+        let unknown = old_unknown.clone();
+        let gate = gate.clone();
+        attempts.push(tokio::spawn(async move {
+            gate.wait().await;
+            backend
+                .replace_unknown_store_state_staging(&unknown)
+                .await
+                .unwrap()
+        }));
+    }
+    gate.wait().await;
+    let mut replacements = Vec::new();
+    for attempt in attempts {
+        replacements.extend(attempt.await.unwrap());
+    }
+    assert_eq!(
+        replacements.len(),
+        1,
+        "only one replacement may pass the active-build guard"
+    );
+    let replacement = replacements.into_iter().next().unwrap();
+    assert!(
+        backend
+            .replace_unknown_store_state_staging(&old_unknown)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let view = backend
+        .publish_store_state(replacement.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        backend
+            .publish_store_state(replacement.clone())
+            .await
+            .unwrap(),
+        view
+    );
+    let loser = backend
+        .begin_store_state_staging(target.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        backend.publish_store_state(loser.clone()).await.unwrap(),
+        view
+    );
+    assert_eq!(
+        backend.store_state_staging_status(&loser).await.unwrap(),
+        Some(StagingStatus::Adopted(view.clone()))
+    );
+    backend
+        .testing_age_store_state_staging(&loser, STAGING_RETENTION_SECS + 1)
+        .await
+        .unwrap();
+    backend.reclaim_expired_store_state().await.unwrap();
+    assert_eq!(
+        backend.store_state_staging_status(&loser).await.unwrap(),
+        None
+    );
+    assert!(
+        backend
+            .replace_unknown_store_state_staging(&old_unknown)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    backend
+        .testing_age_store_state_staging(&replacement, STAGING_RETENTION_SECS + 1)
+        .await
+        .unwrap();
+    backend.reclaim_expired_store_state().await.unwrap();
+    assert_eq!(
+        backend
+            .store_state_staging_status(&replacement)
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        backend.resolve_store_state(&target).await.unwrap(),
+        Some(view)
+    );
+    let orphan_target = request("expired-horizon", "store", StoreStateLifecycle::Derived);
+    let orphan = backend
+        .begin_store_state_staging(orphan_target.clone())
+        .await
+        .unwrap();
+    backend
+        .testing_age_store_state_staging(&orphan, 601)
+        .await
+        .unwrap();
+    assert_eq!(backend.reclaim_expired_store_state().await.unwrap(), 1);
+    assert_eq!(
+        backend.store_state_staging_status(&orphan).await.unwrap(),
+        Some(StagingStatus::Expired)
+    );
+    backend
+        .testing_age_store_state_staging(&orphan, STAGING_RETENTION_SECS + 1)
+        .await
+        .unwrap();
+    backend.reclaim_expired_store_state().await.unwrap();
+    assert_eq!(
+        backend.store_state_staging_status(&orphan).await.unwrap(),
+        None
+    );
+    assert!(
+        backend
+            .resolve_store_state(&orphan_target)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[cfg(feature = "testing")]
+#[tokio::test]
 async fn expiration_racing_publication_has_one_terminal_winner() {
     use eidetica::backend::StagingStatus;
     let backend: Arc<dyn BackendImpl> = Arc::from(test_backend().await);

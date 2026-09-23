@@ -818,6 +818,13 @@ impl BackendImpl for SqlxBackend {
         storage::begin_store_state_staging(self, request).await
     }
 
+    async fn replace_unknown_store_state_staging(
+        &self,
+        previous: &StagingToken,
+    ) -> Result<Option<StagingToken>> {
+        storage::replace_unknown_store_state_staging(self, previous).await
+    }
+
     async fn store_state_staging_status(
         &self,
         token: &StagingToken,
