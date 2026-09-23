@@ -1500,6 +1500,71 @@ async fn terminal_horizon_and_unknown_replacement_guards() {
 
 #[cfg(feature = "testing")]
 #[tokio::test]
+async fn lost_publication_request_expires_before_safe_rebuild() {
+    use eidetica::backend::StagingStatus;
+    let backend = test_backend().await;
+    let target = request("lost-request", "store", StoreStateLifecycle::Derived);
+    let token = backend
+        .begin_store_state_staging(target.clone())
+        .await
+        .unwrap();
+    backend
+        .stage_store_state_records(
+            &token,
+            BTreeMap::from([(b"row".to_vec(), Some(b"partial".to_vec()))]),
+        )
+        .await
+        .unwrap();
+    // The request was never delivered: private records cannot be resolved.
+    assert_eq!(
+        backend.store_state_staging_status(&token).await.unwrap(),
+        Some(StagingStatus::Active)
+    );
+    assert_eq!(backend.resolve_store_state(&target).await.unwrap(), None);
+    backend
+        .testing_age_store_state_staging(&token, 599)
+        .await
+        .unwrap();
+    assert_eq!(backend.reclaim_expired_store_state().await.unwrap(), 0);
+    backend
+        .testing_age_store_state_staging(&token, 2)
+        .await
+        .unwrap();
+    assert_eq!(backend.reclaim_expired_store_state().await.unwrap(), 1);
+    assert_eq!(
+        backend.store_state_staging_status(&token).await.unwrap(),
+        Some(StagingStatus::Expired)
+    );
+    assert!(backend.publish_store_state(token.clone()).await.is_err());
+    assert_eq!(backend.resolve_store_state(&target).await.unwrap(), None);
+    let replacement = backend
+        .begin_store_state_staging(target.clone())
+        .await
+        .unwrap();
+    backend
+        .stage_store_state_records(
+            &replacement,
+            BTreeMap::from([(b"row".to_vec(), Some(b"complete".to_vec()))]),
+        )
+        .await
+        .unwrap();
+    let view = backend.publish_store_state(replacement).await.unwrap();
+    assert_eq!(
+        backend.resolve_store_state(&target).await.unwrap(),
+        Some(view.clone())
+    );
+    assert_eq!(
+        backend.store_state_record_get(&view, b"row").await.unwrap(),
+        Some(b"complete".to_vec())
+    );
+    assert_eq!(
+        backend.store_state_staging_status(&token).await.unwrap(),
+        Some(StagingStatus::Expired)
+    );
+}
+
+#[cfg(feature = "testing")]
+#[tokio::test]
 async fn expiration_racing_publication_has_one_terminal_winner() {
     use eidetica::backend::StagingStatus;
     let backend: Arc<dyn BackendImpl> = Arc::from(test_backend().await);
@@ -1528,7 +1593,7 @@ async fn expiration_racing_publication_has_one_terminal_winner() {
     });
     barrier.wait().await;
     let result = publish.await.unwrap();
-    sweep.await.unwrap().unwrap();
+    let reclaimed = sweep.await.unwrap().unwrap();
     match backend
         .store_state_staging_status(&token)
         .await
@@ -1536,6 +1601,7 @@ async fn expiration_racing_publication_has_one_terminal_winner() {
         .unwrap()
     {
         StagingStatus::Expired => {
+            assert_eq!(reclaimed, 1);
             assert!(result.is_err());
             assert!(
                 backend
@@ -1546,6 +1612,7 @@ async fn expiration_racing_publication_has_one_terminal_winner() {
             );
         }
         StagingStatus::Published(view) => {
+            assert_eq!(reclaimed, 0);
             assert_eq!(result.unwrap(), view);
             assert_eq!(
                 backend.resolve_store_state(&request).await.unwrap(),
@@ -1554,4 +1621,39 @@ async fn expiration_racing_publication_has_one_terminal_winner() {
         }
         other => panic!("nonterminal race result: {other:?}"),
     }
+
+    // A completed publication is not an orphan even after its token ages.
+    let live = StoreStateRequest {
+        database: ID::from_bytes("sweep-after-publish"),
+        ..request.clone()
+    };
+    let token = backend
+        .begin_store_state_staging(live.clone())
+        .await
+        .unwrap();
+    backend
+        .stage_store_state_records(
+            &token,
+            BTreeMap::from([(b"row".to_vec(), Some(b"complete".to_vec()))]),
+        )
+        .await
+        .unwrap();
+    let view = backend.publish_store_state(token.clone()).await.unwrap();
+    backend
+        .testing_age_store_state_staging(&token, 601)
+        .await
+        .unwrap();
+    assert_eq!(backend.reclaim_expired_store_state().await.unwrap(), 0);
+    assert_eq!(
+        backend.store_state_staging_status(&token).await.unwrap(),
+        Some(StagingStatus::Published(view.clone()))
+    );
+    assert_eq!(
+        backend.resolve_store_state(&live).await.unwrap(),
+        Some(view.clone())
+    );
+    assert_eq!(
+        backend.store_state_record_get(&view, b"row").await.unwrap(),
+        Some(b"complete".to_vec())
+    );
 }

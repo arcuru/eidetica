@@ -4355,6 +4355,93 @@ async fn test_remote_backend_resume_lost_request_response_and_restart() {
 }
 
 /// A lost publication acknowledgement resolves the terminal token to a new
+/// Cancelling a high-level upload cannot discard its encoded pending chunk.
+/// A second recovery attempt must not interleave with the first one.
+#[tokio::test]
+async fn test_remote_backend_cancelled_upload_concurrent_recovery() {
+    use eidetica::backend::{RecordMutation as M, StagingStatus};
+    use eidetica::instance::backend::{Backend, RemoteBackend};
+
+    let (socket, _shutdown, server, _dir) = start_test_server().await;
+    let (instance, root, identity) = setup_db(&server, &socket, "alice").await;
+    let backend = RemoteBackend::new(remote_conn(&instance), Some(identity.clone()));
+    let target = derived_request(&root, "cancelled-upload");
+    let token = backend
+        .begin_store_state_staging(target.clone())
+        .await
+        .unwrap();
+    let (entered, _release) = backend.testing_pause_next_stage();
+    let task_backend = backend.clone();
+    let task_token = token.clone();
+    let upload = tokio::spawn(async move {
+        task_backend
+            .stage_store_state_ordered_chunk(
+                &task_token,
+                0,
+                &[],
+                vec![M::Put {
+                    key: b"row".to_vec(),
+                    value: b"complete".to_vec(),
+                }],
+            )
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(2), entered)
+        .await
+        .unwrap()
+        .unwrap();
+    upload.abort();
+    assert!(upload.await.unwrap_err().is_cancelled());
+    assert!(
+        backend
+            .resolve_store_state(&target)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let fresh = Instance::connect(format!("unix://{}", socket.display()))
+        .await
+        .unwrap();
+    fresh.login_user("alice", None).await.unwrap();
+    let conn = remote_conn(&fresh);
+    assert_eq!(
+        conn.store_state_staging_status(
+            root.clone(),
+            identity.clone(),
+            token.testing_namespace_id().to_string()
+        )
+        .await
+        .unwrap(),
+        Some(StagingStatus::Active)
+    );
+    let (a, b) = tokio::join!(
+        backend.resume_staging(&token, conn.clone()),
+        backend.resume_staging(&token, conn.clone())
+    );
+    assert_eq!(usize::from(a.is_ok()) + usize::from(b.is_ok()), 1);
+    assert!(backend.resume_staging(&token, conn.clone()).await.is_err());
+    let view = backend.publish_store_state(token.clone()).await.unwrap();
+    let resolved = backend.resolve_store_state(&target).await.unwrap().unwrap();
+    assert_eq!(
+        backend
+            .store_state_record_get(&resolved, b"row")
+            .await
+            .unwrap(),
+        Some(b"complete".to_vec())
+    );
+    assert_eq!(
+        backend.store_state_record_get(&view, b"row").await.unwrap(),
+        Some(b"complete".to_vec())
+    );
+    assert!(matches!(
+        conn.store_state_staging_status(root, identity, token.testing_namespace_id().to_string())
+            .await
+            .unwrap(),
+        Some(StagingStatus::Published(_))
+    ));
+}
+
+/// A lost publication acknowledgement resolves the terminal token to a new
 /// session view rather than opening another build or uploading another chunk.
 #[tokio::test]
 async fn test_remote_backend_resume_lost_publication_response() {

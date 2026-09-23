@@ -625,3 +625,45 @@ fixtures, but an explicit full inventory against all Phase 0 contract conditions
 and reproducible cancellation / concurrent recovery test remain needed before
 switching Table. Phase 4 Table switch, encryption/service parity, docs and
 benchmarks are still open. No `table:v0` change and no push/PR.
+
+## Phase 0 fixture inventory — approved six-contract gate (2026-09-23)
+
+This checklist maps **Phase 0 of the approved design** to runnable checks, not the
+later Table acceptance checklist. Execute the accumulated full gate with
+`nix develop -c nix run .#fix` and `nix develop -c just nix full`; the backend
+conformance tests use `test_backend()` under `TEST_BACKEND=inmemory|sqlite|postgres|service`.
+The `service` implementation of that backend-neutral factory falls back to a
+local backend for raw staging operations (no test clock on the RPC), so the
+separate live-socket checks below are essential. A checked box means a fixture
+exists, not that the entire Table redesign is delivered.
+
+- [x] **CanonicalJson golden parsing/bytes:** `crdt::canonical_json::tests::rfc_and_boundary_vectors` (number boundaries, negative zero, Unicode UTF-16 ordering, escapes, invalid numbers and duplicate keys), `typed_readers_cannot_change_canonical_bytes`, `canonical_row_survives_entry_cbor_roundtrip`, and `row_operation_is_inline_json_not_an_escaped_doc_string`.
+- [x] **Token lifecycle, order, digest, retry and lease:** `backend::store_state_records::{ordered_physical_staging_and_empty_generation,sequenced_token_status_adoption_and_abort,terminal_horizon_and_unknown_replacement_guards,expired_orphan_is_reclaimed_and_terminal_result_is_retained}` exercise physical put/delete/put, empty generation, gaps/conflicts/stale replay, status and bounded retention. `service::{test_remote_staging_rejects_late_and_conflicting_replays,test_exact_staging_chunk_retry_after_reconnect_and_delete,test_remote_backend_resume_lost_request_response_and_restart}` cover encoded wire digest/reconnect. `backend::store_state_records::lost_publication_request_expires_before_safe_rebuild` deliberately does not call publish: a 599-second lease/grace probe cannot reclaim; 601 seconds expires the partial build, rejects late publication and permits only a complete replacement. `lost_publish_response_is_resolved_by_token_retry` and `service::test_remote_backend_resume_lost_publication_response` test the opposite (request committed, response lost).
+- [x] **Atomic transaction revision:** `transaction::tests::{projected_staging_installs_concurrent_writes_in_canonical_and_both_overlays,projected_staging_failures_leave_canonical_and_overlays_unchanged}`. Canonical and physical overlay install or neither installs; a gated competing writer cannot lose either update.
+- [x] **Projection laws:** `crdt::map::tests::reference_projection_obeys_identity_merge_and_composition` plus `merge_laws_and_tombstones`, `crdt::lww::tests::exhaustive_associativity_and_identity`; typed streaming deletion across chunk boundary: `transaction::tests::projected_backend_matrix_physical_pages_and_cold_delete` and `projected_streaming_history_applies_deletes_across_chunks`.
+- [x] **Stale cursors, typed state, maintenance refusal:** `transaction::tests::{projected_page_cursor_rejects_put_delete_and_other_view,projected_page_discards_awaited_fetch_after_racing_mutation,projected_real_backend_fetch_rejects_racing_overlay,remote_scan_rejects_overlay_mutation_during_final_frontier_await,typed_store_state_folds_custom_crdt_without_doc_conversion,projected_recordless_fallback_reduces_typed_history}`; `service::{registered_typed_socket_maintenance_is_read_scoped,store_state_read_rejects_wrong_descriptor_and_unauthorized_reader,read_only_password_store_folds_authenticated_remote_history}`. Real socket frontier-change check is in the password read-only test; a stale-check is not a pinned cross-request snapshot.
+- [x] **Failure, cancellation, lost request/response, race, orphan reclamation:** backend matrix `backend::store_state_records::{failed_publish_is_invisible_and_ready_derived_is_immutable,cancelled_build_stays_private_and_replacement_publishes,lost_publication_request_expires_before_safe_rebuild,lost_publish_response_is_resolved_by_token_retry,expiration_racing_publication_has_one_terminal_winner,staging_publication_and_abort_race_is_terminal,terminal_horizon_and_unknown_replacement_guards}`. The publish/sweep race synchronizes the start and asserts exactly Published or Expired and matching resolvability/reclaim count; a completed publish remains immutable through a later sweep. `service::{test_remote_backend_resume_lost_request_response_and_restart,test_remote_backend_resume_lost_publication_response,test_remote_backend_cancelled_upload_concurrent_recovery}` use authenticated Unix sockets: the latter pauses a high-level send _after_ encoding but _before_ transmission, cancels the future, verifies no partial published target, then starts two concurrent authenticated recovery calls: exactly one resumes the original token/chunk, the other is fenced; publication exposes only the complete row.
+
+**Genuine scope gaps:** backend-neutral lease-aging and simultaneous sweeper
+interleavings are exercised against real InMemory, SQLite and isolated
+PostgreSQL in their own Nix runners, **not** through a service RPC because
+that test-only clock is deliberately unavailable to service clients. Live
+service cancellation and both lost-publication sides instead run against an
+InMemory daemon and a real authenticated socket, not an SQL-backed daemon.
+The barrier races only order whole public operations; they do not guarantee a
+specific internal mid-transaction interleaving (the PostgreSQL
+`same_token_stage_vs_publish_is_serialized` test separately gates that SQL
+critical section). A deterministic live-socket lease/sweep race would require
+an internal server test seam, not a public clock-control RPC. No new Table
+behavior, migration, or encrypted Table parity can be claimed from Phase 0.
+
+Performed on this slice: direct focused restored local tests returned 1 passed /
+0 failed each for the new lost-request, amended race and live-socket cancelled
+upload fixture. Negative control dropping pending uploads produced 0 passed /
+1 failed in the cancellation test (timeout at the gate; no upload reached it),
+then restored. Final formatted dirty-source full Nix gate passed: in-memory,
+SQLite, PostgreSQL and service each `1538 tests run: 1538 passed, 5 skipped`;
+minimal `1379 tests run: 1379 passed, 5 skipped`. Nix logs show PASS for
+both changed backend fixtures in all five runners and for the new socket
+fixture in all four full-feature runners. NixOS service and OCI container
+integration VMs passed. The signed-tip gate is recorded after commit below.

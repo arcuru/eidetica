@@ -48,7 +48,15 @@ pub struct RemoteBackend {
     identity: Option<SigKey>,
     views: Arc<Mutex<BTreeMap<String, ID>>>,
     uploads: Arc<tokio::sync::Mutex<HashMap<String, Upload>>>,
+    #[cfg(feature = "testing")]
+    stage_pause: Arc<Mutex<Option<StagePause>>>,
 }
+
+#[cfg(feature = "testing")]
+type StagePause = (
+    tokio::sync::oneshot::Sender<()>,
+    tokio::sync::oneshot::Receiver<()>,
+);
 
 #[derive(Debug)]
 struct Upload {
@@ -70,7 +78,24 @@ impl RemoteBackend {
             identity,
             views: Arc::new(Mutex::new(BTreeMap::new())),
             uploads: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            #[cfg(feature = "testing")]
+            stage_pause: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Pause one high-level upload after retaining its encoded request, before
+    /// sending it. Used to cancel at the ambiguous transport boundary.
+    #[cfg(feature = "testing")]
+    pub fn testing_pause_next_stage(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        *self.stage_pause.lock().unwrap() = Some((entered_tx, release_rx));
+        (entered_rx, release_tx)
     }
 
     /// The acting identity for authenticated RPCs: the bound per-handle
@@ -164,6 +189,13 @@ impl RemoteBackend {
             // Cancellation can occur during the await too; require status
             // resolution rather than silently retrying on the next call.
             upload.ambiguous = true;
+            #[cfg(feature = "testing")]
+            let pause = { self.stage_pause.lock().unwrap().take() };
+            #[cfg(feature = "testing")]
+            if let Some((entered, release)) = pause {
+                let _ = entered.send(());
+                let _ = release.await;
+            }
             match self.connection().send_staging_chunk(payload).await {
                 Ok(()) => {
                     upload.pending.pop_front();
