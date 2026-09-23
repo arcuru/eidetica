@@ -11,6 +11,10 @@ use crate::backend::RecordMutation;
 /// Each delta may be consumed incrementally; callers apply changes in Entry order.
 pub trait RecordProjection<D: CRDT>: Send + Sync {
     fn descriptor(&self) -> ProjectionDescriptor;
+    /// Registered plaintext codec eligible for read-scoped server maintenance.
+    fn server_store_type(&self) -> Option<&'static str> {
+        None
+    }
     fn mutations<'a>(
         &'a self,
         delta: &'a D,
@@ -43,6 +47,10 @@ struct DescribedProjection<D: CRDT + 'static> {
 impl<D: CRDT + 'static> RecordProjection<D> for DescribedProjection<D> {
     fn descriptor(&self) -> ProjectionDescriptor {
         self.descriptor.clone()
+    }
+
+    fn server_store_type(&self) -> Option<&'static str> {
+        self.inner.server_store_type()
     }
 
     fn mutations<'a>(

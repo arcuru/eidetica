@@ -1826,6 +1826,25 @@ impl Transaction {
         result
     }
 
+    async fn publish_record_view_optional<D: CRDT + Codec>(
+        &self,
+        store: &str,
+        projection: &dyn RecordProjection<D>,
+        request: StoreStateRequest,
+        entries: &[Entry],
+    ) -> Result<Option<RecordView>> {
+        // Source/key/projection failures are not optional cache failures.
+        let state = self.fold_store_entries::<D>(store, entries)?;
+        self.project_state(store, projection, &state)?;
+        match self.publish_record_view(store, projection, request, entries).await {
+            Ok(view) => Ok(Some(view)),
+            Err(error) => {
+                tracing::warn!(%store, %error, "optional legacy record publication failed");
+                Ok(None)
+            }
+        }
+    }
+
     pub(crate) async fn ensure_record_view<D: CRDT + Codec>(
         &self,
         store: &str,
@@ -1864,31 +1883,85 @@ impl Transaction {
         let request = state::records_request(
             self.db.root_id(),
             store,
-            descriptor,
+            descriptor.clone(),
             source_key,
             crate::backend::CacheScope::Shared,
         );
         let view = if let Some(view) = self.db.ops().resolve_store_state(&request).await? {
             view
         } else {
-            let boundary = Snapshot::from(parents);
-            let entries = self
-                .db
-                .ops()
-                .store_at(self.db.root_id(), store, &boundary)
-                .await?;
-            // Validate source/decryption/projection before attempting optional
-            // Derived publication. No source or key failure is downgraded here.
-            let state = self.fold_store_entries::<D>(store, &entries)?;
-            self.project_state(store, projection, &state)?;
-            match self
-                .publish_record_view(store, projection, request, &entries)
-                .await
+            #[cfg(all(unix, feature = "service"))]
+            if let Some(conn) = self.db.ops().remote_connection() {
+                // A read-only client cannot publish its own generation. The
+                // daemon validates the registered plaintext codec and builds
+                // under its narrowly scoped internal maintenance capability.
+                if self.encryptors.lock().unwrap().contains_key(store) {
+                    return Err(StoreError::RecordMaintenanceUnavailable {
+                        store: store.into(),
+                    }
+                    .into());
+                }
+                let Some(type_id) = projection.server_store_type() else {
+                    let boundary = Snapshot::from(parents);
+                    let entries = self
+                        .db
+                        .ops()
+                        .store_at(self.db.root_id(), store, &boundary)
+                        .await?;
+                    return self
+                        .publish_record_view_optional(store, projection, request, &entries)
+                        .await;
+                };
+
+                match conn
+                    .ensure_record_generation(
+                        self.db.root_id().clone(),
+                        self.db.auth_identity().cloned().unwrap_or_default(),
+                        store.into(),
+                        type_id,
+                        descriptor.clone(),
+                    )
+                    .await
+                {
+                    Err(crate::Error::Store(error))
+                        if matches!(*error, StoreError::RecordMaintenanceUnavailable { .. }) =>
+                    {
+                        return Err(
+                            crate::backend::BackendError::StoreStateStorageUnsupported.into()
+                        );
+                    }
+                    result => result?,
+                }
+                self.db
+                    .ops()
+                    .resolve_store_state(&request)
+                    .await?
+                    .ok_or_else(|| StoreError::RecordMaintenanceUnavailable {
+                        store: store.into(),
+                    })?
+            } else {
+                let boundary = Snapshot::from(parents);
+                let entries = self
+                    .db
+                    .ops()
+                    .store_at(self.db.root_id(), store, &boundary)
+                    .await?;
+                match self.publish_record_view_optional(store, projection, request, &entries).await? {
+                    Some(view) => view,
+                    None => return Ok(None),
+                }
+            }
+            #[cfg(not(all(unix, feature = "service")))]
             {
-                Ok(view) => view,
-                Err(error) => {
-                    tracing::warn!(%store, %error, "optional legacy record publication failed");
-                    return Ok(None);
+                let boundary = Snapshot::from(parents);
+                let entries = self
+                    .db
+                    .ops()
+                    .store_at(self.db.root_id(), store, &boundary)
+                    .await?;
+                match self.publish_record_view_optional(store, projection, request, &entries).await? {
+                    Some(view) => view,
+                    None => return Ok(None),
                 }
             }
         };
