@@ -104,8 +104,8 @@ nonce[12] || AES-GCM ciphertext-and-tag
 ```
 
 These are raw subtree payload bytes inside `Entry`; they are not JSON or base64 wrappers. The
-plaintext format belongs to the wrapped Store (for example, JSON for `Doc`-backed Stores or a Yrs
-binary update). This encryption call also supplies no additional authenticated data. Entry
+plaintext format belongs to the wrapped Store (for example, canonical `LwwMap` row deltas for
+Table, `Doc` JSON for DocStore, or a Yrs binary update). This encryption call also supplies no additional authenticated data. Entry
 identity, signatures, parents, Store name, and database membership are protected by the Entry/DAG
 authentication layers, not by row-envelope AAD.
 
@@ -119,7 +119,9 @@ not necessarily the same bytes as an individual Entry delta.
 
 `Table` declares projection `eidetica/table/rows/canonical-json:v0`, version 0. `PasswordStore<Table<T>>` namespaces
 that descriptor as `eidetica/password/eidetica/table/rows/canonical-json:v0`, version 0. The encrypted projection is
-built after decrypting Entry deltas and applying the Table projection.
+built by streaming ordered Entry deltas through the Table projection into bounded private
+physical put/delete chunks, then publishing atomically. History retrieval still holds a
+`Vec<Entry>`; bounded row chunks do not bound total cold-build memory.
 
 Two 32-byte subkeys are derived from the master with BLAKE3's derive-key mode:
 

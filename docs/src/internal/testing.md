@@ -52,7 +52,7 @@ continuation, and lifecycle-safe clearing.
 Table cached-state tests instrument local record reads to prove zero reads while
 loading a handle, one point lookup for `get`, bounded ordered pages, and
 transaction-local put/delete overlays. They also assert that a cold record set
-contains one backend record per row while historical Entry deltas remain `Doc`.
+contains one backend record per live row while historical Table Entry deltas are ordered `LwwMap<String, CanonicalJson>` operations (including delete tombstones).
 Store-state records tests cover a derived clear during an active reader and the
 rebuild that follows it, plus the reclaim of the unlinked generation.
 Store-state service tests cover publication, reconnect durability,

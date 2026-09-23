@@ -127,9 +127,10 @@ uses another derived generation, built from immutable Entries.
 
 Scans and `search` use physical-key order. This order is deterministic for one encrypted Store but
 is not lexicographic primary-key order. `TablePage::next` is an exclusive cursor in that physical
-order. Treat it as opaque: pass it unchanged to the next `scan_page` call for the same Store and
-password. The cached path and the history fallback use the same physical order, so a continuation
-can cross between them without changing cursor domains.
+order. Treat it as opaque: pass it unchanged to the next `scan_page` call for the same transaction
+view, Store and password. A changed local overlay or remote history frontier invalidates a cursor;
+start a fresh scan instead. The cached path and the history fallback use the same physical order,
+not a pinned snapshot of subsequent remote writes.
 
 ### Other Store types
 
@@ -145,7 +146,11 @@ the service socket as ciphertext. The daemon can serve a warm encrypted Table po
 point-record requests rather than a row scan or Store-history reconstruction.
 
 Encrypted cache materializations uploaded by a client are scoped to that authenticated user. The
-daemon cannot validate their decrypted contents. The signed, content-addressed Entry DAG remains
+daemon cannot validate their decrypted contents. On a read-only service connection where encrypted
+server maintenance is unavailable, an unlocked client instead folds authorized encrypted Entries
+locally and pages in physical-key order; this can fetch and decrypt the full history per read and
+does not publish a server generation. Unsupported maintenance is not a bypass for authorization,
+descriptor mismatch, wrong password, or ciphertext authentication failure. The signed, content-addressed Entry DAG remains
 the source of truth, and peer synchronization still exchanges Entries rather than treating the
 cache as authoritative data.
 
