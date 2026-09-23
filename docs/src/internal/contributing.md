@@ -21,14 +21,15 @@ just   # See all available commands
 
 ### Common Commands
 
-| Command       | Description                   |
-| ------------- | ----------------------------- |
-| `just build`  | Fast incremental build        |
-| `just test`   | Run tests with cargo nextest  |
-| `just lint`   | Linting (clippy, audit, etc.) |
-| `just fmt`    | Multi-language formatting     |
-| `just ci`     | Full local CI pipeline        |
-| `just ci nix` | Nix CI pipeline               |
+| Command       | Description                                     |
+| ------------- | ----------------------------------------------- |
+| `just dev`    | Fast local tests and Clippy (no separate build) |
+| `just build`  | Build all targets explicitly                    |
+| `just test`   | Run tests with cargo nextest                    |
+| `just lint`   | Linting (clippy, audit, etc.)                   |
+| `just fmt`    | Multi-language formatting                       |
+| `just ci`     | Full local check-only pipeline                  |
+| `just ci nix` | Nix CI pipeline                                 |
 
 ### Testing
 
@@ -82,13 +83,11 @@ collected at 10 samples, so it is not comparable with a larger run.
 
 ## Development Workflow
 
-1. Enter the dev shell: `nix develop` or use direnv
-2. Make changes
-3. Build: `just build`
-4. Test: `just test`
-5. Lint: `just lint`
-6. Format: `just fmt`
-7. Run full CI locally before pushing: `just ci`
+1. Enter the dev shell: `nix develop` or use direnv.
+2. Make changes and run `just dev` for SQLite tests and Clippy. Nextest builds the test binaries, and Clippy checks all targets, so a separate `just build` is not needed for routine validation.
+3. During iteration, run a focused test with `just test <filter>`; use `just test service` for service-backend changes. These use Cargo's incremental cache in the current worktree.
+4. Run `just ci` for the full local check-only pipeline (format, lint, API docs, tests, doc tests and book links). Run `just fix` separately when fixes are needed; `just ci` does not edit the tree.
+5. Use `just ci nix` for the reproducible full Nix gate before delivery. It still builds and checks the targets not covered by the faster local path.
 
 ## CI Integration
 
