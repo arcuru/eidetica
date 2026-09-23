@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::{
     Result, Store, Transaction,
-    backend::RecordMutations,
+    backend::{RecordMutation, RecordMutations},
     crdt::{
         Doc,
         doc::{Value, path::normalize_path},
@@ -43,11 +43,34 @@ fn insert_projected_record(out: &mut RecordMutations, key: Vec<u8>, value: Optio
     out.insert(key, value);
 }
 
-pub(crate) fn encode_entry_delta(mutations: &RecordMutations) -> Result<Doc> {
-    TableProjection.encode_entry_delta(mutations)
+// The Doc-backed Table still stages legacy records; this adapter is removed
+// with the table:v0 format switch.
+pub(crate) fn legacy_doc_delta(mutations: &RecordMutations) -> Result<Doc> {
+    let mut delta = Doc::new();
+    for (key, value) in mutations {
+        let key = std::str::from_utf8(key).map_err(|error| StoreError::SerializationFailed {
+            store: "Table".to_string(),
+            reason: error.to_string(),
+        })?;
+        let _ = match value {
+            Some(value) => delta.set(
+                key,
+                std::str::from_utf8(value).map_err(|error| StoreError::SerializationFailed {
+                    store: "Table".to_string(),
+                    reason: error.to_string(),
+                })?,
+            ),
+            None => delta.remove(key),
+        };
+    }
+    Ok(delta)
 }
 
 impl RecordProjection<Doc> for TableProjection {
+    fn legacy_collapsed(&self) -> bool {
+        true
+    }
+
     fn descriptor(&self) -> ProjectionDescriptor {
         ProjectionDescriptor {
             name: "eidetica/table/rows".to_string(),
@@ -55,33 +78,19 @@ impl RecordProjection<Doc> for TableProjection {
         }
     }
 
-    fn project_delta(&self, delta: &Doc, out: &mut RecordMutations) -> Result<()> {
-        project_doc_delta(delta, "", out);
-        Ok(())
-    }
-
-    fn encode_entry_delta(&self, mutations: &RecordMutations) -> Result<Doc> {
-        let mut delta = Doc::new();
-        for (key, value) in mutations {
-            let key =
-                std::str::from_utf8(key).map_err(|error| StoreError::SerializationFailed {
-                    store: "Table".to_string(),
-                    reason: error.to_string(),
-                })?;
-            let _ = match value {
-                Some(value) => delta.set(
-                    key,
-                    std::str::from_utf8(value).map_err(|error| {
-                        StoreError::SerializationFailed {
-                            store: "Table".to_string(),
-                            reason: error.to_string(),
-                        }
-                    })?,
-                ),
-                None => delta.remove(key),
-            };
-        }
-        Ok(delta)
+    fn mutations<'a>(
+        &'a self,
+        delta: &'a Doc,
+    ) -> Result<Box<dyn Iterator<Item = Result<RecordMutation>> + Send + 'a>> {
+        // Doc's hierarchical conflicts need a collapsed view until Table migrates.
+        let mut out = RecordMutations::new();
+        project_doc_delta(delta, "", &mut out);
+        Ok(Box::new(out.into_iter().map(|(key, value)| {
+            Ok(match value {
+                Some(value) => RecordMutation::Put { key, value },
+                None => RecordMutation::Delete { key },
+            })
+        })))
     }
 
     fn normalize_record_key(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {

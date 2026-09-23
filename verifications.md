@@ -336,3 +336,49 @@ minimal 1371 tests run: 1371 passed, 5 skipped. Both cursor fixtures
 reported PASS in each runner; NixOS service and OCI container VM integration
 passed. These fixtures use the internal deterministic provider in every runner,
 not those runners' remote/backend record scanners. No deployed Table switch.
+
+## Phase 0/3 continuation: typed one-way projection and real record view
+
+Intended: make `RecordProjection<D>` one-way and incrementally consumable, reduce
+ordered typed Entry deltas into bounded physical put/delete chunks, and serve typed
+point reads and physical-order scan pages from a real immutable backend RecordView
+plus revision-checked transaction overlays. Keep Doc-backed Table and its old
+entry format intact; recordless reads reduce typed history locally. This slice
+does not switch Table or complete Phase 0.
+
+Performed: `projected_streaming_history_applies_deletes_across_chunks` writes
+140 rows, deletes across a chunk boundary, rebuilds a real in-memory generation,
+checks absent physical keys, and resurrects a row. A negative control dropping
+ordered Deletes failed 0 passed / 1 failed at the committed deleted row;
+restored. `projected_real_record_view_physical_scan_and_overlay` checks cold point
+materialization, a real backend record get and ordered scan merged with local
+delete/put while the published view remains unchanged. The deterministic
+`projected_real_backend_fetch_rejects_racing_overlay` gate releases a real backend
+scan only after the overlay changes and expects StaleCursor. The recordless
+backend-seam fixture disables record methods while forwarding Entry operations;
+point reads and paged scans reduce typed history and merge a local put.
+These new unit fixtures use a real in-memory engine even when the Nix runner's
+`TEST_BACKEND` is SQLite, PostgreSQL or service. Existing integration tests
+cover those backend paths for the legacy Table, not this typed Store API.
+
+Final formatted source: `nix develop -c nix run .#fix` succeeded; `nix develop
+-c just nix full` passed: in-memory, SQLite, PostgreSQL and service each
+1527 tests run / 1527 passed / 5 skipped; minimal 1375 run / 1375 passed /
+5 skipped. NixOS service and OCI container VM integrations passed. The new
+real-view, race, recordless and chunk fixtures reported PASS in the runners,
+but run against their in-memory fixture. Existing Doc-backed Table and
+`table:v0` remained unchanged.
+
+Newly required: backend-neutral typed projection fixtures using actual SQLite,
+PostgreSQL and remote socket backends; encrypted physical-key identity and
+client-side decrypting fallback checks; automatic authorized remote ambiguous
+retry/recovery; service maintenance permission and descriptor validation for
+typed records. The Doc Table still uses a deliberately collapsed legacy
+projection and commit adapter until its format switch; do not remove it before
+remaining Phase 0 fixtures, and do not infer redesign completion from this gate.
+
+After the added recordless fixture and the legacy-adapter rename, the final
+formatted-source full gate again reported 1527 passed / 5 skipped on each
+full-feature backend runner and 1375 passed / 5 skipped on minimal, with both
+VM integration tests passing. `rg encode_entry_delta crates/lib/src` returned
+no matches; the legacy Doc Table commit adapter remains as `legacy_doc_delta`.
