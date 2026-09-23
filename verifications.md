@@ -382,3 +382,52 @@ formatted-source full gate again reported 1527 passed / 5 skipped on each
 full-feature backend runner and 1375 passed / 5 skipped on minimal, with both
 VM integration tests passing. `rg encode_entry_delta crates/lib/src` returned
 no matches; the legacy Doc Table commit adapter remains as `legacy_doc_delta`.
+
+## Phase 0 continuation: actual typed projection backend matrix
+
+Intended: execute physical-key point reads and paged transaction overlays, cold
+streaming deletes across the 128-mutation chunk boundary, and a gated backend
+fetch race on the storage engine actually selected by each runner. Include a
+recordless seam on that same engine and a test-only authenticated-key envelope
+for encrypted physical-key identity and client-side history decryption. Do not
+switch the Doc-backed Table or claim its future service codec is implemented.
+
+Performed: `projected_backend_matrix_physical_pages_and_cold_delete` uses
+SQLite in-memory, isolated PostgreSQL schema, in-memory backend, or a live Unix
+socket daemon authenticated as its bootstrap user according to `TEST_BACKEND`;
+creates a signed database with the user API. It commits 140 typed rows, commits
+Deletes at keys 000 and 139 in a separate Entry, resolves a cold RecordView,
+checks physical absence and an interior surviving key, then pages with exclusive
+physical cursors at limit 7 through staged update and insert; the published
+view retains its old bytes. The existing `projected_real_backend_fetch_rejects_racing_overlay`
+now gates the actual selected backend's scan until a competing stage and rejects
+StaleCursor. `projected_recordless_fallback_reduces_typed_history` now forwards
+Entry reads through that selected engine, refusing all record methods. The
+new `projected_encrypted_physical_identity_and_recordless_fallback` uses a
+test-only reversible ciphertext envelope binding the logical key, a reversed
+physical key sort, mismatch rejection, physical-order paging, and recordless
+history decryption on each selected engine including the authenticated socket.
+It is not a PasswordStore interoperability test or server-side maintenance grant.
+
+Negative control: disabling Deletes in the streaming projection made the SQLite
+matrix fixture fail 0 passed / 1 failed (exit 101) at the deleted point read;
+restored and reran the complete gate. A first negative control removed only the
+legacy collapsed-path Delete and stayed green: it does not exercise this typed
+projection and cannot be used as evidence. No production defect was observed in
+these tested paths; no production code changed. The service path here uses
+client-authorized record staging; it does not establish read-scoped typed
+maintenance, which is still missing.
+
+Final `nix develop -c nix run .#fix` succeeded; `nix develop -c just nix full`
+passed on restored formatted source. Nextest summaries: in-memory, SQLite,
+PostgreSQL, service each 1529 tests run: 1529 passed, 5 skipped; minimal 1377
+tests run: 1377 passed, 5 skipped. All four named tests reported PASS in each
+runner; NixOS service and OCI container integration tests passed. These are
+unit-module tests to access internal typed APIs but select real SQL engines and
+socket RPC, rather than rerunning an in-memory engine under matrix labels.
+
+Newly required: true encrypted PasswordStore identity and remote read-only
+client decrypting fallback, service authorization and typed maintenance
+dispatch, automatic remote ambiguous chunk retry/recovery, then Table switch,
+legacy removal, service/encryption parity, benchmarks and another full gate.
+Existing Doc-backed Table and `table:v0` remain unchanged; no PR or push.
