@@ -153,6 +153,12 @@ pub enum DatabaseOp {
         chunk_id: u64,
         records: WireRecordMutations,
     },
+    /// Apply physical mutations in message order, without collapsing repeated keys.
+    StageStoreStateOrdered {
+        token: String,
+        chunk_id: u64,
+        mutations: Vec<crate::backend::RecordMutation>,
+    },
     /// Publish the private build and return a view onto the published record set.
     PublishStoreState { token: String },
     /// Resolve the durable outcome of an ambiguous staging operation.
@@ -270,6 +276,7 @@ impl DatabaseOp {
             DatabaseOp::SubmitSignedEntry { .. }
             | DatabaseOp::BeginStoreStateStaging { .. }
             | DatabaseOp::StageStoreStateRecords { .. }
+            | DatabaseOp::StageStoreStateOrdered { .. }
             | DatabaseOp::PublishStoreState { .. }
             | DatabaseOp::AbortStoreState { .. }
             | DatabaseOp::StoreStateStagingStatus { .. } => Permission::Write(0),

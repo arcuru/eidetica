@@ -5,8 +5,8 @@
 use crate::Result;
 use crate::backend::errors::BackendError;
 use crate::backend::{
-    CacheScope, InstanceMetadata, InstanceSecrets, RecordMutations, RecordPage, RecordRange,
-    RecordView, StagingStatus, StagingToken, StoreStateLifecycle, StoreStateRequest,
+    CacheScope, InstanceMetadata, InstanceSecrets, RecordMutation, RecordMutations, RecordPage,
+    RecordRange, RecordView, StagingStatus, StagingToken, StoreStateLifecycle, StoreStateRequest,
     VerificationStatus,
 };
 use crate::entry::{Entry, ID};
@@ -259,6 +259,41 @@ pub async fn stage_store_state_chunk(
     digest: &[u8],
     records: RecordMutations,
 ) -> Result<()> {
+    apply_ordered_chunk(
+        backend,
+        token,
+        sequence,
+        digest,
+        true,
+        records
+            .into_iter()
+            .map(|(key, value)| match value {
+                Some(value) => RecordMutation::Put { key, value },
+                None => RecordMutation::Delete { key },
+            })
+            .collect(),
+    )
+    .await
+}
+
+pub async fn stage_store_state_ordered_chunk(
+    backend: &SqlxBackend,
+    token: &StagingToken,
+    sequence: u64,
+    digest: &[u8],
+    mutations: Vec<RecordMutation>,
+) -> Result<()> {
+    apply_ordered_chunk(backend, token, sequence, digest, false, mutations).await
+}
+
+async fn apply_ordered_chunk(
+    backend: &SqlxBackend,
+    token: &StagingToken,
+    sequence: u64,
+    digest: &[u8],
+    legacy_null_delete: bool,
+    mutations: Vec<RecordMutation>,
+) -> Result<()> {
     let sequence =
         i64::try_from(sequence).map_err(|_| BackendError::InvalidStoreStateStagingToken)?;
     let mut tx = backend
@@ -294,9 +329,22 @@ pub async fn stage_store_state_chunk(
     let next = next
         .checked_add(1)
         .ok_or(BackendError::InvalidStoreStateStagingToken)?;
-    for (key, value) in records {
-        sqlx::query("INSERT INTO store_state_records (namespace_id, record_key, record_value) VALUES ($1, $2, $3) ON CONFLICT (namespace_id, record_key) DO UPDATE SET record_value = EXCLUDED.record_value")
-            .bind(&token.namespace_id).bind(key).bind(value).execute(&mut *tx).await.sql_context("Failed to apply sequenced chunk")?;
+    for mutation in mutations {
+        match mutation {
+            RecordMutation::Put { key, value } => {
+                sqlx::query("INSERT INTO store_state_records (namespace_id, record_key, record_value) VALUES ($1, $2, $3) ON CONFLICT (namespace_id, record_key) DO UPDATE SET record_value = EXCLUDED.record_value")
+                    .bind(&token.namespace_id).bind(key).bind(value).execute(&mut *tx).await.sql_context("Failed to apply sequenced put")?;
+            }
+            RecordMutation::Delete { key } => {
+                if legacy_null_delete {
+                    sqlx::query("INSERT INTO store_state_records (namespace_id, record_key, record_value) VALUES ($1, $2, NULL) ON CONFLICT (namespace_id, record_key) DO UPDATE SET record_value = EXCLUDED.record_value")
+                        .bind(&token.namespace_id).bind(key).execute(&mut *tx).await.sql_context("Failed to apply legacy tombstone")?;
+                } else {
+                    sqlx::query("DELETE FROM store_state_records WHERE namespace_id = $1 AND record_key = $2")
+                        .bind(&token.namespace_id).bind(key).execute(&mut *tx).await.sql_context("Failed to apply sequenced delete")?;
+                }
+            }
+        }
     }
     sqlx::query("UPDATE store_state_staging_tokens SET next_sequence = $1, last_digest = $2, last_activity = $3 WHERE namespace_id = $4")
         .bind(next).bind(digest).bind(now_secs()).bind(&token.namespace_id)

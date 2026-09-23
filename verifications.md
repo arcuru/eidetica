@@ -64,6 +64,33 @@ failure; true backend-neutral ordered put/delete conformance once explicit
 mutations exist; transaction-state revision, cursor, typed state/capability,
 and full remaining Phase 0 contracts before Phase 2 or any Table switch.
 
+## Phase 0 continuation: ordered physical mutation slice
+
+Intended: add an explicit ordered `Put`/`Delete` chunk path across the backend
+trait, in-memory, SQLite, PostgreSQL and authenticated service RPC without
+switching the Doc-backed Table. Delete removes the private row; put after delete
+resurrects it; empty generations publish. Preserve the existing collapsed
+Doc-overlay tombstone path, including its publish-time null rejection.
+
+Performed: backend-neutral conformance fixture sends put/delete/put across
+sequences, retries the immediate accepted sequence, rejects older/gapped and
+conflicting chunks, publishes a physically empty namespace after a same-chunk
+put/delete, and resolves a never-written generation. A live authenticated
+service-socket fixture exercises the ordered RPC and empty publication. Negative
+control disabling the in-memory physical removal failed with 0 passed / 1
+failed at the empty scan assertion (exit 101), then the restored test passed.
+Focused `TEST_BACKEND=sqlite` fixture passed 1/1; live socket fixture passed
+1/1. `nix develop -c nix run .#fix` succeeded. Final formatted-source `nix develop -c just nix full` succeeded: in-memory,
+SQLite, PostgreSQL and service each 1514 passed / 5 skipped; minimal 1365
+passed / 5 skipped; NixOS service and OCI container integration passed. A
+committed-tip rerun is recorded below after the signed commit.
+
+Newly required: exact encoded-chunk replay after ambiguous transport (adapter
+still lacks it), bounded terminal-token retention and unknown-token safety,
+revision-checked transaction staging, stale cursors, typed Store-state and
+permission/fallback fixtures, before Phase 2 or the Table switch. Existing
+`table:v0` and Doc Table behavior remain unchanged.
+
 ## Phase 0 continuation: durable staging-token slice (recovered dirty worktree)
 
 Intended: preserve the previous worker's 15 dirty files and prove that in-memory
