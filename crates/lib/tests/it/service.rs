@@ -2595,6 +2595,111 @@ async fn test_historical_table_service_reads_use_row_record_set() {
     assert!(second.next.is_none());
 }
 
+/// Full encrypted cold rebuild over an authenticated Unix socket, not a local
+/// fixture running under the service test runner.
+#[tokio::test]
+async fn test_encrypted_table_streamed_cold_rebuild_over_socket() {
+    let (socket, _stop, server, _dir) = start_test_server().await;
+    create_user_via_admin(&server, "alice").await;
+    let mut alice = server.login_user("alice", None).await.unwrap();
+    let key = alice.get_default_key().unwrap();
+    let db = alice.create_database(Doc::new(), &key).await.unwrap();
+    let store = "socket_streamed_rows";
+    super::store::password_store::populate_streamed_password_table(&db, store).await;
+    server.backend().clear_derived_store_state().await.unwrap();
+    server.backend().clear_derived_store_state().await.unwrap();
+    let client = login_client(&socket, "alice").await;
+    let identity = eidetica::Database::find_sigkeys(&server, db.root_id(), &key)
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap()
+        .0;
+    let remote =
+        eidetica::Database::open_remote(&client, remote_conn(&client), db.root_id(), identity)
+            .await
+            .unwrap();
+    let tx = remote.new_transaction().await.unwrap();
+    let mut wrong = tx
+        .get_store::<PasswordStore<Table<super::store::password_store::PasswordTestRecord>>>(store)
+        .await
+        .unwrap();
+    assert!(wrong.open("wrong").is_err());
+    super::store::password_store::check_streamed_password_table(&remote, store).await;
+    let memory = server.backend().local_engine().unwrap();
+    let memory = memory.as_any().downcast_ref::<InMemory>().unwrap();
+    let records = memory.store_state_records(db.root_id(), store).unwrap();
+    assert_eq!(records.len(), 217);
+    assert!(
+        records
+            .iter()
+            .all(|(key, value)| key.len() == 32 && value.is_some())
+    );
+    // A late, validly signed Entry with a corrupt encrypted payload must fail
+    // after earlier chunks were staged, without exposing the new generation.
+    super::store::password_store::inject_late_corrupt_encrypted_entry(&db, &alice, store).await;
+    server.backend().clear_derived_store_state().await.unwrap();
+    server.backend().clear_derived_store_state().await.unwrap();
+    super::store::password_store::assert_failed_cold_build_unpublished(&remote, store).await;
+}
+
+#[tokio::test]
+async fn test_encrypted_table_socket_rejects_wrong_physical_identity() {
+    let (socket, _stop, server, _dir) = start_test_server().await;
+    create_user_via_admin(&server, "alice").await;
+    let mut alice = server.login_user("alice", None).await.unwrap();
+    let key = alice.get_default_key().unwrap();
+    let db = alice.create_database(Doc::new(), &key).await.unwrap();
+    let store = "socket_identity_rows";
+    super::store::password_store::populate_streamed_password_table(&db, store).await;
+    let client = login_client(&socket, "alice").await;
+    let identity = eidetica::Database::find_sigkeys(&server, db.root_id(), &key)
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap()
+        .0;
+    let remote =
+        eidetica::Database::open_remote(&client, remote_conn(&client), db.root_id(), identity)
+            .await
+            .unwrap();
+    super::store::password_store::check_streamed_password_table(&remote, store).await;
+    super::store::password_store::assert_wrong_physical_identity_rejected(&remote, &server, store)
+        .await;
+}
+
+#[tokio::test]
+async fn test_encrypted_table_recordless_socket_reads_ordered_history() {
+    use super::transaction::record_fallback::Recordless;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let socket = dir.path().join("recordless-rows.sock");
+    let (server, _) = Instance::create_backend(
+        Box::new(Recordless::new(InMemory::new())),
+        NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let mut admin = server.login_user("admin", None).await.unwrap();
+    let key = admin.add_private_key(Some("rows")).await.unwrap();
+    let db = admin.create_database(Doc::new(), &key).await.unwrap();
+    let store = "recordless_rows";
+    super::store::password_store::populate_streamed_password_table(&db, store).await;
+    let (stop, rx) = watch::channel(());
+    let daemon = ServiceServer::bind(server.clone(), &socket).await.unwrap();
+    let task = tokio::spawn(daemon.run(rx));
+    let client = Instance::connect(format!("unix://{}", socket.display()))
+        .await
+        .unwrap();
+    let remote_user = client.login_user("admin", None).await.unwrap();
+    let remote = remote_user.open_database(db.root_id()).await.unwrap();
+    super::store::password_store::check_streamed_password_table(&remote, store).await;
+    stop.send(()).unwrap();
+    task.await.unwrap().unwrap();
+}
+
 /// A warm encrypted `Table` point read stays on the service's point-record
 /// path: it neither scans the published row set nor reconstructs Store history.
 #[tokio::test]
