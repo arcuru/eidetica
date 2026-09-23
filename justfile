@@ -478,11 +478,20 @@ ci mode='local':
 # Nix
 # =============================================================================
 
-# Nix commands: build, check, test, test-all, bench, integration, full
-nix action='check':
+# Nix commands: check, full, test [backend], lint [tool], doc [target], integration [target], eval [target], build, test-all, bench
+nix action='check' target='':
     #!/usr/bin/env bash
     set -e
-    case "{{ action }}" in
+    action={{quote(action)}}
+    target={{quote(target)}}
+    case "$target" in
+        *[!a-zA-Z0-9_-]*) echo "Invalid Nix target: $target" >&2; exit 2 ;;
+    esac
+    case "$action" in
+        test|lint|doc|integration|eval) ;;
+        *) if [ -n "$target" ]; then echo "Nix action $action does not take a target" >&2; exit 2; fi ;;
+    esac
+    case "$action" in
         build)
             nix build
             ;;
@@ -493,7 +502,7 @@ nix action='check':
                 exit 127
             fi
             target='.#checks'
-            if [ "{{ action }}" = full ]; then
+            if [ "$action" = full ]; then
                 # Push CI already combines checks and all integrations in one graph.
                 system=$(nix eval --raw --impure --expr builtins.currentSystem)
                 target=".#legacyPackages.${system}.ci"
@@ -501,7 +510,14 @@ nix action='check':
             nix-fast-build --no-link --skip-cached ${CI:+--no-nom} -f "$target"
             ;;
         test)
-            nix run .#test
+            if [ -n "$target" ]; then
+                nix build ".#test.$target" --print-build-logs --no-link
+            else
+                nix run .#test
+            fi
+            ;;
+        lint|doc|integration|eval)
+            nix build ".#${action}.${target:-default}" --print-build-logs --no-link
             ;;
         test-all)
             # Force re-run all hermetic test backends
@@ -511,12 +527,9 @@ nix action='check':
             # Force re-run hermetic benchmarks (rebuild even if cached)
             nix build .#bench --rebuild --print-build-logs --no-link
             ;;
-        integration)
-            nix build .#integration.default --print-build-logs --no-link
-            ;;
         *)
-            echo "Unknown action: {{ action }}"
-            echo "Options: build, check, test, test-all, bench, integration, full"
+            echo "Unknown action: $action"
+            echo "Options: check, full, test [backend], lint [tool], doc [target], integration [target], eval [target], build, test-all, bench"
             exit 1
             ;;
     esac
