@@ -26,3 +26,15 @@ The recursive merge-base algorithm uses caching for performance optimization:
 - Cache eliminates redundant computations
 - Scales well with DAG complexity through memoization
 - Memory-computation trade-off favors cached access patterns
+
+### Table projections
+
+`Table<T>` persists RFC 8785 canonical JSON rows in `LwwMap` Entry deltas.
+Cold record materialization streams physical row puts/deletes into bounded private
+chunks (128 mutations or 1 MiB) before publishing an immutable generation.
+This bounds the projected row chunk, **not** the entire rebuild: history retrieval
+still returns `Vec<Entry>`, and the transaction's staged delta may hold a batch
+of rows. Warm point reads fetch one record; scans request bounded pages.
+Encrypted scans sort by keyed physical hashes rather than logical row keys.
+See the Table benchmark harness for payload, write, point and scan workloads;
+benchmark results depend on backend, history shape and cache state.

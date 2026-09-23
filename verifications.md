@@ -829,3 +829,91 @@ Boundary: the authenticated service read-only client projects ordered decrypted 
 Negative controls: omitting the late socket Entry failed `0 passed; 1 failed` on the expected error; omitting the late SQL Entry failed `0 passed; 1 failed`; leaving the physical key unchanged failed `0 passed; 1 failed`; replacing encrypted deletes with malformed puts failed the actual SQLite cold fixture `0 passed; 1 failed` (record authentication error). All restored, SQLite focused fixture `1 passed; 0 failed`, socket streamed and identity focused `1/1` and `2/2`, recordless socket `1 passed; 0 failed`. An intermediate full Nix gate failed only the new socket record-count assertion (260 instead of 217): a single clear leaves a reader-pinned generation; corrected the fixture to use the documented two-phase clear and reran the full gate.
 
 Final formatted-source `nix develop -c nix run .#fix` passed clippy/deadnix/markdownlint/statix/treefmt; `nix develop -c just nix full` exit 0 with actual Nix test derivation logs: in-memory, SQLite, PostgreSQL, service each **1546 tests run: 1546 passed, 5 skipped**; minimal **1381 tests run: 1381 passed, 5 skipped**; named new fixtures PASS where applicable. NixOS service and OCI container VMs passed. Re-run this accumulated full gate on the signed committed tip. Remaining todo scope: Phase 6 docs/benchmarks, final accumulated checks and handoff; no push/PR.
+
+## Phase 6 partial: documentation and comparable Table measurements (2026-09-23)
+
+Intended: describe Map/Lww/LwwMap, deterministic Entry-order and the incompatible
+Doc-to-canonical-JSON Table format; fix the cold benchmark, compare baseline and
+branch payload, writes, reads, scans and encryption; record a cold rebuild memory
+measurement, then finish the accumulated gate. Per the approved contract,
+`table:v0` and `canonical-json:v0` remain unchanged; old databases/fixtures must
+be rebuilt, not mixed with the new format.
+
+Performed: corrected public/internal CRDT, Table, cache, Store-state, encryption,
+performance and testing text. Clarified exact UTF-8 keys, typed read boundary,
+physical encrypted order and client-side read-only service fallback (not server
+maintenance). Existing Map/Lww/LwwMap Rust doctest examples remain executable.
+Repaired both cold benchmark variants by clearing derived generations after
+setup; the 1k/10k cold point benchmark no longer pre-reads a row. Added identical
+Table payload reporting, fresh one/32-row commit, 100-row paged scan, and fresh
+32-row plaintext/password-wrapped scan cases to the old and new harness.
+
+Measurement protocol: old `e0f4645178` detached baseline and candidate starting
+at `d80f463da9` with only the *same* benchmark harness edit temporarily copied
+to the baseline (not committed there); both built in release profile with the
+same flake toolchain and `TEST_BACKEND=inmemory`. Run sequentially, on the same
+x86_64 AMD Ryzen 9 7900 (12 cores/24 threads), 124 GiB RAM host. At start:
+~49 GiB available RAM, load averages 3.37/5.38/11.17; background load was **not**
+quiescent. Exact command per tree:
+
+```sh
+TEST_BACKEND=inmemory nix develop -c cargo bench -p eidetica --bench table_cache_benchmarks -- 'table_(payload_bytes|write|page|warm_cache|cold_point_read)' --sample-size 10 --warm-up-time 0.1 --measurement-time 0.2
+TEST_BACKEND=inmemory nix develop -c cargo bench -p eidetica --bench table_cache_benchmarks -- table_encrypted_page --sample-size 10 --warm-up-time 0.1 --measurement-time 0.2
+```
+
+Payload numbers are the `Entry::data("bench_table")` subtree byte lengths for
+the same exact keys and typed rows; Entry headers/signatures and storage index
+are excluded. The payload-only harness prints byte lengths, not a meaningless
+sub-nanosecond Criterion `black_box(size)` timing. Results (baseline → branch;
+Criterion 95% confidence interval for time, 10 samples):
+
+| Workload | Old Doc | New LwwMap |
+| --- | ---: | ---: |
+| one-row payload | 85 B | 63 B |
+| 32-row payload in one commit | 2414 B | 2113 B |
+| fresh one-row write+commit | [75.195, 76.341] µs | [76.201, 79.935] µs |
+| fresh 32-row write+commit | [115.19, 119.01] µs | [806.94, 825.48] µs |
+| warm point, 100 historical single-row commits | [61.025, 62.154] µs | [59.933, 62.162] µs |
+| corrected cold first point, 1k batched rows | [3.3316, 3.4327] ms | [1.5949, 1.6404] ms |
+| corrected cold first point, 10k batched rows | [302.23, 313.11] ms | [16.863, 18.459] ms |
+| scan 100 rows, page size 10 | [90.202, 91.092] µs | [186.16, 188.25] µs |
+| scan 100 rows, page size 50 | [88.389, 88.803] µs | [171.97, 175.63] µs |
+| fresh plain 32-row scan | [39.339, 42.467] µs | [104.60, 105.93] µs |
+| fresh encrypted 32-row scan | [22.469, 24.261] ms | [17.268, 18.278] ms |
+
+The fresh encrypted scan includes `PasswordStore::open`/Argon2id, first-generation
+build, authenticated row decoding, and 32-row scan; the plain leg includes its
+first build. This is **not** isolated per-record encryption overhead or a warm
+point-read comparison. Plain/encrypted legs have different configuration/history
+payloads. A fresh 32-row transaction is substantially slower on the new path;
+do not present the redesign as an across-the-board speedup. The 10k candidate
+reported Criterion's estimated 664-second collection warning (setup dominates,
+not timed); its 10 timed reads still completed. Short 0.2s target, only 10
+samples, dynamic CPU clocks and shared host load limit precision; intervals
+that overlap (warm 100) do not establish a change. The older benchmark groups
+with one commit per inserted row show per-history setup cost, not fixed-row
+complexity. These numbers describe InMemory only, not SQLite/PostgreSQL/socket.
+
+**Cold peak-memory limitation:** no peak RSS claim. `iter_with_setup` builds a
+new database and many Entries inside the *same* Criterion process on every
+sample, so `/usr/bin/time -v` or `/proc/self/status` maximum resident set over
+that process measures cumulative setup/allocator high-water plus Criterion,
+not the cold projection. An isolated one-shot child with a prebuilt persisted
+fixture and a process-level baseline RSS (or allocation instrumentation scoped
+to reconstruction) is needed to attribute cold-build peak memory. The current
+history API still collects `Vec<Entry>` even though row mutations stream in
+bounded 128-change/1-MiB private chunks. Churn-heavy payload, delete-heavy
+payload, encrypted cold-build-only and warm encrypted point comparisons likewise
+remain unmeasured. No claim of bounded total cold RSS or general throughput win.
+
+`nix develop -c cargo check -p eidetica --bench table_cache_benchmarks` compiled
+the changed harness; both benchmark legs emitted time CIs and payload bytes.
+`nix develop -c nix run .#fix` succeeded (clippy, deadnix, markdownlint,
+statix, treefmt 0 changed in final run). Final formatted-source
+`nix develop -c just nix full` exited 0: in-memory, SQLite, PostgreSQL and
+service each **1546 tests run: 1546 passed, 5 skipped**; minimal **1381 tests
+run: 1381 passed, 5 skipped**. NixOS service and OCI container integration
+VMs both reported passed. The gate exercises Table/encryption/socket behavior
+from preceding phases; Criterion results are separate InMemory measurements.
+`git diff --check` clean. Signed-tip recheck follows the local commit. No
+push/PR.

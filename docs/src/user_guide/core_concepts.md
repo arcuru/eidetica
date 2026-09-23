@@ -131,7 +131,7 @@ Eidetica is designed with distributed systems in mind:
 - All data structures have CRDT properties for automatic conflict resolution
 - Different store types implement appropriate CRDT strategies:
   - DocStore uses structural merge by default: concurrent writes to the same key use last-writer-wins (LWW), while writes to different keys are combined. Docs can be marked as **atomic** to use full LWW replacement, where the entire document replaces its predecessor instead of merging field-by-field. This is used for data that must be treated as a complete unit.
-  - Table preserves all items, with LWW for updates to the same item
+  - Table uses an ordered LWW map of exact row keys; the last set or delete in deterministic Entry order (height, then ID) wins for each key, not the latest wall-clock timestamp
 
 These properties ensure that when Eidetica instances synchronize, they eventually reach a consistent state regardless of the order in which updates are received.
 
@@ -198,6 +198,7 @@ Eidetica is under active development, and some features mentioned in this docume
 - PasswordStore for transparent password-based encryption wrapping any store
 - CRDT functionality:
   - Doc (hierarchical nested document structure with recursive merging and tombstone support)
+  - Map (per-key CRDT composition), Lww (right-biased set/delete register), and LwwMap (per-key Lww with hidden tombstones)
 - Atomic operations across stores
 - Tombstone support for proper deletion handling in distributed environments
 - Signature-based authentication with crypto-agile key types and granular permissions
