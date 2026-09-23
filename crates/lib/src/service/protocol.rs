@@ -192,9 +192,14 @@ pub enum DatabaseOp {
     /// The database's Verified-frontier tips (server runs `Database::snapshot`
     /// on its local instance). Gate Read.
     GetVerifiedTips,
-    /// Server-materialized merged state of an **unencrypted** store, against
-    /// the server's own Verified frontier. Gate Read.
-    GetStoreState { store: String },
+    /// Typed Store state for registered plaintext codecs. The client supplies
+    /// its expected registry type and effective projection descriptor; the
+    /// server verifies both after the canonical Read gate. Gate Read.
+    GetStoreState {
+        store: String,
+        expected_type: String,
+        projection: crate::backend::ProjectionDescriptor,
+    },
     /// Ordered (by subtree height), verified, opaque store entries reachable
     /// from `tips` in `scope` — the universal primitive, incl. encrypted
     /// stores (client decrypts+merges locally). Gate Read.

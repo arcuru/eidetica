@@ -200,3 +200,36 @@ Newly required: high-level ambiguous transport/reconnect retry and authorized
 service recovery, typed state/capability and fallback, revision/cursor race
 contracts, remaining Phase 0, then Phases 2-6 and full Table/encryption/service
 behavior checks. Do not switch Table before Phase 0 completion.
+
+## Phase 0 continuation: typed Store-state read and permission slice
+
+Intended: typed public Store-state retrieval instead of Doc-shaped generic JSON;
+server registry type and projection validation after canonical Read authorization;
+explicit capability refusal for unsupported maintenance and typed ordered history
+fallback on a recordless backend. Preserve DocStore JSON convenience and the
+Doc-backed Table/table:v0. This is not the read-scoped ensure-generation RPC
+and grants no read client a shared staging token.
+
+Performed: `typed_store_state_folds_custom_crdt_without_doc_conversion`
+reduces a non-Doc max counter and rejects a DocStore identity mismatch.
+Live-socket `store_state_read_rejects_wrong_descriptor_and_unauthorized_reader`
+checks positive Doc retrieval, unauthenticated refusal, authenticated descriptor
+mismatch, typed Store mismatch, and a second user's canonical Read denial.
+Live recordless socket reads committed Doc data via the typed authorized Entry
+history fallback. A negative control removed the distinct capability wire
+mapping and the recordless test failed 0 passed / 1 failed (exit 101) with an
+IO error rather than falling back; mapping restored and focused fixture passed
+1 passed / 0 failed. `nix develop -c nix run .#fix` succeeded. Final
+`nix develop -c just nix full` passed: in-memory, SQLite, PostgreSQL, service
+1518/1518 each, minimal 1367/1367, five skipped each; NixOS service and OCI
+container integration VMs passed. The changed tests appear as PASS in the full
+backend matrix; this is not proof of the future Table codec or encrypted fallback.
+
+Newly required: read-scoped server ensure-generation under internal maintenance
+capability, strict descriptor validation for password-wrapped/unknown codecs,
+typed history fallback for encrypted Stores with client-side decryption,
+transaction revision atomicity, stale cursor races, authorized service recovery
+and automatic high-level ambiguous-response retry; then Phases 2-6 including
+Table switch, encryption parity, benchmarks, and full gate again. This service
+RPC remains a plaintext whole-state read for known Doc-backed types, not a
+shared-generation publication grant. No Table format switch was made.
