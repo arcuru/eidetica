@@ -586,3 +586,42 @@ the socket daemon uses InMemory under each runner. NixOS service and OCI
 container VM integrations passed. No push/PR. Remaining: automatic high-level
 remote staging recovery, full Table redesign/parity/benchmarks and complete
 accumulated verification before delivery.
+
+## Phase 0 — explicit high-level authenticated upload recovery (2026-09-23)
+
+Intended: RemoteBackend must retain encoded chunks through ambiguous transport and
+require a caller-supplied reauthenticated connection to resume the same token;
+publication must resolve by status without a fresh build or saved credentials.
+Preserve the existing Doc-backed Table and `table:v0`.
+
+Performed: the adapter now binds token upload state to its original target and
+acting/session identity, holds its exact encoded unacknowledged request plus
+remaining pre-encoded batch chunks, and fences staging/publish/abort during
+ambiguous I/O or cancellation. An ambiguous error carries the token and
+optional chunk sequence. Explicit `resume_staging` checks status on the supplied
+connection, acknowledges/replays retained chunks in sequence, resolves a
+terminal publication to a new session view, and replaces the backend socket
+only after authorized success. Aborted, expired, unknown, mismatched-target or
+wrong-session attempts cannot publish or restart a build. An ambiguous begin
+remains an orphan lease/reclamation case because no token was returned.
+
+Real authenticated socket fixtures cover lost request on a closed socket, a
+server-accepted chunk with lost adapter acknowledgement across daemon restart,
+wrong user/unauthenticated and wrong-db status refusal, later ordered delete
+and put, and a lost publication acknowledgement resolved to a new view. The
+socket server uses InMemory in each Nix runner. Negative control omitting the
+exact retained replay failed 0 passed / 1 failed (exit 101) at
+`InvalidStoreStateStagingToken`; restored focused tests passed 2/2.
+`nix develop -c nix run .#fix` succeeded (clippy, deadnix, markdownlint,
+statix, treefmt). Final formatted-source `nix develop -c just nix full` exit 0:
+in-memory, SQLite, PostgreSQL and service each 1536/1536 passed (5 skipped),
+minimal 1378/1378 passed (5 skipped); both named socket fixtures PASS in all
+four full-feature runners; NixOS service and OCI container integrations passed.
+A committed-tip gate follows the signed commit.
+
+Phase 0 is not declared complete: the design's backend-neutral lost-publication
+request/response and reclamation race matrix is partially exercised by separate
+fixtures, but an explicit full inventory against all Phase 0 contract conditions
+and reproducible cancellation / concurrent recovery test remain needed before
+switching Table. Phase 4 Table switch, encryption/service parity, docs and
+benchmarks are still open. No `table:v0` change and no push/PR.
