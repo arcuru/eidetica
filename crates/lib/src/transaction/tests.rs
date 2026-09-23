@@ -96,10 +96,10 @@ impl RecordProjection<Doc> for LegacyRowsProjection {
     fn descriptor(&self) -> ProjectionDescriptor {
         RowsProjection.descriptor()
     }
-    fn project_delta(&self, _: &Doc, _: &mut RecordMutations) -> Result<()> {
-        unreachable!()
-    }
-    fn encode_entry_delta(&self, _: &RecordMutations) -> Result<Doc> {
+    fn mutations<'a>(
+        &'a self,
+        _: &'a Doc,
+    ) -> Result<Box<dyn Iterator<Item = Result<RecordMutation>> + Send + 'a>> {
         unreachable!()
     }
 }
@@ -112,21 +112,22 @@ impl RecordProjection<StagedRows> for RowsProjection {
             version: 0,
         }
     }
-    fn project_delta(&self, delta: &StagedRows, out: &mut RecordMutations) -> Result<()> {
-        for (key, op) in delta.0.operations() {
-            out.insert(
-                key.as_bytes().to_vec(),
-                match op {
-                    crate::crdt::Lww::Set(value) => Some(value.as_bytes().to_vec()),
-                    crate::crdt::Lww::Delete => None,
-                    crate::crdt::Lww::NoOp => unreachable!(),
+    fn mutations<'a>(
+        &'a self,
+        delta: &'a StagedRows,
+    ) -> Result<Box<dyn Iterator<Item = Result<RecordMutation>> + Send + 'a>> {
+        Ok(Box::new(delta.0.operations().map(|(key, op)| {
+            Ok(match op {
+                crate::crdt::Lww::Set(value) => RecordMutation::Put {
+                    key: key.as_bytes().to_vec(),
+                    value: value.as_bytes().to_vec(),
                 },
-            );
-        }
-        Ok(())
-    }
-    fn encode_entry_delta(&self, _: &RecordMutations) -> Result<StagedRows> {
-        unreachable!("typed staging does not reconstruct canonical deltas from records")
+                crate::crdt::Lww::Delete => RecordMutation::Delete {
+                    key: key.as_bytes().to_vec(),
+                },
+                crate::crdt::Lww::NoOp => unreachable!(),
+            })
+        })))
     }
 }
 
@@ -145,6 +146,327 @@ fn is_stale(
     assert!(
         matches!(result, Err(crate::Error::Store(error)) if matches!(*error, StoreError::StaleCursor { .. }))
     );
+}
+
+#[derive(Debug)]
+struct RecordlessOps(std::sync::Arc<dyn crate::instance::backend::Backend>);
+
+#[async_trait::async_trait]
+impl crate::instance::backend::Backend for RecordlessOps {
+    async fn get(&self, id: &ID) -> Result<Entry> {
+        self.0.get(id).await
+    }
+    async fn snapshot(&self, tree: &ID) -> Result<Snapshot> {
+        self.0.snapshot(tree).await
+    }
+    async fn store_snapshot(&self, tree: &ID, store: &str) -> Result<Snapshot> {
+        self.0.store_snapshot(tree, store).await
+    }
+    async fn store_snapshot_at(
+        &self,
+        tree: &ID,
+        store: &str,
+        snapshot: &Snapshot,
+    ) -> Result<Snapshot> {
+        self.0.store_snapshot_at(tree, store, snapshot).await
+    }
+    async fn store_at(&self, tree: &ID, store: &str, snapshot: &Snapshot) -> Result<Vec<Entry>> {
+        self.0.store_at(tree, store, snapshot).await
+    }
+    async fn compute_merge_state(
+        &self,
+        tree: &ID,
+        store: &str,
+        ids: &[ID],
+    ) -> Result<crate::instance::backend::MergeSlice> {
+        self.0.compute_merge_state(tree, store, ids).await
+    }
+    async fn put(&self, entry: Entry) -> Result<()> {
+        self.0.put(entry).await
+    }
+    async fn write_entry(
+        &self,
+        status: VerificationStatus,
+        entry: Entry,
+        source: WriteSource,
+    ) -> Result<()> {
+        self.0.write_entry(status, entry, source).await
+    }
+    async fn get_instance_metadata(&self) -> Result<Option<crate::backend::InstanceMetadata>> {
+        self.0.get_instance_metadata().await
+    }
+    async fn set_instance_metadata(
+        &self,
+        metadata: &crate::backend::InstanceMetadata,
+    ) -> Result<()> {
+        self.0.set_instance_metadata(metadata).await
+    }
+}
+
+#[tokio::test]
+async fn projected_recordless_fallback_reduces_typed_history() {
+    let (instance, _) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        crate::NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let (key, _) = generate_keypair();
+    let db = Database::create(&instance, key, Doc::new()).await.unwrap();
+    let tx = db.new_transaction().await.unwrap();
+    tx.stage_projected_delta("rows", &RowsProjection, row("a", "old"))
+        .await
+        .unwrap();
+    tx.stage_projected_delta("rows", &RowsProjection, row("b", "old"))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let tx = db.new_transaction().await.unwrap();
+    let mut deletion = crate::crdt::LwwMap::new();
+    deletion.delete("a".to_string());
+    tx.stage_projected_delta("rows", &RowsProjection, StagedRows(deletion))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let recordless = db
+        .clone()
+        .with_test_ops(std::sync::Arc::new(RecordlessOps(db.backend().unwrap())));
+    let tx = recordless.new_transaction().await.unwrap();
+    assert_eq!(
+        tx.projected_get("rows", &RowsProjection, b"a")
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        tx.projected_get("rows", &RowsProjection, b"b")
+            .await
+            .unwrap(),
+        Some(b"old".to_vec())
+    );
+    tx.stage_projected_delta("rows", &RowsProjection, row("c", "new"))
+        .await
+        .unwrap();
+    let (page, next) = tx
+        .projected_record_scan_page("rows", &RowsProjection, None, 1)
+        .await
+        .unwrap();
+    assert_eq!(page.records, vec![(b"b".to_vec(), b"old".to_vec())]);
+    let (page, end) = tx
+        .projected_record_scan_page("rows", &RowsProjection, next.as_ref(), 1)
+        .await
+        .unwrap();
+    assert_eq!(page.records, vec![(b"c".to_vec(), b"new".to_vec())]);
+    assert!(end.is_none());
+}
+
+#[tokio::test]
+async fn projected_streaming_history_applies_deletes_across_chunks() {
+    let (instance, _) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        crate::NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let (key, _) = generate_keypair();
+    let db = Database::create(&instance, key, Doc::new()).await.unwrap();
+    let tx = db.new_transaction().await.unwrap();
+    let mut rows = crate::crdt::LwwMap::new();
+    for i in 0..140 {
+        rows.set(format!("{i:03}"), "old".to_string());
+    }
+    tx.stage_projected_delta("rows", &RowsProjection, StagedRows(rows))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let tx = db.new_transaction().await.unwrap();
+    let mut rows = crate::crdt::LwwMap::new();
+    rows.delete("000".to_string());
+    rows.delete("139".to_string());
+    tx.stage_projected_delta("rows", &RowsProjection, StagedRows(rows))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let tx = db.new_transaction().await.unwrap();
+    assert_eq!(
+        tx.projected_get("rows", &RowsProjection, b"000")
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        tx.projected_get("rows", &RowsProjection, b"139")
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        tx.projected_get("rows", &RowsProjection, b"001")
+            .await
+            .unwrap(),
+        Some(b"old".to_vec())
+    );
+    let view = tx.record_view("rows", &RowsProjection).await.unwrap();
+    assert_eq!(
+        db.ops()
+            .store_state_record_get(&view, b"000")
+            .await
+            .unwrap(),
+        None
+    );
+    let tx = db.new_transaction().await.unwrap();
+    tx.stage_projected_delta("rows", &RowsProjection, row("000", "new"))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let tx = db.new_transaction().await.unwrap();
+    assert_eq!(
+        tx.projected_get("rows", &RowsProjection, b"000")
+            .await
+            .unwrap(),
+        Some(b"new".to_vec())
+    );
+}
+
+#[tokio::test]
+async fn projected_real_record_view_physical_scan_and_overlay() {
+    let (instance, _) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        crate::NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let (key, _) = generate_keypair();
+    let db = Database::create(&instance, key, Doc::new()).await.unwrap();
+    let tx = db.new_transaction().await.unwrap();
+    tx.stage_projected_delta("rows", &RowsProjection, row("a", "old"))
+        .await
+        .unwrap();
+    tx.stage_projected_delta("rows", &RowsProjection, row("b", "old"))
+        .await
+        .unwrap();
+    tx.stage_projected_delta("rows", &RowsProjection, row("c", "old"))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let tx = db.new_transaction().await.unwrap();
+    // These rows are not in the new transaction's overlay: the first read
+    // must materialize and address a real backend RecordView.
+    assert_eq!(
+        tx.projected_get("rows", &RowsProjection, b"b")
+            .await
+            .unwrap(),
+        Some(b"old".to_vec())
+    );
+    let view = tx.record_view("rows", &RowsProjection).await.unwrap();
+    assert_eq!(
+        db.ops().store_state_record_get(&view, b"b").await.unwrap(),
+        Some(b"old".to_vec())
+    );
+    let mut deletion = crate::crdt::LwwMap::new();
+    deletion.delete("b".to_string());
+    tx.stage_projected_delta("rows", &RowsProjection, StagedRows(deletion))
+        .await
+        .unwrap();
+    tx.stage_projected_delta("rows", &RowsProjection, row("d", "new"))
+        .await
+        .unwrap();
+    assert_eq!(
+        tx.projected_get("rows", &RowsProjection, b"b")
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        tx.projected_get("rows", &RowsProjection, b"d")
+            .await
+            .unwrap(),
+        Some(b"new".to_vec())
+    );
+    let mut cursor = None;
+    let mut rows = Vec::new();
+    loop {
+        let (page, next) = tx
+            .projected_record_scan_page("rows", &RowsProjection, cursor.as_ref(), 1)
+            .await
+            .unwrap();
+        rows.extend(page.records);
+        cursor = next;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(
+        rows,
+        vec![
+            (b"a".to_vec(), b"old".to_vec()),
+            (b"c".to_vec(), b"old".to_vec()),
+            (b"d".to_vec(), b"new".to_vec())
+        ]
+    );
+    assert_eq!(
+        db.ops().store_state_record_get(&view, b"b").await.unwrap(),
+        Some(b"old".to_vec())
+    );
+}
+
+#[tokio::test]
+async fn projected_real_backend_fetch_rejects_racing_overlay() {
+    let (instance, _) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        crate::NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let (key, _) = generate_keypair();
+    let db = Database::create(&instance, key, Doc::new()).await.unwrap();
+    let tx = db.new_transaction().await.unwrap();
+    tx.stage_projected_delta("rows", &RowsProjection, row("a", "old"))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let tx = db.new_transaction().await.unwrap();
+    let view = tx.record_view("rows", &RowsProjection).await.unwrap();
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let reader = tx.clone();
+    let database = db.clone();
+    let task = tokio::spawn(async move {
+        let mut entered = Some(entered_tx);
+        let mut release = Some(release_rx);
+        reader
+            .projected_scan_page(
+                "rows",
+                RowsProjection.descriptor(),
+                None,
+                1,
+                move |after, limit| {
+                    entered.take().unwrap().send(()).unwrap();
+                    let wait = release.take().unwrap();
+                    let database = database.clone();
+                    let view = view.clone();
+                    async move {
+                        wait.await.unwrap();
+                        database
+                            .ops()
+                            .store_state_record_scan(
+                                &view,
+                                &RecordRange::default(),
+                                after.as_deref(),
+                                limit,
+                            )
+                            .await
+                    }
+                },
+            )
+            .await
+    });
+    entered_rx.await.unwrap();
+    tx.stage_projected_delta("rows", &RowsProjection, row("b", "new"))
+        .await
+        .unwrap();
+    release_tx.send(()).unwrap();
+    is_stale(task.await.unwrap());
 }
 
 #[tokio::test]
@@ -397,11 +719,11 @@ impl RecordProjection<RacingRows> for RacingProjection {
     fn descriptor(&self) -> ProjectionDescriptor {
         RowsProjection.descriptor()
     }
-    fn project_delta(&self, delta: &RacingRows, out: &mut RecordMutations) -> Result<()> {
-        RowsProjection.project_delta(&delta.rows, out)
-    }
-    fn encode_entry_delta(&self, _: &RecordMutations) -> Result<RacingRows> {
-        unreachable!()
+    fn mutations<'a>(
+        &'a self,
+        delta: &'a RacingRows,
+    ) -> Result<Box<dyn Iterator<Item = Result<RecordMutation>> + Send + 'a>> {
+        RowsProjection.mutations(&delta.rows)
     }
 }
 
@@ -444,11 +766,11 @@ impl RecordProjection<FallibleRows> for FallibleProjection {
     fn descriptor(&self) -> ProjectionDescriptor {
         RowsProjection.descriptor()
     }
-    fn project_delta(&self, delta: &FallibleRows, out: &mut RecordMutations) -> Result<()> {
-        RowsProjection.project_delta(&delta.rows, out)
-    }
-    fn encode_entry_delta(&self, _: &RecordMutations) -> Result<FallibleRows> {
-        unreachable!()
+    fn mutations<'a>(
+        &'a self,
+        delta: &'a FallibleRows,
+    ) -> Result<Box<dyn Iterator<Item = Result<RecordMutation>> + Send + 'a>> {
+        RowsProjection.mutations(&delta.rows)
     }
 }
 
@@ -486,15 +808,15 @@ async fn projected_staging_failures_leave_canonical_and_overlays_unchanged() {
         fn descriptor(&self) -> ProjectionDescriptor {
             RowsProjection.descriptor()
         }
-        fn project_delta(&self, _: &StagedRows, _: &mut RecordMutations) -> Result<()> {
+        fn mutations<'a>(
+            &'a self,
+            _: &'a StagedRows,
+        ) -> Result<Box<dyn Iterator<Item = Result<RecordMutation>> + Send + 'a>> {
             Err(StoreError::SerializationFailed {
                 store: "rows".into(),
                 reason: "injected projection failure".into(),
             }
             .into())
-        }
-        fn encode_entry_delta(&self, _: &RecordMutations) -> Result<StagedRows> {
-            unreachable!()
         }
     }
     assert!(

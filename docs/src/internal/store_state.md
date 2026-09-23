@@ -55,3 +55,16 @@ Remote record operations use session-scoped read views and backend-owned opaque 
 Each accepted chunk renews a five-minute lease. Expiry stops staging or publication; a sweeper marks an unpublished build `Expired` and removes its private records only after five minutes of additional grace. A terminal outcome is retained for at least 24 hours of client retries plus the five-minute lease and five-minute reclamation grace (24 hours 10 minutes from its transition); reclamation prunes older terminal rows. New opaque tokens carry a UUIDv7 creation timestamp. An unknown token cannot authorize replacement before that creation horizon; after it, a backend-atomic check must find neither a resolved target generation nor a live unexpired build for the same target. Legacy tokens without a timestamp remain ambiguous and cannot use this recovery path. Callers must authorize the target before using recovery; the remote adapter does not automatically invoke it. Publication, abort and reclamation serialize per target; only one terminal outcome can win. Session view expiry does not abort a durable build. Sweeping currently runs on service requests or via the backend reclamation method, not on an independent timer. A backend without persistent storage must persist its in-memory snapshot explicitly to retain state through process loss.
 
 Pages have exclusive continuation keys and encoded-byte bounds; one record that cannot fit fails with `RecordTooLarge`.
+
+Typed record projections now yield an iterator of ordered physical `Put` and
+`Delete` mutations from a canonical `D: CRDT` delta, without reconstructing
+an Entry from cached records. Non-legacy cold materialization consumes one
+Entry delta and bounded mutation chunks (128 changes or 1 MiB), then publishes
+one immutable generation. History retrieval itself still returns `Vec<Entry>`.
+Typed transaction point reads and physical-order pages resolve a real backend
+record view, merge the revisioned local overlay, and reject a page if that
+overlay changes while a backend fetch is awaited. On a backend without records,
+typed history is folded locally and projected for point reads and scans.
+The existing Doc-backed Table remains on a collapsed compatibility projection
+and its canonical commit adapter until the Table format switch; this path is
+not a claim that Doc's hierarchical semantics can be streamed as flat rows.

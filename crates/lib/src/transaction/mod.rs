@@ -40,7 +40,7 @@ use crate::{
         types::{AuthInfo, SigKey},
         validation::AuthValidator,
     },
-    backend::{RecordMutations, RecordRange, RecordView, VerificationStatus},
+    backend::{RecordMutation, RecordMutations, RecordRange, RecordView, VerificationStatus},
     constants::{INDEX, ROOT, SETTINGS},
     crdt::{CRDT, Data, Doc, doc::Value},
     entry::{Entry, EntryBuilder, ID},
@@ -204,7 +204,7 @@ pub struct Transaction {
     record_mutations: Arc<Mutex<HashMap<String, RecordMutations>>>,
     // Lock order for mixed staging: projected -> logical -> builder.
     logical_record_mutations: Arc<Mutex<HashMap<String, RecordMutations>>>,
-    record_views: Arc<Mutex<HashMap<String, RecordView>>>,
+    record_views: Arc<Mutex<HashMap<(String, ProjectionDescriptor), RecordView>>>,
     projected: Arc<Mutex<HashMap<String, ProjectedStage>>>,
 }
 
@@ -622,8 +622,7 @@ impl Transaction {
         let stages = self.projected.lock().unwrap();
         let descriptor = self.encrypted_projection_descriptor(store, projection.descriptor());
         drop(stages);
-        let mut incoming = RecordMutations::new();
-        projection.project_delta(&delta, &mut incoming)?;
+        let incoming = projection.mutations(&delta)?.collect::<Result<Vec<_>>>()?;
         loop {
             let snapshot = self.projected.lock().unwrap().get(store).cloned();
             if let Some(state) = &snapshot
@@ -649,8 +648,12 @@ impl Transaction {
             let mut physical = snapshot
                 .as_ref()
                 .map_or_else(RecordMutations::new, |s| s.physical.clone());
-            for (key, value) in &incoming {
-                let Some(key) = projection.normalize_record_key(key)? else {
+            for mutation in &incoming {
+                let (raw_key, value) = match mutation {
+                    RecordMutation::Put { key, value } => (key, Some(value)),
+                    RecordMutation::Delete { key } => (key, None),
+                };
+                let Some(key) = projection.normalize_record_key(raw_key)? else {
                     continue;
                 };
                 let conflicts = logical
@@ -664,7 +667,6 @@ impl Transaction {
                     .collect::<Result<Vec<_>>>()?;
                 let physical_key = self.physical_record_key(store, &key)?;
                 let encrypted = value
-                    .as_ref()
                     .map(|value| self.encrypt_record(store, &key, value))
                     .transpose()?;
                 for conflict in &conflicts {
@@ -673,7 +675,7 @@ impl Transaction {
                 for conflict in physical_conflicts {
                     physical.remove(&conflict);
                 }
-                logical.insert(key, value.clone());
+                logical.insert(key, value.cloned());
                 physical.insert(physical_key, encrypted);
             }
             let mut stages = self.projected.lock().unwrap();
@@ -724,6 +726,193 @@ impl Transaction {
             );
             return Ok(());
         }
+    }
+
+    /// Read a typed row from the fixed historical view, overlaid with staged changes.
+    #[allow(dead_code)] // Used by the typed Store after its format switch.
+    pub(crate) async fn projected_get<D: CRDT + Send>(
+        &self,
+        store: &str,
+        projection: &dyn RecordProjection<D>,
+        key: &[u8],
+    ) -> Result<Option<Vec<u8>>> {
+        let Some(key) = projection.normalize_record_key(key)? else {
+            return Ok(None);
+        };
+        loop {
+            let snapshot = self.projected.lock().unwrap().get(store).cloned();
+            let revision = snapshot.as_ref().map_or(0, |s| s.revision);
+            let descriptor = self.encrypted_projection_descriptor(store, projection.descriptor());
+            if let Some(state) = &snapshot
+                && state.descriptor != descriptor
+            {
+                return Err(StoreError::TypeMismatch {
+                    store: store.into(),
+                    expected: format!("{:?}", state.descriptor),
+                    actual: format!("{descriptor:?}"),
+                }
+                .into());
+            }
+            let staged = snapshot.as_ref().and_then(|s| {
+                s.logical.get(&key).cloned().or_else(|| {
+                    s.logical
+                        .keys()
+                        .any(|staged| projection.staged_key_shadows_cached(staged, &key))
+                        .then_some(None)
+                })
+            });
+            let value = if let Some(value) = staged {
+                value
+            } else {
+                let physical = self.physical_record_key(store, &key)?;
+                let value = match self.record_view(store, projection).await {
+                    Err(err) if err.is_unsupported_store_state() => self
+                        .projected_history::<D>(store, projection)
+                        .await?
+                        .get(&physical)
+                        .cloned(),
+                    Err(err) => return Err(err),
+                    Ok(view) => {
+                        match self.db.ops().store_state_record_get(&view, &physical).await {
+                            Err(err) if err.is_unsupported_store_state() => self
+                                .projected_history::<D>(store, projection)
+                                .await?
+                                .get(&physical)
+                                .cloned(),
+                            Err(err) => return Err(err),
+                            Ok(value) => value,
+                        }
+                    }
+                };
+                value
+                    .map(|value| {
+                        self.decode_projected_record(store, &physical, &value)
+                            .map(|(_, value)| value)
+                    })
+                    .transpose()?
+            };
+            if self.encrypted_projection_descriptor(store, projection.descriptor()) != descriptor {
+                continue;
+            }
+            if self
+                .projected
+                .lock()
+                .unwrap()
+                .get(store)
+                .map_or(0, |s| s.revision)
+                == revision
+            {
+                return Ok(value);
+            }
+        }
+    }
+
+    /// Recordless fallback reduces typed history before projecting into physical order.
+    async fn projected_history<D: CRDT + Send>(
+        &self,
+        store: &str,
+        projection: &dyn RecordProjection<D>,
+    ) -> Result<BTreeMap<Vec<u8>, Vec<u8>>> {
+        let state: D = self
+            .get_full_state_with_descriptor(store, projection.descriptor())
+            .await?;
+        let mut records = BTreeMap::new();
+        for mutation in projection.mutations(&state)? {
+            match mutation? {
+                RecordMutation::Put { key, value } => {
+                    let Some(key) = projection.normalize_record_key(&key)? else {
+                        continue;
+                    };
+                    records.insert(
+                        self.physical_record_key(store, &key)?,
+                        self.encrypt_record(store, &key, &value)?,
+                    );
+                }
+                RecordMutation::Delete { key } => {
+                    if let Some(key) = projection.normalize_record_key(&key)? {
+                        records.remove(&self.physical_record_key(store, &key)?);
+                    }
+                }
+            }
+        }
+        Ok(records)
+    }
+
+    fn decode_projected_record(
+        &self,
+        store: &str,
+        physical: &[u8],
+        value: &[u8],
+    ) -> Result<(Vec<u8>, Vec<u8>)> {
+        let (logical, value) = self.decrypt_record(store, physical, value)?;
+        if self.physical_record_key(store, &logical)? != physical {
+            return Err(StoreError::DataCorruption {
+                store: store.into(),
+                reason: "record key does not match authenticated logical key".into(),
+            }
+            .into());
+        }
+        Ok((logical, value))
+    }
+
+    /// Scan a typed projection using the backend's real immutable RecordView.
+    #[allow(dead_code)] // Used by the typed Store after its format switch.
+    pub(crate) async fn projected_record_scan_page<D: CRDT + Send>(
+        &self,
+        store: &str,
+        projection: &dyn RecordProjection<D>,
+        cursor: Option<&TableCursor>,
+        limit: usize,
+    ) -> Result<(crate::backend::RecordPage, Option<TableCursor>)> {
+        // Resolve before taking the immutable overlay snapshot. The page scanner
+        // rejects any mutation racing resolution or a later backend fetch.
+        let view = match self.record_view(store, projection).await {
+            Err(err) if err.is_unsupported_store_state() => None,
+            Err(err) => return Err(err),
+            Ok(view) => Some(view),
+        };
+        let history = if view.is_none() {
+            Some(self.projected_history::<D>(store, projection).await?)
+        } else {
+            None
+        };
+        let backend = self.db.ops();
+        self.projected_scan_page(
+            store,
+            projection.descriptor(),
+            cursor,
+            limit,
+            |after, count| {
+                let view = view.clone();
+                let history = history.clone();
+                async move {
+                    if let Some(view) = view {
+                        backend
+                            .store_state_record_scan(
+                                &view,
+                                &RecordRange::default(),
+                                after.as_deref(),
+                                count,
+                            )
+                            .await
+                    } else {
+                        let mut rows = history
+                            .unwrap()
+                            .into_iter()
+                            .filter(|(key, _)| after.as_ref().is_none_or(|after| key > after))
+                            .take(count + 1)
+                            .collect::<Vec<_>>();
+                        let next = (rows.len() > count).then(|| rows[count - 1].0.clone());
+                        rows.truncate(count);
+                        Ok(crate::backend::RecordPage {
+                            records: rows,
+                            next,
+                        })
+                    }
+                }
+            },
+        )
+        .await
     }
 
     /// Scan a typed projection over one immutable transaction overlay. The
@@ -845,7 +1034,7 @@ impl Transaction {
             })
         });
         for (key, value) in &mut records {
-            (*key, *value) = self.decrypt_record(store, key, value)?;
+            (*key, *value) = self.decode_projected_record(store, key, value)?;
         }
         check_revision()?;
         Ok((
@@ -940,7 +1129,10 @@ impl Transaction {
                 self.record_get_from_history(store, &key).await
             }
             Err(err) if err.is_invalid_store_state_view() => {
-                self.record_views.lock().unwrap().remove(store);
+                self.record_views
+                    .lock()
+                    .unwrap()
+                    .retain(|(name, _), _| name != store);
                 let view = match self.record_view(store, projection).await {
                     Err(err) if err.is_unsupported_store_state() => {
                         return self.record_get_from_history(store, &key).await;
@@ -1049,7 +1241,10 @@ impl Transaction {
                         .await;
                 }
                 Err(err) if err.is_invalid_store_state_view() => {
-                    self.record_views.lock().unwrap().remove(store);
+                    self.record_views
+                        .lock()
+                        .unwrap()
+                        .retain(|(name, _), _| name != store);
                     match self.record_view(store, projection).await {
                         Err(err) if err.is_unsupported_store_state() => {
                             return self
@@ -1133,7 +1328,16 @@ impl Transaction {
     ) -> Result<crate::backend::RecordPage> {
         let state: Doc = self.get_full_state(store).await?;
         let mut projected = RecordMutations::new();
-        projection.project_delta(&state, &mut projected)?;
+        for mutation in projection.mutations(&state)? {
+            match mutation? {
+                RecordMutation::Put { key, value } => {
+                    projected.insert(key, Some(value));
+                }
+                RecordMutation::Delete { key } => {
+                    projected.insert(key, None);
+                }
+            }
+        }
         let mutations = self
             .logical_record_mutations
             .lock()
@@ -1197,10 +1401,10 @@ impl Transaction {
             })
     }
 
-    async fn publish_record_view(
+    async fn publish_record_view<D: CRDT>(
         &self,
         store: &str,
-        projection: &dyn RecordProjection<Doc>,
+        projection: &dyn RecordProjection<D>,
         request: crate::backend::StoreStateRequest,
         entries: &[Entry],
     ) -> Result<RecordView> {
@@ -1222,8 +1426,21 @@ impl Transaction {
             for entry in entries {
                 if let Ok(bytes) = entry.data(store) {
                     let plaintext = self.decrypt_if_needed(store, bytes)?;
-                    let delta: Doc = serde_json::from_slice(&plaintext)?;
-                    projection.project_delta(&delta, &mut logical)?;
+                    let delta: D = serde_json::from_slice(&plaintext)?;
+                    for mutation in projection.mutations(&delta)? {
+                        match mutation? {
+                            RecordMutation::Put { key, value } => {
+                                logical
+                                    .retain(|old, _| !projection.staged_keys_conflict(old, &key));
+                                logical.insert(key, Some(value));
+                            }
+                            RecordMutation::Delete { key } => {
+                                logical
+                                    .retain(|old, _| !projection.staged_keys_conflict(old, &key));
+                                logical.insert(key, None);
+                            }
+                        }
+                    }
                 }
             }
             logical.retain(|_, value| value.is_some());
@@ -1251,14 +1468,11 @@ impl Transaction {
         result
     }
 
-    async fn record_view(
+    async fn record_view<D: CRDT>(
         &self,
         store: &str,
-        projection: &dyn RecordProjection<Doc>,
+        projection: &dyn RecordProjection<D>,
     ) -> Result<RecordView> {
-        if let Some(view) = self.record_views.lock().unwrap().get(store).cloned() {
-            return Ok(view);
-        }
         self.init_subtree_parents(store).await?;
         let parents = self
             .entry_builder
@@ -1270,6 +1484,10 @@ impl Transaction {
             .unwrap_or_default();
         let source_key = create_merge_cache_id(&parents).to_string().into_bytes();
         let descriptor = self.encrypted_projection_descriptor(store, projection.descriptor());
+        let cache_key = (store.to_string(), descriptor.clone());
+        if let Some(view) = self.record_views.lock().unwrap().get(&cache_key).cloned() {
+            return Ok(view);
+        }
         let request = state::records_request(
             self.db.root_id(),
             store,
@@ -1292,7 +1510,7 @@ impl Transaction {
         self.record_views
             .lock()
             .unwrap()
-            .insert(store.to_string(), view.clone());
+            .insert(cache_key, view.clone());
         Ok(view)
     }
 
@@ -1809,7 +2027,7 @@ impl Transaction {
         {
             let staged = self.logical_record_mutations.lock().unwrap().clone();
             for (store, mutations) in staged {
-                let delta = crate::store::table::encode_entry_delta(&mutations)?;
+                let delta = crate::store::table::legacy_doc_delta(&mutations)?;
                 self.update_subtree(store, serde_json::to_vec(&delta)?)
                     .await?;
             }

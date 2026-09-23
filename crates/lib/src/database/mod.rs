@@ -1006,6 +1006,12 @@ impl Database {
         self.ops.as_ref()
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_test_ops(mut self, ops: Arc<dyn Backend>) -> Self {
+        self.ops = ops;
+        self
+    }
+
     /// Retrieve the root entry from the backend
     pub async fn get_root(&self) -> Result<Entry> {
         let instance = self.instance()?;
