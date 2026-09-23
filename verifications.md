@@ -849,7 +849,7 @@ Table payload reporting, fresh one/32-row commit, 100-row paged scan, and fresh
 32-row plaintext/password-wrapped scan cases to the old and new harness.
 
 Measurement protocol: old `e0f4645178` detached baseline and candidate starting
-at `d80f463da9` with only the *same* benchmark harness edit temporarily copied
+at `d80f463da9` with only the _same_ benchmark harness edit temporarily copied
 to the baseline (not committed there); both built in release profile with the
 same flake toolchain and `TEST_BACKEND=inmemory`. Run sequentially, on the same
 x86_64 AMD Ryzen 9 7900 (12 cores/24 threads), 124 GiB RAM host. At start:
@@ -867,19 +867,19 @@ are excluded. The payload-only harness prints byte lengths, not a meaningless
 sub-nanosecond Criterion `black_box(size)` timing. Results (baseline → branch;
 Criterion 95% confidence interval for time, 10 samples):
 
-| Workload | Old Doc | New LwwMap |
-| --- | ---: | ---: |
-| one-row payload | 85 B | 63 B |
-| 32-row payload in one commit | 2414 B | 2113 B |
-| fresh one-row write+commit | [75.195, 76.341] µs | [76.201, 79.935] µs |
-| fresh 32-row write+commit | [115.19, 119.01] µs | [806.94, 825.48] µs |
+| Workload                                      |             Old Doc |          New LwwMap |
+| --------------------------------------------- | ------------------: | ------------------: |
+| one-row payload                               |                85 B |                63 B |
+| 32-row payload in one commit                  |              2414 B |              2113 B |
+| fresh one-row write+commit                    | [75.195, 76.341] µs | [76.201, 79.935] µs |
+| fresh 32-row write+commit                     | [115.19, 119.01] µs | [806.94, 825.48] µs |
 | warm point, 100 historical single-row commits | [61.025, 62.154] µs | [59.933, 62.162] µs |
-| corrected cold first point, 1k batched rows | [3.3316, 3.4327] ms | [1.5949, 1.6404] ms |
-| corrected cold first point, 10k batched rows | [302.23, 313.11] ms | [16.863, 18.459] ms |
-| scan 100 rows, page size 10 | [90.202, 91.092] µs | [186.16, 188.25] µs |
-| scan 100 rows, page size 50 | [88.389, 88.803] µs | [171.97, 175.63] µs |
-| fresh plain 32-row scan | [39.339, 42.467] µs | [104.60, 105.93] µs |
-| fresh encrypted 32-row scan | [22.469, 24.261] ms | [17.268, 18.278] ms |
+| corrected cold first point, 1k batched rows   | [3.3316, 3.4327] ms | [1.5949, 1.6404] ms |
+| corrected cold first point, 10k batched rows  | [302.23, 313.11] ms | [16.863, 18.459] ms |
+| scan 100 rows, page size 10                   | [90.202, 91.092] µs | [186.16, 188.25] µs |
+| scan 100 rows, page size 50                   | [88.389, 88.803] µs | [171.97, 175.63] µs |
+| fresh plain 32-row scan                       | [39.339, 42.467] µs | [104.60, 105.93] µs |
+| fresh encrypted 32-row scan                   | [22.469, 24.261] ms | [17.268, 18.278] ms |
 
 The fresh encrypted scan includes `PasswordStore::open`/Argon2id, first-generation
 build, authenticated row decoding, and 32-row scan; the plain leg includes its
@@ -895,7 +895,7 @@ with one commit per inserted row show per-history setup cost, not fixed-row
 complexity. These numbers describe InMemory only, not SQLite/PostgreSQL/socket.
 
 **Cold peak-memory limitation:** no peak RSS claim. `iter_with_setup` builds a
-new database and many Entries inside the *same* Criterion process on every
+new database and many Entries inside the _same_ Criterion process on every
 sample, so `/usr/bin/time -v` or `/proc/self/status` maximum resident set over
 that process measures cumulative setup/allocator high-water plus Criterion,
 not the cold projection. An isolated one-shot child with a prebuilt persisted
