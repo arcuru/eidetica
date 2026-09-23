@@ -4170,6 +4170,290 @@ async fn test_authenticated_staging_recovery_scopes_and_publication() {
     );
 }
 
+/// High-level upload retains its exact request through an ambiguous send, and
+/// only a caller-provided reauthenticated socket may resume the same build.
+#[tokio::test]
+async fn test_remote_backend_resume_lost_request_response_and_restart() {
+    use eidetica::backend::{RecordMutation as M, StagingStatus};
+    use eidetica::instance::backend::{Backend, RemoteBackend};
+
+    let (socket, shutdown, server, _dir) = start_test_server().await;
+    let (instance, root, identity) = setup_db(&server, &socket, "alice").await;
+    let old = remote_conn(&instance);
+    let backend = RemoteBackend::new(old.clone(), Some(identity.clone()));
+    let request = derived_request(&root, "backend-resume");
+    let token = backend
+        .begin_store_state_staging(request.clone())
+        .await
+        .unwrap();
+    let first = vec![M::Put {
+        key: b"row".to_vec(),
+        value: b"first".to_vec(),
+    }];
+    backend
+        .stage_store_state_ordered_chunk(&token, 0, &[], first)
+        .await
+        .unwrap();
+    // Simulate an accepted chunk whose acknowledgement never reached the
+    // adapter: the server owns it, but the adapter still has sequence zero.
+    let second = backend
+        .begin_store_state_staging(derived_request(&root, "lost-reply"))
+        .await
+        .unwrap();
+    let accepted = vec![M::Put {
+        key: b"reply".to_vec(),
+        value: b"accepted".to_vec(),
+    }];
+    old.stage_store_state_ordered_chunk(
+        root.clone(),
+        identity.clone(),
+        second.testing_namespace_id().to_string(),
+        0,
+        accepted.clone(),
+    )
+    .await
+    .unwrap();
+    shutdown.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if old
+                .store_state_staging_status(
+                    root.clone(),
+                    identity.clone(),
+                    token.testing_namespace_id().to_string(),
+                )
+                .await
+                .is_err()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let reply_error = backend
+        .stage_store_state_ordered_chunk(&second, 0, &[], accepted)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        reply_error,
+        eidetica::Error::AmbiguousStaging { chunk: Some(0), .. }
+    ));
+    let lost = vec![M::Delete {
+        key: b"row".to_vec(),
+    }];
+    let error = backend
+        .stage_store_state_ordered_chunk(&token, 1, &[], lost.clone())
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        eidetica::Error::AmbiguousStaging { chunk: Some(1), .. }
+    ));
+    assert!(
+        backend
+            .stage_store_state_ordered_chunk(&token, 1, &[], lost.clone())
+            .await
+            .is_err()
+    );
+    let mut restarted = None;
+    for _ in 0..50 {
+        if let Ok(service) = ServiceServer::bind(server.clone(), socket.clone()).await {
+            restarted = Some(service);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let (_tx, rx) = watch::channel(());
+    tokio::spawn(restarted.expect("daemon releases socket").run(rx));
+    let fresh = Instance::connect(format!("unix://{}", socket.display()))
+        .await
+        .unwrap();
+    let unauth = remote_conn(&fresh);
+    assert!(backend.resume_staging(&token, unauth).await.is_err());
+    create_user_via_admin(&server, "bob").await;
+    fresh.login_user("bob", None).await.unwrap();
+    assert!(
+        backend
+            .resume_staging(&token, remote_conn(&fresh))
+            .await
+            .is_err()
+    );
+    drop(fresh);
+    let fresh = Instance::connect(format!("unix://{}", socket.display()))
+        .await
+        .unwrap();
+    fresh.login_user("alice", None).await.unwrap();
+    let conn = remote_conn(&fresh);
+    assert!(
+        conn.store_state_staging_status(
+            eidetica::entry::ID::from_bytes("other-db"),
+            identity.clone(),
+            token.testing_namespace_id().to_string(),
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        backend
+            .resume_staging(&second, conn.clone())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        backend
+            .resume_staging(&token, conn.clone())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(backend.resume_staging(&token, conn.clone()).await.is_err());
+    assert_eq!(
+        backend
+            .stage_store_state_ordered_chunk(
+                &token,
+                2,
+                &[],
+                vec![M::Put {
+                    key: b"later".to_vec(),
+                    value: b"second".to_vec(),
+                }]
+            )
+            .await
+            .unwrap(),
+        ()
+    );
+
+    let view = backend.publish_store_state(token.clone()).await.unwrap();
+    assert_eq!(
+        backend.store_state_record_get(&view, b"row").await.unwrap(),
+        None
+    );
+    assert_eq!(
+        backend
+            .store_state_record_get(&view, b"later")
+            .await
+            .unwrap(),
+        Some(b"second".to_vec())
+    );
+    let second_view = backend.publish_store_state(second).await.unwrap();
+    assert_eq!(
+        backend
+            .store_state_record_get(&second_view, b"reply")
+            .await
+            .unwrap(),
+        Some(b"accepted".to_vec())
+    );
+    assert!(matches!(
+        conn.store_state_staging_status(root, identity, token.testing_namespace_id().to_string())
+            .await
+            .unwrap(),
+        Some(StagingStatus::Published(_))
+    ));
+}
+
+/// A lost publication acknowledgement resolves the terminal token to a new
+/// session view rather than opening another build or uploading another chunk.
+#[tokio::test]
+async fn test_remote_backend_resume_lost_publication_response() {
+    use eidetica::backend::RecordMutation as M;
+    use eidetica::instance::backend::{Backend, RemoteBackend};
+
+    let (socket, shutdown, server, _dir) = start_test_server().await;
+    let (instance, root, identity) = setup_db(&server, &socket, "alice").await;
+    let old = remote_conn(&instance);
+    let backend = RemoteBackend::new(old.clone(), Some(identity.clone()));
+    let request = derived_request(&root, "lost-publication");
+    let token = backend
+        .begin_store_state_staging(request.clone())
+        .await
+        .unwrap();
+    backend
+        .stage_store_state_ordered_chunk(
+            &token,
+            0,
+            &[],
+            vec![M::Put {
+                key: b"key".to_vec(),
+                value: b"value".to_vec(),
+            }],
+        )
+        .await
+        .unwrap();
+    let _lost_view = old
+        .publish_store_state(
+            root.clone(),
+            identity.clone(),
+            token.testing_namespace_id().to_string(),
+        )
+        .await
+        .unwrap();
+    shutdown.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if old
+                .store_state_staging_status(
+                    root.clone(),
+                    identity.clone(),
+                    token.testing_namespace_id().to_string(),
+                )
+                .await
+                .is_err()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(matches!(
+        backend
+            .publish_store_state(token.clone())
+            .await
+            .unwrap_err(),
+        eidetica::Error::AmbiguousStaging { chunk: None, .. }
+    ));
+    let mut restarted = None;
+    for _ in 0..50 {
+        if let Ok(service) = ServiceServer::bind(server.clone(), socket.clone()).await {
+            restarted = Some(service);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let (_tx, rx) = watch::channel(());
+    tokio::spawn(restarted.expect("daemon releases socket").run(rx));
+    let fresh = Instance::connect(format!("unix://{}", socket.display()))
+        .await
+        .unwrap();
+    fresh.login_user("alice", None).await.unwrap();
+    let view = backend
+        .resume_staging(&token, remote_conn(&fresh))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        backend.store_state_record_get(&view, b"key").await.unwrap(),
+        Some(b"value".to_vec())
+    );
+    assert!(
+        backend
+            .resume_staging(&token, remote_conn(&fresh))
+            .await
+            .is_err()
+    );
+    assert!(
+        backend
+            .resolve_store_state(&request)
+            .await
+            .unwrap()
+            .is_some()
+    );
+}
+
 /// A token is backend-owned: reconnecting the client cannot reset its sequence
 /// or lose its terminal result. The view is re-resolved after publication.
 #[tokio::test]
