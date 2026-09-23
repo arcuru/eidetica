@@ -3541,6 +3541,154 @@ async fn test_exact_staging_chunk_retry_after_reconnect_and_delete() {
     );
 }
 
+/// The caller supplies a fresh authenticated connection; recovery never
+/// manufactures login credentials or begins a second build.
+#[tokio::test]
+async fn test_authenticated_staging_recovery_scopes_and_publication() {
+    use eidetica::backend::{RecordMutation as M, StagingStatus};
+    use eidetica::service::client::{RemoteConnection, StagingChunkOutcome};
+    use eidetica::service::protocol::DatabaseOp;
+
+    let (socket, shutdown, server, _dir) = start_test_server().await;
+    let (instance, root, identity) = setup_db(&server, &socket, "alice").await;
+    let old = remote_conn(&instance);
+    let request = derived_request(&root, "authenticated-recovery");
+    let token = old
+        .begin_store_state_staging(identity.clone(), request.clone())
+        .await
+        .unwrap();
+    let chunk = RemoteConnection::encode_staging_chunk(
+        root.clone(),
+        identity.clone(),
+        DatabaseOp::StageStoreStateOrdered {
+            token: token.clone(),
+            chunk_id: 0,
+            mutations: vec![M::Put {
+                key: b"row".to_vec(),
+                value: b"value".to_vec(),
+            }],
+        },
+    )
+    .unwrap();
+    old.send_staging_chunk(&chunk).await.unwrap();
+    shutdown.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if old.send_staging_chunk(&chunk).await.is_err() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let mut restarted = None;
+    for _ in 0..50 {
+        if let Ok(service) = ServiceServer::bind(server.clone(), socket.clone()).await {
+            restarted = Some(service);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let (_tx, rx) = watch::channel(());
+    tokio::spawn(restarted.expect("daemon releases socket").run(rx));
+    let fresh = Instance::connect(format!("unix://{}", socket.display()))
+        .await
+        .unwrap();
+    let conn = remote_conn(&fresh);
+    // Unauthenticated and wrong-user requests must not learn the token state.
+    assert!(
+        old.send_staging_chunk_with_recovery(&conn, &chunk)
+            .await
+            .is_err()
+    );
+    create_user_via_admin(&server, "bob").await;
+    fresh.login_user("bob", None).await.unwrap();
+    assert!(
+        old.send_staging_chunk_with_recovery(&conn, &chunk)
+            .await
+            .is_err()
+    );
+    drop(fresh);
+    let fresh = Instance::connect(format!("unix://{}", socket.display()))
+        .await
+        .unwrap();
+    fresh.login_user("alice", None).await.unwrap();
+    let conn = remote_conn(&fresh);
+    let wrong_db = RemoteConnection::encode_staging_chunk(
+        eidetica::entry::ID::from_bytes("other-db"),
+        identity.clone(),
+        DatabaseOp::StageStoreStateOrdered {
+            token: token.clone(),
+            chunk_id: 0,
+            mutations: vec![M::Put {
+                key: b"row".to_vec(),
+                value: b"value".to_vec(),
+            }],
+        },
+    )
+    .unwrap();
+    assert!(
+        old.send_staging_chunk_with_recovery(&conn, &wrong_db)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        old.send_staging_chunk_with_recovery(&conn, &chunk)
+            .await
+            .unwrap(),
+        StagingChunkOutcome::Staged
+    );
+    let next = RemoteConnection::encode_staging_chunk(
+        root.clone(),
+        identity.clone(),
+        DatabaseOp::StageStoreStateOrdered {
+            token: token.clone(),
+            chunk_id: 1,
+            mutations: vec![M::Put {
+                key: b"second".to_vec(),
+                value: b"fresh".to_vec(),
+            }],
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        old.send_staging_chunk_with_recovery(&conn, &next)
+            .await
+            .unwrap(),
+        StagingChunkOutcome::Staged
+    );
+    let view = old
+        .publish_store_state_with_recovery(&conn, root.clone(), identity.clone(), token.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        conn.store_state_record_get(root.clone(), identity.clone(), view, b"row".to_vec())
+            .await
+            .unwrap(),
+        Some(b"value".to_vec())
+    );
+    assert!(matches!(
+        conn.store_state_staging_status(root.clone(), identity.clone(), token.clone())
+            .await
+            .unwrap(),
+        Some(StagingStatus::Published(_))
+    ));
+    let view = old
+        .send_staging_chunk_with_recovery(&conn, &chunk)
+        .await
+        .unwrap();
+    let StagingChunkOutcome::Published(view) = view else {
+        panic!("published token must resolve")
+    };
+    assert_eq!(
+        conn.store_state_record_get(root, identity, view, b"row".to_vec())
+            .await
+            .unwrap(),
+        Some(b"value".to_vec())
+    );
+}
+
 /// A token is backend-owned: reconnecting the client cannot reset its sequence
 /// or lose its terminal result. The view is re-resolved after publication.
 #[tokio::test]
