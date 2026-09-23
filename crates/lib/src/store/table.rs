@@ -132,6 +132,8 @@ pub(crate) enum CursorKind {
         revision: u64,
         store: String,
         projection: ProjectionDescriptor,
+        /// Verified database frontier for remote client-side history projection.
+        frontier: Option<crate::Snapshot>,
         last_physical_key: Vec<u8>,
     },
 }

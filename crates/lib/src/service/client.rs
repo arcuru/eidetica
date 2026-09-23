@@ -1240,6 +1240,28 @@ impl RemoteConnection {
         projection: crate::backend::ProjectionDescriptor,
         decrypt: impl Fn(&[u8]) -> crate::Result<Vec<u8>>,
     ) -> crate::Result<D> {
+        self.get_store_state_with_decrypt_and_frontier(
+            root_id,
+            identity,
+            store,
+            expected_type,
+            projection,
+            decrypt,
+        )
+        .await
+        .map(|(state, _)| state)
+    }
+
+    /// Return the source frontier used by a read-authorized history fold.
+    pub(crate) async fn get_store_state_with_decrypt_and_frontier<D: crate::crdt::CRDT + Codec>(
+        &self,
+        root_id: ID,
+        identity: SigKey,
+        store: String,
+        expected_type: &str,
+        projection: crate::backend::ProjectionDescriptor,
+        decrypt: impl Fn(&[u8]) -> crate::Result<Vec<u8>>,
+    ) -> crate::Result<(D, Option<crate::Snapshot>)> {
         let identity = if identity == SigKey::default() {
             self.session_identity().unwrap_or_default()
         } else {
@@ -1257,7 +1279,7 @@ impl RemoteConnection {
             )
             .await;
         match response {
-            Ok(ServiceResponse::StoreState(bytes)) => D::decode(&bytes),
+            Ok(ServiceResponse::StoreState(bytes)) => Ok((D::decode(&bytes)?, None)),
             Err(crate::Error::Store(error))
                 if matches!(
                     *error,
@@ -1272,7 +1294,7 @@ impl RemoteConnection {
                         root_id,
                         identity,
                         store.clone(),
-                        tips.into_tips(),
+                        tips.clone().into_tips(),
                         ReadScope::Verified,
                     )
                     .await?;
@@ -1284,7 +1306,7 @@ impl RemoteConnection {
                         state = state.merge(&D::decode(&decrypt(data)?)?)?;
                     }
                 }
-                Ok(state)
+                Ok((state, Some(tips)))
             }
             Err(error) => Err(error),
             Ok(other) => Err(unexpected_response("StoreState", &other)),
@@ -1335,6 +1357,11 @@ impl RemoteConnection {
         root_id: ID,
         identity: SigKey,
     ) -> crate::Result<Snapshot> {
+        let identity = if identity == SigKey::default() {
+            self.session_identity().unwrap_or_default()
+        } else {
+            identity
+        };
         let resp = self
             .db_request(root_id, identity, DatabaseOp::GetVerifiedTips)
             .await?;
