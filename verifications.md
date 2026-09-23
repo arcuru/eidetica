@@ -1050,3 +1050,44 @@ passed, 5 skipped**; minimal **1383 tests run: 1383 passed, 5 skipped**;
 NixOS service and OCI VM integration tests passed. `git diff --check` clean.
 These gate fixtures validate actual backend and socket behavior; committed-tip
 gate and handoff remain to follow. No push/PR.
+
+## Phase 6 persisted cold rebuild and payload follow-up (2026-09-23)
+
+Intended: measure cold Table peak process RSS without construction in the reader process, old Doc-backed `e0f4645178` against new `28d151e896` with identical inputs and source-identical harness; cover delete/resurrection Entry payload, warm encrypted point and encrypted cold build. Recheck optional 32-row commit/scan only if useful; the prior 32-row commit after optimization is already recorded above.
+
+Performed: added `crates/lib/examples/table_rebuild_probe.rs` to both revisions (baseline copy temporary, uncommitted). `prepare` constructs a file-backed SQLite fixture with 128 puts per Entry (10,000 rows / 79 data Entries for plain; 1,000 rows / 8 data Entries for encrypted), exact keys and values, then calls `clear_derived_store_state` twice to unlink and reclaim derived generations. A separate `read` process opens by saved root, samples `/proc/self/status` VmRSS/VmHWM before the first point, reads row N/2 and asserts its id, then reports elapsed time and peak HWM. No setup writes or Criterion allocations occur in the reading process. The read includes SQLite/Instance open, lazy first projection, and for encrypted the password open/Argon2 and decryption. Peak HWM is **process high-water, not isolated projection allocation**; baseline RSS is recorded so the increment can be seen. The initial one-clear iteration was insufficient to reclaim pinned generations; a second clear plus `sqlite3` inspection now checks zero linked namespaces (`status=1`) before cloning fixtures. A naive repeat on an already read SQLite file measured a warm generation in milliseconds: those numbers were **discarded**, not used as cold evidence. Another initial copy without checkpoint could retain a WAL that was not included; final samples checkpoint the source before copying.
+
+Exact build and measurement commands (run from each tree, same measured source SHA-256 `01b0c8f1c1b1425bc29f6e9e7e635ed5891d3d3e76f44db659583377ec8b4d9a` (later formatting-only cleanup: `db9f816e165163bb70e700a80281f7d9ba56a568cb54806ebc1c967dfd9701ad`; readings predate that cleanup)):
+
+```sh
+nix develop -c cargo build --release -p eidetica --example table_rebuild_probe
+# Set bin to that tree's target/release/examples/table_rebuild_probe; use distinct files per revision.
+"$bin" prepare "$fixture.sqlite" 10000 plain
+sqlite3 "$fixture.sqlite" 'select count(*) from store_state_namespaces where status=1; PRAGMA wal_checkpoint(TRUNCATE);'
+# The count MUST be 0. Use a fresh copy for each read, copying the saved .root too.
+cp "$fixture.sqlite" "$sample.sqlite"; cp "${fixture%.sqlite}.root" "${sample%.sqlite}.root"
+"$bin" read "$sample.sqlite" 10000 plain
+# Repeat prepare/checkpoint/copy/read with 1000 encrypted; three independent copies each.
+```
+
+`TEST_BACKEND` is not used by the standalone example: SQLite file backend is selected explicitly. Final plain 10k cold reads (old → new; each `before HWM / after HWM` KiB, elapsed milliseconds, three separate cloned files):
+
+| Leg        | Three `(before → after HWM KiB; ms)`                                  |
+| ---------- | --------------------------------------------------------------------- |
+| Old Doc    | 7336 → 14020; 430.586 · 7268 → 13292; 436.259 · 7272 → 13308; 439.820 |
+| New LwwMap | 7568 → 11144; 331.318 · 7704 → 11316; 304.534 · 7716 → 11476; 351.922 |
+
+Encrypted 1k cold first point (includes Argon2id): old 7264 → 28252; 92.793 ms · 7152 → 28100; 84.654 ms · 7256 → 28080; 83.231 ms; new 7684 → 28184; 87.943 ms · 7776 → 28216; 85.241 ms · 7828 → 28656; 95.929 ms. These are raw one-shot observations, **not** confidence intervals, isolated projection allocation, or a claim of bounded total RSS. The new plain leg has lower observed process HWM in these samples, but history still collects `Vec<Entry>` and is not proven bounded by 128 mutations/1 MiB. Encrypted 1k HWM is dominated by the password path and is not evidence of reduced encrypted projection memory. Separate cold-process probes validate the actual returned row and did not create a generation until read. A negative check requesting the absent row 1000 from a 1000-row file panicked with `Store(KeyNotFound ...)`, confirming the read assertion is downstream of the persisted fixture.
+
+Added a Criterion payload reporter for three historical 128-key Entries: first put all 128, then delete 96 (32 live remain), then resurrect all 128. Same `BenchRecord` values, keys and operations in both trees; `Entry::data("bench_table")` bytes per phase old **[9540, 4870, 9650] (total 24060 B)** vs new **[8375, 4665, 8485] (total 21525 B)**. This excludes Entry metadata/signatures and SQLite overhead; it is historical payload, not live record-set size. The reporter asserts all 96 deletes succeeded. Same source-identical final Criterion harness SHA-256 `dc721682ec8d7da573118238b3514d0a3e10f0b1e2813c80e22764c95e7d8865` on both trees, temporarily copied to baseline and not committed there. The final warm point fixture opens a password wrapper **once** before timing and times `Table::get` on an already published row, retaining the unlocked Table handle (no per-iteration Argon2). Identical command per tree, sequential:
+
+```sh
+TEST_BACKEND=inmemory nix develop -c cargo bench -p eidetica --bench table_cache_benchmarks -- 'table_churn_payload' --sample-size 10 --warm-up-time 0.1 --measurement-time 0.2
+TEST_BACKEND=inmemory nix develop -c cargo bench -p eidetica --bench table_cache_benchmarks -- 'table_warm_point_mode' --sample-size 15 --warm-up-time 0.3 --measurement-time 0.5
+```
+
+The first command's only meaningful result is printed bytes, not Criterion timing. Warm point Criterion 95% time CIs (15 samples): old plain [304.27, 309.17] ns, encrypted [1.6833, 1.7436] µs; new plain [1.6544, 1.6611] µs, encrypted [3.4784, 3.6091] µs. Plain vs encrypted configurations have different initial histories; use **within-mode old/new** comparisons, not encryption-only cost subtraction. An earlier warm fixture erroneously re-opened the password and rebuilt the handle on **every** iteration, reporting ~20 ms; replaced it and reran both revisions. The corrected warm new path is slower in this small InMemory row workload, not an across-the-board win. Criterion history files in each worktree can display a stale “change” versus earlier harness revisions: only the absolute intervals above are compared.
+
+Hardware: same x86_64 Ryzen 9 7900 (12 cores/24 threads), 124 GiB RAM, ~47–50 GiB available; shared host load ~3.22/3.56/6.56 near end. Builds and legs run sequentially, but machine was not quiescent; clocks, SQLite I/O/page cache and cold OS cache are uncontrolled. The original 1k/10k Criterion point results above were InMemory and must **not** be compared to these SQLite wall-times. Warm sample duration 0.5 s; no source-level sample override in these groups. Historical payload and cold process RSS are distinct observables; do not infer linear scaling or a general throughput win.
+
+Harness objective checks: both measured copies compile in release; SHA-256 match for each; `read` on absent key fails; final independent SQLite source files report zero linked namespaces before copies; each cold read returns exact row id, and the warm benchmark operates on a retained opened handle. After formatting-only probe cleanup, the new release binary read a fresh copy and returned row 5000; querying absent row 10000 panicked with `Store(KeyNotFound ...)`. `nix develop -c nix run .#fix` finished with clippy/deadnix/markdownlint/statix and treefmt (0 changes in final run); `git diff --check` clean. First full `nix develop -c just nix full` failed only minimal-feature example compilation because SQLite was not gated; adding `required-features = ["sqlite"]` to the example fixed that. Final formatted-source full gate exited 0: in-memory, SQLite, PostgreSQL and service nextest each **1548 tests run: 1548 passed, 5 skipped**; minimal **1383 tests run: 1383 passed, 5 skipped**; NixOS service and OCI container VM integrations passed. The formatted-source gate does not benchmark the example: the separate positive/negative runs above exercise it. Signed-tip check and handoff follow; no push/PR.
