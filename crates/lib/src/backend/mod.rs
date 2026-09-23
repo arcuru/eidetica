@@ -135,9 +135,18 @@ impl StagingToken {
 
 /// Ordered record changes.
 ///
-/// `None` is a staged delete marker. Deletes can be staged but never published:
-/// [`BackendImpl::publish_store_state`] rejects a build holding one.
+/// Legacy collapsed record overlay used by the current Doc-backed Table.
+/// `None` is a tombstone in this overlay; the explicit staging API below
+/// instead removes a physical row.
 pub type RecordMutations = BTreeMap<Vec<u8>, Option<Vec<u8>>>;
+
+/// One physical change to a private generation. Order is significant even for
+/// repeated keys, and deletes remove the stored row rather than storing null.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RecordMutation {
+    Put { key: Vec<u8>, value: Vec<u8> },
+    Delete { key: Vec<u8> },
+}
 
 /// Half-open byte-key range `[start, end)`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -390,6 +399,18 @@ pub trait BackendImpl: Send + Sync + Any {
         _sequence: u64,
         _digest: &[u8],
         _records: RecordMutations,
+    ) -> Result<()> {
+        Err(BackendError::StoreStateStorageUnsupported.into())
+    }
+
+    /// Apply an explicitly ordered physical chunk exactly once. Its digest is
+    /// bound to the encoded wire chunk by the service, before any key collapse.
+    async fn stage_store_state_ordered_chunk(
+        &self,
+        _token: &StagingToken,
+        _sequence: u64,
+        _digest: &[u8],
+        _mutations: Vec<RecordMutation>,
     ) -> Result<()> {
         Err(BackendError::StoreStateStorageUnsupported.into())
     }

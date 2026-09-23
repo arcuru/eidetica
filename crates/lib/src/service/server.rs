@@ -997,6 +997,26 @@ async fn dispatch_database_op(
                 .await?;
             Ok(ServiceResponse::Ok)
         }
+        DatabaseOp::StageStoreStateOrdered {
+            token,
+            chunk_id,
+            mutations,
+        } => {
+            let encoded = serde_json::to_vec(&mutations)?;
+            if encoded.len() > crate::service::protocol::MAX_RECORD_CHUNK_BYTES as usize {
+                return Err(crate::backend::BackendError::RecordTooLarge {
+                    encoded_bytes: encoded.len(),
+                }
+                .into());
+            }
+            let digest = blake3::hash(&encoded);
+            let backend = scoped_staging_token(instance, user_uuid, &root_id, &token).await?;
+            instance
+                .backend()
+                .stage_store_state_ordered_chunk(&backend, chunk_id, digest.as_bytes(), mutations)
+                .await?;
+            Ok(ServiceResponse::Ok)
+        }
         DatabaseOp::PublishStoreState { token } => {
             let backend_token = scoped_staging_token(instance, user_uuid, &root_id, &token).await?;
             let view = instance

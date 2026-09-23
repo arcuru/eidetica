@@ -24,9 +24,9 @@ use serde::{Deserialize, Serialize};
 use crate::{
     Result,
     backend::{
-        BackendImpl, InstanceMetadata, InstanceSecrets, RecordMutations, RecordPage, RecordRange,
-        RecordView, StagingStatus, StagingToken, StoreStateLifecycle, StoreStateRequest,
-        VerificationStatus, errors::BackendError,
+        BackendImpl, InstanceMetadata, InstanceSecrets, RecordMutation, RecordMutations,
+        RecordPage, RecordRange, RecordView, StagingStatus, StagingToken, StoreStateLifecycle,
+        StoreStateRequest, VerificationStatus, errors::BackendError,
     },
     entry::{Entry, ID},
     snapshot::Snapshot,
@@ -407,6 +407,56 @@ impl BackendImpl for InMemory {
             .get_mut(&token.namespace_id)
             .ok_or(BackendError::InvalidStoreStateStagingToken)?;
         namespace.records.extend(records);
+        let state = inner.staging_tokens.get_mut(&token.namespace_id).unwrap();
+        state.next_sequence = next;
+        state.last_digest = Some(digest.to_vec());
+        state.last_activity = staging_now();
+        Ok(())
+    }
+
+    async fn stage_store_state_ordered_chunk(
+        &self,
+        token: &StagingToken,
+        sequence: u64,
+        digest: &[u8],
+        mutations: Vec<RecordMutation>,
+    ) -> Result<()> {
+        let mut inner = self.inner.write().unwrap();
+        let state = inner
+            .staging_tokens
+            .get(&token.namespace_id)
+            .filter(|state| {
+                state.target == token.target
+                    && state.status == StagingStatus::Active
+                    && state.last_activity > staging_now() - 300
+            })
+            .ok_or(BackendError::InvalidStoreStateStagingToken)?;
+        if sequence.checked_add(1) == Some(state.next_sequence)
+            && state.last_digest.as_deref() == Some(digest)
+        {
+            return Ok(());
+        }
+        if sequence != state.next_sequence {
+            return Err(BackendError::InvalidStoreStateStagingToken.into());
+        }
+        let next = sequence
+            .checked_add(1)
+            .ok_or(BackendError::InvalidStoreStateStagingToken)?;
+        let namespace = inner
+            .store_state_namespaces
+            .get_mut(&token.namespace_id)
+            .filter(|ns| !ns.ready && ns.request.lifecycle == StoreStateLifecycle::Staging)
+            .ok_or(BackendError::InvalidStoreStateStagingToken)?;
+        for mutation in mutations {
+            match mutation {
+                RecordMutation::Put { key, value } => {
+                    namespace.records.insert(key, Some(value));
+                }
+                RecordMutation::Delete { key } => {
+                    namespace.records.remove(&key);
+                }
+            }
+        }
         let state = inner.staging_tokens.get_mut(&token.namespace_id).unwrap();
         state.next_sequence = next;
         state.last_digest = Some(digest.to_vec());
