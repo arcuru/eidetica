@@ -349,6 +349,58 @@ fn bench_table_payload(_c: &mut Criterion) {
     }
 }
 
+/// Include historical Entry payloads from a put/delete/resurrection workload.
+/// This is the sum of subtree bytes, not storage framing or peak resident memory.
+fn bench_churn_payload(_c: &mut Criterion) {
+    let rt = Runtime::new().unwrap();
+    let (_instance, _user, db) = rt.block_on(setup_tree_async());
+    let sizes = rt.block_on(async {
+        let mut sizes = Vec::new();
+        for phase in 0..3 {
+            let tx = db.new_transaction().await.unwrap();
+            let table = tx
+                .get_store::<Table<BenchRecord>>("bench_table")
+                .await
+                .unwrap();
+            for id in 0..128 {
+                let key = format!("row-{id:08}");
+                if phase == 1 && id < 96 {
+                    assert!(table.delete(&key).await.unwrap());
+                } else if phase != 1 || id >= 96 {
+                    table
+                        .set(
+                            &key,
+                            BenchRecord {
+                                id,
+                                name: format!("record_{id}"),
+                                value: phase * 100 + id as i64,
+                            },
+                        )
+                        .await
+                        .unwrap();
+                }
+            }
+            let entry = tx.commit().await.unwrap();
+            sizes.push(
+                db.backend()
+                    .unwrap()
+                    .get(&entry)
+                    .await
+                    .unwrap()
+                    .data("bench_table")
+                    .unwrap()
+                    .len(),
+            );
+        }
+        sizes
+    });
+    eprintln!(
+        "table_churn_payload_bytes phase_subtree_bytes={sizes:?} total={}",
+        sizes.iter().sum::<usize>()
+    );
+    black_box(sizes);
+}
+
 /// One fresh database per sample: commit a single row or a batch, including
 /// Entry construction and storage. Setup cost is outside the measured closure.
 fn bench_table_writes(c: &mut Criterion) {
@@ -518,6 +570,104 @@ fn bench_encrypted_pages(c: &mut Criterion) {
     group.finish();
 }
 
+/// Compare warm plaintext and encrypted point lookups after a published build.
+/// Password derivation and setup are outside the timed closure.
+fn bench_warm_point_modes(c: &mut Criterion) {
+    let rt = Runtime::new().unwrap();
+    let mut group = c.benchmark_group("table_warm_point_mode");
+    for &encrypted in &[false, true] {
+        let (instance, _user, db) = rt.block_on(setup_tree_async());
+        rt.block_on(async {
+            let tx = db.new_transaction().await.unwrap();
+            if encrypted {
+                let mut wrapped = tx
+                    .get_store::<PasswordStore<Table<BenchRecord>>>("bench_table")
+                    .await
+                    .unwrap();
+                wrapped
+                    .initialize("bench-password", Doc::new())
+                    .await
+                    .unwrap();
+                wrapped
+                    .inner()
+                    .await
+                    .unwrap()
+                    .set(
+                        "row-00000000",
+                        BenchRecord {
+                            id: 0,
+                            name: "record_0".into(),
+                            value: 0,
+                        },
+                    )
+                    .await
+                    .unwrap();
+            } else {
+                tx.get_store::<Table<BenchRecord>>("bench_table")
+                    .await
+                    .unwrap()
+                    .set(
+                        "row-00000000",
+                        BenchRecord {
+                            id: 0,
+                            name: "record_0".into(),
+                            value: 0,
+                        },
+                    )
+                    .await
+                    .unwrap();
+            }
+            tx.commit().await.unwrap();
+            if encrypted {
+                let tx = db.new_transaction().await.unwrap();
+                let mut wrapped = tx
+                    .get_store::<PasswordStore<Table<BenchRecord>>>("bench_table")
+                    .await
+                    .unwrap();
+                wrapped.open("bench-password").unwrap();
+                black_box(
+                    wrapped
+                        .inner()
+                        .await
+                        .unwrap()
+                        .get("row-00000000")
+                        .await
+                        .unwrap(),
+                );
+            } else {
+                black_box(
+                    db.get_store_viewer::<Table<BenchRecord>>("bench_table")
+                        .await
+                        .unwrap()
+                        .get("row-00000000")
+                        .await
+                        .unwrap(),
+                );
+            }
+        });
+        if encrypted {
+            let tx = rt.block_on(db.new_transaction()).unwrap();
+            let mut wrapped = rt
+                .block_on(tx.get_store::<PasswordStore<Table<BenchRecord>>>("bench_table"))
+                .unwrap();
+            wrapped.open("bench-password").unwrap();
+            let table = rt.block_on(wrapped.inner()).unwrap();
+            group.bench_function(BenchmarkId::new("get_1", true), |b| {
+                b.iter(|| black_box(rt.block_on(table.get("row-00000000")).unwrap()));
+            });
+        } else {
+            let table = rt
+                .block_on(db.get_store_viewer::<Table<BenchRecord>>("bench_table"))
+                .unwrap();
+            group.bench_function(BenchmarkId::new("get_1", false), |b| {
+                b.iter(|| black_box(rt.block_on(table.get("row-00000000")).unwrap()));
+            });
+        }
+        drop(instance);
+    }
+    group.finish();
+}
+
 criterion_group! {
     name = table_cache_benches;
     config = Criterion::default().configure_from_args();
@@ -527,6 +677,8 @@ criterion_group! {
         bench_cold_cache_rebuild,
         bench_cold_large_table_point_read,
         bench_table_payload,
+        bench_churn_payload,
+        bench_warm_point_modes,
         bench_table_writes,
         bench_table_pages,
         bench_encrypted_pages,
