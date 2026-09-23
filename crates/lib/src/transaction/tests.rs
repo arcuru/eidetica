@@ -82,6 +82,334 @@ async fn typed_store_state_folds_custom_crdt_without_doc_conversion() {
     ));
 }
 
+#[derive(Clone, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct StagedRows(crate::crdt::LwwMap<String, String>);
+impl Data for StagedRows {}
+impl CRDT for StagedRows {
+    fn merge(&self, other: &Self) -> Result<Self> {
+        Ok(Self(self.0.merge(&other.0)?))
+    }
+}
+
+struct LegacyRowsProjection;
+impl RecordProjection<Doc> for LegacyRowsProjection {
+    fn descriptor(&self) -> ProjectionDescriptor {
+        RowsProjection.descriptor()
+    }
+    fn project_delta(&self, _: &Doc, _: &mut RecordMutations) -> Result<()> {
+        unreachable!()
+    }
+    fn encode_entry_delta(&self, _: &RecordMutations) -> Result<Doc> {
+        unreachable!()
+    }
+}
+
+struct RowsProjection;
+impl RecordProjection<StagedRows> for RowsProjection {
+    fn descriptor(&self) -> ProjectionDescriptor {
+        ProjectionDescriptor {
+            name: "test/rows".into(),
+            version: 0,
+        }
+    }
+    fn project_delta(&self, delta: &StagedRows, out: &mut RecordMutations) -> Result<()> {
+        for (key, op) in delta.0.operations() {
+            out.insert(
+                key.as_bytes().to_vec(),
+                match op {
+                    crate::crdt::Lww::Set(value) => Some(value.as_bytes().to_vec()),
+                    crate::crdt::Lww::Delete => None,
+                    crate::crdt::Lww::NoOp => unreachable!(),
+                },
+            );
+        }
+        Ok(())
+    }
+    fn encode_entry_delta(&self, _: &RecordMutations) -> Result<StagedRows> {
+        unreachable!("typed staging does not reconstruct canonical deltas from records")
+    }
+}
+
+fn row(key: &str, value: &str) -> StagedRows {
+    let mut rows = crate::crdt::LwwMap::new();
+    rows.set(key.to_string(), value.to_string());
+    StagedRows(rows)
+}
+
+#[tokio::test]
+async fn projected_staging_installs_concurrent_writes_in_canonical_and_both_overlays() {
+    let (instance, _) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        crate::NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let (key, _) = generate_keypair();
+    let db = Database::create(&instance, key, Doc::new()).await.unwrap();
+    let tx = db.new_transaction().await.unwrap();
+    // Both writers must finish constructing from revision 0 before either installs.
+    // A bounded barrier forces the lost-update interleaving of an unchecked snapshot.
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+    let handles = [("a", "one"), ("b", "two")]
+        .into_iter()
+        .map(|(key, value)| {
+            let tx = tx.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                runtime.block_on(tx.stage_projected_delta(
+                    "rows",
+                    &RacingProjection,
+                    RacingRows {
+                        rows: row(key, value),
+                        barrier: Some(barrier),
+                    },
+                ))
+            })
+        })
+        .collect::<Vec<_>>();
+    barrier.wait();
+    for handle in handles {
+        handle.join().unwrap().unwrap();
+    }
+    let state = tx.projected.lock().unwrap().get("rows").unwrap().clone();
+    assert_eq!(state.revision, 2);
+    assert_eq!(state.logical.len(), 2);
+    assert_eq!(state.physical, state.logical);
+    assert!(
+        matches!(tx.stage_record("rows", &LegacyRowsProjection, b"x".to_vec(), Some(b"x".to_vec())),
+        Err(crate::Error::Store(error)) if matches!(*error, StoreError::InvalidOperation { .. }))
+    );
+    let staged: RacingRows = tx.get_local_data("rows").unwrap().unwrap();
+    assert_eq!(staged.rows.0.get(&"a".to_string()).unwrap(), "one");
+    assert_eq!(staged.rows.0.get(&"b".to_string()).unwrap(), "two");
+    tx.commit().await.unwrap();
+    let next = db.new_transaction().await.unwrap();
+    let persisted: RacingRows = next.get_full_state("rows").await.unwrap();
+    assert_eq!(persisted.rows, staged.rows);
+}
+
+#[derive(Clone, Default, Deserialize)]
+struct RacingRows {
+    rows: StagedRows,
+    #[serde(skip)]
+    barrier: Option<std::sync::Arc<std::sync::Barrier>>,
+}
+impl Serialize for RacingRows {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        if let Some(barrier) = &self.barrier {
+            barrier.wait();
+        }
+        #[derive(Serialize)]
+        struct Wire<'a> {
+            rows: &'a StagedRows,
+        }
+        Wire { rows: &self.rows }.serialize(serializer)
+    }
+}
+impl Data for RacingRows {}
+impl CRDT for RacingRows {
+    fn merge(&self, other: &Self) -> Result<Self> {
+        Ok(Self {
+            rows: self.rows.merge(&other.rows)?,
+            barrier: None,
+        })
+    }
+}
+struct RacingProjection;
+impl RecordProjection<RacingRows> for RacingProjection {
+    fn descriptor(&self) -> ProjectionDescriptor {
+        RowsProjection.descriptor()
+    }
+    fn project_delta(&self, delta: &RacingRows, out: &mut RecordMutations) -> Result<()> {
+        RowsProjection.project_delta(&delta.rows, out)
+    }
+    fn encode_entry_delta(&self, _: &RecordMutations) -> Result<RacingRows> {
+        unreachable!()
+    }
+}
+
+#[derive(Clone, Default, Deserialize)]
+struct FallibleRows {
+    rows: StagedRows,
+    fail: bool,
+}
+impl Serialize for FallibleRows {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        if self.fail {
+            return Err(serde::ser::Error::custom("injected serialization failure"));
+        }
+        #[derive(Serialize)]
+        struct Wire<'a> {
+            rows: &'a StagedRows,
+            fail: bool,
+        }
+        Wire {
+            rows: &self.rows,
+            fail: self.fail,
+        }
+        .serialize(serializer)
+    }
+}
+impl Data for FallibleRows {}
+impl CRDT for FallibleRows {
+    fn merge(&self, other: &Self) -> Result<Self> {
+        Ok(Self {
+            rows: self.rows.merge(&other.rows)?,
+            fail: other.fail,
+        })
+    }
+}
+struct FallibleProjection;
+impl RecordProjection<FallibleRows> for FallibleProjection {
+    fn descriptor(&self) -> ProjectionDescriptor {
+        RowsProjection.descriptor()
+    }
+    fn project_delta(&self, delta: &FallibleRows, out: &mut RecordMutations) -> Result<()> {
+        RowsProjection.project_delta(&delta.rows, out)
+    }
+    fn encode_entry_delta(&self, _: &RecordMutations) -> Result<FallibleRows> {
+        unreachable!()
+    }
+}
+
+struct FailingEncryptor;
+impl Encryptor for FailingEncryptor {
+    fn decrypt(&self, data: &[u8]) -> Result<Vec<u8>> {
+        Ok(data.to_vec())
+    }
+    fn encrypt(&self, _: &[u8]) -> Result<Vec<u8>> {
+        Err(StoreError::SerializationFailed {
+            store: "rows".into(),
+            reason: "injected encryption failure".into(),
+        }
+        .into())
+    }
+}
+
+#[tokio::test]
+async fn projected_staging_failures_leave_canonical_and_overlays_unchanged() {
+    let (instance, _) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        crate::NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let (key, _) = generate_keypair();
+    let db = Database::create(&instance, key, Doc::new()).await.unwrap();
+    let tx = db.new_transaction().await.unwrap();
+    tx.stage_projected_delta("rows", &RowsProjection, row("a", "one"))
+        .await
+        .unwrap();
+    let before = tx.projected.lock().unwrap().get("rows").unwrap().clone();
+    struct BadProjection;
+    impl RecordProjection<StagedRows> for BadProjection {
+        fn descriptor(&self) -> ProjectionDescriptor {
+            RowsProjection.descriptor()
+        }
+        fn project_delta(&self, _: &StagedRows, _: &mut RecordMutations) -> Result<()> {
+            Err(StoreError::SerializationFailed {
+                store: "rows".into(),
+                reason: "injected projection failure".into(),
+            }
+            .into())
+        }
+        fn encode_entry_delta(&self, _: &RecordMutations) -> Result<StagedRows> {
+            unreachable!()
+        }
+    }
+    assert!(
+        tx.stage_projected_delta("rows", &BadProjection, row("b", "two"))
+            .await
+            .is_err()
+    );
+    let serial_tx = db.new_transaction().await.unwrap();
+    let baseline = FallibleRows {
+        rows: row("a", "one"),
+        fail: false,
+    };
+    serial_tx
+        .stage_projected_delta("rows", &FallibleProjection, baseline.clone())
+        .await
+        .unwrap();
+    let prior = serial_tx
+        .projected
+        .lock()
+        .unwrap()
+        .get("rows")
+        .unwrap()
+        .clone();
+    assert!(
+        serial_tx
+            .stage_projected_delta(
+                "rows",
+                &FallibleProjection,
+                FallibleRows {
+                    rows: row("b", "two"),
+                    fail: true
+                }
+            )
+            .await
+            .is_err()
+    );
+    let unchanged = serial_tx
+        .projected
+        .lock()
+        .unwrap()
+        .get("rows")
+        .unwrap()
+        .clone();
+    assert_eq!(prior.canonical, unchanged.canonical);
+    assert_eq!(prior.logical, unchanged.logical);
+    assert_eq!(prior.physical, unchanged.physical);
+    assert_eq!(prior.revision, unchanged.revision);
+    assert_eq!(
+        serial_tx
+            .get_local_data::<FallibleRows>("rows")
+            .unwrap()
+            .unwrap()
+            .rows,
+        baseline.rows
+    );
+    let encrypted_tx = db.new_transaction().await.unwrap();
+    encrypted_tx
+        .register_encryptor("rows", Box::new(FailingEncryptor))
+        .unwrap();
+    let prior_error = encrypted_tx
+        .stage_projected_delta("rows", &RowsProjection, row("a", "one"))
+        .await;
+    assert!(prior_error.is_err());
+    assert!(encrypted_tx.projected.lock().unwrap().get("rows").is_none());
+    assert!(
+        encrypted_tx
+            .get_local_data::<StagedRows>("rows")
+            .unwrap()
+            .is_none()
+    );
+    let after = tx.projected.lock().unwrap().get("rows").unwrap().clone();
+    assert_eq!(after.revision, before.revision);
+    assert_eq!(after.canonical, before.canonical);
+    assert_eq!(after.logical, before.logical);
+    assert_eq!(after.physical, before.physical);
+    assert!(
+        tx.register_encryptor("rows", Box::new(FailingEncryptor))
+            .is_err()
+    );
+    assert_eq!(
+        tx.get_local_data::<StagedRows>("rows").unwrap().unwrap(),
+        row("a", "one")
+    );
+}
+
 /// Test that corrupted auth configuration prevents commit
 ///
 /// Validates that transactions reject changes that would corrupt the auth configuration,

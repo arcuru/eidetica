@@ -261,3 +261,43 @@ on the formatted source. Nix nextest: in-memory, SQLite, PostgreSQL and service
 each 1519 tests run: 1519 passed, 5 skipped; minimal 1367 tests run: 1367
 passed, 5 skipped. Both changed live-socket fixtures reported PASS on all four
 full-feature runners. NixOS service and OCI container VM integration passed.
+
+## Phase 0 continuation: revision-atomic typed staging fixture
+
+Intended: introduce an internal transaction-local candidate for typed canonical
+Entry bytes and logical/physical overlays at one monotonic revision, without
+switching the existing Doc-backed Table. Projection, serialization and record
+encryption errors must leave the cell and Entry builder unchanged. An unlocked
+snapshot may be used only with a revision check and retry. No await under its
+installation lock; this is not yet the Phase 3 read path.
+
+Performed: `nix develop -c cargo test -p eidetica --all-features --lib
+projected_staging -- --nocapture`: 2 passed, 0 failed (final focused run on
+formatted source). The concurrency fixture uses two OS threads and a three-party
+barrier in serialization so both candidates start from the same empty revision;
+it checks revision 2, both logical and physical entries, canonical local bytes,
+and persisted post-commit history. A temporary removal of the revision guard
+failed 0 passed / 1 failed (exit 101), then restored. The failure fixture
+injects projection, canonical serde serialization, and physical encryption
+failures and compares builder bytes and both overlays before/after. Legacy
+`stage_record` refuses a Store already using typed staging; a direct subsequent
+subtree overwrite is detected on the next typed stage (guard not directly
+covered by this fixture). Registering an encryptor after typed staging is
+refused. No Table switch or `table:v0` change.
+
+`nix develop -c nix run .#fix` succeeded. One intermediate full gate failed
+solely on treefmt for a newly added assertion after the prior formatter run;
+a subsequent fix formatted it, and the **final** `nix develop -c just nix full`
+passed on the formatted source: in-memory, SQLite, PostgreSQL, service each
+1521 tests run: 1521 passed, 5 skipped; minimal 1369 tests run: 1369 passed,
+5 skipped. Both new fixtures reported PASS in each backend runner; NixOS and
+OCI integration VMs passed. Focused fixture exercises local in-memory Entry
+behavior even inside backend-matrix runners, not remote typed staging.
+
+Newly required: genericize the one-way streamable projection and route typed
+read-your-writes through this cell; decide and enforce direct-update exclusivity
+when other Store APIs move onto typed staging; retain encrypted key-identity
+validation when the projection context evolves. Complete stale cursor/race,
+encrypted decrypting fallback, authorized remote recovery and automatic
+high-level retry fixtures before Table switches; then Phases 3-6 including
+actual Table/encryption/service behavior and benchmarks.

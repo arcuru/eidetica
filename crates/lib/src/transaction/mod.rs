@@ -195,8 +195,22 @@ pub struct Transaction {
     /// `_index` updates — bypass `get_store` and remain unaffected.
     system_subtrees_locked: Arc<AtomicBool>,
     record_mutations: Arc<Mutex<HashMap<String, RecordMutations>>>,
+    // Lock order for mixed staging: projected -> logical -> builder.
     logical_record_mutations: Arc<Mutex<HashMap<String, RecordMutations>>>,
     record_views: Arc<Mutex<HashMap<String, RecordView>>>,
+    projected: Arc<Mutex<HashMap<String, ProjectedStage>>>,
+}
+
+/// Canonical delta and both read-your-writes overlays share one revision.
+/// Legacy Doc-backed Table staging remains separate until the format switch.
+#[derive(Clone)]
+#[allow(dead_code)] // Phase 0 contract cell; Phase 3 routes reads through its overlays.
+struct ProjectedStage {
+    revision: u64,
+    descriptor: ProjectionDescriptor,
+    canonical: Vec<u8>,
+    logical: RecordMutations,
+    physical: RecordMutations,
 }
 
 /// RAII guard returned by [`Transaction::lock_system_subtrees`]. Releases the
@@ -266,6 +280,7 @@ impl Transaction {
             record_mutations: Arc::new(Mutex::new(HashMap::new())),
             logical_record_mutations: Arc::new(Mutex::new(HashMap::new())),
             record_views: Arc::new(Mutex::new(HashMap::new())),
+            projected: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -356,10 +371,17 @@ impl Transaction {
         subtree: impl Into<String>,
         encryptor: Box<dyn Encryptor>,
     ) -> Result<()> {
-        self.encryptors
-            .lock()
-            .unwrap()
-            .insert(subtree.into(), encryptor);
+        let subtree = subtree.into();
+        let stages = self.projected.lock().unwrap();
+        if stages.contains_key(&subtree) {
+            return Err(StoreError::InvalidOperation {
+                store: subtree,
+                operation: "register_encryptor".to_string(),
+                reason: "projection context already staged".to_string(),
+            }
+            .into());
+        }
+        self.encryptors.lock().unwrap().insert(subtree, encryptor);
         Ok(())
     }
 
@@ -565,7 +587,6 @@ impl Transaction {
             None
         };
 
-        // Now update the builder
         let mut builder_ref = self.entry_builder.lock().unwrap();
         let builder = builder_ref
             .as_mut()
@@ -579,6 +600,124 @@ impl Transaction {
         Ok(())
     }
 
+    /// Stage one typed delta and its logical/physical read overlay at one revision.
+    /// All fallible work happens outside the state lock; a competing writer forces
+    /// recomputation rather than allowing an unlocked snapshot to overwrite it.
+    #[allow(dead_code)] // Phase 0 fixture exercises this before the Table migration.
+    pub(crate) async fn stage_projected_delta<D: CRDT + Send>(
+        &self,
+        store: &str,
+        projection: &dyn RecordProjection<D>,
+        delta: D,
+    ) -> Result<()> {
+        self.init_subtree_parents(store).await?;
+        let stages = self.projected.lock().unwrap();
+        let descriptor = self.encrypted_projection_descriptor(store, projection.descriptor());
+        drop(stages);
+        let mut incoming = RecordMutations::new();
+        projection.project_delta(&delta, &mut incoming)?;
+        loop {
+            let snapshot = self.projected.lock().unwrap().get(store).cloned();
+            if let Some(state) = &snapshot
+                && state.descriptor != descriptor
+            {
+                return Err(StoreError::TypeMismatch {
+                    store: store.to_string(),
+                    expected: format!("{:?}", state.descriptor),
+                    actual: format!("{descriptor:?}"),
+                }
+                .into());
+            }
+            let canonical = if let Some(state) = &snapshot {
+                let current: D = serde_json::from_slice(&state.canonical)?;
+                current.merge(&delta)?
+            } else {
+                delta.clone()
+            };
+            let bytes = serde_json::to_vec(&canonical)?;
+            let mut logical = snapshot
+                .as_ref()
+                .map_or_else(RecordMutations::new, |s| s.logical.clone());
+            let mut physical = snapshot
+                .as_ref()
+                .map_or_else(RecordMutations::new, |s| s.physical.clone());
+            for (key, value) in &incoming {
+                let Some(key) = projection.normalize_record_key(key)? else {
+                    continue;
+                };
+                let conflicts = logical
+                    .keys()
+                    .filter(|staged| projection.staged_keys_conflict(staged, &key))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let physical_conflicts = conflicts
+                    .iter()
+                    .map(|key| self.physical_record_key(store, key))
+                    .collect::<Result<Vec<_>>>()?;
+                let physical_key = self.physical_record_key(store, &key)?;
+                let encrypted = value
+                    .as_ref()
+                    .map(|value| self.encrypt_record(store, &key, value))
+                    .transpose()?;
+                for conflict in &conflicts {
+                    logical.remove(conflict);
+                }
+                for conflict in physical_conflicts {
+                    physical.remove(&conflict);
+                }
+                logical.insert(key, value.clone());
+                physical.insert(physical_key, encrypted);
+            }
+            let mut stages = self.projected.lock().unwrap();
+            if self
+                .logical_record_mutations
+                .lock()
+                .unwrap()
+                .contains_key(store)
+            {
+                return Err(StoreError::InvalidOperation {
+                    store: store.to_string(),
+                    operation: "stage_projected_delta".to_string(),
+                    reason: "subtree uses legacy record staging".to_string(),
+                }
+                .into());
+            }
+            if stages.get(store).map(|s| s.revision) != snapshot.as_ref().map(|s| s.revision) {
+                continue;
+            }
+            let mut builder_ref = self.entry_builder.lock().unwrap();
+            let builder = builder_ref
+                .as_mut()
+                .ok_or(TransactionError::TransactionAlreadyCommitted)?;
+            if builder.data(store).is_ok()
+                && snapshot
+                    .as_ref()
+                    .is_none_or(|state| builder.data(store).ok() != Some(&state.canonical))
+            {
+                return Err(StoreError::InvalidOperation {
+                    store: store.to_string(),
+                    operation: "stage_projected_delta".to_string(),
+                    reason: "subtree already has staged data outside the projected state"
+                        .to_string(),
+                }
+                .into());
+            }
+            // No await or fallible transformation between canonical and overlay install.
+            builder.set_subtree_data_mut(store, bytes.clone());
+            stages.insert(
+                store.to_string(),
+                ProjectedStage {
+                    revision: snapshot.map_or(1, |s| s.revision + 1),
+                    descriptor: descriptor.clone(),
+                    canonical: bytes,
+                    logical,
+                    physical,
+                },
+            );
+            return Ok(());
+        }
+    }
+
     pub(crate) fn stage_record(
         &self,
         store: &str,
@@ -586,6 +725,15 @@ impl Transaction {
         key: Vec<u8>,
         value: Option<Vec<u8>>,
     ) -> Result<()> {
+        let stages = self.projected.lock().unwrap();
+        if stages.contains_key(store) {
+            return Err(StoreError::InvalidOperation {
+                store: store.to_string(),
+                operation: "stage_record".to_string(),
+                reason: "subtree uses projected staging".to_string(),
+            }
+            .into());
+        }
         let Some(key) = projection.normalize_record_key(&key)? else {
             return Ok(());
         };
