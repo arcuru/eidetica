@@ -173,3 +173,30 @@ after ambiguous transport (and reconnect ownership), bounded terminal-token
 retention with safe unknown-after-horizon replacement, typed state/capability,
 revision/cursor races, service authorization/fallback; then later phases and
 another complete Nix gate. Do not claim Phase 0 complete or switch Table.
+
+## Phase 0 continuation: bounded terminal outcomes and guarded recovery
+
+Intended: retain terminal outcomes for the 24-hour retry window plus five-minute
+lease and five-minute reclamation grace, then prune; disallow replacement of an
+unknown token before its creation horizon or while a published generation or
+unexpired build for its exact target exists. Keep the existing Table untouched.
+
+Performed: new backend-neutral `terminal_horizon_and_unknown_replacement_guards`
+fixture checks Aborted, Expired, Adopted and Published outcomes before and after
+pruning, retry/idempotent publish, recent-unknown refusal, atomic simultaneous
+old-unknown replacement (exactly one winner), and generation/active-build
+refusal. Existing publication-vs-sweeper race fixture still passes. A negative
+control disabled the in-memory horizon check: the fixture failed 0 passed / 1
+failed at recent-unknown refusal; restored source and re-ran. `nix develop -c
+nix run .#fix` succeeded; final `nix develop -c just nix full` succeeded:
+in-memory, SQLite, PostgreSQL and service each 1516/1516 passed, minimal
+1366/1366 passed, five skipped in each; service and OCI VM integrations passed.
+The service-mode backend-neutral fixture uses the local in-memory backend,
+not a recovery RPC. Unknown-token recovery is backend-only and requires a
+caller-authorized target; the remote adapter does not automatically retry or
+recover lost responses. Legacy random token IDs cannot qualify for recovery.
+
+Newly required: high-level ambiguous transport/reconnect retry and authorized
+service recovery, typed state/capability and fallback, revision/cursor race
+contracts, remaining Phase 0, then Phases 2-6 and full Table/encryption/service
+behavior checks. Do not switch Table before Phase 0 completion.
