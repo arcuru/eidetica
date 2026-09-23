@@ -155,6 +155,8 @@ pub enum DatabaseOp {
     },
     /// Publish the private build and return a view onto the published record set.
     PublishStoreState { token: String },
+    /// Resolve the durable outcome of an ambiguous staging operation.
+    StoreStateStagingStatus { token: String },
     /// Discard an unfinished private build.
     AbortStoreState { token: String },
     /// Fetch one record from a published record set.
@@ -269,7 +271,8 @@ impl DatabaseOp {
             | DatabaseOp::BeginStoreStateStaging { .. }
             | DatabaseOp::StageStoreStateRecords { .. }
             | DatabaseOp::PublishStoreState { .. }
-            | DatabaseOp::AbortStoreState { .. } => Permission::Write(0),
+            | DatabaseOp::AbortStoreState { .. }
+            | DatabaseOp::StoreStateStagingStatus { .. } => Permission::Write(0),
             // Gated against `_databases`, not the request's `root_id`; the
             // dispatcher special-cases this so the value here is advisory.
             DatabaseOp::SetInstanceMetadata { .. } => Permission::Admin(0),
@@ -467,6 +470,7 @@ pub enum ServiceResponse {
     RecordPage(RecordPage),
     /// View onto one published record set.
     RecordView(Option<String>),
+    StagingStatus(Option<crate::backend::StagingStatus>),
     /// Capability for one private build.
     Token(String),
     /// Transaction-build context (response to `DatabaseOp::BeginTransaction`).
@@ -506,7 +510,9 @@ pub enum ServiceResponse {
     /// Challenge bytes returned in response to `SessionKeyChallenge`. The
     /// client signs these with the named pubkey's private key and returns the
     /// signature in `SessionKeyRegister`.
-    SessionKeyChallenge { challenge: Vec<u8> },
+    SessionKeyChallenge {
+        challenge: Vec<u8>,
+    },
 }
 
 /// Write a length-prefixed JSON frame to an async writer.

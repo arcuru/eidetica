@@ -888,3 +888,346 @@ async fn clearing_derived_records_preserves_an_active_reader_and_rebuilds() {
         Some(b"authority".to_vec())
     );
 }
+
+/// Conformance over the same backend trait used by the daemon. A failed chunk
+/// cannot advance the sequence; terminal status survives record removal.
+#[tokio::test]
+async fn sequenced_token_status_adoption_and_abort() {
+    use eidetica::backend::StagingStatus;
+    let backend = test_backend().await;
+    let target = request("sequenced", "store", StoreStateLifecycle::Derived);
+    let first = backend
+        .begin_store_state_staging(target.clone())
+        .await
+        .unwrap();
+    let second = backend
+        .begin_store_state_staging(target.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        backend.store_state_staging_status(&first).await.unwrap(),
+        Some(StagingStatus::Active)
+    );
+    assert!(
+        backend
+            .stage_store_state_chunk(&first, 1, b"gap", BTreeMap::new())
+            .await
+            .is_err()
+    );
+    backend
+        .stage_store_state_chunk(
+            &first,
+            0,
+            b"put",
+            BTreeMap::from([(b"a".to_vec(), Some(b"1".to_vec()))]),
+        )
+        .await
+        .unwrap();
+    backend
+        .stage_store_state_chunk(
+            &first,
+            0,
+            b"put",
+            BTreeMap::from([(b"a".to_vec(), Some(b"evil".to_vec()))]),
+        )
+        .await
+        .unwrap();
+    assert!(
+        backend
+            .stage_store_state_chunk(&first, 0, b"other", BTreeMap::new())
+            .await
+            .is_err()
+    );
+    backend
+        .stage_store_state_chunk(
+            &first,
+            1,
+            b"next",
+            BTreeMap::from([(b"b".to_vec(), Some(b"2".to_vec()))]),
+        )
+        .await
+        .unwrap();
+    assert!(
+        backend
+            .stage_store_state_chunk(&first, 0, b"put", BTreeMap::new())
+            .await
+            .is_err()
+    );
+    let winner = backend.publish_store_state(first.clone()).await.unwrap();
+    assert_eq!(
+        backend.store_state_record_get(&winner, b"a").await.unwrap(),
+        Some(b"1".to_vec())
+    );
+    assert_eq!(
+        backend.store_state_staging_status(&first).await.unwrap(),
+        Some(StagingStatus::Published(winner.clone()))
+    );
+    assert_eq!(
+        backend.publish_store_state(first.clone()).await.unwrap(),
+        winner
+    );
+    let adopted = backend.publish_store_state(second.clone()).await.unwrap();
+    assert_eq!(adopted, winner);
+    assert_eq!(
+        backend.store_state_staging_status(&second).await.unwrap(),
+        Some(StagingStatus::Adopted(winner.clone()))
+    );
+    backend.abort_store_state(first).await.unwrap();
+    backend.abort_store_state(second).await.unwrap();
+    assert_eq!(
+        backend.resolve_store_state(&target).await.unwrap(),
+        Some(winner)
+    );
+
+    let abandoned = backend
+        .begin_store_state_staging(request("abandoned", "store", StoreStateLifecycle::Derived))
+        .await
+        .unwrap();
+    backend.abort_store_state(abandoned.clone()).await.unwrap();
+    backend.abort_store_state(abandoned.clone()).await.unwrap();
+    assert_eq!(
+        backend
+            .store_state_staging_status(&abandoned)
+            .await
+            .unwrap(),
+        Some(StagingStatus::Aborted)
+    );
+    assert!(backend.publish_store_state(abandoned).await.is_err());
+}
+
+#[tokio::test]
+async fn staging_publication_and_abort_race_is_terminal() {
+    use eidetica::backend::StagingStatus;
+    let backend: Arc<dyn BackendImpl> = Arc::from(test_backend().await);
+    let target = request("terminal-race", "store", StoreStateLifecycle::Derived);
+    let token = backend
+        .begin_store_state_staging(target.clone())
+        .await
+        .unwrap();
+    let barrier = Arc::new(Barrier::new(3));
+    let b = backend.clone();
+    let t = token.clone();
+    let gate = barrier.clone();
+    let publish = tokio::spawn(async move {
+        gate.wait().await;
+        b.publish_store_state(t).await
+    });
+    let b = backend.clone();
+    let t = token.clone();
+    let gate = barrier.clone();
+    let abort = tokio::spawn(async move {
+        gate.wait().await;
+        b.abort_store_state(t).await
+    });
+    barrier.wait().await;
+    let published = publish.await.unwrap();
+    abort.await.unwrap().unwrap();
+    match backend
+        .store_state_staging_status(&token)
+        .await
+        .unwrap()
+        .unwrap()
+    {
+        StagingStatus::Published(view) => {
+            assert_eq!(published.unwrap(), view);
+            assert_eq!(
+                backend.resolve_store_state(&target).await.unwrap(),
+                Some(view)
+            );
+        }
+        StagingStatus::Aborted => {
+            assert!(published.is_err());
+            assert!(
+                backend
+                    .resolve_store_state(&target)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        other => panic!("unexpected terminal outcome: {other:?}"),
+    }
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn sqlite_token_survives_backend_reopen() {
+    use eidetica::backend::{StagingStatus, database::Sqlite};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("reopen.db");
+    let target = request("restart", "store", StoreStateLifecycle::Derived);
+    let token = {
+        let backend = Sqlite::open(&path).await.unwrap();
+        let token = backend
+            .begin_store_state_staging(target.clone())
+            .await
+            .unwrap();
+        backend
+            .stage_store_state_chunk(
+                &token,
+                0,
+                b"first",
+                BTreeMap::from([(b"x".to_vec(), Some(b"original".to_vec()))]),
+            )
+            .await
+            .unwrap();
+        token
+    };
+    let backend = Sqlite::open(&path).await.unwrap();
+    assert_eq!(
+        backend.store_state_staging_status(&token).await.unwrap(),
+        Some(StagingStatus::Active)
+    );
+    backend
+        .stage_store_state_chunk(&token, 0, b"first", BTreeMap::new())
+        .await
+        .unwrap();
+    backend
+        .stage_store_state_chunk(
+            &token,
+            1,
+            b"second",
+            BTreeMap::from([(b"y".to_vec(), Some(b"later".to_vec()))]),
+        )
+        .await
+        .unwrap();
+    let view = backend.publish_store_state(token.clone()).await.unwrap();
+    assert_eq!(
+        backend.store_state_record_get(&view, b"x").await.unwrap(),
+        Some(b"original".to_vec())
+    );
+    drop(backend);
+    let backend = Sqlite::open(&path).await.unwrap();
+    assert_eq!(
+        backend.store_state_staging_status(&token).await.unwrap(),
+        Some(StagingStatus::Published(view.clone()))
+    );
+    assert_eq!(backend.publish_store_state(token).await.unwrap(), view);
+}
+
+#[cfg(feature = "testing")]
+#[tokio::test]
+async fn expired_orphan_is_reclaimed_and_terminal_result_is_retained() {
+    use eidetica::backend::StagingStatus;
+    let backend = test_backend().await;
+    let request = request("orphan", "store", StoreStateLifecycle::Derived);
+    let orphan = backend
+        .begin_store_state_staging(request.clone())
+        .await
+        .unwrap();
+    backend
+        .stage_store_state_chunk(
+            &orphan,
+            0,
+            b"first",
+            BTreeMap::from([(b"key".to_vec(), Some(b"private".to_vec()))]),
+        )
+        .await
+        .unwrap();
+    // An idle token must not be reclaimed before the lease + grace horizon.
+    backend
+        .testing_age_store_state_staging(&orphan, 599)
+        .await
+        .unwrap();
+    assert_eq!(backend.reclaim_expired_store_state().await.unwrap(), 0);
+    assert_eq!(
+        backend.store_state_staging_status(&orphan).await.unwrap(),
+        Some(StagingStatus::Active)
+    );
+    backend
+        .testing_age_store_state_staging(&orphan, 2)
+        .await
+        .unwrap();
+    assert_eq!(backend.reclaim_expired_store_state().await.unwrap(), 1);
+    assert_eq!(backend.reclaim_expired_store_state().await.unwrap(), 0);
+    assert_eq!(
+        backend.store_state_staging_status(&orphan).await.unwrap(),
+        Some(StagingStatus::Expired)
+    );
+    assert!(backend.publish_store_state(orphan.clone()).await.is_err());
+    assert!(
+        backend
+            .stage_store_state_chunk(&orphan, 1, b"second", BTreeMap::new())
+            .await
+            .is_err()
+    );
+    assert!(
+        backend
+            .resolve_store_state(&request)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let replacement = backend
+        .begin_store_state_staging(request.clone())
+        .await
+        .unwrap();
+    let view = backend.publish_store_state(replacement).await.unwrap();
+    backend
+        .testing_age_store_state_staging(&orphan, 1000)
+        .await
+        .unwrap();
+    assert_eq!(backend.reclaim_expired_store_state().await.unwrap(), 0);
+    assert_eq!(
+        backend.resolve_store_state(&request).await.unwrap(),
+        Some(view)
+    );
+}
+
+#[cfg(feature = "testing")]
+#[tokio::test]
+async fn expiration_racing_publication_has_one_terminal_winner() {
+    use eidetica::backend::StagingStatus;
+    let backend: Arc<dyn BackendImpl> = Arc::from(test_backend().await);
+    let request = request("sweep-race", "store", StoreStateLifecycle::Derived);
+    let token = backend
+        .begin_store_state_staging(request.clone())
+        .await
+        .unwrap();
+    backend
+        .testing_age_store_state_staging(&token, 601)
+        .await
+        .unwrap();
+    let barrier = Arc::new(Barrier::new(3));
+    let b = backend.clone();
+    let t = token.clone();
+    let gate = barrier.clone();
+    let publish = tokio::spawn(async move {
+        gate.wait().await;
+        b.publish_store_state(t).await
+    });
+    let b = backend.clone();
+    let gate = barrier.clone();
+    let sweep = tokio::spawn(async move {
+        gate.wait().await;
+        b.reclaim_expired_store_state().await
+    });
+    barrier.wait().await;
+    let result = publish.await.unwrap();
+    sweep.await.unwrap().unwrap();
+    match backend
+        .store_state_staging_status(&token)
+        .await
+        .unwrap()
+        .unwrap()
+    {
+        StagingStatus::Expired => {
+            assert!(result.is_err());
+            assert!(
+                backend
+                    .resolve_store_state(&request)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        StagingStatus::Published(view) => {
+            assert_eq!(result.unwrap(), view);
+            assert_eq!(
+                backend.resolve_store_state(&request).await.unwrap(),
+                Some(view)
+            );
+        }
+        other => panic!("nonterminal race result: {other:?}"),
+    }
+}

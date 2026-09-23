@@ -111,6 +111,17 @@ pub struct StagingToken {
     pub(crate) target: StoreStateRequest,
 }
 
+/// Backend-owned outcome of a staging token. Terminal outcomes remain queryable
+/// even after the private records have been reclaimed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StagingStatus {
+    Active,
+    Published(RecordView),
+    Adopted(RecordView),
+    Aborted,
+    Expired,
+}
+
 #[cfg(feature = "testing")]
 impl StagingToken {
     /// Test-only accessor for the pause-gate registry key.
@@ -350,6 +361,56 @@ pub trait BackendImpl: Send + Sync + Any {
     /// Start a private build for a later atomic publish. The build is invisible
     /// to readers until published.
     async fn begin_store_state_staging(&self, _request: StoreStateRequest) -> Result<StagingToken> {
+        Err(BackendError::StoreStateStorageUnsupported.into())
+    }
+
+    /// Query the backend-owned lifecycle, including terminal outcomes after
+    /// private records have been removed. Unknown tokens are not safe to retry.
+    async fn store_state_staging_status(
+        &self,
+        _token: &StagingToken,
+    ) -> Result<Option<StagingStatus>> {
+        Err(BackendError::StoreStateStorageUnsupported.into())
+    }
+
+    /// Look up an opaque token for a service request. The service MUST check
+    /// database and user scope before exposing its status or performing writes.
+    async fn store_state_staging_token(
+        &self,
+        _id: &str,
+    ) -> Result<Option<(StagingToken, StagingStatus)>> {
+        Err(BackendError::StoreStateStorageUnsupported.into())
+    }
+
+    /// Atomically validate a sequenced wire chunk and apply it once. Digest
+    /// covers the encoded ordered wire mutations, before key collapse.
+    async fn stage_store_state_chunk(
+        &self,
+        _token: &StagingToken,
+        _sequence: u64,
+        _digest: &[u8],
+        _records: RecordMutations,
+    ) -> Result<()> {
+        Err(BackendError::StoreStateStorageUnsupported.into())
+    }
+
+    /// Renew a private build's lease after an acknowledged operation.
+    async fn renew_store_state_staging(&self, _token: &StagingToken) -> Result<()> {
+        Err(BackendError::StoreStateStorageUnsupported.into())
+    }
+
+    /// Reclaim expired private builds. An active lease is never reclaimed.
+    async fn reclaim_expired_store_state(&self) -> Result<u64> {
+        Err(BackendError::StoreStateStorageUnsupported.into())
+    }
+
+    /// Test-only lease clock advance; never exposed through the service.
+    #[cfg(feature = "testing")]
+    async fn testing_age_store_state_staging(
+        &self,
+        _token: &StagingToken,
+        _seconds: i64,
+    ) -> Result<()> {
         Err(BackendError::StoreStateStorageUnsupported.into())
     }
 

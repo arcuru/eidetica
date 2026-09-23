@@ -43,17 +43,13 @@ type ConnectionId = u64;
 /// its backend resources.
 const TOKEN_IDLE_TTL: Duration = Duration::from_secs(5 * 60);
 
-/// One server-issued Store-state capability, bound to the session that minted
-/// it. `published` distinguishes a readable view from a staging namespace that
-/// still owes an abort if the session goes away.
+/// Session-scoped readable view or short-lived idle timer for a build. Build
+/// state and status live in the backend, not in this connection cache.
 struct SessionStaging {
     backend: StagingToken,
     user_uuid: String,
     database: ID,
     published: bool,
-    published_view: Option<String>,
-    next_sequence: u64,
-    last_chunk: Option<(u64, blake3::Hash)>,
     last_used: Instant,
 }
 
@@ -90,19 +86,13 @@ impl ConnectionContext {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Drop session tokens that have gone idle, returning the backend staging
-    /// tokens whose namespaces the caller must abort.
-    fn cleanup_expired(&self) -> Vec<StagingToken> {
+    /// Drop idle session views; backend-owned staging leases survive disconnect.
+    fn cleanup_expired(&self) {
         let now = Instant::now();
-        let mut expired = Vec::new();
-        self.staging.lock().unwrap().retain(|_, value| {
-            let keep = now.duration_since(value.last_used) <= self.token_idle_ttl;
-            if !keep && !value.published {
-                expired.push(value.backend.clone());
-            }
-            keep
-        });
-        expired
+        self.staging
+            .lock()
+            .unwrap()
+            .retain(|_, value| now.duration_since(value.last_used) <= self.token_idle_ttl);
     }
 }
 
@@ -129,19 +119,6 @@ impl Drop for ConnectionGuard {
             self.ctx.instance.remove_write_callback(tree_id, *id);
         }
         drop(subs);
-        let staging = std::mem::take(&mut *self.ctx.staging.lock().unwrap())
-            .into_values()
-            .filter(|value| !value.published)
-            .map(|value| value.backend)
-            .collect::<Vec<_>>();
-        if !staging.is_empty() {
-            let backend = self.ctx.instance.backend().clone();
-            tokio::spawn(async move {
-                for token in staging {
-                    let _ = backend.abort_store_state(token).await;
-                }
-            });
-        }
     }
 }
 
@@ -741,8 +718,13 @@ async fn dispatch_inner(
     ctx: &ConnectionContext,
     request: ServiceRequest,
 ) -> crate::Result<ServiceResponse> {
-    for token in ctx.cleanup_expired() {
-        let _ = instance.backend().abort_store_state(token).await;
+    ctx.cleanup_expired();
+    // Older custom backends can serve Entries without implementing record
+    // storage. Reclamation is an optional capability, not a login gate.
+    if let Err(error) = instance.backend().reclaim_expired_store_state().await
+        && !error.is_unsupported_store_state()
+    {
+        return Err(error);
     }
     match request {
         // === Pre-auth: login handshake ===
@@ -965,9 +947,6 @@ async fn dispatch_database_op(
                         user_uuid: user_uuid.to_string(),
                         database: request.database.clone(),
                         published: true,
-                        published_view: None,
-                        next_sequence: 0,
-                        last_chunk: None,
                         last_used: Instant::now(),
                     },
                 );
@@ -981,17 +960,15 @@ async fn dispatch_database_op(
                 .backend()
                 .begin_store_state_staging(request.clone())
                 .await?;
-            let token = random_token();
+            // The opaque backend id is scoped by its durable target and user.
+            let token = backend.namespace_id.clone();
             ctx.staging.lock().unwrap().insert(
                 token.clone(),
                 SessionStaging {
                     backend,
-                    user_uuid: user_uuid.to_string(),
+                    user_uuid: user_uuid.to_owned(),
                     database: request.database,
                     published: false,
-                    published_view: None,
-                    next_sequence: 0,
-                    last_chunk: None,
                     last_used: Instant::now(),
                 },
             );
@@ -1013,43 +990,15 @@ async fn dispatch_database_op(
             let records = records
                 .into_iter()
                 .collect::<crate::backend::RecordMutations>();
-            let (backend, duplicate) =
-                session_staging(ctx, user_uuid, &root_id, &token, chunk_id, digest)?;
-            if duplicate {
-                return Ok(ServiceResponse::Ok);
-            }
-            if let Err(error) = instance
+            let backend = scoped_staging_token(instance, user_uuid, &root_id, &token).await?;
+            instance
                 .backend()
-                .stage_store_state_records(&backend, records)
-                .await
-            {
-                if let Some(value) = ctx.staging.lock().unwrap().get_mut(&token) {
-                    value.next_sequence = chunk_id;
-                    value.last_chunk = None;
-                }
-                return Err(error);
-            }
+                .stage_store_state_chunk(&backend, chunk_id, digest.as_bytes(), records)
+                .await?;
             Ok(ServiceResponse::Ok)
         }
         DatabaseOp::PublishStoreState { token } => {
-            let backend_token = {
-                let mut staging = ctx.staging.lock().unwrap();
-                let staged = staging
-                    .get_mut(&token)
-                    .filter(|value| value.user_uuid == user_uuid && value.database == root_id)
-                    .ok_or(crate::backend::BackendError::InvalidStoreStateStagingToken)?;
-                staged.last_used = Instant::now();
-                if let Some(view) = &staged.published_view {
-                    return Ok(ServiceResponse::RecordView(Some(view.clone())));
-                }
-                if staged.published {
-                    return Err(crate::backend::BackendError::InvalidStoreStateStagingToken.into());
-                }
-                staged.backend.clone()
-            };
-            // Preserve the token on error: a lost backend response may have
-            // committed the namespace. Retrying or querying status must not
-            // abort that generation or start an ambiguous replacement.
+            let backend_token = scoped_staging_token(instance, user_uuid, &root_id, &token).await?;
             let view = instance
                 .backend()
                 .publish_store_state(backend_token)
@@ -1076,37 +1025,23 @@ async fn dispatch_database_op(
                     user_uuid: user_uuid.to_string(),
                     database,
                     published: true,
-                    published_view: None,
-                    next_sequence: 0,
-                    last_chunk: None,
                     last_used: Instant::now(),
                 },
             );
-            if let Some(staged) = ctx.staging.lock().unwrap().get_mut(&token) {
-                staged.published = true;
-                staged.published_view = Some(view_token.clone());
-            }
             Ok(ServiceResponse::RecordView(Some(view_token)))
         }
+        DatabaseOp::StoreStateStagingStatus { token } => {
+            let backend = scoped_staging_token(instance, user_uuid, &root_id, &token).await?;
+            Ok(ServiceResponse::StagingStatus(
+                instance
+                    .backend()
+                    .store_state_staging_status(&backend)
+                    .await?,
+            ))
+        }
         DatabaseOp::AbortStoreState { token } => {
-            let staged = {
-                let mut staging = ctx.staging.lock().unwrap();
-                if let Some(value) = staging.get_mut(&token) {
-                    if value.user_uuid != user_uuid || value.database != root_id {
-                        return Err(
-                            crate::backend::BackendError::InvalidStoreStateStagingToken.into()
-                        );
-                    }
-                    if value.published {
-                        value.last_used = Instant::now();
-                        return Ok(ServiceResponse::Ok);
-                    }
-                }
-                staging.remove(&token)
-            };
-            if let Some(staged) = staged {
-                instance.backend().abort_store_state(staged.backend).await?;
-            }
+            let backend = scoped_staging_token(instance, user_uuid, &root_id, &token).await?;
+            instance.backend().abort_store_state(backend).await?;
             Ok(ServiceResponse::Ok)
         }
         DatabaseOp::StoreStateRecordGet { view, key } => {
@@ -1494,38 +1429,24 @@ fn session_store_state_request(
     Ok(request)
 }
 
-/// Accept the next chunk or acknowledge only the most recent identical chunk.
-/// The digest is over the encoded wire mutations, before key collapse.
-fn session_staging(
-    ctx: &ConnectionContext,
-    user_uuid: &str,
+/// Resolve a persistent token only after binding it to the authenticated user
+/// and database. A guessed id never grants access to another user's build.
+async fn scoped_staging_token(
+    instance: &Instance,
+    user: &str,
     database: &ID,
-    token: &str,
-    chunk_id: u64,
-    digest: blake3::Hash,
-) -> crate::Result<(StagingToken, bool)> {
-    let mut staging = ctx.staging.lock().unwrap();
-    let value = staging
-        .get_mut(token)
-        .filter(|value| value.user_uuid == user_uuid && value.database == *database)
+    id: &str,
+) -> crate::Result<StagingToken> {
+    let (token, _) = instance
+        .backend()
+        .store_state_staging_token(id)
+        .await?
         .ok_or(crate::backend::BackendError::InvalidStoreStateStagingToken)?;
-    if value.published {
-        return Err(crate::backend::BackendError::StoreStateNamespaceImmutable.into());
-    }
-    if value.last_chunk == Some((chunk_id, digest)) {
-        value.last_used = Instant::now();
-        return Ok((value.backend.clone(), true));
-    }
-    if chunk_id != value.next_sequence {
+    if token.target.database != *database || token.target.scope != CacheScope::User(user.to_owned())
+    {
         return Err(crate::backend::BackendError::InvalidStoreStateStagingToken.into());
     }
-    value.next_sequence = value
-        .next_sequence
-        .checked_add(1)
-        .ok_or(crate::backend::BackendError::InvalidStoreStateStagingToken)?;
-    value.last_chunk = Some((chunk_id, digest));
-    value.last_used = Instant::now();
-    Ok((value.backend.clone(), false))
+    Ok(token)
 }
 
 /// Handle `ServiceRequest::TrustedLoginUser`: look up the user's full record,

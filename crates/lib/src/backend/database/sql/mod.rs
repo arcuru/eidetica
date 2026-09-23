@@ -818,6 +818,47 @@ impl BackendImpl for SqlxBackend {
         storage::begin_store_state_staging(self, request).await
     }
 
+    async fn store_state_staging_status(
+        &self,
+        token: &StagingToken,
+    ) -> Result<Option<crate::backend::StagingStatus>> {
+        storage::store_state_staging_status(self, token).await
+    }
+
+    async fn store_state_staging_token(
+        &self,
+        id: &str,
+    ) -> Result<Option<(StagingToken, crate::backend::StagingStatus)>> {
+        storage::store_state_staging_token(self, id).await
+    }
+
+    async fn stage_store_state_chunk(
+        &self,
+        token: &StagingToken,
+        sequence: u64,
+        digest: &[u8],
+        records: RecordMutations,
+    ) -> Result<()> {
+        storage::stage_store_state_chunk(self, token, sequence, digest, records).await
+    }
+
+    async fn renew_store_state_staging(&self, token: &StagingToken) -> Result<()> {
+        storage::renew_store_state_staging(self, token).await
+    }
+
+    #[cfg(feature = "testing")]
+    async fn testing_age_store_state_staging(
+        &self,
+        token: &StagingToken,
+        seconds: i64,
+    ) -> Result<()> {
+        storage::testing_age_store_state_staging(self, token, seconds).await
+    }
+
+    async fn reclaim_expired_store_state(&self) -> Result<u64> {
+        storage::reclaim_expired_store_state(self).await
+    }
+
     async fn stage_store_state_records(
         &self,
         token: &StagingToken,
@@ -1123,11 +1164,8 @@ mod tests {
 /// A publish carrying a token whose target does not match the namespace it
 /// names must never disturb a ready namespace.
 ///
-/// Unlike `InMemory` (which resolves by target and adopts the ready winner),
-/// the SQL publish names the namespace: the `UPDATE` only flips
-/// lifecycle/status and keeps the begin-time identity, using `target` for
-/// locking and failure-path winner adoption. Either way the ready snapshot
-/// and its records always survive a malformed clone.
+/// Both backends reject a mismatched target without changing the ready
+/// snapshot or the private namespace.
 #[cfg(all(test, feature = "sqlite"))]
 mod store_state_token_tests {
     use std::collections::BTreeMap;
@@ -1186,28 +1224,13 @@ mod store_state_token_tests {
             .await
             .unwrap();
 
-        // Malformed clone: B's namespace id, A's target. The SQL publish names
-        // the namespace (the UPDATE only flips lifecycle/status and keeps the
-        // begin-time identity; `target` drives locking and winner adoption),
-        // so B becomes ready under its own identity while ready A is
-        // untouched: no ready snapshot is ever modified by a mismatched token.
+        // A mismatched target cannot publish or adopt another build.
         let bad = StagingToken {
             namespace_id: token_b.namespace_id.clone(),
             target: request_a.clone(),
         };
-        let published_b = backend.publish_store_state(bad).await.unwrap();
-        assert_eq!(published_b.namespace_id, token_b.namespace_id);
-        assert_eq!(
-            backend.resolve_store_state(&request_b).await.unwrap(),
-            Some(published_b.clone())
-        );
-        assert_eq!(
-            backend
-                .store_state_record_get(&published_b, b"key")
-                .await
-                .unwrap(),
-            Some(b"value-b".to_vec())
-        );
+        assert!(backend.publish_store_state(bad).await.is_err());
+        assert_eq!(backend.resolve_store_state(&request_b).await.unwrap(), None);
         assert_eq!(
             backend.resolve_store_state(&request_a).await.unwrap(),
             Some(view_a.clone())
