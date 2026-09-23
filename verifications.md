@@ -795,3 +795,15 @@ large encrypted chunk fixtures, docs/benchmarks and final accumulated parity
 are still required before the todo can be handed off. No mixed old/new
 `table:v0` data is supported; regenerate old databases/fixtures, never bump
 silently to `v1`. Branch remains local, no push/PR.
+
+Signed-tip verification for Phase 4: commit `64ffab2428` has a valid bot
+ED25519 signature, clean worktree; `nix flake metadata --json` reported
+revision `64ffab2428d525674e298dcd49012cd0ecf41fa9` and `dirtyRev: null`.
+`nix develop -c just nix full` exited 0 on that revision (reused the exact
+formatted-source test derivations). `nix derivation show
+.#checks.x86_64-linux.test` listed five backend runner inputs; `nix log` on
+each reported: in-memory, SQLite, PostgreSQL and service each `1540 tests
+run: 1540 passed, 5 skipped`; minimal `1379 tests run: 1379 passed, 5
+skipped`. No separate service deployment was made; the new Table socket
+fixtures ran against a test daemon, not a production daemon. The signed-tip
+run also reused the passing NixOS and OCI VM checks. No push or PR.
