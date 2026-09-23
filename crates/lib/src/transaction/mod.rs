@@ -807,6 +807,30 @@ impl Transaction {
         }
     }
 
+    /// Read the unlocked Store's typed state. On a service connection the
+    /// server authorizes the canonical read before returning a capability
+    /// refusal; only then may this client decrypt and fold Entry history.
+    pub(crate) async fn unlocked_store_state<S: Store>(&self, store: &str) -> Result<S::Data>
+    where
+        S::Data: Send,
+    {
+        #[cfg(all(unix, feature = "service"))]
+        if let Some(conn) = self.db.instance()?.remote_connection() {
+            return conn
+                .get_store_state_with_decrypt::<S::Data>(
+                    self.db.root_id().clone(),
+                    self.db.auth_identity().cloned().unwrap_or_default(),
+                    store.to_string(),
+                    S::type_id(),
+                    S::state_model().descriptor(),
+                    |bytes| self.decrypt_if_needed(store, bytes),
+                )
+                .await;
+        }
+        self.get_full_state_with_descriptor(store, S::state_model().descriptor())
+            .await
+    }
+
     /// Recordless fallback reduces typed history before projecting into physical order.
     async fn projected_history<D: CRDT + Send>(
         &self,

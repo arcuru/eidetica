@@ -1102,14 +1102,42 @@ impl RemoteConnection {
         identity: SigKey,
         store: String,
     ) -> crate::Result<S::Data> {
+        self.get_store_state_with_decrypt::<S::Data>(
+            root_id,
+            identity,
+            store,
+            S::type_id(),
+            S::state_model().descriptor(),
+            |bytes| Ok(bytes.to_vec()),
+        )
+        .await
+    }
+
+    /// Only the read-authorized maintenance refusal permits a local history
+    /// fold. The decryptor is supplied by an already unlocked client Store;
+    /// ciphertext and passwords are never sent to the daemon for projection.
+    pub(crate) async fn get_store_state_with_decrypt<D: crate::crdt::CRDT>(
+        &self,
+        root_id: ID,
+        identity: SigKey,
+        store: String,
+        expected_type: &str,
+        projection: crate::backend::ProjectionDescriptor,
+        decrypt: impl Fn(&[u8]) -> crate::Result<Vec<u8>>,
+    ) -> crate::Result<D> {
+        let identity = if identity == SigKey::default() {
+            self.session_identity().unwrap_or_default()
+        } else {
+            identity
+        };
         let response = self
             .db_request(
                 root_id.clone(),
                 identity.clone(),
                 DatabaseOp::EnsureStoreStateGeneration {
                     store: store.clone(),
-                    expected_type: S::type_id().to_string(),
-                    projection: S::state_model().descriptor(),
+                    expected_type: expected_type.to_string(),
+                    projection,
                 },
             )
             .await;
@@ -1121,7 +1149,6 @@ impl RemoteConnection {
                     crate::store::StoreError::RecordMaintenanceUnavailable { .. }
                 ) =>
             {
-                use crate::crdt::CRDT;
                 let tips = self
                     .get_verified_tips(root_id.clone(), identity.clone())
                     .await?;
@@ -1136,10 +1163,10 @@ impl RemoteConnection {
                     .await?;
                 // The fallback may not publish: it owns no server maintenance
                 // capability. Fold only authorized, ordered canonical history.
-                let mut state = S::Data::default();
+                let mut state = D::default();
                 for entry in entries {
                     if let Ok(data) = entry.data(&store) {
-                        state = state.merge(&serde_json::from_slice(data)?)?;
+                        state = state.merge(&serde_json::from_slice(&decrypt(data)?)?)?;
                     }
                 }
                 Ok(state)

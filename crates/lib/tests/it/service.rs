@@ -930,6 +930,135 @@ async fn test_database_encrypted_store_roundtrip() {
     assert_eq!(decrypted, secret_data, "decrypted data must match original");
 }
 
+/// A read-only client unlocks locally and folds the actual encrypted Entry
+/// stream when the daemon declines encrypted projection maintenance.
+#[tokio::test]
+async fn read_only_password_store_folds_authenticated_remote_history() {
+    use eidetica::auth::types::{AuthKey, Permission};
+    use eidetica::service::protocol::{AuthenticatedDbRequest, DatabaseOp};
+    use eidetica::store::{Registered, Store};
+    let (socket, _tx, server, _dir) = start_test_server().await;
+    let (_alice, root, _) = setup_db(&server, &socket, "alice").await;
+    let alice = server.login_user("alice", None).await.unwrap();
+    let db = alice.open_database(&root).await.unwrap();
+    db.with_transaction(|tx| async move {
+        let mut encrypted = tx.get_store::<PasswordStore<DocStore>>("secrets").await?;
+        encrypted.initialize("correct", Doc::new()).await?;
+        encrypted.inner().await?.set("a", "first").await?;
+        tx.get_settings()?
+            .set_global_auth_key(AuthKey::active(None, Permission::Read))
+            .await?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    db.with_transaction(|tx| async move {
+        let mut encrypted = tx.get_store::<PasswordStore<DocStore>>("secrets").await?;
+        encrypted.open("correct")?;
+        encrypted.inner().await?.set("b", "second").await?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+
+    create_user_via_admin(&server, "bob").await;
+    let remote = Instance::connect(format!("unix://{}", socket.display()))
+        .await
+        .unwrap();
+    let bob = remote.login_user("bob", None).await.unwrap();
+    let read_db = eidetica::Database::open(&remote, &root).await.unwrap();
+    let tx = read_db.new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<DocStore>>("secrets")
+        .await
+        .unwrap();
+    let wrong = encrypted.open("wrong").unwrap_err();
+    assert!(
+        !matches!(wrong, eidetica::Error::Store(ref e) if matches!(**e, eidetica::store::StoreError::RecordMaintenanceUnavailable { .. }))
+    );
+    encrypted.open("correct").unwrap();
+    let state = encrypted.get_state().await.unwrap();
+    assert_eq!(state.get_as::<&str>("a"), Some("first"));
+    assert_eq!(state.get_as::<&str>("b"), Some("second"));
+    // The same bytes through the public typed API are ciphertext without
+    // this transaction's decryptor; they must not masquerade as a valid Doc.
+    let bob_identity = eidetica::auth::types::SigKey::from_pubkey(&bob.get_default_key().unwrap());
+    assert!(
+        remote_conn(&remote)
+            .get_store_state::<PasswordStore<DocStore>>(
+                root.clone(),
+                bob_identity,
+                "secrets".into()
+            )
+            .await
+            .is_err()
+    );
+    let conn = remote_conn(&remote);
+    let identity = eidetica::auth::types::SigKey::from_pubkey(&bob.get_default_key().unwrap());
+    let request = StoreStateRequest {
+        database: root.clone(),
+        store: "secrets".into(),
+        lifecycle: eidetica::backend::StoreStateLifecycle::Derived,
+        scope: eidetica::backend::CacheScope::Shared,
+        projection: PasswordStore::<DocStore>::state_model().descriptor(),
+        source_key: b"client-must-not-publish".to_vec(),
+    };
+    assert!(
+        conn.begin_store_state_staging(identity.clone(), request)
+            .await
+            .is_err()
+    );
+    let wrong_descriptor = ServiceRequest::AuthenticatedDb(Box::new(AuthenticatedDbRequest {
+        root_id: root.clone(),
+        identity,
+        op: DatabaseOp::EnsureStoreStateGeneration {
+            store: "secrets".into(),
+            expected_type: PasswordStore::<DocStore>::type_id().into(),
+            projection: DocStore::state_model().descriptor(),
+        },
+    }));
+    let (mut reader, mut writer) = raw_handshake(&socket).await;
+    write_frame(&mut writer, &wrong_descriptor).await.unwrap();
+    match read_response(&mut reader).await {
+        ServiceResponse::Error(error) => assert_ne!(error.kind, "RecordMaintenanceUnavailable"),
+        other => panic!("unauthenticated descriptor request succeeded: {other:?}"),
+    }
+    // Authenticate the raw socket and verify that an authorized malformed
+    // descriptor is rejected as a mismatch, not a capability fallback.
+    let bob_signing = bob
+        .get_signing_key(&bob.get_default_key().unwrap())
+        .unwrap();
+    write_frame(
+        &mut writer,
+        &ServiceRequest::TrustedLoginUser {
+            username: "bob".into(),
+        },
+    )
+    .await
+    .unwrap();
+    let challenge = match read_response(&mut reader).await {
+        ServiceResponse::TrustedLoginChallenge { challenge, .. } => challenge,
+        other => panic!("expected challenge: {other:?}"),
+    };
+    write_frame(
+        &mut writer,
+        &ServiceRequest::TrustedLoginProve {
+            signature: create_challenge_response(&challenge, &bob_signing),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        read_response(&mut reader).await,
+        ServiceResponse::TrustedLoginOk
+    ));
+    write_frame(&mut writer, &wrong_descriptor).await.unwrap();
+    match read_response(&mut reader).await {
+        ServiceResponse::Error(error) => assert_eq!(error.kind, "TypeMismatch"),
+        other => panic!("encrypted descriptor accepted: {other:?}"),
+    }
+}
+
 /// Positive control: owner can read via `get_verified_tips`.
 #[tokio::test]
 async fn test_backend_snapshot_allowed_for_owner() {
