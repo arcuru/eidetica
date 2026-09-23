@@ -542,25 +542,19 @@ impl Transaction {
         let subtree = subtree.as_ref();
         let data = data.into();
 
-        // Check if we need to fetch tips (check without holding borrow across await)
-        let needs_tips = {
+        let main_parents = {
             let builder_ref = self.entry_builder.lock().unwrap();
             let builder = builder_ref
                 .as_ref()
                 .ok_or(TransactionError::TransactionAlreadyCommitted)?;
-            !builder.subtrees().contains(&subtree.to_string())
+            (!builder.subtrees().contains(&subtree.to_string()))
+                .then(|| builder.parents().unwrap_or_default())
         };
 
-        // Fetch tips if needed (no borrow held across this await)
-        let tips = if needs_tips {
-            let backend = self.db.ops();
-            // FIXME: we should get the subtree snapshot while still using the parent pointers
-            Some(
-                backend
-                    .store_snapshot(self.db.root_id(), subtree)
-                    .await?
-                    .into_tips(),
-            )
+        // The signed settings DAG must be scoped to this entry's main parents,
+        // not to a newer live sibling on a historical branch.
+        let tips = if let Some(parents) = main_parents {
+            Some(self.get_subtree_tips(subtree, &parents).await?)
         } else {
             None
         };
