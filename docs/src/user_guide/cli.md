@@ -184,3 +184,39 @@ eidetica db list --data-dir /var/lib/eidetica
 install -d -m 0700 "$XDG_RUNTIME_DIR/eidetica"
 eidetica daemon --socket "$XDG_RUNTIME_DIR/eidetica/service.sock"
 ```
+
+### `db reset-local-verification` (offline trust reset)
+
+**Before upgrading an existing instance to new delegated-authorization verification
+rules**, stop the daemon/server and all writers and readers, back up the database,
+then run the reset with the same backend configuration as the instance:
+
+```bash
+eidetica db reset-local-verification --backend sqlite --data-dir /var/lib/eidetica --confirm
+# Or: --backend inmemory --data-dir <directory containing eidetica.json>
+# Or: --backend postgres --postgres-url <instance connection URL>
+```
+
+The command does not run during startup or schema migration. **Skipping it can
+leave old `Verified` labels trusted under the new rules.** It resets _all_
+local statuses (`Verified` and `Failed` included) to `Unverified`, discards
+derived and incomplete Store-state namespaces, and keeps every immutable Entry
+and authoritative Store state. It does not verify entries itself. Start the new
+version only after the command succeeds; explicitly run ordinary
+`Database::verify()` for each database (including dependencies) or let normal
+verification on access/sync rebuild trust before relying on reads. Verification
+is prefix-closed: until ancestors verify, descendants remain `Unverified`.
+If any reset step fails, leave the service stopped, diagnose and retry the
+command; do not trust the old status labels. An in-memory persistence file
+must exist and parse successfully; a missing or corrupt file is never treated
+as an empty instance by this command.
+
+SQLite and PostgreSQL commit status and cache changes in one transaction.
+The persisted in-memory backend writes a replacement JSON snapshot by atomic
+rename on POSIX; if writing fails before rename, the old file remains in
+place. Run the command with no other process or API user of the backend:
+the normal online `clear_derived_store_state` retains a generation for live
+readers, whereas the trust reset deliberately drops it. The in-memory JSON
+persistence path has no cross-process ownership lock. On platforms without
+atomic replacement rename, take an offline backup and verify the reopened
+file before starting the service.

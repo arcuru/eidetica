@@ -2079,8 +2079,9 @@ impl Database {
     /// tip to be `Verified` while one of its ancestors is not, which is what
     /// makes the Verified set ancestor-closed (see [`Self::allow_unverified`]).
     ///
-    /// Already-`Verified` entries are never demoted here; that is a separate,
-    /// not-yet-built path. Local-only — verification is a per-node decision
+    /// Already-`Verified` entries are never demoted by this pass. An explicit
+    /// offline backend trust reset can clear all statuses before a rule upgrade.
+    /// Local-only — verification is a per-node decision
     /// and is never delegated to a peer.
     pub async fn verify(&self) -> Result<VerifyReport> {
         self.verify_with_source(WriteSource::Remote, None).await

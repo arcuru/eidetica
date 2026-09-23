@@ -448,6 +448,20 @@ impl BackendImpl for InMemory {
         Ok(RecordPage { records, next })
     }
 
+    async fn reset_local_verification(&self) -> Result<()> {
+        let mut inner = self.inner.write().unwrap();
+        for status in inner.verification_status.values_mut() {
+            *status = VerificationStatus::Unverified;
+        }
+        // The ordinary clear unlinks a generation for active readers. A reset
+        // instead requires exclusive offline ownership and drops all disposable
+        // namespaces, including incomplete builds from a prior run.
+        inner.store_state_namespaces.retain(|_, namespace| {
+            namespace.request.lifecycle == StoreStateLifecycle::Authoritative
+        });
+        Ok(())
+    }
+
     /// Unlink every ready derived namespace and reclaim the previously
     /// unlinked generation.
     ///
@@ -468,6 +482,7 @@ impl BackendImpl for InMemory {
         }
         Ok(())
     }
+
     /// Retrieves an entry by its unique content-addressable ID.
     ///
     /// # Arguments

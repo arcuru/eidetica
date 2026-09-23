@@ -1130,3 +1130,34 @@ async fn test_deep_chain_frontier_cut() {
         vec![chain[29].clone()]
     );
 }
+
+#[tokio::test]
+async fn explicit_trust_reset_reverifies_entire_local_prefix() {
+    let (instance, tree, _key) = setup_tree_with_user_key_local().await;
+    let a = add_data_to_subtree(&tree, "data", &[("s", "a")]).await;
+    let b = add_data_to_subtree(&tree, "data", &[("s", "b")]).await;
+    let root = tree.root_id().clone();
+    let backend = instance.backend();
+    backend.engine().reset_local_verification().await.unwrap();
+    for id in [&root, &a, &b] {
+        assert_eq!(
+            backend.get_verification_status(id).await.unwrap(),
+            VerificationStatus::Unverified
+        );
+    }
+    let report = tree.verify().await.unwrap();
+    assert_eq!(report.failed, 0, "{report:?}");
+    assert_eq!(report.still_unverified, 0, "{report:?}");
+    assert_eq!(
+        backend.get_verification_status(&b).await.unwrap(),
+        VerificationStatus::Verified
+    );
+    assert_eq!(
+        backend.get_verification_status(&a).await.unwrap(),
+        VerificationStatus::Verified
+    );
+    assert_eq!(
+        backend.get_verification_status(&root).await.unwrap(),
+        VerificationStatus::Verified
+    );
+}
