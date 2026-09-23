@@ -11,10 +11,6 @@ use crate::backend::RecordMutation;
 /// Each delta may be consumed incrementally; callers apply changes in Entry order.
 pub trait RecordProjection<D: CRDT>: Send + Sync {
     fn descriptor(&self) -> ProjectionDescriptor;
-    /// Legacy hierarchical projections must collapse conflicts before publication.
-    fn legacy_collapsed(&self) -> bool {
-        false
-    }
     fn mutations<'a>(
         &'a self,
         delta: &'a D,
@@ -37,13 +33,6 @@ pub trait RecordProjection<D: CRDT>: Send + Sync {
     fn staged_key_shadows_cached(&self, staged_key: &[u8], cached_key: &[u8]) -> bool {
         self.staged_keys_conflict(staged_key, cached_key)
     }
-
-    /// Whether a staged key is a descendant of a caller-facing key.
-    fn staged_key_descends_from(&self, staged_key: &[u8], key: &[u8]) -> bool {
-        staged_key
-            .strip_prefix(key)
-            .is_some_and(|suffix| suffix.starts_with(b"."))
-    }
 }
 
 struct DescribedProjection<D: CRDT + 'static> {
@@ -54,10 +43,6 @@ struct DescribedProjection<D: CRDT + 'static> {
 impl<D: CRDT + 'static> RecordProjection<D> for DescribedProjection<D> {
     fn descriptor(&self) -> ProjectionDescriptor {
         self.descriptor.clone()
-    }
-
-    fn legacy_collapsed(&self) -> bool {
-        self.inner.legacy_collapsed()
     }
 
     fn mutations<'a>(
@@ -77,10 +62,6 @@ impl<D: CRDT + 'static> RecordProjection<D> for DescribedProjection<D> {
 
     fn staged_key_shadows_cached(&self, staged_key: &[u8], cached_key: &[u8]) -> bool {
         self.inner.staged_key_shadows_cached(staged_key, cached_key)
-    }
-
-    fn staged_key_descends_from(&self, staged_key: &[u8], key: &[u8]) -> bool {
-        self.inner.staged_key_descends_from(staged_key, key)
     }
 }
 

@@ -473,7 +473,7 @@ async fn test_password_table_uses_lazy_encrypted_record_cache() {
         PasswordStore::<Table<PasswordTestRecord>>::state_model()
             .descriptor()
             .name,
-        "eidetica/password/eidetica/table/rows"
+        "eidetica/password/eidetica/table/rows/canonical-json:v0"
     );
     let records = memory
         .store_state_records(database.root_id(), "lazy_records")
@@ -495,7 +495,7 @@ async fn test_password_table_uses_lazy_encrypted_record_cache() {
 }
 
 #[tokio::test]
-async fn test_password_table_staged_parent_child_conflicts() {
+async fn test_password_table_staged_parent_child_independent() {
     let (_instance, database) = setup_tree().await;
     let tx = database.new_transaction().await.unwrap();
     let mut encrypted = tx
@@ -524,7 +524,7 @@ async fn test_password_table_staged_parent_child_conflicts() {
         )
         .await
         .unwrap();
-    assert!(table.get("a.b").await.is_err());
+    assert_eq!(table.get("a.b").await.unwrap().value, 1);
     assert_eq!(table.get("a").await.unwrap().value, 2);
     tx.commit().await.unwrap();
 
@@ -535,7 +535,7 @@ async fn test_password_table_staged_parent_child_conflicts() {
         .unwrap();
     encrypted.open("pass").unwrap();
     let table = encrypted.inner().await.unwrap();
-    assert!(table.get("a.b").await.is_err());
+    assert_eq!(table.get("a.b").await.unwrap().value, 1);
     assert_eq!(table.get("a").await.unwrap().value, 2);
 }
 

@@ -336,7 +336,7 @@ Teardown is refcounted with hysteresis rather than immediate. Dropping the last 
 
 ## Store state
 
-Historical current state is materialized into derived record sets in the shared Store-state record substrate (see [Store state](store_state.md)). The daemon owns those records; clients resolve views and read points or bounded pages through them, so a `Table` read fetches the rows it asks for rather than a whole materialized `Doc`.
+Historical current state is materialized into derived record sets in the shared Store-state record substrate (see [Store state](store_state.md)). The daemon owns those records; clients resolve views and read points or bounded pages through them, so a `Table` read fetches the rows it asks for rather than a whole materialized Table.
 
 Cached state is scoped by [`CacheScope`](crate::backend::CacheScope):
 

@@ -196,6 +196,11 @@ for (id, user) in active_users {
 # }
 ```
 
+Table keys are exact opaque UTF-8 strings: `a`, `a.b`, `.` and the empty key are independent.
+Rows persist as RFC 8785 canonical JSON within ordered LWW map deltas, regardless of the
+Rust type used to read them. Existing Doc-backed `table:v0` data must be regenerated;
+there is no old-format compatibility despite the unchanged type ID.
+
 Use cases for `Table`:
 
 - Collections of structured objects
@@ -615,7 +620,7 @@ Each Store type implements its own merge logic, typically triggered implicitly w
 
 - **`DocStore`**: Uses the internal `Doc` type with **structural merge** by default. When merging concurrent writes to the _same key_ or path, the write associated with the later `Entry` "wins" (LWW), and its value is kept. Writes to different keys are simply combined. Deleted keys (via `delete()`) are tracked with tombstones to ensure deletions propagate properly. Docs marked as **atomic** (via `Doc::atomic()`) use full **Last-Writer-Wins** replacement — the entire Doc replaces its predecessor rather than merging field-by-field. This is used for data that should be treated as a complete unit.
 
-- **`Table<T>`**: Also uses **LWW for updates to the _same row ID_**. If two concurrent operations modify the same row, the later write wins. Inserts of _different_ rows are combined (all inserted rows are kept). Deletions generally take precedence over concurrent updates (though precise semantics might evolve).
+- **`Table<T>`**: Uses an ordered `LwwMap<String, CanonicalJson>` delta. Different row IDs coexist; on the same exact key, the last set or delete in deterministic Entry reduction order wins. “Last” is not wall-clock time, and deletion has no unconditional precedence over a later set.
 
 **Note:** The CRDT merge logic happens internally when a `Transaction` loads the initial state of a Store or when a store viewer is created. You typically don't invoke merge logic directly.
 
