@@ -170,6 +170,15 @@ impl DerivedFloors {
         }
         let mut pending = Vec::new();
         for entry in &entries {
+            // A backend must not turn a foreign ancestor into a complete
+            // delegated proof, even if that ancestor is locally Verified.
+            if !entry.in_tree(root) {
+                return Err(AuthError::InvalidDelegationTips {
+                    tree_id: root.clone(),
+                    claimed_tips: tips.tips().to_vec(),
+                }
+                .into());
+            }
             match backend.get_verification_status(&entry.id()).await? {
                 VerificationStatus::Verified => {}
                 VerificationStatus::Unverified => pending.push(entry.id()),

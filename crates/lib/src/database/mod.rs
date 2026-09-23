@@ -59,6 +59,8 @@ fn auto_verify_suppressed() -> bool {
 enum PinnedSettings {
     /// The pinned `_settings` set is fully present; here is its auth config.
     Complete(AuthSettings),
+    /// The pin contradicts the authenticated main-parent history.
+    Invalid,
     /// This node does not yet hold the full pinned `_settings` set, so the
     /// entry cannot be verified yet (it stays `Unverified`).
     Incomplete,
@@ -1751,7 +1753,7 @@ impl Database {
         match self.get_historical_settings_for_entry(&entry).await? {
             // We do not hold the pinned `_settings` set, so we cannot make a
             // verification decision: report not-verified rather than guess.
-            PinnedSettings::Incomplete => Ok(false),
+            PinnedSettings::Incomplete | PinnedSettings::Invalid => Ok(false),
             PinnedSettings::Complete(auth_settings) => {
                 let instance = self.instance()?;
                 let mut validator = AuthValidator::new();
@@ -1833,6 +1835,29 @@ impl Database {
 
         // Resolve the effective `_settings` tips to validate against.
         let effective_tips: Vec<ID> = if settings_tips.is_empty() {
+            // A missing pin on a non-genesis entry cannot erase earlier
+            // authenticated settings. Missing main ancestors defer the verdict.
+            let mut stack = entry.parents()?;
+            let mut seen = std::collections::HashSet::new();
+            let mut has_settings = false;
+            while let Some(id) = stack.pop() {
+                if !seen.insert(id.clone()) {
+                    continue;
+                }
+                let ancestor = match backend.get(&id).await {
+                    Ok(ancestor) => ancestor,
+                    Err(e) if e.is_not_found() => return Ok(PinnedSettings::Incomplete),
+                    Err(e) => return Err(e),
+                };
+                if !ancestor.in_tree(self.root_id()) {
+                    return Ok(PinnedSettings::Invalid);
+                }
+                has_settings |= ancestor.in_subtree(SETTINGS);
+                stack.extend(ancestor.parents()?);
+            }
+            if has_settings {
+                return Ok(PinnedSettings::Invalid);
+            }
             if entry.in_subtree(SETTINGS) {
                 // Genesis / bootstrap: no prior `_settings` exists, so the
                 // entry is self-authorising — validate against the auth it
@@ -2206,7 +2231,12 @@ impl Database {
                     let mut blocked = false;
                     for p in &parents {
                         match backend.get_verification_status(p).await {
-                            Ok(VerificationStatus::Verified) => {}
+                            Ok(VerificationStatus::Verified) => {
+                                let parent = backend.get(p).await?;
+                                if !parent.in_tree(self.root_id()) {
+                                    compromised = true;
+                                }
+                            }
                             Ok(VerificationStatus::Failed) => compromised = true,
                             Ok(VerificationStatus::Unverified) => blocked = true,
                             Err(e) if e.is_not_found() => blocked = true,
@@ -2227,6 +2257,12 @@ impl Database {
 
                     match self.get_historical_settings_for_entry(entry).await? {
                         PinnedSettings::Incomplete => report.still_unverified += 1,
+                        PinnedSettings::Invalid => {
+                            backend
+                                .update_verification_status(id, VerificationStatus::Failed)
+                                .await?;
+                            report.failed += 1;
+                        }
                         PinnedSettings::Complete(auth_settings) => {
                             let mut validator = AuthValidator::new();
                             let valid = match validator
