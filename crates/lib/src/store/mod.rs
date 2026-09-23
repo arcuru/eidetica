@@ -5,13 +5,20 @@ use async_trait::async_trait;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use crate::backend::RecordMutations;
+use crate::backend::RecordMutation;
 
-/// Converts canonical Entry deltas to and from a Store's cached record format.
+/// One-way projection of canonical Entry deltas into ordered record changes.
+/// Each delta may be consumed incrementally; callers apply changes in Entry order.
 pub trait RecordProjection<D: CRDT>: Send + Sync {
     fn descriptor(&self) -> ProjectionDescriptor;
-    fn project_delta(&self, delta: &D, out: &mut RecordMutations) -> Result<()>;
-    fn encode_entry_delta(&self, mutations: &RecordMutations) -> Result<D>;
+    /// Legacy hierarchical projections must collapse conflicts before publication.
+    fn legacy_collapsed(&self) -> bool {
+        false
+    }
+    fn mutations<'a>(
+        &'a self,
+        delta: &'a D,
+    ) -> Result<Box<dyn Iterator<Item = Result<RecordMutation>> + Send + 'a>>;
 
     /// Converts a caller-facing key into its persisted record key.
     fn normalize_record_key(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
@@ -49,12 +56,15 @@ impl<D: CRDT + 'static> RecordProjection<D> for DescribedProjection<D> {
         self.descriptor.clone()
     }
 
-    fn project_delta(&self, delta: &D, out: &mut RecordMutations) -> Result<()> {
-        self.inner.project_delta(delta, out)
+    fn legacy_collapsed(&self) -> bool {
+        self.inner.legacy_collapsed()
     }
 
-    fn encode_entry_delta(&self, mutations: &RecordMutations) -> Result<D> {
-        self.inner.encode_entry_delta(mutations)
+    fn mutations<'a>(
+        &'a self,
+        delta: &'a D,
+    ) -> Result<Box<dyn Iterator<Item = Result<RecordMutation>> + Send + 'a>> {
+        self.inner.mutations(delta)
     }
 
     fn normalize_record_key(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
