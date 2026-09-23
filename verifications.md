@@ -502,3 +502,47 @@ that cost later. Page cursors detect local transaction overlay/view changes,
 not a remote frontier changing between page calls. Server codec dispatch for
 additional plaintext typed Stores, automatic high-level staging recovery,
 full Table redesign/parity/benchmarks and another full gate are still open.
+
+## Phase 0 — explicit typed server codec dispatch (2026-09-23)
+
+Intended: a Read-gated typed registry from `_index`, not caller-selected
+plaintext maintenance; unknown or encrypted effective projection must not
+create a cache generation. Keep existing `table:v0` and Doc-backed Table.
+
+Performed: `ServiceServer::register_store::<S>` registers an explicit plaintext
+Store type, descriptor and typed state decoder before serving; defaults remain
+DocStore and Doc-backed Table. The authenticated ensure handler checks `_index`
+type identity and registered effective descriptor strictly before probing or
+building state. An unregistered codec or encrypted wrapper (whose wrapped
+codec is concealed by `_index`) returns distinct
+`RecordMaintenanceUnavailable` after the canonical Read gate, even for a
+claimed plaintext descriptor. Duplicate and encrypted registration is refused.
+No Table format change, push or PR.
+
+A real Unix socket fixture serves a custom non-Doc `SocketCounter` through a
+registered daemon, verifies default DocStore and a Read-only client, rejects
+wrong type/version/codec descriptor, and confirms a subsequent canonical read
+is unchanged. A second daemon sharing the backend but not the registration
+returns `RecordMaintenanceUnavailable` on the authenticated socket and the
+client folds typed history; pre-auth request is denied and Write-only staging
+remains denied. Encrypted wrapper with both the wrapped descriptor and a
+plaintext descriptor refuses maintenance. Negative control disabling registered
+codec descriptor equality made this fixture fail (0 passed, 1 failed): it
+returned `CrdtValue(Number(7))` for the wrong version. Restored test passed
+1/1. The first full Nix gate failed two older tests expecting `TypeMismatch`
+for unverifiable encrypted descriptors (1531/1533 in in-memory and SQLite);
+updated those assertions to the fail-closed capability contract, then ran the
+full gate again on formatted source.
+
+`nix develop -c nix run .#fix` exit 0 (clippy, deadnix, markdownlint,
+statix, treefmt). Final `nix develop -c just nix full` exit 0: in-memory,
+SQLite, PostgreSQL and service each 1533 passed / 5 skipped; minimal 1378
+passed / 5 skipped; changed real-socket fixture PASS in all four full-feature
+runners; NixOS service and OCI VM integration tests passed. Flake metadata
+locked dirtyRev `0f642f4f3e-dirty` on formatted working source; committed-tip
+gate to follow after the signed commit.
+
+Remaining: automatic high-level remote staging retry/recovery, remote-frontier
+cursor snapshot and full Table redesign/encryption parity/benchmarks. Re-run
+complete accumulated checks on final implementation; no Table switch before
+Phase 0 fixtures are complete.
