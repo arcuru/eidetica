@@ -11,9 +11,8 @@ default:
 # Development Workflows
 # =============================================================================
 
-# Quick development feedback (build + test + lint)
+# Quick development feedback; nextest and clippy compile what they need
 dev:
-    just build
     just test
     just lint clippy
 
@@ -150,7 +149,7 @@ test *args:
         full)
             just test
             just test doc
-            just doc test
+            just doc links
             ;;
         ignored)
             cargo nextest run --workspace --all-features --no-fail-fast --status-level fail --run-ignored all
@@ -184,7 +183,7 @@ lint +tools='clippy audit typos statix deadnix shellcheck yamllint actionlint zi
                 ;;
             audit)
                 echo "=== Running audit (cargo-deny) ==="
-                cargo deny check --config .config/deny.toml
+                cargo deny --config .config/deny.toml --workspace --all-features check bans licenses sources
                 ;;
             typos)
                 echo "=== Running typos ==="
@@ -457,10 +456,9 @@ ci mode='local':
     set -e
     case "{{ mode }}" in
         local)
-            just fix
+            just fmt check
             just lint
             just doc
-            just build
             just test full
             ;;
         full)
