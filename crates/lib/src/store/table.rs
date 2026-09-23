@@ -18,6 +18,10 @@ const DEFAULT_SCAN_PAGE_SIZE: usize = 128;
 struct TableProjection;
 
 impl RecordProjection<LwwMap<String, CanonicalJson>> for TableProjection {
+    fn server_store_type(&self) -> Option<&'static str> {
+        Some(<Table<serde_json::Value> as Registered>::type_id())
+    }
+
     fn descriptor(&self) -> ProjectionDescriptor {
         ProjectionDescriptor {
             name: "eidetica/table/rows/canonical-json:v0".to_string(),

@@ -901,6 +901,70 @@ async fn read_scoped_ensure_generation_authorizes_before_maintenance() {
     );
 }
 
+/// A read-only service client can cold-read a Table through server-owned
+/// maintenance; it must not need a client staging token to materialize rows.
+#[tokio::test]
+async fn read_only_table_cold_get_and_scan_use_server_maintenance() {
+    use eidetica::auth::types::{AuthKey, Permission};
+    let (socket, _shutdown, server, _dir) = start_test_server().await;
+    create_user_via_admin(&server, "alice").await;
+    create_user_via_admin(&server, "bob").await;
+    let mut alice = server.login_user("alice", None).await.unwrap();
+    let key = alice.get_default_key().unwrap();
+    let db = alice.create_database(Doc::new(), &key).await.unwrap();
+    let root = db.root_id().clone();
+    db.with_transaction(|tx| async move {
+        let table = tx.get_store::<Table<ServiceTodo>>("rows").await?;
+        table
+            .set(
+                "a.b",
+                ServiceTodo {
+                    title: "first".into(),
+                    done: false,
+                },
+            )
+            .await?;
+        table
+            .set(
+                "a",
+                ServiceTodo {
+                    title: "second".into(),
+                    done: true,
+                },
+            )
+            .await?;
+        tx.get_settings()?
+            .set_global_auth_key(AuthKey::active(None, Permission::Read))
+            .await?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let client = Instance::connect(format!("unix://{}", socket.display()))
+        .await
+        .unwrap();
+    client.login_user("bob", None).await.unwrap();
+    let bob = server.login_user("bob", None).await.unwrap();
+    let identity = eidetica::auth::types::SigKey::from_pubkey(&bob.get_default_key().unwrap());
+    let remote = eidetica::Database::open_remote(&client, remote_conn(&client), &root, identity)
+        .await
+        .unwrap();
+    let table = remote
+        .get_store_viewer::<Table<ServiceTodo>>("rows")
+        .await
+        .unwrap();
+    assert_eq!(table.get("a.b").await.unwrap().title, "first");
+    let page = table.scan_page(None, 10).await.unwrap();
+    assert_eq!(
+        page.rows
+            .iter()
+            .map(|(k, _)| k.as_str())
+            .collect::<Vec<_>>(),
+        ["a", "a.b"]
+    );
+    assert!(page.next.is_none());
+}
+
 /// Descriptor and registry identity are checked after the canonical read gate.
 #[tokio::test]
 async fn store_state_read_rejects_wrong_descriptor_and_unauthorized_reader() {
