@@ -1,9 +1,9 @@
 //! Database management commands.
 
-use eidetica::Instance;
+use eidetica::{Instance, backend::BackendImpl};
 
 use crate::backend::create_backend;
-use crate::cli::DbListArgs;
+use crate::cli::{Backend, DbListArgs, DbResetArgs};
 use crate::output::{OutputFormat, print_table};
 
 /// Run the `db list` command
@@ -65,5 +65,56 @@ pub async fn list(
         }
     }
 
+    Ok(())
+}
+
+/// Reset only local trust state. This must not use the general backend factory:
+/// that factory creates directories and treats corrupt in-memory files as empty.
+pub async fn reset_local_verification(
+    args: &DbResetArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !args.confirm {
+        return Err("Pass --confirm to reset all local verification statuses".into());
+    }
+    let config = &args.backend_config;
+    match config.backend {
+        Backend::Inmemory => {
+            let dir = config
+                .data_dir
+                .as_ref()
+                .ok_or("Specify --data-dir explicitly")?;
+            let path = dir.join("eidetica.json");
+            let backend = eidetica::backend::database::InMemory::try_load_from_file(&path)
+                .await?
+                .ok_or("In-memory persistence file does not exist")?;
+            backend.reset_local_verification().await?;
+            backend.save_to_file(&path)?;
+        }
+        Backend::Sqlite => {
+            let dir = config
+                .data_dir
+                .as_ref()
+                .ok_or("Specify --data-dir explicitly")?;
+            let path = dir.join("eidetica.db");
+            if !path.is_file() {
+                return Err("SQLite database file does not exist".into());
+            }
+            eidetica::backend::database::Sqlite::open(&path)
+                .await?
+                .reset_local_verification()
+                .await?;
+        }
+        Backend::Postgres => {
+            let url = config
+                .postgres_url
+                .as_ref()
+                .ok_or("Specify --postgres-url explicitly")?;
+            eidetica::backend::database::Postgres::connect(url)
+                .await?
+                .reset_local_verification()
+                .await?;
+        }
+    }
+    println!("Local verification reset; restart and reverify all databases before trusting reads.");
     Ok(())
 }

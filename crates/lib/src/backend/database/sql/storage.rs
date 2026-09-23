@@ -378,6 +378,36 @@ pub async fn clear_derived_store_state(backend: &SqlxBackend) -> Result<()> {
         .sql_context("Failed to commit derived Store-state clear")
 }
 
+/// Offline trust reset: status and cache invalidation commit together.
+/// Unlike the online two-generation derived clear, there must be no live readers.
+pub async fn reset_local_verification(backend: &SqlxBackend) -> Result<()> {
+    let mut tx = backend
+        .pool()
+        .begin()
+        .await
+        .sql_context("Failed to begin trust reset")?;
+    if backend.is_sqlite() {
+        sqlx::query("COMMIT; BEGIN IMMEDIATE")
+            .execute(&mut *tx)
+            .await
+            .sql_context("Failed to lock trust reset")?;
+    }
+    sqlx::query("DELETE FROM store_state_namespaces WHERE lifecycle = $1 OR lifecycle = $2")
+        .bind(StoreStateLifecycle::Derived.as_db_int())
+        .bind(StoreStateLifecycle::Staging.as_db_int())
+        .execute(&mut *tx)
+        .await
+        .sql_context("Failed to discard disposable Store state")?;
+    sqlx::query("UPDATE entries SET verification_status = $1")
+        .bind(VerificationStatus::Unverified.as_db_int())
+        .execute(&mut *tx)
+        .await
+        .sql_context("Failed to reset verification statuses")?;
+    tx.commit()
+        .await
+        .sql_context("Failed to commit trust reset")
+}
+
 /// Get an entry by ID.
 pub async fn get(backend: &SqlxBackend, id: &ID) -> Result<Entry> {
     let pool = backend.pool();

@@ -225,3 +225,61 @@ async fn test_load_missing_version_defaults_to_v0() {
 
 // Test-only: store-and-promote helper (production `put` is Unverified-only).
 use crate::helpers::TestVerify;
+
+#[tokio::test]
+async fn persisted_trust_reset_survives_restart_and_keeps_entries() {
+    use eidetica::backend::VerificationStatus;
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("eidetica.json");
+    let backend = InMemory::new();
+    let root = Entry::root_builder().build().unwrap();
+    let id = root.id();
+    backend.put_verified(root.clone()).await.unwrap();
+    backend.save_to_file(&path).unwrap();
+    let loaded = InMemory::try_load_from_file(&path).await.unwrap().unwrap();
+    loaded.reset_local_verification().await.unwrap();
+    loaded.save_to_file(&path).unwrap();
+    let reopened = InMemory::try_load_from_file(&path).await.unwrap().unwrap();
+    assert_eq!(
+        reopened.get_verification_status(&id).await.unwrap(),
+        VerificationStatus::Unverified
+    );
+    assert_eq!(reopened.get(&id).await.unwrap(), root);
+}
+
+#[tokio::test]
+async fn failed_persisted_reset_write_leaves_old_snapshot_retryable() {
+    use eidetica::backend::VerificationStatus;
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("eidetica.json");
+    let backend = InMemory::new();
+    let entry = Entry::root_builder().build().unwrap();
+    let id = entry.id();
+    backend.put(entry.clone()).await.unwrap();
+    backend
+        .update_verification_status(&id, VerificationStatus::Failed)
+        .await
+        .unwrap();
+    backend.save_to_file(&path).unwrap();
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp_path = std::path::PathBuf::from(tmp);
+    fs::create_dir(&tmp_path).unwrap(); // force the atomic replacement to fail before rename
+    let loaded = InMemory::try_load_from_file(&path).await.unwrap().unwrap();
+    loaded.reset_local_verification().await.unwrap();
+    assert!(loaded.save_to_file(&path).is_err());
+    let old = InMemory::try_load_from_file(&path).await.unwrap().unwrap();
+    assert_eq!(
+        old.get_verification_status(&id).await.unwrap(),
+        VerificationStatus::Failed
+    );
+    fs::remove_dir(&tmp_path).unwrap();
+    old.reset_local_verification().await.unwrap();
+    old.save_to_file(&path).unwrap();
+    let reopened = InMemory::try_load_from_file(&path).await.unwrap().unwrap();
+    assert_eq!(
+        reopened.get_verification_status(&id).await.unwrap(),
+        VerificationStatus::Unverified
+    );
+    assert_eq!(reopened.get(&id).await.unwrap(), entry);
+}

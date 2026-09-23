@@ -742,3 +742,52 @@ async fn clearing_derived_records_preserves_an_active_reader_and_rebuilds() {
         Some(b"authority".to_vec())
     );
 }
+
+#[tokio::test]
+async fn trust_reset_discards_derived_but_preserves_authoritative_state() {
+    let backend = test_backend().await;
+    let derived = request("reset", "store", StoreStateLifecycle::Derived);
+    let authoritative = request("reset", "store", StoreStateLifecycle::Authoritative);
+    let old = publish(
+        backend.as_ref(),
+        derived.clone(),
+        [(b"old".to_vec(), b"old".to_vec())],
+    )
+    .await;
+    let keep = publish(
+        backend.as_ref(),
+        authoritative.clone(),
+        [(b"keep".to_vec(), b"keep".to_vec())],
+    )
+    .await;
+    backend.reset_local_verification().await.unwrap();
+    assert!(
+        backend
+            .resolve_store_state(&derived)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        backend.resolve_store_state(&authoritative).await.unwrap(),
+        Some(keep.clone())
+    );
+    assert_eq!(
+        backend
+            .store_state_record_get(&keep, b"keep")
+            .await
+            .unwrap(),
+        Some(b"keep".to_vec())
+    );
+    assert!(backend.store_state_record_get(&old, b"old").await.is_err());
+    let fresh = publish(
+        backend.as_ref(),
+        derived.clone(),
+        [(b"fresh".to_vec(), b"fresh".to_vec())],
+    )
+    .await;
+    assert_eq!(
+        backend.resolve_store_state(&derived).await.unwrap(),
+        Some(fresh)
+    );
+}

@@ -30,11 +30,11 @@ this doc covers the status that wraps them.
   signature and permissions check out against the settings the entry pins.
 - **`Unverified`** — not yet checked, _or_ checked-but-undecidable because
   this node does not yet hold the settings ancestry the entry pins. A
-  **transient, monotonic** state: it only ever resolves toward `Verified` or
+  **transient, normally monotonic** state: it resolves toward `Verified` or
   `Failed` as more of the DAG arrives.
 - **`Failed`** — checked and **definitively rejected** (bad signature, or
   signed by a key without the claimed authority under the pinned settings).
-  Terminal.
+  Terminal during ordinary verification; an explicit offline trust reset clears it.
 
 The `Unverified`/`Failed` split is load-bearing. A single "not Verified"
 state would conflate "I can't tell yet" (normal under partial sync) with "I
@@ -291,3 +291,14 @@ non-breaking extension.
   — verification of a freshly transferred database.
 - [Settings Storage](settings_storage.md#entry-metadata) — the
   `settings_tips` pin mechanics.
+
+## Explicit trust reset on verification-rule upgrades
+
+A verification status is local, not an immutable property of an Entry. When
+an operator upgrades to new delegated-authorization verification rules, the
+old `Verified` and `Failed` decisions and disposable derived Store-state must
+be cleared **before** starting the new version. Use the offline
+[`db reset-local-verification` command](../user_guide/cli.md#db-reset-local-verification-offline-trust-reset)
+and reverify from immutable Entries. This is deliberately operator-triggered,
+not a schema migration or automatic legacy-version gate. Skipping the procedure
+can leave historical `Verified` labels trusted under the new rules.

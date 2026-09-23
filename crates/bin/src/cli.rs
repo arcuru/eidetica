@@ -162,6 +162,17 @@ pub struct DaemonInitArgs {
 pub enum DbCommands {
     /// List all databases with their root IDs and tip counts
     List(DbListArgs),
+    /// Offline operator-triggered reset of local verification and derived state
+    ResetLocalVerification(DbResetArgs),
+}
+
+#[derive(clap::Args, Debug)]
+pub struct DbResetArgs {
+    #[command(flatten)]
+    pub backend_config: BackendConfig,
+    /// Acknowledge that every Entry must be verified again before trusting reads
+    #[arg(long, required = true)]
+    pub confirm: bool,
 }
 
 /// Arguments for db list

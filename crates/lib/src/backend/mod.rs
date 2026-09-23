@@ -407,6 +407,13 @@ pub trait BackendImpl: Send + Sync + Any {
     async fn clear_derived_store_state(&self) -> Result<()> {
         Err(BackendError::StoreStateStorageUnsupported.into())
     }
+    /// Explicit offline reset of local trust decisions and disposable Store state.
+    /// Preserves immutable Entries and authoritative Store state. Unsupported
+    /// backends fail without a partial reset.
+    async fn reset_local_verification(&self) -> Result<()> {
+        Err(BackendError::StoreStateStorageUnsupported.into())
+    }
+
     /// Retrieves an entry by its unique content-addressable ID.
     ///
     /// # Arguments

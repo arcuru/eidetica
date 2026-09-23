@@ -32,6 +32,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(Commands::Db {
             command: DbCommands::List(ref args),
         }) => commands::db::list(args, format).await,
+        Some(Commands::Db {
+            command: DbCommands::ResetLocalVerification(ref args),
+        }) => commands::db::reset_local_verification(args).await,
         None => {
             // Default to serve with default args for backward compatibility
             let serve_cli = Cli::parse_from(["eidetica", "serve"]);

@@ -369,3 +369,134 @@ async fn test_reput_does_not_demote_existing_verified_entry() {
         VerificationStatus::Unverified
     );
 }
+
+#[tokio::test]
+async fn explicit_reset_keeps_entries_and_forgets_both_terminal_statuses() {
+    let backend = test_backend().await;
+    let verified = Entry::root_builder().build().unwrap();
+    let failed = Entry::builder(verified.id())
+        .add_parent(verified.id())
+        .build()
+        .unwrap();
+    let verified_id = verified.id();
+    let failed_id = failed.id();
+    backend.put_verified(verified.clone()).await.unwrap();
+    backend.put(failed.clone()).await.unwrap();
+    backend
+        .update_verification_status(&failed_id, VerificationStatus::Failed)
+        .await
+        .unwrap();
+    backend.reset_local_verification().await.unwrap();
+    for (id, entry) in [(verified_id, verified), (failed_id, failed)] {
+        assert_eq!(
+            backend.get_verification_status(&id).await.unwrap(),
+            VerificationStatus::Unverified
+        );
+        assert_eq!(backend.get(&id).await.unwrap(), entry);
+    }
+    backend.reset_local_verification().await.unwrap();
+    assert!(
+        backend
+            .get_entries_by_verification_status(VerificationStatus::Verified)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        backend
+            .get_entries_by_verification_status(VerificationStatus::Failed)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn sqlite_reset_failure_rolls_back_cache_and_status_then_retries() {
+    use eidetica::backend::{
+        CacheScope, ProjectionDescriptor, StoreStateLifecycle, StoreStateRequest, database::Sqlite,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("eidetica.db");
+    let backend = Sqlite::open(&path).await.unwrap();
+    let entry = Entry::root_builder().build().unwrap();
+    let id = entry.id();
+    backend.put(entry.clone()).await.unwrap();
+    backend
+        .update_verification_status(&id, VerificationStatus::Verified)
+        .await
+        .unwrap();
+    let request = StoreStateRequest {
+        database: id.clone(),
+        store: "reset".into(),
+        lifecycle: StoreStateLifecycle::Derived,
+        scope: CacheScope::Shared,
+        projection: ProjectionDescriptor {
+            name: "test".into(),
+            version: 0,
+        },
+        source_key: b"old".to_vec(),
+    };
+    let token = backend
+        .begin_store_state_staging(request.clone())
+        .await
+        .unwrap();
+    backend
+        .stage_store_state_records(&token, [(b"key".to_vec(), Some(b"value".to_vec()))].into())
+        .await
+        .unwrap();
+    backend.publish_store_state(token).await.unwrap();
+
+    // Simulate a write failure after cache deletion but before status update.
+    // The raw SQL connection is a test-only fault injector, not a second backend owner.
+    sqlx::any::install_default_drivers();
+    let url = format!("sqlite:{}?mode=rw", path.display());
+    let pool = sqlx::AnyPool::connect(&url).await.unwrap();
+    sqlx::query("CREATE TRIGGER refuse_reset BEFORE UPDATE ON entries BEGIN SELECT RAISE(ABORT, 'reset fault'); END")
+        .execute(&pool).await.unwrap();
+    assert!(backend.reset_local_verification().await.is_err());
+    assert_eq!(
+        backend.get_verification_status(&id).await.unwrap(),
+        VerificationStatus::Verified
+    );
+    assert!(
+        backend
+            .resolve_store_state(&request)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    sqlx::query("DROP TRIGGER refuse_reset")
+        .execute(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+    drop(backend);
+
+    let reopened = Sqlite::open(&path).await.unwrap();
+    assert_eq!(
+        reopened.get_verification_status(&id).await.unwrap(),
+        VerificationStatus::Verified
+    );
+    assert!(
+        reopened
+            .resolve_store_state(&request)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    reopened.reset_local_verification().await.unwrap();
+    assert_eq!(
+        reopened.get_verification_status(&id).await.unwrap(),
+        VerificationStatus::Unverified
+    );
+    assert!(
+        reopened
+            .resolve_store_state(&request)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(reopened.get(&id).await.unwrap(), entry);
+}

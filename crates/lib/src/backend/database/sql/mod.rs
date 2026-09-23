@@ -855,6 +855,10 @@ impl BackendImpl for SqlxBackend {
     async fn clear_derived_store_state(&self) -> Result<()> {
         storage::clear_derived_store_state(self).await
     }
+
+    async fn reset_local_verification(&self) -> Result<()> {
+        storage::reset_local_verification(self).await
+    }
     async fn get(&self, id: &ID) -> Result<Entry> {
         storage::get(self, id).await
     }
