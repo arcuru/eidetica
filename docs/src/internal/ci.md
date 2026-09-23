@@ -10,7 +10,7 @@ Fuzz / simulation testing are planned for the future.
 
 ### GitHub Actions
 
-The primary CI runs on GitHub with these workflows:
+The primary CI runs on GitHub with these workflows. The main CI workflow cancels superseded runs of the same pull request, but does not cancel main-push runs because Publish depends on their successful completion:
 
 - **[ci.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/ci.yml)**: Main CI pipeline (lint, test, integration tests, docs)
 - **[publish.yml](https://github.com/arcuru/eidetica/blob/main/.github/workflows/publish.yml)**: Publish pipeline (container images, cache warming, size tracking)
@@ -29,7 +29,7 @@ The primary CI runs on GitHub with these workflows:
 
 ### Forgejo CI
 
-A dedicated Forgejo runner provides CI redundancy on [code.jackson.dev](https://code.jackson.dev/arcuru/eidetica). The Forgejo workflows mirror the testing in the GitHub Actions setup with minor adaptations for the Forgejo environment.
+A dedicated Forgejo runner provides CI redundancy on [code.jackson.dev](https://code.jackson.dev/arcuru/eidetica). The Forgejo workflows mirror the testing in the GitHub Actions setup with minor adaptations for the Forgejo environment. The lint and test jobs each request their existing Nix targets in a single `nix build` invocation so shared dependencies can be scheduled together; job boundaries and checks are unchanged.
 
 ## Nix Flake
 
