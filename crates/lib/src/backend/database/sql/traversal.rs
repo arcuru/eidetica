@@ -525,6 +525,13 @@ pub async fn get_tree_from_tips(
                 reason: format!("CBOR deserialization failed: {e}"),
                 source: None,
             })?;
+        if !entry.in_tree(tree) {
+            return Err(BackendError::EntryNotInTree {
+                entry_id: entry.id(),
+                tree_id: tree.clone(),
+            }
+            .into());
+        }
         entries.push(entry);
     }
 

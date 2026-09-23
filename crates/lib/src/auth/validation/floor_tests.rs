@@ -294,6 +294,33 @@ async fn empty_pin_cannot_promote_unsigned_child() {
     assert_eq!(fx.submit_remote(entry).await, VerificationStatus::Failed);
 }
 
+/// An actually unconfigured tree still permits unsigned entries with no pin.
+#[tokio::test]
+async fn empty_pin_allows_unsigned_child_without_settings() {
+    let instance = new_instance().await;
+    let backend = instance.require_local_engine().unwrap();
+    let root = Entry::root_builder().build().unwrap();
+    let root_id = root.id();
+    backend.put(root).await.unwrap();
+    backend
+        .update_verification_status(&root_id, VerificationStatus::Verified)
+        .await
+        .unwrap();
+    let child = Entry::builder(root_id.clone())
+        .add_parent(root_id.clone())
+        .build()
+        .unwrap();
+    let child_id = child.id();
+    instance
+        .put_remote_entries(&root_id, vec![child])
+        .await
+        .unwrap();
+    assert_eq!(
+        backend.get_verification_status(&child_id).await.unwrap(),
+        VerificationStatus::Verified
+    );
+}
+
 /// A Verified foreign main parent cannot provide a shortcut around the
 /// target tree's authenticated history.
 #[tokio::test]

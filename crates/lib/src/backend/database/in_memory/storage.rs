@@ -292,21 +292,26 @@ pub(crate) fn get_tree_from_tips(
             .ok_or_else(|| BackendError::EntryNotFound {
                 id: current_id.clone(),
             })?;
-        // Entry must be in the specified tree to be included
-        if entry.in_tree(tree) {
-            // Add parents to be processed
-            if let Ok(parents) = entry.parents() {
-                for parent in parents {
-                    if !processed.contains(&parent) {
-                        to_process.push_back(parent);
-                    }
+        // A foreign parent is not a partial tree: it invalidates the proof.
+        if !entry.in_tree(tree) {
+            return Err(BackendError::EntryNotInTree {
+                entry_id: current_id,
+                tree_id: tree.clone(),
+            }
+            .into());
+        }
+        // Add parents to be processed
+        if let Ok(parents) = entry.parents() {
+            for parent in parents {
+                if !processed.contains(&parent) {
+                    to_process.push_back(parent);
                 }
             }
-
-            // Include this entry in the result
-            result.push(entry.clone());
-            processed.insert(current_id);
         }
+
+        // Include this entry in the result
+        result.push(entry.clone());
+        processed.insert(current_id);
     }
 
     // Sort the result by height
