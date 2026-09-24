@@ -5,8 +5,12 @@
 
 mod helpers;
 
-use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use eidetica::{Instance, store::Table};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use eidetica::{
+    Instance,
+    crdt::Doc,
+    store::{PasswordStore, Table},
+};
 use helpers::setup_tree_async;
 use serde::{Deserialize, Serialize};
 use std::hint::black_box;
@@ -65,16 +69,12 @@ fn setup_table_with_history(
 ///
 /// Setup (not timed):
 /// 1. Create Table with N records (each in separate commit)
-/// 2. Warm the cache by reading once
+/// 2. Read once to resolve the current generation
 ///
 /// Timed: Adding a new transaction and computing the final state
 ///
-/// - Current behavior: Full recomputation processing ALL entries (O(n))
-/// - Target behavior: Incremental update processing only DIFF entries (O(delta))
-///
-/// Comparing this with cold_cache shows the optimization opportunity: cold must
-/// always process all N entries, but after a single commit we could process only
-/// the delta.
+/// A changed tip requires a new immutable generation; this is not a delta-only
+/// rebuild. Compare with cold_cache to distinguish initial and changed-tip cost.
 fn bench_cache_rebuild_after_single_commit(c: &mut Criterion) {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -146,7 +146,7 @@ fn bench_cache_rebuild_after_single_commit(c: &mut Criterion) {
 /// Setup: Create Table with N records, warm cache once
 /// Timed: Full read workflow (get store viewer + get record) with warm cache
 ///
-/// This establishes the O(1) baseline. Cache is valid so no recomputation needed.
+/// The generation is already published; history reconstruction is excluded.
 fn bench_warm_cache_read(c: &mut Criterion) {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -189,13 +189,12 @@ fn bench_warm_cache_read(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmarks cold cache (no prior state) initial population.
+/// Benchmarks cold cache (no published derived state) initial population.
 ///
-/// Setup (not timed): Create Table with N records (no cache warming)
+/// Setup (not timed): Create Table with N records and clear derived state
 /// Timed: First `table.get()` must compute state from scratch and populate cache
 ///
-/// This is always O(n) - no prior state exists to build incrementally from.
-/// Provides a baseline for the unavoidable cost of initial cache population.
+/// This measures the first read's historical rebuild rather than a warm view.
 fn bench_cold_cache_rebuild(c: &mut Criterion) {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -211,9 +210,12 @@ fn bench_cold_cache_rebuild(c: &mut Criterion) {
             |b, &history_size| {
                 b.iter_with_setup(
                     || {
-                        // Setup: Create table but don't read (cache cold)
-                        // Returns (Instance, Database, keys) - Instance kept alive
-                        setup_table_with_history(&rt, history_size)
+                        // Writes may have created a derived generation. Explicitly
+                        // unlink it before measuring the first read.
+                        let (instance, db, keys) = setup_table_with_history(&rt, history_size);
+                        rt.block_on(db.backend().unwrap().clear_derived_store_state())
+                            .unwrap();
+                        (instance, db, keys)
                     },
                     |(_instance, db, keys)| {
                         // Benchmark: First read triggers full cache build
@@ -235,11 +237,11 @@ fn bench_cold_cache_rebuild(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmarks one point read through a fresh Table handle.
+/// Benchmarks one point read including cold historical materialization.
 ///
-/// Setup creates a large Table in one commit and prepares its historical state.
-/// The timed operation opens a new handle and reads one row, excluding initial
-/// cached-state construction.
+/// Setup creates a large Table in one commit, then clears any derived state
+/// created during writes. The timed operation opens a new handle and reads one
+/// row, including the first record generation build.
 fn bench_cold_large_table_point_read(c: &mut Criterion) {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -279,11 +281,13 @@ fn bench_cold_large_table_point_read(c: &mut Criterion) {
                             }
                             tx.commit().await.unwrap();
 
-                            let table = db
-                                .get_store_viewer::<Table<BenchRecord>>("bench_table")
+                            // Writing may materialize a generation while checking row state.
+                            // A fresh viewer alone is not a cold cache.
+                            db.backend()
+                                .unwrap()
+                                .clear_derived_store_state()
                                 .await
                                 .unwrap();
-                            table.get(&keys[0]).await.unwrap();
                             keys
                         });
                         (_instance, db, keys)
@@ -305,6 +309,365 @@ fn bench_cold_large_table_point_read(c: &mut Criterion) {
     group.finish();
 }
 
+/// Report actual stored subtree payload sizes, excluding Entry framing/signatures.
+/// The same rows and exact keys are used on both Table formats.
+fn bench_table_payload(_c: &mut Criterion) {
+    let rt = Runtime::new().unwrap();
+    for &rows in &[1, 32] {
+        let (_instance, _user, db) = rt.block_on(setup_tree_async());
+        let bytes = rt.block_on(async {
+            let tx = db.new_transaction().await.unwrap();
+            let table = tx
+                .get_store::<Table<BenchRecord>>("bench_table")
+                .await
+                .unwrap();
+            for id in 0..rows {
+                table
+                    .set(
+                        format!("row-{id:08}"),
+                        BenchRecord {
+                            id,
+                            name: format!("record_{id}"),
+                            value: id as i64 * 100,
+                        },
+                    )
+                    .await
+                    .unwrap();
+            }
+            let entry_id = tx.commit().await.unwrap();
+            db.backend()
+                .unwrap()
+                .get(&entry_id)
+                .await
+                .unwrap()
+                .data("bench_table")
+                .unwrap()
+                .len()
+        });
+        eprintln!("table_payload_bytes rows={rows} subtree_bytes={bytes}");
+        black_box(bytes);
+    }
+}
+
+/// Include historical Entry payloads from a put/delete/resurrection workload.
+/// This is the sum of subtree bytes, not storage framing or peak resident memory.
+fn bench_churn_payload(_c: &mut Criterion) {
+    let rt = Runtime::new().unwrap();
+    let (_instance, _user, db) = rt.block_on(setup_tree_async());
+    let sizes = rt.block_on(async {
+        let mut sizes = Vec::new();
+        for phase in 0..3 {
+            let tx = db.new_transaction().await.unwrap();
+            let table = tx
+                .get_store::<Table<BenchRecord>>("bench_table")
+                .await
+                .unwrap();
+            for id in 0..128 {
+                let key = format!("row-{id:08}");
+                if phase == 1 && id < 96 {
+                    assert!(table.delete(&key).await.unwrap());
+                } else if phase != 1 || id >= 96 {
+                    table
+                        .set(
+                            &key,
+                            BenchRecord {
+                                id,
+                                name: format!("record_{id}"),
+                                value: phase * 100 + id as i64,
+                            },
+                        )
+                        .await
+                        .unwrap();
+                }
+            }
+            let entry = tx.commit().await.unwrap();
+            sizes.push(
+                db.backend()
+                    .unwrap()
+                    .get(&entry)
+                    .await
+                    .unwrap()
+                    .data("bench_table")
+                    .unwrap()
+                    .len(),
+            );
+        }
+        sizes
+    });
+    eprintln!(
+        "table_churn_payload_bytes phase_subtree_bytes={sizes:?} total={}",
+        sizes.iter().sum::<usize>()
+    );
+    black_box(sizes);
+}
+
+/// One fresh database per sample: commit a single row or a batch, including
+/// Entry construction and storage. Setup cost is outside the measured closure.
+fn bench_table_writes(c: &mut Criterion) {
+    let rt = Runtime::new().unwrap();
+    let mut group = c.benchmark_group("table_write");
+    for &rows in &[1, 32] {
+        group.throughput(Throughput::Elements(rows));
+        group.bench_with_input(BenchmarkId::new("commit", rows), &rows, |b, &rows| {
+            b.iter_with_setup(
+                || rt.block_on(setup_tree_async()),
+                |(_instance, _user, db)| {
+                    rt.block_on(async {
+                        let tx = db.new_transaction().await.unwrap();
+                        let table = tx
+                            .get_store::<Table<BenchRecord>>("bench_table")
+                            .await
+                            .unwrap();
+                        for id in 0..rows as usize {
+                            table
+                                .set(
+                                    format!("row-{id:08}"),
+                                    BenchRecord {
+                                        id,
+                                        name: format!("record_{id}"),
+                                        value: id as i64 * 100,
+                                    },
+                                )
+                                .await
+                                .unwrap();
+                        }
+                        black_box(tx.commit().await.unwrap());
+                    });
+                },
+            );
+        });
+    }
+    group.finish();
+}
+
+/// Scan a published generation, not the history reconstruction phase.
+fn bench_table_pages(c: &mut Criterion) {
+    let rt = Runtime::new().unwrap();
+    let (_instance, db, keys) = setup_table_with_history(&rt, 100);
+    rt.block_on(async {
+        let table = db
+            .get_store_viewer::<Table<BenchRecord>>("bench_table")
+            .await
+            .unwrap();
+        table.get(&keys[0]).await.unwrap();
+    });
+    let mut group = c.benchmark_group("table_page");
+    for &limit in &[10, 50] {
+        group.throughput(Throughput::Elements(100));
+        group.bench_with_input(BenchmarkId::new("scan_100", limit), &limit, |b, &limit| {
+            b.iter(|| {
+                rt.block_on(async {
+                    let table = db
+                        .get_store_viewer::<Table<BenchRecord>>("bench_table")
+                        .await
+                        .unwrap();
+                    let mut cursor = None;
+                    let mut count = 0;
+                    loop {
+                        let page = table.scan_page(cursor.as_ref(), limit).await.unwrap();
+                        count += page.rows.len();
+                        cursor = page.next;
+                        if cursor.is_none() {
+                            break;
+                        }
+                    }
+                    assert_eq!(count, 100);
+                    black_box(count);
+                });
+            });
+        });
+    }
+    group.finish();
+}
+
+/// Include password derivation and authenticated physical scans in both legs.
+/// Each sample uses a fresh encrypted Store; setup is excluded from timing.
+fn bench_encrypted_pages(c: &mut Criterion) {
+    let rt = Runtime::new().unwrap();
+    let mut group = c.benchmark_group("table_encrypted_page");
+    for &encrypted_mode in &[false, true] {
+        group.bench_with_input(
+            BenchmarkId::new("scan_32", encrypted_mode),
+            &encrypted_mode,
+            |b, &encrypted_mode| {
+                b.iter_with_setup(
+                    || {
+                        let (instance, user, db) = rt.block_on(setup_tree_async());
+                        rt.block_on(async {
+                            let tx = db.new_transaction().await.unwrap();
+                            if encrypted_mode {
+                                let mut wrapped = tx
+                                    .get_store::<PasswordStore<Table<BenchRecord>>>("bench_table")
+                                    .await
+                                    .unwrap();
+                                wrapped
+                                    .initialize("bench-password", Doc::new())
+                                    .await
+                                    .unwrap();
+                                let table = wrapped.inner().await.unwrap();
+                                for id in 0..32 {
+                                    table
+                                        .set(
+                                            format!("row-{id:08}"),
+                                            BenchRecord {
+                                                id,
+                                                name: format!("record_{id}"),
+                                                value: id as i64 * 100,
+                                            },
+                                        )
+                                        .await
+                                        .unwrap();
+                                }
+                            } else {
+                                let table = tx
+                                    .get_store::<Table<BenchRecord>>("bench_table")
+                                    .await
+                                    .unwrap();
+                                for id in 0..32 {
+                                    table
+                                        .set(
+                                            format!("row-{id:08}"),
+                                            BenchRecord {
+                                                id,
+                                                name: format!("record_{id}"),
+                                                value: id as i64 * 100,
+                                            },
+                                        )
+                                        .await
+                                        .unwrap();
+                                }
+                            }
+                            tx.commit().await.unwrap();
+                        });
+                        (instance, user, db)
+                    },
+                    |(_instance, _user, db)| {
+                        rt.block_on(async {
+                            let tx = db.new_transaction().await.unwrap();
+                            let count = if encrypted_mode {
+                                let mut wrapped = tx
+                                    .get_store::<PasswordStore<Table<BenchRecord>>>("bench_table")
+                                    .await
+                                    .unwrap();
+                                wrapped.open("bench-password").unwrap();
+                                let table = wrapped.inner().await.unwrap();
+                                table.scan_page(None, 32).await.unwrap().rows.len()
+                            } else {
+                                let table = tx
+                                    .get_store::<Table<BenchRecord>>("bench_table")
+                                    .await
+                                    .unwrap();
+                                table.scan_page(None, 32).await.unwrap().rows.len()
+                            };
+                            assert_eq!(count, 32);
+                            black_box(count);
+                        });
+                    },
+                );
+            },
+        );
+    }
+    group.finish();
+}
+
+/// Compare warm plaintext and encrypted point lookups after a published build.
+/// Password derivation and setup are outside the timed closure.
+fn bench_warm_point_modes(c: &mut Criterion) {
+    let rt = Runtime::new().unwrap();
+    let mut group = c.benchmark_group("table_warm_point_mode");
+    for &encrypted in &[false, true] {
+        let (instance, _user, db) = rt.block_on(setup_tree_async());
+        rt.block_on(async {
+            let tx = db.new_transaction().await.unwrap();
+            if encrypted {
+                let mut wrapped = tx
+                    .get_store::<PasswordStore<Table<BenchRecord>>>("bench_table")
+                    .await
+                    .unwrap();
+                wrapped
+                    .initialize("bench-password", Doc::new())
+                    .await
+                    .unwrap();
+                wrapped
+                    .inner()
+                    .await
+                    .unwrap()
+                    .set(
+                        "row-00000000",
+                        BenchRecord {
+                            id: 0,
+                            name: "record_0".into(),
+                            value: 0,
+                        },
+                    )
+                    .await
+                    .unwrap();
+            } else {
+                tx.get_store::<Table<BenchRecord>>("bench_table")
+                    .await
+                    .unwrap()
+                    .set(
+                        "row-00000000",
+                        BenchRecord {
+                            id: 0,
+                            name: "record_0".into(),
+                            value: 0,
+                        },
+                    )
+                    .await
+                    .unwrap();
+            }
+            tx.commit().await.unwrap();
+            if encrypted {
+                let tx = db.new_transaction().await.unwrap();
+                let mut wrapped = tx
+                    .get_store::<PasswordStore<Table<BenchRecord>>>("bench_table")
+                    .await
+                    .unwrap();
+                wrapped.open("bench-password").unwrap();
+                black_box(
+                    wrapped
+                        .inner()
+                        .await
+                        .unwrap()
+                        .get("row-00000000")
+                        .await
+                        .unwrap(),
+                );
+            } else {
+                black_box(
+                    db.get_store_viewer::<Table<BenchRecord>>("bench_table")
+                        .await
+                        .unwrap()
+                        .get("row-00000000")
+                        .await
+                        .unwrap(),
+                );
+            }
+        });
+        if encrypted {
+            let tx = rt.block_on(db.new_transaction()).unwrap();
+            let mut wrapped = rt
+                .block_on(tx.get_store::<PasswordStore<Table<BenchRecord>>>("bench_table"))
+                .unwrap();
+            wrapped.open("bench-password").unwrap();
+            let table = rt.block_on(wrapped.inner()).unwrap();
+            group.bench_function(BenchmarkId::new("get_1", true), |b| {
+                b.iter(|| black_box(rt.block_on(table.get("row-00000000")).unwrap()));
+            });
+        } else {
+            let table = rt
+                .block_on(db.get_store_viewer::<Table<BenchRecord>>("bench_table"))
+                .unwrap();
+            group.bench_function(BenchmarkId::new("get_1", false), |b| {
+                b.iter(|| black_box(rt.block_on(table.get("row-00000000")).unwrap()));
+            });
+        }
+        drop(instance);
+    }
+    group.finish();
+}
+
 criterion_group! {
     name = table_cache_benches;
     config = Criterion::default().configure_from_args();
@@ -313,5 +676,11 @@ criterion_group! {
         bench_warm_cache_read,
         bench_cold_cache_rebuild,
         bench_cold_large_table_point_read,
+        bench_table_payload,
+        bench_churn_payload,
+        bench_warm_point_modes,
+        bench_table_writes,
+        bench_table_pages,
+        bench_encrypted_pages,
 }
 criterion_main!(table_cache_benches);

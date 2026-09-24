@@ -3,11 +3,86 @@
 //! This module contains tests for Table subtree functionality including
 //! CRUD operations, search functionality, UUID generation, and multiple operations.
 
-use eidetica::Snapshot;
 use eidetica::store::Table;
+use eidetica::{
+    Snapshot, Store,
+    crdt::{CanonicalJson, LwwMap},
+};
 
 use super::helpers::*;
 use crate::helpers::*;
+
+#[tokio::test]
+async fn test_table_entry_delta_has_inline_canonical_json_and_tombstone() {
+    let ctx = TestContext::new().with_database().await;
+    let tx = ctx.database().new_transaction().await.unwrap();
+    let table = tx
+        .get_store::<Table<serde_json::Value>>("wire_rows")
+        .await
+        .unwrap();
+    table
+        .set("a.b", serde_json::json!({"z": 2, "a": 1}))
+        .await
+        .unwrap();
+    table.set("", serde_json::json!([true])).await.unwrap();
+    let id = tx.commit().await.unwrap();
+    let entry = ctx.database().backend().unwrap().get(&id).await.unwrap();
+    let bytes = entry.data("wire_rows").unwrap();
+    assert_eq!(
+        std::str::from_utf8(bytes).unwrap(),
+        r#"[["",{"set":[true]}],["a.b",{"set":{"a":1,"z":2}}]]"#
+    );
+    let delta: LwwMap<String, CanonicalJson> = serde_json::from_slice(bytes).unwrap();
+    assert!(
+        serde_json::from_slice::<LwwMap<String, CanonicalJson>>(br#"{"a.b":"old Doc row"}"#)
+            .is_err()
+    );
+    assert_eq!(
+        delta.get(&"a.b".to_string()).unwrap().as_bytes(),
+        br#"{"a":1,"z":2}"#
+    );
+    assert_eq!(
+        Table::<serde_json::Value>::state_model().descriptor().name,
+        "eidetica/table/rows/canonical-json:v0"
+    );
+
+    let tx = ctx.database().new_transaction().await.unwrap();
+    let table = tx
+        .get_store::<Table<serde_json::Value>>("wire_rows")
+        .await
+        .unwrap();
+    assert!(table.delete("a.b").await.unwrap());
+    let id = tx.commit().await.unwrap();
+    let entry = ctx.database().backend().unwrap().get(&id).await.unwrap();
+    assert_eq!(
+        std::str::from_utf8(entry.data("wire_rows").unwrap()).unwrap(),
+        r#"[["a.b","delete"]]"#
+    );
+}
+
+#[tokio::test]
+async fn test_table_delete_does_not_swallow_typed_decode_failure() {
+    let ctx = TestContext::new().with_database().await;
+    let tx = ctx.database().new_transaction().await.unwrap();
+    let table = tx
+        .get_store::<Table<serde_json::Value>>("typed_delete")
+        .await
+        .unwrap();
+    table
+        .set("row", serde_json::json!({"not_a_value": true}))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let tx = ctx.database().new_transaction().await.unwrap();
+    let table = tx
+        .get_store::<Table<SimpleRecord>>("typed_delete")
+        .await
+        .unwrap();
+    assert!(matches!(table.delete("row").await,
+        Err(eidetica::Error::Store(error)) if matches!(*error, eidetica::store::StoreError::DeserializationFailed { .. })));
+    assert!(table.scan_page(None, 5).await.is_err());
+}
 
 #[tokio::test]
 async fn test_table_basic_crud_operations() {
@@ -262,198 +337,110 @@ async fn test_table_dotted_primary_keys_survive_commits() {
 }
 
 #[tokio::test]
-async fn test_table_overlay_hides_stale_doc_path_replacements() {
+async fn test_table_exact_keys_multi_operation_and_cold_warm_reads() {
     let ctx = TestContext::new().with_database().await;
+    let keys = [
+        "", ".", "...", "a", "a.b", "a..b", "a/b", "é", "e\u{301}", "🚀",
+    ];
     let tx = ctx.database().new_transaction().await.unwrap();
     let table = tx
-        .get_store::<Table<SimpleRecord>>("path_replacements")
+        .get_store::<Table<SimpleRecord>>("exact_keys")
         .await
         .unwrap();
-    for (key, value) in [("a", 1), ("b", 2), ("c", 3)] {
-        table.set(key, SimpleRecord { value }).await.unwrap();
+    for (index, key) in keys.iter().enumerate() {
+        table
+            .set(
+                key,
+                SimpleRecord {
+                    value: index as i32,
+                },
+            )
+            .await
+            .unwrap();
     }
-    tx.commit().await.unwrap();
-
-    let tx = ctx.database().new_transaction().await.unwrap();
-    let table = tx
-        .get_store::<Table<SimpleRecord>>("path_replacements")
-        .await
-        .unwrap();
-    table.set("a.b", SimpleRecord { value: 4 }).await.unwrap();
-    assert!(table.get("a").await.is_err());
-    assert_eq!(table.get("a.b").await.unwrap().value, 4);
-    let first = table.scan_page(None, 1).await.unwrap();
-    assert_eq!(first.rows[0].0, "a.b");
-    let second = table.scan_page(first.next.as_ref(), 1).await.unwrap();
-    assert_eq!(second.rows[0].0, "b");
-    let third = table.scan_page(second.next.as_ref(), 1).await.unwrap();
-    assert_eq!(third.rows[0].0, "c");
-    assert!(third.next.is_none());
-
-    tx.commit().await.unwrap();
-    let tx = ctx.database().new_transaction().await.unwrap();
-    let table = tx
-        .get_store::<Table<SimpleRecord>>("path_replacements")
-        .await
-        .unwrap();
-    table.set("a", SimpleRecord { value: 5 }).await.unwrap();
-    assert_eq!(table.get("a").await.unwrap().value, 5);
-    assert!(table.get("a.b").await.is_err());
-    assert!(table.delete("a").await.unwrap());
-    assert!(table.get("a").await.is_err());
-    assert!(table.get("a.b").await.is_err());
-    table.set("a", SimpleRecord { value: 6 }).await.unwrap();
-    assert_eq!(table.get("a").await.unwrap().value, 6);
-    assert!(table.get("a.b").await.is_err());
-    let page = table.scan_page(None, 4).await.unwrap();
+    table.set("a", SimpleRecord { value: 42 }).await.unwrap();
+    assert!(table.delete("a.b").await.unwrap());
+    table.set("a.b", SimpleRecord { value: 99 }).await.unwrap();
+    assert!(table.delete("...").await.unwrap());
+    assert!(!table.delete("missing").await.unwrap());
+    assert_eq!(table.get("a").await.unwrap().value, 42);
+    let id = tx.commit().await.unwrap();
+    let entry = ctx.database().backend().unwrap().get(&id).await.unwrap();
+    let delta: LwwMap<String, CanonicalJson> =
+        serde_json::from_slice(entry.data("exact_keys").unwrap()).unwrap();
+    assert_eq!(delta.operations().count(), keys.len());
     assert_eq!(
-        page.rows
-            .iter()
-            .map(|(key, _)| key.as_str())
-            .collect::<Vec<_>>(),
-        ["a", "b", "c"]
+        delta.get(&"a".to_string()).unwrap().as_bytes(),
+        br#"{"value":42}"#
     );
-    assert!(page.next.is_none());
-}
+    assert_eq!(
+        delta.get(&"a.b".to_string()).unwrap().as_bytes(),
+        br#"{"value":99}"#
+    );
+    assert!(matches!(
+        delta.operation(&"...".to_string()),
+        Some(eidetica::crdt::Lww::Delete)
+    ));
 
-#[tokio::test]
-async fn test_table_conflicting_staged_paths_use_last_operation() {
-    for (name, operations, parent, child, expected) in [
-        (
-            "parent_then_child",
-            [("set", "a"), ("set", "a.b")],
-            None,
-            Some(2),
-            [("a.b", 2), ("b", 3), ("c", 4)].as_slice(),
-        ),
-        (
-            "child_then_parent",
-            [("set", "a.b"), ("set", "a")],
-            Some(1),
-            None,
-            [("a", 1), ("b", 3), ("c", 4)].as_slice(),
-        ),
-        (
-            "child_then_parent_delete",
-            [("set", "a.b"), ("delete", "a")],
-            None,
-            None,
-            [("b", 3), ("c", 4)].as_slice(),
-        ),
-        (
-            "parent_delete_then_child",
-            [("delete", "a"), ("set", "a.b")],
-            None,
-            Some(2),
-            [("a.b", 2), ("b", 3), ("c", 4)].as_slice(),
-        ),
-    ] {
-        let ctx = TestContext::new().with_database().await;
-        let tx = ctx.database().new_transaction().await.unwrap();
-        let table = tx.get_store::<Table<SimpleRecord>>(name).await.unwrap();
-        for (key, value) in [("a", 0), ("b", 3), ("c", 4)] {
-            table.set(key, SimpleRecord { value }).await.unwrap();
+    for cold in [true, false] {
+        if cold {
+            ctx.database()
+                .backend()
+                .unwrap()
+                .clear_derived_store_state()
+                .await
+                .unwrap();
         }
-        tx.commit().await.unwrap();
-
-        let tx = ctx.database().new_transaction().await.unwrap();
-        let table = tx.get_store::<Table<SimpleRecord>>(name).await.unwrap();
-        for (operation, key) in operations {
-            if operation == "set" {
-                let value = if key == "a" { 1 } else { 2 };
-                table.set(key, SimpleRecord { value }).await.unwrap();
+        let viewer = ctx
+            .database()
+            .get_store_viewer::<Table<SimpleRecord>>("exact_keys")
+            .await
+            .unwrap();
+        for (index, key) in keys.iter().enumerate() {
+            if *key == "..." {
+                assert!(viewer.get(key).await.is_err());
             } else {
-                assert!(table.delete(key).await.unwrap());
+                let expected = if *key == "a" {
+                    42
+                } else if *key == "a.b" {
+                    99
+                } else {
+                    index as i32
+                };
+                assert_eq!(viewer.get(key).await.unwrap().value, expected, "{key:?}");
             }
         }
-        assert_table_path_state(
-            &format!("{name} before commit"),
-            &table,
-            parent,
-            child,
-            expected,
-        )
-        .await;
-        tx.commit().await.unwrap();
-
-        let tx = ctx.database().new_transaction().await.unwrap();
-        let table = tx.get_store::<Table<SimpleRecord>>(name).await.unwrap();
-        assert_table_path_state(
-            &format!("{name} after commit"),
-            &table,
-            parent,
-            child,
-            expected,
-        )
-        .await;
-    }
-}
-
-async fn assert_table_path_state(
-    phase: &str,
-    table: &Table<SimpleRecord>,
-    parent: Option<i32>,
-    child: Option<i32>,
-    expected: &[(&str, i32)],
-) {
-    assert_eq!(
-        table.get("a").await.ok().map(|row| row.value),
-        parent,
-        "{phase} parent"
-    );
-    assert_eq!(
-        table.get("a.b").await.ok().map(|row| row.value),
-        child,
-        "{phase} child"
-    );
-
-    let mut cursor = None;
-    let mut rows = Vec::new();
-    loop {
-        let page = table.scan_page(cursor.as_ref(), 1).await.unwrap();
-        rows.extend(page.rows.into_iter().map(|(key, row)| (key, row.value)));
-        let Some(next) = page.next else {
-            break;
-        };
-        cursor = Some(next);
-    }
-    assert_eq!(
-        rows,
-        expected
+        let mut rows = Vec::new();
+        let mut cursor = None;
+        loop {
+            let page = viewer.scan_page(cursor.as_ref(), 2).await.unwrap();
+            rows.extend(page.rows.into_iter().map(|(key, row)| (key, row.value)));
+            cursor = page.next;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        let mut expected = keys
             .iter()
-            .map(|(key, value)| ((*key).to_string(), *value))
-            .collect::<Vec<_>>()
-    );
-}
-
-#[tokio::test]
-async fn test_table_doc_path_normalization_keeps_empty_key_and_ignores_all_dots() {
-    let ctx = TestContext::new().with_database().await;
-    let tx = ctx.database().new_transaction().await.unwrap();
-    let table = tx
-        .get_store::<Table<SimpleRecord>>("path_normalization")
-        .await
-        .unwrap();
-    table.set("", SimpleRecord { value: 1 }).await.unwrap();
-    table.set(".", SimpleRecord { value: 2 }).await.unwrap();
-    table.set("...", SimpleRecord { value: 3 }).await.unwrap();
-    assert_eq!(table.get("").await.unwrap().value, 1);
-    assert!(table.get(".").await.is_err());
-    assert!(table.get("...").await.is_err());
-    assert_eq!(
-        table.scan_page(None, 2).await.unwrap().rows,
-        [("".to_string(), SimpleRecord { value: 1 })]
-    );
-    tx.commit().await.unwrap();
-
-    let viewer = ctx
-        .database()
-        .get_store_viewer::<Table<SimpleRecord>>("path_normalization")
-        .await
-        .unwrap();
-    assert_eq!(viewer.get("").await.unwrap().value, 1);
-    assert!(viewer.get(".").await.is_err());
-    assert!(viewer.get("...").await.is_err());
+            .enumerate()
+            .filter(|(_, key)| **key != "...")
+            .map(|(index, key)| {
+                (
+                    (*key).to_string(),
+                    if *key == "a" {
+                        42
+                    } else if *key == "a.b" {
+                        99
+                    } else {
+                        index as i32
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        expected.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(rows, expected);
+        assert_eq!(viewer.search(|row| row.value == 99).await.unwrap().len(), 1);
+    }
 }
 
 #[tokio::test]

@@ -6,11 +6,8 @@ use uuid::Uuid;
 
 use crate::{
     Result, Store, Transaction,
-    backend::{RecordMutation, RecordMutations},
-    crdt::{
-        Doc,
-        doc::{Value, path::normalize_path},
-    },
+    backend::RecordMutation,
+    crdt::{CanonicalJson, Lww, LwwMap},
     store::{
         ProjectionDescriptor, RecordProjection, Registered, StoreStateModel, errors::StoreError,
     },
@@ -20,102 +17,34 @@ const DEFAULT_SCAN_PAGE_SIZE: usize = 128;
 
 struct TableProjection;
 
-fn project_doc_delta(delta: &Doc, prefix: &str, out: &mut RecordMutations) {
-    for (key, value) in delta.iter_all() {
-        let key = if prefix.is_empty() {
-            key.clone()
-        } else {
-            format!("{prefix}.{key}")
-        };
-        match value {
-            Value::Doc(doc) => project_doc_delta(doc, &key, out),
-            Value::Text(value) => {
-                insert_projected_record(out, key.into_bytes(), Some(value.as_bytes().to_vec()))
-            }
-            Value::Deleted => insert_projected_record(out, key.into_bytes(), None),
-            _ => {}
-        }
-    }
-}
-
-fn insert_projected_record(out: &mut RecordMutations, key: Vec<u8>, value: Option<Vec<u8>>) {
-    out.retain(|existing_key, _| !TableProjection.staged_keys_conflict(existing_key, &key));
-    out.insert(key, value);
-}
-
-// The Doc-backed Table still stages legacy records; this adapter is removed
-// with the table:v0 format switch.
-pub(crate) fn legacy_doc_delta(mutations: &RecordMutations) -> Result<Doc> {
-    let mut delta = Doc::new();
-    for (key, value) in mutations {
-        let key = std::str::from_utf8(key).map_err(|error| StoreError::SerializationFailed {
-            store: "Table".to_string(),
-            reason: error.to_string(),
-        })?;
-        let _ = match value {
-            Some(value) => delta.set(
-                key,
-                std::str::from_utf8(value).map_err(|error| StoreError::SerializationFailed {
-                    store: "Table".to_string(),
-                    reason: error.to_string(),
-                })?,
-            ),
-            None => delta.remove(key),
-        };
-    }
-    Ok(delta)
-}
-
-impl RecordProjection<Doc> for TableProjection {
-    fn legacy_collapsed(&self) -> bool {
-        true
+impl RecordProjection<LwwMap<String, CanonicalJson>> for TableProjection {
+    fn server_store_type(&self) -> Option<&'static str> {
+        Some(<Table<serde_json::Value> as Registered>::type_id())
     }
 
     fn descriptor(&self) -> ProjectionDescriptor {
         ProjectionDescriptor {
-            name: "eidetica/table/rows".to_string(),
+            name: "eidetica/table/rows/canonical-json:v0".to_string(),
             version: 0,
         }
     }
 
     fn mutations<'a>(
         &'a self,
-        delta: &'a Doc,
+        delta: &'a LwwMap<String, CanonicalJson>,
     ) -> Result<Box<dyn Iterator<Item = Result<RecordMutation>> + Send + 'a>> {
-        // Doc's hierarchical conflicts need a collapsed view until Table migrates.
-        let mut out = RecordMutations::new();
-        project_doc_delta(delta, "", &mut out);
-        Ok(Box::new(out.into_iter().map(|(key, value)| {
-            Ok(match value {
-                Some(value) => RecordMutation::Put { key, value },
-                None => RecordMutation::Delete { key },
+        Ok(Box::new(delta.operations().map(|(key, operation)| {
+            Ok(match operation {
+                Lww::Set(value) => RecordMutation::Put {
+                    key: key.as_bytes().to_vec(),
+                    value: value.as_bytes().to_vec(),
+                },
+                Lww::Delete => RecordMutation::Delete {
+                    key: key.as_bytes().to_vec(),
+                },
+                Lww::NoOp => unreachable!("keyed NoOp is not a canonical map operation"),
             })
         })))
-    }
-
-    fn normalize_record_key(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        let key = std::str::from_utf8(key).map_err(|error| StoreError::SerializationFailed {
-            store: "Table".to_string(),
-            reason: error.to_string(),
-        })?;
-        let normalized = normalize_path(key);
-        Ok((key.is_empty() || !normalized.is_empty()).then_some(normalized.into_bytes()))
-    }
-
-    fn staged_keys_conflict(&self, left: &[u8], right: &[u8]) -> bool {
-        left == right
-            || left
-                .strip_prefix(right)
-                .is_some_and(|suffix| suffix.starts_with(b"."))
-            || right
-                .strip_prefix(left)
-                .is_some_and(|suffix| suffix.starts_with(b"."))
-    }
-
-    fn staged_key_descends_from(&self, staged_key: &[u8], key: &[u8]) -> bool {
-        staged_key
-            .strip_prefix(key)
-            .is_some_and(|suffix| suffix.starts_with(b"."))
     }
 }
 
@@ -125,8 +54,6 @@ pub struct TableCursor(pub(crate) CursorKind);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CursorKind {
-    // table:v0 remains Doc-backed until the format switch.
-    Legacy(Vec<u8>),
     Projected {
         view: Uuid,
         revision: u64,
@@ -162,7 +89,7 @@ pub struct TablePage<T> {
 /// by handling the details of:
 /// - Primary key generation and management
 /// - Serialization/deserialization of records
-/// - Storage within the underlying CRDT (Doc)
+/// - Storage within the underlying LWW map
 pub struct Table<T>
 where
     T: Serialize + for<'de> Deserialize<'de> + Clone,
@@ -186,7 +113,7 @@ impl<T> Store for Table<T>
 where
     T: Serialize + for<'de> Deserialize<'de> + Clone + Send + Sync,
 {
-    type Data = Doc;
+    type Data = LwwMap<String, CanonicalJson>;
 
     fn state_model() -> StoreStateModel<Self::Data> {
         StoreStateModel::Records(Arc::new(TableProjection))
@@ -235,16 +162,18 @@ where
         let projection = TableProjection;
         match self
             .txn
-            .record_get(&self.name, &projection, key.as_bytes())
+            .projected_get(&self.name, &projection, key.as_bytes())
             .await?
         {
-            Some(value) => serde_json::from_slice(&value).map_err(|e| {
-                StoreError::DeserializationFailed {
-                    store: self.name.clone(),
-                    reason: format!("Failed to deserialize record for key '{key}': {e}"),
-                }
-                .into()
-            }),
+            Some(value) => CanonicalJson::parse(&value)
+                .and_then(|row| row.to_value())
+                .map_err(|e| {
+                    StoreError::DeserializationFailed {
+                        store: self.name.clone(),
+                        reason: format!("Failed to deserialize record for key '{key}': {e}"),
+                    }
+                    .into()
+                }),
             None => Err(StoreError::KeyNotFound {
                 store: self.name.clone(),
                 key: key.to_string(),
@@ -272,17 +201,7 @@ where
         // Generate a UUIDv4 for the primary key
         let primary_key = Uuid::new_v4().to_string();
 
-        let serialized_row =
-            serde_json::to_vec(&row).map_err(|e| StoreError::SerializationFailed {
-                store: self.name.clone(),
-                reason: format!("Failed to serialize record: {e}"),
-            })?;
-        self.txn.stage_record(
-            &self.name,
-            &TableProjection,
-            primary_key.as_bytes().to_vec(),
-            Some(serialized_row),
-        )?;
+        self.set(&primary_key, row).await?;
 
         // Return the primary key
         Ok(primary_key)
@@ -304,17 +223,16 @@ where
     /// Returns an error if there's a serialization error or the operation fails
     pub async fn set(&self, key: impl AsRef<str>, row: T) -> Result<()> {
         let key_str = key.as_ref();
-        let serialized_row =
-            serde_json::to_vec(&row).map_err(|e| StoreError::SerializationFailed {
+        let canonical =
+            CanonicalJson::from_value(&row).map_err(|e| StoreError::SerializationFailed {
                 store: self.name.clone(),
                 reason: format!("Failed to serialize record for key '{key_str}': {e}"),
             })?;
-        self.txn.stage_record(
-            &self.name,
-            &TableProjection,
-            key_str.as_bytes().to_vec(),
-            Some(serialized_row),
-        )
+        let mut delta = LwwMap::new();
+        delta.set(key_str.to_string(), canonical);
+        self.txn
+            .stage_projected_delta(&self.name, &TableProjection, delta)
+            .await
     }
 
     /// Deletes a row from the Table by its primary key.
@@ -335,24 +253,22 @@ where
         let key_str = key.as_ref();
 
         // Check if the record exists (checks both local and full state)
-        let exists = self.get(key_str).await.is_ok()
-            || self.txn.record_has_staged_descendant(
-                &self.name,
-                &TableProjection,
-                key_str.as_bytes(),
-            )?;
-
-        // If the record doesn't exist, return false early
+        let exists = match self.get(key_str).await {
+            Ok(_) => true,
+            Err(crate::Error::Store(error)) if matches!(*error, StoreError::KeyNotFound { .. }) => {
+                false
+            }
+            Err(error) => return Err(error),
+        };
         if !exists {
             return Ok(false);
         }
 
-        self.txn.stage_record(
-            &self.name,
-            &TableProjection,
-            key_str.as_bytes().to_vec(),
-            None,
-        )?;
+        let mut delta = LwwMap::new();
+        delta.delete(key_str.to_string());
+        self.txn
+            .stage_projected_delta(&self.name, &TableProjection, delta)
+            .await?;
 
         // Return true since we confirmed the record existed
         Ok(true)
@@ -399,23 +315,9 @@ where
         limit: usize,
     ) -> Result<TablePage<T>> {
         let projection = TableProjection;
-        let page = self
+        let (page, next) = self
             .txn
-            .record_scan(
-                &self.name,
-                &projection,
-                match cursor.map(|cursor| &cursor.0) {
-                    Some(CursorKind::Legacy(key)) => Some(key.as_slice()),
-                    Some(CursorKind::Projected { .. }) => {
-                        return Err(StoreError::StaleCursor {
-                            store: self.name.clone(),
-                        }
-                        .into());
-                    }
-                    None => None,
-                },
-                limit,
-            )
+            .projected_record_scan_page(&self.name, &projection, cursor, limit)
             .await?;
         let mut rows = Vec::with_capacity(page.records.len());
         for (key, value) in page.records {
@@ -424,17 +326,14 @@ where
                     store: self.name.clone(),
                     reason: error.to_string(),
                 })?;
-            let row = serde_json::from_slice(&value).map_err(|error| {
-                StoreError::DeserializationFailed {
+            let row = CanonicalJson::parse(&value)
+                .and_then(|row| row.to_value())
+                .map_err(|error| StoreError::DeserializationFailed {
                     store: self.name.clone(),
                     reason: format!("Failed to deserialize record for key '{key}': {error}"),
-                }
-            })?;
+                })?;
             rows.push((key, row));
         }
-        Ok(TablePage {
-            rows,
-            next: page.next.map(|key| TableCursor(CursorKind::Legacy(key))),
-        })
+        Ok(TablePage { rows, next })
     }
 }

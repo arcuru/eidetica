@@ -53,6 +53,25 @@ use crate::{
     },
 };
 
+fn page_from_history(
+    history: &BTreeMap<Vec<u8>, Vec<u8>>,
+    after: Option<&[u8]>,
+    count: usize,
+) -> Result<crate::backend::RecordPage> {
+    let mut rows = history
+        .iter()
+        .filter(|(key, _)| after.is_none_or(|after| key.as_slice() > after))
+        .take(count.saturating_add(1))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect::<Vec<_>>();
+    let next = (rows.len() > count).then(|| rows[count - 1].0.clone());
+    rows.truncate(count);
+    Ok(crate::backend::RecordPage {
+        records: rows,
+        next,
+    })
+}
+
 /// Creates a synthetic entry ID for multi-tip merged CRDT state caching.
 ///
 /// Tips are sorted to ensure deterministic keys regardless of input order.
@@ -201,23 +220,34 @@ pub struct Transaction {
     /// `Registry::new` → `DocStore::load`) and `Store::register`'s own
     /// `_index` updates — bypass `get_store` and remain unaffected.
     system_subtrees_locked: Arc<AtomicBool>,
-    record_mutations: Arc<Mutex<HashMap<String, RecordMutations>>>,
-    // Lock order for mixed staging: projected -> logical -> builder.
-    logical_record_mutations: Arc<Mutex<HashMap<String, RecordMutations>>>,
     record_views: Arc<Mutex<HashMap<(String, ProjectionDescriptor), RecordView>>>,
     projected: Arc<Mutex<HashMap<String, ProjectedStage>>>,
+    projected_sealed: Arc<AtomicBool>,
 }
 
-/// Canonical delta and both read-your-writes overlays share one revision.
-/// Legacy Doc-backed Table staging remains separate until the format switch.
+/// Canonical typed delta and both read-your-writes overlays share one revision.
 #[derive(Clone)]
-#[allow(dead_code)] // Phase 0 contract cell; Phase 3 routes reads through its overlays.
 struct ProjectedStage {
     revision: u64,
     descriptor: ProjectionDescriptor,
-    canonical: Vec<u8>,
+    canonical: Arc<dyn StagedDelta>,
     logical: RecordMutations,
     physical: RecordMutations,
+}
+
+trait StagedDelta: Send + Sync {
+    fn as_any(&self) -> &dyn std::any::Any;
+    fn bytes(&self) -> Result<Vec<u8>>;
+}
+
+impl<D: CRDT + Send + Sync + 'static> StagedDelta for D {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn bytes(&self) -> Result<Vec<u8>> {
+        Ok(serde_json::to_vec(self)?)
+    }
 }
 
 /// RAII guard returned by [`Transaction::lock_system_subtrees`]. Releases the
@@ -285,10 +315,9 @@ impl Transaction {
             provided_signing_key: None,
             encryptors: Arc::new(Mutex::new(HashMap::new())),
             system_subtrees_locked: Arc::new(AtomicBool::new(false)),
-            record_mutations: Arc::new(Mutex::new(HashMap::new())),
-            logical_record_mutations: Arc::new(Mutex::new(HashMap::new())),
             record_views: Arc::new(Mutex::new(HashMap::new())),
             projected: Arc::new(Mutex::new(HashMap::new())),
+            projected_sealed: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -381,6 +410,9 @@ impl Transaction {
     ) -> Result<()> {
         let subtree = subtree.into();
         let stages = self.projected.lock().unwrap();
+        if self.projected_sealed.load(Ordering::Acquire) {
+            return Err(TransactionError::TransactionAlreadyCommitted.into());
+        }
         if stages.contains_key(&subtree) {
             return Err(StoreError::InvalidOperation {
                 store: subtree,
@@ -508,6 +540,10 @@ impl Transaction {
     /// # Arguments
     /// * `root` - The tree root ID to set (use `ID::default()` for top-level roots)
     pub(crate) fn set_entry_root(&self, root: ID) -> Result<()> {
+        let stages = self.projected.lock().unwrap();
+        if !stages.is_empty() || self.projected_sealed.load(Ordering::Acquire) {
+            return Err(TransactionError::TransactionAlreadyCommitted.into());
+        }
         let mut builder_ref = self.entry_builder.lock().unwrap();
         let builder = builder_ref
             .as_mut()
@@ -524,6 +560,10 @@ impl Transaction {
     /// # Arguments
     /// * `entropy` - Random entropy value
     pub(crate) fn set_metadata_entropy(&self, entropy: u64) -> Result<()> {
+        let stages = self.projected.lock().unwrap();
+        if !stages.is_empty() || self.projected_sealed.load(Ordering::Acquire) {
+            return Err(TransactionError::TransactionAlreadyCommitted.into());
+        }
         let mut builder_ref = self.entry_builder.lock().unwrap();
         let builder = builder_ref
             .as_mut()
@@ -595,6 +635,10 @@ impl Transaction {
             None
         };
 
+        let stages = self.projected.lock().unwrap();
+        if stages.contains_key(subtree) || self.projected_sealed.load(Ordering::Acquire) {
+            return Err(TransactionError::TransactionAlreadyCommitted.into());
+        }
         let mut builder_ref = self.entry_builder.lock().unwrap();
         let builder = builder_ref
             .as_mut()
@@ -611,8 +655,7 @@ impl Transaction {
     /// Stage one typed delta and its logical/physical read overlay at one revision.
     /// All fallible work happens outside the state lock; a competing writer forces
     /// recomputation rather than allowing an unlocked snapshot to overwrite it.
-    #[allow(dead_code)] // Phase 0 fixture exercises this before the Table migration.
-    pub(crate) async fn stage_projected_delta<D: CRDT + Send>(
+    pub(crate) async fn stage_projected_delta<D: CRDT + Send + Sync + 'static>(
         &self,
         store: &str,
         projection: &dyn RecordProjection<D>,
@@ -635,13 +678,23 @@ impl Transaction {
                 }
                 .into());
             }
+            // Validate each incoming value before installing it; the accumulated
+            // canonical Entry bytes are only produced once at commit.
+            serde_json::to_vec(&delta)?;
             let canonical = if let Some(state) = &snapshot {
-                let current: D = serde_json::from_slice(&state.canonical)?;
+                let current = state
+                    .canonical
+                    .as_any()
+                    .downcast_ref::<D>()
+                    .ok_or_else(|| StoreError::TypeMismatch {
+                        store: store.to_string(),
+                        expected: format!("{:?}", state.descriptor),
+                        actual: format!("{descriptor:?} (different delta type)"),
+                    })?;
                 current.merge(&delta)?
             } else {
                 delta.clone()
             };
-            let bytes = serde_json::to_vec(&canonical)?;
             let mut logical = snapshot
                 .as_ref()
                 .map_or_else(RecordMutations::new, |s| s.logical.clone());
@@ -679,18 +732,8 @@ impl Transaction {
                 physical.insert(physical_key, encrypted);
             }
             let mut stages = self.projected.lock().unwrap();
-            if self
-                .logical_record_mutations
-                .lock()
-                .unwrap()
-                .contains_key(store)
-            {
-                return Err(StoreError::InvalidOperation {
-                    store: store.to_string(),
-                    operation: "stage_projected_delta".to_string(),
-                    reason: "subtree uses legacy record staging".to_string(),
-                }
-                .into());
+            if self.projected_sealed.load(Ordering::Acquire) {
+                return Err(TransactionError::TransactionAlreadyCommitted.into());
             }
             if stages.get(store).map(|s| s.revision) != snapshot.as_ref().map(|s| s.revision) {
                 continue;
@@ -699,11 +742,7 @@ impl Transaction {
             let builder = builder_ref
                 .as_mut()
                 .ok_or(TransactionError::TransactionAlreadyCommitted)?;
-            if builder.data(store).is_ok()
-                && snapshot
-                    .as_ref()
-                    .is_none_or(|state| builder.data(store).ok() != Some(&state.canonical))
-            {
+            if builder.data(store).is_ok() {
                 return Err(StoreError::InvalidOperation {
                     store: store.to_string(),
                     operation: "stage_projected_delta".to_string(),
@@ -713,13 +752,12 @@ impl Transaction {
                 .into());
             }
             // No await or fallible transformation between canonical and overlay install.
-            builder.set_subtree_data_mut(store, bytes.clone());
             stages.insert(
                 store.to_string(),
                 ProjectedStage {
                     revision: snapshot.map_or(1, |s| s.revision + 1),
                     descriptor: descriptor.clone(),
-                    canonical: bytes,
+                    canonical: Arc::new(canonical),
                     logical,
                     physical,
                 },
@@ -732,7 +770,6 @@ impl Transaction {
     /// publish server records. The server authorizes the history before decryption.
     /// Remote reads currently fold the full state before selecting a physical key;
     /// an independently authenticated read-only record view can optimize this later.
-    #[allow(dead_code)] // The typed Store migration will consume this path.
     pub(crate) async fn unlocked_projected_get<S: Store>(
         &self,
         store: &str,
@@ -871,7 +908,6 @@ impl Transaction {
     }
 
     /// Read a typed row from the fixed historical view, overlaid with staged changes.
-    #[allow(dead_code)] // Used by the typed Store after its format switch.
     pub(crate) async fn projected_get<D: CRDT + Send>(
         &self,
         store: &str,
@@ -935,6 +971,30 @@ impl Transaction {
                                     .await?
                                     .get(&physical)
                                     .cloned(),
+                                Err(err) if err.is_invalid_store_state_view() => {
+                                    self.invalidate_record_view(store);
+                                    match self.record_view(store, projection).await {
+                                        Err(err) if err.is_unsupported_store_state() => self
+                                            .projected_history::<D>(store, projection)
+                                            .await?
+                                            .get(&physical)
+                                            .cloned(),
+                                        Err(err) => return Err(err),
+                                        Ok(view) => match self
+                                            .db
+                                            .ops()
+                                            .store_state_record_get(&view, &physical)
+                                            .await
+                                        {
+                                            Err(err) if err.is_unsupported_store_state() => self
+                                                .projected_history::<D>(store, projection)
+                                                .await?
+                                                .get(&physical)
+                                                .cloned(),
+                                            result => result?,
+                                        },
+                                    }
+                                }
                                 Err(err) => return Err(err),
                                 Ok(value) => value,
                             }
@@ -1046,7 +1106,6 @@ impl Transaction {
     }
 
     /// Scan a typed projection using the backend's real immutable RecordView.
-    #[allow(dead_code)] // Used by the typed Store after its format switch.
     pub(crate) async fn projected_record_scan_page<D: CRDT + Send>(
         &self,
         store: &str,
@@ -1078,14 +1137,50 @@ impl Transaction {
                 let history = history.clone();
                 async move {
                     if let Some(view) = view {
-                        backend
+                        let result = backend
                             .store_state_record_scan(
                                 &view,
                                 &RecordRange::default(),
                                 after.as_deref(),
                                 count,
                             )
-                            .await
+                            .await;
+                        match result {
+                            Err(err) if err.is_invalid_store_state_view() => {
+                                self.invalidate_record_view(store);
+                                match self.record_view(store, projection).await {
+                                    Ok(view) => match backend
+                                        .store_state_record_scan(
+                                            &view,
+                                            &RecordRange::default(),
+                                            after.as_deref(),
+                                            count,
+                                        )
+                                        .await
+                                    {
+                                        Err(err) if err.is_unsupported_store_state() => {
+                                            let history = self
+                                                .projected_history::<D>(store, projection)
+                                                .await?;
+                                            page_from_history(&history, after.as_deref(), count)
+                                        }
+                                        result => result,
+                                    },
+                                    Err(err) if err.is_unsupported_store_state() => {
+                                        let history =
+                                            self.projected_history::<D>(store, projection).await?;
+                                        page_from_history(&history, after.as_deref(), count)
+                                    }
+                                    Err(err) => Err(err),
+                                }
+                            }
+                            Err(err) if err.is_unsupported_store_state() => {
+                                let history =
+                                    self.projected_history::<D>(store, projection).await?;
+                                page_from_history(&history, after.as_deref(), count)
+                            }
+                            result => result,
+                        }
                     } else {
                         let mut rows = history
                             .unwrap()
@@ -1141,9 +1236,7 @@ impl Transaction {
 
     /// Scan a typed projection over one immutable transaction overlay. The
     /// fetcher supplies persisted physical-key pages; it must honor exclusive
-    /// `after` and return pages in physical order. Phase 3 wires the backend
-    /// view into this boundary, before the Table format changes.
-    #[allow(dead_code)]
+    /// `after` and return pages in physical order.
     pub(crate) async fn projected_scan_page<F, Fut>(
         &self,
         store: &str,
@@ -1208,6 +1301,28 @@ impl Transaction {
         if limit == 0 {
             check_revision()?;
             return Ok((crate::backend::RecordPage::default(), None));
+        }
+        // Without staged rows, the backend already supplies a bounded ordered
+        // page. Avoid copying it into a merge map, but keep the race checks.
+        if snapshot.is_none() {
+            let result = fetch(after, limit).await;
+            check_revision()?;
+            let mut page = result?;
+            let next = page.next.take().map(|last_physical_key| {
+                TableCursor(CursorKind::Projected {
+                    view: self.view_id,
+                    revision,
+                    store: store.into(),
+                    projection: context.clone(),
+                    frontier: frontier.clone(),
+                    last_physical_key,
+                })
+            });
+            for (key, value) in &mut page.records {
+                (*key, *value) = self.decode_projected_record(store, key, value)?;
+            }
+            check_revision()?;
+            return Ok((page, next));
         }
         let mut merged = snapshot
             .as_ref()
@@ -1274,347 +1389,6 @@ impl Transaction {
         ))
     }
 
-    pub(crate) fn stage_record(
-        &self,
-        store: &str,
-        projection: &dyn RecordProjection<Doc>,
-        key: Vec<u8>,
-        value: Option<Vec<u8>>,
-    ) -> Result<()> {
-        let stages = self.projected.lock().unwrap();
-        if stages.contains_key(store) {
-            return Err(StoreError::InvalidOperation {
-                store: store.to_string(),
-                operation: "stage_record".to_string(),
-                reason: "subtree uses projected staging".to_string(),
-            }
-            .into());
-        }
-        let Some(key) = projection.normalize_record_key(&key)? else {
-            return Ok(());
-        };
-        let conflicting_keys = {
-            let mut staged = self.logical_record_mutations.lock().unwrap();
-            let mutations = staged.entry(store.to_string()).or_default();
-            let conflicting_keys = mutations
-                .keys()
-                .filter(|staged_key| projection.staged_keys_conflict(staged_key, &key))
-                .cloned()
-                .collect::<Vec<_>>();
-            mutations.retain(|staged_key, _| !conflicting_keys.contains(staged_key));
-            mutations.insert(key.clone(), value.clone());
-            conflicting_keys
-        };
-        let physical_key = self.physical_record_key(store, &key)?;
-        let conflicting_physical_keys = conflicting_keys
-            .iter()
-            .map(|key| self.physical_record_key(store, key))
-            .collect::<Result<Vec<_>>>()?;
-        let value = value
-            .map(|value| self.encrypt_record(store, &key, &value))
-            .transpose()?;
-        let mut record_mutations = self.record_mutations.lock().unwrap();
-        let mutations = record_mutations.entry(store.to_string()).or_default();
-        mutations.retain(|staged_key, _| !conflicting_physical_keys.contains(staged_key));
-        mutations.insert(physical_key, value);
-        Ok(())
-    }
-
-    pub(crate) async fn record_get(
-        &self,
-        store: &str,
-        projection: &dyn RecordProjection<Doc>,
-        key: &[u8],
-    ) -> Result<Option<Vec<u8>>> {
-        let Some(key) = projection.normalize_record_key(key)? else {
-            return Ok(None);
-        };
-        if let Some(mutations) = self.logical_record_mutations.lock().unwrap().get(store) {
-            if let Some(value) = mutations.get(&key) {
-                return Ok(value.clone());
-            }
-            if mutations
-                .keys()
-                .any(|staged_key| projection.staged_key_shadows_cached(staged_key, &key))
-            {
-                return Ok(None);
-            }
-        }
-        let physical_key = self.physical_record_key(store, &key)?;
-        let view = match self.record_view(store, projection).await {
-            Err(err) if err.is_unsupported_store_state() => {
-                return self.record_get_from_history(store, &key).await;
-            }
-            result => result?,
-        };
-        match self
-            .db
-            .ops()
-            .store_state_record_get(&view, &physical_key)
-            .await
-        {
-            Err(err) if err.is_unsupported_store_state() => {
-                self.record_get_from_history(store, &key).await
-            }
-            Err(err) if err.is_invalid_store_state_view() => {
-                self.record_views
-                    .lock()
-                    .unwrap()
-                    .retain(|(name, _), _| name != store);
-                let view = match self.record_view(store, projection).await {
-                    Err(err) if err.is_unsupported_store_state() => {
-                        return self.record_get_from_history(store, &key).await;
-                    }
-                    result => result?,
-                };
-                match self
-                    .db
-                    .ops()
-                    .store_state_record_get(&view, &physical_key)
-                    .await
-                {
-                    Err(err) if err.is_unsupported_store_state() => {
-                        self.record_get_from_history(store, &key).await
-                    }
-                    result => result?.map_or(Ok(None), |value| {
-                        self.decrypt_record(store, &physical_key, &value)
-                            .map(|(_, value)| Some(value))
-                    }),
-                }
-            }
-            result => result?.map_or(Ok(None), |value| {
-                self.decrypt_record(store, &physical_key, &value)
-                    .map(|(_, value)| Some(value))
-            }),
-        }
-    }
-
-    pub(crate) fn record_has_staged_descendant(
-        &self,
-        store: &str,
-        projection: &dyn RecordProjection<Doc>,
-        key: &[u8],
-    ) -> Result<bool> {
-        let Some(key) = projection.normalize_record_key(key)? else {
-            return Ok(false);
-        };
-        Ok(self
-            .logical_record_mutations
-            .lock()
-            .unwrap()
-            .get(store)
-            .is_some_and(|mutations| {
-                mutations.iter().any(|(staged_key, value)| {
-                    value.is_some() && projection.staged_key_descends_from(staged_key, &key)
-                })
-            }))
-    }
-
-    pub(crate) async fn record_scan(
-        &self,
-        store: &str,
-        projection: &dyn RecordProjection<Doc>,
-        after: Option<&[u8]>,
-        limit: usize,
-    ) -> Result<crate::backend::RecordPage> {
-        if limit == 0 {
-            return Ok(crate::backend::RecordPage::default());
-        }
-        let view = match self.record_view(store, projection).await {
-            Err(err) if err.is_unsupported_store_state() => {
-                return self
-                    .record_scan_from_history(store, projection, after, limit)
-                    .await;
-            }
-            result => result?,
-        };
-        let logical_mutations = self
-            .logical_record_mutations
-            .lock()
-            .unwrap()
-            .get(store)
-            .cloned()
-            .unwrap_or_default();
-        let mutations = self
-            .record_mutations
-            .lock()
-            .unwrap()
-            .get(store)
-            .cloned()
-            .unwrap_or_default();
-        let mut merged = mutations
-            .iter()
-            .filter(|(key, value)| {
-                value.is_some() && after.is_none_or(|after| key.as_slice() > after)
-            })
-            .map(|(key, value)| (key.clone(), value.clone().unwrap()))
-            .collect::<BTreeMap<_, _>>();
-        let mut backend_after = after.map(ToOwned::to_owned);
-        let mut backend_has_more = true;
-        while backend_has_more {
-            let page = match self
-                .db
-                .ops()
-                .store_state_record_scan(
-                    &view,
-                    &RecordRange::default(),
-                    backend_after.as_deref(),
-                    limit.max(1),
-                )
-                .await
-            {
-                Err(err) if err.is_unsupported_store_state() => {
-                    return self
-                        .record_scan_from_history(store, projection, after, limit)
-                        .await;
-                }
-                Err(err) if err.is_invalid_store_state_view() => {
-                    self.record_views
-                        .lock()
-                        .unwrap()
-                        .retain(|(name, _), _| name != store);
-                    match self.record_view(store, projection).await {
-                        Err(err) if err.is_unsupported_store_state() => {
-                            return self
-                                .record_scan_from_history(store, projection, after, limit)
-                                .await;
-                        }
-                        Ok(view) => match self
-                            .db
-                            .ops()
-                            .store_state_record_scan(
-                                &view,
-                                &RecordRange::default(),
-                                backend_after.as_deref(),
-                                limit.max(1),
-                            )
-                            .await
-                        {
-                            Err(err) if err.is_unsupported_store_state() => {
-                                return self
-                                    .record_scan_from_history(store, projection, after, limit)
-                                    .await;
-                            }
-                            result => result?,
-                        },
-                        Err(err) => return Err(err),
-                    }
-                }
-                result => result?,
-            };
-            for (physical_key, value) in page.records {
-                let (logical_key, _) = self.decrypt_record(store, &physical_key, &value)?;
-                if !logical_mutations.keys().any(|staged_key| {
-                    projection.staged_key_shadows_cached(staged_key, &logical_key)
-                }) {
-                    merged.insert(physical_key, value);
-                }
-            }
-            backend_after = page.next;
-            backend_has_more = backend_after.is_some();
-            let backend_reached_page_end = merged.keys().nth(limit).is_some_and(|page_end| {
-                backend_after
-                    .as_ref()
-                    .is_some_and(|backend_after| backend_after >= page_end)
-            });
-            if backend_reached_page_end {
-                break;
-            }
-        }
-        let mut records = merged
-            .into_iter()
-            .take(limit.saturating_add(1))
-            .collect::<Vec<_>>();
-        let has_more = records.len() > limit || backend_has_more;
-        records.truncate(limit);
-        let next = has_more.then(|| records.last().unwrap().0.clone());
-        for (key, value) in &mut records {
-            (*key, *value) = self.decrypt_record(store, key, value)?;
-        }
-        Ok(crate::backend::RecordPage { records, next })
-    }
-
-    async fn record_get_from_history(&self, store: &str, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        let state: Doc = self.get_full_state(store).await?;
-        Ok(state
-            .get(std::str::from_utf8(key).map_err(|error| {
-                TransactionError::StoreDeserializationFailed {
-                    store: store.to_string(),
-                    reason: error.to_string(),
-                }
-            })?)
-            .and_then(Value::as_text)
-            .map(|value| value.as_bytes().to_vec()))
-    }
-
-    async fn record_scan_from_history(
-        &self,
-        store: &str,
-        projection: &dyn RecordProjection<Doc>,
-        after: Option<&[u8]>,
-        limit: usize,
-    ) -> Result<crate::backend::RecordPage> {
-        let state: Doc = self.get_full_state(store).await?;
-        let mut projected = RecordMutations::new();
-        for mutation in projection.mutations(&state)? {
-            match mutation? {
-                RecordMutation::Put { key, value } => {
-                    projected.insert(key, Some(value));
-                }
-                RecordMutation::Delete { key } => {
-                    projected.insert(key, None);
-                }
-            }
-        }
-        let mutations = self
-            .logical_record_mutations
-            .lock()
-            .unwrap()
-            .get(store)
-            .cloned()
-            .unwrap_or_default();
-        let mut records = projected
-            .into_iter()
-            .filter_map(|(key, value)| value.map(|value| (key, value)))
-            .filter(|(cached_key, _)| {
-                !mutations
-                    .keys()
-                    .any(|staged_key| projection.staged_key_shadows_cached(staged_key, cached_key))
-            })
-            .collect::<BTreeMap<_, _>>();
-        for (key, value) in mutations {
-            match value {
-                Some(value) => {
-                    records.insert(key, value);
-                }
-                None => {
-                    records.remove(&key);
-                }
-            }
-        }
-        let mut records = records
-            .into_iter()
-            .map(|(logical_key, value)| {
-                Ok((
-                    self.physical_record_key(store, &logical_key)?,
-                    (logical_key, value),
-                ))
-            })
-            .collect::<Result<BTreeMap<_, _>>>()?
-            .into_iter()
-            .filter(|(physical_key, _)| after.is_none_or(|after| physical_key.as_slice() > after))
-            .take(limit.saturating_add(1))
-            .collect::<Vec<_>>();
-        let has_more = records.len() > limit;
-        records.truncate(limit);
-        let next = has_more.then(|| records.last().unwrap().0.clone());
-        let records = records
-            .into_iter()
-            .map(|(_, (logical_key, value))| (logical_key, value))
-            .collect();
-        Ok(crate::backend::RecordPage { records, next })
-    }
-
     fn encrypted_projection_descriptor(
         &self,
         store: &str,
@@ -1650,42 +1424,44 @@ impl Transaction {
 
         let token = self.db.ops().begin_store_state_staging(request).await?;
         let result = async {
-            let mut logical = RecordMutations::new();
+            let mut chunk = Vec::new();
+            let mut chunk_bytes = 0;
+            let mut sequence = 0;
             for entry in entries {
                 if let Ok(bytes) = entry.data(store) {
                     let plaintext = self.decrypt_if_needed(store, bytes)?;
                     let delta: D = serde_json::from_slice(&plaintext)?;
                     for mutation in projection.mutations(&delta)? {
-                        match mutation? {
-                            RecordMutation::Put { key, value } => {
-                                logical
-                                    .retain(|old, _| !projection.staged_keys_conflict(old, &key));
-                                logical.insert(key, Some(value));
+                        let mutation = match mutation? {
+                            RecordMutation::Put { key, value } => RecordMutation::Put {
+                                key: self.physical_record_key(store, &key)?,
+                                value: self.encrypt_record(store, &key, &value)?,
+                            },
+                            RecordMutation::Delete { key } => RecordMutation::Delete {
+                                key: self.physical_record_key(store, &key)?,
+                            },
+                        };
+                        let size = serde_json::to_vec(&mutation)?.len();
+                        if size > state::CHUNK_BYTES {
+                            return Err(crate::backend::BackendError::RecordTooLarge {
+                                encoded_bytes: size,
                             }
-                            RecordMutation::Delete { key } => {
-                                logical
-                                    .retain(|old, _| !projection.staged_keys_conflict(old, &key));
-                                logical.insert(key, None);
-                            }
+                            .into());
                         }
+                        if !chunk.is_empty()
+                            && (chunk.len() == 128 || chunk_bytes + size > state::CHUNK_BYTES)
+                        {
+                            state::stage_chunk(self.db.ops(), &token, &mut sequence, &mut chunk)
+                                .await?;
+                            chunk_bytes = 0;
+                        }
+                        chunk_bytes += size;
+                        chunk.push(mutation);
                     }
                 }
             }
-            logical.retain(|_, value| value.is_some());
-            let mut physical = RecordMutations::new();
-            for (key, value) in logical {
-                if let Some(value) = value {
-                    physical.insert(
-                        self.physical_record_key(store, &key)?,
-                        Some(self.encrypt_record(store, &key, &value)?),
-                    );
-                }
-            }
-            if !physical.is_empty() {
-                self.db
-                    .ops()
-                    .stage_store_state_records(&token, physical)
-                    .await?;
+            if !chunk.is_empty() {
+                state::stage_chunk(self.db.ops(), &token, &mut sequence, &mut chunk).await?;
             }
             self.db.ops().publish_store_state(token.clone()).await
         }
@@ -1694,6 +1470,21 @@ impl Transaction {
             let _ = self.db.ops().abort_store_state(token).await;
         }
         result
+    }
+
+    pub(crate) async fn ensure_record_view<D: CRDT>(
+        &self,
+        store: &str,
+        projection: &dyn RecordProjection<D>,
+    ) -> Result<()> {
+        self.record_view(store, projection).await.map(|_| ())
+    }
+
+    fn invalidate_record_view(&self, store: &str) {
+        self.record_views
+            .lock()
+            .unwrap()
+            .retain(|(name, _), _| name != store);
     }
 
     async fn record_view<D: CRDT>(
@@ -1719,21 +1510,83 @@ impl Transaction {
         let request = state::records_request(
             self.db.root_id(),
             store,
-            descriptor,
+            descriptor.clone(),
             source_key,
             crate::backend::CacheScope::Shared,
         );
         let view = if let Some(view) = self.db.ops().resolve_store_state(&request).await? {
             view
         } else {
-            let boundary = Snapshot::from(parents);
-            let entries = self
-                .db
-                .ops()
-                .store_at(self.db.root_id(), store, &boundary)
-                .await?;
-            self.publish_record_view(store, projection, request, &entries)
-                .await?
+            #[cfg(all(unix, feature = "service"))]
+            if let Some(conn) = self.db.ops().remote_connection() {
+                // A read-only client cannot publish its own generation. The
+                // daemon validates the registered plaintext codec and builds
+                // under its narrowly scoped internal maintenance capability.
+                if self.encryptors.lock().unwrap().contains_key(store)
+                    || projection.server_store_type().is_none()
+                {
+                    // Encrypted and unregistered projections must never be
+                    // dispatched to a plaintext server codec. Keep their
+                    // existing client-side build path.
+                    let boundary = Snapshot::from(parents);
+                    let entries = self
+                        .db
+                        .ops()
+                        .store_at(self.db.root_id(), store, &boundary)
+                        .await?;
+                    return self
+                        .publish_record_view(store, projection, request, &entries)
+                        .await;
+                }
+                let type_id = projection.server_store_type().expect("checked above");
+
+                match conn
+                    .ensure_record_generation(
+                        self.db.root_id().clone(),
+                        self.db.auth_identity().cloned().unwrap_or_default(),
+                        store.into(),
+                        type_id,
+                        descriptor.clone(),
+                    )
+                    .await
+                {
+                    Err(crate::Error::Store(error))
+                        if matches!(*error, StoreError::RecordMaintenanceUnavailable { .. }) =>
+                    {
+                        return Err(
+                            crate::backend::BackendError::StoreStateStorageUnsupported.into()
+                        );
+                    }
+                    result => result?,
+                }
+                self.db
+                    .ops()
+                    .resolve_store_state(&request)
+                    .await?
+                    .ok_or_else(|| StoreError::RecordMaintenanceUnavailable {
+                        store: store.into(),
+                    })?
+            } else {
+                let boundary = Snapshot::from(parents);
+                let entries = self
+                    .db
+                    .ops()
+                    .store_at(self.db.root_id(), store, &boundary)
+                    .await?;
+                self.publish_record_view(store, projection, request, &entries)
+                    .await?
+            }
+            #[cfg(not(all(unix, feature = "service")))]
+            {
+                let boundary = Snapshot::from(parents);
+                let entries = self
+                    .db
+                    .ops()
+                    .store_at(self.db.root_id(), store, &boundary)
+                    .await?;
+                self.publish_record_view(store, projection, request, &entries)
+                    .await?
+            }
         };
         self.record_views
             .lock()
@@ -1873,11 +1726,23 @@ impl Transaction {
         T: Data,
     {
         let subtree_name = subtree_name.as_ref();
+        let stages = self.projected.lock().unwrap();
         let builder_ref = self.entry_builder.lock().unwrap();
         let builder = builder_ref
             .as_ref()
             .ok_or(TransactionError::TransactionAlreadyCommitted)?;
 
+        if let Some(stage) = stages.get(subtree_name) {
+            return stage.canonical.bytes().and_then(|data| {
+                serde_json::from_slice(&data).map(Some).map_err(|e| {
+                    TransactionError::StoreDeserializationFailed {
+                        store: subtree_name.to_string(),
+                        reason: e.to_string(),
+                    }
+                    .into()
+                })
+            });
+        }
         if let Ok(data) = builder.data(subtree_name) {
             if data.is_empty() {
                 Ok(None)
@@ -2252,15 +2117,6 @@ impl Transaction {
     }
 
     async fn commit_inner(self, guard: Option<tokio::sync::OwnedMutexGuard<()>>) -> Result<ID> {
-        {
-            let staged = self.logical_record_mutations.lock().unwrap().clone();
-            for (store, mutations) in staged {
-                let delta = crate::store::table::legacy_doc_delta(&mutations)?;
-                self.update_subtree(store, serde_json::to_vec(&delta)?)
-                    .await?;
-            }
-        }
-
         // Check if this is a settings subtree update and get the effective settings before any borrowing
         let has_settings_update = {
             let builder_cell = self.entry_builder.lock().unwrap();
@@ -2349,18 +2205,37 @@ impl Transaction {
             subtree_tips.push((subtree_name, tips));
         }
 
-        // Now update the builder with the tips
-        {
-            let mut builder_ref = self.entry_builder.lock().unwrap();
-            let builder = builder_ref
-                .as_mut()
-                .ok_or(TransactionError::TransactionAlreadyCommitted)?;
-
-            for (subtree_name, tips) in subtree_tips {
-                builder.set_subtree_parents_mut(&subtree_name, tips);
+        // Serialize outside the install lock, then seal exactly the revision
+        // whose canonical bytes were serialized. No await under either lock.
+        loop {
+            let snapshot = self.projected.lock().unwrap().clone();
+            let bytes = snapshot
+                .iter()
+                .map(|(store, stage)| Ok((store.clone(), stage.canonical.bytes()?)))
+                .collect::<Result<Vec<_>>>()?;
+            let stages = self.projected.lock().unwrap();
+            if stages.len() != snapshot.len()
+                || stages.iter().any(|(store, stage)| {
+                    snapshot.get(store).map(|old| old.revision) != Some(stage.revision)
+                })
+            {
+                continue;
             }
-
+            let mut builder_ref = self.entry_builder.lock().unwrap();
+            let mut builder = builder_ref
+                .as_ref()
+                .ok_or(TransactionError::TransactionAlreadyCommitted)?
+                .clone();
+            for (subtree_name, tips) in &subtree_tips {
+                builder.set_subtree_parents_mut(subtree_name, tips.clone());
+            }
+            for (store, data) in bytes {
+                builder.set_subtree_data_mut(store, data);
+            }
             builder.remove_empty_subtrees_mut()?;
+            *builder_ref = Some(builder);
+            self.projected_sealed.store(true, Ordering::Release);
+            break;
         }
 
         // Add metadata with settings snapshot for all entries
@@ -2372,13 +2247,13 @@ impl Transaction {
             .store_snapshot_at(self.db.root_id(), SETTINGS, &db_snapshot)
             .await?;
 
-        // Clone the builder from RefCell (limit borrow scope to avoid holding across await)
+        // Clone the sealed builder (no borrow held across awaits below).
         let mut builder = {
             let builder_cell = self.entry_builder.lock().unwrap();
-            let builder_from_cell = builder_cell
+            builder_cell
                 .as_ref()
-                .ok_or(TransactionError::TransactionAlreadyCommitted)?;
-            builder_from_cell.clone()
+                .ok_or(TransactionError::TransactionAlreadyCommitted)?
+                .clone()
         };
 
         // Parse existing metadata if present, or create new

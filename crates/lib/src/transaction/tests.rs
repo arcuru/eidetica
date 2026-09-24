@@ -91,19 +91,6 @@ impl CRDT for StagedRows {
     }
 }
 
-struct LegacyRowsProjection;
-impl RecordProjection<Doc> for LegacyRowsProjection {
-    fn descriptor(&self) -> ProjectionDescriptor {
-        RowsProjection.descriptor()
-    }
-    fn mutations<'a>(
-        &'a self,
-        _: &'a Doc,
-    ) -> Result<Box<dyn Iterator<Item = Result<RecordMutation>> + Send + 'a>> {
-        unreachable!()
-    }
-}
-
 struct RowsProjection;
 impl RecordProjection<StagedRows> for RowsProjection {
     fn descriptor(&self) -> ProjectionDescriptor {
@@ -921,6 +908,100 @@ async fn projected_page_discards_awaited_fetch_after_racing_mutation() {
 }
 
 #[tokio::test]
+async fn projected_unstaged_page_keeps_cursor_and_rejects_racing_stage() {
+    let (instance, _) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        crate::NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let (key, _) = generate_keypair();
+    let db = Database::create(&instance, key, Doc::new()).await.unwrap();
+    let tx = db.new_transaction().await.unwrap();
+    let (page, cursor) = tx
+        .projected_scan_page(
+            "rows",
+            RowsProjection.descriptor(),
+            None,
+            1,
+            None,
+            |after, _| async move {
+                assert!(after.is_none());
+                Ok(crate::backend::RecordPage {
+                    records: vec![(b"a".to_vec(), b"one".to_vec())],
+                    next: Some(b"a".to_vec()),
+                })
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(page.records, vec![(b"a".to_vec(), b"one".to_vec())]);
+    assert!(page.next.is_none());
+    let cursor = cursor.unwrap();
+    let (page, next) = tx
+        .projected_scan_page(
+            "rows",
+            RowsProjection.descriptor(),
+            Some(&cursor),
+            1,
+            None,
+            |after, _| async move {
+                assert_eq!(after, Some(b"a".to_vec()));
+                Ok(crate::backend::RecordPage {
+                    records: vec![(b"b".to_vec(), b"two".to_vec())],
+                    next: None,
+                })
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(page.records, vec![(b"b".to_vec(), b"two".to_vec())]);
+    assert!(next.is_none());
+
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let reader = tx.clone();
+    let task = tokio::spawn(async move {
+        let mut entered = Some(entered_tx);
+        let mut release = Some(release_rx);
+        reader
+            .projected_scan_page(
+                "rows",
+                RowsProjection.descriptor(),
+                None,
+                1,
+                None,
+                move |_, _| {
+                    entered.take().unwrap().send(()).unwrap();
+                    let wait = release.take().unwrap();
+                    async move {
+                        wait.await.unwrap();
+                        Ok(crate::backend::RecordPage::default())
+                    }
+                },
+            )
+            .await
+    });
+    entered_rx.await.unwrap();
+    tx.stage_projected_delta("rows", &RowsProjection, row("c", "three"))
+        .await
+        .unwrap();
+    release_tx.send(()).unwrap();
+    is_stale(task.await.unwrap());
+    is_stale(
+        tx.projected_scan_page(
+            "rows",
+            RowsProjection.descriptor(),
+            Some(&cursor),
+            1,
+            None,
+            |_, _| async { unreachable!("stale cursor must be rejected before fetching") },
+        )
+        .await,
+    );
+}
+
+#[tokio::test]
 async fn projected_staging_installs_concurrent_writes_in_canonical_and_both_overlays() {
     let (instance, _) = Instance::create_backend(
         Box::new(InMemory::new()),
@@ -949,7 +1030,7 @@ async fn projected_staging_installs_concurrent_writes_in_canonical_and_both_over
                     &RacingProjection,
                     RacingRows {
                         rows: row(key, value),
-                        barrier: Some(barrier),
+                        barrier: Some((barrier, std::sync::Arc::new(AtomicBool::new(false)))),
                     },
                 ))
             })
@@ -963,10 +1044,6 @@ async fn projected_staging_installs_concurrent_writes_in_canonical_and_both_over
     assert_eq!(state.revision, 2);
     assert_eq!(state.logical.len(), 2);
     assert_eq!(state.physical, state.logical);
-    assert!(
-        matches!(tx.stage_record("rows", &LegacyRowsProjection, b"x".to_vec(), Some(b"x".to_vec())),
-        Err(crate::Error::Store(error)) if matches!(*error, StoreError::InvalidOperation { .. }))
-    );
     let staged: RacingRows = tx.get_local_data("rows").unwrap().unwrap();
     assert_eq!(staged.rows.0.get(&"a".to_string()).unwrap(), "one");
     assert_eq!(staged.rows.0.get(&"b".to_string()).unwrap(), "two");
@@ -980,14 +1057,19 @@ async fn projected_staging_installs_concurrent_writes_in_canonical_and_both_over
 struct RacingRows {
     rows: StagedRows,
     #[serde(skip)]
-    barrier: Option<std::sync::Arc<std::sync::Barrier>>,
+    barrier: Option<(
+        std::sync::Arc<std::sync::Barrier>,
+        std::sync::Arc<AtomicBool>,
+    )>,
 }
 impl Serialize for RacingRows {
     fn serialize<S: serde::Serializer>(
         &self,
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error> {
-        if let Some(barrier) = &self.barrier {
+        if let Some((barrier, visited)) = &self.barrier
+            && !visited.swap(true, Ordering::SeqCst)
+        {
             barrier.wait();
         }
         #[derive(Serialize)]
@@ -1152,7 +1234,10 @@ async fn projected_staging_failures_leave_canonical_and_overlays_unchanged() {
         .get("rows")
         .unwrap()
         .clone();
-    assert_eq!(prior.canonical, unchanged.canonical);
+    assert_eq!(
+        prior.canonical.bytes().unwrap(),
+        unchanged.canonical.bytes().unwrap()
+    );
     assert_eq!(prior.logical, unchanged.logical);
     assert_eq!(prior.physical, unchanged.physical);
     assert_eq!(prior.revision, unchanged.revision);
@@ -1181,7 +1266,10 @@ async fn projected_staging_failures_leave_canonical_and_overlays_unchanged() {
     );
     let after = tx.projected.lock().unwrap().get("rows").unwrap().clone();
     assert_eq!(after.revision, before.revision);
-    assert_eq!(after.canonical, before.canonical);
+    assert_eq!(
+        after.canonical.bytes().unwrap(),
+        before.canonical.bytes().unwrap()
+    );
     assert_eq!(after.logical, before.logical);
     assert_eq!(after.physical, before.physical);
     assert!(
@@ -1191,6 +1279,108 @@ async fn projected_staging_failures_leave_canonical_and_overlays_unchanged() {
     assert_eq!(
         tx.get_local_data::<StagedRows>("rows").unwrap().unwrap(),
         row("a", "one")
+    );
+}
+
+#[derive(Clone, Default, Deserialize)]
+struct CommitFailRows {
+    rows: StagedRows,
+    #[serde(skip)]
+    calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+impl Serialize for CommitFailRows {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        if self.calls.fetch_add(1, Ordering::SeqCst) > 0 {
+            return Err(serde::ser::Error::custom(
+                "injected commit serialization failure",
+            ));
+        }
+        self.rows.serialize(serializer)
+    }
+}
+impl Data for CommitFailRows {}
+impl CRDT for CommitFailRows {
+    fn merge(&self, other: &Self) -> Result<Self> {
+        Ok(Self {
+            rows: self.rows.merge(&other.rows)?,
+            calls: self.calls.clone(),
+        })
+    }
+}
+struct CommitFailProjection;
+impl RecordProjection<CommitFailRows> for CommitFailProjection {
+    fn descriptor(&self) -> ProjectionDescriptor {
+        RowsProjection.descriptor()
+    }
+    fn mutations<'a>(
+        &'a self,
+        delta: &'a CommitFailRows,
+    ) -> Result<Box<dyn Iterator<Item = Result<RecordMutation>> + Send + 'a>> {
+        RowsProjection.mutations(&delta.rows)
+    }
+}
+
+#[tokio::test]
+async fn projected_commit_serialization_failure_leaves_builder_and_overlays_atomic() {
+    let (instance, _) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        crate::NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let (key, _) = generate_keypair();
+    let db = Database::create(&instance, key, Doc::new()).await.unwrap();
+    let tx = db.new_transaction().await.unwrap();
+    let observer = tx.clone();
+    tx.stage_projected_delta(
+        "rows",
+        &CommitFailProjection,
+        CommitFailRows {
+            rows: row("a", "one"),
+            calls: Default::default(),
+        },
+    )
+    .await
+    .unwrap();
+    let before = observer
+        .projected
+        .lock()
+        .unwrap()
+        .get("rows")
+        .unwrap()
+        .clone();
+    assert!(tx.commit().await.is_err());
+    let after = observer
+        .projected
+        .lock()
+        .unwrap()
+        .get("rows")
+        .unwrap()
+        .clone();
+    assert_eq!(before.revision, after.revision);
+    assert_eq!(before.logical, after.logical);
+    assert_eq!(before.physical, after.physical);
+    assert!(
+        observer
+            .entry_builder
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .data("rows")
+            .is_err()
+    );
+    assert!(!observer.projected_sealed.load(Ordering::Acquire));
+    assert!(
+        db.ops()
+            .store_snapshot(db.root_id(), "rows")
+            .await
+            .unwrap()
+            .tips()
+            .is_empty()
     );
 }
 

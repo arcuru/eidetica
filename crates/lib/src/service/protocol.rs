@@ -201,6 +201,13 @@ pub enum DatabaseOp {
         expected_type: String,
         projection: crate::backend::ProjectionDescriptor,
     },
+    /// Build a registered plaintext record generation without returning its
+    /// potentially large full CRDT state to a point/page reader. Gate Read.
+    EnsureRecordGeneration {
+        store: String,
+        expected_type: String,
+        projection: crate::backend::ProjectionDescriptor,
+    },
     /// Ordered (by subtree height), verified, opaque store entries reachable
     /// from `tips` in `scope` — the universal primitive, incl. encrypted
     /// stores (client decrypts+merges locally). Gate Read.
@@ -292,6 +299,7 @@ impl DatabaseOp {
             DatabaseOp::BeginTransaction { .. }
             | DatabaseOp::GetVerifiedTips
             | DatabaseOp::EnsureStoreStateGeneration { .. }
+            | DatabaseOp::EnsureRecordGeneration { .. }
             | DatabaseOp::GetStoreEntries { .. }
             | DatabaseOp::GetStoreTipsUpToEntries { .. }
             | DatabaseOp::ComputeMergeState { .. }

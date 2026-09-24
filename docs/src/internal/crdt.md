@@ -40,12 +40,16 @@ row projection of `LwwMap<K, V>`, which composes `Map<K, Lww<V>>` and presents
 only live values through its ordinary iteration API. Both maps serialize as
 key-ordered sequences of unique key/operation pairs, not JSON objects.
 
+For example, folding `Set("a", 1)`, `Delete("a")`, then `Set("a", 2)`
+leaves `a = 2`; an unrelated key `b` is unaffected. The operation order
+comes from Entries, whereas serialization sorts map keys.
+
 `CanonicalJson` holds RFC 8785 canonical row bytes (`canonical-json:v0`). It
 rejects duplicate member names and invalid JSON number inputs. A typed reader
 may deserialize a row, but its schema never rewrites the canonical row bytes.
-The existing Table remains Doc-backed until record staging and projection
-contracts are implemented; no mixed old/new `table:v0` histories are supported
-once that format changes.
+Table now reduces `LwwMap<String, CanonicalJson>` Entry deltas in deterministic Entry order.
+Its `table:v0` type ID is retained, but the old Doc-backed wire format is incompatible;
+no mixed old/new history or migration is supported.
 
 ## Doc Merge Semantics
 

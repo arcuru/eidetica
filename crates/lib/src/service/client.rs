@@ -1109,6 +1109,35 @@ impl RemoteConnection {
         }
     }
 
+    /// Ask the server to build a registered plaintext record generation after
+    /// canonical Read authorization, without returning the full merged state.
+    pub async fn ensure_record_generation(
+        &self,
+        root_id: ID,
+        identity: SigKey,
+        store: String,
+        expected_type: &str,
+        projection: crate::backend::ProjectionDescriptor,
+    ) -> crate::Result<()> {
+        let identity = if identity == SigKey::default() {
+            self.session_identity().unwrap_or_default()
+        } else {
+            identity
+        };
+        let response = self
+            .db_request(
+                root_id,
+                identity,
+                DatabaseOp::EnsureRecordGeneration {
+                    store,
+                    expected_type: expected_type.to_string(),
+                    projection,
+                },
+            )
+            .await?;
+        Self::expect_ok(response)
+    }
+
     /// Fetch a registered Store's state; only an explicit maintenance
     /// capability refusal selects client-side typed history reduction.
     pub async fn get_store_state<S: crate::store::Store>(

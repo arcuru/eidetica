@@ -1136,7 +1136,7 @@ impl<S: Store> PasswordStore<S> {
 
     /// Read one projected row using the unlocked password and physical-key identity.
     /// The remote read-only path folds authorized history locally, never stages
-    /// server maintenance. This is a typed projection API, not a Table format switch.
+    /// server maintenance. The caller supplies the wrapped Store's typed projection.
     pub async fn projected_get(
         &self,
         projection: &dyn super::RecordProjection<S::Data>,

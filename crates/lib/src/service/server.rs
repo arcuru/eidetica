@@ -196,12 +196,35 @@ type StoreRead =
         &'a Database,
         &'a str,
     ) -> Pin<Box<dyn Future<Output = crate::Result<serde_json::Value>> + Send + 'a>>;
+type StoreEnsure = for<'a> fn(
+    &'a Database,
+    &'a str,
+) -> Pin<Box<dyn Future<Output = crate::Result<()>> + Send + 'a>>;
 
 #[derive(Clone)]
 struct StoreCodec {
     type_id: &'static str,
     descriptor: crate::backend::ProjectionDescriptor,
     read: StoreRead,
+    ensure: Option<StoreEnsure>,
+}
+
+fn ensure_store<'a, S: crate::store::Store>(
+    db: &'a Database,
+    name: &'a str,
+) -> Pin<Box<dyn Future<Output = crate::Result<()>> + Send + 'a>>
+where
+    S::Data: Send,
+{
+    Box::pin(async move {
+        if let crate::store::StoreStateModel::Records(projection) = S::state_model() {
+            db.new_transaction()
+                .await?
+                .ensure_record_view(name, projection.as_ref())
+                .await?;
+        }
+        Ok(())
+    })
 }
 
 fn read_store<'a, S: crate::store::Store>(
@@ -211,7 +234,13 @@ fn read_store<'a, S: crate::store::Store>(
 where
     S::Data: Send,
 {
-    Box::pin(async move { Ok(serde_json::to_value(db.get_store_state::<S>(name).await?)?) })
+    Box::pin(async move {
+        if let crate::store::StoreStateModel::Records(projection) = S::state_model() {
+            let txn = db.new_transaction().await?;
+            txn.ensure_record_view(name, projection.as_ref()).await?;
+        }
+        Ok(serde_json::to_value(db.get_store_state::<S>(name).await?)?)
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -259,6 +288,8 @@ impl ServiceServer {
             type_id,
             descriptor: S::state_model().descriptor(),
             read: read_store::<S>,
+            ensure: matches!(S::state_model(), crate::store::StoreStateModel::Records(_))
+                .then_some(ensure_store::<S> as StoreEnsure),
         });
         Ok(())
     }
@@ -1245,18 +1276,39 @@ async fn dispatch_database_op(
             Ok(ServiceResponse::TransactionContext(ctx))
         }
 
-        DatabaseOp::EnsureStoreStateGeneration {
-            store,
-            expected_type,
-            projection,
-        } => {
+        op @ (DatabaseOp::EnsureStoreStateGeneration { .. }
+        | DatabaseOp::EnsureRecordGeneration { .. }) => {
+            let records_only = matches!(op, DatabaseOp::EnsureRecordGeneration { .. });
+            let (store, expected_type, projection) = match op {
+                DatabaseOp::EnsureStoreStateGeneration {
+                    store,
+                    expected_type,
+                    projection,
+                }
+                | DatabaseOp::EnsureRecordGeneration {
+                    store,
+                    expected_type,
+                    projection,
+                } => (store, expected_type, projection),
+                _ => unreachable!(),
+            };
             use crate::store::StoreError;
 
             // The per-tree Read gate above runs before looking up metadata or
             // doing internal cache maintenance. Never trust the caller's codec.
             let db = Database::open(instance, &root_id).await?;
             let txn = db.new_transaction().await?;
-            let actual = txn.get_index().await?.get_entry(&store).await?.type_id;
+            let actual = match txn.get_index().await?.get_entry(&store).await {
+                Ok(entry) => entry.type_id,
+                Err(crate::Error::Store(error))
+                    if matches!(*error, StoreError::KeyNotFound { .. }) && records_only =>
+                {
+                    // An empty, not-yet-registered Table (including a new
+                    // user's keys Table) has no codec identity to maintain.
+                    return Err(StoreError::RecordMaintenanceUnavailable { store }.into());
+                }
+                Err(error) => return Err(error),
+            };
             if actual != expected_type {
                 return Err(StoreError::TypeMismatch {
                     store,
@@ -1299,7 +1351,18 @@ async fn dispatch_database_op(
                 Err(err) => return Err(err),
                 Ok(_) => {}
             }
-            Ok(ServiceResponse::CrdtValue((codec.read)(&db, &store).await?))
+            if records_only {
+                let ensure =
+                    codec
+                        .ensure
+                        .ok_or_else(|| StoreError::RecordMaintenanceUnavailable {
+                            store: store.clone(),
+                        })?;
+                ensure(&db, &store).await?;
+                Ok(ServiceResponse::Ok)
+            } else {
+                Ok(ServiceResponse::CrdtValue((codec.read)(&db, &store).await?))
+            }
         }
 
         DatabaseOp::GetStoreEntries { store, tips, scope } => {

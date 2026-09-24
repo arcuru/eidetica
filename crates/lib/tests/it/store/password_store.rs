@@ -413,7 +413,7 @@ async fn test_password_store_docstore_delete() {
 // ============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-struct PasswordTestRecord {
+pub(crate) struct PasswordTestRecord {
     name: String,
     value: i32,
 }
@@ -476,7 +476,7 @@ async fn test_password_table_uses_lazy_encrypted_record_cache() {
         PasswordStore::<Table<PasswordTestRecord>>::state_model()
             .descriptor()
             .name,
-        "eidetica/password/eidetica/table/rows"
+        "eidetica/password/eidetica/table/rows/canonical-json:v0"
     );
     let records = memory
         .store_state_records(database.root_id(), "lazy_records")
@@ -497,8 +497,457 @@ async fn test_password_table_uses_lazy_encrypted_record_cache() {
     }
 }
 
+pub(crate) async fn populate_streamed_password_table(database: &eidetica::Database, store: &str) {
+    let tx = database.new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<Table<PasswordTestRecord>>>(store)
+        .await
+        .unwrap();
+    encrypted.initialize("pass", Doc::new()).await.unwrap();
+    let table = encrypted.inner().await.unwrap();
+    for i in 0..260 {
+        let key = format!("row-{i:03}");
+        table
+            .set(
+                &key,
+                PasswordTestRecord {
+                    name: key.clone(),
+                    value: i,
+                },
+            )
+            .await
+            .unwrap();
+    }
+    tx.commit().await.unwrap();
+
+    // Each transaction is an Entry. Later changes must be applied in order,
+    // including a tombstone and resurrection after the first 128 mutations.
+    let tx = database.new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<Table<PasswordTestRecord>>>(store)
+        .await
+        .unwrap();
+    encrypted.open("pass").unwrap();
+    let table = encrypted.inner().await.unwrap();
+    for i in 0..260 {
+        let key = format!("row-{i:03}");
+        if i % 3 == 0 {
+            table.delete(&key).await.unwrap();
+        } else {
+            table
+                .set(
+                    &key,
+                    PasswordTestRecord {
+                        name: key.clone(),
+                        value: i + 1000,
+                    },
+                )
+                .await
+                .unwrap();
+        }
+    }
+    tx.commit().await.unwrap();
+
+    let tx = database.new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<Table<PasswordTestRecord>>>(store)
+        .await
+        .unwrap();
+    encrypted.open("pass").unwrap();
+    let table = encrypted.inner().await.unwrap();
+    for i in (0..260).step_by(6) {
+        let key = format!("row-{i:03}");
+        table
+            .set(
+                &key,
+                PasswordTestRecord {
+                    name: key.clone(),
+                    value: i + 2000,
+                },
+            )
+            .await
+            .unwrap();
+    }
+    tx.commit().await.unwrap();
+}
+
+pub(crate) async fn check_streamed_password_table(database: &eidetica::Database, store: &str) {
+    let tx = database.new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<Table<PasswordTestRecord>>>(store)
+        .await
+        .unwrap();
+    encrypted.open("pass").unwrap();
+    let table = encrypted.inner().await.unwrap();
+    assert_eq!(table.get("row-000").await.unwrap().value, 2000);
+    assert!(table.get("row-003").await.is_err());
+    assert_eq!(table.get("row-257").await.unwrap().value, 1257);
+    let mut cursor = None;
+    let mut keys = Vec::new();
+    loop {
+        let page = table.scan_page(cursor.as_ref(), 37).await.unwrap();
+        keys.extend(page.rows.into_iter().map(|(key, _)| key));
+        if page.next.is_none() {
+            break;
+        }
+        cursor = page.next;
+    }
+    assert_eq!(keys.len(), 217);
+    assert_ne!(keys, {
+        let mut sorted = keys.clone();
+        sorted.sort();
+        sorted
+    });
+    let mut expected = (0..260)
+        .filter(|i| i % 3 != 0 || i % 6 == 0)
+        .map(|i| format!("row-{i:03}"))
+        .collect::<Vec<_>>();
+    expected.sort();
+    let mut actual = keys;
+    actual.sort();
+    assert_eq!(actual, expected);
+}
+
+#[cfg(all(unix, feature = "service"))]
+pub(crate) async fn inject_late_corrupt_encrypted_entry(
+    database: &eidetica::Database,
+    user: &eidetica::user::User,
+    store: &str,
+) {
+    use eidetica::{Entry, WriteSource, auth::crypto::sign_entry, backend::VerificationStatus};
+    let ctx = database
+        .transaction_context(
+            &[store.into()],
+            eidetica::service::protocol::ReadScope::Verified,
+        )
+        .await
+        .unwrap();
+    let key = user.get_default_key().unwrap();
+    let identity = eidetica::auth::types::SigKey::from_pubkey(&key);
+    let signing = user.get_signing_key(&key).unwrap();
+    let entry = Entry::builder(database.root_id().clone())
+        .set_parents(ctx.main_parents.iter().map(|(id, _)| id.clone()).collect())
+        .set_subtree_data(store, vec![0u8; 28])
+        .set_subtree_parents(
+            store,
+            ctx.subtree_parents[store]
+                .iter()
+                .map(|(id, _)| id.clone())
+                .collect(),
+        )
+        .set_metadata(
+            serde_json::to_vec(&serde_json::json!({
+                "settings_tips": ctx.settings_tips,
+                "entropy": serde_json::Value::Null,
+            }))
+            .unwrap(),
+        )
+        .set_height(
+            ctx.main_parents
+                .iter()
+                .map(|(_, height)| *height)
+                .max()
+                .unwrap_or(0)
+                + 1,
+        )
+        .build()
+        .unwrap()
+        .with_auth(|auth| auth.key = identity.clone());
+    let signature = sign_entry(&entry, &signing).unwrap();
+    let entry = entry.with_auth(|auth| auth.signature = Some(signature));
+    let entry_id = entry.id();
+    if let Some(conn) = database.instance().unwrap().remote_connection() {
+        conn.submit_signed_entry(database.root_id().clone(), identity, entry)
+            .await
+            .unwrap();
+    } else {
+        database
+            .instance()
+            .unwrap()
+            .put_entry(
+                database.root_id(),
+                VerificationStatus::Verified,
+                entry,
+                WriteSource::Local,
+            )
+            .await
+            .unwrap();
+    }
+    let snapshot = database
+        .backend()
+        .unwrap()
+        .store_snapshot(database.root_id(), store)
+        .await
+        .unwrap();
+    assert!(
+        snapshot.tips().contains(&entry_id),
+        "tampered Entry must be the newest store tip"
+    );
+    assert_eq!(
+        database
+            .backend()
+            .unwrap()
+            .get(&entry_id)
+            .await
+            .unwrap()
+            .data(store)
+            .unwrap(),
+        &vec![0u8; 28]
+    );
+}
+
+#[cfg(all(unix, feature = "service"))]
+pub(crate) async fn streamed_projection_request(
+    database: &eidetica::Database,
+    store: &str,
+) -> eidetica::backend::StoreStateRequest {
+    use eidetica::backend::{CacheScope, StoreStateLifecycle, StoreStateRequest};
+    let backend = database.backend().unwrap();
+    let parents = backend
+        .store_snapshot(database.root_id(), store)
+        .await
+        .unwrap();
+    let mut parents = parents.into_tips();
+    parents.sort();
+    let source = format!(
+        "merge{}",
+        parents
+            .iter()
+            .map(|id| format!(":{id}"))
+            .collect::<String>()
+    );
+    StoreStateRequest {
+        database: database.root_id().clone(),
+        store: store.into(),
+        lifecycle: StoreStateLifecycle::Derived,
+        scope: CacheScope::Shared,
+        projection: PasswordStore::<Table<PasswordTestRecord>>::state_model().descriptor(),
+        source_key: eidetica::entry::ID::from_bytes(source.as_bytes())
+            .to_string()
+            .into_bytes(),
+    }
+}
+
+#[cfg(all(unix, feature = "service"))]
+pub(crate) async fn assert_wrong_physical_identity_rejected(
+    database: &eidetica::Database,
+    control: &eidetica::Instance,
+    store: &str,
+) {
+    use eidetica::backend::RecordRange;
+    let backend = database.backend().unwrap();
+    let request = streamed_projection_request(database, store).await;
+    let view = backend
+        .resolve_store_state(&request)
+        .await
+        .unwrap()
+        .unwrap();
+    let page = backend
+        .store_state_record_scan(&view, &RecordRange::default(), None, 1)
+        .await
+        .unwrap();
+    let (key, ciphertext) = &page.records[0];
+    let mut wrong = key.clone();
+    wrong[0] ^= 1;
+    control.backend().clear_derived_store_state().await.unwrap();
+    control.backend().clear_derived_store_state().await.unwrap();
+    // Administrative cache clearing is intentionally a no-op over a client
+    // connection. Inject the mismatched physical key through the owner seam.
+    let token = control
+        .backend()
+        .begin_store_state_staging(request)
+        .await
+        .unwrap();
+    control
+        .backend()
+        .stage_store_state_records(&token, [(wrong, Some(ciphertext.clone()))].into())
+        .await
+        .unwrap();
+    control.backend().publish_store_state(token).await.unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<Table<PasswordTestRecord>>>(store)
+        .await
+        .unwrap();
+    encrypted.open("pass").unwrap();
+    assert!(
+        encrypted
+            .inner()
+            .await
+            .unwrap()
+            .scan_page(None, 1)
+            .await
+            .is_err(),
+        "ciphertext under a foreign physical key must fail authentication"
+    );
+}
+
+#[cfg(all(unix, feature = "service"))]
+pub(crate) async fn assert_failed_cold_build_unpublished(
+    database: &eidetica::Database,
+    store: &str,
+) {
+    let backend = database.backend().unwrap();
+    let request = streamed_projection_request(database, store).await;
+    assert!(
+        backend
+            .resolve_store_state(&request)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let tx = database.new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<Table<PasswordTestRecord>>>(store)
+        .await
+        .unwrap();
+    encrypted.open("pass").unwrap();
+    let table = encrypted.inner().await.unwrap();
+    assert!(table.get("row-000").await.is_err());
+    assert!(
+        backend
+            .resolve_store_state(&request)
+            .await
+            .unwrap()
+            .is_none(),
+        "failed late decrypt published partial records"
+    );
+}
+
 #[tokio::test]
-async fn test_password_table_staged_parent_child_conflicts() {
+async fn test_password_table_cold_streams_overwrite_delete_and_resurrection() {
+    let (instance, database, _key) = setup_tree_with_user_key_local().await;
+    let store = "streamed_rows";
+    populate_streamed_password_table(&database, store).await;
+    instance
+        .backend()
+        .clear_derived_store_state()
+        .await
+        .unwrap();
+    instance
+        .backend()
+        .clear_derived_store_state()
+        .await
+        .unwrap();
+    let memory = instance.backend().local_engine().unwrap();
+    let memory = memory
+        .as_any()
+        .downcast_ref::<eidetica::backend::database::InMemory>()
+        .unwrap();
+    assert!(
+        memory
+            .store_state_records(database.root_id(), store)
+            .is_none()
+    );
+    let tx = database.new_transaction().await.unwrap();
+    let mut wrong = tx
+        .get_store::<PasswordStore<Table<PasswordTestRecord>>>(store)
+        .await
+        .unwrap();
+    assert!(wrong.open("wrong").is_err());
+    check_streamed_password_table(&database, store).await;
+    let records = memory
+        .store_state_records(database.root_id(), store)
+        .unwrap();
+    assert_eq!(records.len(), 217);
+    assert!(
+        records
+            .iter()
+            .all(|(key, value)| key.len() == 32 && value.is_some())
+    );
+}
+
+#[tokio::test]
+async fn test_password_table_cold_streams_on_selected_backend() {
+    // Unlike the local instrumentation test, this factory uses SQLite and
+    // PostgreSQL when selected by the matrix. Service has its own socket test.
+    if std::env::var("TEST_BACKEND").as_deref() == Ok("service") {
+        return;
+    }
+    let (instance, _) = eidetica::Instance::create_backend(
+        test_backend().await,
+        eidetica::NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let mut admin = instance.login_user("admin", None).await.unwrap();
+    let key = admin.add_private_key(Some("rows")).await.unwrap();
+    let database = admin.create_database(Doc::new(), &key).await.unwrap();
+    let store = "matrix_encrypted_rows";
+    populate_streamed_password_table(&database, store).await;
+    instance
+        .backend()
+        .clear_derived_store_state()
+        .await
+        .unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let mut wrong = tx
+        .get_store::<PasswordStore<Table<PasswordTestRecord>>>(store)
+        .await
+        .unwrap();
+    assert!(wrong.open("wrong").is_err());
+    check_streamed_password_table(&database, store).await;
+    #[cfg(all(unix, feature = "service"))]
+    {
+        let request = streamed_projection_request(&database, store).await;
+        let view = database
+            .backend()
+            .unwrap()
+            .resolve_store_state(&request)
+            .await
+            .unwrap()
+            .expect("cold encrypted generation published");
+        let page = database
+            .backend()
+            .unwrap()
+            .store_state_record_scan(&view, &Default::default(), None, 300)
+            .await
+            .unwrap();
+        assert_eq!(page.records.len(), 217);
+        assert!(page.records.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        assert!(
+            page.records
+                .iter()
+                .all(|(key, value)| key.len() == 32 && value.len() > 28)
+        );
+        inject_late_corrupt_encrypted_entry(&database, &admin, store).await;
+        instance
+            .backend()
+            .clear_derived_store_state()
+            .await
+            .unwrap();
+        instance
+            .backend()
+            .clear_derived_store_state()
+            .await
+            .unwrap();
+        assert_failed_cold_build_unpublished(&database, store).await;
+    }
+}
+
+#[cfg(all(unix, feature = "service"))]
+#[tokio::test]
+async fn test_password_table_rejects_wrong_physical_record_identity() {
+    if std::env::var("TEST_BACKEND").as_deref() == Ok("service") {
+        return;
+    }
+    let (instance, _) = eidetica::Instance::create_backend(
+        test_backend().await,
+        eidetica::NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let mut admin = instance.login_user("admin", None).await.unwrap();
+    let key = admin.add_private_key(Some("rows")).await.unwrap();
+    let database = admin.create_database(Doc::new(), &key).await.unwrap();
+    let store = "identity_rows";
+    populate_streamed_password_table(&database, store).await;
+    check_streamed_password_table(&database, store).await;
+    assert_wrong_physical_identity_rejected(&database, &instance, store).await;
+}
+
+#[tokio::test]
+async fn test_password_table_staged_parent_child_independent() {
     let (_instance, database) = setup_tree().await;
     let tx = database.new_transaction().await.unwrap();
     let mut encrypted = tx
@@ -527,7 +976,7 @@ async fn test_password_table_staged_parent_child_conflicts() {
         )
         .await
         .unwrap();
-    assert!(table.get("a.b").await.is_err());
+    assert_eq!(table.get("a.b").await.unwrap().value, 1);
     assert_eq!(table.get("a").await.unwrap().value, 2);
     tx.commit().await.unwrap();
 
@@ -538,7 +987,7 @@ async fn test_password_table_staged_parent_child_conflicts() {
         .unwrap();
     encrypted.open("pass").unwrap();
     let table = encrypted.inner().await.unwrap();
-    assert!(table.get("a.b").await.is_err());
+    assert_eq!(table.get("a.b").await.unwrap().value, 1);
     assert_eq!(table.get("a").await.unwrap().value, 2);
 }
 
