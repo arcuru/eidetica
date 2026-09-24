@@ -549,3 +549,93 @@ async fn test_remote_historical_pin_matches_main_parent_frontier() {
         VerificationStatus::Failed
     );
 }
+
+/// Old-branch commits pin their main parents' pre-write settings, not the live head.
+#[tokio::test]
+async fn test_historical_transaction_pins_main_parent_settings() {
+    use eidetica::backend::VerificationStatus;
+    use eidetica::constants::SETTINGS;
+
+    let (instance, mut user, key_id) =
+        test_local_instance_with_user_and_key("historical_user", Some("historical_key")).await;
+    let db = user.create_database(Doc::new(), &key_id).await.unwrap();
+    let root = db.root_id().clone();
+    let engine = instance.backend().local_engine().unwrap();
+
+    let tx = db.new_transaction().await.unwrap();
+    tx.get_store::<DocStore>(SETTINGS)
+        .await
+        .unwrap()
+        .set("version", "new")
+        .await
+        .unwrap();
+    let newer = tx.commit().await.unwrap();
+
+    let old_parents = Snapshot::from([root.clone()]);
+    let tx = db.new_transaction_at(&old_parents).await.unwrap();
+    tx.get_store::<DocStore>("data")
+        .await
+        .unwrap()
+        .set("old", "branch")
+        .await
+        .unwrap();
+    let historical = tx.commit().await.unwrap();
+
+    let pin = |entry: &Entry| -> Snapshot {
+        let value: serde_json::Value = serde_json::from_slice(entry.metadata().unwrap()).unwrap();
+        serde_json::from_value(value["settings_tips"].clone()).unwrap()
+    };
+    let expected_old = engine
+        .store_snapshot_at(db.root_id(), SETTINGS, &old_parents)
+        .await
+        .unwrap();
+    let expected_new = engine
+        .store_snapshot_at(db.root_id(), SETTINGS, &Snapshot::from([newer.clone()]))
+        .await
+        .unwrap();
+    assert_eq!(expected_old, Snapshot::from([root]));
+    assert_eq!(expected_new, Snapshot::from([newer.clone()]));
+    assert_eq!(pin(&db.get_entry(&historical).await.unwrap()), expected_old);
+
+    let tx = db
+        .new_transaction_at(&Snapshot::from([newer]))
+        .await
+        .unwrap();
+    tx.get_store::<DocStore>("data")
+        .await
+        .unwrap()
+        .set("new", "branch")
+        .await
+        .unwrap();
+    let sibling = tx.commit().await.unwrap();
+    assert_eq!(pin(&db.get_entry(&sibling).await.unwrap()), expected_new);
+
+    let merge_parents = Snapshot::from([historical.clone(), sibling]);
+    let tx = db.new_transaction_at(&merge_parents).await.unwrap();
+    tx.get_store::<DocStore>("data")
+        .await
+        .unwrap()
+        .set("merged", "yes")
+        .await
+        .unwrap();
+    let merged = tx.commit().await.unwrap();
+    let expected_merge = engine
+        .store_snapshot_at(db.root_id(), SETTINGS, &merge_parents)
+        .await
+        .unwrap();
+    assert_eq!(pin(&db.get_entry(&merged).await.unwrap()), expected_merge);
+
+    assert_eq!(
+        engine.get_verification_status(&historical).await.unwrap(),
+        VerificationStatus::Verified
+    );
+    instance
+        .demote_to_unverified(db.root_id(), &historical)
+        .await
+        .unwrap();
+    db.verify().await.unwrap();
+    assert_eq!(
+        engine.get_verification_status(&historical).await.unwrap(),
+        VerificationStatus::Verified
+    );
+}
