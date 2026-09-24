@@ -1,10 +1,9 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 #
-# This source code is dual-licensed under either the MIT license found in the
-# LICENSE-MIT file in the root directory of this source tree or the Apache
-# License, Version 2.0 found in the LICENSE-APACHE file in the root directory
-# of this source tree. You may select, at your option, one of the
-# above-listed licenses.
+# Adapted from Buck2's prelude/toolchains/demo.bzl. This source code is
+# dual-licensed under either the MIT license in toolchains/LICENSE-MIT or the
+# Apache License, Version 2.0 in toolchains/LICENSE-APACHE. You may select
+# either license.
 
 load("@prelude//android/tools:jdk_system_image.bzl", "jdk_system_image")
 load("@prelude//tests:test_toolchain.bzl", "noop_test_toolchain")
