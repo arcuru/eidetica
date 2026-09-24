@@ -24,15 +24,22 @@ use serde::{Deserialize, Serialize};
 use crate::{
     Result,
     backend::{
-        BackendImpl, InstanceMetadata, InstanceSecrets, RecordMutations, RecordPage, RecordRange,
-        RecordView, StagingToken, StoreStateLifecycle, StoreStateRequest, VerificationStatus,
-        errors::BackendError,
+        BackendImpl, InstanceMetadata, InstanceSecrets, RecordMutation, RecordMutations,
+        RecordPage, RecordRange, RecordView, StagingStatus, StagingToken, StoreStateLifecycle,
+        StoreStateRequest, VerificationStatus, errors::BackendError,
     },
     entry::{Entry, ID},
     snapshot::Snapshot,
 };
 
 use crate::backend::database::sorting;
+
+fn staging_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock before epoch")
+        .as_secs() as i64
+}
 
 /// Grouped tree tips cache: (tree_tips, subtree_name -> subtree_tips)
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -50,6 +57,7 @@ pub(crate) struct TreeTipsCache {
 pub(crate) struct InMemoryInner {
     pub(crate) entries: HashMap<ID, Entry>,
     pub(crate) store_state_namespaces: HashMap<String, RecordNamespace>,
+    pub(crate) staging_tokens: HashMap<String, MemoryStagingToken>,
     pub(crate) verification_status: HashMap<ID, VerificationStatus>,
     /// Instance metadata containing device public key and system database IDs.
     ///
@@ -66,14 +74,24 @@ pub(crate) struct InMemoryInner {
     pub(crate) tips: HashMap<ID, TreeTipsCache>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct MemoryStagingToken {
+    pub(crate) target: StoreStateRequest,
+    pub(crate) status: StagingStatus,
+    pub(crate) last_activity: i64,
+    #[serde(default)]
+    pub(crate) next_sequence: u64,
+    pub(crate) last_digest: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct RecordNamespace {
-    request: StoreStateRequest,
-    ready: bool,
+    pub(crate) request: StoreStateRequest,
+    pub(crate) ready: bool,
     /// Unlinked by a derived clear: no longer resolvable, still readable
     /// through views resolved before the clear.
-    unlinked: bool,
-    records: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
+    pub(crate) unlinked: bool,
+    pub(crate) records: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
 }
 
 /// A simple in-memory database implementation using a `HashMap` for storage.
@@ -162,6 +180,7 @@ impl InMemory {
             inner: RwLock::new(InMemoryInner {
                 entries: HashMap::new(),
                 store_state_namespaces: HashMap::new(),
+                staging_tokens: HashMap::new(),
                 verification_status: HashMap::new(),
                 instance_metadata: None,
                 instance_secrets: None,
@@ -294,7 +313,18 @@ impl BackendImpl for InMemory {
         let target = request.clone();
         request.lifecycle = StoreStateLifecycle::Staging;
         let namespace_id = uuid::Uuid::new_v4().to_string();
-        self.inner.write().unwrap().store_state_namespaces.insert(
+        let mut inner = self.inner.write().unwrap();
+        inner.staging_tokens.insert(
+            namespace_id.clone(),
+            MemoryStagingToken {
+                target: target.clone(),
+                status: StagingStatus::Active,
+                last_activity: staging_now(),
+                next_sequence: 0,
+                last_digest: None,
+            },
+        );
+        inner.store_state_namespaces.insert(
             namespace_id.clone(),
             RecordNamespace {
                 request,
@@ -309,12 +339,195 @@ impl BackendImpl for InMemory {
         })
     }
 
+    async fn store_state_staging_status(
+        &self,
+        token: &StagingToken,
+    ) -> Result<Option<StagingStatus>> {
+        Ok(self
+            .inner
+            .read()
+            .unwrap()
+            .staging_tokens
+            .get(&token.namespace_id)
+            .filter(|state| state.target == token.target)
+            .map(|state| state.status.clone()))
+    }
+
+    async fn store_state_staging_token(
+        &self,
+        id: &str,
+    ) -> Result<Option<(StagingToken, StagingStatus)>> {
+        Ok(self
+            .inner
+            .read()
+            .unwrap()
+            .staging_tokens
+            .get(id)
+            .map(|state| {
+                (
+                    StagingToken {
+                        namespace_id: id.to_owned(),
+                        target: state.target.clone(),
+                    },
+                    state.status.clone(),
+                )
+            }))
+    }
+
+    async fn stage_store_state_chunk(
+        &self,
+        token: &StagingToken,
+        sequence: u64,
+        digest: &[u8],
+        records: RecordMutations,
+    ) -> Result<()> {
+        let mut inner = self.inner.write().unwrap();
+        let state = inner
+            .staging_tokens
+            .get_mut(&token.namespace_id)
+            .filter(|state| {
+                state.target == token.target
+                    && state.status == StagingStatus::Active
+                    && state.last_activity > staging_now() - 300
+            })
+            .ok_or(BackendError::InvalidStoreStateStagingToken)?;
+        if sequence.checked_add(1) == Some(state.next_sequence)
+            && state.last_digest.as_deref() == Some(digest)
+        {
+            return Ok(());
+        }
+        if sequence != state.next_sequence {
+            return Err(BackendError::InvalidStoreStateStagingToken.into());
+        }
+        let next = sequence
+            .checked_add(1)
+            .ok_or(BackendError::InvalidStoreStateStagingToken)?;
+        let namespace = inner
+            .store_state_namespaces
+            .get_mut(&token.namespace_id)
+            .ok_or(BackendError::InvalidStoreStateStagingToken)?;
+        namespace.records.extend(records);
+        let state = inner.staging_tokens.get_mut(&token.namespace_id).unwrap();
+        state.next_sequence = next;
+        state.last_digest = Some(digest.to_vec());
+        state.last_activity = staging_now();
+        Ok(())
+    }
+
+    async fn stage_store_state_ordered_chunk(
+        &self,
+        token: &StagingToken,
+        sequence: u64,
+        digest: &[u8],
+        mutations: Vec<RecordMutation>,
+    ) -> Result<()> {
+        let mut inner = self.inner.write().unwrap();
+        let state = inner
+            .staging_tokens
+            .get(&token.namespace_id)
+            .filter(|state| {
+                state.target == token.target
+                    && state.status == StagingStatus::Active
+                    && state.last_activity > staging_now() - 300
+            })
+            .ok_or(BackendError::InvalidStoreStateStagingToken)?;
+        if sequence.checked_add(1) == Some(state.next_sequence)
+            && state.last_digest.as_deref() == Some(digest)
+        {
+            return Ok(());
+        }
+        if sequence != state.next_sequence {
+            return Err(BackendError::InvalidStoreStateStagingToken.into());
+        }
+        let next = sequence
+            .checked_add(1)
+            .ok_or(BackendError::InvalidStoreStateStagingToken)?;
+        let namespace = inner
+            .store_state_namespaces
+            .get_mut(&token.namespace_id)
+            .filter(|ns| !ns.ready && ns.request.lifecycle == StoreStateLifecycle::Staging)
+            .ok_or(BackendError::InvalidStoreStateStagingToken)?;
+        for mutation in mutations {
+            match mutation {
+                RecordMutation::Put { key, value } => {
+                    namespace.records.insert(key, Some(value));
+                }
+                RecordMutation::Delete { key } => {
+                    namespace.records.remove(&key);
+                }
+            }
+        }
+        let state = inner.staging_tokens.get_mut(&token.namespace_id).unwrap();
+        state.next_sequence = next;
+        state.last_digest = Some(digest.to_vec());
+        state.last_activity = staging_now();
+        Ok(())
+    }
+
+    async fn renew_store_state_staging(&self, token: &StagingToken) -> Result<()> {
+        let mut inner = self.inner.write().unwrap();
+        let state = inner
+            .staging_tokens
+            .get_mut(&token.namespace_id)
+            .filter(|state| {
+                state.target == token.target
+                    && state.status == StagingStatus::Active
+                    && state.last_activity > staging_now() - 300
+            })
+            .ok_or(BackendError::InvalidStoreStateStagingToken)?;
+        state.last_activity = staging_now();
+        Ok(())
+    }
+
+    #[cfg(feature = "testing")]
+    async fn testing_age_store_state_staging(
+        &self,
+        token: &StagingToken,
+        seconds: i64,
+    ) -> Result<()> {
+        let mut inner = self.inner.write().unwrap();
+        let state = inner
+            .staging_tokens
+            .get_mut(&token.namespace_id)
+            .filter(|state| state.target == token.target)
+            .ok_or(BackendError::InvalidStoreStateStagingToken)?;
+        state.last_activity -= seconds;
+        Ok(())
+    }
+
+    async fn reclaim_expired_store_state(&self) -> Result<u64> {
+        let mut inner = self.inner.write().unwrap();
+        let expired: Vec<_> = inner
+            .staging_tokens
+            .iter()
+            .filter(|(_, state)| {
+                state.status == StagingStatus::Active && state.last_activity < staging_now() - 600
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &expired {
+            inner.staging_tokens.get_mut(id).unwrap().status = StagingStatus::Expired;
+            inner.store_state_namespaces.remove(id);
+        }
+        Ok(expired.len() as u64)
+    }
+
     async fn stage_store_state_records(
         &self,
         token: &StagingToken,
         records: RecordMutations,
     ) -> Result<()> {
         let mut inner = self.inner.write().unwrap();
+        let state = inner
+            .staging_tokens
+            .get_mut(&token.namespace_id)
+            .filter(|state| {
+                state.target == token.target
+                    && state.status == StagingStatus::Active
+                    && state.last_activity > staging_now() - 300
+            })
+            .ok_or(BackendError::InvalidStoreStateStagingToken)?;
+        state.last_activity = staging_now();
         let namespace = inner
             .store_state_namespaces
             .get_mut(&token.namespace_id)
@@ -328,64 +541,63 @@ impl BackendImpl for InMemory {
 
     async fn publish_store_state(&self, token: StagingToken) -> Result<RecordView> {
         let mut inner = self.inner.write().unwrap();
-        // A repeat publish of an already-published token is idempotent: the
-        // namespace is still ready for the same target, so hand back its view.
-        // Removing it first would turn a retry into data loss.
-        if inner
-            .store_state_namespaces
+        let state = inner
+            .staging_tokens
             .get(&token.namespace_id)
-            .is_some_and(|namespace| namespace.ready && namespace.request == token.target)
-        {
-            return Ok(RecordView {
-                namespace_id: token.namespace_id,
-            });
+            .filter(|state| state.target == token.target)
+            .ok_or(BackendError::InvalidStoreStateStagingToken)?;
+        match &state.status {
+            StagingStatus::Published(view) | StagingStatus::Adopted(view) => {
+                return Ok(view.clone());
+            }
+            StagingStatus::Active if state.last_activity > staging_now() - 300 => {}
+            _ => return Err(BackendError::InvalidStoreStateStagingToken.into()),
         }
-        let staged = inner.store_state_namespaces.remove(&token.namespace_id);
-        // A concurrent materializer may have made this exact target ready
-        // first. Both derived the same state from the same source, so adopt the
-        // winner and discard this namespace rather than failing the loser.
-        if let Some((winner_id, _)) = inner
+        if let Some((winner, _)) = inner
             .store_state_namespaces
             .iter()
-            .find(|(_, ready)| ready.ready && !ready.unlinked && ready.request == token.target)
+            .find(|(_, ns)| ns.ready && !ns.unlinked && ns.request == token.target)
         {
-            return Ok(RecordView {
-                namespace_id: winner_id.clone(),
-            });
-        }
-        let mut namespace = staged.ok_or(BackendError::InvalidStoreStateStagingToken)?;
-        // A ready namespace is never removed: reaching here with one means the
-        // token's target no longer matches, which is an error that must not
-        // destroy published state.
-        if namespace.ready {
+            let view = RecordView {
+                namespace_id: winner.clone(),
+            };
+            inner.store_state_namespaces.remove(&token.namespace_id);
             inner
-                .store_state_namespaces
-                .insert(token.namespace_id.clone(), namespace);
-            return Err(BackendError::InvalidStoreStateStagingToken.into());
+                .staging_tokens
+                .get_mut(&token.namespace_id)
+                .unwrap()
+                .status = StagingStatus::Adopted(view.clone());
+            return Ok(view);
         }
-        if namespace.request.lifecycle != StoreStateLifecycle::Staging {
-            return Err(BackendError::InvalidStoreStateStagingToken.into());
-        }
+        let namespace = inner
+            .store_state_namespaces
+            .get_mut(&token.namespace_id)
+            .filter(|ns| !ns.ready && ns.request.lifecycle == StoreStateLifecycle::Staging)
+            .ok_or(BackendError::InvalidStoreStateStagingToken)?;
         if namespace.records.values().any(Option::is_none) {
             return Err(BackendError::InvalidStoreStateStagingToken.into());
         }
         namespace.request = token.target;
         namespace.ready = true;
+        let view = RecordView {
+            namespace_id: token.namespace_id.clone(),
+        };
         inner
-            .store_state_namespaces
-            .insert(token.namespace_id.clone(), namespace);
-        Ok(RecordView {
-            namespace_id: token.namespace_id,
-        })
+            .staging_tokens
+            .get_mut(&token.namespace_id)
+            .unwrap()
+            .status = StagingStatus::Published(view.clone());
+        Ok(view)
     }
 
     async fn abort_store_state(&self, token: StagingToken) -> Result<()> {
         let mut inner = self.inner.write().unwrap();
-        if inner
-            .store_state_namespaces
-            .get(&token.namespace_id)
-            .is_some_and(|namespace| !namespace.ready)
+        if let Some(state) = inner
+            .staging_tokens
+            .get_mut(&token.namespace_id)
+            .filter(|state| state.target == token.target && state.status == StagingStatus::Active)
         {
+            state.status = StagingStatus::Aborted;
             inner.store_state_namespaces.remove(&token.namespace_id);
         }
         Ok(())
@@ -699,9 +911,7 @@ impl BackendImpl for InMemory {
 ///
 /// `StagingToken` is `Clone` with crate-visible fields, so a caller can hold
 /// a token for one target while naming another namespace (or vice versa).
-/// Publishing such a malformed clone either adopts the already-ready winner
-/// for the claimed target or fails with the ready namespace re-inserted —
-/// the ready snapshot and its records always survive.
+/// A mismatched token is rejected without changing either namespace.
 #[cfg(test)]
 mod store_state_token_tests {
     use std::collections::BTreeMap;
@@ -760,14 +970,12 @@ mod store_state_token_tests {
             .await
             .unwrap();
 
-        // Malformed clone: B's namespace id, A's target. The ready winner for
-        // A is adopted and A's snapshot is untouched.
+        // A mismatched target cannot publish or adopt a different build.
         let bad = StagingToken {
             namespace_id: token_b.namespace_id.clone(),
             target: request_a.clone(),
         };
-        let adopted = backend.publish_store_state(bad).await.unwrap();
-        assert_eq!(adopted, view_a);
+        assert!(backend.publish_store_state(bad).await.is_err());
         assert_eq!(
             backend
                 .store_state_record_get(&view_a, b"key")

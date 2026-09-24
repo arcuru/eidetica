@@ -1516,8 +1516,155 @@ async fn test_remote_store_state_stores_ciphertext_verbatim() {
     );
 }
 
-/// An idle private-build capability is reclaimed: the build it was staging is
-/// aborted, so the token stops working and nothing was published.
+/// A lost service publication response must be recoverable using the original
+/// token, not by creating an ambiguous second build.
+#[tokio::test]
+async fn test_remote_publish_retry_returns_the_same_view() {
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    let (instance, root, identity) = setup_db(&server, &socket_path, "alice").await;
+    let conn = remote_conn(&instance);
+    let request = derived_request(&root, "lost-publish-response");
+    let token = conn
+        .begin_store_state_staging(identity.clone(), request.clone())
+        .await
+        .unwrap();
+    conn.stage_store_state_records(
+        root.clone(),
+        identity.clone(),
+        token.clone(),
+        0,
+        BTreeMap::from([(b"key".to_vec(), Some(b"value".to_vec()))]),
+    )
+    .await
+    .unwrap();
+    let _lost_view = conn
+        .publish_store_state(root.clone(), identity.clone(), token.clone())
+        .await
+        .unwrap();
+    let recovered = conn
+        .publish_store_state(root.clone(), identity.clone(), token.clone())
+        .await
+        .unwrap();
+    assert!(
+        conn.stage_store_state_records(
+            root.clone(),
+            identity.clone(),
+            token.clone(),
+            1,
+            BTreeMap::from([(b"key".to_vec(), Some(b"changed".to_vec()))]),
+        )
+        .await
+        .is_err(),
+        "published token cannot accept another chunk"
+    );
+    conn.abort_store_state(root.clone(), identity.clone(), token)
+        .await
+        .unwrap();
+    assert_eq!(
+        conn.store_state_record_get(root, identity.clone(), recovered, b"key".to_vec())
+            .await
+            .unwrap(),
+        Some(b"value".to_vec())
+    );
+    assert!(
+        conn.resolve_store_state(identity, request)
+            .await
+            .unwrap()
+            .is_some()
+    );
+}
+
+/// The Backend adapter must not restart its sequence at zero when a second
+/// staging call uploads another batch for the same token.
+#[tokio::test]
+async fn test_remote_backend_sequences_across_stage_calls() {
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    let (instance, root, _identity) = setup_db(&server, &socket_path, "alice").await;
+    let backend = instance.backend();
+    let request = derived_request(&root, "separate-stage-calls");
+    let token = backend
+        .begin_store_state_staging(request.clone())
+        .await
+        .unwrap();
+    backend
+        .stage_store_state_records(
+            &token,
+            BTreeMap::from([(b"key".to_vec(), Some(b"first".to_vec()))]),
+        )
+        .await
+        .unwrap();
+    backend
+        .stage_store_state_records(
+            &token,
+            BTreeMap::from([(b"key".to_vec(), Some(b"second".to_vec()))]),
+        )
+        .await
+        .unwrap();
+    let view = backend.publish_store_state(token).await.unwrap();
+    assert_eq!(
+        backend.store_state_record_get(&view, b"key").await.unwrap(),
+        Some(b"second".to_vec())
+    );
+    assert!(
+        backend
+            .resolve_store_state(&request)
+            .await
+            .unwrap()
+            .is_some()
+    );
+}
+
+/// Chunk sequence is token-wide, not reset for each client stage call. A late
+/// put must never resurrect a row removed by a later accepted chunk.
+#[tokio::test]
+async fn test_remote_staging_rejects_late_and_conflicting_replays() {
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    let (instance, root, identity) = setup_db(&server, &socket_path, "alice").await;
+    let conn = remote_conn(&instance);
+    let request = derived_request(&root, "ordered-chunks");
+    let token = conn
+        .begin_store_state_staging(identity.clone(), request.clone())
+        .await
+        .unwrap();
+    let put = BTreeMap::from([(b"key".to_vec(), Some(b"first".to_vec()))]);
+    let delete = BTreeMap::from([(b"key".to_vec(), None)]);
+    let send = |sequence, records| {
+        conn.stage_store_state_records(
+            root.clone(),
+            identity.clone(),
+            token.clone(),
+            sequence,
+            records,
+        )
+    };
+    assert!(
+        send(1, put.clone()).await.is_err(),
+        "future sequence must be refused"
+    );
+    send(0, put.clone()).await.unwrap();
+    send(0, put.clone()).await.unwrap();
+    assert!(
+        send(0, delete.clone()).await.is_err(),
+        "conflicting digest must be refused"
+    );
+    send(1, delete).await.unwrap();
+    assert!(send(0, put).await.is_err(), "late replay must be refused");
+    assert!(
+        send(3, BTreeMap::new()).await.is_err(),
+        "gaps must be refused"
+    );
+    conn.abort_store_state(root.clone(), identity.clone(), token)
+        .await
+        .unwrap();
+    assert!(
+        conn.resolve_store_state(identity, request)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+/// Session view expiry does not shorten the backend-owned staging lease.
 #[tokio::test]
 async fn test_remote_store_state_idle_staging_token_expires() {
     let (socket_path, _tx, server, _dir) =
@@ -1532,18 +1679,32 @@ async fn test_remote_store_state_idle_staging_token_expires() {
         .unwrap();
     tokio::time::sleep(Duration::from_millis(120)).await;
 
-    assert!(
-        conn.publish_store_state(root_id, identity.clone(), token)
+    assert!(matches!(
+        conn.store_state_staging_status(root_id.clone(), identity.clone(), token.clone())
             .await
-            .is_err(),
-        "an expired staging token must not publish"
-    );
+            .unwrap(),
+        Some(eidetica::backend::StagingStatus::Active)
+    ));
+    let view = conn
+        .publish_store_state(root_id.clone(), identity.clone(), token)
+        .await
+        .unwrap();
     assert!(
         conn.resolve_store_state(identity, request)
             .await
             .unwrap()
-            .is_none(),
-        "an expired build must leave no ready record set behind"
+            .is_some()
+    );
+    assert!(
+        conn.store_state_record_get(
+            root_id,
+            conn.session_identity().unwrap(),
+            view,
+            b"absent".to_vec()
+        )
+        .await
+        .unwrap()
+        .is_none()
     );
 }
 
@@ -2827,4 +2988,300 @@ async fn test_open_database_with_unheld_key_is_rejected() {
         msg.contains("key") || msg.contains("permission") || msg.contains("auth"),
         "expected a key/permission error, got: {err}",
     );
+}
+
+/// The real socket must preserve mutation order even when one chunk touches
+/// the same physical key more than once; an empty generation is resolvable.
+#[tokio::test]
+async fn test_remote_ordered_physical_staging() {
+    use eidetica::backend::RecordMutation as M;
+    let (socket, _tx, server, _dir) = start_test_server().await;
+    let (instance, root, identity) = setup_db(&server, &socket, "alice").await;
+    let conn = remote_conn(&instance);
+    let request = derived_request(&root, "ordered-physical");
+    let token = conn
+        .begin_store_state_staging(identity.clone(), request.clone())
+        .await
+        .unwrap();
+    let put = vec![M::Put {
+        key: b"row".to_vec(),
+        value: b"first".to_vec(),
+    }];
+    conn.stage_store_state_ordered_chunk(
+        root.clone(),
+        identity.clone(),
+        token.clone(),
+        0,
+        put.clone(),
+    )
+    .await
+    .unwrap();
+    conn.stage_store_state_ordered_chunk(
+        root.clone(),
+        identity.clone(),
+        token.clone(),
+        1,
+        vec![
+            M::Delete {
+                key: b"row".to_vec(),
+            },
+            M::Delete {
+                key: b"absent".to_vec(),
+            },
+        ],
+    )
+    .await
+    .unwrap();
+    assert!(
+        conn.stage_store_state_ordered_chunk(root.clone(), identity.clone(), token.clone(), 0, put)
+            .await
+            .is_err()
+    );
+    conn.stage_store_state_ordered_chunk(
+        root.clone(),
+        identity.clone(),
+        token.clone(),
+        2,
+        vec![M::Put {
+            key: b"row".to_vec(),
+            value: b"last".to_vec(),
+        }],
+    )
+    .await
+    .unwrap();
+    let view = conn
+        .publish_store_state(root.clone(), identity.clone(), token)
+        .await
+        .unwrap();
+    assert_eq!(
+        conn.store_state_record_get(root.clone(), identity.clone(), view, b"row".to_vec())
+            .await
+            .unwrap(),
+        Some(b"last".to_vec())
+    );
+    let token = conn
+        .begin_store_state_staging(identity.clone(), derived_request(&root, "empty-physical"))
+        .await
+        .unwrap();
+    conn.stage_store_state_ordered_chunk(
+        root.clone(),
+        identity.clone(),
+        token.clone(),
+        0,
+        vec![
+            M::Put {
+                key: b"row".to_vec(),
+                value: b"temporary".to_vec(),
+            },
+            M::Delete {
+                key: b"row".to_vec(),
+            },
+        ],
+    )
+    .await
+    .unwrap();
+    let view = conn
+        .publish_store_state(root.clone(), identity.clone(), token)
+        .await
+        .unwrap();
+    assert_eq!(
+        conn.store_state_record_get(root, identity, view, b"row".to_vec())
+            .await
+            .unwrap(),
+        None
+    );
+}
+
+/// A token is backend-owned: reconnecting the client cannot reset its sequence
+/// or lose its terminal result. The view is re-resolved after publication.
+#[tokio::test]
+async fn test_remote_staging_status_survives_reconnect() {
+    use eidetica::backend::StagingStatus;
+    let (socket, _tx, server, _dir) = start_test_server().await;
+    let (instance, root, identity) = setup_db(&server, &socket, "alice").await;
+    let request = derived_request(&root, "reconnect-token");
+    let token = remote_conn(&instance)
+        .begin_store_state_staging(identity.clone(), request.clone())
+        .await
+        .unwrap();
+    remote_conn(&instance)
+        .stage_store_state_records(
+            root.clone(),
+            identity.clone(),
+            token.clone(),
+            0,
+            BTreeMap::from([(b"key".to_vec(), Some(b"first".to_vec()))]),
+        )
+        .await
+        .unwrap();
+    drop(instance);
+    let instance = Instance::connect(format!("unix://{}", socket.display()))
+        .await
+        .unwrap();
+    let user = instance.login_user("alice", None).await.unwrap();
+    let pubkey = user.get_default_key().unwrap();
+    let identity = eidetica::Database::find_sigkeys(&server, &root, &pubkey)
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap()
+        .0;
+    let conn = remote_conn(&instance);
+    assert_eq!(
+        conn.store_state_staging_status(root.clone(), identity.clone(), token.clone())
+            .await
+            .unwrap(),
+        Some(StagingStatus::Active)
+    );
+    conn.stage_store_state_records(
+        root.clone(),
+        identity.clone(),
+        token.clone(),
+        0,
+        BTreeMap::from([(b"key".to_vec(), Some(b"first".to_vec()))]),
+    )
+    .await
+    .unwrap();
+    assert!(
+        conn.stage_store_state_records(
+            root.clone(),
+            identity.clone(),
+            token.clone(),
+            0,
+            BTreeMap::from([(b"key".to_vec(), Some(b"different".to_vec()))])
+        )
+        .await
+        .is_err()
+    );
+    conn.stage_store_state_records(
+        root.clone(),
+        identity.clone(),
+        token.clone(),
+        1,
+        BTreeMap::from([(b"second".to_vec(), Some(b"later".to_vec()))]),
+    )
+    .await
+    .unwrap();
+    let view = conn
+        .publish_store_state(root.clone(), identity.clone(), token.clone())
+        .await
+        .unwrap();
+    assert!(matches!(
+        conn.store_state_staging_status(root.clone(), identity.clone(), token.clone())
+            .await
+            .unwrap(),
+        Some(StagingStatus::Published(_))
+    ));
+    let retry = conn
+        .publish_store_state(root.clone(), identity.clone(), token)
+        .await
+        .unwrap();
+    assert_eq!(
+        conn.store_state_record_get(root.clone(), identity.clone(), view, b"key".to_vec())
+            .await
+            .unwrap(),
+        Some(b"first".to_vec())
+    );
+    assert_eq!(
+        conn.store_state_record_get(root, identity, retry, b"second".to_vec())
+            .await
+            .unwrap(),
+        Some(b"later".to_vec())
+    );
+}
+
+#[tokio::test]
+async fn test_remote_staging_survives_service_restart() {
+    use eidetica::backend::StagingStatus;
+    let (socket, shutdown, server, _dir) = start_test_server().await;
+    let (instance, root, identity) = setup_db(&server, &socket, "alice").await;
+    let conn = remote_conn(&instance);
+    let request = derived_request(&root, "restart-token");
+    let token = conn
+        .begin_store_state_staging(identity.clone(), request.clone())
+        .await
+        .unwrap();
+    conn.stage_store_state_records(
+        root.clone(),
+        identity.clone(),
+        token.clone(),
+        0,
+        BTreeMap::from([(b"key".to_vec(), Some(b"original".to_vec()))]),
+    )
+    .await
+    .unwrap();
+    shutdown.send(()).unwrap();
+    drop(conn);
+    drop(instance);
+    // Bind a new daemon to the same backend after the old socket releases.
+    let mut restarted = None;
+    for _ in 0..50 {
+        match ServiceServer::bind(server.clone(), socket.clone()).await {
+            Ok(service) => {
+                restarted = Some(service);
+                break;
+            }
+            Err(_) => tokio::time::sleep(Duration::from_millis(20)).await,
+        }
+    }
+    let service = restarted.expect("old daemon must release the socket");
+    let (_tx, rx) = watch::channel(());
+    tokio::spawn(service.run(rx));
+    let instance = Instance::connect(format!("unix://{}", socket.display()))
+        .await
+        .unwrap();
+    let user = instance.login_user("alice", None).await.unwrap();
+    let pubkey = user.get_default_key().unwrap();
+    let identity = eidetica::Database::find_sigkeys(&server, &root, &pubkey)
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap()
+        .0;
+    let conn = remote_conn(&instance);
+    assert_eq!(
+        conn.store_state_staging_status(root.clone(), identity.clone(), token.clone())
+            .await
+            .unwrap(),
+        Some(StagingStatus::Active)
+    );
+    assert!(
+        conn.stage_store_state_records(
+            root.clone(),
+            identity.clone(),
+            token.clone(),
+            0,
+            BTreeMap::new()
+        )
+        .await
+        .is_err()
+    );
+    // A different encoded chunk with the same sequence cannot replace the first.
+    conn.stage_store_state_records(
+        root.clone(),
+        identity.clone(),
+        token.clone(),
+        1,
+        BTreeMap::from([(b"more".to_vec(), Some(b"later".to_vec()))]),
+    )
+    .await
+    .unwrap();
+    let view = conn
+        .publish_store_state(root.clone(), identity.clone(), token.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        conn.store_state_record_get(root.clone(), identity.clone(), view, b"key".to_vec())
+            .await
+            .unwrap(),
+        Some(b"original".to_vec())
+    );
+    assert!(matches!(
+        conn.store_state_staging_status(root, identity, token)
+            .await
+            .unwrap(),
+        Some(StagingStatus::Published(_))
+    ));
 }

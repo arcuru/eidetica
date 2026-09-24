@@ -1269,6 +1269,26 @@ impl RemoteConnection {
         }
     }
 
+    /// Query the backend-owned outcome after a lost response or reconnect.
+    pub async fn store_state_staging_status(
+        &self,
+        root: ID,
+        identity: SigKey,
+        token: String,
+    ) -> crate::Result<Option<crate::backend::StagingStatus>> {
+        match self
+            .db_request(
+                root,
+                identity,
+                DatabaseOp::StoreStateStagingStatus { token },
+            )
+            .await?
+        {
+            ServiceResponse::StagingStatus(status) => Ok(status),
+            other => Err(unexpected_response("StagingStatus", &other)),
+        }
+    }
+
     /// Upload one idempotent chunk of records into the private build.
     pub async fn stage_store_state_records(
         &self,
@@ -1285,6 +1305,28 @@ impl RemoteConnection {
                 token,
                 chunk_id,
                 records: records.into_iter().collect(),
+            },
+        )
+        .await
+        .and_then(Self::expect_ok)
+    }
+
+    /// Upload one ordered physical chunk without collapsing repeated keys.
+    pub async fn stage_store_state_ordered_chunk(
+        &self,
+        root: ID,
+        identity: SigKey,
+        token: String,
+        chunk_id: u64,
+        mutations: Vec<crate::backend::RecordMutation>,
+    ) -> crate::Result<()> {
+        self.db_request(
+            root,
+            identity,
+            DatabaseOp::StageStoreStateOrdered {
+                token,
+                chunk_id,
+                mutations,
             },
         )
         .await

@@ -225,3 +225,65 @@ async fn test_load_missing_version_defaults_to_v0() {
 
 // Test-only: store-and-promote helper (production `put` is Unverified-only).
 use crate::helpers::TestVerify;
+
+#[tokio::test]
+async fn staging_sequence_and_terminal_status_survive_snapshot_reload() {
+    use eidetica::backend::{
+        CacheScope, ProjectionDescriptor, StagingStatus, StoreStateLifecycle, StoreStateRequest,
+    };
+    use eidetica::entry::ID;
+    use std::collections::BTreeMap;
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("staging.json");
+    let request = StoreStateRequest {
+        database: ID::from_bytes("staging-persistence"),
+        store: "rows".into(),
+        lifecycle: StoreStateLifecycle::Derived,
+        scope: CacheScope::Shared,
+        projection: ProjectionDescriptor {
+            name: "test".into(),
+            version: 0,
+        },
+        source_key: b"fixed".to_vec(),
+    };
+    let backend = InMemory::new();
+    let token = backend
+        .begin_store_state_staging(request.clone())
+        .await
+        .unwrap();
+    backend
+        .stage_store_state_chunk(
+            &token,
+            0,
+            b"first",
+            BTreeMap::from([(b"key".to_vec(), Some(b"original".to_vec()))]),
+        )
+        .await
+        .unwrap();
+    backend.save_to_file(&path).unwrap();
+    let backend = InMemory::load_from_file(&path).await.unwrap();
+    assert_eq!(
+        backend.store_state_staging_status(&token).await.unwrap(),
+        Some(StagingStatus::Active)
+    );
+    backend
+        .stage_store_state_chunk(&token, 0, b"first", BTreeMap::new())
+        .await
+        .unwrap();
+    backend
+        .stage_store_state_chunk(&token, 1, b"second", BTreeMap::new())
+        .await
+        .unwrap();
+    let view = backend.publish_store_state(token.clone()).await.unwrap();
+    assert_eq!(
+        backend.store_state_record_get(&view, b"key").await.unwrap(),
+        Some(b"original".to_vec())
+    );
+    backend.save_to_file(&path).unwrap();
+    let backend = InMemory::load_from_file(&path).await.unwrap();
+    assert_eq!(
+        backend.store_state_staging_status(&token).await.unwrap(),
+        Some(StagingStatus::Published(view.clone()))
+    );
+    assert_eq!(backend.publish_store_state(token).await.unwrap(), view);
+}
