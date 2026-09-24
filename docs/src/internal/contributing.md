@@ -33,12 +33,16 @@ just   # See all available commands
 | `just nix test sqlite` | Hermetic SQLite check only                      |
 | `just nix lint clippy` | Hermetic Clippy check only                      |
 | `just nix doc links`   | Offline documentation link check                |
+| `just buck build`      | Native Buck2 library, CLI, and example builds   |
+| `just buck test`       | Native Buck2 unit, integration and book tests   |
 
 ### Parallel Buck2 build
 
 Buck2 builds the library, CLI, examples, unit/integration tests, and book doctests
-with native Rust rules alongside Cargo. See [Buck2 build](buck2.md) for the tool
-setup, commands, dependency regeneration, and Nix packaging limitations.
+with native Rust rules alongside Cargo. The Nix dev shell supplies upstream `buck2` and
+its native toolchain; run `just buck build` or `just buck test` after entering via direnv
+or `nix develop`. See [Buck2 build](buck2.md) for direct commands, dependency
+regeneration, and Nix packaging limitations.
 
 ### Testing
 

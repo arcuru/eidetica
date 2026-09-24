@@ -4,21 +4,29 @@ Buck2 is an independent, parallel Rust build: its rules invoke `rustc`/`rustdoc`
 
 ## Tools and commands
 
-Obtain tools with Nix, outside **or** inside `nix develop`:
+The x86_64-linux Nix development shell includes Buck2, Reindeer, Rust, Clang, LLD, and binutils. Enter it with `nix develop`, or set up direnv once from the repository root if you do not already have an `.envrc`:
 
 ```sh
-nix shell nixpkgs#buck2 nixpkgs#rustc nixpkgs#clang nixpkgs#lld nixpkgs#binutils
-./toolchains/buck2-local build //crates/lib:eidetica //crates/bin:eidetica //examples/chat:chat //examples/todo:todo
-./toolchains/buck2-local test //crates/lib:unit //crates/lib:it //crates/bin:unit //crates/bin:reset '//crates/book-tests:book[doc]'
-./toolchains/buck2-local run //crates/bin:eidetica -- --help
+printf 'use flake\n' > .envrc
+direnv allow
 ```
 
-`buck2-local` supplies absolute C compiler and archiver paths from `PATH`: Buck's bundled demo toolchain otherwise gives build-script shims bare command names that cannot be executed by their `execve` wrapper. It does not invoke Cargo. The CLI binary and examples use the current workspace version (and author/description where Clap requires them) in their BUCK `env`; update those values when the Cargo workspace version changes. `//crates/lib:eidetica_testing` is a private test-only variant; the CLI and examples depend on the production `//crates/lib:eidetica`, which does **not** enable `testing`.
-
-To refresh dependency rules after changing Cargo manifests/lockfile, install Reindeer and Cargo with Nix, then run both generators from the repository root:
+Once in the shell, use upstream `buck2` directly or the `just buck` shortcuts:
 
 ```sh
-nix shell nixpkgs#reindeer nixpkgs#cargo nixpkgs#rustc
+just buck build                                    # library, CLI, chat and todo examples
+just buck test                                     # unit, integration, CLI and book doctests
+just buck run                                      # CLI help
+just buck build //crates/lib:eidetica              # one build target
+just buck test '//crates/book-tests:book[doc]'     # one test target
+buck2 run //crates/bin:eidetica -- --help          # pass arguments to the CLI
+```
+
+The shell generates an ignored `.buckconfig.d/nix-dev-shell` with absolute C compiler and archiver paths. This uses Buck2's [standard local configuration mechanism](https://buck2.build/docs/concepts/buckconfig/), not a replacement binary: Buck's bundled demo toolchain otherwise gives build-script shims bare command names that cannot be executed by their `execve` wrapper. A personal `.buckconfig.local` can override the generated values without being overwritten. The CLI binary and examples use the current workspace version (and author/description where Clap requires them) in their BUCK `env`; update those values when the Cargo workspace version changes. `//crates/lib:eidetica_testing` is a private test-only variant; the CLI and examples depend on the production `//crates/lib:eidetica`, which does **not** enable `testing`.
+
+To refresh dependency rules after changing Cargo manifests/lockfile, run both generators from the repository root in the dev shell:
+
+```sh
 reindeer buckify
 reindeer -c reindeer-tests.toml buckify
 ```

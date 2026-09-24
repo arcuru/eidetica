@@ -535,6 +535,49 @@ nix action='check' target='':
     esac
 
 # =============================================================================
+# Buck2 (developer build, Linux x86_64)
+# =============================================================================
+
+# Buck2 commands: build [target], test [target], run [target]
+buck action='build' target='':
+    #!/usr/bin/env bash
+    set -e
+    action={{quote(action)}}
+    target={{quote(target)}}
+    if ! command -v buck2 >/dev/null 2>&1; then
+        echo "Buck2 is not on PATH; enter the x86_64-linux dev shell (direnv or nix develop)" >&2
+        exit 127
+    fi
+    case "$action" in
+        build)
+            if [ -n "$target" ]; then
+                buck2 build "$target"
+            else
+                buck2 build //crates/lib:eidetica //crates/bin:eidetica //examples/chat:chat //examples/todo:todo
+            fi
+            ;;
+        test)
+            if [ -n "$target" ]; then
+                buck2 test "$target"
+            else
+                buck2 test //crates/lib:unit //crates/lib:it //crates/bin:unit //crates/bin:reset '//crates/book-tests:book[doc]'
+            fi
+            ;;
+        run)
+            if [ -n "$target" ]; then
+                buck2 run "$target"
+            else
+                buck2 run //crates/bin:eidetica -- --help
+            fi
+            ;;
+        *)
+            echo "Unknown Buck2 action: $action" >&2
+            echo "Options: build [target], test [target], run [target]" >&2
+            exit 2
+            ;;
+    esac
+
+# =============================================================================
 # Container
 # =============================================================================
 

@@ -31,5 +31,8 @@ result-*
 # mdbook files
 docs/book
 
-# Buck output
+# Buck output and local Nix dev-shell toolchain configuration
 /buck-out
+/.buckconfig.local
+/.buckconfig.d/nix-dev-shell
+/.buckconfig.d/nix-dev-shell.*
