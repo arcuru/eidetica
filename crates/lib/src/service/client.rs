@@ -41,6 +41,21 @@ use crate::user::UserError;
 use crate::user::crypto::{decrypt_private_key, derive_encryption_key};
 use crate::user::types::{KeyStorage, UserInfo};
 
+/// Result of a chunk upload: a terminal build has a newly issued view token
+/// scoped to the supplied authenticated connection.
+#[derive(Debug, PartialEq, Eq)]
+pub enum StagingChunkOutcome {
+    Staged,
+    Published(String),
+}
+
+fn invalid_staging_recovery() -> crate::Error {
+    crate::Error::Io(std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        "only staging chunks may be recovered",
+    ))
+}
+
 /// How long an `Idle` per-tree subscription is kept warm before the
 /// sweep sends `UnsubscribeWrites`. A re-registration arriving inside
 /// this window transitions back to `Subscribed` without a wire call.
@@ -1102,26 +1117,75 @@ impl RemoteConnection {
         identity: SigKey,
         store: String,
     ) -> crate::Result<S::Data> {
+        self.get_store_state_with_decrypt::<S::Data>(
+            root_id,
+            identity,
+            store,
+            S::type_id(),
+            S::state_model().descriptor(),
+            |bytes| Ok(bytes.to_vec()),
+        )
+        .await
+    }
+
+    /// Only the read-authorized maintenance refusal permits a local history
+    /// fold. The decryptor is supplied by an already unlocked client Store;
+    /// ciphertext and passwords are never sent to the daemon for projection.
+    pub(crate) async fn get_store_state_with_decrypt<D: crate::crdt::CRDT>(
+        &self,
+        root_id: ID,
+        identity: SigKey,
+        store: String,
+        expected_type: &str,
+        projection: crate::backend::ProjectionDescriptor,
+        decrypt: impl Fn(&[u8]) -> crate::Result<Vec<u8>>,
+    ) -> crate::Result<D> {
+        self.get_store_state_with_decrypt_and_frontier(
+            root_id,
+            identity,
+            store,
+            expected_type,
+            projection,
+            decrypt,
+        )
+        .await
+        .map(|(state, _)| state)
+    }
+
+    /// Return the source frontier used by a read-authorized history fold.
+    pub(crate) async fn get_store_state_with_decrypt_and_frontier<D: crate::crdt::CRDT>(
+        &self,
+        root_id: ID,
+        identity: SigKey,
+        store: String,
+        expected_type: &str,
+        projection: crate::backend::ProjectionDescriptor,
+        decrypt: impl Fn(&[u8]) -> crate::Result<Vec<u8>>,
+    ) -> crate::Result<(D, Option<crate::Snapshot>)> {
+        let identity = if identity == SigKey::default() {
+            self.session_identity().unwrap_or_default()
+        } else {
+            identity
+        };
         let response = self
             .db_request(
                 root_id.clone(),
                 identity.clone(),
                 DatabaseOp::EnsureStoreStateGeneration {
                     store: store.clone(),
-                    expected_type: S::type_id().to_string(),
-                    projection: S::state_model().descriptor(),
+                    expected_type: expected_type.to_string(),
+                    projection,
                 },
             )
             .await;
         match response {
-            Ok(ServiceResponse::CrdtValue(value)) => Ok(serde_json::from_value(value)?),
+            Ok(ServiceResponse::CrdtValue(value)) => Ok((serde_json::from_value(value)?, None)),
             Err(crate::Error::Store(error))
                 if matches!(
                     *error,
                     crate::store::StoreError::RecordMaintenanceUnavailable { .. }
                 ) =>
             {
-                use crate::crdt::CRDT;
                 let tips = self
                     .get_verified_tips(root_id.clone(), identity.clone())
                     .await?;
@@ -1130,19 +1194,19 @@ impl RemoteConnection {
                         root_id,
                         identity,
                         store.clone(),
-                        tips.into_tips(),
+                        tips.clone().into_tips(),
                         ReadScope::Verified,
                     )
                     .await?;
                 // The fallback may not publish: it owns no server maintenance
                 // capability. Fold only authorized, ordered canonical history.
-                let mut state = S::Data::default();
+                let mut state = D::default();
                 for entry in entries {
                     if let Ok(data) = entry.data(&store) {
-                        state = state.merge(&serde_json::from_slice(data)?)?;
+                        state = state.merge(&serde_json::from_slice(&decrypt(data)?)?)?;
                     }
                 }
-                Ok(state)
+                Ok((state, Some(tips)))
             }
             Err(error) => Err(error),
             Ok(other) => Err(unexpected_response("CrdtValue", &other)),
@@ -1193,6 +1257,11 @@ impl RemoteConnection {
         root_id: ID,
         identity: SigKey,
     ) -> crate::Result<Snapshot> {
+        let identity = if identity == SigKey::default() {
+            self.session_identity().unwrap_or_default()
+        } else {
+            identity
+        };
         let resp = self
             .db_request(root_id, identity, DatabaseOp::GetVerifiedTips)
             .await?;
@@ -1431,6 +1500,86 @@ impl RemoteConnection {
         match resp {
             ServiceResponse::Error(e) => Err(service_error_to_eidetica_error(e)),
             other => Self::expect_ok(other),
+        }
+    }
+
+    /// Resolve an ambiguous chunk send using a connection the caller has already
+    /// reconnected and authenticated. The original bytes are kept until the
+    /// acknowledgement; an unknown/terminal token never starts a new build.
+    /// A published token is resolved to a fresh session-scoped view instead of
+    /// replaying into a terminal build.
+    pub async fn send_staging_chunk_with_recovery(
+        &self,
+        authenticated: &Self,
+        payload: &[u8],
+    ) -> crate::Result<StagingChunkOutcome> {
+        let req: ServiceRequest = serde_json::from_slice(payload)?;
+        let ServiceRequest::AuthenticatedDb(envelope) = req else {
+            return Err(invalid_staging_recovery());
+        };
+        let token = match &envelope.op {
+            DatabaseOp::StageStoreStateRecords { token, .. }
+            | DatabaseOp::StageStoreStateOrdered { token, .. } => token.clone(),
+            _ => return Err(invalid_staging_recovery()),
+        };
+        match self.send_staging_chunk(payload).await {
+            Ok(()) => Ok(StagingChunkOutcome::Staged),
+            Err(crate::Error::Io(_)) => {
+                let root = envelope.root_id;
+                let identity = envelope.identity;
+                match authenticated
+                    .store_state_staging_status(root.clone(), identity.clone(), token.clone())
+                    .await?
+                {
+                    Some(crate::backend::StagingStatus::Active) => {
+                        authenticated.send_staging_chunk(payload).await?;
+                        Ok(StagingChunkOutcome::Staged)
+                    }
+                    Some(crate::backend::StagingStatus::Published(_))
+                    | Some(crate::backend::StagingStatus::Adopted(_)) => {
+                        Ok(StagingChunkOutcome::Published(
+                            authenticated
+                                .publish_store_state(root, identity, token)
+                                .await?,
+                        ))
+                    }
+                    _ => Err(crate::backend::BackendError::InvalidStoreStateStagingToken.into()),
+                }
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Publish once, resolving an ambiguous transport result through the
+    /// authenticated replacement. A missing or terminal token fails closed.
+    pub async fn publish_store_state_with_recovery(
+        &self,
+        authenticated: &Self,
+        root: ID,
+        identity: SigKey,
+        token: String,
+    ) -> crate::Result<String> {
+        match self
+            .publish_store_state(root.clone(), identity.clone(), token.clone())
+            .await
+        {
+            Ok(view) => Ok(view),
+            Err(crate::Error::Io(_)) => {
+                match authenticated
+                    .store_state_staging_status(root.clone(), identity.clone(), token.clone())
+                    .await?
+                {
+                    Some(crate::backend::StagingStatus::Active)
+                    | Some(crate::backend::StagingStatus::Published(_))
+                    | Some(crate::backend::StagingStatus::Adopted(_)) => {
+                        authenticated
+                            .publish_store_state(root, identity, token)
+                            .await
+                    }
+                    _ => Err(crate::backend::BackendError::InvalidStoreStateStagingToken.into()),
+                }
+            }
+            Err(error) => Err(error),
         }
     }
 

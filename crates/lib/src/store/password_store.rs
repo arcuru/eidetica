@@ -1114,6 +1114,88 @@ impl<S: Store> PasswordStore<S> {
         self.state() != PasswordStoreState::Uninitialized
     }
 
+    /// Read the unlocked wrapped CRDT through authenticated service history
+    /// when the server cannot maintain an encrypted projection. The password
+    /// stays in this transaction; a capability refusal never masks a bad key.
+    pub async fn get_state(&self) -> Result<S::Data>
+    where
+        S::Data: Send,
+    {
+        if !self.is_open() {
+            return Err(StoreError::InvalidOperation {
+                store: self.name.clone(),
+                operation: "get_state".to_string(),
+                reason: "Store not opened - call open() first".to_string(),
+            }
+            .into());
+        }
+        self.transaction
+            .unlocked_store_state::<Self>(&self.name)
+            .await
+    }
+
+    /// Read one projected row using the unlocked password and physical-key identity.
+    /// The remote read-only path folds authorized history locally, never stages
+    /// server maintenance. This is a typed projection API, not a Table format switch.
+    pub async fn projected_get(
+        &self,
+        projection: &dyn super::RecordProjection<S::Data>,
+        key: &[u8],
+    ) -> Result<Option<Vec<u8>>>
+    where
+        S::Data: Send,
+    {
+        self.require_open("projected_get")?;
+        self.check_projection(projection)?;
+        self.transaction
+            .unlocked_projected_get::<S>(&self.name, projection, key)
+            .await
+    }
+
+    /// Scan one physical-order page; continuation is stale after an overlay change.
+    pub async fn projected_scan_page(
+        &self,
+        projection: &dyn super::RecordProjection<S::Data>,
+        cursor: Option<&super::TableCursor>,
+        limit: usize,
+    ) -> Result<(crate::backend::RecordPage, Option<super::TableCursor>)>
+    where
+        S::Data: Send,
+    {
+        self.require_open("projected_scan_page")?;
+        self.check_projection(projection)?;
+        self.transaction
+            .unlocked_projected_scan_page::<S>(&self.name, projection, cursor, limit)
+            .await
+    }
+
+    fn check_projection(&self, projection: &dyn super::RecordProjection<S::Data>) -> Result<()> {
+        let expected = S::state_model().descriptor();
+        let actual = projection.descriptor();
+        if expected != actual {
+            return Err(StoreError::TypeMismatch {
+                store: self.name.clone(),
+                expected: format!("{expected:?}"),
+                actual: format!("{actual:?}"),
+            }
+            .into());
+        }
+        Ok(())
+    }
+
+    fn require_open(&self, operation: &str) -> Result<()> {
+        if self.is_open() {
+            Ok(())
+        } else {
+            Err(StoreError::InvalidOperation {
+                store: self.name.clone(),
+                operation: operation.to_string(),
+                reason: "Store not opened - call open() first".to_string(),
+            }
+            .into())
+        }
+    }
+
     /// Get the wrapped store, providing transparent encryption.
     ///
     /// Returns the inner `S` store instance that transparently encrypts data
@@ -1203,6 +1285,18 @@ mod tests {
         assert_eq!(
             *first.record_value_material().unwrap(),
             *second.record_value_material().unwrap()
+        );
+    }
+
+    #[test]
+    fn encrypted_entry_tamper_is_not_a_maintenance_refusal() {
+        let encryptor = encryptor("secrets");
+        let mut ciphertext = encryptor.encrypt(br#"{"a":1}"#).unwrap();
+        assert_eq!(encryptor.decrypt(&ciphertext).unwrap(), br#"{"a":1}"#);
+        *ciphertext.last_mut().unwrap() ^= 1;
+        let error = encryptor.decrypt(&ciphertext).unwrap_err();
+        assert!(
+            !matches!(error, crate::Error::Store(ref e) if matches!(**e, StoreError::RecordMaintenanceUnavailable { .. }))
         );
     }
 

@@ -728,6 +728,148 @@ impl Transaction {
         }
     }
 
+    /// Read an unlocked password projection without asking a read-only client to
+    /// publish server records. The server authorizes the history before decryption.
+    /// Remote reads currently fold the full state before selecting a physical key;
+    /// an independently authenticated read-only record view can optimize this later.
+    #[allow(dead_code)] // The typed Store migration will consume this path.
+    pub(crate) async fn unlocked_projected_get<S: Store>(
+        &self,
+        store: &str,
+        projection: &dyn RecordProjection<S::Data>,
+        key: &[u8],
+    ) -> Result<Option<Vec<u8>>>
+    where
+        S::Data: Send,
+    {
+        #[cfg(all(unix, feature = "service"))]
+        if self.db.instance()?.remote_connection().is_some() {
+            loop {
+                let revision = self
+                    .projected
+                    .lock()
+                    .unwrap()
+                    .get(store)
+                    .map_or(0, |s| s.revision);
+                let state = self
+                    .unlocked_store_state::<crate::store::PasswordStore<S>>(store)
+                    .await?;
+                let history = self.project_state(store, projection, &state)?;
+                if self
+                    .projected
+                    .lock()
+                    .unwrap()
+                    .get(store)
+                    .map_or(0, |s| s.revision)
+                    == revision
+                {
+                    return self
+                        .projected_get_with_history(store, projection, key, Some(&history))
+                        .await;
+                }
+            }
+        }
+        self.projected_get(store, projection, key).await
+    }
+
+    pub(crate) async fn unlocked_projected_scan_page<S: Store>(
+        &self,
+        store: &str,
+        projection: &dyn RecordProjection<S::Data>,
+        cursor: Option<&TableCursor>,
+        limit: usize,
+    ) -> Result<(crate::backend::RecordPage, Option<TableCursor>)>
+    where
+        S::Data: Send,
+    {
+        #[cfg(all(unix, feature = "service"))]
+        if self.db.instance()?.remote_connection().is_some() {
+            let revision = self
+                .projected
+                .lock()
+                .unwrap()
+                .get(store)
+                .map_or(0, |s| s.revision);
+            let conn = self.db.instance()?.remote_connection().unwrap();
+            let root = self.db.root_id().clone();
+            let identity = self.db.auth_identity().cloned().unwrap_or_default();
+            let (state, frontier) = conn
+                .get_store_state_with_decrypt_and_frontier::<S::Data>(
+                    root.clone(),
+                    identity.clone(),
+                    store.to_string(),
+                    <crate::store::PasswordStore<S> as crate::store::Registered>::type_id(),
+                    S::state_model().descriptor(),
+                    |bytes| self.decrypt_if_needed(store, bytes),
+                )
+                .await?;
+            let history = self.project_state(store, projection, &state)?;
+            let Some(frontier) = frontier else {
+                return Err(StoreError::RecordMaintenanceUnavailable {
+                    store: store.into(),
+                }
+                .into());
+            };
+            let (page, next) = self
+                .projected_scan_with_history(
+                    store,
+                    projection,
+                    cursor,
+                    limit,
+                    history,
+                    Some(frontier.clone()),
+                )
+                .await?;
+            // The fold is pinned to its source tips, but a new Verified tip can
+            // arrive during any await. Never return a page for a mixed frontier.
+            self.check_remote_scan_frontier(
+                store,
+                revision,
+                &frontier,
+                conn.get_verified_tips(root, identity),
+            )
+            .await?;
+            return Ok((page, next));
+        }
+        self.projected_record_scan_page(store, projection, cursor, limit)
+            .await
+    }
+
+    #[cfg(all(unix, feature = "service"))]
+    async fn check_remote_scan_frontier<F>(
+        &self,
+        store: &str,
+        revision: u64,
+        frontier: &Snapshot,
+        check: F,
+    ) -> Result<()>
+    where
+        F: Future<Output = Result<Snapshot>>,
+    {
+        let current = check.await;
+        // Check the overlay after the network await, including when it fails.
+        if self
+            .projected
+            .lock()
+            .unwrap()
+            .get(store)
+            .map_or(0, |s| s.revision)
+            != revision
+        {
+            return Err(StoreError::StaleCursor {
+                store: store.into(),
+            }
+            .into());
+        }
+        if current? != *frontier {
+            return Err(StoreError::StaleCursor {
+                store: store.into(),
+            }
+            .into());
+        }
+        Ok(())
+    }
+
     /// Read a typed row from the fixed historical view, overlaid with staged changes.
     #[allow(dead_code)] // Used by the typed Store after its format switch.
     pub(crate) async fn projected_get<D: CRDT + Send>(
@@ -735,6 +877,17 @@ impl Transaction {
         store: &str,
         projection: &dyn RecordProjection<D>,
         key: &[u8],
+    ) -> Result<Option<Vec<u8>>> {
+        self.projected_get_with_history(store, projection, key, None)
+            .await
+    }
+
+    async fn projected_get_with_history<D: CRDT + Send>(
+        &self,
+        store: &str,
+        projection: &dyn RecordProjection<D>,
+        key: &[u8],
+        history: Option<&BTreeMap<Vec<u8>, Vec<u8>>>,
     ) -> Result<Option<Vec<u8>>> {
         let Some(key) = projection.normalize_record_key(key)? else {
             return Ok(None);
@@ -765,22 +918,26 @@ impl Transaction {
                 value
             } else {
                 let physical = self.physical_record_key(store, &key)?;
-                let value = match self.record_view(store, projection).await {
-                    Err(err) if err.is_unsupported_store_state() => self
-                        .projected_history::<D>(store, projection)
-                        .await?
-                        .get(&physical)
-                        .cloned(),
-                    Err(err) => return Err(err),
-                    Ok(view) => {
-                        match self.db.ops().store_state_record_get(&view, &physical).await {
-                            Err(err) if err.is_unsupported_store_state() => self
-                                .projected_history::<D>(store, projection)
-                                .await?
-                                .get(&physical)
-                                .cloned(),
-                            Err(err) => return Err(err),
-                            Ok(value) => value,
+                let value = if let Some(history) = history {
+                    history.get(&physical).cloned()
+                } else {
+                    match self.record_view(store, projection).await {
+                        Err(err) if err.is_unsupported_store_state() => self
+                            .projected_history::<D>(store, projection)
+                            .await?
+                            .get(&physical)
+                            .cloned(),
+                        Err(err) => return Err(err),
+                        Ok(view) => {
+                            match self.db.ops().store_state_record_get(&view, &physical).await {
+                                Err(err) if err.is_unsupported_store_state() => self
+                                    .projected_history::<D>(store, projection)
+                                    .await?
+                                    .get(&physical)
+                                    .cloned(),
+                                Err(err) => return Err(err),
+                                Ok(value) => value,
+                            }
                         }
                     }
                 };
@@ -807,6 +964,30 @@ impl Transaction {
         }
     }
 
+    /// Read the unlocked Store's typed state. On a service connection the
+    /// server authorizes the canonical read before returning a capability
+    /// refusal; only then may this client decrypt and fold Entry history.
+    pub(crate) async fn unlocked_store_state<S: Store>(&self, store: &str) -> Result<S::Data>
+    where
+        S::Data: Send,
+    {
+        #[cfg(all(unix, feature = "service"))]
+        if let Some(conn) = self.db.instance()?.remote_connection() {
+            return conn
+                .get_store_state_with_decrypt::<S::Data>(
+                    self.db.root_id().clone(),
+                    self.db.auth_identity().cloned().unwrap_or_default(),
+                    store.to_string(),
+                    S::type_id(),
+                    S::state_model().descriptor(),
+                    |bytes| self.decrypt_if_needed(store, bytes),
+                )
+                .await;
+        }
+        self.get_full_state_with_descriptor(store, S::state_model().descriptor())
+            .await
+    }
+
     /// Recordless fallback reduces typed history before projecting into physical order.
     async fn projected_history<D: CRDT + Send>(
         &self,
@@ -816,8 +997,17 @@ impl Transaction {
         let state: D = self
             .get_full_state_with_descriptor(store, projection.descriptor())
             .await?;
+        self.project_state(store, projection, &state)
+    }
+
+    fn project_state<D: CRDT>(
+        &self,
+        store: &str,
+        projection: &dyn RecordProjection<D>,
+        state: &D,
+    ) -> Result<BTreeMap<Vec<u8>, Vec<u8>>> {
         let mut records = BTreeMap::new();
-        for mutation in projection.mutations(&state)? {
+        for mutation in projection.mutations(state)? {
             match mutation? {
                 RecordMutation::Put { key, value } => {
                     let Some(key) = projection.normalize_record_key(&key)? else {
@@ -882,6 +1072,7 @@ impl Transaction {
             projection.descriptor(),
             cursor,
             limit,
+            None,
             |after, count| {
                 let view = view.clone();
                 let history = history.clone();
@@ -915,6 +1106,39 @@ impl Transaction {
         .await
     }
 
+    async fn projected_scan_with_history<D: CRDT + Send>(
+        &self,
+        store: &str,
+        projection: &dyn RecordProjection<D>,
+        cursor: Option<&TableCursor>,
+        limit: usize,
+        history: BTreeMap<Vec<u8>, Vec<u8>>,
+        frontier: Option<crate::Snapshot>,
+    ) -> Result<(crate::backend::RecordPage, Option<TableCursor>)> {
+        self.projected_scan_page(
+            store,
+            projection.descriptor(),
+            cursor,
+            limit,
+            frontier,
+            |after, count| {
+                let mut rows = history
+                    .iter()
+                    .filter(|(key, _)| after.as_ref().is_none_or(|after| *key > after))
+                    .take(count.saturating_add(1))
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect::<Vec<_>>();
+                let next = (rows.len() > count).then(|| rows[count - 1].0.clone());
+                rows.truncate(count);
+                std::future::ready(Ok(crate::backend::RecordPage {
+                    records: rows,
+                    next,
+                }))
+            },
+        )
+        .await
+    }
+
     /// Scan a typed projection over one immutable transaction overlay. The
     /// fetcher supplies persisted physical-key pages; it must honor exclusive
     /// `after` and return pages in physical order. Phase 3 wires the backend
@@ -926,6 +1150,7 @@ impl Transaction {
         descriptor: ProjectionDescriptor,
         cursor: Option<&TableCursor>,
         limit: usize,
+        frontier: Option<crate::Snapshot>,
         mut fetch: F,
     ) -> Result<(crate::backend::RecordPage, Option<TableCursor>)>
     where
@@ -951,11 +1176,13 @@ impl Transaction {
                 revision: cursor_revision,
                 store: cursor_store,
                 projection,
+                frontier: cursor_frontier,
                 last_physical_key,
             }) if *view == self.view_id
                 && *cursor_revision == revision
                 && cursor_store == store
-                && projection == &context =>
+                && projection == &context
+                && cursor_frontier == &frontier =>
             {
                 Some(last_physical_key.clone())
             }
@@ -1030,6 +1257,7 @@ impl Transaction {
                 revision,
                 store: store.into(),
                 projection: context.clone(),
+                frontier: frontier.clone(),
                 last_physical_key: records.last().unwrap().0.clone(),
             })
         });

@@ -111,6 +111,7 @@ fn extract_id_from_message(message: &str) -> Option<ID> {
 fn error_kind_name(err: &crate::Error) -> String {
     match err {
         crate::Error::Io(_) => "Io".to_string(),
+        crate::Error::AmbiguousStaging { .. } => "AmbiguousStaging".to_string(),
         crate::Error::Serialize(_) => "Serialize".to_string(),
         crate::Error::Auth(e) => format!("{e:?}")
             .split_once(|c: char| !c.is_alphanumeric())
@@ -292,6 +293,7 @@ mod tests {
     fn wire_mapping_exhaustiveness_guard(err: &crate::Error) {
         match err {
             crate::Error::Io(_) => {}
+            crate::Error::AmbiguousStaging { .. } => {}
             crate::Error::Serialize(_) => {}
             crate::Error::Auth(_) => {}
             crate::Error::Backend(_) => {}
