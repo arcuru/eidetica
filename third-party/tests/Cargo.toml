@@ -1,0 +1,17 @@
+# Development-only dependencies omitted by Reindeer's normal-dependency graph.
+# Separate workspace so Cargo's production workspace membership is unchanged.
+[workspace]
+
+[package]
+name = "eidetica-buck-test-deps"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "placeholder"
+path = "placeholder.rs"
+
+[dependencies]
+ctor = "0.6"
+tempfile = "3"

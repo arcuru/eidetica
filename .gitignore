@@ -30,3 +30,6 @@ result-*
 
 # mdbook files
 docs/book
+
+# Buck output
+/buck-out
