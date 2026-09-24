@@ -139,11 +139,20 @@ async fn test_genesis_first_auth_survives_reverification() -> Result<()> {
     let db = Database::create(&instance, signer, Doc::new()).await?;
     let id = db.root_id();
     let backend = instance.require_local_engine()?;
-    assert_eq!(backend.get_verification_status(id).await?, VerificationStatus::Verified);
+    assert_eq!(
+        backend.get_verification_status(id).await?,
+        VerificationStatus::Verified
+    );
     instance.demote_to_unverified(id, id).await?;
-    assert_eq!(backend.get_verification_status(id).await?, VerificationStatus::Unverified);
+    assert_eq!(
+        backend.get_verification_status(id).await?,
+        VerificationStatus::Unverified
+    );
     db.verify().await?;
-    assert_eq!(backend.get_verification_status(id).await?, VerificationStatus::Verified);
+    assert_eq!(
+        backend.get_verification_status(id).await?,
+        VerificationStatus::Verified
+    );
     Ok(())
 }
 

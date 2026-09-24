@@ -1523,20 +1523,23 @@ impl Transaction {
         }
 
         // Check if this is a settings subtree update and get the effective settings before any borrowing
-        let has_settings_update = {
+        let (has_settings_update, is_genesis) = {
             let builder_cell = self.entry_builder.lock().unwrap();
             let builder = builder_cell
                 .as_ref()
                 .ok_or(TransactionError::TransactionAlreadyCommitted)?;
-            builder.subtrees().contains(&SETTINGS.to_string())
+            (
+                builder.subtrees().contains(&SETTINGS.to_string()),
+                builder.is_root(),
+            )
         };
 
         // Get settings using full CRDT state computation
         let historical_settings = self.get_full_state::<Doc>(SETTINGS).await?;
 
-        // However, if this is a settings update and there's no historical auth but staged auth exists,
-        // use the staged settings for validation (this handles initial database creation with auth)
-        let effective_settings_for_validation = if has_settings_update {
+        // Only genesis may authorize itself with staged auth. All later entries
+        // validate against pre-write settings, even the first auth write.
+        let effective_settings_for_validation = if has_settings_update && is_genesis {
             let historical_has_auth = matches!(historical_settings.get("auth"), Some(Value::Doc(auth_map)) if !auth_map.is_empty());
             if !historical_has_auth {
                 let staged_settings = self.get_local_data::<Doc>(SETTINGS)?.unwrap_or_default();

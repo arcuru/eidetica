@@ -4,6 +4,20 @@ use super::*;
 use crate::auth::types::{AuthInfo, DelegationStep, KeyHint, SigKey};
 
 #[test]
+fn test_builder_genesis_requires_marker_no_main_parents_and_no_root() {
+    let root = Entry::root_builder();
+    assert!(root.is_root());
+    assert!(!root.clone().add_parent(ID::from_bytes("parent")).is_root());
+    assert!(!root.clone().set_root(ID::from_bytes("tree")).is_root());
+    assert!(!Entry::builder(ID::default()).is_root());
+    assert!(
+        !Entry::builder(ID::from_bytes("tree"))
+            .set_subtree_data(crate::constants::ROOT, b"marker")
+            .is_root()
+    );
+}
+
+#[test]
 fn test_validate_root_entry_without_parents_succeeds() {
     // Root entries (with "_root" subtree) should be valid without parents
     let entry = Entry::root_builder()

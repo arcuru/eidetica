@@ -143,6 +143,13 @@ impl EntryBuilder {
             .collect()
     }
 
+    /// Match the structural genesis predicate used by `Entry::is_root` before build.
+    pub(crate) fn is_root(&self) -> bool {
+        self.subtrees.iter().any(|node| node.name == ROOT)
+            && self.tree.parents.is_empty()
+            && self.tree.root.is_none()
+    }
+
     /// Get the `RawData` for a specific named subtree within this entry builder.
     ///
     /// Returns an error if the subtree is not found or if the subtree exists but has no data (`None`).
