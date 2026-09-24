@@ -1624,13 +1624,13 @@ impl Transaction {
             builder.remove_empty_subtrees_mut()?;
         }
 
-        // Add metadata with settings snapshot for all entries
-        // Get the backend to access the settings snapshot (do async ops before RefCell borrow)
-        let db_snapshot = self.db.snapshot().await?;
+        // Pin the builder's pre-write main-parent settings, not the live database head.
+        // Resolve before borrowing the builder across the async backend call.
+        let parents_snapshot = Snapshot::from(main_parents);
         let settings_snapshot = self
             .db
             .ops()
-            .store_snapshot_at(self.db.root_id(), SETTINGS, &db_snapshot)
+            .store_snapshot_at(self.db.root_id(), SETTINGS, &parents_snapshot)
             .await?;
 
         // Clone the builder from RefCell (limit borrow scope to avoid holding across await)

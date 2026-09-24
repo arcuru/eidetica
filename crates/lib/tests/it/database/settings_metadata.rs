@@ -593,6 +593,8 @@ async fn test_historical_transaction_pins_main_parent_settings() {
         .store_snapshot_at(db.root_id(), SETTINGS, &Snapshot::from([newer.clone()]))
         .await
         .unwrap();
+    assert_eq!(pin(&db.get_entry(&root).await.unwrap()), Snapshot::EMPTY);
+    assert_eq!(pin(&db.get_entry(&newer).await.unwrap()), expected_old);
     assert_eq!(expected_old, Snapshot::from([root]));
     assert_eq!(expected_new, Snapshot::from([newer.clone()]));
     assert_eq!(pin(&db.get_entry(&historical).await.unwrap()), expected_old);
@@ -633,6 +635,11 @@ async fn test_historical_transaction_pins_main_parent_settings() {
         .demote_to_unverified(db.root_id(), &historical)
         .await
         .unwrap();
+    assert_eq!(
+        engine.get_verification_status(&historical).await.unwrap(),
+        VerificationStatus::Unverified,
+        "the verifier must start from an unverified signed entry"
+    );
     db.verify().await.unwrap();
     assert_eq!(
         engine.get_verification_status(&historical).await.unwrap(),
