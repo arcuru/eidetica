@@ -496,7 +496,7 @@ async fn test_database_get_verified_tips() {
     );
 }
 
-/// Exercise `DatabaseOp::GetStoreState`.
+/// Exercise `DatabaseOp::EnsureStoreStateGeneration`.
 #[tokio::test]
 async fn test_database_get_store_state() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
@@ -538,14 +538,215 @@ async fn test_database_get_store_state() {
 
     let conn = remote_conn(&instance);
     let state = conn
-        .get_store_state(root_id.clone(), identity, "entries".to_string())
+        .get_store_state::<DocStore>(root_id.clone(), identity, "entries".to_string())
         .await
         .unwrap();
+    let state = serde_json::to_value(state).unwrap();
 
     assert!(
         state.is_object() || state.is_null(),
         "get_store_state must return a JSON value, got: {:?}",
         state
+    );
+}
+
+/// A canonical read grant can invoke internal maintenance but cannot stage
+/// records or receive a staging token. The descriptor is checked before work.
+#[tokio::test]
+async fn read_scoped_ensure_generation_authorizes_before_maintenance() {
+    use eidetica::auth::types::{AuthKey, Permission, SigKey};
+    use eidetica::store::Store;
+    let (socket, _tx, server, _dir) = start_test_server().await;
+    let (_alice, root, _) = setup_db(&server, &socket, "alice").await;
+    let alice = server.login_user("alice", None).await.unwrap();
+    let db = alice.open_database(&root).await.unwrap();
+    db.with_transaction(|tx| async move {
+        tx.get_store::<DocStore>("entries")
+            .await?
+            .set("k", "v")
+            .await?;
+        tx.get_settings()?
+            .set_global_auth_key(AuthKey::active(None, Permission::Read))
+            .await?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    create_user_via_admin(&server, "bob").await;
+    let remote = Instance::connect(format!("unix://{}", socket.display()))
+        .await
+        .unwrap();
+    let bob = remote.login_user("bob", None).await.unwrap();
+    let bob_identity = SigKey::from_pubkey(&bob.get_default_key().unwrap());
+    let conn = remote_conn(&remote);
+    let state = conn
+        .get_store_state::<DocStore>(root.clone(), bob_identity.clone(), "entries".into())
+        .await
+        .unwrap();
+    assert_eq!(state.get_as::<&str>("k"), Some("v"));
+    // The permission is only Read: the explicit staging path stays denied.
+    let request = StoreStateRequest {
+        database: root.clone(),
+        store: "entries".into(),
+        lifecycle: eidetica::backend::StoreStateLifecycle::Derived,
+        scope: eidetica::backend::CacheScope::Shared,
+        projection: DocStore::state_model().descriptor(),
+        source_key: b"untrusted".to_vec(),
+    };
+    assert!(
+        conn.begin_store_state_staging(bob_identity.clone(), request)
+            .await
+            .is_err()
+    );
+}
+
+/// Descriptor and registry identity are checked after the canonical read gate.
+#[tokio::test]
+async fn store_state_read_rejects_wrong_descriptor_and_unauthorized_reader() {
+    use eidetica::service::protocol::{AuthenticatedDbRequest, DatabaseOp};
+    use eidetica::store::{Registered, Store};
+    let (socket, _tx, server, _dir) = start_test_server().await;
+    let (_alice, root, identity) = setup_db(&server, &socket, "alice").await;
+    let server_user = server.login_user("alice", None).await.unwrap();
+    let db = server_user.open_database(&root).await.unwrap();
+    db.with_transaction(|tx| async move {
+        tx.get_store::<DocStore>("entries")
+            .await?
+            .set("k", "v")
+            .await?;
+        let mut encrypted = tx.get_store::<PasswordStore<DocStore>>("secrets").await?;
+        encrypted.initialize("test-password", Doc::new()).await?;
+        encrypted.inner().await?.set("hidden", "value").await?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let remote = Instance::connect(format!("unix://{}", socket.display()))
+        .await
+        .unwrap();
+    remote.login_user("alice", None).await.unwrap();
+    let conn = remote_conn(&remote);
+    let value = conn
+        .get_store_state::<DocStore>(root.clone(), identity.clone(), "entries".into())
+        .await
+        .unwrap();
+    assert_eq!(value.get_as::<&str>("k"), Some("v"));
+
+    let wrong = eidetica::backend::ProjectionDescriptor {
+        name: "wrong".into(),
+        version: 0,
+    };
+    let request = ServiceRequest::AuthenticatedDb(Box::new(AuthenticatedDbRequest {
+        root_id: root.clone(),
+        identity: identity.clone(),
+        op: DatabaseOp::EnsureStoreStateGeneration {
+            store: "entries".into(),
+            expected_type: DocStore::type_id().into(),
+            projection: wrong,
+        },
+    }));
+    let (mut reader, mut writer) = raw_handshake(&socket).await;
+    // An unauthenticated raw request cannot reach descriptor validation.
+    write_frame(&mut writer, &request).await.unwrap();
+    match read_response(&mut reader).await {
+        ServiceResponse::Error(err) => assert_ne!(err.kind, "RecordMaintenanceUnavailable"),
+        other => panic!("unauthenticated request succeeded: {other:?}"),
+    }
+    let alice = server.login_user("alice", None).await.unwrap();
+    let signing = alice
+        .get_signing_key(&alice.get_default_key().unwrap())
+        .unwrap();
+    write_frame(
+        &mut writer,
+        &ServiceRequest::TrustedLoginUser {
+            username: "alice".into(),
+        },
+    )
+    .await
+    .unwrap();
+    let challenge = match read_response(&mut reader).await {
+        ServiceResponse::TrustedLoginChallenge { challenge, .. } => challenge,
+        other => panic!("expected challenge: {other:?}"),
+    };
+    write_frame(
+        &mut writer,
+        &ServiceRequest::TrustedLoginProve {
+            signature: create_challenge_response(&challenge, &signing),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        read_response(&mut reader).await,
+        ServiceResponse::TrustedLoginOk
+    ));
+    write_frame(&mut writer, &request).await.unwrap();
+    match read_response(&mut reader).await {
+        ServiceResponse::Error(err) => assert_eq!(err.kind, "TypeMismatch"),
+        other => panic!("wrong descriptor accepted: {other:?}"),
+    }
+    let encrypted_request = |projection| {
+        ServiceRequest::AuthenticatedDb(Box::new(AuthenticatedDbRequest {
+            root_id: root.clone(),
+            identity: identity.clone(),
+            op: DatabaseOp::EnsureStoreStateGeneration {
+                store: "secrets".into(),
+                expected_type: PasswordStore::<DocStore>::type_id().into(),
+                projection,
+            },
+        }))
+    };
+    write_frame(
+        &mut writer,
+        &encrypted_request(DocStore::state_model().descriptor()),
+    )
+    .await
+    .unwrap();
+    match read_response(&mut reader).await {
+        ServiceResponse::Error(err) => assert_eq!(err.kind, "TypeMismatch"),
+        other => panic!("unencrypted descriptor accepted for encrypted store: {other:?}"),
+    }
+    write_frame(
+        &mut writer,
+        &encrypted_request(PasswordStore::<DocStore>::state_model().descriptor()),
+    )
+    .await
+    .unwrap();
+    match read_response(&mut reader).await {
+        ServiceResponse::Error(err) => assert_eq!(err.kind, "RecordMaintenanceUnavailable"),
+        other => panic!("encrypted maintenance succeeded: {other:?}"),
+    }
+    // Authenticated wrong descriptor and type cannot trigger history fallback.
+    let result = conn
+        .get_store_state::<Table<serde_json::Value>>(
+            root.clone(),
+            identity.clone(),
+            "entries".into(),
+        )
+        .await;
+    let error = result.unwrap_err();
+    assert!(error.to_string().contains("TypeMismatch"), "{error}");
+    assert!(
+        !matches!(error, eidetica::Error::Store(ref e) if matches!(**e, eidetica::store::StoreError::RecordMaintenanceUnavailable { .. }))
+    );
+
+    create_user_via_admin(&server, "bob").await;
+    let bob = Instance::connect(format!("unix://{}", socket.display()))
+        .await
+        .unwrap();
+    let bob_user = bob.login_user("bob", None).await.unwrap();
+    let bob_identity =
+        eidetica::auth::types::SigKey::from_pubkey(&bob_user.get_default_key().unwrap());
+    let denied = remote_conn(&bob)
+        .get_store_state::<DocStore>(root, bob_identity, "entries".into())
+        .await;
+    let error = denied.unwrap_err();
+    assert!(
+        error.to_string().to_lowercase().contains("permission"),
+        "{error}"
+    );
+    assert!(
+        !matches!(error, eidetica::Error::Store(ref e) if matches!(**e, eidetica::store::StoreError::RecordMaintenanceUnavailable { .. }))
     );
 }
 
@@ -3080,6 +3281,125 @@ async fn test_remote_ordered_physical_staging() {
     )
     .await
     .unwrap();
+    let view = conn
+        .publish_store_state(root.clone(), identity.clone(), token)
+        .await
+        .unwrap();
+    assert_eq!(
+        conn.store_state_record_get(root, identity, view, b"row".to_vec())
+            .await
+            .unwrap(),
+        None
+    );
+}
+
+/// Preserve an encoded request across a lost acknowledgement and reconnect.
+/// Replaying a pre-delete put must not resurrect the row after a newer delete.
+#[tokio::test]
+async fn test_exact_staging_chunk_retry_after_reconnect_and_delete() {
+    use eidetica::backend::{RecordMutation as M, StagingStatus};
+    use eidetica::service::client::RemoteConnection;
+    use eidetica::service::protocol::DatabaseOp;
+
+    let (socket, shutdown, server, _dir) = start_test_server().await;
+    let (instance, root, identity) = setup_db(&server, &socket, "alice").await;
+    let request = derived_request(&root, "replay-after-delete");
+    let token = remote_conn(&instance)
+        .begin_store_state_staging(identity.clone(), request.clone())
+        .await
+        .unwrap();
+    let put = RemoteConnection::encode_staging_chunk(
+        root.clone(),
+        identity.clone(),
+        DatabaseOp::StageStoreStateOrdered {
+            token: token.clone(),
+            chunk_id: 0,
+            mutations: vec![M::Put {
+                key: b"row".to_vec(),
+                value: b"first".to_vec(),
+            }],
+        },
+    )
+    .unwrap();
+    remote_conn(&instance)
+        .send_staging_chunk(&put)
+        .await
+        .unwrap();
+    // The caller cannot distinguish an acknowledgement lost during teardown
+    // from a request that never arrived. Restart the daemon with its backend.
+    shutdown.send(()).unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let failed = tokio::time::timeout(
+        Duration::from_secs(2),
+        remote_conn(&instance).send_staging_chunk(&put),
+    )
+    .await
+    .expect("old connection must fail promptly on shutdown");
+    assert!(
+        failed.is_err(),
+        "closed connection cannot acknowledge a chunk"
+    );
+    drop(instance);
+    let mut restarted = None;
+    for _ in 0..50 {
+        if let Ok(service) = ServiceServer::bind(server.clone(), socket.clone()).await {
+            restarted = Some(service);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let (_tx, rx) = watch::channel(());
+    tokio::spawn(restarted.expect("old daemon must release socket").run(rx));
+    let instance = Instance::connect(format!("unix://{}", socket.display()))
+        .await
+        .unwrap();
+    instance.login_user("alice", None).await.unwrap();
+    let conn = remote_conn(&instance);
+    assert_eq!(
+        conn.store_state_staging_status(root.clone(), identity.clone(), token.clone())
+            .await
+            .unwrap(),
+        Some(StagingStatus::Active)
+    );
+    conn.send_staging_chunk(&put).await.unwrap();
+
+    let delete = RemoteConnection::encode_staging_chunk(
+        root.clone(),
+        identity.clone(),
+        DatabaseOp::StageStoreStateOrdered {
+            token: token.clone(),
+            chunk_id: 1,
+            mutations: vec![M::Delete {
+                key: b"row".to_vec(),
+            }],
+        },
+    )
+    .unwrap();
+    conn.send_staging_chunk(&delete).await.unwrap();
+    assert!(
+        conn.send_staging_chunk(&put).await.is_err(),
+        "older put must be rejected"
+    );
+    assert!(
+        conn.send_staging_chunk(
+            &RemoteConnection::encode_staging_chunk(
+                root.clone(),
+                identity.clone(),
+                DatabaseOp::StageStoreStateOrdered {
+                    token: token.clone(),
+                    chunk_id: 1,
+                    mutations: vec![M::Put {
+                        key: b"row".to_vec(),
+                        value: b"conflict".to_vec()
+                    }],
+                },
+            )
+            .unwrap()
+        )
+        .await
+        .is_err(),
+        "conflicting retry must be rejected"
+    );
     let view = conn
         .publish_store_state(root.clone(), identity.clone(), token)
         .await

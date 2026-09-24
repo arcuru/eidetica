@@ -6,16 +6,16 @@ use crate::Result;
 use crate::backend::errors::BackendError;
 use crate::backend::{
     CacheScope, InstanceMetadata, InstanceSecrets, RecordMutation, RecordMutations, RecordPage,
-    RecordRange, RecordView, StagingStatus, StagingToken, StoreStateLifecycle, StoreStateRequest,
-    VerificationStatus,
+    RecordRange, RecordView, STAGING_RETENTION_SECS, StagingStatus, StagingToken,
+    StoreStateLifecycle, StoreStateRequest, VerificationStatus,
 };
 use crate::entry::{Entry, ID};
 
 use super::{SqlxBackend, SqlxResultExt};
 use crate::backend::database::sorting;
 
-// coding: fixed five-minute lease and five-minute reclamation grace; increase
-// the retained terminal horizon when client retry windows are specified.
+// coding: fixed five-minute lease and five-minute reclamation grace;
+// retention includes a 24-hour maximum client retry window.
 const LEASE_SECS: i64 = 300;
 const GRACE_SECS: i64 = 300;
 
@@ -106,13 +106,20 @@ pub async fn begin_store_state_staging(
     if request.lifecycle == StoreStateLifecycle::Staging {
         return Err(BackendError::InvalidStoreStateStagingToken.into());
     }
-    let namespace_id = uuid::Uuid::new_v4().to_string();
+    let namespace_id = uuid::Uuid::now_v7().to_string();
     let staging_source = namespace_id.as_bytes();
     let mut tx = backend
         .pool()
         .begin()
         .await
         .sql_context("Failed to begin Store-state staging transaction")?;
+    if backend.is_sqlite() {
+        sqlx::query("COMMIT; BEGIN IMMEDIATE")
+            .execute(&mut *tx)
+            .await
+            .sql_context("Failed to lock Store-state staging transaction")?;
+    }
+    lock_store_state_namespace(backend, &mut tx, &request, &namespace_id).await?;
     sqlx::query(
         "INSERT INTO store_state_namespaces
          (namespace_id, database_id, store_name, lifecycle, status, scope_user_uuid,
@@ -142,6 +149,73 @@ pub async fn begin_store_state_staging(
         namespace_id,
         target: request,
     })
+}
+
+/// Recover an unknown result only when its creation is older than the complete
+/// horizon and a transaction-local target lock proves no winner or live builder.
+pub async fn replace_unknown_store_state_staging(
+    backend: &SqlxBackend,
+    previous: &StagingToken,
+) -> Result<Option<StagingToken>> {
+    let now = now_secs();
+    if !crate::backend::forgotten_token_is_old(&previous.namespace_id, now) {
+        return Ok(None);
+    }
+    let mut tx = backend
+        .pool()
+        .begin()
+        .await
+        .sql_context("Failed to begin recovery")?;
+    if backend.is_sqlite() {
+        sqlx::query("COMMIT; BEGIN IMMEDIATE")
+            .execute(&mut *tx)
+            .await
+            .sql_context("Failed to lock recovery")?;
+    }
+    lock_store_state_namespace(backend, &mut tx, &previous.target, &previous.namespace_id).await?;
+    let known: Option<(String,)> = sqlx::query_as(
+        "SELECT namespace_id FROM store_state_staging_tokens WHERE namespace_id = $1",
+    )
+    .bind(&previous.namespace_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .sql_context("Failed to check recovery token")?;
+    if known.is_some() {
+        return Ok(None);
+    }
+    let target_json = serde_json::to_string(&previous.target)?;
+    let rows: Vec<(i64,)> = sqlx::query_as(
+        "SELECT last_activity FROM store_state_staging_tokens WHERE outcome = 0 AND target_json = $1")
+        .bind(&target_json).fetch_all(&mut *tx).await
+        .sql_context("Failed to check active builds")?;
+    if rows.iter().any(|(activity,)| *activity >= now - LEASE_SECS) {
+        return Ok(None);
+    }
+    let winner: Option<(String,)> = sqlx::query_as(
+        "SELECT namespace_id FROM store_state_namespaces WHERE database_id = $1 AND store_name = $2 AND lifecycle = $3 AND status = 1 AND scope_user_uuid = $4 AND projection_name = $5 AND projection_version = $6 AND source_key = $7")
+        .bind(previous.target.database.to_string()).bind(&previous.target.store)
+        .bind(previous.target.lifecycle.as_db_int()).bind(store_state_scope(&previous.target.scope))
+        .bind(&previous.target.projection.name).bind(i64::from(previous.target.projection.version))
+        .bind(&previous.target.source_key).fetch_optional(&mut *tx).await
+        .sql_context("Failed to check recovery generation")?;
+    if winner.is_some() {
+        return Ok(None);
+    }
+    let namespace_id = uuid::Uuid::now_v7().to_string();
+    sqlx::query("INSERT INTO store_state_namespaces (namespace_id, database_id, store_name, lifecycle, status, scope_user_uuid, projection_name, projection_version, source_key, created_revision) VALUES ($1, $2, $3, $4, 0, $5, $6, $7, $8, NULL)")
+        .bind(&namespace_id).bind(previous.target.database.to_string()).bind(&previous.target.store)
+        .bind(StoreStateLifecycle::Staging.as_db_int()).bind(store_state_scope(&previous.target.scope))
+        .bind(&previous.target.projection.name).bind(i64::from(previous.target.projection.version))
+        .bind(namespace_id.as_bytes()).execute(&mut *tx).await
+        .sql_context("Failed to create recovery namespace")?;
+    sqlx::query("INSERT INTO store_state_staging_tokens (namespace_id, target_json, outcome, last_activity) VALUES ($1, $2, 0, $3)")
+        .bind(&namespace_id).bind(target_json).bind(now).execute(&mut *tx).await
+        .sql_context("Failed to create recovery token")?;
+    tx.commit().await.sql_context("Failed to commit recovery")?;
+    Ok(Some(StagingToken {
+        namespace_id,
+        target: previous.target.clone(),
+    }))
 }
 
 pub async fn stage_store_state_records(
@@ -400,8 +474,8 @@ pub async fn reclaim_expired_store_state(backend: &SqlxBackend) -> Result<u64> {
                 .sql_context("Failed to lock Store-state reclamation")?;
         }
         lock_store_state_namespace(backend, &mut tx, &target, &id).await?;
-        let changed = sqlx::query("UPDATE store_state_staging_tokens SET outcome = 4 WHERE namespace_id = $1 AND outcome = 0 AND last_activity < $2")
-            .bind(&id).bind(cutoff).execute(&mut *tx).await.sql_context("Failed to expire staging token")?;
+        let changed = sqlx::query("UPDATE store_state_staging_tokens SET outcome = 4, last_activity = $3 WHERE namespace_id = $1 AND outcome = 0 AND last_activity < $2")
+            .bind(&id).bind(cutoff).bind(now_secs()).execute(&mut *tx).await.sql_context("Failed to expire staging token")?;
         if changed.rows_affected() == 1 {
             sqlx::query(
                 "DELETE FROM store_state_namespaces WHERE namespace_id = $1 AND status = 0",
@@ -416,6 +490,12 @@ pub async fn reclaim_expired_store_state(backend: &SqlxBackend) -> Result<u64> {
             .await
             .sql_context("Failed to commit Store-state reclamation")?;
     }
+    // On terminal transition last_activity becomes the retention start.
+    sqlx::query("DELETE FROM store_state_staging_tokens WHERE outcome != 0 AND last_activity < $1")
+        .bind(now_secs() - STAGING_RETENTION_SECS)
+        .execute(backend.pool())
+        .await
+        .sql_context("Failed to prune terminal staging tokens")?;
     Ok(count)
 }
 
@@ -472,11 +552,12 @@ pub async fn publish_store_state(backend: &SqlxBackend, token: StagingToken) -> 
         (1, token.namespace_id.clone())
     };
     sqlx::query(
-        "UPDATE store_state_staging_tokens SET outcome = $1, view_id = $2 WHERE namespace_id = $3",
+        "UPDATE store_state_staging_tokens SET outcome = $1, view_id = $2, last_activity = $4 WHERE namespace_id = $3",
     )
     .bind(outcome)
     .bind(&view)
     .bind(&token.namespace_id)
+    .bind(now_secs())
     .execute(&mut *tx)
     .await
     .sql_context("Failed to record publication")?;
@@ -506,8 +587,8 @@ pub async fn abort_store_state(backend: &SqlxBackend, token: StagingToken) -> Re
             .sql_context("Failed to lock Store-state abort transaction")?;
     }
     lock_store_state_namespace(backend, &mut tx, &token.target, &token.namespace_id).await?;
-    let result = sqlx::query("UPDATE store_state_staging_tokens SET outcome = 3 WHERE namespace_id = $1 AND target_json = $2 AND outcome = 0")
-        .bind(&token.namespace_id).bind(serde_json::to_string(&token.target)?)
+    let result = sqlx::query("UPDATE store_state_staging_tokens SET outcome = 3, last_activity = $3 WHERE namespace_id = $1 AND target_json = $2 AND outcome = 0")
+        .bind(&token.namespace_id).bind(serde_json::to_string(&token.target)?).bind(now_secs())
         .execute(&mut *tx).await.sql_context("Failed to record Store-state abort")?;
     if result.rows_affected() == 1 {
         sqlx::query("DELETE FROM store_state_namespaces WHERE namespace_id = $1 AND status = 0")

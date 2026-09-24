@@ -192,9 +192,15 @@ pub enum DatabaseOp {
     /// The database's Verified-frontier tips (server runs `Database::snapshot`
     /// on its local instance). Gate Read.
     GetVerifiedTips,
-    /// Server-materialized merged state of an **unencrypted** store, against
-    /// the server's own Verified frontier. Gate Read.
-    GetStoreState { store: String },
+    /// Read-scoped server maintenance for registered plaintext codecs. The
+    /// server verifies registry identity and projection after the canonical
+    /// Read gate, builds any missing generation itself, and returns typed
+    /// state without exposing a staging token. Gate Read.
+    EnsureStoreStateGeneration {
+        store: String,
+        expected_type: String,
+        projection: crate::backend::ProjectionDescriptor,
+    },
     /// Ordered (by subtree height), verified, opaque store entries reachable
     /// from `tips` in `scope` — the universal primitive, incl. encrypted
     /// stores (client decrypts+merges locally). Gate Read.
@@ -285,7 +291,7 @@ impl DatabaseOp {
             DatabaseOp::SetInstanceMetadata { .. } => Permission::Admin(0),
             DatabaseOp::BeginTransaction { .. }
             | DatabaseOp::GetVerifiedTips
-            | DatabaseOp::GetStoreState { .. }
+            | DatabaseOp::EnsureStoreStateGeneration { .. }
             | DatabaseOp::GetStoreEntries { .. }
             | DatabaseOp::GetStoreTipsUpToEntries { .. }
             | DatabaseOp::ComputeMergeState { .. }
@@ -482,7 +488,7 @@ pub enum ServiceResponse {
     Token(String),
     /// Transaction-build context (response to `DatabaseOp::BeginTransaction`).
     TransactionContext(TransactionContext),
-    /// Materialized CRDT store state (response to `DatabaseOp::GetStoreState`).
+    /// Materialized CRDT store state (response to `DatabaseOp::EnsureStoreStateGeneration`).
     CrdtValue(WireCrdtValue),
     /// Merge state: lowest common ancestor + path to tips (response to
     /// `DatabaseOp::ComputeMergeState`).
@@ -528,7 +534,15 @@ pub async fn write_frame<W: AsyncWrite + Unpin, T: Serialize>(
     value: &T,
 ) -> crate::Result<()> {
     let payload = serde_json::to_vec(value)?;
-    let len = payload.len() as u32;
+    write_encoded_frame(writer, &payload).await
+}
+
+/// Send previously encoded bytes unchanged (including on a retry).
+pub(crate) async fn write_encoded_frame<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    payload: &[u8],
+) -> crate::Result<()> {
+    let len = u32::try_from(payload.len()).unwrap_or(u32::MAX);
     if len > MAX_FRAME_SIZE {
         return Err(crate::Error::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -536,7 +550,7 @@ pub async fn write_frame<W: AsyncWrite + Unpin, T: Serialize>(
         )));
     }
     writer.write_all(&len.to_be_bytes()).await?;
-    writer.write_all(&payload).await?;
+    writer.write_all(payload).await?;
     writer.flush().await?;
     Ok(())
 }

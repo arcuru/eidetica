@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::backend::BackendError;
 use crate::entry::ID;
 use crate::instance::InstanceError;
+use crate::store::StoreError;
 
 /// Wire-format error for the service protocol.
 ///
@@ -44,6 +45,9 @@ impl From<&crate::Error> for ServiceError {
 /// combinations.
 pub fn service_error_to_eidetica_error(err: ServiceError) -> crate::Error {
     match (err.module.as_str(), err.kind.as_str()) {
+        ("store", "RecordMaintenanceUnavailable") => {
+            StoreError::RecordMaintenanceUnavailable { store: err.message }.into()
+        }
         ("backend", "StoreStateStorageUnsupported") => {
             BackendError::StoreStateStorageUnsupported.into()
         }
@@ -229,6 +233,10 @@ mod tests {
     #[test]
     fn test_all_mapped_pairs_roundtrip_module_and_kind() {
         let cases: Vec<crate::Error> = vec![
+            StoreError::RecordMaintenanceUnavailable {
+                store: "data".into(),
+            }
+            .into(),
             crate::Error::Backend(Box::new(BackendError::StoreStateStorageUnsupported)),
             crate::Error::Backend(Box::new(BackendError::InvalidStoreStateStagingToken)),
             crate::Error::Backend(Box::new(BackendError::InvalidStoreStateView)),

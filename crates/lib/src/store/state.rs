@@ -2,14 +2,14 @@ use std::collections::BTreeMap;
 
 use crate::{
     Result,
-    backend::{CacheScope, RecordView, StoreStateLifecycle, StoreStateRequest},
+    backend::{CacheScope, RecordMutation, RecordView, StoreStateLifecycle, StoreStateRequest},
+    crdt::CRDT,
     entry::ID,
     instance::backend::Backend,
 };
 
 use super::ProjectionDescriptor;
 use super::RecordProjection;
-use crate::crdt::Doc;
 
 /// Reserved key for the generic opaque whole-state projection.
 pub const OPAQUE_STATE_KEY: &[u8] = &[0x00];
@@ -41,22 +41,64 @@ pub(crate) fn records_request(
     opaque_request(database, store, descriptor, source_key, scope)
 }
 
-pub(crate) async fn publish_records<'a>(
+pub(crate) async fn publish_records<'a, D: CRDT>(
     backend: &dyn Backend,
     request: StoreStateRequest,
     deltas: impl Iterator<Item = &'a [u8]>,
-    projection: &dyn RecordProjection<Doc>,
+    projection: &dyn RecordProjection<D>,
 ) -> Result<RecordView> {
     let token = backend.begin_store_state_staging(request).await?;
     let result = async {
-        let mut records = BTreeMap::new();
-        for bytes in deltas {
-            let delta: Doc = serde_json::from_slice(bytes)?;
-            projection.project_delta(&delta, &mut records)?;
+        if projection.legacy_collapsed() {
+            // Compatibility path for the Doc-backed Table; remove with its format switch.
+            let mut records: crate::backend::RecordMutations = BTreeMap::new();
+            for bytes in deltas {
+                let delta: D = serde_json::from_slice(bytes)?;
+                for mutation in projection.mutations(&delta)? {
+                    match mutation? {
+                        RecordMutation::Put { key, value } => {
+                            records.retain(|old, _| !projection.staged_keys_conflict(old, &key));
+                            records.insert(key, Some(value));
+                        }
+                        RecordMutation::Delete { key } => {
+                            records.retain(|old, _| !projection.staged_keys_conflict(old, &key));
+                            records.insert(key, None);
+                        }
+                    }
+                }
+            }
+            records.retain(|_, value| value.is_some());
+            if !records.is_empty() {
+                backend.stage_store_state_records(&token, records).await?;
+            }
+            return backend.publish_store_state(token.clone()).await;
         }
-        records.retain(|_, value| value.is_some());
-        if !records.is_empty() {
-            backend.stage_store_state_records(&token, records).await?;
+        let mut chunk = Vec::new();
+        let mut chunk_bytes = 0;
+        let mut sequence = 0;
+        for bytes in deltas {
+            let delta: D = serde_json::from_slice(bytes)?;
+            for mutation in projection.mutations(&delta)? {
+                let mutation = mutation?;
+                let size = serde_json::to_vec(&mutation)?.len();
+                // Leave room for the service RPC envelope, not just the mutation JSON.
+                const CHUNK_BYTES: usize = 1024 * 1024;
+                if size > CHUNK_BYTES {
+                    return Err(crate::backend::BackendError::RecordTooLarge {
+                        encoded_bytes: size,
+                    }
+                    .into());
+                }
+                if !chunk.is_empty() && (chunk.len() == 128 || chunk_bytes + size > CHUNK_BYTES) {
+                    stage_chunk(backend, &token, &mut sequence, &mut chunk).await?;
+                    chunk_bytes = 0;
+                }
+                chunk_bytes += size;
+                chunk.push(mutation);
+            }
+        }
+        if !chunk.is_empty() {
+            stage_chunk(backend, &token, &mut sequence, &mut chunk).await?;
         }
         backend.publish_store_state(token.clone()).await
     }
@@ -65,6 +107,21 @@ pub(crate) async fn publish_records<'a>(
         let _ = backend.abort_store_state(token).await;
     }
     result
+}
+
+async fn stage_chunk(
+    backend: &dyn Backend,
+    token: &crate::backend::StagingToken,
+    sequence: &mut u64,
+    chunk: &mut Vec<RecordMutation>,
+) -> Result<()> {
+    let mutations = std::mem::take(chunk);
+    let digest = blake3::hash(&serde_json::to_vec(&mutations)?);
+    backend
+        .stage_store_state_ordered_chunk(token, *sequence, digest.as_bytes(), mutations)
+        .await?;
+    *sequence += 1;
+    Ok(())
 }
 
 pub(crate) async fn load_opaque(
