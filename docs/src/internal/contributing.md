@@ -34,6 +34,12 @@ just   # See all available commands
 | `just nix lint clippy` | Hermetic Clippy check only                      |
 | `just nix doc links`   | Offline documentation link check                |
 
+### Parallel Buck2 build
+
+Buck2 builds the library, CLI, examples, unit/integration tests, and book doctests
+with native Rust rules alongside Cargo. See [Buck2 build](buck2.md) for the tool
+setup, commands, dependency regeneration, and Nix packaging limitations.
+
 ### Testing
 
 | Command         | Description                            |

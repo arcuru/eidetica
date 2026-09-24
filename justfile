@@ -199,11 +199,11 @@ lint +tools='clippy audit typos statix deadnix shellcheck yamllint actionlint zi
                 ;;
             shellcheck)
                 echo "=== Running shellcheck ==="
-                find . -name "*.sh" -type f -exec shellcheck {} +
+                find . -path "./buck-out" -prune -o -name "*.sh" -type f -exec shellcheck {} +
                 ;;
             yamllint)
                 echo "=== Running yamllint ==="
-                find . \( -name "*.yml" -o -name "*.yaml" \) -type f -exec yamllint -c .config/yamllint.yaml {} +
+                find . -path "./buck-out" -prune -o \( -name "*.yml" -o -name "*.yaml" \) -type f -exec yamllint -c .config/yamllint.yaml {} +
                 ;;
             actionlint)
                 echo "=== Running actionlint ==="
@@ -219,7 +219,7 @@ lint +tools='clippy audit typos statix deadnix shellcheck yamllint actionlint zi
                 ;;
             markdownlint)
                 echo "=== Running markdownlint ==="
-                find . -name "*.md" -not -path "./target/*" -type f -exec markdownlint --config .config/markdownlint.yaml {} +
+                find . -path "./buck-out" -prune -o -name "*.md" -not -path "./target/*" -type f -exec markdownlint --config .config/markdownlint.yaml {} +
                 ;;
             gitleaks)
                 echo "=== Running gitleaks ==="
