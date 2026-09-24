@@ -449,3 +449,103 @@ async fn test_metadata_consistency_across_operations() {
         "Operations without settings changes should have same tips"
     );
 }
+
+/// A raw backend matrix check: signed metadata is not a license to replace
+/// the _settings frontier of the entry's main parents.
+#[tokio::test]
+async fn test_remote_historical_pin_matches_main_parent_frontier() {
+    use crate::helpers::test_backend;
+    use eidetica::auth::{
+        crypto::{PrivateKey, sign_entry},
+        types::{AuthKey, Permission, SigKey},
+    };
+    use eidetica::backend::VerificationStatus;
+    use eidetica::{Database, Instance, NewUser};
+
+    let (instance, _) =
+        Instance::create_backend(test_backend().await, NewUser::passwordless("admin"))
+            .await
+            .unwrap();
+    let admin = PrivateKey::generate();
+    let db = Database::create(&instance, admin, Doc::new())
+        .await
+        .unwrap();
+    let engine = instance.backend().local_engine().unwrap();
+    let root = db.root_id().clone();
+    let txn = db.new_transaction().await.unwrap();
+    txn.get_store::<DocStore>("data")
+        .await
+        .unwrap()
+        .set("k", "v")
+        .await
+        .unwrap();
+    let data_id = txn.commit().await.unwrap();
+    let metadata = |tips: &[eidetica::entry::ID]| {
+        serde_json::to_vec(&serde_json::json!({
+            "settings_tips": tips, "entropy": null
+        }))
+        .unwrap()
+    };
+    let forged = Entry::builder(root.clone())
+        .add_parent(data_id.clone())
+        .set_height(2)
+        .set_metadata(metadata(&[data_id]))
+        .set_subtree_data("data", b"forged")
+        .build()
+        .unwrap();
+    let forged_id = forged.id();
+    engine.put(forged).await.unwrap();
+    db.verify().await.unwrap();
+    assert_eq!(
+        engine.get_verification_status(&forged_id).await.unwrap(),
+        VerificationStatus::Failed
+    );
+
+    let signer = PrivateKey::generate();
+    let txn = db.new_transaction().await.unwrap();
+    txn.get_settings()
+        .unwrap()
+        .set_auth_key(
+            &signer.public_key(),
+            AuthKey::active(Some("temporary"), Permission::Write(1)),
+        )
+        .await
+        .unwrap();
+    let grant = txn.commit().await.unwrap();
+    let key = SigKey::from_pubkey(&signer.public_key());
+    let signed = |parent: eidetica::entry::ID| {
+        let entry = Entry::builder(root.clone())
+            .add_parent(parent)
+            .set_height(3)
+            .set_metadata(metadata(std::slice::from_ref(&grant)))
+            .set_subtree_data("data", b"stale-key")
+            .build()
+            .unwrap()
+            .with_auth(|auth| auth.key = key.clone());
+        let signature = sign_entry(&entry, &signer).unwrap();
+        entry.with_auth(|auth| auth.signature = Some(signature))
+    };
+    let sibling = signed(grant.clone());
+    let txn = db.new_transaction().await.unwrap();
+    txn.get_settings()
+        .unwrap()
+        .revoke_auth_key(&signer.public_key())
+        .await
+        .unwrap();
+    let revocation = txn.commit().await.unwrap();
+    let sibling_id = sibling.id();
+    engine.put(sibling).await.unwrap();
+    db.verify().await.unwrap();
+    assert_eq!(
+        engine.get_verification_status(&sibling_id).await.unwrap(),
+        VerificationStatus::Verified
+    );
+    let child = signed(revocation);
+    let child_id = child.id();
+    engine.put(child).await.unwrap();
+    db.verify().await.unwrap();
+    assert_eq!(
+        engine.get_verification_status(&child_id).await.unwrap(),
+        VerificationStatus::Failed
+    );
+}
