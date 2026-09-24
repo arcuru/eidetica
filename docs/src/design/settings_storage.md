@@ -80,7 +80,7 @@ struct EntryMetadata {
 - Used for efficient settings validation in sparse checkouts
 - Stored in `TreeNode.metadata` field as serialized JSON
 
-**`settings_tips` is the verification pin.** An entry's signature is always
+**`settings_tips` is the verification pin.** Its signed value must equal the full `_settings` frontier of the entry's main parents, excluding any settings written in that entry. Only genesis can bootstrap against its own settings. An entry's signature is always
 validated against the `_settings` state these tips identify — _not_ the
 current settings — so granting or revoking authority later cannot
 retroactively (in)validate historical entries. When a node does not yet hold

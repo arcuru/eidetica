@@ -35,6 +35,77 @@ pub(crate) struct DerivedFloors {
     state: State,
 }
 
+/// Derive the complete canonical settings frontier at the specified main tips.
+/// `entries` must be a complete, root-first main ancestry for those tips.
+/// A signed settings write must consume exactly its main parents' frontier.
+pub(crate) fn causal_settings_frontier(entries: &[Entry], tips: &[ID]) -> Result<Snapshot> {
+    fn prune(candidates: Vec<ID>, nodes: &HashMap<ID, &Entry>) -> Result<Snapshot> {
+        let candidates = Snapshot::from(candidates);
+        let mut dominated = HashSet::new();
+        for tip in &candidates {
+            let mut stack = vec![tip.clone()];
+            let mut seen = HashSet::new();
+            while let Some(id) = stack.pop() {
+                if !seen.insert(id.clone()) {
+                    continue;
+                }
+                if id != *tip && candidates.tips().contains(&id) {
+                    dominated.insert(id.clone());
+                }
+                if let Some(ancestor) = nodes.get(&id) {
+                    stack.extend(ancestor.subtree_parents(SETTINGS)?);
+                }
+            }
+        }
+        Ok(Snapshot::from(
+            candidates
+                .iter()
+                .filter(|id| !dominated.contains(*id))
+                .cloned()
+                .collect::<Vec<_>>(),
+        ))
+    }
+
+    let mut frontiers: HashMap<ID, Snapshot> = HashMap::new();
+    let mut settings_nodes: HashMap<ID, &Entry> = HashMap::new();
+    for node in entries {
+        let mut candidates = Vec::new();
+        for parent in node.parents()? {
+            let frontier =
+                frontiers
+                    .get(&parent)
+                    .ok_or_else(|| AuthError::InvalidAuthConfiguration {
+                        reason: "incomplete main ancestry for settings frontier".to_string(),
+                    })?;
+            candidates.extend(frontier.iter().cloned());
+        }
+        let expected = prune(candidates, &settings_nodes)?;
+        let frontier = if node.in_subtree(SETTINGS) {
+            if Snapshot::from(node.subtree_parents(SETTINGS)?) != expected {
+                return Err(AuthError::InvalidAuthConfiguration {
+                    reason: "settings parents differ from main-parent causal frontier".to_string(),
+                }
+                .into());
+            }
+            settings_nodes.insert(node.id(), node);
+            Snapshot::from(vec![node.id()])
+        } else {
+            expected
+        };
+        frontiers.insert(node.id(), frontier);
+    }
+    let mut candidates = Vec::new();
+    for tip in tips {
+        let frontier = frontiers
+            .get(tip)
+            .ok_or_else(|| AuthError::InvalidAuthConfiguration {
+                reason: "missing main tip for settings frontier".to_string(),
+            })?;
+        candidates.extend(frontier.iter().cloned());
+    }
+    prune(candidates, &settings_nodes)
+}
+
 impl DerivedFloors {
     pub(crate) fn for_entry(backend: std::sync::Arc<dyn BackendImpl>, entry: &Entry) -> Self {
         Self {
@@ -223,66 +294,15 @@ impl DerivedFloors {
         };
         entries.push(entry.clone());
 
-        // One pass over the complete main DAG. Each node carries the nearest
-        // settings frontier of its parents; a merge prunes settings ancestors
-        // already superseded by another candidate (without backend rescans).
-        let mut frontiers: HashMap<ID, Snapshot> = HashMap::new();
-        let mut settings_nodes: HashMap<ID, &Entry> = HashMap::new();
-        for node in &entries {
-            let mut candidates = Vec::new();
-            for parent in node.parents()? {
-                let frontier = frontiers
-                    .get(&parent)
-                    .ok_or_else(|| self.unsynced(vec![parent]))?;
-                candidates.extend(frontier.iter().cloned());
-            }
-            let candidates = Snapshot::from(candidates);
-            let mut dominated = HashSet::new();
-            for tip in &candidates {
-                let mut stack = vec![tip.clone()];
-                let mut seen = HashSet::new();
-                while let Some(id) = stack.pop() {
-                    if !seen.insert(id.clone()) {
-                        continue;
-                    }
-                    if id != *tip && candidates.tips().contains(&id) {
-                        dominated.insert(id.clone());
-                    }
-                    if let Some(ancestor) = settings_nodes.get(&id) {
-                        stack.extend(ancestor.subtree_parents(SETTINGS)?);
-                    }
-                }
-            }
-            let expected = Snapshot::from(
-                candidates
-                    .iter()
-                    .filter(|id| !dominated.contains(*id))
-                    .cloned()
-                    .collect::<Vec<_>>(),
-            );
-            let frontier = if node.in_subtree(SETTINGS) {
-                if Snapshot::from(node.subtree_parents(SETTINGS)?) != expected {
-                    return Err(AuthError::InvalidAuthConfiguration {
-                        reason: "settings parents differ from main-parent causal frontier"
-                            .to_string(),
-                    }
-                    .into());
-                }
-                settings_nodes.insert(node.id(), node);
-                Snapshot::from(vec![node.id()])
-            } else {
-                expected
-            };
-            frontiers.insert(node.id(), frontier);
-        }
+        let frontier = causal_settings_frontier(&entries, &[entry.id()])?;
+        let settings_nodes: HashMap<ID, &Entry> = entries
+            .iter()
+            .filter(|node| node.in_subtree(SETTINGS))
+            .map(|node| (node.id(), node))
+            .collect();
 
         let mut reachable = HashSet::new();
-        let mut stack = frontiers
-            .get(&entry.id())
-            .into_iter()
-            .flat_map(|snapshot| snapshot.iter())
-            .cloned()
-            .collect::<Vec<_>>();
+        let mut stack = frontier.into_tips();
         while let Some(id) = stack.pop() {
             if reachable.insert(id.clone()) {
                 let node = settings_nodes
