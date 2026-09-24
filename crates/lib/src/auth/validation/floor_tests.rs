@@ -172,6 +172,10 @@ impl Fixture {
     /// current `_settings` state, carrying a unique payload.
     async fn data_entry(&self, parents: &[ID]) -> Entry {
         let (settings_tips, _) = self.pinned_settings().await;
+        self.data_entry_with_pin(parents, &settings_tips).await
+    }
+
+    async fn data_entry_with_pin(&self, parents: &[ID], settings_tips: &[ID]) -> Entry {
         let mut height = 0u64;
         for p in parents {
             if let Ok(parent) = self.engine().get(p).await {
@@ -1494,5 +1498,172 @@ async fn published_projection_cannot_promote_unverified_parent() {
     assert_eq!(
         projection.floor_for(fx.identity.root_id()),
         crate::Snapshot::from(fx.i1)
+    );
+}
+
+// The metadata is signed but untrusted: a data-store tip cannot erase the
+// authenticated settings carried by its main parents.
+#[tokio::test]
+async fn non_settings_pin_cannot_promote_unsigned_child() {
+    let fx = fixture().await;
+    let parent = fx.direct(&fx.tips().await).await;
+    let parent_id = fx.accept(&parent, "data parent").await;
+    let child = fx
+        .data_entry_with_pin(
+            std::slice::from_ref(&parent_id),
+            std::slice::from_ref(&parent_id),
+        )
+        .await;
+    assert_eq!(fx.submit_remote(child).await, VerificationStatus::Failed);
+}
+
+#[tokio::test]
+async fn revoked_signer_cannot_pin_old_settings_below_revocation() {
+    let fx = fixture().await;
+    let signer = PrivateKey::generate();
+    let txn = fx.target.new_transaction().await.unwrap();
+    txn.get_settings()
+        .unwrap()
+        .set_auth_key(
+            &signer.public_key(),
+            AuthKey::active(Some("temporary"), Permission::Write(5)),
+        )
+        .await
+        .unwrap();
+    txn.commit().await.unwrap();
+    let (old_pin, _) = fx.pinned_settings().await;
+    let before = fx.tips().await;
+    let key = SigKey::from_pubkey(&signer.public_key());
+    let sibling = Fixture::sign(
+        fx.data_entry_with_pin(&before, &old_pin).await,
+        key.clone(),
+        &signer,
+    );
+
+    let txn = fx.target.new_transaction().await.unwrap();
+    txn.get_settings()
+        .unwrap()
+        .revoke_auth_key(&signer.public_key())
+        .await
+        .unwrap();
+    let revocation = txn.commit().await.unwrap();
+    // Sibling's parents predate revocation even though the verifier has seen it.
+    assert_eq!(
+        fx.submit_remote(sibling).await,
+        VerificationStatus::Verified
+    );
+    let child = Fixture::sign(
+        fx.data_entry_with_pin(&[revocation], &old_pin).await,
+        key,
+        &signer,
+    );
+    assert_eq!(fx.submit_remote(child).await, VerificationStatus::Failed);
+}
+
+#[tokio::test]
+async fn missing_main_ancestor_defers_forged_pin_decision_until_retry() {
+    let fx = fixture().await;
+    let missing_parent = fx.direct(&fx.tips().await).await;
+    let child = fx
+        .data_entry_with_pin(&[missing_parent.id()], &[missing_parent.id()])
+        .await;
+    let child_id = child.id();
+    assert_eq!(
+        fx.submit_remote(child).await,
+        VerificationStatus::Unverified
+    );
+    assert_eq!(
+        fx.submit_remote(missing_parent).await,
+        VerificationStatus::Verified
+    );
+    fx.target.verify().await.unwrap();
+    assert_eq!(
+        fx.engine()
+            .get_verification_status(&child_id)
+            .await
+            .unwrap(),
+        VerificationStatus::Failed
+    );
+}
+
+#[tokio::test]
+async fn settings_write_pins_pre_write_frontier_not_own_tip() {
+    let fx = fixture().await;
+    let (prior, _) = fx.pinned_settings().await;
+    // A signed settings write against the authentic pre-write pin is valid.
+    let subtree_parents = prior.clone();
+    let mut settings = Doc::new();
+    settings.set("name", "new");
+    let data = serde_json::to_vec(&settings).unwrap();
+    // Build the two variants with identical causal main parents.
+    let parents = fx.tips().await;
+    let metadata = |tips: &[ID]| {
+        serde_json::to_vec(&serde_json::json!({"settings_tips": tips, "entropy": null})).unwrap()
+    };
+    let valid = Fixture::sign(
+        Entry::builder(fx.target.root_id().clone())
+            .set_parents(parents.clone())
+            .set_subtree_data(SETTINGS, data.clone())
+            .set_subtree_parents(SETTINGS, subtree_parents.clone())
+            .set_metadata(metadata(&prior))
+            .build()
+            .unwrap(),
+        SigKey::from_pubkey(&fx.target_admin.public_key()),
+        &fx.target_admin,
+    );
+    assert_eq!(fx.submit_remote(valid).await, VerificationStatus::Verified);
+    // Pinning the as-yet-uncommitted settings write itself must not grant it authority.
+    let own = Entry::builder(fx.target.root_id().clone())
+        .set_parents(parents)
+        .set_subtree_data(SETTINGS, data)
+        .set_subtree_parents(SETTINGS, subtree_parents)
+        .set_metadata(metadata(&[]))
+        .build()
+        .unwrap();
+    let child = Fixture::sign(
+        own,
+        SigKey::from_pubkey(&fx.target_admin.public_key()),
+        &fx.target_admin,
+    );
+    assert_eq!(fx.submit_remote(child).await, VerificationStatus::Failed);
+}
+
+#[tokio::test]
+async fn non_genesis_settings_write_cannot_bootstrap_its_own_signer() {
+    let instance = new_instance().await;
+    let backend = instance.require_local_engine().unwrap();
+    let root = Entry::root_builder().build().unwrap();
+    let root_id = root.id();
+    backend.put(root).await.unwrap();
+    backend
+        .update_verification_status(&root_id, VerificationStatus::Verified)
+        .await
+        .unwrap();
+    let signer = PrivateKey::generate();
+    let mut auth = AuthSettings::new();
+    auth.add_key(
+        &signer.public_key(),
+        AuthKey::active(Some("new"), Permission::Admin(0)),
+    )
+    .unwrap();
+    let mut settings = Doc::new();
+    settings.set("auth", auth.as_doc().clone());
+    let entry = Entry::builder(root_id.clone())
+        .add_parent(root_id.clone())
+        .set_subtree_data(SETTINGS, serde_json::to_vec(&settings).unwrap())
+        .set_metadata(
+            serde_json::to_vec(&serde_json::json!({"settings_tips": [], "entropy": null})).unwrap(),
+        )
+        .build()
+        .unwrap();
+    let entry = Fixture::sign(entry, SigKey::from_pubkey(&signer.public_key()), &signer);
+    let id = entry.id();
+    instance
+        .put_remote_entries(&root_id, vec![entry])
+        .await
+        .unwrap();
+    assert_eq!(
+        backend.get_verification_status(&id).await.unwrap(),
+        VerificationStatus::Failed
     );
 }
