@@ -82,7 +82,7 @@ Claimed and configured tips require complete locally `Verified` ancestry of the 
 
 **Upgrade prerequisite:** Before using these authorization rules on a database verified under older code, an operator must explicitly run the separate local verification-reset utility to clear **all** stored verification labels (including `Failed`) and derived caches, then reverify from immutable Entries. There is no automatic migration or version marker here. Skipping the reset may trust legacy `Verified` labels; clearing only the cache is not a safe substitute. The signed Entry/AuthInfo wire format is unchanged.
 
-Historical signature checks remain pinned to the signed pre-write settings snapshot rather than the current database head. The resulting settings projection is reconstructed from complete main-tree ancestry at each entry, not from the signature's pre-write pin or unrelated live tips. Snapshot pinning does not promise live-head freshness or retroactive revocation.
+Historical signature checks require the signed pre-write settings pin to equal the complete canonical `_settings` frontier of the entry's main parents, rather than the current database head. A missing main or pinned ancestor defers verification; a forged or stale complete pin fails. Only the genesis entry can bootstrap against its own settings. The resulting settings projection is reconstructed from complete main-tree ancestry at each entry, not from the signature's pre-write pin or unrelated live tips. Snapshot pinning does not promise live-head freshness or retroactive revocation.
 
 ## Conflict Resolution
 

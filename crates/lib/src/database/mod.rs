@@ -1833,46 +1833,59 @@ impl Database {
             None => Vec::new(),
         };
 
-        // Resolve the effective `_settings` tips to validate against.
-        let effective_tips: Vec<ID> = if settings_tips.is_empty() {
-            // A missing pin on a non-genesis entry cannot erase earlier
-            // authenticated settings. Missing main ancestors defer the verdict.
-            let mut stack = entry.parents()?;
-            let mut seen = std::collections::HashSet::new();
-            let mut has_settings = false;
-            while let Some(id) = stack.pop() {
-                if !seen.insert(id.clone()) {
-                    continue;
-                }
-                let ancestor = match backend.get(&id).await {
-                    Ok(ancestor) => ancestor,
-                    Err(e) if e.is_not_found() => return Ok(PinnedSettings::Incomplete),
-                    Err(e) => return Err(e),
-                };
-                if !ancestor.in_tree(self.root_id()) {
-                    return Ok(PinnedSettings::Invalid);
-                }
-                has_settings |= ancestor.in_subtree(SETTINGS);
-                stack.extend(ancestor.parents()?);
+        // A signed pin is not a declaration of authority: derive the complete
+        // pre-write settings frontier from the entry's MAIN parents. This
+        // remains historical even if a revocation has landed on another branch.
+        let parents = entry.parents()?;
+        // The Backend seam has no raw tree walk on a remote handle. Walk
+        // every main edge here so missing ancestors cannot become a partial
+        // SQL/in-memory store snapshot, then process parents before children.
+        let mut stack = parents.clone();
+        let mut seen = std::collections::HashSet::new();
+        let mut ancestry = Vec::new();
+        while let Some(id) = stack.pop() {
+            if !seen.insert(id.clone()) {
+                continue;
             }
-            if has_settings {
+            let ancestor = match backend.get(&id).await {
+                Ok(entry) => entry,
+                Err(e) if e.is_not_found() => return Ok(PinnedSettings::Incomplete),
+                Err(e) => return Err(e),
+            };
+            if !ancestor.in_tree(self.root_id()) {
                 return Ok(PinnedSettings::Invalid);
             }
-            if entry.in_subtree(SETTINGS) {
-                // Genesis / bootstrap: no prior `_settings` exists, so the
-                // entry is self-authorising — validate against the auth it
-                // itself establishes (TOFU), mirroring how the transaction
-                // validates initial database creation. Seeding the
-                // reconstruction with the entry itself folds in its own
-                // `_settings` contribution.
-                vec![entry.id()]
-            } else {
-                // No auth context at all (no settings ever configured) —
-                // mirrors the transaction path's "auth never configured" case.
-                return Ok(PinnedSettings::Complete(AuthSettings::new()));
-            }
+            stack.extend(ancestor.parents()?);
+            ancestry.push(ancestor);
+        }
+        ancestry.sort_by(|a, b| {
+            a.height()
+                .cmp(&b.height())
+                .then_with(|| a.id().cmp(&b.id()))
+        });
+        let expected =
+            match crate::auth::validation::floors::causal_settings_frontier(&ancestry, &parents) {
+                Ok(frontier) => frontier,
+                Err(Error::Auth(e)) if matches!(*e, AuthError::InvalidAuthConfiguration { .. }) => {
+                    return Ok(PinnedSettings::Invalid);
+                }
+                Err(e) => return Err(e),
+            };
+        if Snapshot::from(settings_tips) != expected {
+            return Ok(PinnedSettings::Invalid);
+        }
+        let effective_tips = if entry.id() == *self.root_id()
+            && parents.is_empty()
+            && expected.is_empty()
+            && entry.in_subtree(SETTINGS)
+        {
+            // Genesis alone bootstraps its own auth; later settings writes
+            // must validate against their pre-write context.
+            vec![entry.id()]
+        } else if expected.is_empty() {
+            return Ok(PinnedSettings::Complete(AuthSettings::new()));
         } else {
-            settings_tips
+            expected.into_tips()
         };
 
         // Completeness: every pinned tip and its full `_settings` ancestor
@@ -1885,9 +1898,14 @@ impl Database {
             if !seen.insert(id.clone()) {
                 continue;
             }
-            let Ok(e) = backend.get(&id).await else {
-                return Ok(PinnedSettings::Incomplete);
+            let e = match backend.get(&id).await {
+                Ok(entry) => entry,
+                Err(e) if e.is_not_found() => return Ok(PinnedSettings::Incomplete),
+                Err(e) => return Err(e),
             };
+            if !e.in_tree(self.root_id()) {
+                return Ok(PinnedSettings::Invalid);
+            }
             // Walk both the `_settings` subtree DAG and the main parents that
             // carry it, so the closure can't be short-circuited.
             for p in e.subtree_parents(SETTINGS).unwrap_or_default() {
