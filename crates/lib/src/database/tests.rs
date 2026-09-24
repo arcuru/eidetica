@@ -94,6 +94,60 @@ async fn test_create_bootstraps_signing_key_as_admin_zero() -> Result<()> {
 }
 
 #[tokio::test]
+async fn test_non_genesis_first_auth_cannot_authorize_its_signer_locally() -> Result<()> {
+    let (instance, _admin) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        crate::NewUser::passwordless("admin"),
+    )
+    .await?;
+    let backend = instance.require_local_engine()?;
+    let root = Entry::root_builder().build()?;
+    let root_id = root.id();
+    backend.put(root).await?;
+    backend
+        .update_verification_status(&root_id, VerificationStatus::Verified)
+        .await?;
+
+    let signer = PrivateKey::generate();
+    let db = Database::open(&instance, &root_id)
+        .await?
+        .with_key(signer.clone());
+    let txn = db.new_transaction().await?;
+    txn.get_settings()?
+        .set_auth_key(
+            &signer.public_key(),
+            AuthKey::active(Some("new"), Permission::Admin(0)),
+        )
+        .await?;
+    let result = txn.commit().await;
+    assert!(
+        matches!(result, Err(Error::Transaction(ref e)) if matches!(**e, crate::transaction::TransactionError::EntryValidationFailed)),
+        "a non-genesis first auth write must fail authorization, got {result:?}"
+    );
+    assert_eq!(backend.get_tree(&root_id).await?.len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_genesis_first_auth_survives_reverification() -> Result<()> {
+    let (instance, _admin) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        crate::NewUser::passwordless("admin"),
+    )
+    .await?;
+    let (signer, _) = generate_keypair();
+    let db = Database::create(&instance, signer, Doc::new()).await?;
+    let id = db.root_id();
+    let backend = instance.require_local_engine()?;
+    assert_eq!(backend.get_verification_status(id).await?, VerificationStatus::Verified);
+    instance.demote_to_unverified(id, id).await?;
+    assert_eq!(backend.get_verification_status(id).await?, VerificationStatus::Unverified);
+    db.verify().await?;
+    assert_eq!(backend.get_verification_status(id).await?, VerificationStatus::Verified);
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_create_rejects_preconfigured_auth() -> Result<()> {
     let (instance, _admin) = Instance::create_backend(
         Box::new(InMemory::new()),
