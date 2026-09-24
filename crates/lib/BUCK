@@ -1,0 +1,81 @@
+# Cargo's `full` feature set is production; never include the internal `testing` feature here.
+
+_LIB_DEPS = [
+    "//third-party:aes-gcm",
+    "//third-party:argon2",
+    "//third-party:async-trait",
+    "//third-party:axum",
+    "//third-party:base64ct",
+    "//third-party:blake3",
+    "//third-party:chrono",
+    "//third-party:cid",
+    "//third-party:ed25519-dalek",
+    "//third-party:futures-util",
+    "//third-party:handle_trait",
+    "//third-party:hex",
+    "//third-party:iroh",
+    "//third-party:iroh-tickets",
+    "//third-party:libc",
+    "//third-party:multihash-codetable",
+    "//third-party:rand",
+    "//third-party:reqwest",
+    "//third-party:serde",
+    "//third-party:serde_bytes",
+    "//third-party:serde_ipld_dagcbor",
+    "//third-party:serde_json",
+    "//third-party:sqlx",
+    "//third-party:thiserror",
+    "//third-party:tokio",
+    "//third-party:tracing",
+    "//third-party:url",
+    "//third-party:uuid",
+    "//third-party:yrs",
+    "//third-party:zeroize",
+]
+
+# A separate test-only library avoids leaking internal hooks into the CLI binary.
+rust_library(
+    name = "eidetica",
+    crate = "eidetica",
+    crate_root = "src/lib.rs",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+    features = ["default", "full", "y-crdt", "sqlite", "postgres", "service"],
+    deps = _LIB_DEPS,
+    visibility = ["PUBLIC"],
+)
+
+rust_library(
+    name = "eidetica_testing",
+    crate = "eidetica",
+    crate_root = "src/lib.rs",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+    features = ["default", "full", "y-crdt", "sqlite", "postgres", "service", "testing"],
+    deps = _LIB_DEPS,
+)
+
+rust_test(
+    name = "it",
+    crate = "it",
+    features = ["testing", "sqlite", "postgres", "service", "y-crdt"],
+    crate_root = "tests/it/main.rs",
+    srcs = glob(["tests/it/**/*.rs"]),
+    edition = "2024",
+    deps = _LIB_DEPS + [
+        ":eidetica_testing",
+        "//third-party/tests:ctor",
+        "//third-party/tests:tempfile",
+        "//third-party:tracing-subscriber",
+    ],
+)
+
+rust_test(
+    name = "unit",
+    crate = "eidetica",
+    crate_root = "src/lib.rs",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+    features = ["default", "full", "y-crdt", "sqlite", "postgres", "service", "testing"],
+    deps = _LIB_DEPS + ["//third-party:ipld-core", "//third-party/tests:tempfile"],
+)

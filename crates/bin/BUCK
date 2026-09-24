@@ -1,0 +1,45 @@
+
+_BIN_DEPS = [
+    "//crates/lib:eidetica",
+    "//third-party:axum",
+    "//third-party:base64ct",
+    "//third-party:clap",
+    "//third-party:reqwest",
+    "//third-party:rpassword",
+    "//third-party:serde",
+    "//third-party:serde_json",
+    "//third-party:tokio",
+    "//third-party:tower-cookies",
+    "//third-party:tracing",
+    "//third-party:tracing-subscriber",
+    "//third-party:url",
+    "//third-party:uuid",
+]
+
+rust_binary(
+    name = "eidetica",
+    crate_root = "src/main.rs",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+    env = {"CARGO_PKG_VERSION": "0.2.0"},
+    deps = _BIN_DEPS,
+    visibility = ["PUBLIC"],
+)
+
+rust_test(
+    name = "reset",
+    crate_root = "tests/reset.rs",
+    srcs = ["tests/reset.rs"],
+    edition = "2024",
+    env = {"CARGO_BIN_EXE_eidetica": "$(location :eidetica)"},
+    deps = ["//crates/lib:eidetica", "//third-party/tests:tempfile", "//third-party:tokio"],
+)
+
+rust_test(
+    name = "unit",
+    crate_root = "src/main.rs",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+    env = {"CARGO_PKG_VERSION": "0.2.0"},
+    deps = _BIN_DEPS + ["//third-party/tests:tempfile"],
+)
