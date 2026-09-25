@@ -27,6 +27,26 @@ Uses a recursive merge-base approach for computing CRDT states:
 - **Path Merging**: Merges all entries from merge base to parents with proper ordering
 - **Local Integration**: Applies current entry's data to final state
 
+## Ordered map operations
+
+`Lww<T>` is a right-biased `NoOp`/`Set`/`Delete` register. “Last” means
+last in deterministic Entry reduction order (height, then Entry ID), **not**
+wall-clock timestamp. `NoOp` is its identity; a delete remains a tombstone.
+
+`Map<K, V: CRDT>` merges per key, leaving keys present on only one side
+untouched. It does not define deletion or assume that merging a value is a
+replacement. A general `Map<String, Counter>` therefore cannot use the cheap
+row projection of `LwwMap<K, V>`, which composes `Map<K, Lww<V>>` and presents
+only live values through its ordinary iteration API. Both maps serialize as
+key-ordered sequences of unique key/operation pairs, not JSON objects.
+
+`CanonicalJson` holds RFC 8785 canonical row bytes (`canonical-json:v0`). It
+rejects duplicate member names and invalid JSON number inputs. A typed reader
+may deserialize a row, but its schema never rewrites the canonical row bytes.
+The existing Table remains Doc-backed until record staging and projection
+contracts are implemented; no mixed old/new `table:v0` histories are supported
+once that format changes.
+
 ## Doc Merge Semantics
 
 The `Doc` type supports two merge modes controlled by an `atomic` flag:

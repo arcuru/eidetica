@@ -17,11 +17,17 @@
 //! - [`CRDT`] - Core trait defining merge semantics for conflict resolution
 
 // Core modules
+pub mod canonical_json;
 pub mod doc;
 pub mod errors;
+pub mod lww;
+pub mod map;
 pub mod traits;
 
 // Re-export core types
+pub use canonical_json::CanonicalJson;
 pub use doc::Doc;
 pub use errors::CRDTError;
+pub use lww::Lww;
+pub use map::{LwwMap, Map};
 pub use traits::{CRDT, Data};
