@@ -36,6 +36,7 @@ _LIB_DEPS = [
 # A separate test-only library avoids leaking internal hooks into the CLI binary.
 rust_library(
     name = "eidetica",
+    tests = [":unit", ":it", ":eidetica_testing[doc]"],
     crate = "eidetica",
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"]),

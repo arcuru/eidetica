@@ -18,6 +18,7 @@ _BIN_DEPS = [
 
 rust_binary(
     name = "eidetica",
+    tests = [":unit", ":reset"],
     crate_root = "src/main.rs",
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",

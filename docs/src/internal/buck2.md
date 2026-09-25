@@ -41,6 +41,8 @@ The Reindeer-generated third-party Rust libraries (including test-only dependenc
 
 The Buck shortcut does not set `TEST_BACKEND`, so the library integration tests use the InMemory default; `just test` instead uses SQLite. `just buck test` does **not** run Cargo's other backend modes (SQLite, service, PostgreSQL), minimal-feature builds, lints, documentation/link checks, coverage, or Nix packaging and system integration checks. Those remain Cargo/Nix responsibilities, as does CI. Matching the listed targets does not imply identical coverage of every Cargo configuration or platform.
 
+The library and CLI build targets also declare their associated tests. `buck2 test //crates/lib:eidetica` runs the library unit tests, integration tests, and library doctests; `buck2 test //crates/bin:eidetica` runs the CLI unit and reset tests. This scopes testing by target, not by changed source file, and `just buck test` remains the complete Buck shortcut. Query output from `testsof()` drops the `[doc]` subtarget suffix, so do not use its labels directly as a replacement for the doctest command.
+
 When adding a Cargo build or test target, check the first-party BUCK rules and the `just buck` shortcuts as well as Cargo's targets. Run both Buck shortcuts for the native targets and keep the Cargo/Nix gate for the wider matrix.
 
 To refresh dependency rules after changing Cargo manifests/lockfile, run both generators from the repository root in the dev shell:
