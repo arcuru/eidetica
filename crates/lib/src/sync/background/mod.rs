@@ -38,7 +38,12 @@ pub enum SyncCommand {
     /// Send entries to a specific peer
     SendEntries { peer: PeerId, entries: Vec<Entry> },
     /// Trigger immediate sync with a peer
-    SyncWithPeer { peer: PeerId },
+    SyncWithPeer {
+        peer: PeerId,
+        /// Report round completion to deterministic integration tests.
+        #[cfg(feature = "testing")]
+        response: oneshot::Sender<Result<()>>,
+    },
     /// Shutdown the background engine
     Shutdown,
 
@@ -107,7 +112,7 @@ impl std::fmt::Debug for SyncCommand {
                 .field("peer", peer)
                 .field("entries_count", &entries.len())
                 .finish(),
-            Self::SyncWithPeer { peer } => {
+            Self::SyncWithPeer { peer, .. } => {
                 f.debug_struct("SyncWithPeer").field("peer", peer).finish()
             }
             Self::Shutdown => write!(f, "Shutdown"),
@@ -394,11 +399,18 @@ impl BackgroundSync {
                 }
             }
 
-            SyncCommand::SyncWithPeer { peer } => {
-                if let Err(e) = self.sync_with_peer(&peer).await {
+            SyncCommand::SyncWithPeer {
+                peer,
+                #[cfg(feature = "testing")]
+                response,
+            } => {
+                let result = self.sync_with_peer(&peer).await;
+                if let Err(e) = &result {
                     // Log sync failure but don't crash the background engine
                     tracing::error!("Failed to sync with peer {peer}: {e}");
                 }
+                #[cfg(feature = "testing")]
+                let _ = response.send(result);
             }
 
             SyncCommand::AddTransport {
