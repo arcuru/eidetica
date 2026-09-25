@@ -560,7 +560,7 @@ buck action='build' target='':
             if [ -n "$target" ]; then
                 buck2 test "$target"
             else
-                buck2 test //crates/lib:unit //crates/lib:it //crates/bin:unit //crates/bin:reset '//crates/book-tests:book[doc]'
+                buck2 test //crates/lib:unit //crates/lib:it '//crates/lib:eidetica_testing[doc]' //crates/bin:unit //crates/bin:reset '//crates/book-tests:book[doc]'
             fi
             ;;
         run)

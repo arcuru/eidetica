@@ -15,7 +15,7 @@ Once in the shell, use upstream `buck2` directly or the `just buck` shortcuts:
 
 ```sh
 just buck build                                    # library, CLI, chat and todo examples
-just buck test                                     # unit, integration, CLI and book doctests
+just buck test                                     # unit, integration, CLI, library and book doctests
 just buck run                                      # CLI help
 just buck build //crates/lib:eidetica              # one build target
 just buck test '//crates/book-tests:book[doc]'     # one test target

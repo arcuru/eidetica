@@ -52,7 +52,7 @@ rust_library(
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
     features = ["default", "full", "y-crdt", "sqlite", "postgres", "service", "testing"],
-    deps = _LIB_DEPS,
+    deps = _LIB_DEPS + ["//third-party/tests:tempfile"],
 )
 
 rust_test(
