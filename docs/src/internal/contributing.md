@@ -21,28 +21,29 @@ just   # See all available commands
 
 ### Common Commands
 
-| Command                | Description                                     |
-| ---------------------- | ----------------------------------------------- |
-| `just dev`             | Fast local tests and Clippy (no separate build) |
-| `just build`           | Build all targets explicitly                    |
-| `just test`            | Run tests with cargo nextest                    |
-| `just lint`            | Linting (clippy, audit, etc.)                   |
-| `just fmt`             | Multi-language formatting                       |
-| `just ci`              | Full local check-only pipeline                  |
-| `just ci nix`          | Push-CI graph: checks and all integrations      |
-| `just nix test sqlite` | Hermetic SQLite check only                      |
-| `just nix lint clippy` | Hermetic Clippy check only                      |
-| `just nix doc links`   | Offline documentation link check                |
-| `just buck build`      | Native Buck2 library, CLI, and example builds   |
-| `just buck test`       | Native Buck2 unit, integration and book tests   |
+| Command                | Description                                               |
+| ---------------------- | --------------------------------------------------------- |
+| `just dev`             | Fast local tests and Clippy (no separate build)           |
+| `just build`           | Build all targets explicitly                              |
+| `just test`            | Run tests with cargo nextest                              |
+| `just lint`            | Linting (clippy, audit, etc.)                             |
+| `just fmt`             | Multi-language formatting                                 |
+| `just ci`              | Full local check-only pipeline                            |
+| `just ci nix`          | Push-CI graph: checks and all integrations                |
+| `just nix test sqlite` | Hermetic SQLite check only                                |
+| `just nix lint clippy` | Hermetic Clippy check only                                |
+| `just nix doc links`   | Offline documentation link check                          |
+| `just buck build`      | Native Buck2 library, CLI, and example builds             |
+| `just buck test`       | Native Buck2 unit, integration, library and book doctests |
 
 ### Parallel Buck2 build
 
-Buck2 builds the library, CLI, examples, unit/integration tests, and book doctests
+Buck2 builds the library, CLI, examples, unit/integration tests, doctests for the library and book
 with native Rust rules alongside Cargo. The Nix dev shell supplies upstream `buck2` and
 its native toolchain; run `just buck build` or `just buck test` after entering via direnv
-or `nix develop`. See [Buck2 build](buck2.md) for direct commands, dependency
-regeneration, and Nix packaging limitations.
+or `nix develop`. Buck's shortcut uses the InMemory test backend, while Cargo/Nix
+still covers the wider backend and CI matrix. See [Buck2 build](buck2.md) for the
+exact target list, dependency regeneration, and Nix packaging limitations.
 
 ### Testing
 
