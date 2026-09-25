@@ -4,6 +4,9 @@
 [files]
 extend-exclude = [
     "target/",
+    "buck-out/",
+    "third-party/BUCK",
+    "third-party/tests/BUCK",
     "*.lock",
 ]
 
