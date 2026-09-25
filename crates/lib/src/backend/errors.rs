@@ -104,6 +104,24 @@ pub enum BackendError {
         entry_id: ID,
     },
 
+    /// A traversal could not be completed because ancestors it depends on are
+    /// not held locally.
+    ///
+    /// Materializing a CRDT state requires the full ancestor closure of the
+    /// requested tips. Under partial sync a child can be held while its
+    /// parents are not, and folding what is held would produce — and cache —
+    /// a state that is silently wrong. Traversals report this instead.
+    #[error(
+        "Incomplete history for {context}: {} ancestor(s) not held locally: {missing:?}",
+        missing.len()
+    )]
+    IncompleteHistory {
+        /// Where the gap was found, e.g. `store 'users' of tree <id>`.
+        context: String,
+        /// The referenced entries that are not held locally.
+        missing: Vec<ID>,
+    },
+
     /// No common ancestor found for given entries.
     ///
     /// This engine never produces this error: `find_merge_base` reports
@@ -219,6 +237,16 @@ impl BackendError {
                 | BackendError::VerificationStatusNotFound { .. }
                 | BackendError::PrivateKeyNotFound { .. }
         )
+    }
+
+    /// Check if this error reports history that is not held locally.
+    ///
+    /// Distinct from [`is_not_found`](Self::is_not_found): the requested
+    /// entries exist and were found, but ancestors they depend on have not
+    /// been synced yet. Callers that tolerate a partial DAG (verification,
+    /// sync) treat this as "cannot decide yet" and retry once the gap closes.
+    pub fn is_incomplete_history(&self) -> bool {
+        matches!(self, BackendError::IncompleteHistory { .. })
     }
 
     /// Check if this error indicates a data integrity issue.

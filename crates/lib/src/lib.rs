@@ -176,6 +176,18 @@ impl Error {
         }
     }
 
+    /// Check if this error reports history that is not held locally.
+    ///
+    /// A traversal needed ancestors this node has not synced yet. The tips
+    /// asked for do exist — see
+    /// [`BackendError::is_incomplete_history`](backend::errors::BackendError::is_incomplete_history).
+    pub fn is_incomplete_history(&self) -> bool {
+        match self {
+            Error::Backend(backend_err) => backend_err.is_incomplete_history(),
+            _ => false,
+        }
+    }
+
     /// Check if this error indicates permission was denied.
     pub fn is_permission_denied(&self) -> bool {
         match self {
