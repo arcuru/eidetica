@@ -12,6 +12,30 @@ use crate::entry::{Entry, ID};
 use super::{SqlxBackend, SqlxResultExt};
 use crate::backend::database::sorting;
 
+#[cfg(test)]
+static SNAPSHOT_PAUSE: std::sync::OnceLock<
+    std::sync::Mutex<
+        Option<(
+            ID,
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
+> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+async fn pause_before_store_snapshot(tree: &ID) {
+    let pause = SNAPSHOT_PAUSE
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap()
+        .take_if(|(paused_tree, _, _)| paused_tree == tree);
+    if let Some((_, entered, resume)) = pause {
+        let _ = entered.send(());
+        let _ = resume.await;
+    }
+}
+
 /// Get tree tips (entries with no children in the main tree).
 pub async fn snapshot(backend: &SqlxBackend, tree: &ID) -> Result<Vec<ID>> {
     // Find a store with empty string name, used for tree-level tips
@@ -48,6 +72,8 @@ pub async fn store_snapshot_at(
     let current_tree_tips = snapshot(backend, tree).await?;
     let main_entries_set: HashSet<_> = main_entries.iter().collect();
     let current_tips_set: HashSet<_> = current_tree_tips.iter().collect();
+    #[cfg(test)]
+    pause_before_store_snapshot(tree).await;
     if main_entries_set == current_tips_set {
         return store_snapshot(backend, tree, store).await;
     }
@@ -735,4 +761,60 @@ pub async fn get_path_from_to(
     sorting::sort_ids_by_height(&mut path);
 
     Ok(path.into_iter().map(|(id, _)| id).collect())
+}
+
+#[cfg(test)]
+mod snapshot_race_tests {
+    use super::*;
+    use crate::backend::{BackendImpl, VerificationStatus};
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn fixed_parent_store_snapshot_ignores_concurrent_live_write() {
+        let backend = Arc::new(SqlxBackend::sqlite_in_memory().await.unwrap());
+        let root = Entry::root_builder()
+            .set_subtree_data("race_store", b"root")
+            .build()
+            .unwrap();
+        let root_id = root.id();
+        backend.put(root).await.unwrap();
+        backend
+            .update_verification_status(&root_id, VerificationStatus::Verified)
+            .await
+            .unwrap();
+
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (resume_tx, resume_rx) = tokio::sync::oneshot::channel();
+        *SNAPSHOT_PAUSE.get_or_init(Default::default).lock().unwrap() =
+            Some((root_id.clone(), entered_tx, resume_rx));
+
+        let reader_backend = Arc::clone(&backend);
+        let reader_root = root_id.clone();
+        let read_task = tokio::spawn(async move {
+            store_snapshot_at(
+                &reader_backend,
+                &reader_root,
+                "race_store",
+                &[reader_root.clone()],
+            )
+            .await
+        });
+        entered_rx.await.unwrap();
+
+        let child = Entry::builder(root_id.clone())
+            .add_parent(root_id.clone())
+            .set_subtree_data("race_store", b"child")
+            .add_subtree_parent("race_store", root_id.clone())
+            .build()
+            .unwrap();
+        let child_id = child.id();
+        backend.put(child).await.unwrap();
+        backend
+            .update_verification_status(&child_id, VerificationStatus::Verified)
+            .await
+            .unwrap();
+        resume_tx.send(()).unwrap();
+
+        assert_eq!(read_task.await.unwrap().unwrap(), vec![root_id]);
+    }
 }

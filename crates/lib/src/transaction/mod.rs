@@ -197,6 +197,15 @@ pub struct Transaction {
     record_mutations: Arc<Mutex<HashMap<String, RecordMutations>>>,
     logical_record_mutations: Arc<Mutex<HashMap<String, RecordMutations>>>,
     record_views: Arc<Mutex<HashMap<String, RecordView>>>,
+    #[cfg(test)]
+    snapshot_pause: Arc<
+        Mutex<
+            Option<(
+                tokio::sync::oneshot::Sender<()>,
+                tokio::sync::oneshot::Receiver<()>,
+            )>,
+        >,
+    >,
 }
 
 /// RAII guard returned by [`Transaction::lock_system_subtrees`]. Releases the
@@ -266,6 +275,8 @@ impl Transaction {
             record_mutations: Arc::new(Mutex::new(HashMap::new())),
             logical_record_mutations: Arc::new(Mutex::new(HashMap::new())),
             record_views: Arc::new(Mutex::new(HashMap::new())),
+            #[cfg(test)]
+            snapshot_pause: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -1221,6 +1232,14 @@ impl Transaction {
 
             // Set-equal comparison via Snapshot canonical form.
             let parents_snapshot = Snapshot::from(main_parents.clone());
+            #[cfg(test)]
+            {
+                let pause = self.snapshot_pause.lock().unwrap().take();
+                if let Some((entered, resume)) = pause {
+                    let _ = entered.send(());
+                    let _ = resume.await;
+                }
+            }
             let tips = if parents_snapshot == current_database_snapshot {
                 let backend = self.db.ops();
                 backend
