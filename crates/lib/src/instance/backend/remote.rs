@@ -266,7 +266,8 @@ impl Backend for RemoteBackend {
         store: &str,
         main_snapshot: &Snapshot,
     ) -> Result<Snapshot> {
-        self.conn
+        match self
+            .conn
             .store_snapshot_at(
                 tree.clone(),
                 self.identity(),
@@ -274,6 +275,13 @@ impl Backend for RemoteBackend {
                 main_snapshot.tips().to_vec(),
             )
             .await
+        {
+            Ok(snapshot) => Ok(snapshot),
+            // Genesis may ask before the root exists. An empty boundary has no
+            // ancestry to validate; only that not-found case means empty.
+            Err(e) if main_snapshot.is_empty() && e.is_not_found() => Ok(Snapshot::EMPTY),
+            Err(e) => Err(e),
+        }
     }
 
     async fn store_at(&self, tree: &ID, store: &str, snapshot: &Snapshot) -> Result<Vec<Entry>> {
