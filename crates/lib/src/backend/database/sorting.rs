@@ -14,7 +14,12 @@
 //! Entry sorts compare through [`Entry::id_ref`], which borrows the entry's
 //! memoized ID: the tiebreak costs neither a rehash nor a copy of the digest.
 
-use crate::entry::{Entry, ID};
+use std::collections::HashSet;
+
+use crate::{
+    Result,
+    entry::{Entry, ID},
+};
 
 /// Sort entries by tree height, with ID as tiebreaker.
 pub(crate) fn sort_entries_by_height(entries: &mut [Entry]) {
@@ -43,4 +48,17 @@ pub(crate) fn sort_entries_by_store_height(store: &str, entries: &mut [Entry]) {
 /// entry.
 pub(crate) fn sort_ids_by_height<H: Ord>(rows: &mut [(ID, H)]) {
     rows.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+}
+
+/// Return maximal main-tree entries from a validated ancestry closure.
+pub(crate) fn tree_tips_from_entries(entries: &[Entry]) -> Result<Vec<ID>> {
+    let mut parents = HashSet::new();
+    for entry in entries {
+        parents.extend(entry.parents()?);
+    }
+    Ok(entries
+        .iter()
+        .filter(|entry| !parents.contains(entry.id_ref()))
+        .map(Entry::id)
+        .collect())
 }

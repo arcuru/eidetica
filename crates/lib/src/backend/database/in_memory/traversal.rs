@@ -545,8 +545,17 @@ pub(crate) fn store_snapshot_at(
         return Ok(Vec::new());
     }
 
-    // Fast path: if main_entries represents current tree tips, use cached subtree tips
+    // The empty store name denotes the main tree, not an entry subtree.
     let current_tree_tips = snapshot(inner, tree)?;
+    if subtree.is_empty() {
+        if main_entries == current_tree_tips {
+            return Ok(current_tree_tips);
+        }
+        let entries = super::storage::get_tree_from_tips(&*inner, tree, main_entries)?;
+        return sorting::tree_tips_from_entries(&entries);
+    }
+
+    // Fast path: if main_entries represents current tree tips, use cached subtree tips
     if main_entries == current_tree_tips {
         // Check cache first - O(1) lookup
         if let Some(cache) = inner.tips.get(tree)

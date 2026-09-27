@@ -116,13 +116,17 @@ pub async fn store_snapshot_at(
         return Ok(current_store_tips);
     }
 
-    // Historical boundaries traverse their immutable ancestry.
-    // Use a single CTE to find all store entries reachable from main_entries.
-    // This replaces the O(N²) iterative BFS with a single query
+    // The empty store name denotes the main tree. Complete ancestry must be
+    // present before deriving its historical frontier.
+    if store.is_empty() {
+        let entries = get_tree_from_tips(backend, tree, main_entries).await?;
+        return sorting::tree_tips_from_entries(&entries);
+    }
 
-    // Build UNION ALL clause for starting entries
+    // Historical boundaries traverse immutable ancestry. Report a missing or
+    // foreign ancestor instead of silently materializing partial settings.
     let start_selects: Vec<String> = (1..=main_entries.len())
-        .map(|i| format!("SELECT ${} AS id", i + 1)) // +1 because $1 is store_name
+        .map(|i| format!("SELECT ${} AS id", i + 2)) // $1 store, $2 tree
         .collect();
     let starts_union = start_selects.join(" UNION ALL ");
 
@@ -155,14 +159,27 @@ pub async fn store_snapshot_at(
             JOIN store_parents sp ON sp.child_id = se.id AND sp.store_name = $1
             WHERE sp.parent_id IN (SELECT id FROM store_entries)
         )
-        -- Tips are store entries that are not parents
-        SELECT se.id FROM store_entries se
-        WHERE se.id NOT IN (SELECT id FROM non_tips)"
+        -- Return both tips and any incomplete or foreign ancestry. A single
+        -- statement snapshot makes the completeness check and tip result agree.
+        SELECT se.id, CAST(NULL AS TEXT), CAST(NULL AS INTEGER)
+        FROM store_entries se
+        WHERE se.id NOT IN (SELECT id FROM non_tips)
+
+        UNION ALL
+
+        SELECT CAST(NULL AS TEXT), r.id,
+               CASE WHEN e.id IS NULL THEN 0 ELSE 1 END
+        FROM reachable r
+        LEFT JOIN entries e ON e.id = r.id
+        WHERE e.id IS NULL OR e.tree_id <> $2"
     );
 
     // SAFETY: the only generated fragment is a sequence of numbered bind
     // placeholders derived from `main_entries.len()`; all values remain bound.
-    let mut query = sqlx::query_as::<_, (String,)>(sqlx::AssertSqlSafe(sql)).bind(store);
+    let mut query =
+        sqlx::query_as::<_, (Option<String>, Option<String>, Option<i32>)>(sqlx::AssertSqlSafe(sql))
+            .bind(store)
+            .bind(tree.to_string());
     for entry in main_entries {
         query = query.bind(entry.to_string());
     }
@@ -172,7 +189,25 @@ pub async fn store_snapshot_at(
         .await
         .sql_context("Failed to get store tips up to entries")?;
 
-    rows.into_iter().map(|(id,)| ID::parse(&id)).collect()
+    let mut tips = Vec::new();
+    for (tip, invalid_id, wrong_tree) in rows {
+        if let Some(id) = invalid_id {
+            let id = ID::parse(&id)?;
+            return if wrong_tree == Some(1) {
+                Err(BackendError::EntryNotInTree {
+                    entry_id: id,
+                    tree_id: tree.clone(),
+                }
+                .into())
+            } else {
+                Err(BackendError::EntryNotFound { id }.into())
+            };
+        }
+        if let Some(id) = tip {
+            tips.push(ID::parse(&id)?);
+        }
+    }
+    Ok(tips)
 }
 
 /// Depth limit for ancestor traversal in find_merge_base.
