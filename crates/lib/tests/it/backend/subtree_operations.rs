@@ -790,18 +790,15 @@ async fn test_store_snapshot_at_edge_cases() {
     );
 
     // --- Edge case: non-existent entry ID ---
-    // Backends may either return an error or an empty result for non-existent entries
+    // An absent historical boundary is incomplete, never an empty proof.
     let fake_id: ID = ID::from_bytes("nonexistent_entry_12345");
-    let result = backend
-        .store_snapshot_at(&root_id, subtree, &Snapshot::from(&[fake_id].to_vec()))
-        .await;
-    match result {
-        Err(_) => {} // InMemory backend returns error
-        Ok(tips) => assert!(
-            tips.is_empty(),
-            "Tips with non-existent entry should be empty"
-        ),
-    }
+    assert!(
+        backend
+            .store_snapshot_at(&root_id, subtree, &Snapshot::from([fake_id]))
+            .await
+            .is_err(),
+        "Missing boundary entry must fail closed"
+    );
 
     // --- Edge case: non-existent subtree name returns empty ---
     let tips_bad_subtree = backend
@@ -1086,13 +1083,32 @@ async fn historical_tree_tip_store_returns_boundary_tips() {
         .add_parent(older_id.clone())
         .build()
         .unwrap();
+    let newer_id = newer.id();
     backend.put_verified(newer).await.unwrap();
 
+    assert_eq!(
+        backend
+            .store_snapshot_at(&root_id, "", &Snapshot::from([newer_id.clone()]))
+            .await
+            .unwrap(),
+        Snapshot::from([newer_id])
+    );
     let historical = backend
         .store_snapshot_at(&root_id, "", &Snapshot::from([older_id.clone()]))
         .await
         .unwrap();
-    assert_eq!(historical, Snapshot::from([older_id]));
+    assert_eq!(historical, Snapshot::from([older_id.clone()]));
+    assert_eq!(
+        backend
+            .store_snapshot_at(
+                &root_id,
+                "",
+                &Snapshot::from([root_id.clone(), older_id.clone()])
+            )
+            .await
+            .unwrap(),
+        Snapshot::from([older_id])
+    );
 }
 
 #[tokio::test]
@@ -1120,13 +1136,11 @@ async fn historical_store_snapshot_rejects_missing_or_foreign_ancestry() {
         .unwrap();
     let child_id = child.id();
     backend.put_verified(child).await.unwrap();
-    assert!(
-        backend
-            .store_snapshot_at(&root_id, store, &Snapshot::from([child_id]))
-            .await
-            .is_err(),
-        "missing main-tree ancestor must not produce partial store tips"
-    );
+    let missing_error = backend
+        .store_snapshot_at(&root_id, store, &Snapshot::from([child_id]))
+        .await
+        .expect_err("missing main-tree ancestor must not produce partial store tips");
+    assert!(missing_error.is_not_found(), "{missing_error}");
 
     let foreign_root = Entry::root_builder()
         .set_subtree_data(store, b"foreign")
@@ -1134,13 +1148,11 @@ async fn historical_store_snapshot_rejects_missing_or_foreign_ancestry() {
         .unwrap();
     let foreign_id = foreign_root.id();
     backend.put_verified(foreign_root).await.unwrap();
-    assert!(
-        backend
-            .store_snapshot_at(&root_id, store, &Snapshot::from([foreign_id.clone()]))
-            .await
-            .is_err(),
-        "foreign boundary tip must not return another tree's store tips"
-    );
+    let foreign_error = backend
+        .store_snapshot_at(&root_id, store, &Snapshot::from([foreign_id.clone()]))
+        .await
+        .expect_err("foreign boundary tip must not return another tree's store tips");
+    assert!(!foreign_error.is_not_found(), "{foreign_error}");
     let mixed = Entry::builder(root_id.clone())
         .add_parent(foreign_id)
         .set_subtree_data(store, b"mixed")
@@ -1148,11 +1160,9 @@ async fn historical_store_snapshot_rejects_missing_or_foreign_ancestry() {
         .unwrap();
     let mixed_id = mixed.id();
     backend.put_verified(mixed).await.unwrap();
-    assert!(
-        backend
-            .store_snapshot_at(&root_id, store, &Snapshot::from([mixed_id]))
-            .await
-            .is_err(),
-        "foreign main-tree ancestor must invalidate the historical boundary"
-    );
+    let mixed_error = backend
+        .store_snapshot_at(&root_id, store, &Snapshot::from([mixed_id]))
+        .await
+        .expect_err("foreign main-tree ancestor must invalidate the historical boundary");
+    assert!(!mixed_error.is_not_found(), "{mixed_error}");
 }
