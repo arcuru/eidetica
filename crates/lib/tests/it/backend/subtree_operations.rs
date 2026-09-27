@@ -1069,3 +1069,90 @@ async fn test_store_snapshot_at_complex_dag() {
 
 // Test-only: store-and-promote helper (production `put` is Unverified-only).
 use crate::helpers::TestVerify;
+
+#[tokio::test]
+async fn historical_tree_tip_store_returns_boundary_tips() {
+    let backend = test_backend().await;
+    let root = Entry::root_builder().build().unwrap();
+    let root_id = root.id();
+    backend.put_verified(root).await.unwrap();
+    let older = Entry::builder(root_id.clone())
+        .add_parent(root_id.clone())
+        .build()
+        .unwrap();
+    let older_id = older.id();
+    backend.put_verified(older).await.unwrap();
+    let newer = Entry::builder(root_id.clone())
+        .add_parent(older_id.clone())
+        .build()
+        .unwrap();
+    backend.put_verified(newer).await.unwrap();
+
+    let historical = backend
+        .store_snapshot_at(&root_id, "", &Snapshot::from([older_id.clone()]))
+        .await
+        .unwrap();
+    assert_eq!(historical, Snapshot::from([older_id]));
+}
+
+#[tokio::test]
+async fn historical_store_snapshot_rejects_missing_or_foreign_ancestry() {
+    let backend = test_backend().await;
+    let store = "boundary_check";
+    let root = Entry::root_builder()
+        .set_subtree_data(store, b"root")
+        .build()
+        .unwrap();
+    let root_id = root.id();
+    backend.put_verified(root).await.unwrap();
+
+    let missing = Entry::builder(root_id.clone())
+        .add_parent(root_id.clone())
+        .set_subtree_data(store, b"missing")
+        .add_subtree_parent(store, root_id.clone())
+        .build()
+        .unwrap();
+    let child = Entry::builder(root_id.clone())
+        .add_parent(missing.id())
+        .set_subtree_data(store, b"child")
+        .add_subtree_parent(store, missing.id())
+        .build()
+        .unwrap();
+    let child_id = child.id();
+    backend.put_verified(child).await.unwrap();
+    assert!(
+        backend
+            .store_snapshot_at(&root_id, store, &Snapshot::from([child_id]))
+            .await
+            .is_err(),
+        "missing main-tree ancestor must not produce partial store tips"
+    );
+
+    let foreign_root = Entry::root_builder()
+        .set_subtree_data(store, b"foreign")
+        .build()
+        .unwrap();
+    let foreign_id = foreign_root.id();
+    backend.put_verified(foreign_root).await.unwrap();
+    assert!(
+        backend
+            .store_snapshot_at(&root_id, store, &Snapshot::from([foreign_id.clone()]))
+            .await
+            .is_err(),
+        "foreign boundary tip must not return another tree's store tips"
+    );
+    let mixed = Entry::builder(root_id.clone())
+        .add_parent(foreign_id)
+        .set_subtree_data(store, b"mixed")
+        .build()
+        .unwrap();
+    let mixed_id = mixed.id();
+    backend.put_verified(mixed).await.unwrap();
+    assert!(
+        backend
+            .store_snapshot_at(&root_id, store, &Snapshot::from([mixed_id]))
+            .await
+            .is_err(),
+        "foreign main-tree ancestor must invalidate the historical boundary"
+    );
+}
