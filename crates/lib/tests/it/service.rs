@@ -3135,6 +3135,16 @@ async fn remote_snapshot_at_preserves_missing_boundary_error() {
         "a complete boundary may legitimately have no entries in a store"
     );
 
+    let unborn_root = ID::from_bytes(b"not-yet-persisted-root");
+    assert!(
+        remote
+            .store_snapshot_at(&unborn_root, "absent_store", &Snapshot::EMPTY)
+            .await
+            .unwrap()
+            .is_empty(),
+        "genesis has an empty ancestry before its root is stored"
+    );
+
     let missing = ID::from_bytes(b"unavailable-main-tree-ancestor");
     let error = remote
         .store_snapshot_at(&root_id, "absent_store", &Snapshot::from([missing]))
