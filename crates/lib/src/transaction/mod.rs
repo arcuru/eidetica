@@ -48,6 +48,12 @@ use crate::{
     store::{ProjectionDescriptor, RecordProjection, Registry, SettingsStore, StoreError, state},
 };
 
+#[cfg(test)]
+type SnapshotPause = (
+    tokio::sync::oneshot::Sender<()>,
+    tokio::sync::oneshot::Receiver<()>,
+);
+
 /// Creates a synthetic entry ID for multi-tip merged CRDT state caching.
 ///
 /// Tips are sorted to ensure deterministic keys regardless of input order.
@@ -198,14 +204,7 @@ pub struct Transaction {
     logical_record_mutations: Arc<Mutex<HashMap<String, RecordMutations>>>,
     record_views: Arc<Mutex<HashMap<String, RecordView>>>,
     #[cfg(test)]
-    snapshot_pause: Arc<
-        Mutex<
-            Option<(
-                tokio::sync::oneshot::Sender<()>,
-                tokio::sync::oneshot::Receiver<()>,
-            )>,
-        >,
-    >,
+    snapshot_pause: Arc<Mutex<Option<SnapshotPause>>>,
 }
 
 /// RAII guard returned by [`Transaction::lock_system_subtrees`]. Releases the
@@ -1228,10 +1227,7 @@ impl Transaction {
 
         // Initialize subtree tips if needed (async operations)
         if needs_init {
-            let current_database_snapshot = self.db.ops().snapshot(self.db.root_id()).await?;
-
-            // Set-equal comparison via Snapshot canonical form.
-            let parents_snapshot = Snapshot::from(main_parents.clone());
+            let parents_snapshot = Snapshot::from(main_parents);
             #[cfg(test)]
             {
                 let pause = self.snapshot_pause.lock().unwrap().take();
@@ -1240,20 +1236,12 @@ impl Transaction {
                     let _ = resume.await;
                 }
             }
-            let tips = if parents_snapshot == current_database_snapshot {
-                let backend = self.db.ops();
-                backend
-                    .store_snapshot(self.db.root_id(), subtree_name)
-                    .await?
-                    .into_tips()
-            } else {
-                // This transaction uses custom tips - use special handler
-                self.db
-                    .ops()
-                    .store_snapshot_at(self.db.root_id(), subtree_name, &parents_snapshot)
-                    .await?
-                    .into_tips()
-            };
+            let tips = self
+                .db
+                .ops()
+                .store_snapshot_at(self.db.root_id(), subtree_name, &parents_snapshot)
+                .await?
+                .into_tips();
 
             // Update RefCell after async operations
             let mut builder_ref = self.entry_builder.lock().unwrap();

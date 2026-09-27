@@ -261,3 +261,50 @@ async fn fixed_parent_subtree_read_ignores_concurrent_live_write() {
 
     assert_eq!(read_task.await.unwrap().unwrap(), MaxCounter(0));
 }
+
+#[tokio::test]
+async fn fixed_parent_auth_settings_read_ignores_concurrent_grant() {
+    let (instance, _admin) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        crate::NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let (private_key, _) = generate_keypair();
+    let database = Database::create(&instance, private_key, Doc::new())
+        .await
+        .unwrap();
+
+    let baseline = database
+        .new_transaction()
+        .await
+        .unwrap()
+        .get_full_state::<Doc>(SETTINGS)
+        .await
+        .unwrap();
+    let reader = database.new_transaction().await.unwrap();
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (resume_tx, resume_rx) = tokio::sync::oneshot::channel();
+    *reader.snapshot_pause.lock().unwrap() = Some((entered_tx, resume_rx));
+    let read_task = tokio::spawn(async move { reader.get_full_state::<Doc>(SETTINGS).await });
+
+    entered_rx.await.unwrap();
+    let (_, new_key) = generate_keypair();
+    let writer = database.new_transaction().await.unwrap();
+    writer
+        .get_settings()
+        .unwrap()
+        .set_auth_key(
+            &new_key,
+            crate::auth::types::AuthKey::active(
+                Some("new-key"),
+                crate::auth::types::Permission::Write(1),
+            ),
+        )
+        .await
+        .unwrap();
+    writer.commit().await.unwrap();
+    resume_tx.send(()).unwrap();
+
+    assert_eq!(read_task.await.unwrap().unwrap(), baseline);
+}
