@@ -34,6 +34,23 @@ async fn pause_before_store_snapshot(tree: &ID) {
     }
 }
 
+#[cfg(test)]
+static AFTER_TIPS_PAUSE: std::sync::OnceLock<std::sync::Mutex<Option<(ID, SnapshotPause)>>> =
+    std::sync::OnceLock::new();
+
+#[cfg(test)]
+async fn pause_after_tips_query(tree: &ID) {
+    let pause = AFTER_TIPS_PAUSE
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap()
+        .take_if(|(paused_tree, _)| paused_tree == tree);
+    if let Some((_, (entered, resume))) = pause {
+        let _ = entered.send(());
+        let _ = resume.await;
+    }
+}
+
 /// Get tree tips (entries with no children in the main tree).
 pub async fn snapshot(backend: &SqlxBackend, tree: &ID) -> Result<Vec<ID>> {
     // Find a store with empty string name, used for tree-level tips
@@ -58,7 +75,7 @@ pub async fn store_snapshot(backend: &SqlxBackend, tree: &ID, store: &str) -> Re
 /// Get store tips that are reachable from the given main tree entries.
 pub async fn store_snapshot_at(
     backend: &SqlxBackend,
-    _tree: &ID,
+    tree: &ID,
     store: &str,
     main_entries: &[ID],
 ) -> Result<Vec<ID>> {
@@ -67,10 +84,40 @@ pub async fn store_snapshot_at(
     }
 
     #[cfg(test)]
-    pause_before_store_snapshot(_tree).await;
+    pause_before_store_snapshot(tree).await;
     let pool = backend.pool();
 
-    // Use a single CTE to find all store entries reachable from main_entries
+    // The comparison and both tip sets must come from one statement snapshot.
+    // A separate store_snapshot after checking current tips can observe a newer
+    // grant than the main_entries boundary and break signed settings pins.
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT store_name, entry_id FROM tips
+         WHERE tree_id = $1 AND store_name IN ('', $2)",
+    )
+    .bind(tree.to_string())
+    .bind(store)
+    .fetch_all(pool)
+    .await
+    .sql_context("Failed to get current tree and store tips")?;
+    let mut current_tree_tips = HashSet::new();
+    let mut current_store_tips = Vec::new();
+    for (name, entry_id) in rows {
+        let id = ID::parse(&entry_id)?;
+        if name.is_empty() {
+            current_tree_tips.insert(id.clone());
+        }
+        if name == store {
+            current_store_tips.push(id);
+        }
+    }
+    #[cfg(test)]
+    pause_after_tips_query(tree).await;
+    if current_tree_tips == main_entries.iter().cloned().collect() {
+        return Ok(current_store_tips);
+    }
+
+    // Historical boundaries traverse their immutable ancestry.
+    // Use a single CTE to find all store entries reachable from main_entries.
     // This replaces the O(N²) iterative BFS with a single query
 
     // Build UNION ALL clause for starting entries
@@ -754,6 +801,16 @@ pub async fn get_path_from_to(
 }
 
 #[cfg(test)]
+async fn concurrent_snapshot_test_backend() -> std::sync::Arc<SqlxBackend> {
+    #[cfg(feature = "postgres")]
+    if std::env::var("TEST_BACKEND").as_deref() == Ok("postgres") {
+        let url = std::env::var("TEST_POSTGRES_URL").expect("Postgres test URL is required");
+        return std::sync::Arc::new(SqlxBackend::connect_postgres_isolated(&url).await.unwrap());
+    }
+    std::sync::Arc::new(SqlxBackend::sqlite_in_memory().await.unwrap())
+}
+
+#[cfg(test)]
 mod snapshot_race_tests {
     use super::*;
     use crate::backend::{BackendImpl, VerificationStatus};
@@ -761,7 +818,7 @@ mod snapshot_race_tests {
 
     #[tokio::test]
     async fn fixed_parent_store_snapshot_ignores_concurrent_live_write() {
-        let backend = Arc::new(SqlxBackend::sqlite_in_memory().await.unwrap());
+        let backend = concurrent_snapshot_test_backend().await;
         let root = Entry::root_builder()
             .set_subtree_data("race_store", b"root")
             .build()
@@ -806,5 +863,67 @@ mod snapshot_race_tests {
         resume_tx.send(()).unwrap();
 
         assert_eq!(read_task.await.unwrap().unwrap(), vec![root_id]);
+    }
+}
+
+#[cfg(test)]
+mod atomic_tips_tests {
+    use super::*;
+    use crate::backend::{BackendImpl, VerificationStatus};
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn current_tips_query_returns_its_own_snapshot_after_concurrent_write() {
+        let backend = concurrent_snapshot_test_backend().await;
+        let store = "post_query_race";
+        let root = Entry::root_builder()
+            .set_subtree_data(store, b"post_root")
+            .build()
+            .unwrap();
+        let root_id = root.id();
+        backend.put(root).await.unwrap();
+        backend
+            .update_verification_status(&root_id, VerificationStatus::Verified)
+            .await
+            .unwrap();
+
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (resume_tx, resume_rx) = tokio::sync::oneshot::channel();
+        *AFTER_TIPS_PAUSE
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap() = Some((root_id.clone(), (entered_tx, resume_rx)));
+        let reader_backend = Arc::clone(&backend);
+        let reader_root = root_id.clone();
+        let read_task = tokio::spawn(async move {
+            store_snapshot_at(
+                &reader_backend,
+                &reader_root,
+                store,
+                std::slice::from_ref(&reader_root),
+            )
+            .await
+        });
+        entered_rx.await.unwrap();
+
+        let child = Entry::builder(root_id.clone())
+            .add_parent(root_id.clone())
+            .set_subtree_data(store, b"post_child")
+            .add_subtree_parent(store, root_id.clone())
+            .build()
+            .unwrap();
+        let child_id = child.id();
+        backend.put(child).await.unwrap();
+        backend
+            .update_verification_status(&child_id, VerificationStatus::Verified)
+            .await
+            .unwrap();
+        resume_tx.send(()).unwrap();
+
+        assert_eq!(read_task.await.unwrap().unwrap(), vec![root_id.clone()]);
+        assert_eq!(
+            store_snapshot(&backend, &root_id, store).await.unwrap(),
+            vec![child_id]
+        );
     }
 }
