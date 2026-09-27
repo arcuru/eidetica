@@ -3114,3 +3114,31 @@ async fn test_open_database_with_unheld_key_is_rejected() {
         "expected a key/permission error, got: {err}",
     );
 }
+
+#[tokio::test]
+async fn remote_snapshot_at_preserves_missing_boundary_error() {
+    use eidetica::Snapshot;
+    use eidetica::entry::ID;
+    use eidetica::instance::backend::{Backend, RemoteBackend};
+
+    let (socket_path, _shutdown, server, _dir) = start_test_server().await;
+    let (client, root_id, identity) = setup_db(&server, &socket_path, "alice").await;
+    let remote = RemoteBackend::new(remote_conn(&client), Some(identity));
+
+    let current = server.backend().snapshot(&root_id).await.unwrap();
+    assert!(
+        remote
+            .store_snapshot_at(&root_id, "absent_store", &current)
+            .await
+            .unwrap()
+            .is_empty(),
+        "a complete boundary may legitimately have no entries in a store"
+    );
+
+    let missing = ID::from_bytes(b"unavailable-main-tree-ancestor");
+    let error = remote
+        .store_snapshot_at(&root_id, "absent_store", &Snapshot::from([missing]))
+        .await
+        .expect_err("an incomplete boundary cannot be reported as an empty store");
+    assert!(error.is_not_found(), "{error}");
+}
