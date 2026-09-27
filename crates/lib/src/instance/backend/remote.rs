@@ -250,8 +250,7 @@ impl Backend for RemoteBackend {
         if tree_tips.is_empty() {
             return Ok(Snapshot::EMPTY);
         }
-        match self
-            .conn
+        self.conn
             .store_snapshot_at(
                 tree.clone(),
                 self.identity(),
@@ -259,11 +258,6 @@ impl Backend for RemoteBackend {
                 tree_tips.into_tips(),
             )
             .await
-        {
-            Ok(snapshot) => Ok(snapshot),
-            Err(e) if e.is_not_found() => Ok(Snapshot::EMPTY),
-            Err(e) => Err(e),
-        }
     }
 
     async fn store_snapshot_at(
@@ -272,8 +266,7 @@ impl Backend for RemoteBackend {
         store: &str,
         main_snapshot: &Snapshot,
     ) -> Result<Snapshot> {
-        match self
-            .conn
+        self.conn
             .store_snapshot_at(
                 tree.clone(),
                 self.identity(),
@@ -281,11 +274,6 @@ impl Backend for RemoteBackend {
                 main_snapshot.tips().to_vec(),
             )
             .await
-        {
-            Ok(snapshot) => Ok(snapshot),
-            Err(e) if e.is_not_found() => Ok(Snapshot::EMPTY),
-            Err(e) => Err(e),
-        }
     }
 
     async fn store_at(&self, tree: &ID, store: &str, snapshot: &Snapshot) -> Result<Vec<Entry>> {
