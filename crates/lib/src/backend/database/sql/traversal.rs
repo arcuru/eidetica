@@ -13,15 +13,13 @@ use super::{SqlxBackend, SqlxResultExt};
 use crate::backend::database::sorting;
 
 #[cfg(test)]
-static SNAPSHOT_PAUSE: std::sync::OnceLock<
-    std::sync::Mutex<
-        Option<(
-            ID,
-            tokio::sync::oneshot::Sender<()>,
-            tokio::sync::oneshot::Receiver<()>,
-        )>,
-    >,
-> = std::sync::OnceLock::new();
+type SnapshotPause = (
+    tokio::sync::oneshot::Sender<()>,
+    tokio::sync::oneshot::Receiver<()>,
+);
+#[cfg(test)]
+static SNAPSHOT_PAUSE: std::sync::OnceLock<std::sync::Mutex<Option<(ID, SnapshotPause)>>> =
+    std::sync::OnceLock::new();
 
 #[cfg(test)]
 async fn pause_before_store_snapshot(tree: &ID) {
@@ -29,8 +27,8 @@ async fn pause_before_store_snapshot(tree: &ID) {
         .get_or_init(Default::default)
         .lock()
         .unwrap()
-        .take_if(|(paused_tree, _, _)| paused_tree == tree);
-    if let Some((_, entered, resume)) = pause {
+        .take_if(|(paused_tree, _)| paused_tree == tree);
+    if let Some((_, (entered, resume))) = pause {
         let _ = entered.send(());
         let _ = resume.await;
     }
@@ -60,7 +58,7 @@ pub async fn store_snapshot(backend: &SqlxBackend, tree: &ID, store: &str) -> Re
 /// Get store tips that are reachable from the given main tree entries.
 pub async fn store_snapshot_at(
     backend: &SqlxBackend,
-    tree: &ID,
+    _tree: &ID,
     store: &str,
     main_entries: &[ID],
 ) -> Result<Vec<ID>> {
@@ -68,16 +66,8 @@ pub async fn store_snapshot_at(
         return Ok(Vec::new());
     }
 
-    // Fast path: if main_entries are current tree tips, use tips table directly
-    let current_tree_tips = snapshot(backend, tree).await?;
-    let main_entries_set: HashSet<_> = main_entries.iter().collect();
-    let current_tips_set: HashSet<_> = current_tree_tips.iter().collect();
     #[cfg(test)]
-    pause_before_store_snapshot(tree).await;
-    if main_entries_set == current_tips_set {
-        return store_snapshot(backend, tree, store).await;
-    }
-
+    pause_before_store_snapshot(_tree).await;
     let pool = backend.pool();
 
     // Use a single CTE to find all store entries reachable from main_entries
@@ -786,7 +776,7 @@ mod snapshot_race_tests {
         let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
         let (resume_tx, resume_rx) = tokio::sync::oneshot::channel();
         *SNAPSHOT_PAUSE.get_or_init(Default::default).lock().unwrap() =
-            Some((root_id.clone(), entered_tx, resume_rx));
+            Some((root_id.clone(), (entered_tx, resume_rx)));
 
         let reader_backend = Arc::clone(&backend);
         let reader_root = root_id.clone();
@@ -795,7 +785,7 @@ mod snapshot_race_tests {
                 &reader_backend,
                 &reader_root,
                 "race_store",
-                &[reader_root.clone()],
+                std::slice::from_ref(&reader_root),
             )
             .await
         });
