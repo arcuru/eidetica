@@ -16,7 +16,7 @@ eidetica serve [OPTIONS]
 
 | Option           | Short | Default     | Env Var                 | Description                                                     |
 | ---------------- | ----- | ----------- | ----------------------- | --------------------------------------------------------------- |
-| `--port`         | `-p`  | `3000`      | `EIDETICA_PORT`         | Port to listen on                                               |
+| `--port`         | `-p`  | `5942`      | `EIDETICA_PORT`         | Port to listen on                                               |
 | `--host`         |       | `0.0.0.0`   | `EIDETICA_HOST`         | Bind address                                                    |
 | `--backend`      | `-b`  | `sqlite`    | `EIDETICA_BACKEND`      | Storage backend (`sqlite`, `postgres`, `inmemory`)              |
 | `--data-dir`     | `-d`  | current dir | `EIDETICA_DATA_DIR`     | Data directory for storage files                                |
@@ -32,7 +32,7 @@ eidetica health [URL] [OPTIONS]
 
 | Argument/Option | Short | Default                 | Description                                              |
 | --------------- | ----- | ----------------------- | -------------------------------------------------------- |
-| `URL`           |       | `http://127.0.0.1:3000` | URL of the server to check (appends `/health` if needed) |
+| `URL`           |       | `http://127.0.0.1:5942` | URL of the server to check (appends `/health` if needed) |
 | `--timeout`     | `-t`  | `5`                     | Timeout in seconds                                       |
 
 Both `http://` and `https://` URLs are supported. If the URL doesn't already end with `/health`, it is appended automatically.
@@ -105,7 +105,7 @@ eidetica daemon [OPTIONS]
 | ------------------ | ----- | ------------- | ------------------------- | --------------------------------------------------------------- |
 | `--dashboard`      |       | off           | `EIDETICA_DASHBOARD`      | Enable web dashboard (never service RPC)                        |
 | `--dashboard-host` |       | `127.0.0.1`   | `EIDETICA_DASHBOARD_HOST` | Dashboard bind address (only with `--dashboard`)                |
-| `--dashboard-port` |       | `3000`        | `EIDETICA_DASHBOARD_PORT` | Dashboard port (only with `--dashboard`)                        |
+| `--dashboard-port` |       | `5942`        | `EIDETICA_DASHBOARD_PORT` | Dashboard port (only with `--dashboard`)                        |
 | `--socket`         | `-s`  | auto-detected | `EIDETICA_SOCKET`         | Unix socket path (see [Service Mode](service.md) for defaults)  |
 | `--backend`        | `-b`  | `sqlite`      | `EIDETICA_BACKEND`        | Storage backend (`sqlite`, `postgres`, `inmemory`)              |
 | `--data-dir`       | `-d`  | current dir   | `EIDETICA_DATA_DIR`       | Data directory for storage files                                |
@@ -156,7 +156,7 @@ The `--json` flag works with `info` and `db list`.
 | Variable                | Description                                        | Default           |
 | ----------------------- | -------------------------------------------------- | ----------------- |
 | `EIDETICA_SOCKET`       | Unix socket path for daemon mode (`daemon`)        | auto-detected     |
-| `EIDETICA_PORT`         | Port for the HTTP server (`serve`)                 | `3000`            |
+| `EIDETICA_PORT`         | Port for the HTTP server (`serve`)                 | `5942`            |
 | `EIDETICA_HOST`         | Bind address (`serve`)                             | `0.0.0.0`         |
 | `EIDETICA_BACKEND`      | Storage backend (`sqlite`, `postgres`, `inmemory`) | `sqlite`          |
 | `EIDETICA_DATA_DIR`     | Directory for database and data files              | current directory |
@@ -167,7 +167,7 @@ Command-line flags take precedence over environment variables.
 ## Examples
 
 ```bash
-# Start server with defaults (sqlite backend, port 3000)
+# Start server with defaults (sqlite backend, port 5942)
 eidetica
 
 # Start with PostgreSQL backend on a custom port

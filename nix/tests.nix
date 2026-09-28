@@ -246,16 +246,16 @@ in {
         };
 
         # Ensure networking is available
-        networking.firewall.allowedTCPPorts = [3000];
+        networking.firewall.allowedTCPPorts = [5942];
       };
 
       testScript = ''
         machine.start()
         machine.wait_for_unit("eidetica.service")
-        machine.wait_for_open_port(3000)
+        machine.wait_for_open_port(5942)
 
         # Verify the service responds (follow redirects since / redirects to /login)
-        result = machine.succeed("curl -fL http://localhost:3000/")
+        result = machine.succeed("curl -fL http://localhost:5942/")
         machine.log(f"HTTP response: {result}")
 
         # Verify service is running as correct user
@@ -451,7 +451,7 @@ in {
         # Opt in to the passwordless-admin bootstrap explicitly; the
         # entrypoint now fails closed without a credential source.
         machine.succeed(
-          "podman run -d --name eidetica-test -p 3000:3000 "
+          "podman run -d --name eidetica-test -p 5942:5942 "
           "-e EIDETICA_ALLOW_PASSWORDLESS_ADMIN=1 "
           "-v /var/lib/eidetica-data:/data eidetica:dev"
         )
@@ -464,7 +464,7 @@ in {
         machine.succeed("podman ps | grep eidetica-test")
 
         # Verify the service responds (follow redirects since / redirects to /login)
-        machine.wait_until_succeeds("curl -fL http://localhost:3000/", timeout=30)
+        machine.wait_until_succeeds("curl -fL http://localhost:5942/", timeout=30)
 
         # Check container logs
         logs = machine.succeed("podman logs eidetica-test")

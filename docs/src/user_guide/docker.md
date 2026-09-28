@@ -28,7 +28,7 @@ Both registries contain identical images with multi-architecture support (amd64 
 
 | Variable                | Description                                             | Default                  |
 | ----------------------- | ------------------------------------------------------- | ------------------------ |
-| `EIDETICA_PORT`         | Port for the HTTP server                                | `3000`                   |
+| `EIDETICA_PORT`         | Port for the HTTP server                                | `5942`                   |
 | `EIDETICA_HOST`         | Bind address                                            | `0.0.0.0` (in container) |
 | `EIDETICA_BACKEND`      | Storage backend (`sqlite`, `postgres`, `inmemory`)      | `sqlite`                 |
 | `EIDETICA_DATA_DIR`     | Directory for database and data files                   | `/config` (in container) |
@@ -53,13 +53,13 @@ See [CLI Reference](cli.md) for all available commands.
 Pull and run the latest stable image:
 
 ```bash
-docker run -p 3000:3000 ghcr.io/arcuru/eidetica:latest
+docker run -p 5942:5942 ghcr.io/arcuru/eidetica:latest
 ```
 
 Or from Docker Hub:
 
 ```bash
-docker run -p 3000:3000 arcuru/eidetica:latest
+docker run -p 5942:5942 arcuru/eidetica:latest
 ```
 
 ## Docker Compose
@@ -75,7 +75,7 @@ services:
   eidetica:
     image: ghcr.io/arcuru/eidetica:latest
     ports:
-      - "3000:3000"
+      - "5942:5942"
     volumes:
       - eidetica-data:/config
     restart: unless-stopped
@@ -105,7 +105,7 @@ services:
   eidetica:
     image: ghcr.io/arcuru/eidetica:latest
     ports:
-      - "3000:3000"
+      - "5942:5942"
     environment:
       EIDETICA_BACKEND: postgres
       EIDETICA_POSTGRES_URL: postgres://eidetica:secret@postgres:5432/eidetica

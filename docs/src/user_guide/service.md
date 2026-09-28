@@ -36,7 +36,7 @@ The daemon prints its socket path on startup and runs until interrupted (SIGINT/
 
 `eidetica daemon --dashboard` also hosts the existing login/dashboard, health,
 and stats pages. It listens on exactly the address set by `--dashboard-host`
-and `--dashboard-port` (default **127.0.0.1:3000**). The default daemon remains
+and `--dashboard-port` (default **127.0.0.1:5942**). The default daemon remains
 socket-only. Both listeners and the Iroh sync listener use the **same
 Instance/backend**, whether SQLite, PostgreSQL, or in-memory; no separate
 `serve` process is needed. The dashboard does not expose the trusted Unix
@@ -56,7 +56,7 @@ services.eidetica = {
   daemon = true;
   dashboard = true;
   host = "127.0.0.1";
-  port = 3000;
+  port = 5942;
   initialPasswordFile = "/run/agenix/eidetica-admin-password";
 };
 ```
@@ -214,7 +214,7 @@ the wire. (See [Core Concepts](core_concepts.md) for the verification model.)
 | ---------------------------------------------- | ---------------------------------------------------------------------------------------- | ----------------------------------------------- |
 | `--dashboard` / `EIDETICA_DASHBOARD`           | Serve web dashboard alongside socket (boolean)                                           | disabled                                        |
 | `--dashboard-host` / `EIDETICA_DASHBOARD_HOST` | Dashboard bind address                                                                   | `127.0.0.1`                                     |
-| `--dashboard-port` / `EIDETICA_DASHBOARD_PORT` | Dashboard port                                                                           | `3000`                                          |
+| `--dashboard-port` / `EIDETICA_DASHBOARD_PORT` | Dashboard port                                                                           | `5942`                                          |
 | `--socket` / `EIDETICA_SOCKET`                 | Unix socket path                                                                         | See [Default Socket Path](#default-socket-path) |
 | `--sync-ticket` / `EIDETICA_SYNC_TICKETS`      | Bootstrap/reconcile a database from a native ticket (repeatable; env is comma-separated) | --                                              |
 | `--backend`                                    | Storage backend (`sqlite`, `postgres`, `inmemory`)                                       | `sqlite`                                        |

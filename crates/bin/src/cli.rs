@@ -68,7 +68,7 @@ pub struct BackendConfig {
 #[derive(clap::Args, Debug)]
 pub struct ServeArgs {
     /// Port to listen on
-    #[arg(short, long, default_value_t = 3000, env = "EIDETICA_PORT")]
+    #[arg(short, long, default_value_t = 5942, env = "EIDETICA_PORT")]
     pub port: u16,
 
     /// Bind address
@@ -83,7 +83,7 @@ pub struct ServeArgs {
 #[derive(clap::Args, Debug)]
 pub struct HealthArgs {
     /// URL of the server to check (appends /health if no path)
-    #[arg(default_value = "http://127.0.0.1:3000")]
+    #[arg(default_value = "http://127.0.0.1:5942")]
     pub url: String,
 
     /// Timeout in seconds
@@ -127,7 +127,7 @@ pub struct DaemonArgs {
     pub dashboard_host: String,
 
     /// Dashboard port; only used with --dashboard.
-    #[arg(long, env = "EIDETICA_DASHBOARD_PORT", default_value_t = 3000)]
+    #[arg(long, env = "EIDETICA_DASHBOARD_PORT", default_value_t = 5942)]
     pub dashboard_port: u16,
 
     /// Unix socket path (default: $XDG_RUNTIME_DIR/eidetica/service.sock).
