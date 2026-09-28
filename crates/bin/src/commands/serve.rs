@@ -5,13 +5,13 @@ use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 use axum::{
     Form, Router,
     extract::{ConnectInfo, Json as ExtractJson, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
 };
 use serde::Deserialize;
 use tokio::signal::unix::{SignalKind, signal};
-use tower_cookies::{Cookie, CookieManagerLayer, Cookies};
+use tower_cookies::{Cookie, CookieManagerLayer, Cookies, cookie::SameSite};
 use tracing_subscriber::EnvFilter;
 
 use eidetica::{
@@ -121,38 +121,7 @@ pub async fn run(args: &ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
     let iroh_address = sync.get_server_address_for("iroh").await?;
     tracing::info!("Iroh server started: {}", iroh_address);
 
-    let sync_tree_id = sync.sync_tree_root_id().clone();
-
-    let sync_handler: Arc<dyn SyncHandler> =
-        Arc::new(SyncHandlerImpl::new(instance.clone(), sync_tree_id));
-
-    // Create session store
-    let sessions = SessionStore::new();
-
-    // Create shared application state
-    let app_state = AppState {
-        instance: Arc::new(instance),
-        sync_handler,
-        sessions,
-    };
-
-    // Build router
-    let app = Router::new()
-        .route("/", get(handle_root_request))
-        .route("/health", get(handle_health_endpoint))
-        .route("/login", get(handle_login_page).post(handle_login_submit))
-        .route(
-            "/register",
-            get(handle_register_page).post(handle_register_submit),
-        )
-        .route("/logout", post(handle_logout))
-        .route("/dashboard", get(handle_dashboard))
-        .route("/dashboard/database", get(handle_database_detail))
-        .route("/dashboard/track", post(handle_track_database))
-        .route("/stats", get(handle_stats_request))
-        .route("/api/v0", post(handle_sync_request))
-        .layer(CookieManagerLayer::new())
-        .with_state(app_state.clone());
+    let app = web_router(instance.clone(), true);
 
     // Bind server
     let addr = format!("{}:{}", args.host, args.port);
@@ -206,12 +175,12 @@ pub async fn run(args: &ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
 
         // Flush pending sync operations with timeout
         let flush_timeout = Duration::from_secs(10);
-        if let Err(e) = tokio::time::timeout(flush_timeout, app_state.instance.flush_sync()).await {
+        if let Err(e) = tokio::time::timeout(flush_timeout, instance.flush_sync()).await {
             tracing::warn!("Sync flush timed out: {e}");
         }
 
         // Save database on shutdown (only needed for InMemory backend)
-        let engine = app_state.instance.backend().local_engine();
+        let engine = instance.backend().local_engine();
         if let Some(in_memory_backend) =
             engine.as_ref().and_then(|e| e.as_any().downcast_ref::<InMemory>())
         {
@@ -232,6 +201,76 @@ pub async fn run(args: &ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Server shut down");
     Ok(())
+}
+
+/// Build only the existing web surface; never mount the trusted service RPC here.
+/// The daemon disables the legacy HTTP sync endpoint: peer sync still runs on Iroh.
+pub(super) fn web_router(instance: Instance, include_http_sync: bool) -> Router {
+    let sync_handler: Arc<dyn SyncHandler> = Arc::new(SyncHandlerImpl::new(
+        instance.clone(),
+        instance
+            .sync()
+            .expect("sync enabled")
+            .sync_tree_root_id()
+            .clone(),
+    ));
+    let state = AppState {
+        instance: Arc::new(instance),
+        sync_handler,
+        sessions: SessionStore::new(),
+    };
+    let mut app = Router::new()
+        .route("/", get(handle_root_request))
+        .route("/health", get(handle_health_endpoint))
+        .route("/login", get(handle_login_page).post(handle_login_submit))
+        .route(
+            "/register",
+            get(handle_register_page).post(handle_register_submit),
+        )
+        .route("/logout", post(handle_logout))
+        .route("/dashboard", get(handle_dashboard))
+        .route("/dashboard/database", get(handle_database_detail))
+        .route("/dashboard/track", post(handle_track_database))
+        .route("/stats", get(handle_stats_request));
+    if include_http_sync {
+        app = app.route("/api/v0", post(handle_sync_request));
+    }
+    app.layer(CookieManagerLayer::new()).with_state(state)
+}
+
+// All browser form writes (including login) require an Origin matching the
+// request's own Host. The sync endpoint is not cookie-authenticated and is
+// deliberately excluded.
+fn form_origin(headers: &HeaderMap) -> Result<(), StatusCode> {
+    let host = headers
+        .get(axum::http::header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .ok_or(StatusCode::FORBIDDEN)?;
+    let origin = headers
+        .get(axum::http::header::ORIGIN)
+        .and_then(|h| h.to_str().ok())
+        .ok_or(StatusCode::FORBIDDEN)?;
+    let parsed = url::Url::parse(origin).map_err(|_| StatusCode::FORBIDDEN)?;
+    let default_port = if parsed.scheme() == "https" { 443 } else { 80 };
+    let host = if host.contains(':') && !host.ends_with(']') {
+        host.to_string()
+    } else {
+        format!("{host}:{default_port}")
+    };
+    if matches!(parsed.scheme(), "http" | "https")
+        && parsed.path() == "/"
+        && parsed.username().is_empty()
+        && parsed.password().is_none()
+        && parsed.query().is_none()
+        && parsed.fragment().is_none()
+        && parsed
+            .host_str()
+            .is_some_and(|h| format!("{h}:{}", parsed.port_or_known_default().unwrap_or(0)) == host)
+    {
+        Ok(())
+    } else {
+        Err(StatusCode::FORBIDDEN)
+    }
 }
 
 // ============================================================================
@@ -263,8 +302,12 @@ async fn handle_login_page(State(state): State<AppState>, cookies: Cookies) -> R
 async fn handle_login_submit(
     State(state): State<AppState>,
     cookies: Cookies,
+    headers: HeaderMap,
     Form(form): Form<LoginForm>,
 ) -> Response {
+    if let Err(code) = form_origin(&headers) {
+        return code.into_response();
+    }
     let instance = state.instance.clone();
     let sessions = state.sessions.clone();
     let username = form.username.clone();
@@ -295,6 +338,13 @@ async fn handle_login_submit(
         Ok(session_token) => {
             let mut cookie = Cookie::new(SESSION_COOKIE, session_token);
             cookie.set_http_only(true);
+            cookie.set_same_site(SameSite::Strict);
+            cookie.set_secure(
+                headers
+                    .get(axum::http::header::ORIGIN)
+                    .and_then(|h| h.to_str().ok())
+                    .is_some_and(|o| o.starts_with("https://")),
+            );
             cookie.set_path("/");
             cookies.add(cookie);
             Redirect::to("/dashboard").into_response()
@@ -304,12 +354,19 @@ async fn handle_login_submit(
 }
 
 /// Handler for POST /logout - Logout and destroy session
-async fn handle_logout(State(state): State<AppState>, cookies: Cookies) -> Redirect {
+async fn handle_logout(
+    State(state): State<AppState>,
+    cookies: Cookies,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(code) = form_origin(&headers) {
+        return code.into_response();
+    }
     if let Some(cookie) = cookies.get(SESSION_COOKIE) {
         state.sessions.destroy_session(cookie.value()).await;
         cookies.remove(Cookie::from(SESSION_COOKIE));
     }
-    Redirect::to("/login")
+    Redirect::to("/login").into_response()
 }
 
 /// Handler for GET /register - Show registration page
@@ -327,8 +384,12 @@ async fn handle_register_page(State(state): State<AppState>, cookies: Cookies) -
 async fn handle_register_submit(
     State(state): State<AppState>,
     cookies: Cookies,
+    headers: HeaderMap,
     Form(form): Form<RegisterForm>,
 ) -> Response {
+    if let Err(code) = form_origin(&headers) {
+        return code.into_response();
+    }
     if form.username.is_empty() {
         return Html(crate::templates::register_page(Some(
             "Username cannot be empty",
@@ -371,6 +432,13 @@ async fn handle_register_submit(
         Ok(Some(session_token)) => {
             let mut cookie = Cookie::new(SESSION_COOKIE, session_token);
             cookie.set_http_only(true);
+            cookie.set_same_site(SameSite::Strict);
+            cookie.set_secure(
+                headers
+                    .get(axum::http::header::ORIGIN)
+                    .and_then(|h| h.to_str().ok())
+                    .is_some_and(|o| o.starts_with("https://")),
+            );
             cookie.set_path("/");
             cookies.add(cookie);
             Redirect::to("/dashboard").into_response()
@@ -483,8 +551,12 @@ async fn handle_database_detail(
 async fn handle_track_database(
     State(state): State<AppState>,
     cookies: Cookies,
+    headers: HeaderMap,
     Form(form): Form<TrackDatabaseForm>,
 ) -> Response {
+    if let Err(code) = form_origin(&headers) {
+        return code.into_response();
+    }
     let session_token = match cookies.get(SESSION_COOKIE) {
         Some(cookie) => cookie.value().to_string(),
         None => return Redirect::to("/login").into_response(),
@@ -671,4 +743,51 @@ async fn handle_sync_request(
 
     let response = state.sync_handler.handle_request(&request, &context).await;
     axum::Json(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn headers(host: &str, origin: Option<&str>) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(axum::http::header::HOST, host.parse().unwrap());
+        if let Some(origin) = origin {
+            headers.insert(axum::http::header::ORIGIN, origin.parse().unwrap());
+        }
+        headers
+    }
+
+    #[test]
+    fn form_posts_require_same_origin() {
+        let host = "127.0.0.1:3000";
+        assert_eq!(
+            form_origin(&headers(host, None)),
+            Err(StatusCode::FORBIDDEN)
+        );
+        for bad in ["http://elsewhere:3000", "http://127.0.0.1:3001", "null"] {
+            assert_eq!(
+                form_origin(&headers(host, Some(bad))),
+                Err(StatusCode::FORBIDDEN),
+                "accepted {bad}"
+            );
+        }
+        assert_eq!(
+            form_origin(&headers(host, Some("http://127.0.0.1:3000"))),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn form_origin_applies_default_ports() {
+        let proxied = headers("db.example.com", Some("https://db.example.com"));
+        assert_eq!(form_origin(&proxied), Ok(()));
+        let downgraded = headers("db.example.com", Some("http://db.example.com:443"));
+        assert_eq!(form_origin(&downgraded), Err(StatusCode::FORBIDDEN));
+        assert_eq!(
+            form_origin(&headers("[::1]:3000", Some("http://[::1]:3000"))),
+            Ok(())
+        );
+        assert_eq!(form_origin(&headers("[::1]", Some("http://[::1]"))), Ok(()));
+    }
 }

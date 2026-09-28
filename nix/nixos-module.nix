@@ -17,6 +17,18 @@ in {
       description = "The eidetica package to use.";
     };
 
+    daemon = mkOption {
+      type = types.bool;
+      default = false;
+      description = "Run the Unix-socket daemon rather than legacy serve mode.";
+    };
+
+    dashboard = mkOption {
+      type = types.bool;
+      default = false;
+      description = "Host the daemon web dashboard at the configured bind address and port; requires daemon.";
+    };
+
     port = mkOption {
       type = types.port;
       default = 3000;
@@ -105,8 +117,8 @@ in {
         password**. A passwordless admin means anyone who can reach the
         service can act as admin, so only set this for trusted/LAN
         deployments or local development. Use `initialPasswordFile`
-        instead for any deployment that exposes the service beyond
-        loopback.
+        instead for any deployment where others can reach the web
+        listener.
       '';
     };
 
@@ -119,6 +131,10 @@ in {
 
   config = mkIf cfg.enable {
     assertions = [
+      {
+        assertion = !cfg.dashboard || cfg.daemon;
+        message = "services.eidetica.dashboard requires services.eidetica.daemon";
+      }
       {
         assertion = cfg.backend != "postgres" || cfg.postgresUrl != null;
         message = "services.eidetica.postgresUrl is required when backend is postgres";
@@ -142,14 +158,14 @@ in {
       }
     ];
 
-    # Warn loudly when the operator opted into a passwordless admin AND the
-    # service is reachable beyond loopback. The assertion above already
-    # ensures the opt-in is explicit; this just makes the consequence visible
-    # at rebuild time for the dangerous combination.
-    warnings = optional (cfg.allowPasswordlessAdmin && cfg.host != "127.0.0.1") ''
-      services.eidetica.allowPasswordlessAdmin is true and host is ${cfg.host} (not loopback).
-      Anyone who can reach the service can act as admin. Restrict access (firewall /
-      reverse proxy with auth), or switch to services.eidetica.initialPasswordFile.
+    # Warn loudly when the operator opted into a passwordless admin AND a web
+    # listener is running. The assertion above already ensures the opt-in is
+    # explicit; this makes the consequence visible at rebuild time.
+    warnings = optional (cfg.allowPasswordlessAdmin && (!cfg.daemon || cfg.dashboard)) ''
+      services.eidetica.allowPasswordlessAdmin is true and the web listener is on ${cfg.host}:${toString cfg.port}.
+      Anyone who can reach it can log in as admin, including other local users and web
+      pages open in a local browser (DNS rebinding). Restrict access or use
+      services.eidetica.initialPasswordFile.
     '';
 
     # Create user and group
@@ -175,6 +191,7 @@ in {
           EIDETICA_HOST = cfg.host;
           EIDETICA_BACKEND = cfg.backend;
           EIDETICA_DATA_DIR = cfg.dataDir;
+          EIDETICA_SOCKET = "${cfg.dataDir}/service.sock";
         }
         // optionalAttrs (cfg.postgresUrl != null) {
           EIDETICA_POSTGRES_URL = cfg.postgresUrl;
@@ -219,7 +236,11 @@ in {
             );
           in "${initIfNeeded}";
 
-          ExecStart = "${cfg.package}/bin/eidetica";
+          ExecStart = "${cfg.package}/bin/eidetica ${
+            if cfg.daemon
+            then "daemon"
+            else "serve"
+          }${optionalString cfg.dashboard " --dashboard --dashboard-host ${escapeShellArg cfg.host} --dashboard-port ${toString cfg.port}"}";
           Restart = "on-failure";
           RestartSec = "5s";
 
@@ -239,6 +260,6 @@ in {
     };
 
     # Firewall configuration
-    networking.firewall.allowedTCPPorts = mkIf cfg.openFirewall [cfg.port];
+    networking.firewall.allowedTCPPorts = mkIf (cfg.openFirewall && (!cfg.daemon || cfg.dashboard)) [cfg.port];
   };
 }

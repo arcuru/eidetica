@@ -8,7 +8,7 @@ The `eidetica` binary provides a server and management commands for inspecting a
 
 Starts the Eidetica server with HTTP and sync endpoints.
 
-Running `eidetica` with no subcommand is equivalent to `eidetica serve`. This default is likely to change in the future.
+Running `eidetica` with no subcommand is equivalent to `eidetica serve`. This default is likely to change in the future. Do not run `serve` alongside `daemon` on the same SQLite backend.
 
 ```bash
 eidetica serve [OPTIONS]
@@ -101,12 +101,15 @@ Runs the Eidetica service daemon against an already-initialised backend. Fails w
 eidetica daemon [OPTIONS]
 ```
 
-| Option           | Short | Default       | Env Var                 | Description                                                     |
-| ---------------- | ----- | ------------- | ----------------------- | --------------------------------------------------------------- |
-| `--socket`       | `-s`  | auto-detected | `EIDETICA_SOCKET`       | Unix socket path (see [Service Mode](service.md) for defaults)  |
-| `--backend`      | `-b`  | `sqlite`      | `EIDETICA_BACKEND`      | Storage backend (`sqlite`, `postgres`, `inmemory`)              |
-| `--data-dir`     | `-d`  | current dir   | `EIDETICA_DATA_DIR`     | Data directory for storage files                                |
-| `--postgres-url` |       | —             | `EIDETICA_POSTGRES_URL` | PostgreSQL connection URL (required when backend is `postgres`) |
+| Option             | Short | Default       | Env Var                   | Description                                                     |
+| ------------------ | ----- | ------------- | ------------------------- | --------------------------------------------------------------- |
+| `--dashboard`      |       | off           | `EIDETICA_DASHBOARD`      | Enable web dashboard (never service RPC)                        |
+| `--dashboard-host` |       | `127.0.0.1`   | `EIDETICA_DASHBOARD_HOST` | Dashboard bind address (only with `--dashboard`)                |
+| `--dashboard-port` |       | `3000`        | `EIDETICA_DASHBOARD_PORT` | Dashboard port (only with `--dashboard`)                        |
+| `--socket`         | `-s`  | auto-detected | `EIDETICA_SOCKET`         | Unix socket path (see [Service Mode](service.md) for defaults)  |
+| `--backend`        | `-b`  | `sqlite`      | `EIDETICA_BACKEND`        | Storage backend (`sqlite`, `postgres`, `inmemory`)              |
+| `--data-dir`       | `-d`  | current dir   | `EIDETICA_DATA_DIR`       | Data directory for storage files                                |
+| `--postgres-url`   |       | —             | `EIDETICA_POSTGRES_URL`   | PostgreSQL connection URL (required when backend is `postgres`) |
 
 The daemon runs until interrupted with SIGINT or SIGTERM. Clients connect using `Instance::connect("unix://...")`. See [Service (Daemon) Mode](service.md) for full documentation.
 
