@@ -84,11 +84,7 @@ impl Sync {
         signing_key: Option<&PrivateKey>,
     ) -> Result<()> {
         // Get our current tips for this tree (empty if tree doesn't exist)
-        let backend = self.backend()?;
-        let our_tips = backend
-            .snapshot(tree_id)
-            .await
-            .map_err(|e| SyncError::BackendError(format!("Failed to get local tips: {e}")))?;
+        let our_tips = self.tree_pull_tips(tree_id).await?;
 
         // Get our device public key for automatic peer tracking
         let our_device_pubkey = self.get_device_pubkey().ok();
@@ -737,6 +733,27 @@ impl Sync {
         .await
     }
 
+    /// Local tips used in an authenticated pull request.
+    async fn tree_pull_tips(&self, tree_id: &ID) -> Result<crate::Snapshot> {
+        let backend = self.backend()?;
+        let tips = backend
+            .snapshot(tree_id)
+            .await
+            .map_err(|e| SyncError::BackendError(format!("Failed to get local tips: {e}")))?;
+        match backend.get(tree_id).await {
+            Ok(_) => Ok(tips),
+            Err(error) if error.is_not_found() => {
+                if !tips.is_empty() {
+                    warn!(tree_id = %tree_id, "Ignoring orphan tips until the root is bootstrapped");
+                }
+                Ok(crate::Snapshot::EMPTY)
+            }
+            Err(error) => {
+                Err(SyncError::BackendError(format!("Failed to get local root: {error}")).into())
+            }
+        }
+    }
+
     /// One address's attempt at [`Self::sync_tree_with_peer_auth`].
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn sync_tree_with_peer_auth_at(
@@ -750,11 +767,7 @@ impl Sync {
         metadata: Option<Doc>,
     ) -> Result<()> {
         // Get our current tips for this tree (empty if tree doesn't exist)
-        let backend = self.backend()?;
-        let our_tips = backend
-            .snapshot(tree_id)
-            .await
-            .map_err(|e| SyncError::BackendError(format!("Failed to get local tips: {e}")))?;
+        let our_tips = self.tree_pull_tips(tree_id).await?;
 
         // Get our device public key for automatic peer tracking
         let our_device_pubkey = self.get_device_pubkey().ok();
@@ -1054,5 +1067,63 @@ impl Sync {
         }
 
         Err(last_err.expect("at least one task was spawned"))
+    }
+}
+
+#[cfg(test)]
+mod orphan_bootstrap_tests {
+    use super::*;
+    use crate::{Instance, NewUser, backend::database::InMemory, store::DocStore};
+
+    #[tokio::test]
+    async fn orphan_descendants_request_bootstrap_instead_of_incremental_sync() -> Result<()> {
+        let (source, mut owner) =
+            Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless("source"))
+                .await?;
+        let key = owner.get_default_key()?;
+        let db = owner.create_database(Doc::new(), &key).await?;
+        let tree_id = db.root_id().clone();
+        let txn = db.new_transaction().await?;
+        txn.get_store::<DocStore>("content")
+            .await?
+            .set_string("message", "hello")
+            .await?;
+        txn.commit().await?;
+        let entries = source.require_local_engine()?.get_tree(&tree_id).await?;
+        let descendants: Vec<_> = entries
+            .iter()
+            .filter(|entry| entry.id() != tree_id)
+            .cloned()
+            .collect();
+        assert!(!descendants.is_empty());
+
+        let (recipient, _user) = Instance::create_backend(
+            Box::new(InMemory::new()),
+            NewUser::passwordless("recipient"),
+        )
+        .await?;
+        assert!(
+            recipient
+                .put_remote_entries(&tree_id, descendants.clone())
+                .await
+                .is_err()
+        );
+        assert!(
+            !recipient.backend().snapshot(&tree_id).await?.is_empty(),
+            "the race has left orphan tips on the receiver"
+        );
+        let sync = Sync::new(recipient.clone()).await?;
+        assert!(
+            sync.tree_pull_tips(&tree_id).await?.is_empty(),
+            "without a root, the pull must request full bootstrap, not incremental sync"
+        );
+
+        recipient.put_remote_entries(&tree_id, entries).await?;
+        assert!(Database::open(&recipient, &tree_id).await.is_ok());
+        assert!(
+            !sync.tree_pull_tips(&tree_id).await?.is_empty(),
+            "once the root arrives normal incremental tips resume"
+        );
+        Ok(())
     }
 }
