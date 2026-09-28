@@ -8,6 +8,7 @@ The service module (`crate::service`) enables running Eidetica as a local daemon
 graph LR
     C1[Client Process 1] -->|Unix Socket| S[Service Server]
     C2[Client Process 2] -->|Unix Socket| S
+    D[Web dashboard] -->|web routes only| I[Instance]
     S --> I[Instance]
     I --> B[Backend: SQLite/InMemory]
 ```
@@ -88,7 +89,7 @@ sequenceDiagram
 
 ## Security Model
 
-Client-side signing. The daemon stores and serves encrypted key material and signed entries but **never holds plaintext user signing keys or passwords**.
+Client-side signing over the Unix service socket. In socket-only mode the daemon stores and serves encrypted key material and signed entries but **never holds plaintext user signing keys or passwords**. When the optional dashboard is enabled, web logins decrypt signing keys in the daemon process for their in-memory sessions; the socket protocol remains client-side signing.
 
 - **User keys stay client-side**: `TrustedLoginUser` returns the user's full record (`user_info`, including the encrypted `UserCredentials`) in the same round-trip as the challenge. The client derives the key-encryption-key locally (Argon2id over the password), decrypts the root signing key in-process, signs the challenge, and builds its `User` session from the already-returned record — no second wire read of `_users`. The signing key never crosses the socket.
 - **Authentication via challenge-response**: the daemon issues fresh random challenge bytes per login attempt. Successful decryption of the user's signing key on the client _is_ password verification; the daemon verifies the returned signature against the user's stored public key. No password is sent over the wire.

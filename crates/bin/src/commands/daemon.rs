@@ -57,6 +57,17 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
     let socket_path = args.socket.clone().unwrap_or_else(default_socket_path);
     let server = ServiceServer::bind(instance.clone(), &socket_path).await?;
 
+    // Reserve the address before announcing readiness; no second backend is opened.
+    // A bind failure drops the socket owner.
+    let web_listener = if args.dashboard {
+        Some(
+            tokio::net::TcpListener::bind((args.dashboard_host.as_str(), args.dashboard_port))
+                .await?,
+        )
+    } else {
+        None
+    };
+
     instance.enable_sync().await?;
     let sync = instance.sync().ok_or("Sync not enabled on instance")?;
     let startup: eidetica::Result<String> = async {
@@ -79,6 +90,12 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
     };
     tracing::info!(%address, "Daemon sync listener started");
 
+    let web = web_listener.map(|listener| {
+        let addr = listener.local_addr().expect("bound listener");
+        println!("Dashboard listening on http://{addr}");
+        (listener, super::serve::web_router(instance.clone(), false))
+    });
+
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
 
     println!("Eidetica daemon listening on {}", socket_path.display());
@@ -94,27 +111,64 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
 
     let server = server.run(shutdown_rx);
     tokio::pin!(server);
+    let web_shutdown = shutdown_tx.subscribe();
+    let web_server = async move {
+        if let Some((listener, app)) = web {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .with_graceful_shutdown(async move {
+                let mut rx = web_shutdown;
+                let _ = rx.changed().await;
+            })
+            .await
+        } else {
+            let mut rx = web_shutdown;
+            let _ = rx.changed().await;
+            Ok(())
+        }
+    };
+    tokio::pin!(web_server);
 
     let mut sigterm = signal(SignalKind::terminate()).expect("failed to set up SIGTERM handler");
     let mut sigint = signal(SignalKind::interrupt()).expect("failed to set up SIGINT handler");
 
-    let mut unexpected_stop = false;
-    let service_result = tokio::select! {
-        result = &mut server => {
-            unexpected_stop = true;
-            result
-        }
-        _ = sigterm.recv() => {
-            tracing::info!("Received SIGTERM");
-            drop(shutdown_tx);
-            server.await
-        }
-        _ = sigint.recv() => {
-            tracing::info!("Received SIGINT");
-            drop(shutdown_tx);
-            server.await
-        }
+    let stopped = tokio::select! {
+        result = &mut server => Some(("service", result.map_err(|e| e.to_string()))),
+        result = &mut web_server => Some(("dashboard", result.map_err(|e| e.to_string()))),
+        _ = sigterm.recv() => None,
+        _ = sigint.recv() => None,
     };
+    drop(shutdown_tx);
+    // Bound both graceful drains. A cancelled server drops its listener; the
+    // service owner removes only the socket identity it bound.
+    let drain = std::time::Duration::from_secs(10);
+    let (service_result, web_result) = tokio::join!(
+        async {
+            if stopped.as_ref().is_some_and(|(name, _)| *name == "service") {
+                Ok(())
+            } else {
+                tokio::time::timeout(drain, &mut server)
+                    .await
+                    .map_err(|_| "service shutdown timed out".to_string())
+                    .and_then(|r| r.map_err(|e| e.to_string()))
+            }
+        },
+        async {
+            if stopped
+                .as_ref()
+                .is_some_and(|(name, _)| *name == "dashboard")
+            {
+                Ok(())
+            } else {
+                tokio::time::timeout(drain, &mut web_server)
+                    .await
+                    .map_err(|_| "dashboard shutdown timed out".to_string())
+                    .and_then(|r| r.map_err(|e| e.to_string()))
+            }
+        }
+    );
 
     // ServiceServer owns socket and client teardown. Once it has stopped, no
     // new local writes can race the final flush. Keep the sync listener open
@@ -130,11 +184,13 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
     };
     let sync_stop = sync.stop_server().await;
     service_result?;
+    web_result?;
+    if let Some((name, result)) = stopped {
+        result.map_err(|e| format!("{name} listener failed: {e}"))?;
+        return Err(format!("{name} listener stopped unexpectedly").into());
+    }
     sync_flush?;
     sync_stop?;
-    if unexpected_stop {
-        return Err("service server stopped unexpectedly".into());
-    }
 
     println!("Daemon shut down");
     Ok(())
@@ -226,6 +282,9 @@ mod tests {
             command: None,
             sync_tickets: Vec::new(),
             socket: Some(socket.to_path_buf()),
+            dashboard: false,
+            dashboard_host: "127.0.0.1".into(),
+            dashboard_port: 3000,
             backend_config: BackendConfig {
                 backend: Backend::Inmemory,
                 data_dir: Some(data_dir.to_path_buf()),
@@ -263,6 +322,33 @@ mod tests {
 
         assert!(result.is_err());
         assert!(!socket_path.exists());
+    }
+
+    #[tokio::test]
+    async fn dashboard_bind_failure_releases_socket() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("service.sock");
+        let backend = create_backend(&BackendConfig {
+            backend: Backend::Inmemory,
+            data_dir: Some(dir.path().into()),
+            postgres_url: None,
+        })
+        .await
+        .unwrap();
+        Instance::create_backend(backend, NewUser::passwordless("admin"))
+            .await
+            .unwrap();
+        let occupied = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let mut args = daemon_args(dir.path(), &socket);
+        args.dashboard = true;
+        args.dashboard_port = occupied.local_addr().unwrap().port();
+        let result = tokio::time::timeout(Duration::from_secs(2), run(&args))
+            .await
+            .unwrap();
+        assert!(result.is_err());
+        assert!(!socket.exists());
     }
 
     #[tokio::test]

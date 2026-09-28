@@ -17,6 +17,18 @@ in {
       description = "The eidetica package to use.";
     };
 
+    daemon = mkOption {
+      type = types.bool;
+      default = false;
+      description = "Run the Unix-socket daemon rather than legacy serve mode.";
+    };
+
+    dashboard = mkOption {
+      type = types.bool;
+      default = false;
+      description = "Host the daemon web dashboard at the configured bind address and port; requires daemon.";
+    };
+
     port = mkOption {
       type = types.port;
       default = 3000;
@@ -58,6 +70,10 @@ in {
   config = mkIf cfg.enable {
     assertions = [
       {
+        assertion = !cfg.dashboard || cfg.daemon;
+        message = "services.eidetica.dashboard requires services.eidetica.daemon";
+      }
+      {
         assertion = cfg.backend != "postgres" || cfg.postgresUrl != null;
         message = "services.eidetica.postgresUrl is required when backend is postgres";
       }
@@ -79,7 +95,11 @@ in {
       Service = {
         Type = "simple";
         WorkingDirectory = cfg.dataDir;
-        ExecStart = "${cfg.package}/bin/eidetica";
+        ExecStart = "${cfg.package}/bin/eidetica ${
+          if cfg.daemon
+          then "daemon"
+          else "serve"
+        }${optionalString cfg.dashboard " --dashboard --dashboard-host ${escapeShellArg cfg.host} --dashboard-port ${toString cfg.port}"}";
         Restart = "on-failure";
         RestartSec = "5s";
         Environment =

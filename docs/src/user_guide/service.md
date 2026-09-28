@@ -32,6 +32,57 @@ eidetica daemon --backend postgres --postgres-url "postgresql://user:pass@host/d
 
 The daemon prints its socket path on startup and runs until interrupted (SIGINT/SIGTERM).
 
+### Optional web dashboard
+
+`eidetica daemon --dashboard` also hosts the existing login/dashboard, health,
+and stats pages. It listens on exactly the address set by `--dashboard-host`
+and `--dashboard-port` (default **127.0.0.1:3000**). The default daemon remains
+socket-only. Both listeners and the Iroh sync listener use the **same
+Instance/backend**, whether SQLite, PostgreSQL, or in-memory; no separate
+`serve` process is needed. The dashboard does not expose the trusted Unix
+service RPC or `/api/v0` HTTP peer-sync endpoint. Peer sync continues over
+Iroh. If either listener stops unexpectedly, the daemon stops both, flushes
+sync, and exits with an error. Shutdown removes its socket.
+
+The dashboard speaks plain HTTP. For remote access, terminate HTTPS at a
+reverse proxy (for example, Traefik) and forward to the dashboard's bind
+address, preserving the browser's `Host` and `Origin` headers. Who can reach
+the HTTP listener directly is up to the bind address and firewall; with a
+proxy on the same host, bind to loopback and leave the port closed.
+
+```nix
+services.eidetica = {
+  enable = true;
+  daemon = true;
+  dashboard = true;
+  host = "127.0.0.1";
+  port = 3000;
+  initialPasswordFile = "/run/agenix/eidetica-admin-password";
+};
+```
+
+Browser sessions persist in daemon memory until logout or restart; cookies are
+HttpOnly, SameSite=Strict and host-only, and Secure when the browser origin is
+HTTPS. Unlike socket-only mode, dashboard logins decrypt signing keys inside
+the daemon's web session memory; do not enable the dashboard if the daemon
+must never hold plaintext keys. Every web form POST requires an `Origin` that
+matches the request's `Host`; requests without one are rejected.
+
+A passwordless account can be logged into by **anyone who can reach the
+dashboard**: other local users, other hosts if the bind allows it, and web
+pages open in a local browser through DNS rebinding. Use passwords for any
+account a dashboard can reach. The separately launched `serve` command remains
+available for legacy HTTP sync and web deployments.
+
+NixOS and Home Manager modules preserve their `serve` default. Set
+`services.eidetica.daemon = true;` to switch to the socket daemon and
+`services.eidetica.dashboard = true;` to opt into its dashboard; `host` and
+`port` set its bind address and port. A dashboard requires daemon mode. The
+NixOS module opens the port when `openFirewall = true` and a web listener
+(legacy `serve` or the dashboard) is running. The NixOS daemon puts its socket
+at `dataDir/service.sock` (not in systemd's private `/tmp`); client processes
+need owner-approved access to that directory.
+
 ### Default Socket Path
 
 If no `--socket` is specified, the daemon uses:
@@ -92,7 +143,7 @@ The returned Instance is fully transparent -- all downstream code (Database, Tra
 
 ## Security Model
 
-- **Keys and passwords stay client-side.** The daemon sees only encrypted key material and signed entries. Password verification and key derivation (Argon2id) happen in the client process.
+- **Socket-client keys and passwords stay client-side.** The socket daemon sees only encrypted key material and signed entries from those clients. Password verification and key derivation (Argon2id) happen in the client process. Optional dashboard sessions instead hold decrypted keys in daemon memory (see above).
 - **No plaintext secrets cross the socket.** Authentication operations (user creation, login, key management) run locally in the client. PasswordStore decryption and encrypted-cache materialization are also client-side; a warm encrypted Table point read uses only encrypted point-record requests. Only storage operations (get, put, tips, etc.) are forwarded to the daemon.
 - **The socket is a local Unix domain socket.** Access is controlled by filesystem permissions on the socket file. Only processes that can reach the socket path can connect.
 - **The socket directory defines who is trusted.** Missing directories are created with mode `0700`; the socket is mode `0660`. An existing parent must be owned by the daemon user, must not be writable by group or others, and cannot be reached through a symlink. Its group, setgid bit, and traversal permissions may grant trusted Unix-group members access.
@@ -115,7 +166,7 @@ An adjacent lock coordinates cooperating daemons, stale sockets are recovered, a
 >   never needs read access to the file itself), or
 > - `services.eidetica.allowPasswordlessAdmin = true;` (INSECURE; trusted
 >   or LAN deployments only — the module warns at rebuild time when this
->   is combined with a non-loopback `host`).
+>   is combined with a web listener: legacy `serve` or the dashboard).
 >
 > **Container image** — provide one of, in priority order:
 >
@@ -159,13 +210,16 @@ the wire. (See [Core Concepts](core_concepts.md) for the verification model.)
 
 ## Configuration Reference
 
-| Option / Env Var                          | Description                                                                              | Default                                         |
-| ----------------------------------------- | ---------------------------------------------------------------------------------------- | ----------------------------------------------- |
-| `--socket` / `EIDETICA_SOCKET`            | Unix socket path                                                                         | See [Default Socket Path](#default-socket-path) |
-| `--sync-ticket` / `EIDETICA_SYNC_TICKETS` | Bootstrap/reconcile a database from a native ticket (repeatable; env is comma-separated) | --                                              |
-| `--backend`                               | Storage backend (`sqlite`, `postgres`, `inmemory`)                                       | `sqlite`                                        |
-| `--data-dir`                              | Data directory for storage files                                                         | Current directory                               |
-| `--postgres-url`                          | PostgreSQL connection URL                                                                | --                                              |
+| Option / Env Var                               | Description                                                                              | Default                                         |
+| ---------------------------------------------- | ---------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| `--dashboard` / `EIDETICA_DASHBOARD`           | Serve web dashboard alongside socket (boolean)                                           | disabled                                        |
+| `--dashboard-host` / `EIDETICA_DASHBOARD_HOST` | Dashboard bind address                                                                   | `127.0.0.1`                                     |
+| `--dashboard-port` / `EIDETICA_DASHBOARD_PORT` | Dashboard port                                                                           | `3000`                                          |
+| `--socket` / `EIDETICA_SOCKET`                 | Unix socket path                                                                         | See [Default Socket Path](#default-socket-path) |
+| `--sync-ticket` / `EIDETICA_SYNC_TICKETS`      | Bootstrap/reconcile a database from a native ticket (repeatable; env is comma-separated) | --                                              |
+| `--backend`                                    | Storage backend (`sqlite`, `postgres`, `inmemory`)                                       | `sqlite`                                        |
+| `--data-dir`                                   | Data directory for storage files                                                         | Current directory                               |
+| `--postgres-url`                               | PostgreSQL connection URL                                                                | --                                              |
 
 ## Limitations
 

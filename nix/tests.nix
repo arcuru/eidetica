@@ -50,9 +50,8 @@
           port = 8080;
           backend = "sqlite";
           host = "0.0.0.0";
-          # Opt in explicitly so the bootstrap assertion passes. The eval
-          # test exercises a non-loopback bind, which also surfaces the
-          # passwordless-on-public-bind warning.
+          # Opt in explicitly so the bootstrap assertion passes. The legacy
+          # serve listener also surfaces the passwordless web warning.
           allowPasswordlessAdmin = true;
         };
       }
@@ -113,6 +112,43 @@
   nixosEnabledResult = nixosEvalEnabled.config.services.eidetica;
   hmDisabledResult = hmEvalDisabled.config.services.eidetica.enable;
   hmEnabledResult = hmEvalEnabled.config.services.eidetica;
+  nixosCombined =
+    (nixosEvalEnabled.extendModules {
+      modules = [
+        {
+          services.eidetica = {
+            daemon = true;
+            dashboard = true;
+            host = "0.0.0.0";
+            openFirewall = true;
+          };
+        }
+      ];
+    }).config.systemd.services.eidetica.serviceConfig.ExecStart;
+  nixosDashboardFirewall =
+    (nixosEvalEnabled.extendModules {
+      modules = [
+        {
+          services.eidetica = {
+            daemon = true;
+            dashboard = true;
+            openFirewall = true;
+          };
+        }
+      ];
+    }).config.networking.firewall.allowedTCPPorts;
+  hmCombined =
+    (hmEvalEnabled.extendModules {
+      modules = [
+        {
+          services.eidetica = {
+            daemon = true;
+            dashboard = true;
+            host = "0.0.0.0";
+          };
+        }
+      ];
+    }).config.systemd.user.services.eidetica.Service.ExecStart;
 in {
   eval = {
     # Fast module evaluation test for NixOS module
@@ -141,6 +177,15 @@ in {
         else "echo '✗ Service configuration mismatch' && exit 1"
       }
 
+      ${
+        if
+          lib.hasSuffix "/bin/eidetica serve" nixosEvalEnabled.config.systemd.services.eidetica.serviceConfig.ExecStart
+          && lib.hasSuffix "/bin/eidetica daemon --dashboard --dashboard-host 0.0.0.0 --dashboard-port 8080" nixosCombined
+          && lib.elem 8080 nixosDashboardFirewall
+        then "echo '✓ Legacy serve and combined daemon commands evaluate correctly'"
+        else "echo '✗ NixOS service command mismatch' && exit 1"
+      }
+
       echo "All NixOS module evaluation tests passed" > $out/result
     '';
 
@@ -166,6 +211,14 @@ in {
         if hmEnabledResult.enable && hmEnabledResult.port == 9000 && hmEnabledResult.backend == "sqlite"
         then "echo '✓ Module evaluates correctly with service enabled'"
         else "echo '✗ Service configuration mismatch' && exit 1"
+      }
+
+      ${
+        if
+          lib.hasSuffix "/bin/eidetica serve" hmEvalEnabled.config.systemd.user.services.eidetica.Service.ExecStart
+          && lib.hasSuffix "/bin/eidetica daemon --dashboard --dashboard-host 0.0.0.0 --dashboard-port 9000" hmCombined
+        then "echo '✓ Legacy serve and combined daemon commands evaluate correctly'"
+        else "echo '✗ Home Manager service command mismatch' && exit 1"
       }
 
       echo "All Home Manager module evaluation tests passed" > $out/result
@@ -231,7 +284,7 @@ in {
     # correctly over the real Unix socket protocol.
     service =
       pkgs.runCommand "integration-service" {
-        nativeBuildInputs = [eidetica-bin pkgs.cargo-nextest];
+        nativeBuildInputs = [eidetica-bin pkgs.cargo-nextest pkgs.curl];
       } ''
         SOCKET="$TMPDIR/test.sock"
         DATA="$TMPDIR/data"
@@ -244,6 +297,7 @@ in {
           --username admin --passwordless
         DAEMON_LOG="$TMPDIR/daemon.log"
         eidetica daemon --backend sqlite --data-dir "$DATA" --socket "$SOCKET" \
+          --dashboard --dashboard-port 0 \
           >"$DAEMON_LOG" 2>&1 &
         DAEMON_PID=$!
         trap 'if [ -n "$DAEMON_PID" ]; then kill "$DAEMON_PID" 2>/dev/null || true; wait "$DAEMON_PID" 2>/dev/null || true; fi' EXIT
@@ -267,6 +321,29 @@ in {
           exit 1
         fi
 
+        # Only the dashboard routes are exposed; no trusted service RPC on HTTP.
+        PORT=$(sed -n 's/.*Dashboard listening on http:\/\/127.0.0.1:\([0-9]*\).*/\1/p' "$DAEMON_LOG" | head -1)
+        test -n "$PORT"
+        curl -fsS "http://127.0.0.1:$PORT/health" | grep -q '"backend":"sqlite"'
+        test "$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$PORT/api/v0")" = 404
+        test "$(curl -s -o /dev/null -w '%{http_code}' -X POST -d 'username=admin' "http://127.0.0.1:$PORT/login")" = 403
+        curl -fsS -D "$TMPDIR/login-headers" -c "$TMPDIR/admin-cookies" -o /dev/null -X POST \
+          -H "Origin: http://127.0.0.1:$PORT" -d 'username=admin' "http://127.0.0.1:$PORT/login"
+        grep -qi 'samesite=strict' "$TMPDIR/login-headers"
+        grep -qi 'httponly' "$TMPDIR/login-headers"
+        # No Secure flag on direct HTTP; verify same-origin writes and CSRF denials.
+        if grep -qi '; secure' "$TMPDIR/login-headers"; then
+          echo "Direct HTTP login set an unusable Secure cookie"
+          exit 1
+        fi
+        test "$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+          -d 'username=attacker' "http://127.0.0.1:$PORT/register")" = 403
+        test "$(curl -s -o /dev/null -w '%{http_code}' -b "$TMPDIR/admin-cookies" -X POST \
+          "http://127.0.0.1:$PORT/logout")" = 403
+        test "$(curl -s -o /dev/null -w '%{http_code}' -b "$TMPDIR/admin-cookies" -X POST \
+          -H "Origin: http://127.0.0.1:$PORT" -d 'ticket=invalid&permission=read' \
+          "http://127.0.0.1:$PORT/dashboard/track")" = 400
+
         echo "Daemon started (pid=$DAEMON_PID, socket=$SOCKET)"
 
         # Copy source to a writable location (nextest creates target/nextest/ in the workspace)
@@ -285,11 +362,66 @@ in {
           --show-progress=none \
           -E 'test(=user::user_lifecycle_tests::test_complete_lifecycle_passwordless)'
 
+        # A separate process writes through the *external* daemon socket.
+        export EIDETICA_EXTERNAL_SOCKET="$SOCKET"
+        export EIDETICA_EXTERNAL_DB_ID_FILE="$TMPDIR/external-db-id"
+        cargo-nextest nextest run \
+          --archive-file ${testPkgs.archive}/archive.tar.zst \
+          --workspace-remap "$TMPDIR/src" --show-progress=none \
+          -E 'test(=socket_write_visible_to_dashboard)'
+        curl -fsS -c "$TMPDIR/admin-cookies" -o /dev/null -X POST \
+          -H "Origin: http://127.0.0.1:$PORT" -d 'username=admin' "http://127.0.0.1:$PORT/login"
+        curl -fsS -b "$TMPDIR/admin-cookies" "http://127.0.0.1:$PORT/dashboard" > "$TMPDIR/dashboard.html"
+        test -s "$EIDETICA_EXTERNAL_DB_ID_FILE"
+        if ! grep -q "$(cat "$EIDETICA_EXTERNAL_DB_ID_FILE")" "$TMPDIR/dashboard.html"; then
+          echo "Dashboard did not show database written over external socket"
+          cat "$TMPDIR/dashboard.html"
+          cat "$DAEMON_LOG"
+          exit 1
+        fi
+        test "$(curl -s -o /dev/null -w '%{http_code}' -b "$TMPDIR/admin-cookies" -X POST \
+          -H 'Origin: http://attacker.invalid' -d 'ticket=bad&permission=read' \
+          "http://127.0.0.1:$PORT/dashboard/track")" = 403
+
         kill -TERM "$DAEMON_PID"
         wait "$DAEMON_PID"
         DAEMON_PID=""
         grep -q "All sync servers stopped" "$DAEMON_LOG"
         grep -q "Daemon shut down" "$DAEMON_LOG"
+
+        # The dashboard listens exactly where configured. A wildcard bind accepts
+        # whatever Host the browser uses; form writes still need a matching
+        # Origin. The same socket and persisted instance survive a restart.
+        DAEMON_LOG="$TMPDIR/daemon-public.log"
+        eidetica daemon --backend sqlite --data-dir "$DATA" --socket "$SOCKET" \
+          --dashboard --dashboard-host 0.0.0.0 --dashboard-port "$PORT" >"$DAEMON_LOG" 2>&1 &
+        DAEMON_PID=$!
+        for i in $(seq 1 50); do
+          if curl -fsS "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
+            break
+          fi
+          if ! kill -0 "$DAEMON_PID" 2>/dev/null; then cat "$DAEMON_LOG"; exit 1; fi
+          sleep 0.1
+        done
+        grep -q "Dashboard listening on http://0.0.0.0:$PORT" "$DAEMON_LOG"
+        # /proc/net/tcp records the kernel listener address in hex.
+        awk -v port="$(printf '%04X' "$PORT")" \
+          '$2 == "00000000:" port && $4 == "0A" { found=1 } END { exit !found }' /proc/net/tcp
+        curl -fsS -H "Host: db.example:$PORT" "http://127.0.0.1:$PORT/health" | grep -q '"backend":"sqlite"'
+        test "$(curl -s -o /dev/null -w '%{http_code}' -H "Host: db.example:$PORT" \
+          -H "Origin: http://attacker.invalid" -d 'username=admin' "http://127.0.0.1:$PORT/login")" = 403
+        curl -fsS -D "$TMPDIR/public-login-headers" -c "$TMPDIR/public-cookies" -o /dev/null \
+          -H "Host: db.example" -H "Origin: https://db.example" -d 'username=admin' \
+          "http://127.0.0.1:$PORT/login"
+        # Behind a TLS proxy the browser origin is HTTPS, so the cookie is Secure.
+        grep -qi '; secure' "$TMPDIR/public-login-headers"
+        curl -fsS -c "$TMPDIR/public-cookies" -o /dev/null -H "Host: db.example:$PORT" \
+          -H "Origin: http://db.example:$PORT" -d 'username=admin' "http://127.0.0.1:$PORT/login"
+        curl -fsS -b "$TMPDIR/public-cookies" -H "Host: db.example:$PORT" \
+          "http://127.0.0.1:$PORT/dashboard" | grep -q "$(cat "$EIDETICA_EXTERNAL_DB_ID_FILE")"
+        kill -TERM "$DAEMON_PID"
+        wait "$DAEMON_PID"
+        DAEMON_PID=""
 
         echo "Service integration test passed"
         mkdir -p $out

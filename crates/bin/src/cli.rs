@@ -118,6 +118,18 @@ pub struct DaemonArgs {
     )]
     pub sync_tickets: Vec<String>,
 
+    /// Also host the web dashboard (disabled by default).
+    #[arg(long, env = "EIDETICA_DASHBOARD", default_value_t = false)]
+    pub dashboard: bool,
+
+    /// Dashboard bind address; only used with --dashboard.
+    #[arg(long, env = "EIDETICA_DASHBOARD_HOST", default_value = "127.0.0.1")]
+    pub dashboard_host: String,
+
+    /// Dashboard port; only used with --dashboard.
+    #[arg(long, env = "EIDETICA_DASHBOARD_PORT", default_value_t = 3000)]
+    pub dashboard_port: u16,
+
     /// Unix socket path (default: $XDG_RUNTIME_DIR/eidetica/service.sock).
     /// Only used when running the daemon — ignored by `daemon init`.
     #[arg(short, long, env = "EIDETICA_SOCKET", global = true)]
