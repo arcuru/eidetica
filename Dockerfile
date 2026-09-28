@@ -60,7 +60,7 @@ ENV EIDETICA_DATA_DIR=/config
 ENV EIDETICA_HOST=0.0.0.0
 
 # Expose default port
-EXPOSE 3000
+EXPOSE 5942
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \

@@ -31,7 +31,7 @@ in {
 
     port = mkOption {
       type = types.port;
-      default = 3000;
+      default = 5942;
       description = "Port for the eidetica server to listen on.";
     };
 

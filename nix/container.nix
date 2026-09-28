@@ -103,7 +103,7 @@
       User = "1000:1000";
       WorkingDir = "/config";
       ExposedPorts = {
-        "3000/tcp" = {};
+        "5942/tcp" = {};
       };
       Env = [
         "EIDETICA_DATA_DIR=/config"

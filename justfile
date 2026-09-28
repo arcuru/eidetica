@@ -32,7 +32,7 @@ build mode='debug':
     cargo build --workspace --all-targets --all-features {{ if mode == "release" { "--release" } else { "" } }} --quiet
 
 # Run local dev server with persistent cache
-serve port='3000' mode='debug' backend='sqlite':
+serve port='5942' mode='debug' backend='sqlite':
     #!/usr/bin/env bash
     set -e
 
@@ -62,7 +62,7 @@ serve port='3000' mode='debug' backend='sqlite':
     "$bin" serve --port {{ port }} --data-dir "$data_dir" --backend {{ backend }}
 
 # Clean serve cache for a specific port
-serve-clean port='3000':
+serve-clean port='5942':
     #!/usr/bin/env bash
     cache_base="${PRJ_CACHE_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}}/eidetica"
     data_dir="${cache_base}/serve-{{ port }}"

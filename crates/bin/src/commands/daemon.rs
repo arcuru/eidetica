@@ -284,7 +284,7 @@ mod tests {
             socket: Some(socket.to_path_buf()),
             dashboard: false,
             dashboard_host: "127.0.0.1".into(),
-            dashboard_port: 3000,
+            dashboard_port: 5942,
             backend_config: BackendConfig {
                 backend: Backend::Inmemory,
                 data_dir: Some(data_dir.to_path_buf()),
