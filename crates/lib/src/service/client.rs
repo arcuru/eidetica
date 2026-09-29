@@ -1882,16 +1882,17 @@ mod tests {
         let (conn, _peer) = test_conn();
 
         // Live connection: the wait must not complete.
-        let parked =
-            tokio::time::timeout(Duration::from_millis(50), conn.wait_closed_for_test()).await;
+        let mut wait = Box::pin(conn.wait_closed_for_test());
+        let parked = tokio::time::timeout(Duration::from_millis(50), &mut wait).await;
         assert!(
             parked.is_err(),
             "wait_closed_for_test must park while the connection is live"
         );
 
-        // Reader-exit publication: the wait must resolve promptly.
+        // Reader-exit publication must wake the same pending waiter, not just
+        // allow a fresh subscriber to read the latched state.
         conn.inner.mark_dead();
-        tokio::time::timeout(Duration::from_secs(1), conn.wait_closed_for_test())
+        tokio::time::timeout(Duration::from_secs(1), wait)
             .await
             .expect("wait_closed_for_test must resolve once mark_dead has run");
 
