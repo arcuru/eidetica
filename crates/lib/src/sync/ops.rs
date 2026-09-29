@@ -1,5 +1,6 @@
 //! Core sync operations for the sync system.
 
+use std::collections::HashSet;
 use std::future::Future;
 use std::time::Duration;
 
@@ -83,6 +84,65 @@ impl Sync {
         tree_id: &ID,
         signing_key: Option<&PrivateKey>,
     ) -> Result<()> {
+        // Persist the parent's same-peer relationship before discovery so each
+        // dependency edge can inherit it atomically as it is recorded.
+        self.add_tree_sync(peer_pubkey, tree_id).await?;
+        let mut seen = HashSet::new();
+        let mut pending = vec![(tree_id.clone(), 0usize, Vec::new())];
+
+        while let Some((next_tree, depth, dependency_path)) = pending.pop() {
+            if !seen.insert(next_tree.clone()) {
+                continue;
+            }
+            if depth > super::MAX_DEPENDENCY_DEPTH {
+                return Err(SyncError::SyncProtocolError(format!(
+                    "delegated database dependency depth exceeds {}",
+                    super::MAX_DEPENDENCY_DEPTH
+                ))
+                .into());
+            }
+            let dependencies = self
+                .sync_one_tree_with_peer_at(
+                    address,
+                    peer_pubkey,
+                    &next_tree,
+                    signing_key,
+                    &dependency_path,
+                )
+                .await?;
+            for dependency in dependencies.into_iter().rev() {
+                self.persist_dependency(&next_tree, &dependency).await?;
+                let mut child_path = dependency_path.clone();
+                child_path.push(next_tree.clone());
+                pending.push((dependency, depth + 1, child_path));
+            }
+        }
+
+        Database::open(&self.instance()?, tree_id)
+            .await?
+            .verify()
+            .await?;
+
+        Ok(())
+    }
+
+    async fn persist_dependency(&self, parent: &ID, dependency: &ID) -> Result<()> {
+        let txn = self.sync_tree.new_transaction().await?;
+        PeerManager::new(&txn)
+            .add_dependency(parent, dependency)
+            .await?;
+        txn.commit().await?;
+        Ok(())
+    }
+
+    async fn sync_one_tree_with_peer_at(
+        &self,
+        address: &Address,
+        peer_pubkey: &PublicKey,
+        tree_id: &ID,
+        signing_key: Option<&PrivateKey>,
+        dependency_path: &[ID],
+    ) -> Result<Vec<ID>> {
         // Get our current tips for this tree (empty if tree doesn't exist)
         let backend = self.backend()?;
         let our_tips = backend
@@ -100,6 +160,7 @@ impl Sync {
             peer_pubkey,
             tree_id,
             &our_tips,
+            dependency_path,
             instance.clock().now_millis(),
         );
         let request = SyncRequest::SyncTree(SyncTreeRequest {
@@ -111,6 +172,7 @@ impl Sync {
             requested_permission: None,
             metadata: None,
             auth: Some(auth),
+            dependency_path: dependency_path.to_vec(),
         });
 
         // Send request via background sync command
@@ -131,13 +193,13 @@ impl Sync {
             .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))?
             .map_err(|e| SyncError::Network(format!("Request failed: {e}")))?;
 
-        match response {
+        let report = match response {
             SyncResponse::Bootstrap(bootstrap_response) => {
-                self.handle_bootstrap_response(bootstrap_response).await?;
+                self.handle_bootstrap_response(bootstrap_response).await?
             }
             SyncResponse::Incremental(incremental_response) => {
                 self.handle_incremental_response(incremental_response, address)
-                    .await?;
+                    .await?
             }
             SyncResponse::Error(msg) => {
                 return Err(SyncError::SyncProtocolError(format!("Sync error: {msg}")).into());
@@ -149,20 +211,20 @@ impl Sync {
                 }
                 .into());
             }
-        }
+        };
 
-        // Track tree/peer relationship for sync_on_commit to work
-        // This allows on_local_write() to find this peer when queueing entries
-        self.add_tree_sync(peer_pubkey, tree_id).await?;
-
-        Ok(())
+        Ok(report
+            .dependencies
+            .into_iter()
+            .map(|dependency| dependency.database_id)
+            .collect())
     }
 
     /// Handle bootstrap response by storing root and all entries
     pub(super) async fn handle_bootstrap_response(
         &self,
         response: protocol::BootstrapResponse,
-    ) -> Result<()> {
+    ) -> Result<crate::database::VerifyReport> {
         tracing::info!(tree_id = %response.tree_id, "Processing bootstrap response");
 
         // Integrity check: the root entry's content must hash to the declared
@@ -186,11 +248,12 @@ impl Sync {
         all_entries.extend(response.all_entries);
 
         // Store all entries and fire callbacks once
-        self.store_received_entries(&response.tree_id, all_entries)
+        let report = self
+            .store_received_entries(&response.tree_id, all_entries)
             .await?;
 
         tracing::info!(tree_id = %response.tree_id, "Bootstrap completed successfully");
-        Ok(())
+        Ok(report)
     }
 
     /// Handle incremental response by storing missing entries and sending back what server is missing
@@ -198,11 +261,12 @@ impl Sync {
         &self,
         response: protocol::IncrementalResponse,
         peer_address: &peer_types::Address,
-    ) -> Result<()> {
+    ) -> Result<crate::database::VerifyReport> {
         tracing::debug!(tree_id = %response.tree_id, "Processing incremental response");
 
         // Step 1: Store missing entries
-        self.store_received_entries(&response.tree_id, response.missing_entries)
+        let report = self
+            .store_received_entries(&response.tree_id, response.missing_entries)
             .await?;
 
         // Step 2: Check if server is missing entries from us
@@ -245,7 +309,7 @@ impl Sync {
         }
 
         tracing::debug!(tree_id = %response.tree_id, "Incremental sync completed");
-        Ok(())
+        Ok(report)
     }
 
     /// Send entries that the server is missing back to complete bidirectional sync
@@ -307,7 +371,7 @@ impl Sync {
         &self,
         tree_id: &ID,
         entries: Vec<Entry>,
-    ) -> Result<()> {
+    ) -> Result<crate::database::VerifyReport> {
         // These entries arrive without per-entry declared IDs — they were batched
         // under a single tree_id by the sender. Content is stored under whatever
         // ID our local `entry.id()` derives, so substitution attacks on individual
@@ -325,9 +389,7 @@ impl Sync {
         instance
             .put_remote_entries(tree_id, entries)
             .await
-            .map_err(|e| SyncError::BackendError(format!("Failed to store entries: {e}")))?;
-
-        Ok(())
+            .map_err(|e| SyncError::BackendError(format!("Failed to store entries: {e}")).into())
     }
 
     /// Send a batch of entries to a sync peer (async version).
@@ -456,7 +518,10 @@ impl Sync {
         let user_mgr = UserSyncManager::new(&tx);
         let peer_mgr = PeerManager::new(&tx);
 
-        let combined_settings = match user_mgr.get_combined_settings(database.root_id()).await? {
+        let combined_settings = match peer_mgr
+            .inherited_settings(database.root_id(), &user_mgr)
+            .await?
+        {
             Some(settings) => settings,
             None => {
                 // No settings configured for this database - no sync needed
@@ -769,6 +834,7 @@ impl Sync {
             peer_pubkey,
             tree_id,
             &our_tips,
+            &[],
             instance.clock().now_millis(),
         );
         let request = SyncRequest::SyncTree(SyncTreeRequest {
@@ -780,6 +846,7 @@ impl Sync {
             requested_permission,
             metadata,
             auth: Some(auth),
+            dependency_path: vec![],
         });
 
         // Send request via background sync command

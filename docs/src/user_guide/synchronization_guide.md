@@ -53,6 +53,8 @@ sync.sync_with_ticket(&ticket).await?;
 The system automatically detects whether you need full bootstrap or incremental sync.
 Tickets embed the database ID, so `sync_with_ticket` requires no separate tree ID.
 
+If received entries use delegated authentication, sync also acquires the required delegated databases from that peer and retries the blocked entries. Nested and shared dependencies are handled automatically. Dependency replicas inherit the parent database's sync behavior until you track them directly with their own settings.
+
 ### 4. Share a Database
 
 Sharing has two caller-visible operations: save this user's durable signed

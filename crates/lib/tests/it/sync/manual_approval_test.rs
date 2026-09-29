@@ -387,6 +387,7 @@ async fn named_bootstrap_request_requires_matching_proof() {
         requested_permission: None,
         metadata: None,
         auth: None,
+        dependency_path: vec![],
     });
     assert_authentication_failure(handler.handle_request(&incomplete, &context).await);
 }
@@ -481,6 +482,7 @@ async fn public_sync_distinguishes_anonymous_reads_from_named_access_requests() 
         requested_permission: None,
         metadata: None,
         auth: None,
+        dependency_path: vec![],
     });
     assert!(matches!(
         handler.handle_request(&anonymous, &context).await,

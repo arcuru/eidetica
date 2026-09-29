@@ -101,13 +101,19 @@ pub struct SyncTreeRequest {
     /// public sync omits both fields.
     #[serde(default)]
     pub auth: Option<SyncRequestAuth>,
+    /// Delegation path from the originally authorized database to this one.
+    /// The server checks read authority on the first database and every direct
+    /// delegation edge before serving entries.
+    #[serde(default)]
+    pub dependency_path: Vec<ID>,
 }
 
 /// A caller's proof of key possession for one sync request.
 ///
-/// The signature covers the responding server, the tree, the claimed tips, and
-/// a timestamp/nonce pair, so a captured request cannot be replayed to the same
-/// server, redirected to a different one, or reused for a different tree.
+/// The signature covers the responding server, the tree, the claimed tips, the
+/// delegated dependency path, and a timestamp/nonce pair, so a captured request
+/// cannot be replayed to the same server, redirected to a different one, or
+/// rewritten to claim another tree or trust path.
 ///
 /// # What this does not defend against
 ///
@@ -135,11 +141,19 @@ impl SyncRequestAuth {
         server_pubkey: &PublicKey,
         tree_id: &ID,
         tips: &Snapshot,
+        dependency_path: &[ID],
         timestamp_ms: u64,
     ) -> Self {
         let nonce = generate_challenge();
         let signature = create_challenge_response(
-            Self::signing_bytes(server_pubkey, tree_id, tips, timestamp_ms, &nonce),
+            Self::signing_bytes(
+                server_pubkey,
+                tree_id,
+                tips,
+                dependency_path,
+                timestamp_ms,
+                &nonce,
+            ),
             signing_key,
         );
         Self {
@@ -159,9 +173,17 @@ impl SyncRequestAuth {
         server_pubkey: &PublicKey,
         tree_id: &ID,
         tips: &Snapshot,
+        dependency_path: &[ID],
     ) -> Result<(), AuthError> {
         verify_challenge_response(
-            Self::signing_bytes(server_pubkey, tree_id, tips, self.timestamp_ms, &self.nonce),
+            Self::signing_bytes(
+                server_pubkey,
+                tree_id,
+                tips,
+                dependency_path,
+                self.timestamp_ms,
+                &self.nonce,
+            ),
             &self.signature,
             &self.key,
         )
@@ -175,6 +197,7 @@ impl SyncRequestAuth {
         server_pubkey: &PublicKey,
         tree_id: &ID,
         tips: &Snapshot,
+        dependency_path: &[ID],
         timestamp_ms: u64,
         nonce: &[u8],
     ) -> Vec<u8> {
@@ -190,6 +213,10 @@ impl SyncRequestAuth {
         push(&(tips.len() as u64).to_be_bytes());
         for tip in tips.tips() {
             push(tip.to_string().as_bytes());
+        }
+        push(&(dependency_path.len() as u64).to_be_bytes());
+        for dependency in dependency_path {
+            push(dependency.to_string().as_bytes());
         }
         push(&timestamp_ms.to_be_bytes());
         push(nonce);
@@ -278,7 +305,7 @@ pub enum SyncResponse {
 /// serialized type in this protocol (handshake, sync requests/responses) is a
 /// version bump, not a backward-compatible addition. See
 /// [`crate::instance::WriteSource`] for the same rule on the service wire.
-pub const PROTOCOL_VERSION: u32 = 0;
+pub const PROTOCOL_VERSION: u32 = 1;
 
 /// Context information about the incoming request.
 ///

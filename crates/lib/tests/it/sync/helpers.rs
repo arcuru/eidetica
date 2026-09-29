@@ -382,6 +382,7 @@ pub fn create_signed_bootstrap_request(
         server_pubkey,
         tree_id,
         &our_tips,
+        &[],
         eidetica::Clock::now_millis(&eidetica::FixedClock::default()),
     );
     SyncRequest::SyncTree(SyncTreeRequest {
@@ -393,6 +394,7 @@ pub fn create_signed_bootstrap_request(
         requested_permission: Some(permission),
         metadata: None,
         auth: Some(auth),
+        dependency_path: vec![],
     })
 }
 
@@ -411,6 +413,7 @@ pub fn create_bootstrap_request(
         requested_permission: Some(permission),
         metadata: None,
         auth: None,
+        dependency_path: vec![],
     })
 }
 

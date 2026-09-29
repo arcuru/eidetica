@@ -957,7 +957,8 @@ async fn test_verify_report_counts_and_idempotent() {
         eidetica::database::VerifyReport {
             verified: 0,
             failed: 2,
-            still_unverified: 0
+            still_unverified: 0,
+            dependencies: vec![],
         },
         "c and d each Failed exactly once via taint: {report:?}"
     );

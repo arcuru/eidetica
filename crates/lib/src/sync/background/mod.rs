@@ -4,7 +4,7 @@
 //! in a single background thread, removing circular dependency issues and providing
 //! automatic retry, periodic sync, and reconnection handling.
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashSet, sync::Arc, time::Duration};
 
 use tokio::{
     sync::{mpsc, oneshot},
@@ -959,6 +959,59 @@ impl BackgroundSync {
         tree_id: &ID,
         address: &Address,
     ) -> Result<()> {
+        let mut seen = HashSet::new();
+        let mut pending = vec![(tree_id.clone(), 0usize, Vec::new())];
+
+        while let Some((next_tree, depth, dependency_path)) = pending.pop() {
+            if !seen.insert(next_tree.clone()) {
+                continue;
+            }
+            if depth > super::MAX_DEPENDENCY_DEPTH {
+                return Err(SyncError::SyncProtocolError(format!(
+                    "delegated database dependency depth exceeds {}",
+                    super::MAX_DEPENDENCY_DEPTH
+                ))
+                .into());
+            }
+
+            let report = self
+                .sync_one_tree_with_peer(peer_id, &next_tree, address, &dependency_path)
+                .await?;
+            if report.dependencies.is_empty() {
+                continue;
+            }
+
+            let sync_tree = self.get_sync_tree().await?;
+            let txn = sync_tree.new_transaction().await?;
+            let peer_manager = PeerManager::new(&txn);
+            for dependency in &report.dependencies {
+                peer_manager
+                    .add_dependency(&next_tree, &dependency.database_id)
+                    .await?;
+            }
+            txn.commit().await?;
+
+            for dependency in report.dependencies.into_iter().rev() {
+                let mut child_path = dependency_path.clone();
+                child_path.push(next_tree.clone());
+                pending.push((dependency.database_id, depth + 1, child_path));
+            }
+        }
+
+        Database::open(&self.instance()?, tree_id)
+            .await?
+            .verify()
+            .await?;
+        Ok(())
+    }
+
+    async fn sync_one_tree_with_peer(
+        &self,
+        peer_id: &PeerId,
+        tree_id: &ID,
+        address: &Address,
+        dependency_path: &[ID],
+    ) -> Result<crate::database::VerifyReport> {
         async move {
             trace!(peer = %peer_id, tree = %tree_id, "Starting unified tree synchronization");
 
@@ -981,6 +1034,7 @@ impl BackgroundSync {
                 peer_id.public_key(),
                 tree_id,
                 &our_tips,
+                dependency_path,
                 instance.clock().now_millis(),
             );
             let request = SyncRequest::SyncTree(SyncTreeRequest {
@@ -992,21 +1046,22 @@ impl BackgroundSync {
                 requested_permission: None,
                 metadata: None,
                 auth: Some(auth),
+                dependency_path: dependency_path.to_vec(),
             });
 
             let response = self.transport_manager.send_request(address, &request).await?;
 
-            match response {
+            let report = match response {
                 SyncResponse::Bootstrap(bootstrap_response) => {
                     info!(peer = %peer_id, tree = %tree_id, entry_count = bootstrap_response.all_entries.len() + 1, "Received bootstrap response");
-                    self.handle_bootstrap_response(bootstrap_response).await?;
+                    self.handle_bootstrap_response(bootstrap_response).await?
                 }
                 SyncResponse::Incremental(incremental_response) => {
                     debug!(peer = %peer_id, tree = %tree_id,
                            their_tips = incremental_response.their_tips.len(),
                            missing_count = incremental_response.missing_entries.len(),
                            "Received incremental sync response");
-                    self.handle_incremental_response(incremental_response).await?;
+                    self.handle_incremental_response(incremental_response).await?
                 }
                 SyncResponse::Error(msg) => {
                     return Err(SyncError::SyncProtocolError(format!("Sync error: {msg}")).into());
@@ -1017,10 +1072,10 @@ impl BackgroundSync {
                         actual: format!("{response:?}"),
                     }.into());
                 }
-            }
+            };
 
             trace!(peer = %peer_id, tree = %tree_id, "Completed unified tree synchronization");
-            Ok(())
+            Ok(report)
         }
         .instrument(info_span!("sync_tree", peer = %peer_id, tree = %tree_id))
         .await

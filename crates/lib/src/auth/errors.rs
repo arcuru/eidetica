@@ -118,14 +118,15 @@ pub enum AuthError {
         max: usize,
     },
 
-    /// A delegated tree referenced by a delegation is not synced locally enough
-    /// to decide the monotonicity floor.
+    /// A delegated database referenced by a delegation is not replicated locally
+    /// enough to validate the claimed snapshot.
     ///
     /// This is a *transient* condition, not a validation failure: the entries in
     /// `missing` have not arrived yet. The caller should keep the entry
-    /// unverified and re-check after syncing `missing` from the delegated tree's
-    /// peers, rather than rejecting it as a forgery. Deliberately excluded from
-    /// [`AuthError::is_delegation_error`] — it signals sync state, not a
+    /// unverified and re-check after replicating `missing`, rather than rejecting
+    /// it as a forgery. `tree_id` identifies the database dependency and `missing`
+    /// is the first known set of entries needed from it. Deliberately excluded
+    /// from [`AuthError::is_delegation_error`] — it signals replica state, not a
     /// delegation defect.
     #[error(
         "Delegated tree {tree_id} not synced enough to validate delegation: {} entry(ies) missing",

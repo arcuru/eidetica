@@ -42,6 +42,7 @@ fn fabricated_tip_request(tree_id: &ID) -> SyncRequest {
         requested_permission: None,
         metadata: None,
         auth: None,
+        dependency_path: vec![],
     })
 }
 
@@ -162,7 +163,7 @@ fn signed_request(
     timestamp_ms: u64,
 ) -> SyncRequest {
     let our_tips: eidetica::Snapshot = vec![ID::from_bytes("nonexistent_tip")].into();
-    let auth = SyncRequestAuth::sign(key, server_pubkey, tree_id, &our_tips, timestamp_ms);
+    let auth = SyncRequestAuth::sign(key, server_pubkey, tree_id, &our_tips, &[], timestamp_ms);
     SyncRequest::SyncTree(SyncTreeRequest {
         tree_id: tree_id.clone(),
         our_tips,
@@ -172,6 +173,35 @@ fn signed_request(
         requested_permission: None,
         metadata: None,
         auth: Some(auth),
+        dependency_path: vec![],
+    })
+}
+
+fn signed_request_with_dependency_path(
+    key: &PrivateKey,
+    server_pubkey: &eidetica::auth::crypto::PublicKey,
+    tree_id: &ID,
+    dependency_path: Vec<ID>,
+) -> SyncRequest {
+    let our_tips: eidetica::Snapshot = vec![ID::from_bytes("nonexistent_tip")].into();
+    let auth = SyncRequestAuth::sign(
+        key,
+        server_pubkey,
+        tree_id,
+        &our_tips,
+        &dependency_path,
+        FixedClock::default().now_millis(),
+    );
+    SyncRequest::SyncTree(SyncTreeRequest {
+        tree_id: tree_id.clone(),
+        our_tips,
+        peer_pubkey: None,
+        requesting_key: None,
+        requesting_key_name: None,
+        requested_permission: None,
+        metadata: None,
+        auth: Some(auth),
+        dependency_path,
     })
 }
 
@@ -231,6 +261,38 @@ async fn signed_pull_from_unauthorized_key_is_refused() {
     assert!(
         served_entries(&response).is_empty(),
         "a key with no grant was served: {response:?}"
+    );
+}
+
+/// The dependency path controls which parent's authority and delegation graph
+/// the server trusts. It therefore has to be covered by the request signature;
+/// otherwise a captured request can be rewritten into a dependency pull.
+#[tokio::test]
+async fn signed_dependency_path_cannot_be_rewritten() {
+    let (instance, _user, _key_id, database, sync, tree_id) =
+        helpers::setup_manual_approval_server().await;
+    let (client_key, client_pubkey) = generate_keypair();
+    grant_read(&database, &client_pubkey).await;
+
+    let handler = helpers::create_test_sync_handler(&sync);
+    let signed_path = vec![tree_id.clone()];
+    let mut request =
+        signed_request_with_dependency_path(&client_key, &instance.id(), &tree_id, signed_path);
+    let SyncRequest::SyncTree(tree_request) = &mut request else {
+        unreachable!();
+    };
+    tree_request.dependency_path.clear();
+
+    let response = handler
+        .handle_request(&request, &RequestContext::default())
+        .await;
+    assert!(
+        served_entries(&response).is_empty(),
+        "a request with a rewritten dependency path was served: {response:?}"
+    );
+    assert!(
+        matches!(response, SyncResponse::Error(ref error) if error.contains("invalid request signature")),
+        "rewriting the signed dependency path must fail authentication: {response:?}"
     );
 }
 

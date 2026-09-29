@@ -130,7 +130,7 @@ impl BackgroundSync {
     pub(super) async fn handle_bootstrap_response(
         &self,
         response: BootstrapResponse,
-    ) -> Result<()> {
+    ) -> Result<crate::database::VerifyReport> {
         trace!(tree_id = %response.tree_id, "Processing bootstrap response");
 
         // Integrity check: the root entry's content must hash to the declared
@@ -151,26 +151,28 @@ impl BackgroundSync {
         all_entries.extend(response.all_entries);
 
         // Store all entries and fire callbacks once
-        self.store_received_entries(&response.tree_id, all_entries)
+        let report = self
+            .store_received_entries(&response.tree_id, all_entries)
             .await?;
 
         info!(tree_id = %response.tree_id, "Bootstrap completed successfully");
-        Ok(())
+        Ok(report)
     }
 
     /// Handle incremental response by storing missing entries
     pub(super) async fn handle_incremental_response(
         &self,
         response: IncrementalResponse,
-    ) -> Result<()> {
+    ) -> Result<crate::database::VerifyReport> {
         trace!(tree_id = %response.tree_id, "Processing incremental response");
 
         // Store missing entries and fire callbacks
-        self.store_received_entries(&response.tree_id, response.missing_entries)
+        let report = self
+            .store_received_entries(&response.tree_id, response.missing_entries)
             .await?;
 
         debug!(tree_id = %response.tree_id, "Incremental sync completed");
-        Ok(())
+        Ok(report)
     }
 
     /// Validate and store received entries from peer, firing remote write callbacks.
@@ -182,9 +184,9 @@ impl BackgroundSync {
         &self,
         tree_id: &crate::entry::ID,
         entries: Vec<Entry>,
-    ) -> Result<()> {
+    ) -> Result<crate::database::VerifyReport> {
         if entries.is_empty() {
-            return Ok(());
+            return Ok(crate::database::VerifyReport::default());
         }
 
         // Note: Height-based sorting would require tree context
@@ -238,8 +240,6 @@ impl BackgroundSync {
         instance
             .put_remote_entries(tree_id, entries)
             .await
-            .map_err(|e| SyncError::BackendError(format!("Failed to store entries: {e}")))?;
-
-        Ok(())
+            .map_err(|e| SyncError::BackendError(format!("Failed to store entries: {e}")).into())
     }
 }

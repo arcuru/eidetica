@@ -130,10 +130,13 @@ impl SyncHandlerImpl {
             .as_ref()
             .ok_or_else(|| SyncError::AuthenticationRequired(request.tree_id.to_string()))?;
         let instance = self.instance()?;
-        auth.verify(&instance.id(), &request.tree_id, &request.our_tips)
-            .map_err(|_| {
-                SyncError::AuthenticationFailed("invalid request signature".to_string())
-            })?;
+        auth.verify(
+            &instance.id(),
+            &request.tree_id,
+            &request.our_tips,
+            &request.dependency_path,
+        )
+        .map_err(|_| SyncError::AuthenticationFailed("invalid request signature".to_string()))?;
         let now = instance.clock().now_millis();
         if now.abs_diff(auth.timestamp_ms) > MAX_REQUEST_AGE_MS {
             return Err(SyncError::AuthenticationFailed(
@@ -151,6 +154,53 @@ impl SyncHandlerImpl {
     /// must prove it holds a key that [`Database::can_access`] accepts —
     /// directly, through the global grant, or through a delegated tree.
     async fn authorize_read(&self, request: &SyncTreeRequest) -> Result<()> {
+        if let Some(root) = request.dependency_path.first() {
+            if request.dependency_path.len() > super::MAX_DEPENDENCY_DEPTH {
+                return Err(SyncError::PermissionDenied(format!(
+                    "delegated database dependency path exceeds {} steps",
+                    super::MAX_DEPENDENCY_DEPTH
+                ))
+                .into());
+            }
+            if !self.is_database_sync_enabled(root).await {
+                return Err(SyncError::PermissionDenied(format!(
+                    "parent database {root} is not available for sync"
+                ))
+                .into());
+            }
+            let key = self.authenticate_request(request)?;
+            if !Database::can_access(&self.instance()?, root, &key, &Permission::Read).await? {
+                return Err(SyncError::PermissionDenied(format!(
+                    "key {key} is not authorized to read parent database {root}"
+                ))
+                .into());
+            }
+
+            let mut parent = root;
+            for child in request
+                .dependency_path
+                .iter()
+                .skip(1)
+                .chain(std::iter::once(&request.tree_id))
+            {
+                let dependencies = Database::open(&self.instance()?, parent)
+                    .await?
+                    .get_settings()
+                    .await?
+                    .auth_snapshot()
+                    .await?
+                    .get_all_delegated_trees()?;
+                if !dependencies.contains_key(child) {
+                    return Err(SyncError::PermissionDenied(format!(
+                        "database {child} is not delegated by {parent}"
+                    ))
+                    .into());
+                }
+                parent = child;
+            }
+            return Ok(());
+        }
+
         if !self.check_if_database_has_auth(&request.tree_id).await? {
             return Ok(());
         }
@@ -329,9 +379,9 @@ impl SyncHandler for SyncHandlerImpl {
                     // Unverified so a future re-verification pass can promote
                     // them.
                     match instance.put_remote_entries(&tree_id, tree_entries).await {
-                        Ok(n) => {
-                            stored_count += n;
-                            debug!(tree_id = %tree_id, requested = batch_size, stored = n, "Stored entries");
+                        Ok(_) => {
+                            stored_count += batch_size;
+                            debug!(tree_id = %tree_id, requested = batch_size, stored = batch_size, "Stored entries");
                         }
                         Err(e) => {
                             error!(tree_id = %tree_id, error = %e, "Failed to store entries batch");
@@ -494,9 +544,12 @@ impl SyncHandlerImpl {
             Err(_) => return false, // Fail closed
         };
 
-        // Use UserSyncManager to get combined settings
+        // Directly tracked databases use their own combined settings. Durable
+        // delegated replicas inherit from the parent that caused acquisition;
+        // a later direct tracking record naturally takes precedence.
         let user_mgr = UserSyncManager::new(&transaction);
-        match user_mgr.get_combined_settings(tree_id).await {
+        let peer_mgr = PeerManager::new(&transaction);
+        match peer_mgr.inherited_settings(tree_id, &user_mgr).await {
             Ok(Some(settings)) => settings.sync_enabled,
             _ => false, // Fail closed: no settings or error
         }
@@ -772,12 +825,18 @@ impl SyncHandlerImpl {
         let requesting_key_name = request.requesting_key_name.as_deref();
         let requested_permission = request.requested_permission;
 
+        if !request.dependency_path.is_empty()
+            && let Err(e) = self.authorize_read(request).await
+        {
+            return SyncResponse::Error(e.to_string());
+        }
+
         // SECURITY: Check if database has sync enabled (FIRST CHECK - before anything else)
         // This prevents information leakage about database existence: the gate
         // returns false both for databases that are absent and for databases that
         // are present-but-not-tracked-for-sync, and we deliberately respond with
         // the same opaque "Tree not found" to peers in either case.
-        if !self.is_database_sync_enabled(tree_id).await {
+        if !self.is_database_sync_enabled(tree_id).await && request.dependency_path.is_empty() {
             warn!(
                 tree_id = %tree_id,
                 requesting_key = ?requesting_key,
@@ -819,7 +878,7 @@ impl SyncHandlerImpl {
         };
 
         // If auth is configured but no credentials provided, reject the request
-        if auth_configured && requesting_key.is_none() {
+        if auth_configured && requesting_key.is_none() && request.dependency_path.is_empty() {
             warn!(
                 tree_id = %tree_id,
                 "Unauthenticated bootstrap request rejected - database requires authentication"
@@ -948,7 +1007,7 @@ impl SyncHandlerImpl {
         // proved it holds a key with read access. Cases that fall through
         // without approval (no credentials, or a key with no key name) must not
         // be served just because they reached this point.
-        if auth_configured && !key_approved {
+        if auth_configured && !key_approved && request.dependency_path.is_empty() {
             warn!(
                 tree_id = %tree_id,
                 requesting_key = ?requesting_key,
@@ -1039,7 +1098,7 @@ impl SyncHandlerImpl {
         // returns false both for databases that are absent and for databases that
         // are present-but-not-tracked-for-sync, and we deliberately respond with
         // the same opaque "Tree not found" to peers in either case.
-        if !self.is_database_sync_enabled(tree_id).await {
+        if !self.is_database_sync_enabled(tree_id).await && request.dependency_path.is_empty() {
             warn!(
                 tree_id = %tree_id,
                 peer_tip_count = peer_tips.len(),
