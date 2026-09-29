@@ -3,19 +3,23 @@
 //! This module provides the main entry point for validating entries
 //! and the AuthValidator struct that coordinates all validation operations.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use tracing::debug;
 
-use super::resolver::KeyResolver;
+use super::{floors::FloorWalker, resolver::KeyResolver};
 use crate::{
-    Entry, Instance, Result,
+    Entry, Error, Instance, Result,
     auth::{
         crypto::verify_entry_signature,
+        errors::AuthError,
         settings::AuthSettings,
         types::{Operation, ResolvedAuth, SigKey},
     },
+    backend::{BackendError, BackendImpl, Reachability},
     constants::SETTINGS,
+    crdt::{Doc, doc::Value},
+    entry::ID,
 };
 
 /// Authentication validator for validating entries and resolving auth information
@@ -87,30 +91,55 @@ impl AuthValidator {
             return Ok(false);
         }
 
-        // Resolve all matching keys
-        let resolved_auths = match self
-            .resolver
-            .resolve_sig_key(&entry.auth().key, auth_settings, instance)
-            .await
+        // A `_settings` write may only move a committed delegation pointer
+        // forward. This is independent of which key signs, so it is decided
+        // before key resolution; it touches the backend only when the write
+        // actually changes a pointer.
+        if !self
+            .check_delegation_pointers_forward(entry, instance)
+            .await?
         {
+            return Ok(false);
+        }
+
+        // Resolve all matching keys. The claimed tips in a delegation SigKey pin
+        // resolution: the delegated tree's auth settings are read as of those
+        // tips (not its live head), and the tips may regress below neither the
+        // snapshot the parent tree committed for the delegation nor any snapshot
+        // the entry's ancestors pinned for that tree (see
+        // DelegationResolver::resolve_delegation_path_for_entry).
+        let resolution = match (&entry.auth().key, instance) {
+            (SigKey::Delegation { .. }, Some(inst)) => {
+                let engine = inst.require_local_engine()?;
+                let mut floors = FloorWalker::for_entry(engine.as_ref(), entry);
+                self.resolver
+                    .resolve_sig_key_for_entry(
+                        &entry.auth().key,
+                        auth_settings,
+                        instance,
+                        &mut floors,
+                    )
+                    .await
+            }
+            _ => {
+                self.resolver
+                    .resolve_sig_key(&entry.auth().key, auth_settings, instance)
+                    .await
+            }
+        };
+        let resolved_auths = match resolution {
             Ok(auths) => auths,
-            Err(e) => {
+            // Not a verdict: the history needed to decide is not held locally.
+            // Surface it so the caller can keep the entry unverified and retry.
+            Err(Error::Auth(e)) if e.is_delegated_tree_unsynced() => {
+                return Err(Error::Auth(e));
+            }
+            Err(Error::Auth(e)) => {
                 debug!("Key resolution failed: {:?}", e);
                 return Ok(false);
             }
+            Err(e) => return Err(e),
         };
-
-        // The claimed tips in a delegation SigKey pin resolution: the delegated
-        // tree's auth settings are read as of those tips (not its live head), and
-        // the tips may not regress below the snapshot the parent tree committed
-        // for the delegation (see DelegationResolver::resolve_delegation_path).
-        //
-        // FIXME(security): this is the settings-pointer floor only — still a known
-        // gap. Two hardening steps remain: (1) strict per-entry non-regression
-        // (sibling entries above the committed floor can still pick different
-        // snapshots), and (2) a monotonic gate on settings writes so the committed
-        // pointer itself cannot be moved backwards. Until both land, the floor
-        // bounds regression but does not fully pin the delegated-tree snapshot.
 
         // Determine operation type from entry content
         let operation = if entry.subtrees().contains(&SETTINGS.to_string()) {
@@ -143,6 +172,138 @@ impl AuthValidator {
         // No key verified with sufficient permissions
         debug!("Entry invalid: no key verified with sufficient permissions");
         Ok(false)
+    }
+
+    /// Gate `_settings` writes so a committed delegation pointer
+    /// (`auth.delegations.<root>.tree.tips`) only ever moves forward.
+    ///
+    /// The committed pointer is the floor every signature through that
+    /// delegation must cover, so moving it backwards would re-open the
+    /// snapshot regression it exists to close. For every delegation pointer
+    /// this entry writes, the new tips must ancestry-cover the tips committed
+    /// for the same delegated tree in the settings the entry builds on
+    /// (`auth_settings`, the pinned pre-state). Equality is allowed and
+    /// decided without touching the backend. The pointer is matched by the
+    /// delegated tree's root, not by the settings key it is stored under, so
+    /// re-spelling the key does not reset it. A write that removes a
+    /// delegation, or that only touches its bounds, is not a pointer move.
+    ///
+    /// Reads the raw `_settings` data this entry carries, so it covers raw
+    /// settings writes and remotely ingested entries, not only
+    /// `add_delegated_tree`.
+    ///
+    /// Returns `Ok(false)` on a proven regression or an unusable pointer, and
+    /// `Err(DelegatedTreeUnsynced)` when the delegated tree is not held
+    /// locally far enough to decide.
+    async fn check_delegation_pointers_forward(
+        &self,
+        entry: &Entry,
+        instance: Option<&Instance>,
+    ) -> Result<bool> {
+        if !entry.in_subtree(SETTINGS) {
+            return Ok(true);
+        }
+        let Ok(data) = entry.data(SETTINGS) else {
+            return Ok(true);
+        };
+        let settings = serde_json::from_slice::<Doc>(data)?;
+        if settings.is_tombstone("auth.delegations") {
+            return Ok(true);
+        }
+        let Some(delegations) = settings.get("auth.delegations") else {
+            return Ok(true);
+        };
+        let Value::Doc(delegations) = delegations else {
+            debug!("Malformed auth.delegations write");
+            return Ok(false);
+        };
+
+        let mut engine: Option<std::sync::Arc<dyn BackendImpl>> = None;
+
+        for (key, value) in delegations.iter() {
+            if matches!(value, Value::Deleted) {
+                continue;
+            }
+            let Value::Doc(delegation) = value else {
+                debug!("Malformed delegation write for {key}");
+                return Ok(false);
+            };
+            if delegation.is_tombstone("tree") {
+                continue;
+            }
+            let Some(tree) = delegation.get("tree") else {
+                continue;
+            };
+            let Value::Doc(tree) = tree else {
+                debug!("Malformed delegation tree write for {key}");
+                return Ok(false);
+            };
+            let Some(new_tips) = delegation_pointer_tips(tree)? else {
+                continue;
+            };
+            let root = match tree.get("root") {
+                Some(Value::Text(root)) => ID::parse(root)?,
+                Some(_) => {
+                    debug!("Malformed delegation root write for {key}");
+                    return Ok(false);
+                }
+                None => match ID::parse(key) {
+                    Ok(root) => root,
+                    // Neither a root nor an ID key: nothing resolves through it.
+                    Err(_) => continue,
+                },
+            };
+
+            let engine = match &engine {
+                Some(engine) => engine,
+                None => {
+                    let inst = instance.ok_or_else(|| AuthError::DatabaseRequired {
+                        operation: "delegation pointer validation".to_string(),
+                    })?;
+                    engine.insert(inst.require_local_engine()?)
+                }
+            };
+            let targets = committed_pointer_floor(engine.as_ref(), entry, &root).await?;
+            if targets.is_empty() {
+                continue;
+            }
+            let new_snapshot = crate::Snapshot::from(&new_tips);
+            if new_snapshot == targets {
+                continue;
+            }
+            match engine
+                .check_targets_reachable_from(&root, &new_tips, &targets)
+                .await
+            {
+                Ok(Reachability::Reachable) => {}
+                Ok(Reachability::Unreachable) => {
+                    debug!(
+                        "{}",
+                        AuthError::DelegationPointerRegressed {
+                            tree_id: Box::new(root),
+                            previous_tips: targets.into_tips().into_boxed_slice(),
+                            new_tips: new_tips.into_boxed_slice(),
+                        }
+                    );
+                    return Ok(false);
+                }
+                Ok(Reachability::Indeterminate { missing }) => {
+                    return Err(AuthError::DelegatedTreeUnsynced {
+                        tree_id: root,
+                        missing,
+                    }
+                    .into());
+                }
+                // A pointer naming an entry of some other tree is unusable.
+                Err(Error::Backend(e)) if matches!(*e, BackendError::EntryNotInTree { .. }) => {
+                    debug!("Delegation pointer for {root} names a tip outside the tree");
+                    return Ok(false);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        Ok(true)
     }
 
     /// Resolve authentication identifier to concrete authentication information
@@ -181,6 +342,131 @@ impl AuthValidator {
         self.auth_cache.clear();
         self.resolver.clear_cache();
     }
+}
+
+/// Join the last committed pointer for `root` on every parent path.
+///
+/// Reading only the CRDT-resolved auth pre-state is insufficient at a merge:
+/// an atomic delegation reference chooses one concurrent sibling and forgets
+/// the other. Walking to the nearest pointer write on each path preserves both
+/// causal floors, and also prevents remove-then-readd from resetting a pointer.
+async fn committed_pointer_floor(
+    backend: &dyn BackendImpl,
+    entry: &Entry,
+    root: &ID,
+) -> Result<crate::Snapshot> {
+    let tree_id = entry.root().unwrap_or_else(|| entry.id());
+    let mut stack = entry.parents()?;
+    let mut visited = HashSet::new();
+    let mut tips = Vec::new();
+    let mut missing = Vec::new();
+
+    while let Some(id) = stack.pop() {
+        if !visited.insert(id.clone()) {
+            continue;
+        }
+        let ancestor = match backend.get(&id).await {
+            Ok(ancestor) => ancestor,
+            Err(e) if e.is_not_found() => {
+                missing.push(id);
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
+        let pointer = ancestor
+            .data(SETTINGS)
+            .ok()
+            .map(|data| serde_json::from_slice::<Doc>(data))
+            .transpose()?
+            .map(|settings| delegation_pointer_for_root(&settings, root))
+            .transpose()?
+            .flatten();
+        if let Some(pointer) = pointer {
+            tips.extend(pointer);
+        } else {
+            stack.extend(ancestor.parents()?);
+        }
+    }
+
+    if !missing.is_empty() {
+        missing.sort();
+        missing.dedup();
+        return Err(AuthError::DelegatedTreeUnsynced { tree_id, missing }.into());
+    }
+    Ok(crate::Snapshot::from(tips))
+}
+
+/// Return the pointer tips written for `root` in one raw settings delta.
+/// Deletions and bounds-only writes return `None`, so the prior pointer keeps
+/// carrying forward through them.
+fn delegation_pointer_for_root(settings: &Doc, root: &ID) -> Result<Option<Vec<ID>>> {
+    let Some(Value::Doc(delegations)) = settings.get("auth.delegations") else {
+        return Ok(None);
+    };
+    let mut tips = Vec::new();
+    let mut found = false;
+    for (key, value) in delegations.iter() {
+        let Value::Doc(delegation) = value else {
+            continue;
+        };
+        let Some(Value::Doc(tree)) = delegation.get("tree") else {
+            continue;
+        };
+        let written_root = match tree.get("root") {
+            Some(Value::Text(value)) => ID::parse(value)?,
+            Some(_) => continue,
+            None => match ID::parse(key) {
+                Ok(value) => value,
+                Err(_) => continue,
+            },
+        };
+        if &written_root == root
+            && let Some(written_tips) = delegation_pointer_tips(tree)?
+        {
+            found = true;
+            tips.extend(written_tips);
+        }
+    }
+    Ok(found.then_some(tips))
+}
+
+/// The `tips` a `_settings` delegation write commits, read leniently from
+/// its `tree` doc: `Ok(None)` when the write does not touch the pointer, an empty
+/// list when it sets or deletes the pointer. Mirrors `TreeReference`'s wire shape
+/// (`tips` is a doc keyed by index) without requiring the rest of the
+/// reference to be present, so a partial raw write is still gated.
+fn delegation_pointer_tips(tree: &Doc) -> Result<Option<Vec<ID>>> {
+    if tree.is_tombstone("tips") {
+        return Ok(Some(Vec::new()));
+    }
+    let Some(tips) = tree.get("tips") else {
+        return Ok(None);
+    };
+    let Value::Doc(tips) = tips else {
+        return Err(AuthError::InvalidAuthConfiguration {
+            reason: "delegation tree tips are not a document".to_string(),
+        }
+        .into());
+    };
+    let mut entries = Vec::with_capacity(tips.keys().count());
+    for (key, value) in tips.iter() {
+        if matches!(value, Value::Deleted) {
+            continue;
+        }
+        let index = key
+            .parse::<usize>()
+            .map_err(|_| AuthError::InvalidAuthConfiguration {
+                reason: format!("delegation tip index '{key}' is not numeric"),
+            })?;
+        let text = value
+            .as_text()
+            .ok_or_else(|| AuthError::InvalidAuthConfiguration {
+                reason: format!("delegation tip at index {key} is not text"),
+            })?;
+        entries.push((index, ID::parse(text)?));
+    }
+    entries.sort_by_key(|(index, _)| *index);
+    Ok(Some(entries.into_iter().map(|(_, id)| id).collect()))
 }
 
 impl Default for AuthValidator {

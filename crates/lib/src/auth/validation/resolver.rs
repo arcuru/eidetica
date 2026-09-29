@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use super::delegation::DelegationResolver;
+use super::{delegation::DelegationResolver, floors::FloorWalker};
 use crate::{
     Instance, Result,
     auth::{
@@ -56,6 +56,30 @@ impl KeyResolver {
                 })?;
                 self.delegation_resolver
                     .resolve_delegation_path(path, hint, auth_settings, instance)
+                    .await
+            }
+        }
+    }
+
+    /// [`resolve_sig_key`](Self::resolve_sig_key) for a concrete entry.
+    ///
+    /// Delegation steps additionally enforce the snapshot floor the entry
+    /// inherits from its ancestors, derived through `floors`.
+    pub(crate) async fn resolve_sig_key_for_entry(
+        &mut self,
+        sig_key: &SigKey,
+        auth_settings: &AuthSettings,
+        instance: Option<&Instance>,
+        floors: &mut FloorWalker<'_>,
+    ) -> Result<Vec<ResolvedAuth>> {
+        match sig_key {
+            SigKey::Direct { hint } => self.resolve_direct_key(hint, auth_settings),
+            SigKey::Delegation { path, hint } => {
+                let instance = instance.ok_or_else(|| AuthError::DatabaseRequired {
+                    operation: "delegated tree resolution".to_string(),
+                })?;
+                self.delegation_resolver
+                    .resolve_delegation_path_for_entry(path, hint, auth_settings, instance, floors)
                     .await
             }
         }

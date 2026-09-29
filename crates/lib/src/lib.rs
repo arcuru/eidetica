@@ -176,6 +176,14 @@ impl Error {
         }
     }
 
+    /// Get the entry ID when this error identifies one backend entry.
+    pub(crate) fn entry_id(&self) -> Option<&entry::ID> {
+        match self {
+            Error::Backend(error) => error.entry_id(),
+            _ => None,
+        }
+    }
+
     /// Check if this error indicates permission was denied.
     pub fn is_permission_denied(&self) -> bool {
         match self {
