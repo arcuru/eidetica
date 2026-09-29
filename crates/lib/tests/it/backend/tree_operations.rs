@@ -82,16 +82,17 @@ async fn test_backend_complex_tree_structure() {
 #[tokio::test]
 async fn test_backend_get_tree_from_tips() {
     let backend = test_backend().await;
-    let root_id = ID::from_bytes("tree_root");
 
     // Create entries: root -> e1 -> e2a, e2b
-    // Set heights explicitly since we're using EntryBuilder directly
-    let root_entry = Entry::builder(root_id.clone())
-        .add_parent(root_id.clone())
+    // Set heights explicitly since we're using EntryBuilder directly.
+    // A real root entry, not a synthesized ID: ancestry has to bottom out in an
+    // entry the backend holds, or the walk is a truncated history.
+    let root_entry = Entry::root_builder()
         .set_height(0) // Root level
         .build()
         .expect("Root entry should build successfully");
     let root_entry_id = root_entry.id();
+    let root_id = root_entry_id.clone();
     backend.put_verified(root_entry).await.unwrap();
 
     let e1_entry = Entry::builder(root_id.clone())

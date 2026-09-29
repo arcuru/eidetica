@@ -102,3 +102,35 @@ An example of how this is used effectively is the design of settings for the Tre
 The settings, including authentication, is stored in the `_settings` subtree. Each Entry in the Tree points to the latest tips of the `_settings` subtree.
 
 What this means is that you can fully verify the authentication for any Entry only by syncing the `_settings` subtree, and without needing to download any other data from the Tree.
+
+## Traversals Require a Complete Ancestry
+
+A subtree's state is the CRDT fold of every Entry from the subtree root up to
+the tips being read, in a deterministic order. That is only the right answer if
+the walk sees the **whole** ancestor closure of those tips.
+
+Under partial sync it may not. Entries arrive in whatever order a peer sends
+them, so a node can hold a child while its parents are still in flight — the
+DAG on disk is legitimately incomplete, and that is a normal, transient state
+(see [Verification](../design/verification.md)). A walk that follows parent
+pointers into that gap simply stops, because there is no Entry to continue
+from, and the gap looks exactly like a root.
+
+The result is not merely a smaller answer. The fold silently omits every
+contribution below the gap, and materialized states are cached per Entry, so
+the wrong state persists after the missing Entries arrive.
+
+Storage therefore does not enforce parents-before-children on ingest —
+out-of-order arrival is how sync works — and traversals do not paper over a
+gap. **A traversal that cannot reach the full ancestry of its tips reports
+`IncompleteHistory` naming the Entries it is missing**, rather than returning
+the part it can reach. Callers that legitimately tolerate an incomplete DAG
+(the verification pass, sync) treat it as "cannot decide yet" and retry once
+the gap closes; callers that are computing a state get an error instead of a
+wrong value.
+
+Reads that stay on the **Verified frontier** never see this: verification is
+prefix-closed, so the set of `Verified` Entries is ancestor-closed by
+construction and a walk within it cannot run off the end. `IncompleteHistory`
+is what a read that opted into `allow_unverified` — or a store still filling in
+from sync — gets instead of a plausible wrong answer.

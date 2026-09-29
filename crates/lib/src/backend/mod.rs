@@ -557,6 +557,12 @@ pub trait BackendImpl: Send + Sync + Any {
     /// A `Result` containing `Some(id)` for the merge base, or `None` when the
     /// entries share no common ancestor.
     ///
+    /// # Errors
+    /// - `IncompleteHistory` if an ancestor is not held locally. A gap looks
+    ///   like a root, so continuing would yield a base that is too shallow —
+    ///   distinct from the `None` below, which is a genuine absence of any
+    ///   shared ancestor rather than a hole in what this node holds.
+    ///
     /// `None` is a valid result, not an error. A store created independently on
     /// two peers — it did not exist at the point they forked, so neither side's
     /// first write has a store parent in common — has two roots and no shared
@@ -765,10 +771,19 @@ pub trait BackendImpl: Send + Sync + Any {
     ///
     /// Returns entries that are ancestors of the provided store snapshot's tips.
     ///
+    /// The result is the input to a CRDT fold, so it is complete or it is an
+    /// error: a tip that is held but is not a member of the store contributes
+    /// nothing and is skipped, but a tip or ancestor this node does not hold
+    /// at all means the history is truncated and the fold would be wrong.
+    ///
     /// # Arguments
     /// * `tree` - The root ID of the parent tree.
     /// * `store` - The name of the store to retrieve.
     /// * `snapshot` - The store snapshot defining the state to read from.
+    ///
+    /// # Errors
+    /// - `IncompleteHistory` if any tip, or any store ancestor reachable from
+    ///   one, is not held locally.
     async fn store_at(&self, tree: &ID, store: &str, snapshot: &Snapshot) -> Result<Vec<Entry>>;
 
     /// Get the store parent IDs for a specific entry and store, sorted by height then ID.
@@ -808,6 +823,10 @@ pub trait BackendImpl: Send + Sync + Any {
     ///
     /// # Returns
     /// A `Result<Vec<ID>>` containing all entry IDs between from and any of the targets, deduplicated and sorted by height then ID
+    ///
+    /// # Errors
+    /// - `IncompleteHistory` if the walk reaches an entry this node does not
+    ///   hold, which would drop that segment of the path from the merge.
     async fn get_path_from_to(
         &self,
         tree_id: &ID,

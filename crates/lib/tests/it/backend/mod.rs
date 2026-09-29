@@ -1,3 +1,4 @@
+mod ancestor_completeness;
 mod basic_operations;
 mod concurrent_writes;
 // Compares the two reference backends against each other, so it needs both.

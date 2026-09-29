@@ -7,7 +7,14 @@
 use std::collections::{HashSet, VecDeque};
 
 use super::InMemoryInner;
-use crate::{Result, backend::database::sorting, backend::errors::BackendError, entry::ID};
+use crate::{
+    Result,
+    backend::{
+        database::{completeness, sorting},
+        errors::BackendError,
+    },
+    entry::ID,
+};
 
 /// Pair each ID with its embedded subtree height (0 when absent), for
 /// [`sorting::sort_ids_by_height`].
@@ -55,6 +62,7 @@ pub(crate) fn get_path_from_to(
     let mut result = Vec::new();
     let mut to_process = VecDeque::new();
     let mut processed = HashSet::new();
+    let mut missing: Vec<ID> = Vec::new();
 
     // Start from all to_ids
     for to_id in to_ids {
@@ -76,6 +84,14 @@ pub(crate) fn get_path_from_to(
             continue;
         }
 
+        // A parent pointer we cannot follow: the path is missing that segment,
+        // and merging over it would drop those entries' contributions.
+        if !inner.entries.contains_key(&current) {
+            missing.push(current.clone());
+            processed.insert(current);
+            continue;
+        }
+
         // Add current to result (unless it's the from_id)
         result.push(current.clone());
         processed.insert(current.clone());
@@ -89,6 +105,14 @@ pub(crate) fn get_path_from_to(
                 to_process.push_back(parent);
             }
         }
+    }
+
+    if !missing.is_empty() {
+        missing.sort();
+        missing.dedup();
+        return Err(completeness::incomplete_store_history(
+            tree_id, subtree, missing,
+        ));
     }
 
     // Deduplicate result
@@ -229,7 +253,7 @@ pub(crate) fn find_merge_base(
     // FIXME(perf): Improve this, it's correct but leaves optimizations on the table.
     let mut ancestor_sets: Vec<HashSet<ID>> = Vec::with_capacity(entry_ids.len());
     for entry_id in entry_ids {
-        let ancestors = collect_ancestors(inner, subtree, entry_id)?;
+        let ancestors = collect_ancestors(inner, tree, subtree, entry_id)?;
         ancestor_sets.push(ancestors);
     }
 
@@ -290,8 +314,19 @@ pub(crate) fn find_merge_base(
 }
 
 /// Collect all ancestors of an entry in a subtree (including the entry itself).
-fn collect_ancestors(inner: &InMemoryInner, subtree: &str, entry: &ID) -> Result<HashSet<ID>> {
+///
+/// Errors with [`BackendError::IncompleteHistory`] if the closure runs into an
+/// ancestor this node does not hold: the ancestor set would otherwise look
+/// like it bottoms out at a root, and the merge base derived from it would be
+/// too shallow.
+fn collect_ancestors(
+    inner: &InMemoryInner,
+    tree: &ID,
+    subtree: &str,
+    entry: &ID,
+) -> Result<HashSet<ID>> {
     let mut ancestors: HashSet<ID> = HashSet::new();
+    let mut missing: Vec<ID> = Vec::new();
     let mut queue: VecDeque<ID> = VecDeque::new();
     queue.push_back(entry.clone());
 
@@ -299,15 +334,26 @@ fn collect_ancestors(inner: &InMemoryInner, subtree: &str, entry: &ID) -> Result
         if ancestors.contains(&current) {
             continue;
         }
-        ancestors.insert(current.clone());
 
-        if let Ok(entry_data) = super::storage::get(inner, &current)
-            && let Ok(parents) = entry_data.subtree_parents(subtree)
-        {
+        let Ok(entry_data) = super::storage::get(inner, &current) else {
+            missing.push(current);
+            continue;
+        };
+        ancestors.insert(current);
+
+        if let Ok(parents) = entry_data.subtree_parents(subtree) {
             for parent in parents {
                 queue.push_back(parent);
             }
         }
+    }
+
+    if !missing.is_empty() {
+        missing.sort();
+        missing.dedup();
+        return Err(completeness::incomplete_store_history(
+            tree, subtree, missing,
+        ));
     }
 
     Ok(ancestors)

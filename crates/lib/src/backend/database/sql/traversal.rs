@@ -6,11 +6,43 @@
 use std::collections::HashSet;
 
 use crate::Result;
+use crate::backend::database::completeness;
 use crate::backend::errors::BackendError;
 use crate::entry::{Entry, ID};
 
 use super::{SqlxBackend, SqlxResultExt};
 use crate::backend::database::sorting;
+
+/// Which of `ids` this node actually holds.
+///
+/// Used only once a traversal has already come up short, to separate "we do
+/// not have that entry" from "we have it, it is just not a member of this
+/// store". Never runs on the happy path.
+async fn held_ids(backend: &SqlxBackend, ids: &[ID]) -> Result<HashSet<ID>> {
+    if ids.is_empty() {
+        return Ok(HashSet::new());
+    }
+
+    let placeholders: Vec<String> = (1..=ids.len()).map(|i| format!("${i}")).collect();
+    let sql = format!(
+        "SELECT id FROM entries WHERE id IN ({})",
+        placeholders.join(", ")
+    );
+
+    let mut query = sqlx::query_as::<_, (String,)>(&sql);
+    for id in ids {
+        query = query.bind(id.to_string());
+    }
+
+    let rows = query
+        .fetch_all(backend.pool())
+        .await
+        .sql_context("Failed to check which entries are held")?;
+
+    rows.into_iter()
+        .map(|(id,)| ID::parse(&id))
+        .collect::<Result<HashSet<ID>>>()
+}
 
 /// Get tree tips (entries with no children in the main tree).
 pub async fn snapshot(backend: &SqlxBackend, tree: &ID) -> Result<Vec<ID>> {
@@ -167,9 +199,14 @@ pub async fn find_merge_base(
                 continue;
             }
 
-            let (ancestors, new_frontier) =
-                collect_ancestors_from_frontier(backend, store, frontier, MERGE_BASE_DEPTH_LIMIT)
-                    .await?;
+            let (ancestors, new_frontier) = collect_ancestors_from_frontier(
+                backend,
+                tree,
+                store,
+                frontier,
+                MERGE_BASE_DEPTH_LIMIT,
+            )
+            .await?;
 
             // Add to known ancestors (filtering duplicates)
             for (id, height) in ancestors {
@@ -230,6 +267,7 @@ pub async fn find_merge_base(
 /// were not included - these can be used to continue traversal in the next batch.
 async fn collect_ancestors_from_frontier(
     backend: &SqlxBackend,
+    tree: &ID,
     store: &str,
     frontier: &[ID],
     depth_limit: usize,
@@ -259,12 +297,12 @@ async fn collect_ancestors_from_frontier(
         )
         SELECT a.id, s.height, a.depth
         FROM ancestors a
-        JOIN subtrees s ON s.entry_id = a.id AND s.store_name = $1
+        LEFT JOIN subtrees s ON s.entry_id = a.id AND s.store_name = $1
         ORDER BY s.height DESC",
         depth_param = frontier.len() + 2 // +1 for store_name, +1 for 1-indexed
     );
 
-    let mut query = sqlx::query_as::<_, (String, i64, i64)>(&sql).bind(store);
+    let mut query = sqlx::query_as::<_, (String, Option<i64>, i64)>(&sql).bind(store);
     for id in frontier {
         query = query.bind(id.to_string());
     }
@@ -278,15 +316,29 @@ async fn collect_ancestors_from_frontier(
     // Separate ancestors and identify new frontier (entries at max depth with parents)
     let mut ancestors: Vec<(ID, i64)> = Vec::with_capacity(rows.len());
     let mut at_boundary: HashSet<ID> = HashSet::new();
+    let mut missing: Vec<ID> = Vec::new();
 
     for (id_str, height, depth) in rows {
         let id = ID::parse(&id_str)?;
+        // A store parent with no `subtrees` row is one this node never
+        // received. Continuing would treat the gap as a root and yield a merge
+        // base that is too shallow, so report it instead.
+        let Some(height) = height else {
+            missing.push(id);
+            continue;
+        };
         ancestors.push((id.clone(), height));
 
         // Entries at max depth are candidates for the new frontier
         if depth as usize == depth_limit {
             at_boundary.insert(id);
         }
+    }
+
+    if !missing.is_empty() {
+        missing.sort();
+        missing.dedup();
+        return Err(completeness::incomplete_store_history(tree, store, missing));
     }
 
     // The new frontier is entries at the boundary that have parents not yet visited
@@ -414,8 +466,9 @@ async fn validate_tips_in_tree(backend: &SqlxBackend, tree: &ID, tips: &[ID]) ->
 
 /// Get entries in a tree reachable from the given tips.
 ///
-/// Returns an error if any tip doesn't exist locally (`EntryNotFound`) or
-/// belongs to a different tree (`EntryNotInTree`).
+/// Returns an error if any tip doesn't exist locally (`EntryNotFound`), belongs
+/// to a different tree (`EntryNotInTree`), or if the walk reaches a parent this
+/// node does not hold (`IncompleteHistory`).
 pub async fn get_tree_from_tips(
     backend: &SqlxBackend,
     tree: &ID,
@@ -477,6 +530,11 @@ pub async fn get_tree_from_tips(
         entries.push(entry);
     }
 
+    let missing = completeness::missing_tree_ancestors(&entries);
+    if !missing.is_empty() {
+        return Err(completeness::incomplete_tree_history(tree, missing));
+    }
+
     sorting::sort_entries_by_height(&mut entries);
 
     Ok(entries)
@@ -484,8 +542,12 @@ pub async fn get_tree_from_tips(
 
 /// Get entries in a store reachable from the given tips.
 ///
-/// Only includes entries that belong to the specified tree and store. Tips that don't
-/// belong to the tree or store are ignored.
+/// Only includes entries that belong to the specified tree and store. Tips that
+/// are held but don't belong to the tree or store are ignored.
+///
+/// # Errors
+/// - `IncompleteHistory` if a tip, or any store ancestor reachable from one,
+///   is not held locally — the returned entries would be a truncated history.
 pub async fn store_at(
     backend: &SqlxBackend,
     tree: &ID,
@@ -553,9 +615,54 @@ pub async fn store_at(
         entries.push(entry);
     }
 
+    // The CTE follows `store_parents` edges, and an edge whose target we never
+    // received simply produces no row — the walk stops there and the result is
+    // a truncated history that folds to the wrong state. Detect it from the
+    // parent pointers the entries themselves carry, which is the same check
+    // the in-memory backend makes.
+    let missing = completeness::missing_store_ancestors(store, &entries);
+    if !missing.is_empty() {
+        return Err(completeness::incomplete_store_history(tree, store, missing));
+    }
+    ensure_tips_reached(backend, tree, store, tips, &entries).await?;
+
     sorting::sort_entries_by_store_height(store, &mut entries);
 
     Ok(entries)
+}
+
+/// Fail if any requested tip is absent from a traversal's result because this
+/// node does not hold it.
+///
+/// A tip that is held but is not a member of the store contributes nothing and
+/// is not an error — callers may pass a tip set spanning several stores.
+async fn ensure_tips_reached(
+    backend: &SqlxBackend,
+    tree: &ID,
+    store: &str,
+    tips: &[ID],
+    entries: &[Entry],
+) -> Result<()> {
+    let reached: HashSet<ID> = entries.iter().map(|entry| entry.id()).collect();
+    let unreached: Vec<ID> = tips
+        .iter()
+        .filter(|tip| !reached.contains(*tip))
+        .cloned()
+        .collect();
+    if unreached.is_empty() {
+        return Ok(());
+    }
+
+    let held = held_ids(backend, &unreached).await?;
+    let missing: Vec<ID> = unreached
+        .into_iter()
+        .filter(|tip| !held.contains(tip))
+        .collect();
+    if !missing.is_empty() {
+        return Err(completeness::incomplete_store_history(tree, store, missing));
+    }
+
+    Ok(())
 }
 
 /// Get parents of an entry in a store, sorted by height then ID.
@@ -598,9 +705,13 @@ pub async fn get_sorted_store_parents(
 /// from to_ids by following parents back to from_id.
 ///
 /// Uses a recursive CTE for efficient single-query traversal.
+///
+/// # Errors
+/// - `IncompleteHistory` if the walk reaches a store parent this node does not
+///   hold, which would silently drop that segment of the path.
 pub async fn get_path_from_to(
     backend: &SqlxBackend,
-    _tree_id: &ID,
+    tree_id: &ID,
     store: &str,
     from_id: Option<&ID>,
     to_ids: &[ID],
@@ -647,10 +758,10 @@ pub async fn get_path_from_to(
         )
         SELECT p.id, s.height
         FROM path_entries p
-        JOIN subtrees s ON s.entry_id = p.id AND s.store_name = $1"
+        LEFT JOIN subtrees s ON s.entry_id = p.id AND s.store_name = $1"
     );
 
-    let mut query = sqlx::query_as::<_, (String, i64)>(&sql).bind(store);
+    let mut query = sqlx::query_as::<_, (String, Option<i64>)>(&sql).bind(store);
 
     if let Some(from_id) = from_id {
         query = query.bind(from_id.to_string());
@@ -665,10 +776,23 @@ pub async fn get_path_from_to(
         .await
         .sql_context("Failed to get path from to")?;
 
-    let mut path: Vec<(ID, i64)> = rows
-        .into_iter()
-        .map(|(id, height)| ID::parse(&id).map(|id| (id, height)))
-        .collect::<Result<_>>()?;
+    // A path entry with no `subtrees` row is a parent pointer this node never
+    // received: the path would be missing that segment and the merge folded
+    // over it would be wrong.
+    let mut path: Vec<(ID, i64)> = Vec::with_capacity(rows.len());
+    let mut missing = Vec::new();
+    for (id, height) in rows {
+        let id = ID::parse(&id)?;
+        match height {
+            Some(height) => path.push((id, height)),
+            None => missing.push(id),
+        }
+    }
+    if !missing.is_empty() {
+        return Err(completeness::incomplete_store_history(
+            tree_id, store, missing,
+        ));
+    }
 
     sorting::sort_ids_by_height(&mut path);
 
