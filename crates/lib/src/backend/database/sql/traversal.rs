@@ -149,6 +149,9 @@ pub async fn find_merge_base(
     let mut ancestor_sets: Vec<HashSet<ID>> = vec![HashSet::new(); entry_ids.len()];
     let mut frontiers: Vec<Vec<ID>> = entry_ids.iter().map(|id| vec![id.clone()]).collect();
     let mut all_with_heights: Vec<(ID, i64)> = Vec::new();
+    // Store roots within the queried ancestry only; collected with the existing walk query.
+    let mut walked_roots: HashSet<ID> = HashSet::new();
+    let trace_topology = tracing::enabled!(tracing::Level::DEBUG);
     // Common ancestors seen on the most recent intersection. The frontiers can drain
     // either because no common ancestor exists or because none of them dominates every
     // path, and the empty-base event below distinguishes the two.
@@ -157,25 +160,13 @@ pub async fn find_merge_base(
     loop {
         // Check if all frontiers are exhausted (reached roots without finding a usable base)
         if frontiers.iter().all(|f| f.is_empty()) {
-            if tracing::enabled!(tracing::Level::DEBUG) {
-                let root_count: (i64,) = sqlx::query_as(
-                    "SELECT COUNT(*) FROM subtrees s
-                     WHERE s.tree_id = $1 AND s.store_name = $2
-                     AND NOT EXISTS (
-                         SELECT 1 FROM store_parents sp
-                         WHERE sp.child_id = s.entry_id AND sp.store_name = s.store_name
-                     )",
-                )
-                .bind(tree.to_string())
-                .bind(store)
-                .fetch_one(backend.pool())
-                .await
-                .sql_context("Failed to count store roots")?;
+            if trace_topology {
                 tracing::debug!(
                     store = store,
                     common_ancestor_count,
+                    // Each tip's ancestor membership counts, including shared entries per tip.
                     walked_entry_count = all_with_heights.len(),
-                    multiple_roots = root_count.0 > 1,
+                    multiple_roots = walked_roots.len() > 1,
                     "Frontiers reached the store roots with no dominating common ancestor; \
                      merging from the empty base"
                 );
@@ -189,9 +180,15 @@ pub async fn find_merge_base(
                 continue;
             }
 
-            let (ancestors, new_frontier) =
-                collect_ancestors_from_frontier(backend, store, frontier, MERGE_BASE_DEPTH_LIMIT)
-                    .await?;
+            let (ancestors, new_frontier, roots) = collect_ancestors_from_frontier(
+                backend,
+                store,
+                frontier,
+                MERGE_BASE_DEPTH_LIMIT,
+                trace_topology,
+            )
+            .await?;
+            walked_roots.extend(roots);
 
             // Add to known ancestors (filtering duplicates)
             for (id, height) in ancestors {
@@ -248,17 +245,19 @@ pub async fn find_merge_base(
 
 /// Collect ancestors starting from a frontier of entries, up to a depth limit.
 ///
-/// Returns (ancestors with heights, new frontier entries at the boundary).
+/// Returns (ancestors with heights, new frontier entries, walked store roots).
 /// The new frontier contains entries at exactly `depth_limit` depth whose parents
 /// were not included - these can be used to continue traversal in the next batch.
+/// Root detection is part of this query and is evaluated only when tracing is enabled.
 async fn collect_ancestors_from_frontier(
     backend: &SqlxBackend,
     store: &str,
     frontier: &[ID],
     depth_limit: usize,
-) -> Result<(Vec<(ID, i64)>, Vec<ID>)> {
+    trace_topology: bool,
+) -> Result<(Vec<(ID, i64)>, Vec<ID>, HashSet<ID>)> {
     if frontier.is_empty() {
-        return Ok((Vec::new(), Vec::new()));
+        return Ok((Vec::new(), Vec::new(), HashSet::new()));
     }
 
     let pool = backend.pool();
@@ -280,18 +279,25 @@ async fn collect_ancestors_from_frontier(
             JOIN store_parents sp ON sp.child_id = a.id AND sp.store_name = $1
             WHERE a.depth < ${depth_param}
         )
-        SELECT a.id, s.height, a.depth
+        SELECT a.id, s.height, a.depth,
+               CASE WHEN ${trace_param} = 1 AND NOT EXISTS (
+                   SELECT 1 FROM store_parents sp
+                   WHERE sp.child_id = a.id AND sp.store_name = $1
+               ) THEN 1 ELSE 0 END AS is_root
         FROM ancestors a
         JOIN subtrees s ON s.entry_id = a.id AND s.store_name = $1
         ORDER BY s.height DESC",
-        depth_param = frontier.len() + 2 // +1 for store_name, +1 for 1-indexed
+        depth_param = frontier.len() + 2, // +1 for store_name, +1 for 1-indexed
+        trace_param = frontier.len() + 3
     );
 
-    let mut query = sqlx::query_as::<_, (String, i64, i64)>(&sql).bind(store);
+    let mut query = sqlx::query_as::<_, (String, i64, i64, i64)>(&sql).bind(store);
     for id in frontier {
         query = query.bind(id.to_string());
     }
-    query = query.bind(depth_limit as i64);
+    query = query
+        .bind(depth_limit as i64)
+        .bind(i64::from(trace_topology));
 
     let rows = query
         .fetch_all(pool)
@@ -301,9 +307,13 @@ async fn collect_ancestors_from_frontier(
     // Separate ancestors and identify new frontier (entries at max depth with parents)
     let mut ancestors: Vec<(ID, i64)> = Vec::with_capacity(rows.len());
     let mut at_boundary: HashSet<ID> = HashSet::new();
+    let mut roots: HashSet<ID> = HashSet::new();
 
-    for (id_str, height, depth) in rows {
+    for (id_str, height, depth, is_root) in rows {
         let id = ID::parse(&id_str)?;
+        if is_root != 0 {
+            roots.insert(id.clone());
+        }
         ancestors.push((id.clone(), height));
 
         // Entries at max depth are candidates for the new frontier
@@ -317,7 +327,7 @@ async fn collect_ancestors_from_frontier(
     // based on what's already been visited
     let new_frontier: Vec<ID> = at_boundary.into_iter().collect();
 
-    Ok((ancestors, new_frontier))
+    Ok((ancestors, new_frontier, roots))
 }
 
 /// Check if candidate is a dominator (all paths pass through it) using recursive CTE.

@@ -245,6 +245,7 @@ pub(crate) fn find_merge_base(
                 empty_base_topology(inner, subtree, &ancestor_sets);
             tracing::debug!(
                 subtree = subtree,
+                common_ancestor_count = 0,
                 walked_entry_count,
                 multiple_roots,
                 "No common ancestors found; merging from the empty base"
@@ -254,10 +255,11 @@ pub(crate) fn find_merge_base(
     }
 
     // Step 3: Get heights for sorting (we want highest height first = closest to tips)
-    let mut candidates: Vec<(ID, u64)> = Vec::with_capacity(common_ancestors.len());
-    for id in &common_ancestors {
-        let height = get_subtree_height(inner, subtree, id)?;
-        candidates.push((id.clone(), height));
+    let common_ancestor_count = common_ancestors.len();
+    let mut candidates: Vec<(ID, u64)> = Vec::with_capacity(common_ancestor_count);
+    for id in common_ancestors {
+        let height = get_subtree_height(inner, subtree, &id)?;
+        candidates.push((id, height));
     }
     // Sort by height descending (highest first = closest to tips)
     candidates.sort_by_key(|b| std::cmp::Reverse(b.1));
@@ -293,7 +295,7 @@ pub(crate) fn find_merge_base(
             empty_base_topology(inner, subtree, &ancestor_sets);
         tracing::debug!(
             subtree = subtree,
-            common_ancestor_count = common_ancestors.len(),
+            common_ancestor_count,
             walked_entry_count,
             multiple_roots,
             "No common ancestor dominates all entries; merging from the empty base"
@@ -304,8 +306,9 @@ pub(crate) fn find_merge_base(
 
 /// Summarise the topology a merge-base walk covered, for the empty-base debug events.
 ///
-/// Returns the number of entries the walk touched and whether they descend from more
-/// than one store root. Both are read from the ancestor sets the walk already built,
+/// The count sums each tip's ancestor memberships (shared entries count once per tip).
+/// Multiple roots means distinct store roots within the queried ancestry, not the tree.
+/// Both are read from the ancestor sets the walk already built,
 /// so no additional traversal is performed.
 fn empty_base_topology(
     inner: &InMemoryInner,
