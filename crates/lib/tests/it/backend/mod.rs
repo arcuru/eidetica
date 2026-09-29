@@ -5,6 +5,7 @@ mod concurrent_writes;
 mod cross_backend_ordering;
 mod height_calculations;
 mod helpers;
+mod merge_base_trace;
 mod out_of_order_tips;
 #[cfg(feature = "postgres")]
 mod postgres_ownership;
