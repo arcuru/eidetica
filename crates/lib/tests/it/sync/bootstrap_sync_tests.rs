@@ -11,6 +11,7 @@ use eidetica::{
 };
 
 use super::helpers::*;
+use crate::helpers::LocalBackendTestExt;
 
 /// Test the new unified sync API for bootstrapping a database from scratch
 #[tokio::test]
@@ -108,6 +109,77 @@ async fn test_bootstrap_sync_from_zero_state() {
     println!("✅ TEST: Bootstrap sync completed successfully");
 
     // Cleanup
+    server_sync.stop_server().await.unwrap();
+}
+
+/// A remote descendant can arrive before its root and leave a non-empty local
+/// snapshot. Pulling must still request the authenticated bootstrap response.
+#[tokio::test]
+async fn test_pull_recovers_orphan_descendants_then_syncs_incrementally() {
+    let (server_instance, _user, _key, database, tree_id, server_sync) =
+        setup_public_sync_enabled_server("server_user", "server_key", "test_database").await;
+    let first_entry = {
+        let tx = database.new_transaction().await.unwrap();
+        tx.get_store::<DocStore>("messages")
+            .await
+            .unwrap()
+            .set("first", "before bootstrap")
+            .await
+            .unwrap();
+        tx.commit().await.unwrap()
+    };
+    let server_addr = start_sync_server(&server_sync).await;
+    let (client_instance, _user, _key, client_sync) =
+        setup_sync_enabled_client("client_user", "client_key").await;
+    client_sync
+        .register_transport("http", HttpTransport::builder())
+        .await
+        .unwrap();
+
+    // Simulate an early SendEntries batch: storage accepts the descendant,
+    // but opening the database fails until the root has arrived.
+    let entries = server_instance.backend().get_tree(&tree_id).await.unwrap();
+    let descendants: Vec<_> = entries
+        .into_iter()
+        .filter(|entry| entry.id() != tree_id)
+        .collect();
+    assert!(descendants.iter().any(|entry| entry.id() == first_entry));
+    for entry in descendants {
+        client_instance.backend().put(entry).await.unwrap();
+    }
+    assert!(client_instance.backend().get(&tree_id).await.is_err());
+    assert!(
+        !client_instance
+            .backend()
+            .snapshot(&tree_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    client_sync
+        .sync_with_peer(&server_addr, Some(&tree_id))
+        .await
+        .expect("orphan tips must not prevent a real bootstrap pull");
+    assert!(client_instance.backend().get(&tree_id).await.is_ok());
+    assert!(client_instance.backend().get(&first_entry).await.is_ok());
+
+    let later_entry = {
+        let tx = database.new_transaction().await.unwrap();
+        tx.get_store::<DocStore>("messages")
+            .await
+            .unwrap()
+            .set("later", "after bootstrap")
+            .await
+            .unwrap();
+        tx.commit().await.unwrap()
+    };
+    assert!(client_instance.backend().get(&later_entry).await.is_err());
+    client_sync
+        .sync_with_peer(&server_addr, Some(&tree_id))
+        .await
+        .expect("incremental pull after bootstrap should succeed");
+    assert!(client_instance.backend().get(&later_entry).await.is_ok());
     server_sync.stop_server().await.unwrap();
 }
 
