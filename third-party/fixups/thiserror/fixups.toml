@@ -1,0 +1,2 @@
+# build.rs writes OUT_DIR/private.rs (versioned proc-macro implementation) and probes rustc.
+buildscript.run = true

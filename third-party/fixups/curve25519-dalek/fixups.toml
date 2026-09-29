@@ -1,0 +1,2 @@
+# build.rs chooses the arithmetic width and backend cfg for the target architecture.
+buildscript.run = true

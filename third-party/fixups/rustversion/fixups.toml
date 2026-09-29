@@ -1,0 +1,2 @@
+# build/build.rs probes rustc and generates OUT_DIR/version.expr required by the proc macro.
+buildscript.run = true
