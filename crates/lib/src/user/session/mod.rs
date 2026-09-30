@@ -11,6 +11,7 @@
 //! - **`create_database()`** - Create a new database
 //! - **`open_database()`** - Open an existing database
 //! - **`open_database_with_key()`** - Open with an explicitly chosen user key
+//! - **`join()`** - Join a database from a ticket and open it
 //! - **`find_database()`** - Search for databases by name
 //!
 //! ## Tracked Databases
@@ -1068,6 +1069,97 @@ impl User {
 
         self.record_database_access(&database_id, key_id, sync_settings, result)
             .await
+    }
+
+    /// Join a database from a ticket and open it.
+    ///
+    /// Works the same on an embedded and a connected instance. An embedded
+    /// instance bootstraps through its own [`Sync`], which must be enabled.
+    /// A connected instance asks the daemon to do it: the daemon chooses the
+    /// route and owns the network exchange and the ongoing replication, while
+    /// `key_id`'s private key stays in this process and signs only the
+    /// peer-bound request proof. The call waits until the peer answers.
+    ///
+    /// A ticket locates a database; it does not grant access. The peer decides
+    /// whether `key_id` may have `requested_permission`, exactly as for
+    /// [`request_database_access`](Self::request_database_access), whose
+    /// mapping and preference semantics this shares:
+    ///
+    /// - When access is granted, the database is synced, `key_id`'s SigKey
+    ///   mapping and `sync_settings` are recorded, and the opened database is
+    ///   returned.
+    /// - When approval is pending, this returns [`SyncError::BootstrapPending`]
+    ///   after recording a provisional mapping and `sync_settings`. Call `join`
+    ///   again once the request is approved.
+    /// - A rejected request returns [`SyncError::BootstrapRejected`] and
+    ///   records nothing.
+    ///
+    /// # Arguments
+    /// * `ticket` - Database ID and address hints
+    /// * `key_id` - This user's key to request access for
+    /// * `requested_permission` - The permission level being requested
+    /// * `sync_settings` - This user's replication preference for the database
+    /// * `metadata` - Optional context for the approver
+    ///
+    /// # Errors
+    /// - [`UserError::KeyNotFound`] if this user does not hold `key_id`
+    /// - [`SyncError::SyncNotEnabled`] on an embedded instance without sync
+    /// - [`SyncError::BootstrapPending`] or [`SyncError::BootstrapRejected`]
+    ///   as described above
+    /// - Any network or sync error if no ticket address answered
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let key_id = user.get_default_key()?;
+    /// let database = user
+    ///     .join(&ticket, &key_id, Permission::Write(10), SyncSettings::on_commit(), None)
+    ///     .await?;
+    /// ```
+    pub async fn join(
+        &mut self,
+        ticket: &DatabaseTicket,
+        key_id: &PublicKey,
+        requested_permission: Permission,
+        sync_settings: SyncSettings,
+        metadata: Option<Doc>,
+    ) -> Result<Database> {
+        let database_id = ticket.database_id().clone();
+
+        #[cfg(all(unix, feature = "service"))]
+        if let Some(connection) = self.instance.remote_connection() {
+            let signing_key = self
+                .key_manager
+                .get_signing_key(key_id)
+                .ok_or_else(|| super::errors::UserError::KeyNotFound {
+                    key_id: key_id.to_string(),
+                })?
+                .clone();
+            let result = connection
+                .bootstrap_ticket(
+                    ticket,
+                    &signing_key,
+                    &key_id.to_string(),
+                    requested_permission,
+                    metadata,
+                    self.instance.clock().now_millis(),
+                )
+                .await;
+            self.record_database_access(&database_id, key_id, sync_settings, result)
+                .await?;
+            return self.open_database_with_key(&database_id, key_id).await;
+        }
+
+        let sync = self.instance.sync().ok_or(SyncError::SyncNotEnabled)?;
+        self.request_database_access(
+            &sync,
+            ticket,
+            key_id,
+            requested_permission,
+            sync_settings,
+            metadata,
+        )
+        .await?;
+        self.open_database_with_key(&database_id, key_id).await
     }
 
     /// Record the User-layer SigKey mapping for a bootstrap whose network phase

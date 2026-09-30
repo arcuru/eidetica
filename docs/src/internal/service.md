@@ -118,6 +118,8 @@ The top-level request enum is intentionally flat, keeping the pre-auth surface v
 | `GetInstanceMetadata`                          | Pre-auth — fetch server identity (used by `Instance::connect`)                                     |
 | `SessionKeyChallenge { pubkey }`               | Post-auth — request a challenge bound to `pubkey` so the client can prove possession               |
 | `SessionKeyRegister { pubkey, signature }`     | Post-auth — return the signed challenge; on success `pubkey` joins the connection's session keyset |
+| `TicketBootstrapPrepare { ticket }`            | Post-auth — select a ticket route; see [Ticket Bootstrap](#ticket-bootstrap)                       |
+| `TicketBootstrap(Box<TicketBootstrapRequest>)` | Post-auth — send a client-signed bootstrap request through the daemon's sync engine                |
 | `AuthenticatedDb(Box<AuthenticatedDbRequest>)` | A `DatabaseOp` — the single envelope for every storage operation                                   |
 
 `AuthenticatedDbRequest` carries an identity claim that the server validates against the connection's session keyset before dispatch:
@@ -173,7 +175,26 @@ Published views and private builds use opaque random tokens stored only in the c
 | `TrustedLoginChallenge { challenge, user_uuid, user_info }` | Challenge bytes + the user's full record (login)                   |
 | `TrustedLoginOk`                                            | Login succeeded; connection now authenticated                      |
 | `SessionKeyChallenge { challenge }`                         | Challenge bytes the client signs to register an additional key     |
+| `TicketBootstrapRoute { address, peer, tips }`              | Selected route, answering peer, and daemon pull tips               |
+| `TicketBootstrapOutcome(TicketBootstrapOutcome)`            | `Complete`, `Pending { .. }`, or `Rejected { .. }`                 |
 | `Error(ServiceError)`                                       | Error response                                                     |
+
+## Ticket Bootstrap
+
+`User::join` on a connected instance joins a database from a ticket without a client-side sync engine and without sending the user's private key to the daemon.
+A bootstrap request proof (`SyncRequestAuth`) is bound to the answering peer and the requester's advertised tips, so the exchange takes two requests:
+
+1. The client registers the requesting key in the session keyset, then sends `TicketBootstrapPrepare { ticket }`.
+   The daemon races the ticket's address hints with its own transports and returns the chosen `address`, the `peer` that answered, and its local pull `tips`.
+2. The client signs a proof over `peer`, the database, and `tips` with the requesting key, and sends it with the requested permission, key name, and optional approver metadata in `TicketBootstrap`.
+   The daemon requires the proof's key to be in the session keyset and the proof to cover that exact request, then sends it through its own sync engine and records the peer relationship for ongoing replication.
+
+Pending and rejected results travel as `TicketBootstrapOutcome` data rather than as `ServiceError`s, so the client rebuilds `SyncError::BootstrapPending` and `SyncError::BootstrapRejected` exactly and `User::record_database_access` keeps its provisional-mapping and retry semantics.
+The client then records the key mapping and sync preference in the user database as on an embedded instance.
+Requests on a connection are handled in order, so the join occupies its connection until the peer answers.
+
+Continuing replication is the daemon's, and its sync requests are signed with the daemon's device key.
+A database that grants only the joining user key, with no global grant, therefore needs the same device-key access as an embedded bootstrap for later pulls.
 
 ## Session Keyset
 

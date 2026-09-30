@@ -223,7 +223,7 @@ the wire. (See [Core Concepts](core_concepts.md) for the verification model.)
 
 ## Limitations
 
-- **Sync management is server-side.** The daemon always loads persisted sync state, starts its Iroh listener, and keeps syncing without connected service clients. Use `--sync-ticket <TICKET>` for owner-side bootstrap and peer setup; the resulting relationships persist across restart. A connected client can't drive that lifecycle over the wire; `enable_sync()` on a remote Instance remains a no-op. User tracking changes made through the socket are reconciled by the daemon's Instance callbacks.
+- **Sync management is server-side.** The daemon always loads persisted sync state, starts its Iroh listener, and keeps syncing without connected service clients. Use `--sync-ticket <TICKET>` for owner-side bootstrap and peer setup; the resulting relationships persist across restart. A connected client can't drive that lifecycle over the wire; `enable_sync()` on a remote Instance remains a no-op. To join a database from a ticket, a connected client calls `User::join`: the daemon performs the network exchange and keeps the database in sync, while the client signs the access request with its own key. User tracking changes made through the socket are reconciled by the daemon's Instance callbacks.
 - **Unix-only.** The service module requires Unix domain sockets and is not available on Windows.
 - **Feature flag required.** The `service` feature must be enabled (included in the default `full` feature set).
 

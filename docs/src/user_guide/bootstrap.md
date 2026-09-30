@@ -85,6 +85,19 @@ user.request_database_access(
 ).await
 ```
 
+`User::join` takes the same arguments without the `Sync` handle and returns the opened database.
+It uses the instance's own sync engine when embedded and the daemon's when connected to a [service daemon](service.md), where the user's private key stays in the client process:
+
+<!-- Code block ignored: Example client workflow code demonstrating bootstrap API usage -->
+
+```rust,ignore
+let database = user
+    .join(&ticket, &key_id, Permission::Write(5), SyncSettings::on_commit(), None)
+    .await?;
+```
+
+A pending or rejected `join` returns the same errors and records the same provisional state as `request_database_access`.
+
 ### 2. Response Handling
 
 The client must handle different response scenarios:
