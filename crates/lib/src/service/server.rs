@@ -79,6 +79,7 @@ struct ConnectionContext {
     subscribed: std::sync::Mutex<HashMap<ID, CallbackId>>,
     staging: std::sync::Mutex<HashMap<String, SessionStaging>>,
     token_idle_ttl: Duration,
+    published_view_idle_ttl: Duration,
 }
 
 impl ConnectionContext {
@@ -94,7 +95,12 @@ impl ConnectionContext {
         let now = Instant::now();
         let mut expired = Vec::new();
         self.staging.lock().unwrap().retain(|_, value| {
-            let keep = now.duration_since(value.last_used) <= self.token_idle_ttl;
+            let ttl = if value.published {
+                self.published_view_idle_ttl
+            } else {
+                self.token_idle_ttl
+            };
+            let keep = now.duration_since(value.last_used) <= ttl;
             if !keep && !value.published {
                 expired.push(value.backend.clone());
             }
@@ -205,6 +211,7 @@ pub struct ServiceServer {
     listener: UnixListener,
     socket_identity: SocketIdentity,
     token_idle_ttl: Duration,
+    published_view_idle_ttl: Duration,
     _lock_file: File,
 }
 
@@ -234,23 +241,31 @@ impl ServiceServer {
     /// * `instance` - The Instance to serve. The server holds a strong reference.
     /// * `socket_path` - Path for the Unix domain socket.
     pub async fn bind(instance: Instance, socket_path: impl Into<PathBuf>) -> crate::Result<Self> {
-        Self::bind_inner(instance, socket_path.into(), TOKEN_IDLE_TTL).await
+        Self::bind_inner(instance, socket_path.into(), TOKEN_IDLE_TTL, TOKEN_IDLE_TTL).await
     }
 
-    /// Bind with a shorter session-token lifetime for expiry tests.
+    /// Bind with independent staging-token and published-view lifetimes for expiry tests.
     #[cfg(feature = "testing")]
     pub async fn bind_with_token_idle_ttl_for_test(
         instance: Instance,
         socket_path: impl Into<PathBuf>,
-        ttl: Duration,
+        staging_ttl: Duration,
+        published_view_ttl: Duration,
     ) -> crate::Result<Self> {
-        Self::bind_inner(instance, socket_path.into(), ttl).await
+        Self::bind_inner(
+            instance,
+            socket_path.into(),
+            staging_ttl,
+            published_view_ttl,
+        )
+        .await
     }
 
     async fn bind_inner(
         instance: Instance,
         socket_path: PathBuf,
         token_idle_ttl: Duration,
+        published_view_idle_ttl: Duration,
     ) -> crate::Result<Self> {
         let socket_path = absolute_socket_path(socket_path)?;
         prepare_parent(&socket_path).await?;
@@ -272,6 +287,7 @@ impl ServiceServer {
             listener,
             socket_identity,
             token_idle_ttl,
+            published_view_idle_ttl,
             _lock_file: lock_file,
         })
     }
@@ -308,9 +324,10 @@ impl ServiceServer {
                         Ok((stream, _addr)) => {
                             let instance = self.instance.clone();
                             let token_idle_ttl = self.token_idle_ttl;
+                            let published_view_idle_ttl = self.published_view_idle_ttl;
                             let conn_id = next_conn_id.fetch_add(1, Ordering::Relaxed);
                             handlers.spawn(async move {
-                                if let Err(e) = handle_connection(stream, instance, conn_id, token_idle_ttl).await {
+                                if let Err(e) = handle_connection(stream, instance, conn_id, token_idle_ttl, published_view_idle_ttl).await {
                                     tracing::debug!(conn_id, "Connection handler error: {e}");
                                 }
                             });
@@ -582,6 +599,7 @@ async fn handle_connection(
     instance: Instance,
     conn_id: ConnectionId,
     token_idle_ttl: Duration,
+    published_view_idle_ttl: Duration,
 ) -> crate::Result<()> {
     let (mut reader, mut writer) = tokio::io::split(stream);
 
@@ -657,6 +675,7 @@ async fn handle_connection(
         subscribed: std::sync::Mutex::new(HashMap::new()),
         staging: std::sync::Mutex::new(HashMap::new()),
         token_idle_ttl,
+        published_view_idle_ttl,
     });
     let guard = ConnectionGuard { ctx: ctx.clone() };
 

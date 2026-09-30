@@ -58,6 +58,15 @@ async fn start_test_server() -> (PathBuf, watch::Sender<()>, Instance, TempDir) 
 async fn start_test_server_with_token_ttl(
     ttl: Duration,
 ) -> (PathBuf, watch::Sender<()>, Instance, TempDir) {
+    start_test_server_with_token_ttls(ttl, ttl).await
+}
+
+/// Separate lifetimes keep staging safe from scheduler jitter when only published
+/// view expiry is under test.
+async fn start_test_server_with_token_ttls(
+    staging_ttl: Duration,
+    published_view_ttl: Duration,
+) -> (PathBuf, watch::Sender<()>, Instance, TempDir) {
     let dir = tempfile::tempdir().unwrap();
     std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let socket_path = dir.path().join("test.sock");
@@ -71,7 +80,8 @@ async fn start_test_server_with_token_ttl(
     let server = ServiceServer::bind_with_token_idle_ttl_for_test(
         instance.clone(),
         socket_path.clone(),
-        ttl,
+        staging_ttl,
+        published_view_ttl,
     )
     .await
     .unwrap();
@@ -1828,6 +1838,36 @@ async fn test_remote_store_state_idle_staging_token_expires() {
     );
 }
 
+/// A short published-view lifetime must not expire an unpublished build.
+#[tokio::test]
+async fn test_remote_store_state_staging_outlives_published_view_ttl() {
+    let (socket_path, _tx, server, _dir) =
+        start_test_server_with_token_ttls(Duration::from_secs(5 * 60), Duration::from_millis(50))
+            .await;
+    let (instance, root_id, identity) = setup_db(&server, &socket_path, "alice").await;
+    let conn = remote_conn(&instance);
+    let request = derived_request(&root_id, "slow-staging");
+    let token = conn
+        .begin_store_state_staging(identity.clone(), request)
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    let view = conn
+        .publish_store_state(root_id.clone(), identity.clone(), token)
+        .await
+        .expect("staging must survive the published-view lifetime");
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    let error = conn
+        .store_state_record_get(root_id, identity, view, vec![0])
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        eidetica::Error::Backend(error)
+            if matches!(*error, eidetica::backend::BackendError::InvalidStoreStateView)
+    ));
+}
+
 /// A historical `Table` read over the service publishes an addressable row
 /// record set rather than falling back to a whole-`Doc` response.
 #[tokio::test]
@@ -2012,7 +2052,8 @@ async fn test_warm_encrypted_table_service_point_read_is_lazy() {
 #[tokio::test]
 async fn test_connected_table_recovers_after_published_view_expiry() {
     let (socket_path, _tx, server, _dir) =
-        start_test_server_with_token_ttl(Duration::from_millis(50)).await;
+        start_test_server_with_token_ttls(Duration::from_secs(5 * 60), Duration::from_millis(50))
+            .await;
     create_user_via_admin(&server, "alice").await;
 
     let mut server_user = server.login_user("alice", None).await.unwrap();
