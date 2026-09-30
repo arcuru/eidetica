@@ -32,7 +32,7 @@ pub use errors::TransactionError;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Database, Result, Snapshot, Store,
+    Database, Error, Result, Snapshot, Store,
     auth::{
         AuthSettings,
         crypto::{PrivateKey, sign_entry},
@@ -1049,7 +1049,12 @@ impl Transaction {
                 }
                 T::load(self, subtree_name).await
             }
-            Err(err) if err.is_not_found() => T::register(self, subtree_name).await,
+            Err(Error::Store(err))
+                if matches!(err.as_ref(), StoreError::KeyNotFound { store, key }
+                    if store == INDEX && key == &subtree_name) =>
+            {
+                T::register(self, subtree_name).await
+            }
             Err(err) => Err(err),
         }
     }

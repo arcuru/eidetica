@@ -6,7 +6,9 @@ use crate::{
     Instance,
     auth::crypto::generate_keypair,
     backend::database::InMemory,
-    backend::{CacheScope, ProjectionDescriptor, StoreStateLifecycle, StoreStateRequest},
+    backend::{
+        BackendError, CacheScope, ProjectionDescriptor, StoreStateLifecycle, StoreStateRequest,
+    },
     crdt::{CRDT, Codec},
     store::{DocStore, Registered},
 };
@@ -483,4 +485,53 @@ async fn subtree_update_without_handle_uses_transaction_parents() {
     let id = direct.commit().await.unwrap();
     let entry = database.ops().get(&id).await.unwrap();
     assert_eq!(entry.subtree_parents("counter").unwrap(), vec![base_id]);
+}
+
+#[tokio::test]
+async fn get_store_propagates_registry_read_not_found() {
+    // Inject a read failure through the existing decryption seam rather than
+    // implementing an entire backend just to return one not-found error.
+    struct FailedRead(ID);
+    impl Encryptor for FailedRead {
+        fn decrypt(&self, _data: &[u8]) -> Result<Vec<u8>> {
+            Err(BackendError::EntryNotFound { id: self.0.clone() }.into())
+        }
+
+        fn encrypt(&self, data: &[u8]) -> Result<Vec<u8>> {
+            Ok(data.to_vec())
+        }
+    }
+
+    let (instance, _admin) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        crate::NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let (private_key, _) = generate_keypair();
+    let database = Database::create(&instance, private_key, Doc::new())
+        .await
+        .unwrap();
+    let base = database.new_transaction().await.unwrap();
+    base.get_store::<DocStore>("data").await.unwrap();
+    base.commit().await.unwrap();
+
+    let tx = database.new_transaction().await.unwrap();
+    let missing = ID::from_bytes(b"missing registry read dependency");
+    tx.register_encryptor(INDEX, Box::new(FailedRead(missing.clone())))
+        .unwrap();
+    let registry = tx.get_index().await.unwrap();
+    let err = registry.get_entry("data").await.unwrap_err();
+    assert!(matches!(
+        err,
+        Error::Backend(ref err)
+            if matches!(err.as_ref(), BackendError::EntryNotFound { id } if id == &missing)
+    ));
+    let err = tx.get_store::<DocStore>("data").await.err().unwrap();
+    assert!(matches!(
+        err,
+        Error::Backend(ref err)
+            if matches!(err.as_ref(), BackendError::EntryNotFound { id } if id == &missing)
+    ));
+    assert!(tx.get_local_data::<Doc>(INDEX).unwrap().is_none());
 }
