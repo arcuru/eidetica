@@ -17,6 +17,7 @@ use eidetica::{
 };
 
 use super::helpers;
+use crate::helpers::LocalBackendTestExt;
 
 const SECRET: &str = "TOP_SECRET_VALUE";
 
@@ -347,5 +348,197 @@ async fn probe_detects_disclosure_when_it_occurs() {
             .iter()
             .any(|entry| entry.data("_settings").is_ok()),
         "probe cannot detect _settings disclosure"
+    );
+}
+
+#[tokio::test]
+async fn live_delegation_sync_rechecks_member_and_target_grants() {
+    use crate::auth::live_authority::live_delegation_pair;
+    use eidetica::auth::types::{DelegatedTreeRef, PermissionBounds, TreeReference};
+
+    let (instance, sync) = helpers::setup().await;
+    let (key, member) = generate_keypair();
+    let (identity, target, _) = live_delegation_pair(&instance, &member).await;
+    helpers::enable_sync_for_instance_database(&sync, target.root_id())
+        .await
+        .unwrap();
+    helpers::enable_sync_for_instance_database(&sync, identity.root_id())
+        .await
+        .unwrap();
+    write_secret(&target).await;
+    let handler = helpers::create_test_sync_handler(&sync);
+    let response = handler
+        .handle_request(
+            &signed_request(&key, &instance.id(), target.root_id(), now_ms()),
+            &RequestContext::default(),
+        )
+        .await;
+    assert!(
+        discloses_secret(&response),
+        "accepted member must be served"
+    );
+
+    let txn = identity.new_transaction().await.unwrap();
+    txn.get_settings()
+        .unwrap()
+        .revoke_auth_key(&member)
+        .await
+        .unwrap();
+    txn.commit().await.unwrap();
+    let response = handler
+        .handle_request(
+            &signed_request(&key, &instance.id(), target.root_id(), now_ms()),
+            &RequestContext::default(),
+        )
+        .await;
+    assert!(
+        served_entries(&response).is_empty(),
+        "revoked member must not be served via public identity metadata"
+    );
+    let response = handler
+        .handle_request(
+            &signed_request(&key, &instance.id(), identity.root_id(), now_ms()),
+            &RequestContext::default(),
+        )
+        .await;
+    assert!(
+        !served_entries(&response).is_empty(),
+        "identity metadata stays public"
+    );
+
+    grant_read(&target, &member).await;
+    let response = handler
+        .handle_request(
+            &signed_request(&key, &instance.id(), target.root_id(), now_ms()),
+            &RequestContext::default(),
+        )
+        .await;
+    assert!(
+        discloses_secret(&response),
+        "independent direct grant stays valid"
+    );
+    let txn = target.new_transaction().await.unwrap();
+    txn.get_settings()
+        .unwrap()
+        .revoke_auth_key(&member)
+        .await
+        .unwrap();
+    txn.commit().await.unwrap();
+    let txn = identity.new_transaction().await.unwrap();
+    txn.get_settings()
+        .unwrap()
+        .set_auth_key(&member, AuthKey::active(None, Permission::Read))
+        .await
+        .unwrap();
+    txn.commit().await.unwrap();
+    let txn = target.new_transaction().await.unwrap();
+    txn.get_settings()
+        .unwrap()
+        .add_delegated_tree(DelegatedTreeRef {
+            permission_bounds: PermissionBounds {
+                max: Permission::Read,
+                min: None,
+            },
+            tree: TreeReference {
+                root: identity.root_id().clone(),
+                tips: identity.snapshot().await.unwrap().into_tips(),
+            },
+        })
+        .await
+        .unwrap();
+    txn.commit().await.unwrap();
+    let response = handler
+        .handle_request(
+            &signed_request(&key, &instance.id(), target.root_id(), now_ms()),
+            &RequestContext::default(),
+        )
+        .await;
+    assert!(
+        discloses_secret(&response),
+        "Read member is sufficient for live Read"
+    );
+    let txn = target.new_transaction().await.unwrap();
+    txn.get_settings()
+        .unwrap()
+        .as_doc_store()
+        .delete(format!("auth.delegations.{}", identity.root_id()))
+        .await
+        .unwrap();
+    txn.commit().await.unwrap();
+    let response = handler
+        .handle_request(
+            &signed_request(&key, &instance.id(), target.root_id(), now_ms()),
+            &RequestContext::default(),
+        )
+        .await;
+    assert!(
+        served_entries(&response).is_empty(),
+        "current target path removal must stop sync"
+    );
+}
+
+#[tokio::test]
+async fn live_delegation_sync_ignores_unaccepted_identity_tip() {
+    use crate::auth::live_authority::live_delegation_pair;
+    use eidetica::auth::types::KeyStatus;
+    use eidetica::backend::VerificationStatus;
+
+    let (instance, sync) = helpers::setup().await;
+    let (key, member) = generate_keypair();
+    let (identity, target, _) = live_delegation_pair(&instance, &member).await;
+    helpers::enable_sync_for_instance_database(&sync, target.root_id())
+        .await
+        .unwrap();
+    write_secret(&target).await;
+    let accepted = identity.snapshot().await.unwrap();
+    let parent = instance.backend().get(&accepted.tips()[0]).await.unwrap();
+    let settings_tips = instance
+        .backend()
+        .store_snapshot(identity.root_id(), "_settings")
+        .await
+        .unwrap();
+    let mut pending_settings = eidetica::crdt::Doc::new();
+    pending_settings
+        .set_json(
+            format!("auth.keys.{member}"),
+            AuthKey::new(Some("member"), Permission::Write(5), KeyStatus::Revoked),
+        )
+        .unwrap();
+    let pending = Entry::builder(identity.root_id().clone())
+        .set_parents(vec![parent.id(), ID::from_bytes("missing-identity-parent")])
+        .set_height(parent.height() + 1)
+        .set_subtree_parents("_settings", settings_tips.into_tips())
+        .set_subtree_height(
+            "_settings",
+            Some(parent.subtree_height("_settings").unwrap() + 1),
+        )
+        .set_subtree_data("_settings", serde_json::to_vec(&pending_settings).unwrap())
+        .build()
+        .unwrap();
+    let pending_id = pending.id();
+    instance.backend().put(pending).await.unwrap();
+    assert_eq!(
+        identity.snapshot().await.unwrap(),
+        accepted,
+        "incomplete unsigned tip is not accepted"
+    );
+    assert_eq!(
+        instance
+            .backend()
+            .get_verification_status(&pending_id)
+            .await
+            .unwrap(),
+        VerificationStatus::Unverified
+    );
+    let handler = helpers::create_test_sync_handler(&sync);
+    let response = handler
+        .handle_request(
+            &signed_request(&key, &instance.id(), target.root_id(), now_ms()),
+            &RequestContext::default(),
+        )
+        .await;
+    assert!(
+        discloses_secret(&response),
+        "only accepted identity state may change the live grant"
     );
 }
