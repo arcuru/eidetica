@@ -98,7 +98,8 @@
       pg_ctl start -o "-k $TMPDIR -h '''" -l "$PGDATA/postgres.log" > /dev/null 2>&1
       createdb "$PGDATABASE" > /dev/null 2>&1
 
-      export TEST_POSTGRES_URL="postgres:///$PGDATABASE?host=$TMPDIR"
+      TEST_POSTGRES_URL="postgres://$(whoami)@localhost/$PGDATABASE?host=$TMPDIR"
+      export TEST_POSTGRES_URL
     '';
     postRun = ''
       pg_ctl stop > /dev/null 2>&1 || true
@@ -196,7 +197,7 @@
         pg_ctl start -o "-k $TMPDIR -h '''"
         createdb $PGDATABASE
 
-        export TEST_POSTGRES_URL="postgres:///$PGDATABASE?host=$TMPDIR"
+        export TEST_POSTGRES_URL="postgres://$(whoami)@localhost/$PGDATABASE?host=$TMPDIR"
       '';
       postCheck = ''
         pg_ctl stop || true

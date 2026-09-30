@@ -16,7 +16,8 @@ fn postgres_tests_enabled() -> bool {
 async fn test_schema() -> (String, String) {
     let schema = format!("ownership_{}", uuid::Uuid::new_v4().simple());
     let pool = admin_pool().await;
-    pool.execute(format!("CREATE SCHEMA {schema}").as_str())
+    // SAFETY: the test schema is generated solely from a UUID.
+    pool.execute(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
         .await
         .unwrap();
     (postgres_url(), schema)
@@ -54,6 +55,36 @@ fn assert_owned(error: Error) {
     assert!(
         !error.to_string().contains(&postgres_url()),
         "ownership errors must not expose the connection URL: {error}"
+    );
+}
+
+#[tokio::test]
+async fn postgres_testing_schema_name_is_one_identifier() {
+    if !postgres_tests_enabled() {
+        return;
+    }
+    let schema = format!("quoted_{}\"; SELECT 1; --", uuid::Uuid::new_v4().simple());
+    let backend = SqlxBackend::test_connect_postgres_schema(&postgres_url(), schema.clone())
+        .await
+        .expect("schema names containing SQL syntax must remain one identifier");
+    backend
+        .all_roots()
+        .await
+        .expect("pool connections must select the same quoted schema");
+
+    let (initialized,): (bool,) = sqlx::query_as(
+        "SELECT EXISTS (
+            SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = $1 AND c.relname = 'entries'
+        )",
+    )
+    .bind(&schema)
+    .fetch_one(&admin_pool().await)
+    .await
+    .unwrap();
+    assert!(
+        initialized,
+        "tables must be created in the exact schema name"
     );
 }
 

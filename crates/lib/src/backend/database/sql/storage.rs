@@ -607,13 +607,16 @@ async fn insert_or_ignore(
     let placeholders: Vec<String> = (1..=columns.len()).map(|i| format!("${i}")).collect();
     let placeholders = placeholders.join(", ");
 
+    // SAFETY: `table` and `columns` are fixed identifiers supplied only by this
+    // module's call sites, and the generated placeholders contain only integers.
+    // All row values remain bind parameters.
     let sql = if backend.is_sqlite() {
         format!("INSERT OR IGNORE INTO {table} ({cols}) VALUES ({placeholders})")
     } else {
         format!("INSERT INTO {table} ({cols}) VALUES ({placeholders}) ON CONFLICT DO NOTHING")
     };
 
-    let mut query = sqlx::query(&sql);
+    let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
     for value in values {
         query = query.bind(value);
     }
