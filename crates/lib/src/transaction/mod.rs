@@ -535,8 +535,8 @@ impl Transaction {
     /// name within the transaction's internal `EntryBuilder`.
     ///
     /// If this is the first modification to the named subtree within this transaction,
-    /// it also fetches and records the current tips of that subtree from the backend
-    /// to set the correct `subtree_parents` for the new entry.
+    /// it also fetches and records the tips reachable from this transaction's parent
+    /// snapshot to set the correct `subtree_parents` for the new entry.
     ///
     /// # Arguments
     /// * `subtree` - The name of the subtree to update.
@@ -552,22 +552,8 @@ impl Transaction {
         let subtree = subtree.as_ref();
         let data = data.into();
 
-        let main_parents = {
-            let builder_ref = self.entry_builder.lock().unwrap();
-            let builder = builder_ref
-                .as_ref()
-                .ok_or(TransactionError::TransactionAlreadyCommitted)?;
-            (!builder.subtrees().contains(&subtree.to_string()))
-                .then(|| builder.parents().unwrap_or_default())
-        };
-
-        // The signed settings DAG must be scoped to this entry's main parents,
-        // not to a newer live sibling on a historical branch.
-        let tips = if let Some(parents) = main_parents {
-            Some(self.get_subtree_tips(subtree, &parents).await?)
-        } else {
-            None
-        };
+        // Use the transaction's immutable parent boundary, never the current tips.
+        self.init_subtree_parents(subtree).await?;
 
         // Now update the builder
         let mut builder_ref = self.entry_builder.lock().unwrap();
@@ -576,10 +562,6 @@ impl Transaction {
             .ok_or(TransactionError::TransactionAlreadyCommitted)?;
 
         builder.set_subtree_data_mut(subtree.to_string(), data);
-        if let Some(tips) = tips {
-            builder.set_subtree_parents_mut(subtree, tips);
-        }
-
         Ok(())
     }
 
@@ -1055,24 +1037,20 @@ impl Transaction {
 
         // Check _index to determine if this is a new or existing subtree
         let index_store = self.get_index().await?;
-        if index_store.contains(&subtree_name).await {
-            // Type validation for existing subtree
-            let subtree_info = index_store.get_entry(&subtree_name).await?;
-
-            if !T::supports_type_id(&subtree_info.type_id) {
-                return Err(StoreError::TypeMismatch {
-                    store: subtree_name,
-                    expected: T::type_id().to_string(),
-                    actual: subtree_info.type_id,
+        match index_store.get_entry(&subtree_name).await {
+            Ok(subtree_info) => {
+                if !T::supports_type_id(&subtree_info.type_id) {
+                    return Err(StoreError::TypeMismatch {
+                        store: subtree_name,
+                        expected: T::type_id().to_string(),
+                        actual: subtree_info.type_id,
+                    }
+                    .into());
                 }
-                .into());
+                T::load(self, subtree_name).await
             }
-
-            // Type supported - create the Store
-            T::load(self, subtree_name).await
-        } else {
-            // New subtree - register adds it to _index
-            T::register(self, subtree_name).await
+            Err(err) if err.is_not_found() => T::register(self, subtree_name).await,
+            Err(err) => Err(err),
         }
     }
 
@@ -1102,6 +1080,14 @@ impl Transaction {
             builder.parents().unwrap_or_default()
         };
 
+        #[cfg(test)]
+        {
+            let pause = self.snapshot_pause.lock().unwrap().take();
+            if let Some((entered, resume)) = pause {
+                let _ = entered.send(());
+                let _ = resume.await;
+            }
+        }
         let tips = self.get_subtree_tips(subtree_name, &main_parents).await?;
 
         let mut builder_ref = self.entry_builder.lock().unwrap();
@@ -1214,46 +1200,7 @@ impl Transaction {
     {
         let subtree_name = subtree_name.as_ref();
 
-        // Check if we need to initialize subtree tips (get data from RefCell before await)
-        let (needs_init, main_parents) = {
-            let builder_ref = self.entry_builder.lock().unwrap();
-            let builder = builder_ref
-                .as_ref()
-                .ok_or(TransactionError::TransactionAlreadyCommitted)?;
-
-            let subtrees = builder.subtrees();
-            if subtrees.contains(&subtree_name.to_string()) {
-                (false, Vec::new())
-            } else {
-                (true, builder.parents().unwrap_or_default())
-            }
-        };
-
-        // Initialize subtree tips if needed (async operations)
-        if needs_init {
-            let parents_snapshot = Snapshot::from(main_parents);
-            #[cfg(test)]
-            {
-                let pause = self.snapshot_pause.lock().unwrap().take();
-                if let Some((entered, resume)) = pause {
-                    let _ = entered.send(());
-                    let _ = resume.await;
-                }
-            }
-            let tips = self
-                .db
-                .ops()
-                .store_snapshot_at(self.db.root_id(), subtree_name, &parents_snapshot)
-                .await?
-                .into_tips();
-
-            // Update RefCell after async operations
-            let mut builder_ref = self.entry_builder.lock().unwrap();
-            let builder = builder_ref
-                .as_mut()
-                .ok_or(TransactionError::TransactionAlreadyCommitted)?;
-            builder.set_subtree_parents_mut(subtree_name, tips);
-        }
+        self.init_subtree_parents(subtree_name).await?;
 
         // Get the parent pointers for this subtree
         let parents = {

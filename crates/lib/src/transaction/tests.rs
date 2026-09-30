@@ -441,3 +441,46 @@ async fn test_codec_staged_json_errors_unchanged() {
         }
     }
 }
+
+#[tokio::test]
+async fn subtree_update_without_handle_uses_transaction_parents() {
+    let (instance, _admin) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        crate::NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let (private_key, _) = generate_keypair();
+    let database = Database::create(&instance, private_key, Doc::new())
+        .await
+        .unwrap();
+    let base = database.new_transaction().await.unwrap();
+    base.update_subtree("counter", MaxCounter(7).encode().unwrap())
+        .await
+        .unwrap();
+    let base_id = base.commit().await.unwrap();
+    let old = database.new_transaction().await.unwrap();
+    let writer = database.new_transaction().await.unwrap();
+    writer
+        .update_subtree("counter", MaxCounter(20).encode().unwrap())
+        .await
+        .unwrap();
+    writer.commit().await.unwrap();
+
+    // Neither the lazy historical read nor the first write may attach current tips.
+    assert_eq!(
+        old.get_full_state::<MaxCounter>("counter").await.unwrap(),
+        MaxCounter(7)
+    );
+    let direct = database
+        .new_transaction_at(&Snapshot::from([base_id.clone()]))
+        .await
+        .unwrap();
+    direct
+        .update_subtree("counter", MaxCounter(9).encode().unwrap())
+        .await
+        .unwrap();
+    let id = direct.commit().await.unwrap();
+    let entry = database.ops().get(&id).await.unwrap();
+    assert_eq!(entry.subtree_parents("counter").unwrap(), vec![base_id]);
+}
