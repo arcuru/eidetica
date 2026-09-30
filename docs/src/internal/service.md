@@ -188,6 +188,7 @@ A bootstrap request proof (`SyncRequestAuth`) is bound to the answering peer and
    The daemon races the ticket's address hints with its own transports and returns the chosen `address`, the `peer` that answered, and its local pull `tips`.
 2. The client signs a proof over `peer`, the database, and `tips` with the requesting key, and sends it with the requested permission, key name, and optional approver metadata in `TicketBootstrap`.
    The daemon requires the proof's key to be in the session keyset and the proof to cover that exact request, then sends it through its own sync engine and records the peer relationship for ongoing replication.
+   It re-handshakes the route before recording it, so the address must answer as `peer`; and if the daemon already holds the database, the proof's key must already be able to read it there, because the peer store is shared by every user of the daemon.
 
 Pending and rejected results travel as `TicketBootstrapOutcome` data rather than as `ServiceError`s, so the client rebuilds `SyncError::BootstrapPending` and `SyncError::BootstrapRejected` exactly and `User::record_database_access` keeps its provisional-mapping and retry semantics.
 The client then records the key mapping and sync preference in the user database as on an embedded instance.

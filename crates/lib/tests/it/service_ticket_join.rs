@@ -544,6 +544,109 @@ async fn daemon_refuses_unproven_keys_and_mismatched_proofs() {
         matches!(response, ServiceResponse::Error(_)),
         "a proof for another database must be refused, got {response:?}"
     );
+
+    // A proof bound to a peer the daemon already knows but the route does
+    // not answer as: the daemon must not attach the route's address to it.
+    let (_, impostor) = generate_keypair();
+    let daemon_sync = daemon.instance.sync().unwrap();
+    daemon_sync.register_peer(&impostor, None).await.unwrap();
+    let response = request(
+        &mut reader,
+        &mut writer,
+        ServiceRequest::TicketBootstrap(Box::new(TicketBootstrapRequest {
+            database_id: tree.clone(),
+            address: address.clone(),
+            peer: impostor.clone(),
+            tips: tips.clone(),
+            requesting_key_name: "device".to_string(),
+            requested_permission: Permission::Write(5),
+            metadata: None,
+            auth: SyncRequestAuth::sign(&login_key, &impostor, &tree, &tips, now),
+        })),
+    )
+    .await;
+    assert!(
+        matches!(response, ServiceResponse::Error(_)),
+        "a route that does not answer as the named peer must be refused, got {response:?}"
+    );
+    assert!(
+        daemon_sync
+            .get_peer_addresses(&impostor, None)
+            .await
+            .unwrap()
+            .is_empty(),
+        "an unverified route must not be recorded for the claimed peer"
+    );
+
+    // A proven key that cannot read a database the daemon already holds may
+    // not tie that database to a peer of its choosing.
+    let mut alice = alice;
+    let alice_key = alice.get_default_key().unwrap();
+    let private_tree = alice
+        .create_database(Doc::new(), &alice_key)
+        .await
+        .unwrap()
+        .root_id()
+        .clone();
+    let (outsider, outsider_pub) = generate_keypair();
+    let ServiceResponse::SessionKeyChallenge { challenge } = request(
+        &mut reader,
+        &mut writer,
+        ServiceRequest::SessionKeyChallenge {
+            pubkey: outsider_pub.clone(),
+        },
+    )
+    .await
+    else {
+        panic!("expected a session key challenge");
+    };
+    let response = request(
+        &mut reader,
+        &mut writer,
+        ServiceRequest::SessionKeyRegister {
+            pubkey: outsider_pub.clone(),
+            signature: create_challenge_response(&challenge, &outsider),
+        },
+    )
+    .await;
+    assert!(matches!(response, ServiceResponse::Ok), "{response:?}");
+    let private_tips = daemon
+        .instance
+        .backend()
+        .snapshot(&private_tree)
+        .await
+        .unwrap();
+    let response = request(
+        &mut reader,
+        &mut writer,
+        ServiceRequest::TicketBootstrap(Box::new(TicketBootstrapRequest {
+            database_id: private_tree.clone(),
+            address: address.clone(),
+            peer: route_peer.clone(),
+            tips: private_tips.clone(),
+            requesting_key_name: "outsider".to_string(),
+            requested_permission: Permission::Read,
+            metadata: None,
+            auth: SyncRequestAuth::sign(&outsider, &route_peer, &private_tree, &private_tips, now),
+        })),
+    )
+    .await;
+    let ServiceResponse::Error(error) = response else {
+        panic!("a key without read access to a held database must be refused, got {response:?}");
+    };
+    assert!(error.message.contains("not permitted"), "{error:?}");
+    assert!(
+        daemon
+            .instance
+            .sync()
+            .unwrap()
+            .get_tree_peers(&private_tree)
+            .await
+            .unwrap()
+            .is_empty(),
+        "a refused join must not tie the held database to a peer"
+    );
+
     assert!(
         peer.sync
             .pending_bootstrap_requests()

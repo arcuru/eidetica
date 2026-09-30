@@ -240,6 +240,11 @@ impl Sync {
                 )
             })?;
 
+        // The route arrives from outside this process, so prove the address
+        // answers as `peer_pubkey` before recording it in the shared peer
+        // store; otherwise a caller could attach any address to a real peer.
+        self.select_address(std::slice::from_ref(address), Some(peer_pubkey))
+            .await?;
         request.peer_pubkey = self.get_device_pubkey().ok();
         self.add_peer_address(peer_pubkey, address.clone()).await?;
         self.exchange_tree_request_at(address, peer_pubkey, request)

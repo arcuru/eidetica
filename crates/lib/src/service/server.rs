@@ -1712,6 +1712,20 @@ async fn handle_ticket_bootstrap(
             },
         )));
     }
+    // The daemon's sync store is shared by every user, and a successful
+    // exchange ties the database to the chosen peer and sends it whatever
+    // that peer reports missing. A database this daemon already holds is
+    // therefore joined only by a key that can already read it here; an
+    // absent database passes through, as the create flow does.
+    gate_tree_permission(
+        instance,
+        &request.auth.key,
+        &SigKey::from_pubkey(&request.auth.key),
+        &request.database_id,
+        Permission::Read,
+        false,
+    )
+    .await?;
 
     let sync = instance.sync().ok_or(SyncError::SyncNotEnabled)?;
     let sync_request = SyncTreeRequest {

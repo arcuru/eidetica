@@ -850,6 +850,15 @@ impl Sync {
             }
             SyncResponse::Incremental(incremental_response) => {
                 info!(peer = %peer_pubkey, tree = %tree_id, missing_count = incremental_response.missing_entries.len(), "Received incremental sync response");
+                // The response handler stores into, and sends back from, the
+                // tree the response names; it must be the one requested.
+                if incremental_response.tree_id != tree_id {
+                    return Err(SyncError::SyncProtocolError(format!(
+                        "incremental response for tree {} does not match requested tree {tree_id}",
+                        incremental_response.tree_id
+                    ))
+                    .into());
+                }
 
                 // Use the enhanced handler that supports bidirectional sync
                 self.handle_incremental_response(incremental_response, address)
