@@ -354,7 +354,7 @@ async fn probe_detects_disclosure_when_it_occurs() {
 #[tokio::test]
 async fn live_delegation_sync_rechecks_member_and_target_grants() {
     use crate::auth::live_authority::live_delegation_pair;
-    use eidetica::auth::types::{DelegatedTreeRef, PermissionBounds, TreeReference};
+    use crate::auth::helpers::create_delegation_ref;
 
     let (instance, sync) = helpers::setup().await;
     let (key, member) = generate_keypair();
@@ -434,16 +434,11 @@ async fn live_delegation_sync_rechecks_member_and_target_grants() {
     let txn = target.new_transaction().await.unwrap();
     txn.get_settings()
         .unwrap()
-        .add_delegated_tree(DelegatedTreeRef {
-            permission_bounds: PermissionBounds {
-                max: Permission::Read,
-                min: None,
-            },
-            tree: TreeReference {
-                root: identity.root_id().clone(),
-                tips: identity.snapshot().await.unwrap().into_tips(),
-            },
-        })
+        .add_delegated_tree(
+            create_delegation_ref(&identity, Permission::Read, None)
+                .await
+                .unwrap(),
+        )
         .await
         .unwrap();
     txn.commit().await.unwrap();
@@ -490,6 +485,9 @@ async fn live_delegation_sync_ignores_unaccepted_identity_tip() {
         .await
         .unwrap();
     write_secret(&target).await;
+    let handler = helpers::create_test_sync_handler(&sync);
+    // Unaccepted state can neither remove a grant nor restore a removed one.
+    for (status, expected_access) in [(KeyStatus::Revoked, true), (KeyStatus::Active, false)] {
     let accepted = identity.snapshot().await.unwrap();
     let parent = instance.backend().get(&accepted.tips()[0]).await.unwrap();
     let settings_tips = instance
@@ -501,7 +499,7 @@ async fn live_delegation_sync_ignores_unaccepted_identity_tip() {
     pending_settings
         .set_json(
             format!("auth.keys.{member}"),
-            AuthKey::new(Some("member"), Permission::Write(5), KeyStatus::Revoked),
+            AuthKey::new(Some("member"), Permission::Write(5), status),
         )
         .unwrap();
     let pending = Entry::builder(identity.root_id().clone())
@@ -530,15 +528,27 @@ async fn live_delegation_sync_ignores_unaccepted_identity_tip() {
             .unwrap(),
         VerificationStatus::Unverified
     );
-    let handler = helpers::create_test_sync_handler(&sync);
     let response = handler
         .handle_request(
             &signed_request(&key, &instance.id(), target.root_id(), now_ms()),
             &RequestContext::default(),
         )
         .await;
-    assert!(
-        discloses_secret(&response),
+    assert_eq!(
+        discloses_secret(&response), expected_access,
         "only accepted identity state may change the live grant"
     );
+    if expected_access {
+        let txn = identity.new_transaction().await.unwrap();
+        txn.get_settings().unwrap().revoke_auth_key(&member).await.unwrap();
+        txn.commit().await.unwrap();
+    } else {
+        instance.backend().set_verification_status(&pending_id, VerificationStatus::Failed).await.unwrap();
+        let response = handler.handle_request(
+            &signed_request(&key, &instance.id(), target.root_id(), now_ms()),
+            &RequestContext::default(),
+        ).await;
+        assert!(served_entries(&response).is_empty(), "Failed history cannot restore access");
+    }
+    }
 }

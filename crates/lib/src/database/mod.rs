@@ -651,8 +651,8 @@ impl Database {
         pubkey: &PublicKey,
     ) -> Result<Vec<(SigKey, Permission)>> {
         use crate::auth::{
-            types::DelegationStep,
-            validation::{AuthValidator, permissions::select_effective_permission},
+            types::{DelegationStep, KeyHint},
+            validation::permissions::resolve_identity_permission,
         };
 
         // Create temporary database to load settings (no key source needed for reading)
@@ -665,59 +665,33 @@ impl Database {
         // Find direct SigKeys for this pubkey
         let mut results = auth_settings.find_all_sigkeys_for_pubkey(pubkey);
 
-        // Scan single-hop delegation paths. Resolution — permission-bounds
-        // clamping, key status, the tip floor — is delegated to the validator,
-        // the single delegation walker, so this stays pure discovery: find which
-        // delegated trees list the pubkey, then resolve each through the shared
-        // path at the delegated tree's *current* tips.
-        // FIXME: deep nested delegations can't use this
+        // Discovery remains single-hop; authorization uses the same current-
+        // accepted-state resolver as retained identities and service requests.
+        // A delegated wildcard is metadata access, not concrete membership.
         if let Ok(delegated_trees) = auth_settings.get_all_delegated_trees() {
-            let mut validator = AuthValidator::new();
             for delegated_root_id in delegated_trees.keys() {
-                // Load the delegated tree's auth to see which of the pubkey's
-                // hints it lists (enumeration only — the validator re-resolves).
-                let delegated_auth = match Self::open(instance, delegated_root_id).await {
-                    Ok(db) => match db.get_settings().await {
-                        Ok(s) => match s.auth_snapshot().await {
-                            Ok(a) => a,
-                            Err(_) => continue,
-                        },
-                        Err(_) => continue,
-                    },
-                    Err(_) => continue,
-                };
-                let delegated_sigkeys = delegated_auth.find_all_sigkeys_for_pubkey(pubkey);
-                if delegated_sigkeys.is_empty() {
+                let Ok(delegated_db) = Self::open(instance, delegated_root_id).await else {
                     continue;
-                }
-
-                // Current tips = the "live authority" question (caller-supplied),
-                // distinct from a signature's claimed tips. They are at or above
-                // the committed floor, so the validator's floor check passes.
-                let tips = match instance.backend().snapshot(delegated_root_id).await {
-                    Ok(snap) => snap.tips().to_vec(),
-                    Err(_) => continue,
                 };
-
-                for (delegated_sk, _) in delegated_sigkeys {
-                    let delegation_sigkey = SigKey::Delegation {
-                        path: vec![DelegationStep {
-                            tree: delegated_root_id.clone(),
-                            tips: tips.clone(),
-                        }],
-                        hint: delegated_sk.hint().clone(),
-                    };
-                    // Resolve through the single delegation walker; bounds,
-                    // status, and the tip floor all live there, not here.
-                    let Ok(resolved) = validator
-                        .resolve_sig_key(&delegation_sigkey, &auth_settings, Some(instance))
-                        .await
-                    else {
-                        continue;
-                    };
-                    if let Some(perm) = select_effective_permission(&resolved, pubkey) {
-                        results.push((delegation_sigkey, perm));
-                    }
+                let Ok(snapshot) = delegated_db.snapshot().await else {
+                    continue;
+                };
+                let delegation_sigkey = SigKey::Delegation {
+                    path: vec![DelegationStep {
+                        tree: delegated_root_id.clone(),
+                        tips: snapshot.into_tips(),
+                    }],
+                    hint: KeyHint::from_pubkey(pubkey),
+                };
+                if let Ok(permission) = resolve_identity_permission(
+                    pubkey,
+                    &delegation_sigkey,
+                    &auth_settings,
+                    Some(instance),
+                )
+                .await
+                {
+                    results.push((delegation_sigkey, permission));
                 }
             }
         }

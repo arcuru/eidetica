@@ -35,6 +35,31 @@ At each delegation step permission is clamped to its configured minimum/maximum;
 the final hint must resolve a concrete key, not the wildcard.
 Priority authorizes administrative actions; it does not change Doc merge ordering.
 
+## Historical signatures versus live access
+
+Entry validation resolves delegation at the signed snapshots, subject to the
+configured and inherited causal floors. Later membership removal or downgrade
+does not by itself change that historical signature predicate.
+
+Live service access, `Database::current_permission`, and sync's
+`Database::can_access` instead use current accepted authority at every path step.
+The target's current declarations and bounds apply. Claimed tips remain bounded
+hints; they cannot select older authority or trigger identity fetching. The
+resolver reads the retained Verified frontier and proves its complete ancestry
+before folding settings at that immutable boundary. It does not recursively
+verify delegated databases while the caller holds a verification lock.
+
+A public wildcard Read grant exposes identity metadata, not delegated membership.
+An active Read member can still be promoted by `PermissionBounds.min`.
+Independent direct target grants remain valid; sync's pubkey-only discovery is
+still single-hop, while a supplied identity may name a bounded nested path.
+
+This is observer-local authorization. A peer that has not accepted a removal can
+still use older state. There is no globally latest-state guarantee, wall-clock
+revocation bound during partitions, or new concurrent branch-validity policy.
+The `live_delegation` tests cover retained local and service identities, sync
+disclosure, reductions, bounds, path tampering and unaccepted identity state.
+
 ## Validation Seams
 
 - `database/mod.rs`: derive and match the signed causal pre-write settings pin;

@@ -10,11 +10,15 @@ use crate::{
         errors::AuthError,
         settings::AuthSettings,
         types::{Operation, Permission, ResolvedAuth, SigKey},
-        validation::AuthValidator,
+        validation::delegation::DelegationResolver,
     },
 };
 
-/// Resolve the permission level for a pubkey + identity against auth settings.
+/// Resolve live access for a pubkey + identity against current accepted auth settings.
+///
+/// Delegated paths use the verifier's current accepted state at every hop, never
+/// caller-claimed historical tips. Historical Entry validation instead uses
+/// `AuthValidator::resolve_sig_key` at its pinned snapshots.
 ///
 /// Shared validation logic used by both the local path (`Database::validate_key`,
 /// which holds a `DatabaseKey` that bundles signing key + identity) and the
@@ -91,10 +95,12 @@ pub async fn resolve_identity_permission(
                 key_name: hint.name.clone().unwrap_or_else(|| pubkey.to_string()),
             })))
         }
-        SigKey::Delegation { .. } => {
-            let mut validator = AuthValidator::new();
-            let resolved_auths = validator
-                .resolve_sig_key(identity, auth_settings, instance)
+        SigKey::Delegation { path, hint } => {
+            let instance = instance.ok_or_else(|| AuthError::DatabaseRequired {
+                operation: "live delegated access".to_string(),
+            })?;
+            let resolved_auths = DelegationResolver::new()
+                .resolve_live_delegation_path(path, hint, auth_settings, instance)
                 .await
                 .map_err(|e| {
                     Error::Auth(Box::new(AuthError::InvalidAuthConfiguration {
