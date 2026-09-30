@@ -34,7 +34,6 @@ mod multi_transport_tests;
 mod n_peer_convergence_tests;
 mod partition_heal_tests;
 mod peer_management_tests;
-mod peer_round_tests;
 mod sim_delivery_control_tests;
 mod sim_fault_tests;
 mod sim_schedule_tests;

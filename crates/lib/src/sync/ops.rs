@@ -663,45 +663,6 @@ impl Sync {
         Ok(())
     }
 
-    /// Run and await one background per-peer sync round for deterministic tests.
-    ///
-    /// This is the round the periodic timer performs for each active peer:
-    /// the engine walks every tree registered against the peer in the sync
-    /// tree, ending the walk early when a failure says the peer itself
-    /// stopped answering. Tree-walk failures are logged rather than returned,
-    /// so `Ok(())` does not mean that any tree synced successfully. Tests must
-    /// inspect the resulting data and [`SyncStatus::last_sync`](crate::sync::SyncStatus::last_sync),
-    /// which the engine stamps when at least one tree sync succeeds.
-    ///
-    /// Unlike [`sync_with_peer`](Self::sync_with_peer), which dials one
-    /// address and syncs a single named tree, this runs the engine's walk
-    /// over all of the peer's registered trees.
-    ///
-    /// # Arguments
-    /// * `peer` - The peer to run the round against.
-    ///
-    /// # Errors
-    /// Returns [`SyncError::NoTransportEnabled`] when the background engine
-    /// is not running, and the round's own failure (for example, no usable
-    /// route to the peer) otherwise.
-    #[cfg(feature = "testing")]
-    pub async fn sync_with_peer_now_for_test(&self, peer: &PeerId) -> Result<()> {
-        let (tx, rx) = oneshot::channel();
-
-        self.background_tx
-            .get()
-            .ok_or(SyncError::NoTransportEnabled)?
-            .send(SyncCommand::SyncWithPeer {
-                peer: peer.clone(),
-                response: tx,
-            })
-            .await
-            .map_err(|e| SyncError::CommandSendError(e.to_string()))?;
-
-        rx.await
-            .map_err(|e| SyncError::Network(format!("Response channel error: {e}")))?
-    }
-
     /// Sync with a peer using a [`DatabaseTicket`].
     ///
     /// Races bounded handshakes against every address hint, then performs the
