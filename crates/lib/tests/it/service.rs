@@ -2430,3 +2430,106 @@ async fn test_checked_tracking_lookup_service_connection_failure_is_not_absence(
         );
     }
 }
+
+#[tokio::test]
+async fn live_delegation_service_rechecks_retained_session_identity() {
+    use crate::auth::live_authority::live_delegation_pair;
+    use eidetica::{
+        Database,
+        auth::types::{AuthKey, Permission, SigKey},
+    };
+
+    let (socket_path, _tx, server, _dir) = start_test_server().await;
+    create_user_via_admin(&server, "live-member").await;
+    let client = Instance::connect(format!("unix://{}", socket_path.display()))
+        .await
+        .unwrap();
+    let user = client.login_user("live-member", None).await.unwrap();
+    let member = user.get_default_key().unwrap();
+    let (identity, target, sigkey) = live_delegation_pair(&server, &member).await;
+    let txn = target.new_transaction().await.unwrap();
+    txn.get_store::<DocStore>("data")
+        .await
+        .unwrap()
+        .set("secret", "private target")
+        .await
+        .unwrap();
+    let secret_entry = txn.commit().await.unwrap();
+    let conn = remote_conn(&client);
+    let retained = Database::open_remote(&client, conn.clone(), target.root_id(), sigkey.clone())
+        .await
+        .unwrap();
+    assert!(!retained.snapshot().await.unwrap().is_empty());
+    conn.db_get_entry(
+        target.root_id().clone(),
+        sigkey.clone(),
+        secret_entry.clone(),
+    )
+    .await
+    .unwrap();
+
+    let txn = identity.new_transaction().await.unwrap();
+    txn.get_settings()
+        .unwrap()
+        .revoke_auth_key(&member)
+        .await
+        .unwrap();
+    txn.commit().await.unwrap();
+    identity.verify().await.unwrap();
+    assert!(
+        retained.snapshot().await.is_err(),
+        "a logged-in, identity-bound handle must lose access after accepted removal"
+    );
+    let old_claim_error = conn
+        .db_get_entry(
+            target.root_id().clone(),
+            sigkey.clone(),
+            secret_entry.clone(),
+        )
+        .await
+        .unwrap_err();
+    let outsider_error = conn
+        .db_get_entry(
+            target.root_id().clone(),
+            SigKey::from_pubkey(&member),
+            secret_entry,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        old_claim_error.to_string(),
+        outsider_error.to_string(),
+        "denial must not reveal which resolution sub-check failed"
+    );
+
+    // Public identity metadata remains readable, but cannot confer target membership.
+    let public_identity = Database::open_remote(
+        &client,
+        conn.clone(),
+        identity.root_id(),
+        SigKey::from_pubkey(&member),
+    )
+    .await
+    .unwrap();
+    assert!(!public_identity.snapshot().await.unwrap().is_empty());
+    let txn = target.new_transaction().await.unwrap();
+    txn.get_settings()
+        .unwrap()
+        .set_auth_key(&member, AuthKey::active(None, Permission::Read))
+        .await
+        .unwrap();
+    txn.commit().await.unwrap();
+    let direct = Database::open_remote(
+        &client,
+        conn,
+        target.root_id(),
+        SigKey::from_pubkey(&member),
+    )
+    .await
+    .unwrap();
+    assert!(!direct.snapshot().await.unwrap().is_empty());
+    assert!(
+        retained.snapshot().await.is_err(),
+        "a direct grant does not repair the removed delegated path"
+    );
+}
