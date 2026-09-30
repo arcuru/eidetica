@@ -72,7 +72,7 @@ async-trait = "0.1"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 iroh = { version = "1.0", default-features = false, features = ["tls-ring"] }
 iroh-tickets = "1.0"
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "postgres", "any"] }
+sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite", "postgres", "any"] }
 # CLI dependencies
 clap = { version = "4.5", features = ["derive", "env"] }
 url = "2.5"

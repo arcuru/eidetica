@@ -156,8 +156,10 @@ pub async fn initialize(backend: &SqlxBackend) -> Result<()> {
     // Create tables, adapting dialect-specific types
     let blob_type = if backend.is_sqlite() { "BLOB" } else { "BYTEA" };
     for statement in CREATE_TABLES {
+        // SAFETY: both the source statement and replacement type are compile-time
+        // constants; no external data is interpolated into schema SQL.
         let statement = statement.replace("BLOB", blob_type);
-        sqlx::query(&statement)
+        sqlx::query(sqlx::AssertSqlSafe(statement))
             .execute(pool)
             .await
             .sql_context("Schema creation failed")?;
@@ -186,7 +188,7 @@ pub async fn initialize(backend: &SqlxBackend) -> Result<()> {
 
     // Create indexes
     for statement in CREATE_INDEXES {
-        sqlx::query(statement)
+        sqlx::query(*statement)
             .execute(pool)
             .await
             .sql_context("Index creation failed")?;
@@ -203,7 +205,10 @@ async fn initialize_store_state_tables(backend: &SqlxBackend) -> Result<()> {
         .sql_context("Failed to begin schema initialization")?;
     let blob_type = if backend.is_sqlite() { "BLOB" } else { "BYTEA" };
     for statement in CREATE_STORE_STATE_TABLES {
-        sqlx::query(&statement.replace("BYTEA", blob_type))
+        // SAFETY: both the source statement and replacement type are compile-time
+        // constants; no external data is interpolated into schema SQL.
+        let statement = statement.replace("BYTEA", blob_type);
+        sqlx::query(sqlx::AssertSqlSafe(statement))
             .execute(&mut *tx)
             .await
             .sql_context("Failed to create Store-state tables")?;
