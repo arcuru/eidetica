@@ -2444,7 +2444,7 @@ async fn live_delegation_service_rechecks_retained_session_identity() {
     let client = Instance::connect(format!("unix://{}", socket_path.display()))
         .await
         .unwrap();
-    let user = client.login_user("live-member", None).await.unwrap();
+    let user = client.login_account("live-member", None).await.unwrap();
     let member = user.get_default_key().unwrap();
     let (identity, target, sigkey) = live_delegation_pair(&server, &member).await;
     let txn = target.new_transaction().await.unwrap();

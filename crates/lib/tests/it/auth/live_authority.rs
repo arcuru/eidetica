@@ -4,10 +4,7 @@ use eidetica::{
     Database, Instance,
     auth::{
         crypto::{PublicKey, generate_keypair},
-        types::{
-            AuthKey, DelegatedTreeRef, DelegationStep, KeyHint, Permission, PermissionBounds,
-            SigKey, TreeReference,
-        },
+        types::{AuthKey, DelegationStep, KeyHint, Permission, SigKey},
         validation::AuthValidator,
     },
     crdt::Doc,
@@ -15,7 +12,9 @@ use eidetica::{
     store::DocStore,
 };
 
-/// Public identity metadata does not make an arbitrary reader a delegated member.
+use super::helpers::create_delegation_ref;
+
+/// A concrete member in a publicly readable identity, delegated by a private target.
 pub(crate) async fn live_delegation_pair(
     instance: &Instance,
     member: &PublicKey,
@@ -52,16 +51,11 @@ pub(crate) async fn live_delegation_pair(
     let txn = target.new_transaction().await.unwrap();
     txn.get_settings()
         .unwrap()
-        .add_delegated_tree(DelegatedTreeRef {
-            permission_bounds: PermissionBounds {
-                max: Permission::Write(10),
-                min: None,
-            },
-            tree: TreeReference {
-                root: identity.root_id().clone(),
-                tips: tips.clone(),
-            },
-        })
+        .add_delegated_tree(
+            create_delegation_ref(&identity, Permission::Write(10), None)
+                .await
+                .unwrap(),
+        )
         .await
         .unwrap();
     txn.commit().await.unwrap();
@@ -79,7 +73,7 @@ pub(crate) async fn live_delegation_pair(
 async fn live_delegation_removal_preserves_historical_entry_not_access() {
     let (instance, _) = Instance::create_backend(
         crate::helpers::test_backend().await,
-        eidetica::NewUser::passwordless("admin"),
+        eidetica::NewAccount::passwordless("admin"),
     )
     .await
     .unwrap();
@@ -146,7 +140,7 @@ async fn live_delegation_removal_preserves_historical_entry_not_access() {
 async fn live_delegation_downgrade_and_min_promotion() {
     let (instance, _) = Instance::create_backend(
         crate::helpers::test_backend().await,
-        eidetica::NewUser::passwordless("admin"),
+        eidetica::NewAccount::passwordless("admin"),
     )
     .await
     .unwrap();
@@ -172,16 +166,15 @@ async fn live_delegation_downgrade_and_min_promotion() {
     let txn = target.new_transaction().await.unwrap();
     txn.get_settings()
         .unwrap()
-        .add_delegated_tree(DelegatedTreeRef {
-            permission_bounds: PermissionBounds {
-                max: Permission::Write(10),
-                min: Some(Permission::Write(20)),
-            },
-            tree: TreeReference {
-                root: identity.root_id().clone(),
-                tips: identity.snapshot().await.unwrap().into_tips(),
-            },
-        })
+        .add_delegated_tree(
+            create_delegation_ref(
+                &identity,
+                Permission::Write(10),
+                Some(Permission::Write(20)),
+            )
+            .await
+            .unwrap(),
+        )
         .await
         .unwrap();
     txn.commit().await.unwrap();
@@ -231,16 +224,11 @@ async fn live_delegation_checks_current_intermediate_path_and_target_bounds() {
     let txn = outer.new_transaction().await.unwrap();
     txn.get_settings()
         .unwrap()
-        .add_delegated_tree(DelegatedTreeRef {
-            permission_bounds: PermissionBounds {
-                max: Permission::Write(15),
-                min: None,
-            },
-            tree: TreeReference {
-                root: intermediate.root_id().clone(),
-                tips: intermediate.snapshot().await.unwrap().into_tips(),
-            },
-        })
+        .add_delegated_tree(
+            create_delegation_ref(&intermediate, Permission::Write(15), None)
+                .await
+                .unwrap(),
+        )
         .await
         .unwrap();
     txn.commit().await.unwrap();
@@ -268,19 +256,29 @@ async fn live_delegation_checks_current_intermediate_path_and_target_bounds() {
         retained.current_permission().await.unwrap(),
         Permission::Write(15)
     );
+    // Changing only the target's bounds must constrain the retained identity.
+    for max in [Permission::Read, Permission::Write(15)] {
+        let txn = outer.new_transaction().await.unwrap();
+        txn.get_settings()
+            .unwrap()
+            .add_delegated_tree(
+                create_delegation_ref(&intermediate, max, None)
+                    .await
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        txn.commit().await.unwrap();
+        assert_eq!(retained.current_permission().await.unwrap(), max);
+    }
     let txn = intermediate.new_transaction().await.unwrap();
     txn.get_settings()
         .unwrap()
-        .add_delegated_tree(DelegatedTreeRef {
-            permission_bounds: PermissionBounds {
-                max: Permission::Read,
-                min: None,
-            },
-            tree: TreeReference {
-                root: identity.root_id().clone(),
-                tips: identity.snapshot().await.unwrap().into_tips(),
-            },
-        })
+        .add_delegated_tree(
+            create_delegation_ref(&identity, Permission::Read, None)
+                .await
+                .unwrap(),
+        )
         .await
         .unwrap();
     txn.commit().await.unwrap();
@@ -289,23 +287,10 @@ async fn live_delegation_checks_current_intermediate_path_and_target_bounds() {
         Permission::Read,
         "every hop uses current accepted bounds"
     );
-    let txn = intermediate.new_transaction().await.unwrap();
-    txn.get_settings()
-        .unwrap()
-        .as_doc_store()
-        .delete(format!("auth.delegations.{}", identity.root_id()))
-        .await
-        .unwrap();
-    txn.commit().await.unwrap();
-    assert!(
-        retained.current_permission().await.is_err(),
-        "an old intermediate snapshot cannot revive a removed path"
-    );
-
     let SigKey::Delegation { path, hint } = sigkey else {
         unreachable!()
     };
-    for bad in [
+    for (case, bad) in [
         SigKey::Delegation {
             path: vec![path[1].clone(), path[0].clone()],
             hint: hint.clone(),
@@ -322,17 +307,38 @@ async fn live_delegation_checks_current_intermediate_path_and_target_bounds() {
             hint: hint.clone(),
         },
         SigKey::Delegation {
-            path,
+            path: path.clone(),
             hint: KeyHint::from_pubkey(&generate_keypair().1),
         },
-    ] {
+        SigKey::Delegation {
+            path: path.clone(),
+            hint: SigKey::global(&member).hint().clone(),
+        },
+        SigKey::Delegation { path: vec![], hint },
+    ]
+    .into_iter()
+    .enumerate()
+    {
         assert!(
             outer
                 .clone()
                 .with_key(DatabaseKey::with_identity(key.clone(), bad))
                 .current_permission()
                 .await
-                .is_err()
+                .is_err(),
+            "tampered delegation case {case} must be denied"
         );
     }
+    let txn = intermediate.new_transaction().await.unwrap();
+    txn.get_settings()
+        .unwrap()
+        .as_doc_store()
+        .delete(format!("auth.delegations.{}", identity.root_id()))
+        .await
+        .unwrap();
+    txn.commit().await.unwrap();
+    assert!(
+        retained.current_permission().await.is_err(),
+        "an old intermediate snapshot cannot revive a removed path"
+    );
 }
