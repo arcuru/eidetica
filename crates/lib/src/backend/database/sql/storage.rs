@@ -599,8 +599,8 @@ pub async fn put(backend: &SqlxBackend, entry: Entry) -> Result<()> {
 async fn insert_or_ignore(
     backend: &SqlxBackend,
     tx: &mut sqlx::Transaction<'_, sqlx::Any>,
-    table: &str,
-    columns: &[&str],
+    table: &'static str,
+    columns: &[&'static str],
     values: &[String],
 ) -> Result<()> {
     let cols = columns.join(", ");
