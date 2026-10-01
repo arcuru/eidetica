@@ -8,5 +8,6 @@ pub mod helpers;
 mod index_store;
 mod integration;
 pub(crate) mod password_store;
+mod row_codec;
 mod table_operations;
 mod ydoc_operations;

@@ -127,6 +127,9 @@ impl<D: CRDT + 'static> StoreStateModel<D> {
 mod errors;
 pub use errors::StoreError;
 
+pub mod row_codec;
+pub use row_codec::{RawBytes, RowCodec, SerdeJson};
+
 mod docstore;
 mod docstore_query;
 pub use docstore::{DocStore, DocStoreInit};
