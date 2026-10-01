@@ -257,9 +257,8 @@ impl DocStore {
 
     /// Sets a key-value pair (Result-based API for backward compatibility).
     ///
-    /// This method updates the `Map` data held within the `Transaction` for this
-    /// `Doc` instance's subtree name. The change is **not** persisted to the backend
-    /// until the `Transaction::commit()` method is called.
+    /// Equivalent to [`DocStore::set`]: the change is staged in the `Transaction`
+    /// and is **not** persisted to the backend until `Transaction::commit()` is called.
     ///
     /// # Arguments
     /// * `key` - The key to set.
@@ -268,18 +267,7 @@ impl DocStore {
     /// # Returns
     /// A `Result<()>` indicating success or an error during serialization or staging.
     pub async fn set_result(&self, key: impl Into<String>, value: impl Into<Value>) -> Result<()> {
-        let key = key.into();
-        let value = value.into();
-
-        // Get current data from the transaction, or create new if not existing
-        let mut data = self.local_data()?.unwrap_or_default();
-
-        // Update the data
-        data.set(&key, value);
-
-        // Serialize and update the transaction
-        let serialized = serde_json::to_vec(&data)?;
-        self.txn.update_subtree(&self.name, serialized).await
+        self.set(key, value).await
     }
 
     /// Convenience method to set a string value.

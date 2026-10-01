@@ -68,6 +68,97 @@ async fn test_dict_set_and_get_via_op() {
 }
 
 #[tokio::test]
+async fn test_docstore_set_result_matches_set() {
+    let ctx = TestContext::new().with_database().await;
+
+    let txn = ctx
+        .database()
+        .new_transaction()
+        .await
+        .expect("Failed to start transaction");
+    let via_set = txn
+        .get_store::<DocStore>("via_set")
+        .await
+        .expect("Failed to get via_set");
+    let via_set_result = txn
+        .get_store::<DocStore>("via_set_result")
+        .await
+        .expect("Failed to get via_set_result");
+
+    // Plain keys, overwrites, typed values and dotted paths, in the same order
+    let writes: Vec<(&str, Value)> = vec![
+        ("name", "Alice".into()),
+        ("count", 1.into()),
+        ("name", "Bob".into()),
+        ("user.profile.email", "bob@example.com".into()),
+        ("user.verified", true.into()),
+        ("user.profile.email", "bob@example.org".into()),
+        ("count", Value::Deleted),
+    ];
+    for (key, value) in writes {
+        via_set.set(key, value.clone()).await.expect("set failed");
+        via_set_result
+            .set_result(key, value)
+            .await
+            .expect("set_result failed");
+    }
+
+    let staged_set = via_set.get_all().await.expect("get_all via_set");
+    let staged_set_result = via_set_result
+        .get_all()
+        .await
+        .expect("get_all via_set_result");
+    assert_eq!(staged_set, staged_set_result);
+    assert_eq!(
+        via_set_result
+            .get_path(path!("user.profile.email"))
+            .await
+            .unwrap(),
+        Value::Text("bob@example.org".to_string())
+    );
+
+    // Staged writes stay invisible until commit
+    let viewer = ctx
+        .database()
+        .get_store_viewer::<DocStore>("via_set_result")
+        .await
+        .expect("Failed to get viewer");
+    assert_key_not_found(viewer.get("name").await);
+
+    txn.commit().await.expect("Failed to commit transaction");
+
+    let committed_set = ctx
+        .database()
+        .get_store_viewer::<DocStore>("via_set")
+        .await
+        .expect("viewer via_set")
+        .get_all()
+        .await
+        .expect("committed via_set");
+    let committed_set_result = ctx
+        .database()
+        .get_store_viewer::<DocStore>("via_set_result")
+        .await
+        .expect("viewer via_set_result")
+        .get_all()
+        .await
+        .expect("committed via_set_result");
+    assert_eq!(committed_set, committed_set_result);
+    assert_eq!(
+        committed_set_result.get("name"),
+        Some(&Value::Text("Bob".to_string()))
+    );
+    assert_key_not_found(
+        ctx.database()
+            .get_store_viewer::<DocStore>("via_set_result")
+            .await
+            .expect("viewer via_set_result")
+            .get("count")
+            .await,
+    );
+}
+
+#[tokio::test]
 async fn test_dict_get_all_via_viewer() {
     let ctx = TestContext::new().with_database().await;
 
