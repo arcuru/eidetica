@@ -11,10 +11,10 @@ use std::{
 use eidetica::{
     auth::crypto::PublicKey,
     entry::ID,
-    sync::{Address, transports::http::HttpTransport},
+    sync::{Address, dial_attempts, reset_dial_attempts, transports::http::HttpTransport},
 };
 
-use super::helpers::setup;
+use super::helpers::{setup, setup_public_sync_enabled_server, start_sync_server};
 
 const PEERS: usize = 2;
 const ADDRESSES_PER_PEER: usize = 60;
@@ -23,6 +23,10 @@ const ADDRESS_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(30);
 const ACCEPT_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 const ALLOWED_EXTRA_BYTES: usize = 128 * 1024;
 const ALLOWED_EXTRA_ALLOCS: usize = 256;
+/// Black-hole addresses racing one live answering peer.
+const LOSER_ADDRESSES: usize = ADDRESSES_PER_PEER;
+/// How long after the sync returns the losing dials may take to disappear.
+const TEARDOWN_GRACE: Duration = Duration::from_secs(2);
 
 struct BlackHoles {
     addresses: Vec<Address>,
@@ -175,4 +179,80 @@ async fn failed_address_attempts_release_allocations_after_timeout() {
         after_timeout.1 <= baseline.1 + ALLOWED_EXTRA_ALLOCS,
         "live allocations remained more than {ALLOWED_EXTRA_ALLOCS} above baseline after timeout: baseline={baseline:?}, after={after_timeout:?}"
     );
+}
+
+/// Losing dials must disappear once a winner emerges, not at their deadline.
+///
+/// The test above proves eventual reclamation when every attempt fails at
+/// its own 30-second deadline. This one proves the other half, RFC 8305
+/// section 5: with a live peer answering behind a wall of black holes, every
+/// dial the race started must be torn down shortly after the winner is
+/// selected. Each attempt carries a liveness handle; a `Weak::upgrade()`
+/// that still succeeds means that dial's task — its connection, buffers,
+/// and registration work — survived the winner.
+///
+/// Unlike the allocation assertion this needs no allocator baseline and no
+/// deadline wait, so it runs in milliseconds.
+#[tokio::test]
+async fn address_race_losers_tear_down_once_a_winner_emerges() {
+    if std::env::var("NEXTEST_EXECUTION_MODE").as_deref() != Ok("process-per-test") {
+        eprintln!("skipping dial-liveness diagnostic outside nextest process-per-test execution");
+        return;
+    }
+
+    let black_holes = BlackHoles::start(LOSER_ADDRESSES).await;
+    let (_server_instance, _server_user, _server_key_id, _server_db, tree, server_sync) =
+        setup_public_sync_enabled_server("winner_server", "winner_key", "winner_database").await;
+    let server_address = start_sync_server(&server_sync).await;
+    let server_peer = _server_instance.id();
+
+    let (_instance, sync) = setup().await;
+    sync.register_transport("http", HttpTransport::builder())
+        .await
+        .expect("register HTTP transport");
+
+    sync.register_peer(&server_peer, Some("answering peer"))
+        .await
+        .expect("register peer");
+    for address in &black_holes.addresses {
+        sync.add_peer_address(&server_peer, address.clone())
+            .await
+            .expect("record black-hole address");
+    }
+    sync.add_peer_address(&server_peer, server_address.clone())
+        .await
+        .expect("record the live address");
+
+    // Observe only the race this test is about to start.
+    reset_dial_attempts();
+
+    sync.sync_tree_with_peer(&server_peer, &tree)
+        .await
+        .expect("bootstrap through the winning address");
+
+    // One handle per raced address. Attempts whose tasks had not run yet
+    // when the winner was selected are recorded after the sync returns, so
+    // wait for the full set to appear before requiring all of them dead.
+    let expected_attempts = LOSER_ADDRESSES + 1;
+    let deadline = Instant::now() + TEARDOWN_GRACE;
+    loop {
+        let attempts = dial_attempts();
+        let alive = attempts
+            .iter()
+            .filter(|attempt| attempt.upgrade().is_some())
+            .count();
+        if attempts.len() == expected_attempts && alive == 0 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{} of {expected_attempts} dial attempts recorded, {alive} still alive more than \
+             {TEARDOWN_GRACE:?} after the winner emerged — losing dials are not torn down",
+            attempts.len(),
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    black_holes.stop().await;
+    server_sync.stop_server().await.expect("stop server");
 }

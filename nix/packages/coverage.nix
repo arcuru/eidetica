@@ -62,7 +62,7 @@
         pg_ctl start -o "-k $TMPDIR -h '''"
         createdb $PGDATABASE
 
-        export TEST_POSTGRES_URL="postgres:///$PGDATABASE?host=$TMPDIR"
+        export TEST_POSTGRES_URL="postgres://$(whoami)@localhost/$PGDATABASE?host=$TMPDIR"
       '';
       postBuild = ''
         pg_ctl stop || true

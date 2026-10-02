@@ -288,6 +288,27 @@ impl Sync {
     /// # Returns
     /// A Result containing the peer's public key if successful.
     pub async fn connect_to_peer(&self, address: &Address) -> Result<PublicKey> {
+        // A single dial outside any race: the subscription lives as long as
+        // this call, so it never closes and the dial is bounded only by its
+        // own handshake outcome.
+        let (cancel, subscription) = tokio::sync::watch::channel(());
+        let result = self
+            .connect_to_peer_with_cancel(address, subscription)
+            .await;
+        drop(cancel);
+        result
+    }
+
+    /// [`Self::connect_to_peer`] with the dial's race subscription attached.
+    ///
+    /// `cancel` closes when the race that started this dial no longer needs
+    /// it — a usable route was selected elsewhere — and the engine-side dial
+    /// is abandoned instead of running to its attempt deadline.
+    pub(super) async fn connect_to_peer_with_cancel(
+        &self,
+        address: &Address,
+        cancel: tokio::sync::watch::Receiver<()>,
+    ) -> Result<PublicKey> {
         let (tx, rx) = oneshot::channel();
 
         self.background_tx
@@ -295,6 +316,7 @@ impl Sync {
             .ok_or(SyncError::NoTransportEnabled)?
             .send(SyncCommand::ConnectToPeer {
                 address: address.clone(),
+                cancel,
                 response: tx,
             })
             .await

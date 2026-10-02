@@ -97,7 +97,9 @@ pub async fn store_snapshot_at(
         WHERE se.id NOT IN (SELECT id FROM non_tips)"
     );
 
-    let mut query = sqlx::query_as::<_, (String,)>(&sql).bind(store);
+    // SAFETY: the only generated fragment is a sequence of numbered bind
+    // placeholders derived from `main_entries.len()`; all values remain bound.
+    let mut query = sqlx::query_as::<_, (String,)>(sqlx::AssertSqlSafe(sql)).bind(store);
     for entry in main_entries {
         query = query.bind(entry.to_string());
     }
@@ -291,7 +293,10 @@ async fn collect_ancestors_from_frontier(
         trace_param = frontier.len() + 3
     );
 
-    let mut query = sqlx::query_as::<_, (String, i64, i64, i64)>(&sql).bind(store);
+    // SAFETY: generated fragments contain only numbered bind placeholders whose
+    // positions derive from slice lengths; no values are interpolated.
+    let mut query =
+        sqlx::query_as::<_, (String, i64, i64, i64)>(sqlx::AssertSqlSafe(sql)).bind(store);
     for id in frontier {
         query = query.bind(id.to_string());
     }
@@ -414,8 +419,11 @@ async fn validate_tips_in_tree(backend: &SqlxBackend, tree: &ID, tips: &[ID]) ->
          LEFT JOIN entries e_tree ON e_tree.id = s.id AND e_tree.tree_id = $1"
     );
 
+    // SAFETY: `starts_union` contains only numbered bind placeholders generated
+    // from `tips.len()`; tree and tip identifiers remain bind parameters.
     let mut validation_query =
-        sqlx::query_as::<_, (String, i32, i32)>(&validation_sql).bind(tree.to_string());
+        sqlx::query_as::<_, (String, i32, i32)>(sqlx::AssertSqlSafe(validation_sql))
+            .bind(tree.to_string());
 
     for tip in tips {
         validation_query = validation_query.bind(tip.to_string());
@@ -489,7 +497,10 @@ pub async fn get_tree_from_tips(
         JOIN entries e ON e.id = a.id"
     );
 
-    let mut query = sqlx::query_as::<_, (Vec<u8>, i64)>(&sql).bind(tree.to_string());
+    // SAFETY: `starts_union` contains only numbered bind placeholders generated
+    // from `tips.len()`; entry identifiers remain bind parameters.
+    let mut query =
+        sqlx::query_as::<_, (Vec<u8>, i64)>(sqlx::AssertSqlSafe(sql)).bind(tree.to_string());
 
     for tip in tips {
         query = query.bind(tip.to_string());
@@ -563,7 +574,9 @@ pub async fn store_at(
         JOIN subtrees st ON st.entry_id = a.id AND st.store_name = $2"
     );
 
-    let mut query = sqlx::query_as::<_, (Vec<u8>, i64)>(&sql)
+    // SAFETY: `starts_union` contains only numbered bind placeholders generated
+    // from `tips.len()`; tree, store, and tip values remain bind parameters.
+    let mut query = sqlx::query_as::<_, (Vec<u8>, i64)>(sqlx::AssertSqlSafe(sql))
         .bind(tree.to_string())
         .bind(store);
 
@@ -683,7 +696,9 @@ pub async fn get_path_from_to(
         JOIN subtrees s ON s.entry_id = p.id AND s.store_name = $1"
     );
 
-    let mut query = sqlx::query_as::<_, (String, i64)>(&sql).bind(store);
+    // SAFETY: generated fragments are fixed optional predicates plus numbered
+    // bind placeholders derived from `to_ids.len()`; all values remain bound.
+    let mut query = sqlx::query_as::<_, (String, i64)>(sqlx::AssertSqlSafe(sql)).bind(store);
 
     if let Some(from_id) = from_id {
         query = query.bind(from_id.to_string());

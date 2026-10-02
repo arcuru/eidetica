@@ -641,6 +641,10 @@ impl SqlxBackend {
         // Install any driver support
         sqlx::any::install_default_drivers();
 
+        // Quote identifiers even for the testing hook, which accepts caller-supplied
+        // schema names. Doubling quotes keeps the entire name inside one identifier.
+        let schema_name = schema_name.map(|name| format!("\"{}\"", name.replace('"', "\"\"")));
+
         // If schema_name is provided, first create the schema, then use after_connect
         // to set search_path on each connection. This is more reliable than URL options
         // which don't work consistently across all network configurations.
@@ -652,9 +656,9 @@ impl SqlxBackend {
                 .await
                 .sql_context("Failed to connect to PostgreSQL")?;
 
-            // Create schema if it doesn't exist
+            // SAFETY: the schema is a quoted, escaped identifier, not SQL text.
             let create_schema = format!("CREATE SCHEMA IF NOT EXISTS {schema}");
-            sqlx::query(&create_schema)
+            sqlx::query(sqlx::AssertSqlSafe(create_schema))
                 .execute(&temp_pool)
                 .await
                 .sql_context(&format!("Failed to create schema {schema}"))?;
@@ -669,16 +673,18 @@ impl SqlxBackend {
             .await
             .sql_context("Failed to connect to PostgreSQL")?;
         if let Some(ref schema) = schema_name {
+            // SAFETY: the schema is a quoted, escaped identifier.
             let set_path = format!("SET search_path TO {schema}");
             owner
-                .execute(set_path.as_str())
+                .execute(sqlx::AssertSqlSafe(set_path))
                 .await
                 .sql_context("Failed to select PostgreSQL storage namespace")?;
         }
 
-        let (database, schema, acquired): (String, String, bool) = sqlx::query_as(&format!(
+        // SAFETY: the lock expression is a compile-time constant.
+        let (database, schema, acquired): (String, String, bool) = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT current_database()::text, current_schema()::text, pg_try_advisory_lock({POSTGRES_NAMESPACE_LOCK})"
-        ))
+        )))
         .fetch_one(&mut owner)
         .await
         .sql_context("Failed to claim PostgreSQL storage ownership")?;
@@ -689,26 +695,33 @@ impl SqlxBackend {
             .into());
         }
 
+        // SAFETY: the ownership table name is a compile-time constant.
         owner
-            .execute(format!(
+            .execute(sqlx::AssertSqlSafe(format!(
                 "CREATE TABLE IF NOT EXISTS {POSTGRES_OWNERSHIP_TABLE} (id SMALLINT PRIMARY KEY CHECK (id = 1), token TEXT NOT NULL)"
-            ).as_str())
+            )))
             .await
             .sql_context("Failed to initialize PostgreSQL storage ownership metadata")?;
         let token = uuid::Uuid::new_v4().to_string();
-        sqlx::query(&format!(
+        // SAFETY: the table name is a constant; the ownership token stays bound.
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             "INSERT INTO {POSTGRES_OWNERSHIP_TABLE} (id, token) VALUES (1, $1) ON CONFLICT (id) DO UPDATE SET token = EXCLUDED.token"
-        ))
+        )))
         .bind(&token)
         .execute(&mut owner)
         .await
         .sql_context("Failed to publish PostgreSQL storage ownership token")?;
+        // SAFETY: both advisory-lock expressions use only a compile-time constant.
         owner
-            .execute(format!("SELECT pg_advisory_lock_shared({POSTGRES_NAMESPACE_LOCK})").as_str())
+            .execute(sqlx::AssertSqlSafe(format!(
+                "SELECT pg_advisory_lock_shared({POSTGRES_NAMESPACE_LOCK})"
+            )))
             .await
             .sql_context("Failed to fence PostgreSQL storage ownership")?;
         owner
-            .execute(format!("SELECT pg_advisory_unlock({POSTGRES_NAMESPACE_LOCK})").as_str())
+            .execute(sqlx::AssertSqlSafe(format!(
+                "SELECT pg_advisory_unlock({POSTGRES_NAMESPACE_LOCK})"
+            )))
             .await
             .sql_context("Failed to finish PostgreSQL storage ownership claim")?;
 
@@ -734,17 +747,19 @@ impl SqlxBackend {
                 let token = token_for_hook.clone();
                 Box::pin(async move {
                     if let Some(ref schema) = schema {
+                        // SAFETY: the schema was quoted and escaped before this hook.
                         let set_path = format!("SET search_path TO {schema}");
-                        conn.execute(set_path.as_str()).await?;
+                        conn.execute(sqlx::AssertSqlSafe(set_path)).await?;
                     }
-                    conn.execute(
-                        format!("SELECT pg_advisory_lock_shared({POSTGRES_NAMESPACE_LOCK})")
-                            .as_str(),
-                    )
+                    // SAFETY: the lock expression is a compile-time constant.
+                    conn.execute(sqlx::AssertSqlSafe(format!(
+                        "SELECT pg_advisory_lock_shared({POSTGRES_NAMESPACE_LOCK})"
+                    )))
                     .await?;
-                    let valid: (bool,) = sqlx::query_as(&format!(
+                    // SAFETY: the table name is a constant; the token stays bound.
+                    let valid: (bool,) = sqlx::query_as(sqlx::AssertSqlSafe(format!(
                         "SELECT token = $1 FROM {POSTGRES_OWNERSHIP_TABLE} WHERE id = 1"
-                    ))
+                    )))
                     .bind(token)
                     .fetch_one(&mut *conn)
                     .await?;
@@ -1091,13 +1106,15 @@ mod tests {
             .connect(&url)
             .await
             .unwrap();
-        sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        // SAFETY: the test schema is generated solely from a UUID.
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
             .execute(&setup)
             .await
             .unwrap();
-        sqlx::query(&format!(
+        // SAFETY: the only interpolated identifier is the UUID-derived test schema.
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             "CREATE VIEW {schema}.entries AS SELECT 1 AS value"
-        ))
+        )))
         .execute(&setup)
         .await
         .unwrap();
@@ -1108,7 +1125,8 @@ mod tests {
                 .is_err(),
             "the conflicting view must make schema initialization fail"
         );
-        sqlx::query(&format!("DROP VIEW {schema}.entries"))
+        // SAFETY: the only interpolated identifier is the UUID-derived test schema.
+        sqlx::query(sqlx::AssertSqlSafe(format!("DROP VIEW {schema}.entries")))
             .execute(&setup)
             .await
             .unwrap();
@@ -1116,7 +1134,8 @@ mod tests {
         SqlxBackend::connect_postgres_with_schema(&url, Some(schema.clone()))
             .await
             .expect("failed initialization must release PostgreSQL ownership");
-        sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        // SAFETY: the only interpolated identifier is the UUID-derived test schema.
+        sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
             .execute(&setup)
             .await
             .unwrap();
