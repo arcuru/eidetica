@@ -734,7 +734,7 @@ impl Sync {
     }
 
     /// Local tips used in an authenticated pull request.
-    async fn tree_pull_tips(&self, tree_id: &ID) -> Result<crate::Snapshot> {
+    pub(super) async fn tree_pull_tips(&self, tree_id: &ID) -> Result<crate::Snapshot> {
         let backend = self.backend()?;
         let tips = backend
             .snapshot(tree_id)
@@ -769,9 +769,6 @@ impl Sync {
         // Get our current tips for this tree (empty if tree doesn't exist)
         let our_tips = self.tree_pull_tips(tree_id).await?;
 
-        // Get our device public key for automatic peer tracking
-        let our_device_pubkey = self.get_device_pubkey().ok();
-
         // Send the request with proof from the named requesting key. Calls
         // without a named-key request still sign with the device key for
         // authenticated data access where required.
@@ -784,16 +781,33 @@ impl Sync {
             &our_tips,
             instance.clock().now_millis(),
         );
-        let request = SyncRequest::SyncTree(SyncTreeRequest {
+        let request = SyncTreeRequest {
             tree_id: tree_id.clone(),
             our_tips,
-            peer_pubkey: our_device_pubkey,
+            peer_pubkey: self.get_device_pubkey().ok(),
             requesting_key: requesting_key.map(|k| k.public_key()),
             requesting_key_name: requesting_key_name.map(|k| k.to_string()),
             requested_permission,
             metadata,
             auth: Some(auth),
-        });
+        };
+        self.exchange_tree_request_at(address, peer_pubkey, request)
+            .await
+    }
+
+    /// Send one signed tree request through `address` and apply the response.
+    ///
+    /// Shared by requests signed in this process and requests whose proof was
+    /// signed elsewhere (a service client that keeps its key in-process). A
+    /// pending or rejected bootstrap surfaces as the matching [`SyncError`].
+    pub(super) async fn exchange_tree_request_at(
+        &self,
+        address: &Address,
+        peer_pubkey: &PublicKey,
+        request: SyncTreeRequest,
+    ) -> Result<()> {
+        let tree_id = request.tree_id.clone();
+        let request = SyncRequest::SyncTree(request);
 
         // Send request via background sync command
         let (tx, rx) = oneshot::channel();
@@ -830,12 +844,21 @@ impl Sync {
 
                 // Bootstrap entries come from a peer; stored Unverified.
                 let instance = self.instance()?;
-                instance.put_remote_entries(tree_id, all_entries).await?;
+                instance.put_remote_entries(&tree_id, all_entries).await?;
 
                 info!(peer = %peer_pubkey, tree = %tree_id, "Bootstrap sync completed successfully");
             }
             SyncResponse::Incremental(incremental_response) => {
                 info!(peer = %peer_pubkey, tree = %tree_id, missing_count = incremental_response.missing_entries.len(), "Received incremental sync response");
+                // The response handler stores into, and sends back from, the
+                // tree the response names; it must be the one requested.
+                if incremental_response.tree_id != tree_id {
+                    return Err(SyncError::SyncProtocolError(format!(
+                        "incremental response for tree {} does not match requested tree {tree_id}",
+                        incremental_response.tree_id
+                    ))
+                    .into());
+                }
 
                 // Use the enhanced handler that supports bidirectional sync
                 self.handle_incremental_response(incremental_response, address)
@@ -878,7 +901,7 @@ impl Sync {
 
         // Track tree/peer relationship for sync_on_commit to work
         // This allows on_local_write() to find this peer when queueing entries
-        self.add_tree_sync(peer_pubkey, tree_id).await?;
+        self.add_tree_sync(peer_pubkey, &tree_id).await?;
 
         Ok(())
     }

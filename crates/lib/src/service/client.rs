@@ -33,8 +33,9 @@ use crate::instance::WeakInstance;
 use crate::service::error::service_error_to_eidetica_error;
 use crate::service::protocol::{
     AuthenticatedDbRequest, DatabaseOp, Handshake, HandshakeAck, MergeState, Notification,
-    PROTOCOL_VERSION, ReadScope, ServerFrame, ServiceRequest, ServiceResponse, TransactionContext,
-    WireCrdtValue, read_frame, write_frame,
+    PROTOCOL_VERSION, ReadScope, ServerFrame, ServiceRequest, ServiceResponse,
+    TicketBootstrapOutcome, TicketBootstrapRequest, TransactionContext, WireCrdtValue, read_frame,
+    write_frame,
 };
 use crate::snapshot::Snapshot;
 use crate::user::UserError;
@@ -807,6 +808,82 @@ impl RemoteConnection {
         match response {
             ServiceResponse::DatabaseTicket(ticket) => Ok(ticket),
             other => Err(unexpected_response("DatabaseTicket", &other)),
+        }
+    }
+
+    /// Join a database from `ticket` through the daemon's sync engine.
+    ///
+    /// The daemon picks the route and sends the request; `signing_key` stays
+    /// in this process and signs only the peer-bound request proof. The key is
+    /// first registered in the connection's session keyset, which the daemon
+    /// requires before acting for it. `now_millis` is the proof timestamp.
+    ///
+    /// Pending and rejected requests return the same
+    /// [`SyncError::BootstrapPending`](crate::sync::SyncError::BootstrapPending)
+    /// and [`SyncError::BootstrapRejected`](crate::sync::SyncError::BootstrapRejected)
+    /// an embedded [`Sync`](crate::sync::Sync) would.
+    pub(crate) async fn bootstrap_ticket(
+        &self,
+        ticket: &crate::sync::DatabaseTicket,
+        signing_key: &PrivateKey,
+        requesting_key_name: &str,
+        requested_permission: crate::auth::Permission,
+        metadata: Option<crate::crdt::Doc>,
+        now_millis: u64,
+    ) -> crate::Result<()> {
+        use crate::sync::{SyncError, protocol::SyncRequestAuth};
+
+        self.register_session_key(signing_key).await?;
+        let response = self
+            .request_ok(ServiceRequest::TicketBootstrapPrepare {
+                ticket: ticket.clone(),
+            })
+            .await?;
+        let (address, peer, tips) = match response {
+            ServiceResponse::TicketBootstrapRoute {
+                address,
+                peer,
+                tips,
+            } => (address, peer, tips),
+            other => return Err(unexpected_response("TicketBootstrapRoute", &other)),
+        };
+        let auth =
+            SyncRequestAuth::sign(signing_key, &peer, ticket.database_id(), &tips, now_millis);
+        let response = self
+            .request_ok(ServiceRequest::TicketBootstrap(Box::new(
+                TicketBootstrapRequest {
+                    database_id: ticket.database_id().clone(),
+                    address,
+                    peer,
+                    tips,
+                    requesting_key_name: requesting_key_name.to_string(),
+                    requested_permission,
+                    metadata,
+                    auth,
+                },
+            )))
+            .await?;
+        match response {
+            ServiceResponse::TicketBootstrapOutcome(outcome) => match outcome {
+                TicketBootstrapOutcome::Complete => Ok(()),
+                TicketBootstrapOutcome::Pending {
+                    request_id,
+                    message,
+                } => Err(SyncError::BootstrapPending {
+                    request_id,
+                    message,
+                }
+                .into()),
+                TicketBootstrapOutcome::Rejected {
+                    request_id,
+                    message,
+                } => Err(SyncError::BootstrapRejected {
+                    request_id,
+                    message,
+                }
+                .into()),
+            },
+            other => Err(unexpected_response("TicketBootstrapOutcome", &other)),
         }
     }
 

@@ -41,6 +41,7 @@ use crate::entry::{Entry, ID};
 use crate::instance::WriteSource;
 use crate::service::error::ServiceError;
 use crate::snapshot::Snapshot;
+use crate::sync::{Address, DatabaseTicket, protocol::SyncRequestAuth};
 use crate::user::UserInfo;
 
 /// Protocol version. Version 0 indicates an unstable protocol that may change
@@ -308,6 +309,46 @@ pub struct AuthenticatedDbRequest {
     pub op: DatabaseOp,
 }
 
+/// Payload of a [`ServiceRequest::TicketBootstrap`] request.
+///
+/// `address`, `peer`, and `tips` are the values the daemon returned from
+/// [`ServiceRequest::TicketBootstrapPrepare`]; `auth` must be signed over
+/// exactly `peer`, `database_id`, and `tips` by the key it names.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TicketBootstrapRequest {
+    /// Database the ticket names.
+    pub database_id: ID,
+    /// Route the daemon selected.
+    pub address: Address,
+    /// Peer identity that answered on `address`.
+    pub peer: PublicKey,
+    /// Daemon pull tips the proof covers.
+    pub tips: Snapshot,
+    /// Requester-chosen name for the key, shown to approvers.
+    pub requesting_key_name: String,
+    /// Permission requested for the key.
+    pub requested_permission: Permission,
+    /// Optional context for the approver.
+    pub metadata: Option<crate::crdt::Doc>,
+    /// Client-signed proof of possession of the requesting key.
+    pub auth: SyncRequestAuth,
+}
+
+/// Outcome of a [`ServiceRequest::TicketBootstrap`] request.
+///
+/// Pending and rejected are ordinary protocol outcomes, not transport
+/// failures, so they travel as data: the client rebuilds the exact
+/// [`SyncError`](crate::sync::SyncError) variant callers match on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TicketBootstrapOutcome {
+    /// The database is available on the daemon.
+    Complete,
+    /// The peer stored the request for manual approval.
+    Pending { request_id: String, message: String },
+    /// An administrator rejected the request.
+    Rejected { request_id: String, message: String },
+}
+
 /// Top-level request from client to server.
 ///
 /// The shape is intentionally flat: pre-auth lifecycle and queries sit beside
@@ -354,6 +395,19 @@ pub enum ServiceRequest {
         pubkey: PublicKey,
         signature: Vec<u8>,
     },
+
+    // === Post-auth: ticket bootstrap through the daemon's sync engine ===
+    /// Step 1 of joining a database from a ticket. The daemon races the
+    /// ticket's address hints with its own transports and returns the route,
+    /// the identity that answered on it, and the daemon's local pull tips.
+    /// The client needs the last two to sign a peer-bound request proof with
+    /// a key that never leaves the client process.
+    TicketBootstrapPrepare { ticket: DatabaseTicket },
+    /// Step 2 of joining a database from a ticket. The daemon checks the
+    /// client-signed proof, then sends the named-key bootstrap request
+    /// through its own sync engine. The proof's key must already be in the
+    /// connection's session keyset (see `SessionKeyRegister`).
+    TicketBootstrap(Box<TicketBootstrapRequest>),
 
     // === Authenticated wrapper for every storage operation ===
     /// All storage ops travel inside this wrapper. The inner
@@ -507,6 +561,15 @@ pub enum ServiceResponse {
     /// client signs these with the named pubkey's private key and returns the
     /// signature in `SessionKeyRegister`.
     SessionKeyChallenge { challenge: Vec<u8> },
+    /// Route selected for a ticket bootstrap (response to
+    /// `TicketBootstrapPrepare`).
+    TicketBootstrapRoute {
+        address: Address,
+        peer: PublicKey,
+        tips: Snapshot,
+    },
+    /// Result of a ticket bootstrap (response to `TicketBootstrap`).
+    TicketBootstrapOutcome(TicketBootstrapOutcome),
 }
 
 /// Write a length-prefixed JSON frame to an async writer.

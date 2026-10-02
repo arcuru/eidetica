@@ -85,6 +85,30 @@ user.request_database_access(
 ).await
 ```
 
+`User::join` takes the same arguments without the `Sync` handle and returns the opened database.
+It uses the instance's own sync engine when embedded and the daemon's when connected to a [service daemon](service.md), where the user's private key stays in the client process:
+
+<!-- Code block ignored: Example client workflow code demonstrating bootstrap API usage -->
+
+```rust,ignore
+let database = user
+    .join(&ticket, &key_id, Permission::Write(5), SyncSettings::on_commit(), None)
+    .await?;
+```
+
+`join` is a foreground operation with the same interface in embedded and connected modes.
+A ticket is a locator, not an access grant.
+Success returns a `Database` after recording the selected user key's SigKey mapping and the caller's `SyncSettings`, so `user.open_database()` can open it again.
+`SyncError::BootstrapPending` records a provisional mapping and preferences, but does not open the database: explicitly retry `join` after approval.
+`SyncError::BootstrapRejected` is terminal for that request and records no new mapping or preferences.
+
+This is not durable acceptance of a join job.
+Dropping the future or disconnecting can leave effects at the peer, but does not guarantee client-side tracking or completion; reconnect and retry explicitly.
+There is no cancellation API, automatic restart-safe completion, or device enrollment.
+The client holds and signs with the user's private keys; the daemon owns networking, without a second client sync engine.
+Later daemon replication uses its device key, which needs its own authorization or a global grant.
+User-key access alone does not promise ongoing private background replication.
+
 ### 2. Response Handling
 
 The client must handle different response scenarios:
