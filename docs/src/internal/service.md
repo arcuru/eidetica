@@ -192,10 +192,16 @@ A bootstrap request proof (`SyncRequestAuth`) is bound to the answering peer and
 
 Pending and rejected results travel as `TicketBootstrapOutcome` data rather than as `ServiceError`s, so the client rebuilds `SyncError::BootstrapPending` and `SyncError::BootstrapRejected` exactly and `User::record_database_access` keeps its provisional-mapping and retry semantics.
 The client then records the key mapping and sync preference in the user database as on an embedded instance.
+Success returns an opened `Database` only after those client-side writes finish.
+Pending requires an explicit `join` retry after approval; rejection is terminal for the request.
 Requests on a connection are handled in order, so the join occupies its connection until the peer answers.
+This is foreground execution, not durable acceptance: a dropped future or disconnected caller may leave peer-side effects without recording the user's mapping or completing the join.
+Reconnect and retry explicitly; there is no cancellation API or restart-safe completion.
 
 Continuing replication is the daemon's, and its sync requests are signed with the daemon's device key.
-A database that grants only the joining user key, with no global grant, therefore needs the same device-key access as an embedded bootstrap for later pulls.
+A database that grants only the joining user key, with no global grant, therefore needs separate device-key authorization for later pulls.
+`join` does not enroll a device or promise ongoing private background authority.
+The wildcard-authorized replication test covers global access, not private device enrollment.
 
 ## Session Keyset
 

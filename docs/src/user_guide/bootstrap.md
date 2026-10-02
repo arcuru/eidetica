@@ -96,7 +96,18 @@ let database = user
     .await?;
 ```
 
-A pending or rejected `join` returns the same errors and records the same provisional state as `request_database_access`.
+`join` is a foreground operation with the same interface in embedded and connected modes.
+A ticket is a locator, not an access grant.
+Success returns a `Database` after recording the selected user key's SigKey mapping and the caller's `SyncSettings`, so `user.open_database()` can open it again.
+`SyncError::BootstrapPending` records a provisional mapping and preferences, but does not open the database: explicitly retry `join` after approval.
+`SyncError::BootstrapRejected` is terminal for that request and records no new mapping or preferences.
+
+This is not durable acceptance of a join job.
+Dropping the future or disconnecting can leave effects at the peer, but does not guarantee client-side tracking or completion; reconnect and retry explicitly.
+There is no cancellation API, automatic restart-safe completion, or device enrollment.
+The client holds and signs with the user's private keys; the daemon owns networking, without a second client sync engine.
+Later daemon replication uses its device key, which needs its own authorization or a global grant.
+User-key access alone does not promise ongoing private background replication.
 
 ### 2. Response Handling
 

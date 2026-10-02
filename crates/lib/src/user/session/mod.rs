@@ -1076,9 +1076,9 @@ impl User {
     /// Works the same on an embedded and a connected instance. An embedded
     /// instance bootstraps through its own [`Sync`], which must be enabled.
     /// A connected instance asks the daemon to do it: the daemon chooses the
-    /// route and owns the network exchange and the ongoing replication, while
-    /// `key_id`'s private key stays in this process and signs only the
-    /// peer-bound request proof. The call waits until the peer answers.
+    /// route and owns the network exchange, while `key_id`'s private key
+    /// stays in this process and signs only the peer-bound request proof. The
+    /// call waits until the peer answers.
     ///
     /// A ticket locates a database; it does not grant access. The peer decides
     /// whether `key_id` may have `requested_permission`, exactly as for
@@ -1093,6 +1093,14 @@ impl User {
     ///   again once the request is approved.
     /// - A rejected request returns [`SyncError::BootstrapRejected`] and
     ///   records nothing.
+    ///
+    /// This is a foreground operation, not durable acceptance of a join job.
+    /// Dropping the future or disconnecting may leave peer-side effects, but
+    /// does not guarantee the mapping or an opened database. Reconnect and retry
+    /// explicitly; there is no cancellation API or restart-safe completion.
+    /// Joining grants user-key access, not device enrollment. Later daemon
+    /// replication uses its device key and needs separate authorization (or a
+    /// global grant); this call does not promise ongoing private replication.
     ///
     /// # Arguments
     /// * `ticket` - Database ID and address hints

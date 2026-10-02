@@ -157,10 +157,10 @@ async fn read_string(db: &eidetica::Database, key: &str) -> eidetica::Result<Str
         .await
 }
 
-/// A connected client joins, opens, writes, and receives peer writes, while
-/// the daemon owns every network exchange and the client runs no sync engine.
+/// Global Write authorizes both the joining user and the daemon device; this
+/// is not private device enrollment. The daemon owns every network exchange.
 #[tokio::test]
-async fn connected_join_opens_database_and_daemon_keeps_it_in_sync() {
+async fn connected_join_opens_database_and_wildcard_authorizes_daemon_sync() {
     let peer = Peer::start(true).await;
     let (tree, ticket, peer_db) = (peer.tree(), peer.ticket.clone(), peer.db.clone());
     peer_db
@@ -310,10 +310,28 @@ async fn connected_join_pending_then_approved_retry_opens_database() {
         .approve_bootstrap_request(&peer.sync, request_id, &peer.admin_key)
         .await
         .unwrap();
+    assert!(
+        user.open_database(&tree).await.is_err(),
+        "peer approval alone must not complete the foreground join"
+    );
     let db = user
         .join(&ticket, &key, Permission::Write(5), settings, None)
         .await
         .expect("join should succeed once approved");
+    let auth = peer
+        .db
+        .new_transaction()
+        .await
+        .unwrap()
+        .get_settings()
+        .unwrap()
+        .auth_snapshot()
+        .await
+        .unwrap();
+    assert!(
+        auth.get_key_by_pubkey(&daemon.instance.id()).is_err(),
+        "approving the user key must not enroll the daemon device"
+    );
     db.with_transaction(|tx| async move {
         tx.get_store::<DocStore>("messages")
             .await?
@@ -679,6 +697,148 @@ async fn daemon_refuses_unproven_keys_and_mismatched_proofs() {
     let pending = peer.sync.pending_bootstrap_requests().await.unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].1.requesting_pubkey, login_key.public_key());
+
+    peer.sync.stop_server().await.unwrap();
+}
+
+/// Disconnect after submitting the signed request, without receiving its
+/// outcome or recording a user mapping. Peer approval is not a durable join
+/// job: a fresh client must retry before it can open the database.
+#[tokio::test]
+async fn disconnected_join_requires_explicit_retry_after_peer_approval() {
+    let peer = Peer::start(false).await;
+    let (tree, ticket) = (peer.tree(), peer.ticket.clone());
+    let daemon = Daemon::start().await;
+    let alice = daemon.instance.login_user("alice", None).await.unwrap();
+    let key = alice.get_default_key().unwrap();
+    let signing_key = alice.get_signing_key(&key).unwrap();
+    drop(alice);
+
+    let stream = UnixStream::connect(&daemon.socket).await.unwrap();
+    let (mut reader, mut writer) = tokio::io::split(stream);
+    write_frame(
+        &mut writer,
+        &Handshake {
+            protocol_version: PROTOCOL_VERSION,
+        },
+    )
+    .await
+    .unwrap();
+    let _: HandshakeAck = read_frame(&mut reader).await.unwrap().unwrap();
+    let ServiceResponse::TrustedLoginChallenge { challenge, .. } = request(
+        &mut reader,
+        &mut writer,
+        ServiceRequest::TrustedLoginUser {
+            username: "alice".to_string(),
+        },
+    )
+    .await
+    else {
+        panic!("expected a login challenge");
+    };
+    assert!(matches!(
+        request(
+            &mut reader,
+            &mut writer,
+            ServiceRequest::TrustedLoginProve {
+                signature: create_challenge_response(&challenge, &signing_key),
+            },
+        )
+        .await,
+        ServiceResponse::TrustedLoginOk
+    ));
+    let ServiceResponse::TicketBootstrapRoute {
+        address,
+        peer: route_peer,
+        tips,
+    } = request(
+        &mut reader,
+        &mut writer,
+        ServiceRequest::TicketBootstrapPrepare {
+            ticket: ticket.clone(),
+        },
+    )
+    .await
+    else {
+        panic!("expected a ticket route");
+    };
+    write_frame(
+        &mut writer,
+        &ServiceRequest::TicketBootstrap(Box::new(TicketBootstrapRequest {
+            database_id: tree.clone(),
+            address,
+            auth: SyncRequestAuth::sign(
+                &signing_key,
+                &route_peer,
+                &tree,
+                &tips,
+                eidetica::Clock::now_millis(&eidetica::SystemClock),
+            ),
+            peer: route_peer,
+            tips,
+            requesting_key_name: "disconnected".to_string(),
+            requested_permission: Permission::Write(5),
+            metadata: None,
+        })),
+    )
+    .await
+    .unwrap();
+
+    // Observe a real peer-side effect, but never read the join response.
+    let pending = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let pending = peer.sync.pending_bootstrap_requests().await.unwrap();
+            if !pending.is_empty() {
+                break pending;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the signed request must reach the peer before disconnect");
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].1.requesting_pubkey, key);
+    drop(reader);
+    drop(writer);
+    drop(signing_key);
+    peer.user
+        .approve_bootstrap_request(&peer.sync, &pending[0].0, &peer.admin_key)
+        .await
+        .unwrap();
+
+    let service = daemon.connect().await;
+    let mut user = service.login_user("alice", None).await.unwrap();
+    assert!(service.sync().is_none());
+    assert!(user.database(&tree).await.is_err());
+    assert!(
+        user.open_database(&tree).await.is_err(),
+        "an approved peer request is not a completed user join"
+    );
+    let db = user
+        .join(
+            &ticket,
+            &key,
+            Permission::Write(5),
+            SyncSettings::disabled(),
+            None,
+        )
+        .await
+        .expect("a fresh foreground retry must finish the approved join");
+    assert_eq!(db.root_id(), &tree);
+    assert_eq!(user.database(&tree).await.unwrap().key_id, key);
+    assert!(!user.is_sync_enabled(&tree).await.unwrap());
+    assert!(user.open_database(&tree).await.is_ok());
+    assert!(
+        peer.sync
+            .pending_bootstrap_requests()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        peer.sync.approved_bootstrap_requests().await.unwrap().len(),
+        1
+    );
 
     peer.sync.stop_server().await.unwrap();
 }
