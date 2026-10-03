@@ -628,6 +628,30 @@ async fn daemon_refuses_unproven_keys_and_mismatched_proofs() {
     )
     .await;
     assert!(matches!(response, ServiceResponse::Ok), "{response:?}");
+    // Prepare is usable by any authenticated caller, so it must disclose no
+    // local tip IDs even when the ticket names somebody else's private tree.
+    let private_ticket =
+        DatabaseTicket::with_addresses(private_tree.clone(), vec![address.clone()]);
+    let prepared = request(
+        &mut reader,
+        &mut writer,
+        ServiceRequest::TicketBootstrapPrepare {
+            ticket: private_ticket,
+        },
+    )
+    .await;
+    let ServiceResponse::TicketBootstrapRoute {
+        tips: prepared_tips,
+        ..
+    } = prepared
+    else {
+        panic!("expected route without local data");
+    };
+    assert!(
+        prepared_tips.is_empty(),
+        "Prepare disclosed private local tips"
+    );
+
     let private_tips = daemon
         .instance
         .backend()
@@ -893,4 +917,44 @@ async fn embedded_join_without_sync_is_refused() {
         matches!(&error, Error::Sync(e) if matches!(**e, SyncError::SyncNotEnabled)),
         "{error:?}"
     );
+}
+
+#[tokio::test]
+async fn pending_join_does_not_publish_peer_tree_relationship() {
+    let peer = Peer::start(false).await;
+    let daemon = Daemon::start().await;
+    let service = daemon.connect().await;
+    let mut user = service.login_user("alice", None).await.unwrap();
+    let key = user.get_default_key().unwrap();
+    assert!(is_pending(
+        &user
+            .join(
+                &peer.ticket,
+                &key,
+                Permission::Read,
+                SyncSettings::disabled(),
+                None
+            )
+            .await
+            .unwrap_err()
+    ));
+    assert!(
+        peer.sync
+            .get_tree_peers(&peer.tree())
+            .await
+            .unwrap()
+            .is_empty(),
+        "Pending published a serving relationship"
+    );
+    assert!(
+        daemon
+            .instance
+            .sync()
+            .unwrap()
+            .get_tree_peers(&peer.tree())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    peer.sync.stop_server().await.unwrap();
 }
