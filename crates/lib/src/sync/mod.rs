@@ -116,6 +116,8 @@ mod bootstrap;
 mod bootstrap_request_manager;
 #[cfg(any(test, feature = "testing"))]
 mod dial_testing;
+#[cfg(test)]
+mod join_transfer_tests;
 mod ops;
 mod peer;
 mod peer_state;
