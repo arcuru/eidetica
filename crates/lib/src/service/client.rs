@@ -1827,7 +1827,7 @@ mod tests {
     /// subscription state machine without a daemon. No reader task is
     /// spawned and no wire traffic is sent; the peer end is returned so the
     /// caller keeps the socket open for the duration of the test.
-    fn test_conn() -> (RemoteConnection, tokio::net::UnixStream) {
+    pub(super) fn test_conn() -> (RemoteConnection, tokio::net::UnixStream) {
         let (client_side, peer) = tokio::net::UnixStream::pair().unwrap();
         let (_reader, writer) = tokio::io::split(client_side);
         let inner = Arc::new(RemoteConnectionInner {
@@ -1936,5 +1936,57 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(1), conn.wait_closed_for_test())
             .await
             .expect("wait_closed_for_test must stay resolved once closed is published");
+    }
+}
+
+#[cfg(test)]
+mod frame_cancellation_tests {
+    use super::*;
+    use std::time::Duration;
+    use tokio::io::AsyncReadExt;
+
+    #[tokio::test]
+    async fn cancelled_partial_service_frame_retires_connection() {
+        let (conn, mut peer) = super::tests::test_conn();
+        // Larger than a socket's send buffer, but below the protocol cap.
+        let request = ServiceRequest::TrustedLoginUser {
+            username: "x".repeat(2 * 1024 * 1024),
+        };
+        let mut sending = Box::pin(conn.request(request));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), &mut sending)
+                .await
+                .is_err()
+        );
+        let mut prefix = [0; 4];
+        peer.read_exact(&mut prefix).await.unwrap();
+        let expected = u32::from_be_bytes(prefix) as usize;
+        assert!(
+            expected > 1024 * 1024,
+            "positive control: frame write never began"
+        );
+        drop(sending);
+        assert!(
+            conn.inner.closed.load(Ordering::Acquire),
+            "cancelled partial frame left a live FIFO connection"
+        );
+        assert!(
+            conn.inner.pending_lock().is_empty(),
+            "cancelled frame stranded a waiter"
+        );
+        assert!(
+            conn.request(ServiceRequest::GetInstanceMetadata)
+                .await
+                .is_err()
+        );
+        let mut remainder = Vec::new();
+        tokio::time::timeout(Duration::from_secs(1), peer.read_to_end(&mut remainder))
+            .await
+            .expect("retired frame must close the write side")
+            .unwrap();
+        assert!(
+            remainder.len() < expected,
+            "test did not cancel a partial frame"
+        );
     }
 }

@@ -30,6 +30,9 @@ use crate::{
 enum Fault {
     Put,
     Promote,
+    PutTree,
+    PromoteTree,
+    AckTree,
 }
 
 /// Only the named write fails; all reads use the real backend, including caches.
@@ -44,28 +47,36 @@ impl BackendImpl for FaultBackend {
         self
     }
     async fn put(&self, entry: Entry) -> Result<()> {
-        if self
-            .fault
-            .lock()
-            .unwrap()
-            .as_ref()
-            .is_some_and(|(op, id)| matches!(op, Fault::Put) && *id == entry.id())
-        {
+        if self.fault.lock().unwrap().as_ref().is_some_and(|(op, id)| {
+            (matches!(op, Fault::Put) && *id == entry.id())
+                || (matches!(op, Fault::PutTree) && entry.root().as_ref() == Some(id))
+        }) {
             return Err(std::io::Error::other("injected put failure").into());
         }
         self.inner.put(entry).await
     }
     async fn update_verification_status(&self, id: &ID, status: VerificationStatus) -> Result<()> {
-        if self
-            .fault
-            .lock()
-            .unwrap()
-            .as_ref()
-            .is_some_and(|(op, target)| matches!(op, Fault::Promote) && target == id)
-        {
+        let root = self
+            .inner
+            .get(id)
+            .await?
+            .root()
+            .unwrap_or_else(|| id.clone());
+        let fault = self.fault.lock().unwrap().clone();
+        if fault.as_ref().is_some_and(|(op, target)| {
+            (matches!(op, Fault::Promote) && target == id)
+                || (matches!(op, Fault::PromoteTree) && *target == root)
+        }) {
             return Err(std::io::Error::other("injected promotion failure").into());
         }
-        self.inner.update_verification_status(id, status).await
+        self.inner.update_verification_status(id, status).await?;
+        if fault
+            .as_ref()
+            .is_some_and(|(op, target)| matches!(op, Fault::AckTree) && *target == root)
+        {
+            return Err(std::io::Error::other("injected lost commit acknowledgement").into());
+        }
+        Ok(())
     }
     async fn get(&self, id: &ID) -> Result<Entry> {
         self.inner.get(id).await
@@ -481,6 +492,259 @@ async fn join_transfer_reuses_partial_entries_after_sqlite_reopen() -> Result<()
                 "final"
             );
         }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn join_user_pending_and_rejected_leave_user_history_unchanged() -> Result<()> {
+    use crate::user::SyncSettings;
+    let (instance, mut user) =
+        Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless("client"))
+            .await?;
+    let key = user.get_default_key()?;
+    let tree = ID::from_bytes("not-yet-replicated");
+    let before = user.user_database().snapshot().await?;
+    for rejected in [false, false, true, true] {
+        let error = if rejected {
+            super::SyncError::BootstrapRejected {
+                request_id: "same".into(),
+                message: "rejected".into(),
+            }
+        } else {
+            super::SyncError::BootstrapPending {
+                request_id: "same".into(),
+                message: "pending".into(),
+            }
+        };
+        assert!(
+            user.record_database_access(&tree, &key, SyncSettings::on_commit(), Err(error.into()))
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            before,
+            user.user_database().snapshot().await?,
+            "non-success appended User history"
+        );
+        assert_eq!(user.key_mapping(&key, &tree)?, None);
+        assert!(user.database(&tree).await.is_err());
+    }
+    drop(instance);
+    Ok(())
+}
+
+async fn wildcard_database(instance: &Instance) -> Result<Database> {
+    let (owner, _) = generate_keypair();
+    let db = Database::create(instance, owner, Doc::new()).await?;
+    db.with_transaction(|tx| async move {
+        tx.get_settings()?
+            .set_global_auth_key(crate::auth::AuthKey::active(None, Permission::Write(0)))
+            .await
+    })
+    .await?;
+    Ok(db)
+}
+
+#[tokio::test]
+async fn join_user_commit_failure_does_not_publish_speculative_cache() -> Result<()> {
+    use crate::user::SyncSettings;
+    for op in [Fault::PutTree, Fault::PromoteTree, Fault::AckTree] {
+        let (instance, _sync, fault) = destination(Arc::new(InMemory::new())).await?;
+        let mut user = instance.login_user("client", None).await?;
+        let key = user.get_default_key()?;
+        let db = wildcard_database(&instance).await?;
+        *fault.lock().unwrap() = Some((op, user.user_database().root_id().clone()));
+        assert!(
+            user.track_database(db.root_id(), &key, SyncSettings::disabled())
+                .await
+                .is_err()
+        );
+        if matches!(op, Fault::AckTree) {
+            assert_eq!(
+                user.key_mapping(&key, db.root_id())?,
+                Some(crate::auth::SigKey::global(&key)),
+                "cache did not reconcile verified lost-ack outcome"
+            );
+        } else {
+            assert_eq!(
+                user.key_mapping(&key, db.root_id())?,
+                None,
+                "uncommitted mapping escaped into cache"
+            );
+        }
+        *fault.lock().unwrap() = None;
+        user.track_database(db.root_id(), &key, SyncSettings::disabled())
+            .await?;
+        assert_eq!(
+            user.key_mapping(&key, db.root_id())?,
+            Some(crate::auth::SigKey::global(&key))
+        );
+        let before = user.user_database().snapshot().await?;
+        user.track_database(db.root_id(), &key, SyncSettings::disabled())
+            .await?;
+        assert_eq!(
+            before,
+            user.user_database().snapshot().await?,
+            "identical retry appended User history"
+        );
+        let fresh = instance.login_user("client", None).await?;
+        assert_eq!(
+            fresh.key_mapping(&key, db.root_id())?,
+            user.key_mapping(&key, db.root_id())?
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn join_user_rediscovers_legacy_mapping_and_preserves_unrelated_intent() -> Result<()> {
+    use crate::user::SyncSettings;
+    let (instance, mut user) =
+        Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless("client"))
+            .await?;
+    let key = user.get_default_key()?;
+    let db = wildcard_database(&instance).await?;
+    user.track_database(db.root_id(), &key, SyncSettings::disabled())
+        .await?;
+    // Simulate a legacy provisional direct mapping on an unchanged tracked key.
+    user.map_key(&key, db.root_id(), crate::auth::SigKey::from_pubkey(&key))
+        .await?;
+    let other = wildcard_database(&instance).await?;
+    let mut another_session = instance.login_user("client", None).await?;
+    another_session
+        .track_database(
+            other.root_id(),
+            &key,
+            SyncSettings::on_commit().with_interval(43),
+        )
+        .await?;
+    user.record_database_access(db.root_id(), &key, SyncSettings::disabled(), Ok(()))
+        .await?;
+    assert_eq!(
+        user.key_mapping(&key, db.root_id())?,
+        Some(crate::auth::SigKey::global(&key)),
+        "successful retry kept provisional identity"
+    );
+    assert!(
+        user.key_mapping(&key, other.root_id())?.is_some(),
+        "cache dropped other session's persisted mapping"
+    );
+    assert_eq!(
+        user.database(other.root_id())
+            .await?
+            .sync_settings
+            .interval_seconds,
+        Some(43)
+    );
+    Ok(())
+}
+
+async fn pending_request(
+    sync: &Sync,
+    tree: &ID,
+    key: &crate::auth::crypto::PublicKey,
+    permission: Permission,
+) -> Result<String> {
+    use super::{
+        BootstrapRequest, RequestStatus, bootstrap_request_manager::BootstrapRequestManager,
+    };
+    let tx = sync.sync_tree.new_transaction().await?;
+    let id = BootstrapRequestManager::new(&tx)
+        .store_request(BootstrapRequest {
+            tree_id: tree.clone(),
+            requesting_pubkey: key.clone(),
+            requesting_key_name: "requester".into(),
+            requested_permission: permission,
+            timestamp: "2026-10-03T18:00:00Z".into(),
+            status: RequestStatus::Pending,
+            peer_address: Address::http("unused"),
+            metadata: None,
+        })
+        .await?;
+    tx.commit().await?;
+    Ok(id)
+}
+
+#[tokio::test]
+async fn join_approval_reconciles_split_commit_without_regrant() -> Result<()> {
+    for op in [Fault::PutTree, Fault::PromoteTree, Fault::AckTree] {
+        let (instance, sync, fault) = destination(Arc::new(InMemory::new())).await?;
+        let mut owner = instance.login_user("client", None).await?;
+        let owner_key = owner.get_default_key()?;
+        let db = owner.create_database(Doc::new(), &owner_key).await?;
+        let (_, requester) = generate_keypair();
+        let request =
+            pending_request(&sync, db.root_id(), &requester, Permission::Write(5)).await?;
+        *fault.lock().unwrap() = Some((op, sync.sync_tree.root_id().clone()));
+        assert!(
+            owner
+                .approve_bootstrap_request(&sync, &request, &owner_key)
+                .await
+                .is_err()
+        );
+        assert!(
+            Database::can_access(&instance, db.root_id(), &requester, &Permission::Write(5))
+                .await?
+        );
+        let after_grant = db.snapshot().await?;
+        *fault.lock().unwrap() = None;
+        owner
+            .approve_bootstrap_request(&sync, &request, &owner_key)
+            .await?;
+        assert_eq!(
+            after_grant,
+            db.snapshot().await?,
+            "approval retry reissued active grant"
+        );
+        let after_decision = sync.sync_tree.snapshot().await?;
+        owner
+            .approve_bootstrap_request(&sync, &request, &owner_key)
+            .await?;
+        assert_eq!(
+            after_decision,
+            sync.sync_tree.snapshot().await?,
+            "completed decision not idempotent"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn join_approval_retry_refuses_observed_reduction_and_revocation() -> Result<()> {
+    for revoke in [false, true] {
+        let (instance, sync, _) = destination(Arc::new(InMemory::new())).await?;
+        let mut owner = instance.login_user("client", None).await?;
+        let owner_key = owner.get_default_key()?;
+        let db = owner.create_database(Doc::new(), &owner_key).await?;
+        let (_, requester) = generate_keypair();
+        let request =
+            pending_request(&sync, db.root_id(), &requester, Permission::Write(5)).await?;
+        db.with_transaction(|tx| {
+            let requester = requester.clone();
+            async move {
+                let auth = if revoke {
+                    crate::auth::AuthKey::new(
+                        None,
+                        Permission::Write(5),
+                        crate::auth::KeyStatus::Revoked,
+                    )
+                } else {
+                    crate::auth::AuthKey::active(None, Permission::Read)
+                };
+                tx.get_settings()?.set_auth_key(&requester, auth).await
+            }
+        })
+        .await?;
+        let before = db.snapshot().await?;
+        assert!(
+            owner
+                .approve_bootstrap_request(&sync, &request, &owner_key)
+                .await
+                .is_err(),
+            "retry restored reduced/revoked grant"
+        );
+        assert_eq!(before, db.snapshot().await?);
     }
     Ok(())
 }
