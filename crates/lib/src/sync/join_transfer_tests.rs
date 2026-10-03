@@ -424,3 +424,63 @@ async fn join_transfer_propagates_put_and_promotion_failures() -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn join_transfer_reuses_partial_entries_after_sqlite_reopen() -> Result<()> {
+    use crate::backend::database::Sqlite;
+    let (_source, tree, entries) = source().await?;
+    for op in [Fault::Put, Fault::Promote] {
+        for entry in &entries {
+            let dir = tempfile::tempdir()?;
+            let path = dir.path().join("replica.sqlite");
+            let (local, sync, fault) = destination(Arc::new(Sqlite::open(&path).await?)).await?;
+            *fault.lock().unwrap() = Some((op, entry.id()));
+            assert!(
+                exchange(&sync, &tree, bootstrap(&tree, &entries))
+                    .await
+                    .is_err()
+            );
+            let before = local.require_local_engine()?.get_tree(&tree).await?;
+            drop(sync);
+            drop(local);
+            drop(fault);
+
+            // Reopen the file, not an in-memory snapshot of its apparent state.
+            let reopened = Instance::open_backend(Box::new(Sqlite::open(&path).await?)).await?;
+            let after = reopened.require_local_engine()?.get_tree(&tree).await?;
+            assert_eq!(
+                before.iter().map(Entry::id).collect::<Vec<_>>(),
+                after.iter().map(Entry::id).collect::<Vec<_>>()
+            );
+            let sync = Sync::new(reopened.clone()).await?;
+            exchange(&sync, &tree, bootstrap(&tree, &entries)).await?;
+            for entry in &entries {
+                assert_eq!(
+                    reopened
+                        .require_local_engine()?
+                        .get_verification_status(&entry.id())
+                        .await?,
+                    VerificationStatus::Verified
+                );
+            }
+            let tips = reopened.backend().snapshot(&tree).await?;
+            exchange(&sync, &tree, bootstrap(&tree, &entries)).await?;
+            assert_eq!(
+                tips,
+                reopened.backend().snapshot(&tree).await?,
+                "duplicate transfer changed target history"
+            );
+            assert_eq!(
+                Database::open(&reopened, &tree)
+                    .await?
+                    .get_store_viewer::<DocStore>("content")
+                    .await?
+                    .get_string("message")
+                    .await?,
+                "final"
+            );
+        }
+    }
+    Ok(())
+}

@@ -837,18 +837,26 @@ impl Sync {
             SyncResponse::Bootstrap(bootstrap_response) => {
                 info!(peer = %peer_pubkey, tree = %tree_id, entry_count = bootstrap_response.all_entries.len() + 1, "Received bootstrap response");
 
-                // Store root + all entries as a single batch with callback dispatch
+                // Neither the envelope nor the root may substitute another tree.
+                if bootstrap_response.tree_id != tree_id
+                    || !bootstrap_response.root_entry.is_root()
+                    || bootstrap_response.root_entry.id() != tree_id
+                {
+                    return Err(SyncError::InvalidEntry(
+                        "bootstrap response does not contain the requested root".to_string(),
+                    )
+                    .into());
+                }
                 let mut all_entries = Vec::with_capacity(1 + bootstrap_response.all_entries.len());
                 all_entries.push(bootstrap_response.root_entry);
                 all_entries.extend(bootstrap_response.all_entries);
 
-                // Bootstrap entries come from a peer; stored Unverified.
-                let instance = self.instance()?;
-                instance.put_remote_entries(&tree_id, all_entries).await?;
+                self.store_verified_response_entries(&tree_id, all_entries)
+                    .await?;
 
                 info!(peer = %peer_pubkey, tree = %tree_id, "Bootstrap sync completed successfully");
             }
-            SyncResponse::Incremental(incremental_response) => {
+            SyncResponse::Incremental(mut incremental_response) => {
                 info!(peer = %peer_pubkey, tree = %tree_id, missing_count = incremental_response.missing_entries.len(), "Received incremental sync response");
                 // The response handler stores into, and sends back from, the
                 // tree the response names; it must be the one requested.
@@ -860,7 +868,13 @@ impl Sync {
                     .into());
                 }
 
-                // Use the enhanced handler that supports bidirectional sync
+                // Do not send anything back or publish routing for an incomplete
+                // supplied closure. Count and raw tips cannot establish readiness.
+                self.store_verified_response_entries(
+                    &tree_id,
+                    std::mem::take(&mut incremental_response.missing_entries),
+                )
+                .await?;
                 self.handle_incremental_response(incremental_response, address)
                     .await?;
 
@@ -903,6 +917,30 @@ impl Sync {
         // This allows on_local_write() to find this peer when queueing entries
         self.add_tree_sync(peer_pubkey, &tree_id).await?;
 
+        Ok(())
+    }
+
+    /// Require the finite supplied closure to be locally verified. Verification
+    /// is prefix-closed, so a Verified supplied entry also proves its ancestry;
+    /// an omitted remote branch is not something this exchange can detect.
+    async fn store_verified_response_entries(
+        &self,
+        tree_id: &ID,
+        entries: Vec<Entry>,
+    ) -> Result<()> {
+        let ids: Vec<_> = entries.iter().map(Entry::id).collect();
+        let instance = self.instance()?;
+        instance.put_remote_entries(tree_id, entries).await?;
+        let backend = instance.require_local_engine()?;
+        for id in ids {
+            let status = backend.get_verification_status(&id).await?;
+            if status != crate::backend::VerificationStatus::Verified {
+                return Err(SyncError::InvalidEntry(format!(
+                    "requested transfer entry {id} is {status:?}, not Verified"
+                ))
+                .into());
+            }
+        }
         Ok(())
     }
 
