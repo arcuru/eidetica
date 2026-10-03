@@ -322,7 +322,7 @@ pub struct TicketBootstrapRequest {
     pub address: Address,
     /// Peer identity that answered on `address`.
     pub peer: PublicKey,
-    /// Daemon pull tips the proof covers.
+    /// Empty bootstrap tips the proof covers.
     pub tips: Snapshot,
     /// Requester-chosen name for the key, shown to approvers.
     pub requesting_key_name: String,
@@ -399,7 +399,7 @@ pub enum ServiceRequest {
     // === Post-auth: ticket bootstrap through the daemon's sync engine ===
     /// Step 1 of joining a database from a ticket. The daemon races the
     /// ticket's address hints with its own transports and returns the route,
-    /// the identity that answered on it, and the daemon's local pull tips.
+    /// the identity that answered on it, and empty tips (no local disclosure).
     /// The client needs the last two to sign a peer-bound request proof with
     /// a key that never leaves the client process.
     TicketBootstrapPrepare { ticket: DatabaseTicket },

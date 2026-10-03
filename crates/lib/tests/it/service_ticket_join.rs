@@ -26,7 +26,7 @@ use eidetica::{
         DatabaseTicket, SyncError, peer_types::Address, protocol::SyncRequestAuth,
         transports::http::HttpTransport,
     },
-    user::{UserError, types::SyncSettings},
+    user::types::SyncSettings,
 };
 use tempfile::TempDir;
 use tokio::{
@@ -240,8 +240,7 @@ async fn connected_join_opens_database_and_wildcard_authorizes_daemon_sync() {
     peer.sync.stop_server().await.unwrap();
 }
 
-/// A pending request records a provisional mapping, keeps its approver
-/// metadata, and a retry after approval opens the database.
+/// Pending keeps only the peer request; retry after approval records User state.
 #[tokio::test]
 async fn connected_join_pending_then_approved_retry_opens_database() {
     let peer = Peer::start(false).await;
@@ -254,6 +253,7 @@ async fn connected_join_pending_then_approved_retry_opens_database() {
     let mut metadata = Doc::new();
     metadata.set("device", "laptop");
     let settings = SyncSettings::on_commit().with_interval(29);
+    let user_before = user.user_database().snapshot().await.unwrap();
 
     let error = user
         .join(
@@ -269,20 +269,10 @@ async fn connected_join_pending_then_approved_retry_opens_database() {
         is_pending(&error),
         "expected BootstrapPending, got {error:?}"
     );
-    assert_eq!(
-        user.database(&tree)
-            .await
-            .unwrap()
-            .sync_settings
-            .interval_seconds,
-        Some(29),
-        "pending join must keep the requested preferences"
-    );
-    let open_error = user.open_database(&tree).await.unwrap_err();
-    assert!(
-        matches!(&open_error, Error::User(e) if matches!(**e, UserError::DatabaseAccessPending { .. })),
-        "expected DatabaseAccessPending, got {open_error:?}"
-    );
+    assert!(user.database(&tree).await.is_err());
+    assert_eq!(user.key_mapping(&key, &tree).unwrap(), None);
+    assert_eq!(user_before, user.user_database().snapshot().await.unwrap());
+    assert!(user.open_database(&tree).await.is_err());
 
     // Retrying while still pending resumes the same request.
     let retry = user
@@ -293,6 +283,7 @@ async fn connected_join_pending_then_approved_retry_opens_database() {
         is_pending(&retry),
         "expected BootstrapPending, got {retry:?}"
     );
+    assert_eq!(user_before, user.user_database().snapshot().await.unwrap());
     let pending = peer.sync.pending_bootstrap_requests().await.unwrap();
     assert_eq!(pending.len(), 1, "a retry must not duplicate the request");
     let (request_id, request) = &pending[0];
@@ -312,7 +303,7 @@ async fn connected_join_pending_then_approved_retry_opens_database() {
         .unwrap();
     assert!(
         user.open_database(&tree).await.is_err(),
-        "peer approval alone must not complete the foreground join"
+        "peer approval alone must not complete the join"
     );
     let db = user
         .join(&ticket, &key, Permission::Write(5), settings, None)
@@ -847,7 +838,7 @@ async fn disconnected_join_requires_explicit_retry_after_peer_approval() {
             None,
         )
         .await
-        .expect("a fresh foreground retry must finish the approved join");
+        .expect("an explicit retry must finish the approved join");
     assert_eq!(db.root_id(), &tree);
     assert_eq!(user.database(&tree).await.unwrap().key_id, key);
     assert!(!user.is_sync_enabled(&tree).await.unwrap());
@@ -957,4 +948,183 @@ async fn pending_join_does_not_publish_peer_tree_relationship() {
             .is_empty()
     );
     peer.sync.stop_server().await.unwrap();
+}
+
+#[tokio::test]
+async fn identical_completed_join_preserves_user_and_routing_history() {
+    let peer = Peer::start(true).await;
+    let daemon = Daemon::start().await;
+    let service = daemon.connect().await;
+    let mut user = service.login_user("alice", None).await.unwrap();
+    let key = user.get_default_key().unwrap();
+    user.join(
+        &peer.ticket,
+        &key,
+        Permission::Write(5),
+        SyncSettings::disabled(),
+        None,
+    )
+    .await
+    .unwrap();
+    let user_before = user.user_database().snapshot().await.unwrap();
+    let local_routes = daemon
+        .instance
+        .sync()
+        .unwrap()
+        .sync_tree()
+        .snapshot()
+        .await
+        .unwrap();
+    let peer_routes = peer.sync.sync_tree().snapshot().await.unwrap();
+    for _ in 0..3 {
+        user.join(
+            &peer.ticket,
+            &key,
+            Permission::Write(5),
+            SyncSettings::disabled(),
+            None,
+        )
+        .await
+        .unwrap();
+    }
+    assert_eq!(
+        user_before,
+        user.user_database().snapshot().await.unwrap(),
+        "identical User settings appended history"
+    );
+    assert_eq!(
+        local_routes,
+        daemon
+            .instance
+            .sync()
+            .unwrap()
+            .sync_tree()
+            .snapshot()
+            .await
+            .unwrap(),
+        "established local routing appended history"
+    );
+    assert_eq!(
+        peer_routes,
+        peer.sync.sync_tree().snapshot().await.unwrap(),
+        "established peer routing appended history"
+    );
+    peer.sync.stop_server().await.unwrap();
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn pending_join_survives_sqlite_daemon_restart_without_user_state() -> eidetica::Result<()> {
+    use eidetica::backend::database::Sqlite;
+    let peer = Peer::start(false).await;
+    let dir = tempfile::tempdir()?;
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))?;
+    let file = dir.path().join("daemon.sqlite");
+    let socket = dir.path().join("daemon.sock");
+    let (daemon, _) = Instance::create_backend(
+        Box::new(Sqlite::open(&file).await?),
+        NewUser::passwordless("alice"),
+    )
+    .await?;
+    daemon.enable_sync().await?;
+    daemon
+        .sync()
+        .unwrap()
+        .register_transport("http", HttpTransport::builder())
+        .await?;
+    let (shutdown, rx) = watch::channel(());
+    let server = ServiceServer::bind(daemon.clone(), &socket).await?;
+    let running = tokio::spawn(server.run(rx));
+    let service = Instance::connect(format!("unix://{}", socket.display())).await?;
+    let mut user = service.login_user("alice", None).await?;
+    let key = user.get_default_key()?;
+    let before = user.user_database().snapshot().await?;
+    assert!(is_pending(
+        &user
+            .join(
+                &peer.ticket,
+                &key,
+                Permission::Write(5),
+                SyncSettings::disabled(),
+                None
+            )
+            .await
+            .unwrap_err()
+    ));
+    let pending = peer.sync.pending_bootstrap_requests().await?;
+    assert_eq!(pending.len(), 1);
+    assert_eq!(before, user.user_database().snapshot().await?);
+    drop(user);
+    drop(service);
+    drop(shutdown);
+    tokio::time::timeout(std::time::Duration::from_secs(2), running)
+        .await
+        .unwrap()
+        .unwrap()?;
+    assert!(!socket.exists());
+    drop(daemon);
+
+    let daemon = Instance::open_backend(Box::new(Sqlite::open(&file).await?)).await?;
+    daemon.enable_sync().await?;
+    daemon
+        .sync()
+        .unwrap()
+        .register_transport("http", HttpTransport::builder())
+        .await?;
+    let (shutdown, rx) = watch::channel(());
+    let server = ServiceServer::bind(daemon.clone(), &socket).await?;
+    let running = tokio::spawn(server.run(rx));
+    let service = Instance::connect(format!("unix://{}", socket.display())).await?;
+    let mut user = service.login_user("alice", None).await?;
+    assert_eq!(before, user.user_database().snapshot().await?);
+    assert_eq!(user.key_mapping(&key, &peer.tree())?, None);
+    assert!(is_pending(
+        &user
+            .join(
+                &peer.ticket,
+                &key,
+                Permission::Write(5),
+                SyncSettings::disabled(),
+                None
+            )
+            .await
+            .unwrap_err()
+    ));
+    assert_eq!(
+        peer.sync.pending_bootstrap_requests().await?[0].0,
+        pending[0].0
+    );
+    peer.user
+        .approve_bootstrap_request(&peer.sync, &pending[0].0, &peer.admin_key)
+        .await?;
+    let db = user
+        .join(
+            &peer.ticket,
+            &key,
+            Permission::Write(5),
+            SyncSettings::disabled(),
+            None,
+        )
+        .await?;
+    assert_eq!(db.root_id(), &peer.tree());
+    let after = user.user_database().snapshot().await?;
+    user.join(
+        &peer.ticket,
+        &key,
+        Permission::Write(5),
+        SyncSettings::disabled(),
+        None,
+    )
+    .await?;
+    assert_eq!(after, user.user_database().snapshot().await?);
+    drop(db);
+    drop(user);
+    drop(service);
+    drop(shutdown);
+    tokio::time::timeout(std::time::Duration::from_secs(2), running)
+        .await
+        .unwrap()
+        .unwrap()?;
+    peer.sync.stop_server().await?;
+    Ok(())
 }

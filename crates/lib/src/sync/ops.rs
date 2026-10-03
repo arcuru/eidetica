@@ -807,6 +807,11 @@ impl Sync {
         request: SyncTreeRequest,
     ) -> Result<()> {
         let tree_id = request.tree_id.clone();
+        let requested_access = request
+            .requesting_key
+            .clone()
+            .zip(request.requested_permission);
+        let pull_only = requested_access.is_some() && request.our_tips.is_empty();
         let request = SyncRequest::SyncTree(request);
 
         // Send request via background sync command
@@ -857,6 +862,13 @@ impl Sync {
                 info!(peer = %peer_pubkey, tree = %tree_id, "Bootstrap sync completed successfully");
             }
             SyncResponse::Incremental(mut incremental_response) => {
+                if pull_only {
+                    return Err(SyncError::SyncProtocolError(
+                        "ticket bootstrap requires a full response, not incremental send-back"
+                            .to_string(),
+                    )
+                    .into());
+                }
                 info!(peer = %peer_pubkey, tree = %tree_id, missing_count = incremental_response.missing_entries.len(), "Received incremental sync response");
                 // The response handler stores into, and sends back from, the
                 // tree the response names; it must be the one requested.
@@ -913,8 +925,15 @@ impl Sync {
             }
         }
 
-        // Track tree/peer relationship for sync_on_commit to work
-        // This allows on_local_write() to find this peer when queueing entries
+        if let Some((key, permission)) = requested_access
+            && !Database::can_access(&self.instance()?, &tree_id, &key, &permission).await?
+        {
+            return Err(SyncError::AuthenticationFailed(
+                "verified transfer does not grant the requested permission".to_string(),
+            )
+            .into());
+        }
+        // Publication follows verified transfer and current requested authority.
         self.add_tree_sync(peer_pubkey, &tree_id).await?;
 
         Ok(())

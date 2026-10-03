@@ -10,7 +10,7 @@ A `Transaction` bundles multiple Store operations (which affect individual subtr
 
 Transactions provide several key benefits:
 
-- **Atomicity**: Changes made to multiple `Store`s within a single `Transaction` are committed together as one atomic unit. If the `commit()` fails, no changes are persisted. This is similar to transactions in traditional databases.
+- **Atomicity**: Changes made to multiple `Store`s within a single `Transaction` are encoded together in one signed Entry. A failure before persistence writes nothing, but storage, verification, callbacks and acknowledgement are separate steps: an error or lost acknowledgement can follow persistence. Read back verified state before retrying; a failed `commit()` does not imply rollback.
 - **Consistency**: A `Transaction` captures a snapshot of the `Database`'s state (specifically, the tips of the relevant `Store`s) when it's created or when a `Store` is first accessed within it. All reads and writes within that `Transaction` occur relative to this consistent state.
 - **Change Staging**: Modifications made via `Store` handles are staged within the `Transaction` object itself, not written directly to the database until `commit()` is called.
 - **Authentication**: All transactions are automatically authenticated using the database's default signing key, ensuring data integrity and access control.

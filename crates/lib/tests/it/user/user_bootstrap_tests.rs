@@ -401,8 +401,8 @@ async fn test_user_reject_nonexistent_request() {
 }
 
 #[tokio::test]
-async fn test_user_cannot_approve_twice() {
-    let (_instance, user, _database, sync, tree_id, user_key_id) = setup_user_with_database()
+async fn test_user_completed_approval_is_idempotent() {
+    let (_instance, user, database, sync, tree_id, user_key_id) = setup_user_with_database()
         .await
         .expect("Failed to setup test");
 
@@ -418,18 +418,13 @@ async fn test_user_cannot_approve_twice() {
         .await
         .expect("First approval should succeed");
 
-    // Try to approve again
-    let result = user
-        .approve_bootstrap_request(&sync, &request_id, &user_key_id)
-        .await;
-
-    assert!(result.is_err(), "Second approval should fail");
-    let error_msg = result.unwrap_err().to_string();
-    assert!(
-        error_msg.contains("Invalid request state") || error_msg.contains("state"),
-        "Error should indicate invalid state: {error_msg}"
-    );
-    println!("✅ Double approval correctly prevented");
+    let target_before = database.snapshot().await.unwrap();
+    let decision_before = sync.sync_tree().snapshot().await.unwrap();
+    user.approve_bootstrap_request(&sync, &request_id, &user_key_id)
+        .await
+        .unwrap();
+    assert_eq!(target_before, database.snapshot().await.unwrap());
+    assert_eq!(decision_before, sync.sync_tree().snapshot().await.unwrap());
 }
 
 #[tokio::test]

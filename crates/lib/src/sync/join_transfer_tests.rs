@@ -26,7 +26,7 @@ use crate::{
     sync::Address,
 };
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Fault {
     Put,
     Promote,
@@ -256,6 +256,15 @@ fn bootstrap(tree: &ID, entries: &[Entry]) -> SyncResponse {
 /// Exercise the real exchange response handler, without a remote response oracle.
 /// Unexpected send-back fails loudly instead of hiding a confidentiality leak.
 async fn exchange(sync: &Sync, tree: &ID, response: SyncResponse) -> Result<()> {
+    exchange_with_access(sync, tree, response, None).await
+}
+
+async fn exchange_with_access(
+    sync: &Sync,
+    tree: &ID,
+    response: SyncResponse,
+    access: Option<(crate::auth::crypto::PublicKey, Permission)>,
+) -> Result<()> {
     let (tx, mut rx) = mpsc::channel(1);
     let mut sync = sync.clone();
     sync.background_tx = std::sync::OnceLock::from(tx);
@@ -285,9 +294,9 @@ async fn exchange(sync: &Sync, tree: &ID, response: SyncResponse) -> Result<()> 
                 tree_id: tree.clone(),
                 our_tips: Snapshot::EMPTY,
                 peer_pubkey: None,
-                requesting_key: None,
-                requesting_key_name: None,
-                requested_permission: None,
+                requesting_key: access.as_ref().map(|(key, _)| key.clone()),
+                requesting_key_name: access.as_ref().map(|_| "requester".to_string()),
+                requested_permission: access.as_ref().map(|(_, permission)| *permission),
                 metadata: None,
                 auth: None,
             },
@@ -746,5 +755,382 @@ async fn join_approval_retry_refuses_observed_reduction_and_revocation() -> Resu
         );
         assert_eq!(before, db.snapshot().await?);
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn join_transfer_checks_grant_and_rejects_incremental_send_back() -> Result<()> {
+    let (source, tree, entries) = source().await?;
+    let (local, sync, _) = destination(Arc::new(InMemory::new())).await?;
+    let (_, requester) = generate_keypair();
+    let access = (requester.clone(), Permission::Write(5));
+    assert!(
+        exchange_with_access(
+            &sync,
+            &tree,
+            SyncResponse::Incremental(IncrementalResponse {
+                tree_id: tree.clone(),
+                their_tips: vec![tree.clone()],
+                missing_entries: entries.clone(),
+            }),
+            Some(access.clone())
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        local.backend().get(&tree).await.is_err(),
+        "hostile incremental join wrote before refusing send-back"
+    );
+    assert!(
+        exchange_with_access(
+            &sync,
+            &tree,
+            bootstrap(&tree, &entries),
+            Some(access.clone())
+        )
+        .await
+        .is_err(),
+        "peer's approved flag substituted for requested authority"
+    );
+    let owner = source.login_user("owner", None).await?;
+    let db = owner.open_database(&tree).await?;
+    db.with_transaction(|tx| {
+        let requester = requester.clone();
+        async move {
+            tx.get_settings()?
+                .set_auth_key(
+                    &requester,
+                    crate::auth::AuthKey::active(None, Permission::Write(5)),
+                )
+                .await
+        }
+    })
+    .await?;
+    let entries = source.require_local_engine()?.get_tree(&tree).await?;
+    let grant = entries.last().unwrap().id();
+    for op in [Fault::Put, Fault::Promote] {
+        let (local, sync, fault) = destination(Arc::new(InMemory::new())).await?;
+        *fault.lock().unwrap() = Some((op, grant.clone()));
+        assert!(
+            exchange_with_access(
+                &sync,
+                &tree,
+                bootstrap(&tree, &entries),
+                Some(access.clone())
+            )
+            .await
+            .is_err()
+        );
+        *fault.lock().unwrap() = None;
+        exchange_with_access(
+            &sync,
+            &tree,
+            bootstrap(&tree, &entries),
+            Some(access.clone()),
+        )
+        .await?;
+        assert!(Database::can_access(&local, &tree, &requester, &Permission::Write(5)).await?);
+    }
+    Ok(())
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn join_user_and_approval_reconcile_persisted_faults_after_reopen() -> Result<()> {
+    use crate::{backend::database::Sqlite, user::SyncSettings};
+    for op in [Fault::PutTree, Fault::PromoteTree, Fault::AckTree] {
+        let dir = tempfile::tempdir()?;
+        let file = dir.path().join("join.sqlite");
+        let (instance, sync, fault) = destination(Arc::new(Sqlite::open(&file).await?)).await?;
+        let mut user = instance.login_user("client", None).await?;
+        let key = user.get_default_key()?;
+        let target = wildcard_database(&instance).await?;
+        let target_id = target.root_id().clone();
+        *fault.lock().unwrap() = Some((op, user.user_database().root_id().clone()));
+        assert!(
+            user.track_database(&target_id, &key, SyncSettings::disabled())
+                .await
+                .is_err()
+        );
+        drop(user);
+        drop(target);
+        drop(sync);
+        drop(instance);
+        drop(fault);
+        let instance = Instance::open_backend(Box::new(Sqlite::open(&file).await?)).await?;
+        let mut user = instance.login_user("client", None).await?;
+        user.track_database(&target_id, &key, SyncSettings::disabled())
+            .await?;
+        let tips = user.user_database().snapshot().await?;
+        user.track_database(&target_id, &key, SyncSettings::disabled())
+            .await?;
+        assert_eq!(tips, user.user_database().snapshot().await?);
+        assert_eq!(
+            user.key_mapping(&key, &target_id)?,
+            Some(crate::auth::SigKey::global(&key))
+        );
+        assert!(user.open_database(&target_id).await.is_ok());
+    }
+    for target_fault in [false, true] {
+        for op in [Fault::PutTree, Fault::PromoteTree, Fault::AckTree] {
+            let dir = tempfile::tempdir()?;
+            let file = dir.path().join("peer.sqlite");
+            let (instance, sync, fault) = destination(Arc::new(Sqlite::open(&file).await?)).await?;
+            let mut owner = instance.login_user("client", None).await?;
+            let key = owner.get_default_key()?;
+            let target = owner.create_database(Doc::new(), &key).await?;
+            let tree = target.root_id().clone();
+            let (_, requester) = generate_keypair();
+            let request = pending_request(&sync, &tree, &requester, Permission::Write(5)).await?;
+            let sync_id = sync.sync_tree.root_id().clone();
+            *fault.lock().unwrap() = Some((
+                op,
+                if target_fault {
+                    tree.clone()
+                } else {
+                    sync_id.clone()
+                },
+            ));
+            assert!(
+                owner
+                    .approve_bootstrap_request(&sync, &request, &key)
+                    .await
+                    .is_err()
+            );
+            drop(owner);
+            drop(target);
+            drop(sync);
+            drop(instance);
+            drop(fault);
+            let instance = Instance::open_backend(Box::new(Sqlite::open(&file).await?)).await?;
+            let sync = Sync::load(instance.clone(), &sync_id).await?;
+            assert_eq!(sync.sync_tree.root_id(), &sync_id);
+            let owner = instance.login_user("client", None).await?;
+            owner
+                .approve_bootstrap_request(&sync, &request, &key)
+                .await?;
+            assert!(
+                Database::can_access(&instance, &tree, &requester, &Permission::Write(5)).await?
+            );
+            let target_tips = Database::open(&instance, &tree).await?.snapshot().await?;
+            let decision_tips = sync.sync_tree.snapshot().await?;
+            owner
+                .approve_bootstrap_request(&sync, &request, &key)
+                .await?;
+            assert_eq!(
+                target_tips,
+                Database::open(&instance, &tree).await?.snapshot().await?
+            );
+            assert_eq!(decision_tips, sync.sync_tree.snapshot().await?);
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn join_approval_refuses_removed_key_and_rejection_is_idempotent() -> Result<()> {
+    let (instance, sync, _) = destination(Arc::new(InMemory::new())).await?;
+    let mut owner = instance.login_user("client", None).await?;
+    let key = owner.get_default_key()?;
+    let db = owner.create_database(Doc::new(), &key).await?;
+    let (_, requester) = generate_keypair();
+    let request = pending_request(&sync, db.root_id(), &requester, Permission::Write(5)).await?;
+    db.with_transaction(|tx| {
+        let requester = requester.clone();
+        async move {
+            tx.get_settings()?
+                .set_auth_key(
+                    &requester,
+                    crate::auth::AuthKey::active(None, Permission::Write(5)),
+                )
+                .await
+        }
+    })
+    .await?;
+    let path = format!("auth.keys.{requester}");
+    db.with_transaction(|tx| async move {
+        tx.get_store::<DocStore>(crate::constants::SETTINGS)
+            .await?
+            .delete(path)
+            .await
+    })
+    .await?;
+    let before = db.snapshot().await?;
+    assert!(
+        owner
+            .approve_bootstrap_request(&sync, &request, &key)
+            .await
+            .is_err(),
+        "removed grant was reactivated"
+    );
+    assert_eq!(before, db.snapshot().await?);
+    owner
+        .reject_bootstrap_request(&sync, &request, &key)
+        .await?;
+    let decision = sync.sync_tree.snapshot().await?;
+    owner
+        .reject_bootstrap_request(&sync, &request, &key)
+        .await?;
+    assert_eq!(decision, sync.sync_tree.snapshot().await?);
+    assert!(
+        owner
+            .approve_bootstrap_request(&sync, &request, &key)
+            .await
+            .is_err()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn join_transfer_missing_delegated_history_is_not_complete() -> Result<()> {
+    use crate::auth::{
+        DelegatedTreeRef, DelegationStep, KeyHint, PermissionBounds, SigKey, TreeReference,
+    };
+    use crate::database::DatabaseKey;
+    let (source, _) =
+        Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless("owner")).await?;
+    let (delegate, delegate_pub) = generate_keypair();
+    let identity = Database::create(&source, delegate.clone(), Doc::new()).await?;
+    let target = Database::create(&source, generate_keypair().0, Doc::new()).await?;
+    let delegated_tips = identity.snapshot().await?.into_tips();
+    target
+        .with_transaction(|tx| {
+            let tree = identity.root_id().clone();
+            let tips = delegated_tips.clone();
+            async move {
+                tx.get_settings()?
+                    .add_delegated_tree(DelegatedTreeRef {
+                        permission_bounds: PermissionBounds {
+                            max: Permission::Write(10),
+                            min: None,
+                        },
+                        tree: TreeReference { root: tree, tips },
+                    })
+                    .await
+            }
+        })
+        .await?;
+    let delegated = target.clone().with_key(DatabaseKey::with_identity(
+        delegate,
+        SigKey::Delegation {
+            path: vec![DelegationStep {
+                tree: identity.root_id().clone(),
+                tips: delegated_tips,
+            }],
+            hint: KeyHint::from_pubkey(&delegate_pub),
+        },
+    ));
+    delegated
+        .with_transaction(|tx| async move {
+            tx.get_store::<DocStore>("content")
+                .await?
+                .set_string("message", "delegated")
+                .await
+        })
+        .await?;
+    let entries = source
+        .require_local_engine()?
+        .get_tree(target.root_id())
+        .await?;
+    let (local, sync, _) = destination(Arc::new(InMemory::new())).await?;
+    assert!(
+        exchange(
+            &sync,
+            target.root_id(),
+            bootstrap(target.root_id(), &entries)
+        )
+        .await
+        .is_err(),
+        "missing delegated history was reported complete"
+    );
+    assert_ne!(
+        local
+            .require_local_engine()?
+            .get_verification_status(&entries.last().unwrap().id())
+            .await?,
+        VerificationStatus::Verified
+    );
+    // Positive control: the identical transfer verifies when the delegated
+    // history is already available. Native Failed-status recovery after missing
+    // history is a separate release prerequisite, not repaired by join.
+    let (local, sync, _) = destination(Arc::new(InMemory::new())).await?;
+    let history = source
+        .require_local_engine()?
+        .get_tree(identity.root_id())
+        .await?;
+    exchange(
+        &sync,
+        identity.root_id(),
+        bootstrap(identity.root_id(), &history),
+    )
+    .await?;
+    exchange(
+        &sync,
+        target.root_id(),
+        bootstrap(target.root_id(), &entries),
+    )
+    .await?;
+    assert_eq!(
+        local
+            .require_local_engine()?
+            .get_verification_status(&entries.last().unwrap().id())
+            .await?,
+        VerificationStatus::Verified
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn join_concurrent_approval_and_routing_are_idempotent() -> Result<()> {
+    let (instance, sync, _) = destination(Arc::new(InMemory::new())).await?;
+    let mut owner = instance.login_user("client", None).await?;
+    let key = owner.get_default_key()?;
+    let db = owner.create_database(Doc::new(), &key).await?;
+    let (_, requester) = generate_keypair();
+    let request = pending_request(&sync, db.root_id(), &requester, Permission::Read).await?;
+    let count = instance
+        .require_local_engine()?
+        .get_tree(db.root_id())
+        .await?
+        .len();
+    let (a, b) = tokio::join!(
+        owner.approve_bootstrap_request(&sync, &request, &key),
+        owner.approve_bootstrap_request(&sync, &request, &key)
+    );
+    a?;
+    b?;
+    assert_eq!(
+        count + 1,
+        instance
+            .require_local_engine()?
+            .get_tree(db.root_id())
+            .await?
+            .len()
+    );
+    let (_, peer) = generate_keypair();
+    sync.register_peer(&peer, None).await?;
+    let count = instance
+        .require_local_engine()?
+        .get_tree(sync.sync_tree.root_id())
+        .await?
+        .len();
+    let (a, b) = tokio::join!(
+        sync.add_tree_sync(&peer, db.root_id()),
+        sync.add_tree_sync(&peer, db.root_id())
+    );
+    a?;
+    b?;
+    assert_eq!(
+        count + 1,
+        instance
+            .require_local_engine()?
+            .get_tree(sync.sync_tree.root_id())
+            .await?
+            .len()
+    );
+    let after = sync.sync_tree.snapshot().await?;
+    sync.add_tree_sync(&peer, db.root_id()).await?;
+    assert_eq!(after, sync.sync_tree.snapshot().await?);
     Ok(())
 }

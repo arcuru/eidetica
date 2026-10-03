@@ -96,18 +96,29 @@ let database = user
     .await?;
 ```
 
-`join` is a foreground operation with the same interface in embedded and connected modes.
+`join` has the same interface in embedded and connected modes and waits for the peer's answer.
 A ticket is a locator, not an access grant.
 Success returns a `Database` after recording the selected user key's SigKey mapping and the caller's `SyncSettings`, so `user.open_database()` can open it again.
-`SyncError::BootstrapPending` records a provisional mapping and preferences, but does not open the database: explicitly retry `join` after approval.
+`SyncError::BootstrapPending` changes no User mappings or preferences: explicitly retry `join` with the same arguments after approval.
 `SyncError::BootstrapRejected` is terminal for that request and records no new mapping or preferences.
 
-This is not durable acceptance of a join job.
-Dropping the future or disconnecting can leave effects at the peer, but does not guarantee client-side tracking or completion; reconnect and retry explicitly.
+Success means the finite supplied response and its ancestry have verified locally and the selected key currently satisfies the requested permission; it is not global catch-up.
+Identical completed User settings and established routing are not written again.
+Newer preferences observed after the network wait are preserved, and legacy provisional mappings are not deleted on Pending or rejection.
+An error, dropped future or disconnected caller can leave a peer request, replicated entries, routing or a committed User Entry without its acknowledgement.
+Reconnect and retry explicitly; a failed call does not imply rollback.
 There is no cancellation API, automatic restart-safe completion, or device enrollment.
 The client holds and signs with the user's private keys; the daemon owns networking, without a second client sync engine.
 Later daemon replication uses its device key, which needs its own authorization or a global grant.
 User-key access alone does not promise ongoing private background replication.
+
+### Current recovery limits
+
+Acquisition of an already-held database that the requesting key cannot read, including an orphan replica, remains refused.
+Join advertises empty tips and never sends local entries back, but this does not resolve native competing grant/revocation semantics.
+Missing delegated signing history can leave an entry Failed; supplying that history later is not yet sufficient to recover it by retry alone.
+Full partial-replica recovery is incomplete and requires native verification/authority enforcement and composed recovery tests; see the [verification model](../design/verification.md).
+Do not treat the independent transfer and bookkeeping fixes as a complete no-stale-grant-bypass guarantee.
 
 ### 2. Response Handling
 
