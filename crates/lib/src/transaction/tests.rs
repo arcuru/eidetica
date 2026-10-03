@@ -121,6 +121,46 @@ async fn test_prevent_auth_corruption() {
 }
 
 #[tokio::test]
+async fn test_docstore_set_result_matches_set_deserialization_error() {
+    let (instance, _admin) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        crate::NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let (private_key, _) = generate_keypair();
+    let database = Database::create(&instance, private_key, Doc::new())
+        .await
+        .unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let store = tx.get_store::<DocStore>("data").await.unwrap();
+
+    // Malformed staged bytes require the transaction's internal injection seam.
+    let malformed = b"not JSON".to_vec();
+    tx.update_subtree("data", malformed.clone()).await.unwrap();
+    let set_error = store.set("name", "Alice").await.unwrap_err();
+    let set_result_error = store.set_result("name", "Alice").await.unwrap_err();
+    assert_eq!(set_error.to_string(), set_result_error.to_string());
+    for error in [set_error, set_result_error] {
+        assert!(matches!(
+            error,
+            crate::Error::Transaction(err)
+                if matches!(err.as_ref(), TransactionError::StoreDeserializationFailed { store, .. } if store == "data")
+        ));
+    }
+    assert_eq!(
+        tx.entry_builder
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .data("data")
+            .unwrap(),
+        &malformed
+    );
+}
+
+#[tokio::test]
 async fn opaque_non_doc_state_materializes_cold_warm_and_after_clear() {
     let backend = InMemory::new();
     let (instance, _admin) =
