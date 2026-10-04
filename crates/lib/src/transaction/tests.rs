@@ -320,6 +320,246 @@ async fn projected_binary_codec_decrypts_before_replay_and_encrypts_records() {
     assert_eq!(BinaryEnvelope.decrypt(&record).unwrap(), b"secret");
 }
 
+// Uses the actual selected engine (or authenticated service) and real AEAD,
+// unlike BinaryEnvelope/KeyedRows which only isolate encoding/physical-key laws.
+#[tokio::test]
+async fn password_binary_codec_backend_matrix_roundtrip() {
+    use crate::store::PasswordStore;
+    let (instance, _daemon) = projection_backend().await;
+    let mut admin = instance.login_user("admin", None).await.unwrap();
+    let key = admin.get_default_key().unwrap();
+    let db = admin.create_database(Doc::new(), &key).await.unwrap();
+    let tx = db.new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<RowsStore>>("rows")
+        .await
+        .unwrap();
+    encrypted.initialize("correct", Doc::new()).await.unwrap();
+    tx.stage_projected_delta("rows", &RowsProjection, row("a", "first"))
+        .await
+        .unwrap();
+    let id = tx.commit().await.unwrap();
+    let entry = db.backend().unwrap().get(&id).await.unwrap();
+    let ciphertext = entry.data("rows").unwrap();
+    assert!(StagedRows::decode(ciphertext).is_err());
+    assert_ne!(ciphertext, &row("a", "first").encode().unwrap());
+    let tx = db.new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<RowsStore>>("rows")
+        .await
+        .unwrap();
+    encrypted.open("correct").unwrap();
+    let mut changes = row("b", "second");
+    changes.0.delete("a".into());
+    tx.stage_projected_delta("rows", &RowsProjection, changes)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    // Remote reads always fold authorized ciphertext; client clear is a no-op.
+    let backend = db.backend().unwrap();
+    let rounds = if backend.local_engine().is_some() {
+        3
+    } else {
+        2
+    };
+    for round in 0..rounds {
+        if round == 2 {
+            backend.clear_derived_store_state().await.unwrap();
+        }
+        let tx = db.new_transaction().await.unwrap();
+        let mut encrypted = tx
+            .get_store::<PasswordStore<RowsStore>>("rows")
+            .await
+            .unwrap();
+        encrypted.open("correct").unwrap();
+        let state = encrypted.get_state().await.unwrap();
+        assert_eq!(state.0.get(&"b".into()).map(String::as_str), Some("second"));
+        assert!(matches!(
+            state.0.operation(&"a".into()),
+            Some(crate::crdt::Lww::Delete)
+        ));
+        assert_eq!(
+            encrypted
+                .projected_get(&RowsProjection, b"a")
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            encrypted
+                .projected_get(&RowsProjection, b"b")
+                .await
+                .unwrap(),
+            Some(b"second".to_vec())
+        );
+        let (page, end) = encrypted
+            .projected_scan_page(&RowsProjection, None, 8)
+            .await
+            .unwrap();
+        assert_eq!(page.records, vec![(b"b".to_vec(), b"second".to_vec())]);
+        assert!(end.is_none());
+    }
+}
+
+#[cfg(all(unix, feature = "service"))]
+#[tokio::test]
+async fn read_only_binary_password_store_decrypts_before_codec_and_rejects_tamper() {
+    use crate::auth::types::{AuthKey, Permission};
+    use crate::store::PasswordStore;
+    use std::time::Duration;
+    let (instance, mut admin) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        crate::NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    admin
+        .admin()
+        .await
+        .unwrap()
+        .create_user(crate::NewUser::passwordless("reader"))
+        .await
+        .unwrap();
+    let key = admin.get_default_key().unwrap();
+    let db = admin.create_database(Doc::new(), &key).await.unwrap();
+    let tx = db.new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<RowsStore>>("rows")
+        .await
+        .unwrap();
+    encrypted.initialize("correct", Doc::new()).await.unwrap();
+    tx.stage_projected_delta("rows", &RowsProjection, row("a", "first"))
+        .await
+        .unwrap();
+    tx.get_settings()
+        .unwrap()
+        .set_global_auth_key(AuthKey::active(None, Permission::Read))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    // Match the existing read-only PasswordStore contract fixture: successive
+    // owner writes warm only daemon-side metadata; encrypted history stays cold.
+    let tx = db.new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<RowsStore>>("rows")
+        .await
+        .unwrap();
+    encrypted.open("correct").unwrap();
+    tx.stage_projected_delta("rows", &RowsProjection, row("b", "second"))
+        .await
+        .unwrap();
+    let id = tx.commit().await.unwrap();
+    let entry = db.backend().unwrap().get(&id).await.unwrap();
+    let mut corrupt = entry.data("rows").unwrap().to_vec();
+    *corrupt.last_mut().unwrap() ^= 1;
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("password-codec.sock");
+    let mut daemon = crate::service::ServiceServer::bind(instance.clone(), &socket)
+        .await
+        .unwrap();
+    assert!(daemon.register_store::<PasswordStore<RowsStore>>().is_err());
+    let (stop, rx) = tokio::sync::watch::channel(());
+    let task = tokio::spawn(daemon.run(rx));
+    let remote = Instance::connect(format!("unix://{}", socket.display()))
+        .await
+        .unwrap();
+    remote.login_user("reader", None).await.unwrap();
+    let read_db = Database::open(&remote, db.root_id()).await.unwrap();
+    let tx = read_db.new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<RowsStore>>("rows")
+        .await
+        .unwrap();
+    assert!(encrypted.open("wrong").is_err());
+    assert!(encrypted.get_state().await.is_err());
+    encrypted.open("correct").unwrap();
+    assert_eq!(
+        encrypted
+            .get_state()
+            .await
+            .unwrap()
+            .0
+            .get(&"a".into())
+            .map(String::as_str),
+        Some("first")
+    );
+    assert_eq!(
+        encrypted
+            .projected_get(&RowsProjection, b"b")
+            .await
+            .unwrap(),
+        Some(b"second".to_vec())
+    );
+    let (page, cursor) = encrypted
+        .projected_scan_page(&RowsProjection, None, 1)
+        .await
+        .unwrap();
+    assert_eq!(page.records.len(), 1);
+    assert!(cursor.is_some());
+    let writer = db.new_transaction().await.unwrap();
+    let mut encrypted_writer = writer
+        .get_store::<PasswordStore<RowsStore>>("rows")
+        .await
+        .unwrap();
+    encrypted_writer.open("correct").unwrap();
+    writer
+        .stage_projected_delta("rows", &RowsProjection, row("c", "third"))
+        .await
+        .unwrap();
+    writer.commit().await.unwrap();
+    is_stale(
+        encrypted
+            .projected_scan_page(&RowsProjection, cursor.as_ref(), 1)
+            .await,
+    );
+    assert_eq!(
+        encrypted
+            .projected_scan_page(&RowsProjection, None, 8)
+            .await
+            .unwrap()
+            .0
+            .records
+            .len(),
+        3
+    );
+    // Knowing the password is not canonical Write authorization.
+    tx.stage_projected_delta("rows", &RowsProjection, row("forbidden", "value"))
+        .await
+        .unwrap();
+    assert!(tx.commit().await.is_err());
+    let tx = db.new_transaction().await.unwrap();
+    tx.update_subtree("rows", corrupt).await.unwrap();
+    tx.commit().await.unwrap();
+    let tx = read_db.new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<RowsStore>>("rows")
+        .await
+        .unwrap();
+    encrypted.open("correct").unwrap();
+    for error in [
+        encrypted.get_state().await.unwrap_err(),
+        encrypted
+            .projected_get(&RowsProjection, b"a")
+            .await
+            .unwrap_err(),
+        encrypted
+            .projected_scan_page(&RowsProjection, None, 8)
+            .await
+            .unwrap_err(),
+    ] {
+        assert!(
+            matches!(error, crate::Error::Store(ref error) if matches!(**error, StoreError::ImplementationError { .. })),
+            "{error}"
+        );
+    }
+    stop.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+}
+
 #[cfg(all(unix, feature = "service"))]
 #[tokio::test]
 async fn binary_custom_store_authorized_daemon_fallback_rejects_bad_codec_and_identity() {
@@ -441,7 +681,7 @@ async fn binary_service_state_decodes_bytes_and_never_falls_back_on_bad_codec() 
         let good = MaxCounter(9).encode().unwrap();
         let mut bad = good.clone();
         bad.push(0);
-        for bytes in [good, bad] {
+        for bytes in [good, Vec::new(), bad] {
             let request: ServiceRequest = read_frame(&mut stream).await.unwrap().unwrap();
             assert!(
                 matches!(request, ServiceRequest::AuthenticatedDb(ref request) if matches!(request.op, DatabaseOp::EnsureStoreStateGeneration { .. }))
@@ -453,8 +693,31 @@ async fn binary_service_state_decodes_bytes_and_never_falls_back_on_bad_codec() 
             .await
             .unwrap();
         }
-        // A decoding error is not a capability refusal: there must be no
-        // GetVerifiedTips/GetStoreEntries fallback request on this socket.
+        for (module, kind) in [
+            ("auth", "PermissionDenied"),
+            ("auth", "SigningKeyMismatch"),
+            ("store", "TypeMismatch"),
+            ("crdt", "DeserializationFailed"),
+        ] {
+            let request: ServiceRequest = read_frame(&mut stream).await.unwrap().unwrap();
+            assert!(
+                matches!(request, ServiceRequest::AuthenticatedDb(ref request) if matches!(request.op, DatabaseOp::EnsureStoreStateGeneration { .. }))
+            );
+            write_frame(
+                &mut stream,
+                &ServerFrame::Response(Box::new(ServiceResponse::Error(
+                    crate::service::error::ServiceError {
+                        module: module.into(),
+                        kind: kind.into(),
+                        message: "explicit refusal".into(),
+                    },
+                ))),
+            )
+            .await
+            .unwrap();
+        }
+        // A Codec/auth/type/descriptor error is not a capability refusal:
+        // there must be no GetVerifiedTips/GetStoreEntries fallback request.
         assert!(
             tokio::time::timeout(
                 Duration::from_millis(100),
@@ -471,11 +734,29 @@ async fn binary_service_state_decodes_bytes_and_never_falls_back_on_bad_codec() 
             .unwrap(),
         MaxCounter(9)
     );
-    assert!(matches!(
-        conn.get_store_state::<CounterStore>(ID::default(), SigKey::default(), "counter".into())
+    for _ in 0..2 {
+        assert!(matches!(
+            conn.get_store_state::<CounterStore>(
+                ID::default(),
+                SigKey::default(),
+                "counter".into()
+            )
             .await,
-        Err(crate::Error::CRDT(_))
-    ));
+            Err(crate::Error::CRDT(_))
+        ));
+    }
+    for kind in [
+        "PermissionDenied",
+        "SigningKeyMismatch",
+        "TypeMismatch",
+        "DeserializationFailed",
+    ] {
+        let error = conn
+            .get_store_state::<CounterStore>(ID::default(), SigKey::default(), "counter".into())
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains(kind), "{error}");
+    }
     tokio::time::timeout(Duration::from_secs(5), peer)
         .await
         .unwrap()

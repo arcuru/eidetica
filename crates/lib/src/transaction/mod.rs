@@ -1096,7 +1096,7 @@ impl Transaction {
             .await
     }
 
-    async fn projected_get_with_history<D: CRDT + Send>(
+    async fn projected_get_with_history<D: CRDT + Codec + Send>(
         &self,
         store: &str,
         projection: &dyn RecordProjection<D>,
@@ -1320,7 +1320,7 @@ impl Transaction {
         .await
     }
 
-    async fn projected_scan_with_history<D: CRDT + Send>(
+    async fn projected_scan_with_history<D: CRDT + Codec + Send>(
         &self,
         store: &str,
         projection: &dyn RecordProjection<D>,

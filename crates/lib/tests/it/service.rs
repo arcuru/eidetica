@@ -17,7 +17,7 @@ use eidetica::auth::types::{
 use eidetica::backend::database::InMemory;
 use eidetica::backend::{ProjectionDescriptor, StoreStateRequest, VerificationStatus};
 use eidetica::crdt::Doc;
-use eidetica::crdt::{CRDT, Data};
+use eidetica::crdt::{CRDT, Codec};
 use eidetica::service::ServiceServer;
 use eidetica::service::protocol::{
     Handshake, HandshakeAck, PROTOCOL_VERSION, ReadScope, ServerFrame, ServiceRequest,
@@ -57,14 +57,28 @@ async fn start_test_server() -> (PathBuf, watch::Sender<()>, Instance, TempDir) 
     start_test_server_with_token_ttl(Duration::from_secs(5 * 60)).await
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+// Deliberately no Serde implementation: registered reads must use Codec bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct SocketCounter(u64);
 impl Default for SocketCounter {
     fn default() -> Self {
         Self(7)
     }
 }
-impl Data for SocketCounter {}
+impl Codec for SocketCounter {
+    fn encode(&self) -> eidetica::Result<Vec<u8>> {
+        Ok(self.0.to_le_bytes().to_vec())
+    }
+    fn decode(bytes: &[u8]) -> eidetica::Result<Self> {
+        let bytes =
+            bytes
+                .try_into()
+                .map_err(|_| eidetica::crdt::CRDTError::DeserializationFailed {
+                    reason: "expected exactly eight counter bytes".into(),
+                })?;
+        Ok(Self(u64::from_le_bytes(bytes)))
+    }
+}
 impl CRDT for SocketCounter {
     fn merge(&self, other: &Self) -> eidetica::Result<Self> {
         Ok(Self(self.0.max(other.0)))
@@ -77,14 +91,14 @@ struct CounterStore {
 }
 impl Registered for CounterStore {
     fn type_id() -> &'static str {
-        "test:socket-counter"
+        "test:socket-counter-binary:v1"
     }
 }
 #[async_trait::async_trait]
 impl Store for CounterStore {
     type Data = SocketCounter;
     fn state_model() -> StoreStateModel<Self::Data> {
-        StoreStateModel::opaque("test/counter", 1)
+        StoreStateModel::opaque("test/counter-binary", 1)
     }
     async fn load(txn: &eidetica::Transaction, name: String) -> eidetica::Result<Self> {
         Ok(Self {
@@ -100,6 +114,61 @@ impl Store for CounterStore {
     }
 }
 
+// A custom Store's staging seam is crate-private. These external fixtures use
+// owner-signed canonical Entries, never caller-asserted verification status.
+async fn insert_signed_store_payload(
+    db: &eidetica::Database,
+    owner: &eidetica::user::User,
+    store: &str,
+    bytes: Vec<u8>,
+) {
+    let ctx = db
+        .transaction_context(&[store.into()], ReadScope::Verified)
+        .await
+        .unwrap();
+    let key = owner.get_default_key().unwrap();
+    let signing = owner.get_signing_key(&key).unwrap();
+    let entry = Entry::builder(db.root_id().clone())
+        .set_parents(ctx.main_parents.iter().map(|(id, _)| id.clone()).collect())
+        .set_subtree_data(store, bytes)
+        .set_subtree_parents(
+            store,
+            ctx.subtree_parents[store]
+                .iter()
+                .map(|(id, _)| id.clone())
+                .collect(),
+        )
+        .set_subtree_height(
+            store,
+            Some(
+                ctx.subtree_parents[store]
+                    .iter()
+                    .map(|(_, height)| *height)
+                    .max()
+                    .unwrap_or(0)
+                    + 1,
+            ),
+        )
+        .set_metadata(
+            serde_json::to_vec(&serde_json::json!({
+                "settings_tips": ctx.settings_tips,
+                "entropy": serde_json::Value::Null,
+            }))
+            .unwrap(),
+        )
+        .set_height(ctx.main_parents.iter().map(|(_, h)| *h).max().unwrap_or(0) + 1)
+        .build()
+        .unwrap()
+        .with_auth(|auth| auth.key = eidetica::auth::types::SigKey::from_pubkey(&key));
+    let signature = sign_entry(&entry, &signing).unwrap();
+    let id = db
+        .insert_raw(entry.with_auth(|auth| auth.signature = Some(signature)))
+        .await
+        .unwrap();
+    db.verify().await.unwrap();
+    assert!(db.snapshot().await.unwrap().tips().contains(&id));
+}
+
 /// Registration supplies a concrete non-Doc decoder, not a caller-chosen
 /// descriptor. A Read-only principal may use it, but cannot stage records.
 #[tokio::test]
@@ -109,10 +178,12 @@ async fn registered_typed_socket_maintenance_is_read_scoped() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let socket = dir.path().join("typed.sock");
-    let (server, _) =
-        Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless("admin"))
-            .await
-            .unwrap();
+    let (server, _) = Instance::create_backend(
+        crate::helpers::test_backend().await,
+        NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
     create_user_via_admin(&server, "alice").await;
     create_user_via_admin(&server, "bob").await;
     let mut alice = server.login_user("alice", None).await.unwrap();
@@ -135,6 +206,22 @@ async fn registered_typed_socket_maintenance_is_read_scoped() {
     })
     .await
     .unwrap();
+    for value in [8, 19, 12] {
+        insert_signed_store_payload(
+            &db,
+            &alice,
+            "counter",
+            SocketCounter(value).encode().unwrap(),
+        )
+        .await;
+    }
+    assert_eq!(
+        db.get_store_state::<CounterStore>("counter").await.unwrap(),
+        SocketCounter(19)
+    );
+    // Remove the local read's derived state: the Read-only daemon request must
+    // build its own generation, not merely re-encode an owner's warm cache.
+    server.backend().clear_derived_store_state().await.unwrap();
     let unknown_socket = dir.path().join("unknown.sock");
     let (unknown_stop, unknown_rx) = watch::channel(());
     let unknown_daemon = ServiceServer::bind(server.clone(), &unknown_socket)
@@ -156,7 +243,7 @@ async fn registered_typed_socket_maintenance_is_read_scoped() {
         conn.get_store_state::<CounterStore>(root.clone(), identity.clone(), "counter".into())
             .await
             .unwrap(),
-        SocketCounter(7)
+        SocketCounter(19)
     );
     assert_eq!(
         conn.get_store_state::<DocStore>(root.clone(), identity.clone(), "known".into())
@@ -205,12 +292,28 @@ async fn registered_typed_socket_maintenance_is_read_scoped() {
         read_response(&mut reader).await,
         ServiceResponse::TrustedLoginOk
     ));
+    write_frame(
+        &mut writer,
+        &request(
+            "counter",
+            CounterStore::type_id(),
+            CounterStore::state_model().descriptor(),
+        ),
+    )
+    .await
+    .unwrap();
+    match read_response(&mut reader).await {
+        ServiceResponse::StoreState(bytes) => {
+            assert_eq!(bytes, SocketCounter(19).encode().unwrap())
+        }
+        other => panic!("registered daemon must encode binary state: {other:?}"),
+    }
     for (store, ty, descriptor, expected_kind) in [
         (
             "counter",
             CounterStore::type_id(),
             ProjectionDescriptor {
-                name: "test/counter".into(),
+                name: "test/counter-binary".into(),
                 version: 2,
             },
             "TypeMismatch",
@@ -259,7 +362,7 @@ async fn registered_typed_socket_maintenance_is_read_scoped() {
         conn.get_store_state::<CounterStore>(root.clone(), identity.clone(), "counter".into())
             .await
             .unwrap(),
-        SocketCounter(7)
+        SocketCounter(19)
     );
     // The same _index identity is unknown to a daemon without registration.
     let unknown = Instance::connect(format!("unix://{}", unknown_socket.display()))
@@ -271,7 +374,7 @@ async fn registered_typed_socket_maintenance_is_read_scoped() {
         .await
         .unwrap();
     // The unavailable response selects a typed history fold (non-Doc default).
-    assert_eq!(fallback, SocketCounter(7));
+    assert_eq!(fallback, SocketCounter(19));
     let (mut unknown_reader, mut unknown_writer) = raw_handshake(&unknown_socket).await;
     write_frame(
         &mut unknown_writer,
@@ -354,6 +457,101 @@ async fn registered_typed_socket_maintenance_is_read_scoped() {
     );
     drop(stop);
     drop(unknown_stop);
+}
+
+/// The same binary history is decoded locally, by registered maintenance, and
+/// by unsupported-daemon fallback. Neither malformed length nor trailing bytes
+/// may become a default state or a published good generation.
+#[tokio::test]
+async fn registered_binary_state_rejects_malformed_and_trailing_history() {
+    use eidetica::auth::types::SigKey;
+    let dir = tempfile::tempdir().unwrap();
+    let (server, mut admin) = Instance::create_backend(
+        crate::helpers::test_backend().await,
+        NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let key = admin.get_default_key().unwrap();
+    let db = admin.create_database(Doc::new(), &key).await.unwrap();
+    db.with_transaction(|tx| async move {
+        for name in ["good", "short", "trailing"] {
+            tx.get_store::<CounterStore>(name).await?;
+        }
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let good = SocketCounter(19).encode().unwrap();
+    let mut trailing = good.clone();
+    trailing.push(0);
+    for (name, bytes) in [
+        ("good", good),
+        ("short", vec![1, 2, 3]),
+        ("trailing", trailing),
+    ] {
+        insert_signed_store_payload(&db, &admin, name, bytes).await;
+    }
+    let identity = SigKey::from_pubkey(&key);
+    assert_eq!(
+        db.get_store_state::<CounterStore>("good").await.unwrap(),
+        SocketCounter(19)
+    );
+    for name in ["short", "trailing"] {
+        assert!(matches!(
+            db.get_store_state::<CounterStore>(name).await,
+            Err(eidetica::Error::CRDT(_))
+        ));
+    }
+    for registered in [true, false] {
+        let socket = dir.path().join(format!("codec-{registered}.sock"));
+        let mut daemon = ServiceServer::bind(server.clone(), &socket).await.unwrap();
+        if registered {
+            daemon.register_store::<CounterStore>().unwrap();
+        }
+        let (stop, rx) = watch::channel(());
+        let task = tokio::spawn(daemon.run(rx));
+        let remote = Instance::connect(format!("unix://{}", socket.display()))
+            .await
+            .unwrap();
+        remote.login_user("admin", None).await.unwrap();
+        let conn = remote_conn(&remote);
+        for name in ["short", "trailing"] {
+            let error = conn
+                .get_store_state::<CounterStore>(
+                    db.root_id().clone(),
+                    identity.clone(),
+                    name.into(),
+                )
+                .await
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("expected exactly eight counter bytes"),
+                "{error}"
+            );
+            assert!(
+                !matches!(error, eidetica::Error::Store(ref error) if matches!(**error, eidetica::store::StoreError::RecordMaintenanceUnavailable { .. }))
+            );
+        }
+        assert_eq!(
+            conn.get_store_state::<CounterStore>(
+                db.root_id().clone(),
+                identity.clone(),
+                "good".into()
+            )
+            .await
+            .unwrap(),
+            SocketCounter(19)
+        );
+        stop.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
 }
 
 /// Same as [`start_test_server`], with the session-token idle lifetime under
