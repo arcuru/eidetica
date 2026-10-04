@@ -192,12 +192,18 @@ pub(crate) async fn load_cached(
 /// Stage and publish an opaque record, skipping backends without the record
 /// substrate. An `Unsupported` at any step aborts the attempt and reports
 /// "not cached" — `publish_opaque` already aborts the token on error, so no
-/// staging namespace leaks. Genuine errors propagate.
+/// staging namespace leaks. Client-side remote folds do not publish caches:
+/// canonical Read authorization does not grant staging authority. Server-owned
+/// maintenance uses its local backend. Genuine local caching errors propagate.
 pub(crate) async fn store_cached(
     backend: &dyn Backend,
     request: StoreStateRequest,
     bytes: Vec<u8>,
 ) -> Result<()> {
+    #[cfg(all(unix, feature = "service"))]
+    if backend.remote_connection().is_some() {
+        return Ok(());
+    }
     match publish_opaque(backend, request, bytes).await {
         Err(err) if err.is_unsupported_store_state() => Ok(()),
         result => result.map(|_| ()),

@@ -1996,27 +1996,27 @@ impl Transaction {
             return T::load(self, subtree_name).await;
         }
 
-        // Check _index to determine if this is a new or existing subtree
+        // Only a missing key permits registration. Authentication, transport and
+        // malformed metadata errors must not become an apparently empty Store.
         let index_store = self.get_index().await?;
-        if index_store.contains(&subtree_name).await {
-            // Type validation for existing subtree
-            let subtree_info = index_store.get_entry(&subtree_name).await?;
-
-            if !T::supports_type_id(&subtree_info.type_id) {
-                return Err(StoreError::TypeMismatch {
-                    store: subtree_name,
-                    expected: T::type_id().to_string(),
-                    actual: subtree_info.type_id,
-                }
-                .into());
+        let subtree_info = match index_store.get_entry(&subtree_name).await {
+            Ok(info) => info,
+            Err(crate::Error::Store(error)) if error.is_not_found() => {
+                return T::register(self, subtree_name).await;
             }
+            Err(error) => return Err(error),
+        };
 
-            // Type supported - create the Store
-            T::load(self, subtree_name).await
-        } else {
-            // New subtree - register adds it to _index
-            T::register(self, subtree_name).await
+        if !T::supports_type_id(&subtree_info.type_id) {
+            return Err(StoreError::TypeMismatch {
+                store: subtree_name,
+                expected: T::type_id().to_string(),
+                actual: subtree_info.type_id,
+            }
+            .into());
         }
+
+        T::load(self, subtree_name).await
     }
 
     /// Get the subtree tips reachable from the given main tree entries.
