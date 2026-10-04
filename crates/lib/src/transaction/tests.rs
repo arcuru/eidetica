@@ -80,7 +80,7 @@ async fn typed_store_state_folds_custom_crdt_without_doc_conversion() {
     for value in [4, 9, 2] {
         let tx = db.new_transaction().await.unwrap();
         tx.get_store::<CounterStore>("counter").await.unwrap();
-        tx.update_subtree("counter", serde_json::to_vec(&MaxCounter(value)).unwrap())
+        tx.update_subtree("counter", MaxCounter(value).encode().unwrap())
             .await
             .unwrap();
         tx.commit().await.unwrap();
@@ -95,9 +95,30 @@ async fn typed_store_state_folds_custom_crdt_without_doc_conversion() {
     ));
 }
 
-#[derive(Clone, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
+// The facade is deliberately non-Serde; only its chosen binary codec knows
+// how the nested algebra is encoded.
+#[derive(Clone, Default, Debug, PartialEq, Eq)]
 struct StagedRows(crate::crdt::LwwMap<String, String>);
-impl Data for StagedRows {}
+impl Codec for StagedRows {
+    fn encode(&self) -> Result<Vec<u8>> {
+        serde_ipld_dagcbor::to_vec(&self.0).map_err(|error| {
+            crate::crdt::CRDTError::SerializationFailed {
+                reason: error.to_string(),
+            }
+            .into()
+        })
+    }
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        serde_ipld_dagcbor::from_slice(bytes)
+            .map(Self)
+            .map_err(|error| {
+                crate::crdt::CRDTError::DeserializationFailed {
+                    reason: error.to_string(),
+                }
+                .into()
+            })
+    }
+}
 impl CRDT for StagedRows {
     fn merge(&self, other: &Self) -> Result<Self> {
         Ok(Self(self.0.merge(&other.0)?))
@@ -144,10 +165,320 @@ impl RecordProjection<StagedRows> for RowsProjection {
     }
 }
 
+struct RowsStore {
+    name: String,
+    txn: Transaction,
+}
+impl Registered for RowsStore {
+    fn type_id() -> &'static str {
+        "test:binary-rows"
+    }
+}
+#[async_trait::async_trait]
+impl Store for RowsStore {
+    type Data = StagedRows;
+    fn state_model() -> crate::store::StoreStateModel<Self::Data> {
+        crate::store::StoreStateModel::Records(std::sync::Arc::new(RowsProjection))
+    }
+    async fn load(txn: &Transaction, name: String) -> Result<Self> {
+        Ok(Self {
+            name,
+            txn: txn.clone(),
+        })
+    }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn transaction(&self) -> &Transaction {
+        &self.txn
+    }
+}
+
 fn row(key: &str, value: &str) -> StagedRows {
     let mut rows = crate::crdt::LwwMap::new();
     rows.set(key.to_string(), value.to_string());
     StagedRows(rows)
+}
+
+#[tokio::test]
+async fn projected_binary_codec_rebuilds_and_rejects_malformed_history() {
+    let (instance, _) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        crate::NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let (key, _) = generate_keypair();
+    let db = Database::create(&instance, key, Doc::new()).await.unwrap();
+    let delta = row("key", "exact bytes");
+    let bytes = delta.encode().unwrap();
+    assert!(serde_json::from_slice::<serde_json::Value>(&bytes).is_err());
+    let mut trailing = bytes.clone();
+    trailing.push(0);
+    assert!(StagedRows::decode(&trailing).is_err());
+
+    let tx = db.new_transaction().await.unwrap();
+    let store = tx.get_store::<RowsStore>("rows").await.unwrap();
+    tx.stage_projected_delta("rows", &RowsProjection, delta.clone())
+        .await
+        .unwrap();
+    assert_eq!(store.local_data().unwrap(), Some(delta));
+    let entry = tx.commit().await.unwrap();
+    assert_eq!(
+        db.ops().get(&entry).await.unwrap().data("rows").unwrap(),
+        &bytes
+    );
+    for _ in 0..2 {
+        let tx = db.new_transaction().await.unwrap();
+        assert_eq!(
+            tx.projected_get("rows", &RowsProjection, b"key")
+                .await
+                .unwrap(),
+            Some(b"exact bytes".to_vec())
+        );
+    }
+    db.backend()
+        .unwrap()
+        .clear_derived_store_state()
+        .await
+        .unwrap();
+    let tx = db.new_transaction().await.unwrap();
+    assert_eq!(
+        tx.projected_get("rows", &RowsProjection, b"key")
+            .await
+            .unwrap(),
+        Some(b"exact bytes".to_vec())
+    );
+    tx.update_subtree("rows", trailing).await.unwrap();
+    tx.commit().await.unwrap();
+    let tx = db.new_transaction().await.unwrap();
+    assert!(matches!(
+        tx.projected_get("rows", &RowsProjection, b"key").await,
+        Err(crate::Error::CRDT(_))
+    ));
+}
+
+// A reversible test envelope detects calls made on the wrong side of the
+// encryption boundary; production PasswordStore crypto has separate coverage.
+struct BinaryEnvelope;
+impl Encryptor for BinaryEnvelope {
+    fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>> {
+        Ok([
+            b"encrypted:".as_slice(),
+            &plaintext.iter().map(|byte| byte ^ 0xff).collect::<Vec<_>>(),
+        ]
+        .concat())
+    }
+    fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>> {
+        let bytes = ciphertext.strip_prefix(b"encrypted:").ok_or_else(|| {
+            crate::crdt::CRDTError::DeserializationFailed {
+                reason: "expected encrypted test envelope".into(),
+            }
+        })?;
+        Ok(bytes.iter().map(|byte| byte ^ 0xff).collect())
+    }
+}
+
+#[tokio::test]
+async fn projected_binary_codec_decrypts_before_replay_and_encrypts_records() {
+    let (instance, _) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        crate::NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let (key, _) = generate_keypair();
+    let db = Database::create(&instance, key, Doc::new()).await.unwrap();
+    let tx = db.new_transaction().await.unwrap();
+    tx.register_encryptor("rows", Box::new(BinaryEnvelope))
+        .unwrap();
+    tx.stage_projected_delta("rows", &RowsProjection, row("key", "secret"))
+        .await
+        .unwrap();
+    let id = tx.commit().await.unwrap();
+    let entry = db.ops().get(&id).await.unwrap();
+    let ciphertext = entry.data("rows").unwrap();
+    assert!(ciphertext.starts_with(b"encrypted:"));
+    assert!(StagedRows::decode(ciphertext).is_err());
+    let tx = db.new_transaction().await.unwrap();
+    tx.register_encryptor("rows", Box::new(BinaryEnvelope))
+        .unwrap();
+    assert_eq!(
+        tx.projected_get("rows", &RowsProjection, b"key")
+            .await
+            .unwrap(),
+        Some(b"secret".to_vec())
+    );
+    let view = tx.record_view("rows", &RowsProjection).await.unwrap();
+    let record = db
+        .ops()
+        .store_state_record_get(&view, b"key")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(record, b"secret");
+    assert_eq!(BinaryEnvelope.decrypt(&record).unwrap(), b"secret");
+}
+
+#[cfg(all(unix, feature = "service"))]
+#[tokio::test]
+async fn binary_custom_store_authorized_daemon_fallback_rejects_bad_codec_and_identity() {
+    use crate::auth::types::SigKey;
+    use crate::service::{ServiceServer, client::RemoteConnection};
+    use std::os::unix::fs::PermissionsExt;
+
+    let (instance, mut admin) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        crate::NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let key = admin.get_default_key().unwrap();
+    let db = admin.create_database(Doc::new(), &key).await.unwrap();
+    for value in [4, 9, 2] {
+        let tx = db.new_transaction().await.unwrap();
+        tx.get_store::<CounterStore>("counter").await.unwrap();
+        tx.update_subtree("counter", MaxCounter(value).encode().unwrap())
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
+    assert_eq!(
+        db.get_store_state::<CounterStore>("counter").await.unwrap(),
+        MaxCounter(9)
+    );
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let socket = dir.path().join("codec.sock");
+    let (shutdown, receiver) = tokio::sync::watch::channel(());
+    let server = ServiceServer::bind(instance.clone(), &socket)
+        .await
+        .unwrap();
+    let task = tokio::spawn(server.run(receiver));
+    let conn = RemoteConnection::connect(&socket).await.unwrap();
+    conn.trusted_login("admin", None).await.unwrap();
+    let identity = Database::find_sigkeys(&instance, db.root_id(), &key)
+        .await
+        .unwrap()
+        .remove(0)
+        .0;
+    assert_eq!(
+        conn.get_store_state::<CounterStore>(
+            db.root_id().clone(),
+            identity.clone(),
+            "counter".into()
+        )
+        .await
+        .unwrap(),
+        MaxCounter(9)
+    );
+    let (_, foreign) = generate_keypair();
+    let denied = conn
+        .get_store_state::<CounterStore>(
+            db.root_id().clone(),
+            SigKey::from_pubkey(&foreign),
+            "counter".into(),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        denied.to_string().contains("SigningKeyMismatch"),
+        "{denied}"
+    );
+    let mismatch = conn
+        .get_store_state::<DocStore>(db.root_id().clone(), identity.clone(), "counter".into())
+        .await
+        .unwrap_err();
+    assert!(mismatch.to_string().contains("TypeMismatch"), "{mismatch}");
+
+    let tx = db.new_transaction().await.unwrap();
+    let mut trailing = MaxCounter(12).encode().unwrap();
+    trailing.push(0);
+    tx.update_subtree("counter", trailing).await.unwrap();
+    tx.commit().await.unwrap();
+    assert!(matches!(
+        db.get_store_state::<CounterStore>("counter").await,
+        Err(crate::Error::CRDT(_))
+    ));
+    assert!(matches!(
+        conn.get_store_state::<CounterStore>(db.root_id().clone(), identity, "counter".into())
+            .await,
+        Err(crate::Error::CRDT(_))
+    ));
+    shutdown.send(()).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+}
+
+#[cfg(all(unix, feature = "service"))]
+#[tokio::test]
+async fn binary_service_state_decodes_bytes_and_never_falls_back_on_bad_codec() {
+    use crate::service::client::RemoteConnection;
+    use crate::service::protocol::{
+        DatabaseOp, Handshake, HandshakeAck, PROTOCOL_VERSION, ServerFrame, ServiceRequest,
+        ServiceResponse, read_frame, write_frame,
+    };
+    use std::time::Duration;
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("codec-peer.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let peer = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let handshake: Handshake = read_frame(&mut stream).await.unwrap().unwrap();
+        assert_eq!(handshake.protocol_version, PROTOCOL_VERSION);
+        write_frame(
+            &mut stream,
+            &HandshakeAck {
+                protocol_version: PROTOCOL_VERSION,
+            },
+        )
+        .await
+        .unwrap();
+        let good = MaxCounter(9).encode().unwrap();
+        let mut bad = good.clone();
+        bad.push(0);
+        for bytes in [good, bad] {
+            let request: ServiceRequest = read_frame(&mut stream).await.unwrap().unwrap();
+            assert!(
+                matches!(request, ServiceRequest::AuthenticatedDb(ref request) if matches!(request.op, DatabaseOp::EnsureStoreStateGeneration { .. }))
+            );
+            write_frame(
+                &mut stream,
+                &ServerFrame::Response(Box::new(ServiceResponse::StoreState(bytes))),
+            )
+            .await
+            .unwrap();
+        }
+        // A decoding error is not a capability refusal: there must be no
+        // GetVerifiedTips/GetStoreEntries fallback request on this socket.
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(100),
+                read_frame::<_, ServiceRequest>(&mut stream)
+            )
+            .await
+            .is_err()
+        );
+    });
+    let conn = RemoteConnection::connect(&socket).await.unwrap();
+    assert_eq!(
+        conn.get_store_state::<CounterStore>(ID::default(), SigKey::default(), "counter".into())
+            .await
+            .unwrap(),
+        MaxCounter(9)
+    );
+    assert!(matches!(
+        conn.get_store_state::<CounterStore>(ID::default(), SigKey::default(), "counter".into())
+            .await,
+        Err(crate::Error::CRDT(_))
+    ));
+    tokio::time::timeout(Duration::from_secs(5), peer)
+        .await
+        .unwrap()
+        .unwrap();
 }
 
 fn is_stale(
@@ -697,28 +1028,25 @@ async fn projected_staging_installs_concurrent_writes_in_canonical_and_both_over
     assert_eq!(persisted.rows, staged.rows);
 }
 
-#[derive(Clone, Default, Deserialize)]
+#[derive(Clone, Default)]
 struct RacingRows {
     rows: StagedRows,
-    #[serde(skip)]
     barrier: Option<std::sync::Arc<std::sync::Barrier>>,
 }
-impl Serialize for RacingRows {
-    fn serialize<S: serde::Serializer>(
-        &self,
-        serializer: S,
-    ) -> std::result::Result<S::Ok, S::Error> {
+impl Codec for RacingRows {
+    fn encode(&self) -> Result<Vec<u8>> {
         if let Some(barrier) = &self.barrier {
             barrier.wait();
         }
-        #[derive(Serialize)]
-        struct Wire<'a> {
-            rows: &'a StagedRows,
-        }
-        Wire { rows: &self.rows }.serialize(serializer)
+        self.rows.encode()
+    }
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        Ok(Self {
+            rows: StagedRows::decode(bytes)?,
+            barrier: None,
+        })
     }
 }
-impl Data for RacingRows {}
 impl CRDT for RacingRows {
     fn merge(&self, other: &Self) -> Result<Self> {
         Ok(Self {
@@ -740,32 +1068,28 @@ impl RecordProjection<RacingRows> for RacingProjection {
     }
 }
 
-#[derive(Clone, Default, Deserialize)]
+#[derive(Clone, Default)]
 struct FallibleRows {
     rows: StagedRows,
     fail: bool,
 }
-impl Serialize for FallibleRows {
-    fn serialize<S: serde::Serializer>(
-        &self,
-        serializer: S,
-    ) -> std::result::Result<S::Ok, S::Error> {
+impl Codec for FallibleRows {
+    fn encode(&self) -> Result<Vec<u8>> {
         if self.fail {
-            return Err(serde::ser::Error::custom("injected serialization failure"));
+            return Err(crate::crdt::CRDTError::SerializationFailed {
+                reason: "injected encoding failure".into(),
+            }
+            .into());
         }
-        #[derive(Serialize)]
-        struct Wire<'a> {
-            rows: &'a StagedRows,
-            fail: bool,
-        }
-        Wire {
-            rows: &self.rows,
-            fail: self.fail,
-        }
-        .serialize(serializer)
+        self.rows.encode()
+    }
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        Ok(Self {
+            rows: StagedRows::decode(bytes)?,
+            fail: false,
+        })
     }
 }
-impl Data for FallibleRows {}
 impl CRDT for FallibleRows {
     fn merge(&self, other: &Self) -> Result<Self> {
         Ok(Self {

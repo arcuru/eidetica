@@ -28,6 +28,7 @@ use crate::auth::types::SigKey;
 use crate::backend::{
     InstanceMetadata, RecordMutations, RecordPage, RecordRange, StoreStateRequest,
 };
+use crate::crdt::Codec;
 use crate::entry::{Entry, ID};
 use crate::instance::WeakInstance;
 use crate::service::error::service_error_to_eidetica_error;
@@ -1126,7 +1127,7 @@ impl RemoteConnection {
             )
             .await;
         match response {
-            Ok(ServiceResponse::CrdtValue(value)) => Ok(serde_json::from_value(value)?),
+            Ok(ServiceResponse::StoreState(bytes)) => S::Data::decode(&bytes),
             Err(crate::Error::Store(error))
                 if matches!(
                     *error,
@@ -1151,13 +1152,13 @@ impl RemoteConnection {
                 let mut state = S::Data::default();
                 for entry in entries {
                     if let Ok(data) = entry.data(&store) {
-                        state = state.merge(&serde_json::from_slice(data)?)?;
+                        state = state.merge(&S::Data::decode(data)?)?;
                     }
                 }
                 Ok(state)
             }
             Err(error) => Err(error),
-            Ok(other) => Err(unexpected_response("CrdtValue", &other)),
+            Ok(other) => Err(unexpected_response("StoreState", &other)),
         }
     }
 

@@ -616,7 +616,7 @@ impl Transaction {
     /// All fallible work happens outside the state lock; a competing writer forces
     /// recomputation rather than allowing an unlocked snapshot to overwrite it.
     #[allow(dead_code)] // Phase 0 fixture exercises this before the Table migration.
-    pub(crate) async fn stage_projected_delta<D: CRDT + Send>(
+    pub(crate) async fn stage_projected_delta<D: CRDT + Codec + Send>(
         &self,
         store: &str,
         projection: &dyn RecordProjection<D>,
@@ -640,12 +640,12 @@ impl Transaction {
                 .into());
             }
             let canonical = if let Some(state) = &snapshot {
-                let current: D = serde_json::from_slice(&state.canonical)?;
+                let current = D::decode(&state.canonical)?;
                 current.merge(&delta)?
             } else {
                 delta.clone()
             };
-            let bytes = serde_json::to_vec(&canonical)?;
+            let bytes = canonical.encode()?;
             let mut logical = snapshot
                 .as_ref()
                 .map_or_else(RecordMutations::new, |s| s.logical.clone());
@@ -734,7 +734,7 @@ impl Transaction {
 
     /// Read a typed row from the fixed historical view, overlaid with staged changes.
     #[allow(dead_code)] // Used by the typed Store after its format switch.
-    pub(crate) async fn projected_get<D: CRDT + Send>(
+    pub(crate) async fn projected_get<D: CRDT + Codec + Send>(
         &self,
         store: &str,
         projection: &dyn RecordProjection<D>,
@@ -812,7 +812,7 @@ impl Transaction {
     }
 
     /// Recordless fallback reduces typed history before projecting into physical order.
-    async fn projected_history<D: CRDT + Send>(
+    async fn projected_history<D: CRDT + Codec + Send>(
         &self,
         store: &str,
         projection: &dyn RecordProjection<D>,
@@ -861,7 +861,7 @@ impl Transaction {
 
     /// Scan a typed projection using the backend's real immutable RecordView.
     #[allow(dead_code)] // Used by the typed Store after its format switch.
-    pub(crate) async fn projected_record_scan_page<D: CRDT + Send>(
+    pub(crate) async fn projected_record_scan_page<D: CRDT + Codec + Send>(
         &self,
         store: &str,
         projection: &dyn RecordProjection<D>,
@@ -1405,7 +1405,7 @@ impl Transaction {
             })
     }
 
-    async fn publish_record_view<D: CRDT>(
+    async fn publish_record_view<D: CRDT + Codec>(
         &self,
         store: &str,
         projection: &dyn RecordProjection<D>,
@@ -1472,7 +1472,7 @@ impl Transaction {
         result
     }
 
-    async fn record_view<D: CRDT>(
+    async fn record_view<D: CRDT + Codec>(
         &self,
         store: &str,
         projection: &dyn RecordProjection<D>,
@@ -2029,8 +2029,7 @@ impl Transaction {
             let staged = self.logical_record_mutations.lock().unwrap().clone();
             for (store, mutations) in staged {
                 let delta = crate::store::table::legacy_doc_delta(&mutations)?;
-                self.update_subtree(store, delta.encode()?)
-                    .await?;
+                self.update_subtree(store, delta.encode()?).await?;
             }
         }
 
