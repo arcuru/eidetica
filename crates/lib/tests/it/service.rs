@@ -3224,6 +3224,56 @@ async fn test_historical_table_service_reads_use_row_record_set() {
     assert!(second.next.is_none());
 }
 
+/// Default daemon Table maintenance copies bytes without a JSON row decoder.
+#[tokio::test]
+async fn test_opaque_table_cold_socket_projection_preserves_exact_bytes() {
+    use eidetica::store::RawBytes;
+    type BytesTable = Table<Vec<u8>, RawBytes>;
+    let (socket, _stop, server, _dir) = start_test_server().await;
+    let (client, root, identity) = setup_db(&server, &socket, "alice").await;
+    let owner = server.login_user("alice", None).await.unwrap();
+    let database = owner.open_database(&root).await.unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let table = tx.get_store::<BytesTable>("opaque_rows").await.unwrap();
+    let payloads = [vec![], vec![0xff, 0, 0x80], b" { \"n\" : 1.00 } ".to_vec()];
+    for (index, bytes) in payloads.iter().enumerate() {
+        table.set(index.to_string(), bytes.clone()).await.unwrap();
+    }
+    tx.commit().await.unwrap();
+    server.backend().clear_derived_store_state().await.unwrap();
+    let engine = server.backend().local_engine().unwrap();
+    let memory = engine.as_any().downcast_ref::<InMemory>().unwrap();
+    assert_eq!(memory.store_state_record_count(&root, "opaque_rows"), 0);
+    let remote =
+        eidetica::Database::open_remote(&client, remote_conn(&client), &root, identity.clone())
+            .await
+            .unwrap();
+    let table = remote
+        .get_store_viewer::<BytesTable>("opaque_rows")
+        .await
+        .unwrap();
+    assert_eq!(table.get("1").await.unwrap(), payloads[1]);
+    assert_eq!(memory.store_state_record_count(&root, "opaque_rows"), 3);
+    let records = memory.store_state_records(&root, "opaque_rows").unwrap();
+    for (index, bytes) in payloads.iter().enumerate() {
+        assert_eq!(
+            records.get(index.to_string().as_bytes()),
+            Some(&Some(bytes.clone()))
+        );
+    }
+    assert_eq!(table.scan_page(None, 3).await.unwrap().rows.len(), 3);
+    // A second actual server clear reaches the encoded complete-state RPC,
+    // rather than merely resolving the first point-read generation.
+    server.backend().clear_derived_store_state().await.unwrap();
+    let state = remote_conn(&client)
+        .get_store_state::<BytesTable>(root, identity, "opaque_rows".into())
+        .await
+        .unwrap();
+    for (index, bytes) in payloads.iter().enumerate() {
+        assert_eq!(state.0.get(&index.to_string()).unwrap().as_ref(), bytes);
+    }
+}
+
 /// Full encrypted cold rebuild over an authenticated Unix socket, not a local
 /// fixture running under the service test runner.
 #[tokio::test]

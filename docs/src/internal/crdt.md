@@ -42,7 +42,7 @@ key-ordered sequences of unique key/operation pairs, not JSON objects.
 
 Merge-only composition needs no Serde or encoding traits on nested values.
 Opaque `serde_bytes::ByteBuf` values can represent rows without parsing or
-normalizing their contents. The existing Table remains Doc-backed.
+normalizing their contents. Table uses these opaque rows in its `TableData` encoding.
 
 ## Store encoding
 

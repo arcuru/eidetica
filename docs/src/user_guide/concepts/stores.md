@@ -197,12 +197,19 @@ for (id, user) in active_users {
 ```
 
 Table keys are exact opaque UTF-8 strings: `a`, `a.b`, `.` and the empty key are independent.
-Rows persist as RFC 8785 canonical JSON within ordered LWW map deltas, regardless of the
-Rust type used to read them. Reads decode only the requested rows into `T`; a mismatched type
-returns a decode error instead of changing stored bytes. Plain scans follow exact UTF-8 key
-order in bounded pages, while encrypted scans follow opaque physical-key order.
-Existing Doc-backed `table:v0` data must be regenerated;
-there is no old-format compatibility despite the unchanged type ID.
+`Table<T, C = SerdeJson>` stores exactly the bytes produced by row codec `C`
+in strict DAG-CBOR `TableData` operations. The default codec encodes typed JSON
+directly, retaining full Rust integer ranges; `RawBytes` preserves arbitrary
+bytes. Custom codecs implement `RowCodec<T>` with a stable `FORMAT_ID` and need
+no Serde or Clone on `T`. Handles clone without `T: Clone` or `C: Clone`.
+Reads decode only requested rows; projections and history folds never parse or
+normalize row bytes. Plain scans follow exact UTF-8 key order in bounded pages,
+while encrypted scans follow opaque physical-key order. `table:v1` has no
+legacy `table:v0` decoder or migration.
+
+Row-format configuration and historical identity enforcement are not yet wired.
+Callers must use a compatible row codec for all history; a matching Store type
+ID alone does not establish row-format or application-schema compatibility.
 
 Use cases for `Table`:
 
@@ -440,7 +447,7 @@ Eidetica automatically maintains an index of all user-created subtrees in a spec
 The `_index` subtree tracks:
 
 - **Subtree names**: Which subtrees exist in the database
-- **Store types**: What type of Store manages each subtree (e.g., "docstore:v0", "table:v0")
+- **Store types**: What type of Store manages each subtree (e.g., "docstore:v0", "table:v1")
 - **Configuration**: Store-specific settings for each subtree
 - **Subtree settings**: Common settings like height strategy overrides
 
@@ -623,7 +630,7 @@ Each Store type implements its own merge logic, typically triggered implicitly w
 
 - **`DocStore`**: Uses the internal `Doc` type with **structural merge** by default. When merging concurrent writes to the _same key_ or path, the write associated with the later `Entry` "wins" (LWW), and its value is kept. Writes to different keys are simply combined. Deleted keys (via `delete()`) are tracked with tombstones to ensure deletions propagate properly. Docs marked as **atomic** (via `Doc::atomic()`) use full **Last-Writer-Wins** replacement — the entire Doc replaces its predecessor rather than merging field-by-field. This is used for data that should be treated as a complete unit.
 
-- **`Table<T>`**: Uses an ordered `LwwMap<String, CanonicalJson>` delta. Different row IDs coexist; on the same exact key, the last set or delete in deterministic Entry reduction order wins. “Last” is not wall-clock time, and deletion has no unconditional precedence over a later set.
+- **`Table<T, C = SerdeJson>`**: Uses an opaque-byte `TableData` delta. Different row IDs coexist; on the same exact key, the last set or delete in deterministic Entry reduction order wins. “Last” is not wall-clock time, and deletion has no unconditional precedence over a later set.
 
 **Note:** The CRDT merge logic happens internally when a `Transaction` loads the initial state of a Store or when a store viewer is created. You typically don't invoke merge logic directly.
 
