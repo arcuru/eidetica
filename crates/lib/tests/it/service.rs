@@ -143,6 +143,66 @@ async fn test_connect_and_create_instance() {
 }
 
 #[tokio::test]
+async fn service_v1_rejects_v0_client_and_daemon_handshakes() {
+    assert_eq!(PROTOCOL_VERSION, 1);
+    let (socket, _shutdown, _server, _dir) = start_test_server().await;
+    let mut stream = UnixStream::connect(&socket).await.unwrap();
+    write_frame(
+        &mut stream,
+        &Handshake {
+            protocol_version: 0,
+        },
+    )
+    .await
+    .unwrap();
+    let ack: HandshakeAck = read_frame(&mut stream).await.unwrap().unwrap();
+    assert_eq!(ack.protocol_version, 1);
+    let eof = tokio::time::timeout(
+        Duration::from_secs(5),
+        read_frame::<_, ServerFrame>(&mut stream),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(
+        eof.is_none(),
+        "v0 client must be disconnected before requests"
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let old_socket = dir.path().join("old.sock");
+    let listener = tokio::net::UnixListener::bind(&old_socket).unwrap();
+    let peer = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let handshake: Handshake = read_frame(&mut stream).await.unwrap().unwrap();
+        assert_eq!(handshake.protocol_version, 1);
+        write_frame(
+            &mut stream,
+            &HandshakeAck {
+                protocol_version: 0,
+            },
+        )
+        .await
+        .unwrap();
+        let eof: Option<ServiceRequest> = read_frame(&mut stream).await.unwrap();
+        assert!(
+            eof.is_none(),
+            "client must not send requests to a v0 daemon"
+        );
+    });
+    let error = eidetica::service::client::RemoteConnection::connect(&old_socket)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, eidetica::Error::Io(ref io) if io.kind() == std::io::ErrorKind::InvalidData)
+    );
+    tokio::time::timeout(Duration::from_secs(5), peer)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
 async fn test_user_lifecycle() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
     // Admin is bootstrapped — use it to create test user
@@ -543,16 +603,63 @@ async fn test_database_get_store_state() {
 
     let conn = remote_conn(&instance);
     let state = conn
-        .get_store_state::<DocStore>(root_id.clone(), identity, "entries".to_string())
+        .get_store_state::<DocStore>(root_id.clone(), identity.clone(), "entries".to_string())
         .await
         .unwrap();
-    let state = serde_json::to_value(state).unwrap();
+    assert_eq!(state.get_as::<&str>("greeting"), Some("hello"));
+    assert_eq!(state.get_as::<i64>("count"), Some(42));
 
-    assert!(
-        state.is_object() || state.is_null(),
-        "get_store_state must return a JSON value, got: {:?}",
-        state
-    );
+    // Observe the actual live response, not just the typed convenience API.
+    use eidetica::crdt::Codec;
+    use eidetica::service::protocol::{AuthenticatedDbRequest, DatabaseOp};
+    use eidetica::store::{Registered, Store};
+    let (mut reader, mut writer) = raw_handshake(&socket_path).await;
+    write_frame(
+        &mut writer,
+        &ServiceRequest::TrustedLoginUser {
+            username: "alice".into(),
+        },
+    )
+    .await
+    .unwrap();
+    let challenge = match read_response(&mut reader).await {
+        ServiceResponse::TrustedLoginChallenge { challenge, .. } => challenge,
+        other => panic!("expected challenge: {other:?}"),
+    };
+    let signing = server_user.get_signing_key(&server_key).unwrap();
+    write_frame(
+        &mut writer,
+        &ServiceRequest::TrustedLoginProve {
+            signature: create_challenge_response(&challenge, &signing),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        read_response(&mut reader).await,
+        ServiceResponse::TrustedLoginOk
+    ));
+    write_frame(
+        &mut writer,
+        &ServiceRequest::AuthenticatedDb(Box::new(AuthenticatedDbRequest {
+            root_id,
+            identity,
+            op: DatabaseOp::EnsureStoreStateGeneration {
+                store: "entries".into(),
+                expected_type: DocStore::type_id().into(),
+                projection: DocStore::state_model().descriptor(),
+            },
+        })),
+    )
+    .await
+    .unwrap();
+    match read_response(&mut reader).await {
+        ServiceResponse::StoreState(bytes) => {
+            // Doc's existing JSON map encoding does not promise key order.
+            assert_eq!(Doc::decode(&bytes).unwrap(), state);
+        }
+        other => panic!("expected encoded StoreState: {other:?}"),
+    }
 }
 
 /// A canonical read grant can invoke internal maintenance but cannot stage

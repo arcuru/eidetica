@@ -23,6 +23,7 @@ use crate::auth::validation::permissions::resolve_identity_permission;
 use crate::backend::{
     CacheScope, StagingToken, StoreStateLifecycle, StoreStateRequest, VerificationStatus,
 };
+use crate::crdt::Codec;
 use crate::database::Database;
 use crate::entry::ID;
 use crate::instance::{CallbackId, WriteSource};
@@ -1259,7 +1260,7 @@ async fn dispatch_database_op(
                 db.get_store_state::<Table<serde_json::Value>>(&store)
                     .await?
             };
-            Ok(ServiceResponse::CrdtValue(serde_json::to_value(value)?))
+            Ok(ServiceResponse::StoreState(value.encode()?))
         }
 
         DatabaseOp::GetStoreEntries { store, tips, scope } => {

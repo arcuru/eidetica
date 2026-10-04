@@ -41,7 +41,7 @@ The protocol uses **length-prefixed JSON frames** over a Unix domain socket.
 
 Each frame is a 4-byte big-endian length prefix followed by a JSON-serialized payload. Maximum frame size is 64 MiB (`MAX_FRAME_SIZE`); frames exceeding this are rejected on both read and write. `write_frame`/`read_frame` handle serialization and framing; `read_frame` returns `None` on clean EOF.
 
-`PROTOCOL_VERSION` is currently `0`, indicating an unstable protocol that may change without notice. Version mismatches fail the handshake.
+`PROTOCOL_VERSION` is `1`: generic Store-state responses carry complete `Codec` bytes inside the JSON frame. Clients and daemons must agree on the version; v0 peers are rejected at the handshake with no compatibility fallback. Fixed Doc/settings values retain JSON encoding.
 
 `#[non_exhaustive]` does not protect wire compatibility — it only covers Rust source compatibility (exhaustive `match` arms in downstream code). Serialized enums like `WriteSource` (carried by `Notification::DatabaseWrite`) are versioned by `PROTOCOL_VERSION`: a peer on an older version fails to deserialize an unknown variant, so adding a variant is a version bump, not a backward-compatible addition.
 
@@ -134,19 +134,19 @@ pub struct AuthenticatedDbRequest {
 
 Every storage operation rides a single `DatabaseOp` enum carried in `AuthenticatedDbRequest`. The server runs its own `Database` on its local `Instance`, so verification-on-read, the Verified frontier, and CRDT-state materialization happen server-side by construction. Each variant is tree-scoped through the containing request's `root_id`.
 
-| Variant                                              | Purpose                                                                                                                                                                                                               |
-| ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `BeginTransaction { stores, scope }`                 | Acquire parent tips, settings tips, and merged settings needed to build+sign a transaction locally for `stores`, parents drawn from `scope`'s snapshot. Read.                                                         |
-| `SubmitSignedEntry { entry }`                        | Submit a finished, client-signed entry. Server stores it `Unverified` and runs its own verification pass. **Verification-gated, not session-gated** (see below).                                                      |
-| `GetVerifiedTips`                                    | Database's Verified-frontier tips. Read.                                                                                                                                                                              |
-| `GetStoreState { store, expected_type, projection }` | Typed registered plaintext Store state against the Verified frontier; validates type and projection after Read authorization. Returns `WireCrdtValue`, or `RecordMaintenanceUnavailable` for unsupported maintenance. |
-| `GetStoreEntries { store, tips, scope }`             | Ordered (by subtree height), verified, opaque store entries reachable from `tips` in `scope` — the universal primitive, including encrypted stores. Read.                                                             |
-| `GetStoreTipsUpToEntries { store, .. }`              | Store tips reachable from given main-tree entry IDs. Read.                                                                                                                                                            |
-| `ComputeMergeState { store, .. }`                    | Lowest common ancestor + path to tip entries in a store DAG, fused into one RPC. Read.                                                                                                                                |
-| `GetEntry { id }`                                    | Fetch a single entry by id (gating tree resolved server-side post-fetch). Read.                                                                                                                                       |
-| `CreateTicket`                                       | Build a point-in-time database locator after the request is gated for Read on the target database.                                                                                                                    |
-| Store-state resolve / staging / record get/scan      | Resolve, build, and lazily read cached state through opaque server-issued views onto published record sets. Read for reads, Write for staging.                                                                        |
-| `SetInstanceMetadata { metadata }`                   | Rewrite daemon-level pointers to its own system DBs. Special-cased server-side to gate `Admin` on `_databases` (a daemon-global system tree) instead of the request's `root_id`.                                      |
+| Variant                                                           | Purpose                                                                                                                                                                                                                                                    |
+| ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BeginTransaction { stores, scope }`                              | Acquire parent tips, settings tips, and merged settings needed to build+sign a transaction locally for `stores`, parents drawn from `scope`'s snapshot. Read.                                                                                              |
+| `SubmitSignedEntry { entry }`                                     | Submit a finished, client-signed entry. Server stores it `Unverified` and runs its own verification pass. **Verification-gated, not session-gated** (see below).                                                                                           |
+| `GetVerifiedTips`                                                 | Database's Verified-frontier tips. Read.                                                                                                                                                                                                                   |
+| `EnsureStoreStateGeneration { store, expected_type, projection }` | Typed registered plaintext Store state against the Verified frontier; validates type and projection after Read authorization. Returns `StoreState(Vec<u8>)` encoded by the Store's `Codec`, or `RecordMaintenanceUnavailable` for unsupported maintenance. |
+| `GetStoreEntries { store, tips, scope }`                          | Ordered (by subtree height), verified, opaque store entries reachable from `tips` in `scope` — the universal primitive, including encrypted stores. Read.                                                                                                  |
+| `GetStoreTipsUpToEntries { store, .. }`                           | Store tips reachable from given main-tree entry IDs. Read.                                                                                                                                                                                                 |
+| `ComputeMergeState { store, .. }`                                 | Lowest common ancestor + path to tip entries in a store DAG, fused into one RPC. Read.                                                                                                                                                                     |
+| `GetEntry { id }`                                                 | Fetch a single entry by id (gating tree resolved server-side post-fetch). Read.                                                                                                                                                                            |
+| `CreateTicket`                                                    | Build a point-in-time database locator after the request is gated for Read on the target database.                                                                                                                                                         |
+| Store-state resolve / staging / record get/scan                   | Resolve, build, and lazily read cached state through opaque server-issued views onto published record sets. Read for reads, Write for staging.                                                                                                             |
+| `SetInstanceMetadata { metadata }`                                | Rewrite daemon-level pointers to its own system DBs. Special-cased server-side to gate `Admin` on `_databases` (a daemon-global system tree) instead of the request's `root_id`.                                                                           |
 
 Operations deliberately **not** exposed over the wire — `update_verification_status`, `get_instance_secrets`, `all_roots`, and the verification/enumeration queries — live on the concrete local `BackendImpl` engine (reached via `Backend::local_engine`), so a `RemoteBackend` simply does not provide them.
 
@@ -158,22 +158,22 @@ Published views and private builds use opaque random tokens stored only in the c
 
 ### ServiceResponse
 
-| Variant                                                     | Payload                                                            |
-| ----------------------------------------------------------- | ------------------------------------------------------------------ |
-| `Entry(Entry)` / `Entries(Vec<Entry>)`                      | One or many entries                                                |
-| `Ids(Vec<ID>)`                                              | One or many IDs                                                    |
-| `Ok`                                                        | Success with no data                                               |
-| `Token(String)`                                             | Opaque server-issued staging capability                            |
-| `Record` / `RecordPage` / `RecordView`                      | Lazy point, bounded page, and published-record-set responses       |
-| `TransactionContext(TransactionContext)`                    | Parent tips + settings, response to `DatabaseOp::BeginTransaction` |
-| `CrdtValue(WireCrdtValue)`                                  | Materialized merged state, response to `DatabaseOp::GetStoreState` |
-| `MergeState(MergeState)`                                    | LCA + path, response to `DatabaseOp::ComputeMergeState`            |
-| `DatabaseTicket(DatabaseTicket)`                            | Point-in-time locator, response to `DatabaseOp::CreateTicket`      |
-| `InstanceMetadata(Option<InstanceMetadata>)`                | Optional instance metadata                                         |
-| `TrustedLoginChallenge { challenge, user_uuid, user_info }` | Challenge bytes + the user's full record (login)                   |
-| `TrustedLoginOk`                                            | Login succeeded; connection now authenticated                      |
-| `SessionKeyChallenge { challenge }`                         | Challenge bytes the client signs to register an additional key     |
-| `Error(ServiceError)`                                       | Error response                                                     |
+| Variant                                                     | Payload                                                                   |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `Entry(Entry)` / `Entries(Vec<Entry>)`                      | One or many entries                                                       |
+| `Ids(Vec<ID>)`                                              | One or many IDs                                                           |
+| `Ok`                                                        | Success with no data                                                      |
+| `Token(String)`                                             | Opaque server-issued staging capability                                   |
+| `Record` / `RecordPage` / `RecordView`                      | Lazy point, bounded page, and published-record-set responses              |
+| `TransactionContext(TransactionContext)`                    | Parent tips + settings, response to `DatabaseOp::BeginTransaction`        |
+| `StoreState(Vec<u8>)`                                       | Codec-encoded state, response to `DatabaseOp::EnsureStoreStateGeneration` |
+| `MergeState(MergeState)`                                    | LCA + path, response to `DatabaseOp::ComputeMergeState`                   |
+| `DatabaseTicket(DatabaseTicket)`                            | Point-in-time locator, response to `DatabaseOp::CreateTicket`             |
+| `InstanceMetadata(Option<InstanceMetadata>)`                | Optional instance metadata                                                |
+| `TrustedLoginChallenge { challenge, user_uuid, user_info }` | Challenge bytes + the user's full record (login)                          |
+| `TrustedLoginOk`                                            | Login succeeded; connection now authenticated                             |
+| `SessionKeyChallenge { challenge }`                         | Challenge bytes the client signs to register an additional key            |
+| `Error(ServiceError)`                                       | Error response                                                            |
 
 ## Session Keyset
 
@@ -317,7 +317,7 @@ ops: Arc::new(RemoteBackend::new(conn, Some(identity))),
 
 Encrypted stores (wrapped in `PasswordStore`) are opaque to the daemon — the daemon stores and syncs `EncryptedBlob` entries without ever holding a content encryption key. The `DatabaseOp` surface handles the encryption boundary with two complementary primitives:
 
-- **`GetStoreState { store, expected_type, projection }`** — the **registered plaintext path** (DocStore and current Doc-backed Table). After canonical Read authorization, the server validates `_index` type and effective projection, then reduces typed Store history and returns `WireCrdtValue` (`serde_json::Value`). Unsupported maintenance yields `RecordMaintenanceUnavailable` for typed client-side history folding, never for invalid credentials or descriptors. Password-wrapped Stores cannot be decrypted by this server path.
+- **`EnsureStoreStateGeneration { store, expected_type, projection }`** — the **registered plaintext path** (DocStore and current Doc-backed Table). After canonical Read authorization, the server validates `_index` type and effective projection, then reduces typed Store history and returns `StoreState(Vec<u8>)` using `Codec::encode`. The client reconstructs the complete state with `Codec::decode`. Unsupported maintenance yields `RecordMaintenanceUnavailable` for typed client-side history folding, never for invalid credentials or descriptors. Password-wrapped Stores cannot be decrypted by this server path.
 
 - **`GetStoreEntries { store, tips, scope }`** — the **universal primitive** for encrypted stores. Returns opaque `Entry` objects reachable from `tips`, ordered by subtree height, already verified against the server's Verified frontier. The client receives encrypted entries it can decrypt and CRDT-merge locally. This works identically for encrypted and unencrypted stores — the server never touches content. The current typed `get_store_state` history fallback folds plaintext; encrypted callers still use their Store-specific decrypting path.
 
@@ -336,7 +336,7 @@ The encrypted-store-over-service tests cover both paths: `test_database_encrypte
 
 ### Gate scope for `AuthenticatedDb`
 
-Every `DatabaseOp` variant is intrinsically tree-scoped via `root_id` — there are no tree-less operations to gate. Permission follows the `required_permission()` pattern: `Read` for queries (`GetVerifiedTips`, `GetStoreState`, `GetStoreEntries`, `GetEntry`, `BeginTransaction`, `GetStoreTipsUpToEntries`, `ComputeMergeState`), `Write` for mutation. The per-tree permission gate (Gate 2) always fires for non-submit `AuthenticatedDb` requests because the tree identity is known before dispatch.
+Every `DatabaseOp` variant is intrinsically tree-scoped via `root_id` — there are no tree-less operations to gate. Permission follows the `required_permission()` pattern: `Read` for queries (`GetVerifiedTips`, `EnsureStoreStateGeneration`, `GetStoreEntries`, `GetEntry`, `BeginTransaction`, `GetStoreTipsUpToEntries`, `ComputeMergeState`), `Write` for mutation. The per-tree permission gate (Gate 2) always fires for non-submit `AuthenticatedDb` requests because the tree identity is known before dispatch.
 
 `SubmitSignedEntry` is the exception — verification-gated, not session-gated, as covered in [Access Control](#access-control-the-three-gates) above.
 

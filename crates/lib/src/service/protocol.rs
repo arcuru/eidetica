@@ -43,8 +43,8 @@ use crate::service::error::ServiceError;
 use crate::snapshot::Snapshot;
 use crate::user::UserInfo;
 
-/// Protocol version. Version 0 indicates an unstable protocol that may change
-/// without notice between releases.
+/// Protocol version. Version 1 carries generic Store state as Codec bytes.
+/// Clients and daemons must use the same version; there is no v0 compatibility.
 ///
 /// This constant is the compatibility gate for serialized types in this
 /// protocol. `#[non_exhaustive]` does **not** protect wire compatibility: a
@@ -52,7 +52,7 @@ use crate::user::UserInfo;
 /// variant to a serialized enum (e.g. [`WriteSource`](crate::instance::WriteSource)
 /// inside [`Notification::DatabaseWrite`]) is therefore a protocol version
 /// bump, not a backward-compatible addition.
-pub const PROTOCOL_VERSION: u32 = 0;
+pub const PROTOCOL_VERSION: u32 = 1;
 
 /// Maximum frame size: 64 MiB.
 pub const MAX_FRAME_SIZE: u32 = 64 * 1024 * 1024;
@@ -97,9 +97,8 @@ pub enum ReadScope {
     AllowUnverified,
 }
 
-/// A CRDT store's materialized state on the wire. Concrete `Store<T>` typing
-/// stays client-side sugar over this; the cache path already ships
-/// `serde_json` bytes today, so this introduces no new representation.
+/// Fixed Doc/settings values retain their JSON representation. Generic Store
+/// state uses the dedicated encoded-byte [`ServiceResponse::StoreState`].
 pub type WireCrdtValue = serde_json::Value;
 
 /// Everything a client needs to build **and sign** an entry locally without
@@ -488,8 +487,9 @@ pub enum ServiceResponse {
     Token(String),
     /// Transaction-build context (response to `DatabaseOp::BeginTransaction`).
     TransactionContext(TransactionContext),
-    /// Materialized CRDT store state (response to `DatabaseOp::EnsureStoreStateGeneration`).
-    CrdtValue(WireCrdtValue),
+    /// Complete Store state encoded by its Codec, inside the JSON frame
+    /// (response to `DatabaseOp::EnsureStoreStateGeneration`).
+    StoreState(Vec<u8>),
     /// Merge state: lowest common ancestor + path to tips (response to
     /// `DatabaseOp::ComputeMergeState`).
     MergeState(MergeState),
