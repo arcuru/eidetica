@@ -6,7 +6,7 @@ use serde::de::{DeserializeOwned, SeqAccess, Visitor};
 use serde::ser::SerializeSeq;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use super::{CRDT, Data, Lww};
+use super::{CRDT, Codec, Lww};
 
 /// Per-key CRDT composition; a value inserted here is a **delta**, not
 /// necessarily a replacement. There is no implicit deletion policy.
@@ -95,15 +95,22 @@ where
     }
 }
 
-impl<K, V> Data for Map<K, V>
+impl<K, V> Codec for Map<K, V>
 where
-    K: Ord + Clone + Serialize + DeserializeOwned,
-    V: CRDT,
+    K: Ord + Serialize + DeserializeOwned,
+    V: Serialize + DeserializeOwned,
 {
+    fn encode(&self) -> crate::Result<Vec<u8>> {
+        Ok(serde_json::to_vec(self)?)
+    }
+
+    fn decode(bytes: &[u8]) -> crate::Result<Self> {
+        Ok(serde_json::from_slice(bytes)?)
+    }
 }
 impl<K, V> CRDT for Map<K, V>
 where
-    K: Ord + Clone + Serialize + DeserializeOwned,
+    K: Ord + Clone,
     V: CRDT,
 {
     fn merge(&self, other: &Self) -> crate::Result<Self> {
@@ -225,16 +232,23 @@ where
     }
 }
 
-impl<K, V> Data for LwwMap<K, V>
+impl<K, V> Codec for LwwMap<K, V>
 where
-    K: Ord + Clone + Serialize + DeserializeOwned,
-    V: Clone + Serialize + DeserializeOwned,
+    K: Ord + Serialize + DeserializeOwned,
+    V: Serialize + DeserializeOwned,
 {
+    fn encode(&self) -> crate::Result<Vec<u8>> {
+        Ok(serde_json::to_vec(self)?)
+    }
+
+    fn decode(bytes: &[u8]) -> crate::Result<Self> {
+        Ok(serde_json::from_slice(bytes)?)
+    }
 }
 impl<K, V> CRDT for LwwMap<K, V>
 where
-    K: Ord + Clone + Serialize + DeserializeOwned,
-    V: Clone + Serialize + DeserializeOwned,
+    K: Ord + Clone,
+    V: Clone,
 {
     fn merge(&self, other: &Self) -> crate::Result<Self> {
         Ok(Self {
@@ -277,13 +291,13 @@ mod tests {
 
     #[test]
     fn reference_projection_obeys_identity_merge_and_composition() {
-        use crate::crdt::CanonicalJson;
-        type Delta = LwwMap<String, CanonicalJson>;
+        use serde_bytes::ByteBuf;
+        type Delta = LwwMap<String, ByteBuf>;
         fn apply(rows: &mut BTreeMap<Vec<u8>, Vec<u8>>, delta: &Delta) {
             for (key, operation) in delta.operations() {
                 match operation {
                     Lww::Set(value) => {
-                        rows.insert(key.as_bytes().to_vec(), value.as_bytes().to_vec());
+                        rows.insert(key.as_bytes().to_vec(), value.to_vec());
                     }
                     Lww::Delete => {
                         rows.remove(key.as_bytes());
@@ -294,16 +308,13 @@ mod tests {
         }
         let empty = Delta::new();
         let mut set = Delta::new();
-        set.set(
-            "a".into(),
-            CanonicalJson::parse(br#"{"b":2,"a":1}"#).unwrap(),
-        );
-        set.set("a.b".into(), CanonicalJson::parse(b"true").unwrap());
-        set.set("".into(), CanonicalJson::parse(b"null").unwrap());
+        set.set("a".into(), ByteBuf::from(vec![255, 0, 128]));
+        set.set("a.b".into(), ByteBuf::from(vec![0]));
+        set.set("".into(), ByteBuf::new());
         let mut delete = Delta::new();
         delete.delete("a".into());
         let mut resurrect = Delta::new();
-        resurrect.set("a".into(), CanonicalJson::parse(b"3").unwrap());
+        resurrect.set("a".into(), ByteBuf::from(vec![3]));
         for first in [&empty, &set, &delete, &resurrect] {
             for second in [&empty, &set, &delete, &resurrect] {
                 let merged = first.merge(second).unwrap();

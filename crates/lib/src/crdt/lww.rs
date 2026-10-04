@@ -1,6 +1,6 @@
 //! Ordered, right-biased register operations.
 
-use super::{CRDT, Data};
+use super::{CRDT, Codec};
 
 /// A register operation reduced in deterministic Entry order (height, then ID).
 /// "Last" does not refer to wall-clock time. `NoOp` is the identity;
@@ -25,11 +25,22 @@ pub enum Lww<T> {
     Delete,
 }
 
-impl<T> Data for Lww<T> where T: Clone + serde::Serialize + serde::de::DeserializeOwned {}
+impl<T> Codec for Lww<T>
+where
+    T: serde::Serialize + serde::de::DeserializeOwned,
+{
+    fn encode(&self) -> crate::Result<Vec<u8>> {
+        Ok(serde_json::to_vec(self)?)
+    }
+
+    fn decode(bytes: &[u8]) -> crate::Result<Self> {
+        Ok(serde_json::from_slice(bytes)?)
+    }
+}
 
 impl<T> CRDT for Lww<T>
 where
-    T: Clone + serde::Serialize + serde::de::DeserializeOwned,
+    T: Clone,
 {
     fn merge(&self, other: &Self) -> crate::Result<Self> {
         Ok(match other {

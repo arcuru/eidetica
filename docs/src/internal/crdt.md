@@ -40,12 +40,24 @@ row projection of `LwwMap<K, V>`, which composes `Map<K, Lww<V>>` and presents
 only live values through its ordinary iteration API. Both maps serialize as
 key-ordered sequences of unique key/operation pairs, not JSON objects.
 
-`CanonicalJson` holds RFC 8785 canonical row bytes (`canonical-json:v0`). It
-rejects duplicate member names and invalid JSON number inputs. A typed reader
-may deserialize a row, but its schema never rewrites the canonical row bytes.
-The existing Table remains Doc-backed until record staging and projection
-contracts are implemented; no mixed old/new `table:v0` histories are supported
-once that format changes.
+Merge-only composition needs no Serde or encoding traits on nested values.
+Opaque `serde_bytes::ByteBuf` values can represent rows without parsing or
+normalizing their contents. The existing Table remains Doc-backed.
+
+## Store encoding
+
+`Codec: Sized` defines `encode(&self) -> Result<Vec<u8>>` and
+`decode(&[u8]) -> Result<Self>` for complete operation/state values. It has no
+Clone or Serde supertraits and no blanket Serde implementation. `CRDT` requires
+only Clone, Default and merge; `Store::Data` requires both CRDT and Codec.
+Decoding must preserve tombstones and all state affecting subsequent merges,
+consume a complete value, and reject malformed or trailing data.
+
+Doc, Value, List, YrsBinary and the Serde-enabled map/register codecs explicitly
+retain their JSON representations. A custom Store can implement a binary codec
+without implementing Serde; a durable format change needs a new Store identity.
+Encoding precedes encryption, and replay decrypts before decoding. Projection
+algebra alone does not require Codec.
 
 ## Doc Merge Semantics
 
