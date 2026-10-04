@@ -48,13 +48,15 @@ fn test_raw_bytes_identity() {
     }
 }
 
-// Deliberately no Serialize/Deserialize impls: the trait must not require them.
+// Deliberately no Serialize/Deserialize or Clone impls: the trait needs neither.
 #[derive(Debug, PartialEq)]
 struct CustomRow(u8);
 
 struct CustomCodec;
 
 impl RowCodec<CustomRow> for CustomCodec {
+    const FORMAT_ID: &'static str = "example/one-byte:v1";
+
     fn encode(row: &CustomRow) -> eidetica::Result<Vec<u8>> {
         Ok(vec![row.0])
     }
@@ -79,6 +81,14 @@ fn test_custom_non_serde_row_codec() {
     assert_eq!(CustomCodec::decode(&bytes).unwrap(), row);
     assert!(CustomCodec::decode(&[]).is_err());
     assert!(CustomCodec::decode(&[1, 2]).is_err());
+}
+
+#[test]
+fn test_stable_row_format_identities() {
+    assert_eq!(<SerdeJson as RowCodec<IntegerRow>>::FORMAT_ID, "json:v1");
+    assert_eq!(<SerdeJson as RowCodec<String>>::FORMAT_ID, "json:v1");
+    assert_eq!(RawBytes::FORMAT_ID, "raw:v1");
+    assert_eq!(CustomCodec::FORMAT_ID, "example/one-byte:v1");
 }
 
 #[test]
