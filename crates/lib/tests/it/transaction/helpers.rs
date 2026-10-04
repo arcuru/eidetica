@@ -202,7 +202,7 @@ pub async fn create_operation_with_nested_data(tree: &Database) -> ID {
 
     // Set nested map value
     let nested = create_nested_map(&[("inner1", "value1"), ("inner2", "value2")]);
-    store.set_value("map_key", nested).await.unwrap();
+    store.set("map_key", nested).await.unwrap();
 
     txn.commit().await.unwrap()
 }

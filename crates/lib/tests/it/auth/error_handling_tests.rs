@@ -80,7 +80,7 @@ async fn test_delegation_nonexistent_tree() -> Result<()> {
     // Store by root ID (the new storage format)
     new_auth_settings.set_json(nonexistent_root_id.to_string(), nonexistent_delegation)?;
     settings_store
-        .set_value("auth", Value::Doc(new_auth_settings))
+        .set("auth", Value::Doc(new_auth_settings))
         .await?;
     txn.commit().await?;
 
@@ -137,7 +137,7 @@ async fn test_delegation_corrupted_tree_references() -> Result<()> {
         Value::Doc(corrupted_delegate),
     );
     settings_store
-        .set_value("auth", Value::Doc(new_auth_settings))
+        .set("auth", Value::Doc(new_auth_settings))
         .await?;
     txn.commit().await?;
 

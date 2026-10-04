@@ -63,8 +63,8 @@ async fn test_transaction_nested_values() {
     nested.set("inner1", "value1".to_string());
     nested.set("inner2", "value2".to_string());
 
-    // Use the new set_value method to store a map
-    store1.set_value("map_key", nested).await.unwrap();
+    // Store a nested map
+    store1.set("map_key", nested).await.unwrap();
 
     // Commit the operation
     txn1.commit().await.unwrap();

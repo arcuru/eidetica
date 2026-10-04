@@ -366,10 +366,7 @@ async fn test_password_store_docstore_nested_values() {
     let mut inner = Doc::new();
     inner.set("city", "Portland");
     inner.set("zip", Value::Int(97201));
-    docstore
-        .set_value("address", Value::Doc(inner))
-        .await
-        .unwrap();
+    docstore.set("address", Value::Doc(inner)).await.unwrap();
     tx.commit().await.unwrap();
 
     let tx2 = database.new_transaction().await.unwrap();
