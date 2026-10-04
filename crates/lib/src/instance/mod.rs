@@ -18,7 +18,7 @@ use std::{
 use crate::{
     Clock, Database, Entry, Result, SystemClock,
     auth::crypto::{PrivateKey, PublicKey},
-    backend::{BackendImpl, InstanceMetadata, InstanceSecrets, VerificationStatus},
+    backend::{BackendError, BackendImpl, InstanceMetadata, InstanceSecrets, VerificationStatus},
     entry::ID,
     snapshot::Snapshot,
     sync::Sync,
@@ -1844,9 +1844,9 @@ impl Instance {
     /// - Callbacks fire once per sync exchange, not once per entry
     /// - `previous_tips` lets consumers reconstruct exactly what changed
     ///
-    /// Entries that fail to store are logged and skipped — remaining entries
-    /// are still stored and callbacks still fire for whatever was persisted.
-    /// Returns the number of entries that were successfully persisted.
+    /// A storage failure stops ingestion and is returned to the caller. Entries
+    /// already stored remain available to a later retry; this is not rollback.
+    /// Returns the number of supplied entries successfully persisted.
     ///
     /// Serialized per-tree against [`Self::put_entry`] and other concurrent
     /// `put_remote_entries` calls so `previous_tips` is consistent across
@@ -1865,6 +1865,17 @@ impl Instance {
         tree_id: &ID,
         entries: Vec<Entry>,
     ) -> Result<usize> {
+        // Validate the entire envelope before the first write. The backend files
+        // entries under their own root, not under this caller-supplied tree.
+        for entry in &entries {
+            if entry.root().unwrap_or_else(|| entry.id()) != *tree_id {
+                return Err(BackendError::EntryNotInTree {
+                    entry_id: entry.id(),
+                    tree_id: tree_id.clone(),
+                }
+                .into());
+            }
+        }
         if entries.is_empty() {
             return Ok(0);
         }
@@ -1874,18 +1885,11 @@ impl Instance {
         let stored_count = {
             let lock = self.tree_lock(tree_id);
             let _guard = lock.lock().await;
-            let mut stored = 0usize;
+            let count = entries.len();
             for entry in entries {
-                match self.backend().put(entry.clone()).await {
-                    Ok(_) => stored += 1,
-                    Err(e) => tracing::error!(
-                        tree_id = %tree_id,
-                        entry_id = %entry.id(),
-                        "Failed to store remote entry: {}", e
-                    ),
-                }
+                self.backend().put(entry).await?;
             }
-            stored
+            count
         };
 
         // Run verify inline. `Database::verify` walks the Unverified

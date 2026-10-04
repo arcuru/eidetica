@@ -29,8 +29,10 @@ use crate::instance::{CallbackId, WriteSource};
 use crate::service::error::ServiceError;
 use crate::service::protocol::{
     AuthenticatedDbRequest, DatabaseOp, HandshakeAck, MergeState, Notification, PROTOCOL_VERSION,
-    ServerFrame, ServiceRequest, ServiceResponse, read_frame, write_frame,
+    ServerFrame, ServiceRequest, ServiceResponse, TicketBootstrapOutcome, TicketBootstrapRequest,
+    read_frame, write_frame,
 };
+use crate::sync::{SyncError, protocol::SyncTreeRequest};
 use crate::user::system_databases::lookup_user_record;
 
 /// Connection identifier. Monotonic per server-run; reused only after
@@ -763,6 +765,21 @@ async fn dispatch_inner(
         }
         ServiceRequest::SessionKeyRegister { pubkey, signature } => {
             handle_session_key_register(state, pubkey, &signature)
+        }
+
+        // === Post-auth: ticket bootstrap ===
+        ServiceRequest::TicketBootstrapPrepare { ticket } => {
+            require_authenticated(state, "TicketBootstrapPrepare")?;
+            let sync = instance.sync().ok_or(SyncError::SyncNotEnabled)?;
+            let (address, peer, tips) = sync.prepare_ticket_bootstrap(&ticket).await?;
+            Ok(ServiceResponse::TicketBootstrapRoute {
+                address,
+                peer,
+                tips,
+            })
+        }
+        ServiceRequest::TicketBootstrap(request) => {
+            handle_ticket_bootstrap(instance, state, *request).await
         }
 
         // === Authenticated storage operations ===
@@ -1649,6 +1666,103 @@ fn handle_session_key_register(
             },
         ))),
     }
+}
+
+fn require_authenticated(state: &ConnectionState, operation: &str) -> crate::Result<()> {
+    if matches!(state, ConnectionState::Authenticated { .. }) {
+        return Ok(());
+    }
+    Err(crate::Error::Auth(Box::new(
+        AuthError::InvalidAuthConfiguration {
+            reason: format!(
+                "{operation} requires an authenticated connection; complete TrustedLogin* first"
+            ),
+        },
+    )))
+}
+
+/// Send a client-signed ticket bootstrap through the daemon's sync engine.
+///
+/// The daemon only acts for a key this connection has proven it holds, and
+/// never sees that key's private half: the client signs the peer-bound
+/// request proof itself. Pending and rejected results are returned as data
+/// so the client can rebuild the exact error its caller matches on.
+async fn handle_ticket_bootstrap(
+    instance: &Instance,
+    state: &ConnectionState,
+    request: TicketBootstrapRequest,
+) -> crate::Result<ServiceResponse> {
+    let ConnectionState::Authenticated { session_keyset, .. } = state else {
+        return Err(crate::Error::Auth(Box::new(
+            AuthError::InvalidAuthConfiguration {
+                reason: "TicketBootstrap requires an authenticated connection; \
+                         complete TrustedLogin* first"
+                    .to_string(),
+            },
+        )));
+    };
+    if !session_keyset.contains(&request.auth.key) {
+        return Err(crate::Error::Auth(Box::new(
+            AuthError::InvalidAuthConfiguration {
+                reason: format!(
+                    "requesting key '{}' is not in this connection's session keyset; \
+                     register it with SessionKeyChallenge/SessionKeyRegister first",
+                    request.auth.key
+                ),
+            },
+        )));
+    }
+    // The daemon's sync store is shared by every user, and a successful
+    // exchange ties the database to the chosen peer and sends it whatever
+    // that peer reports missing. A database this daemon already holds is
+    // therefore joined only by a key that can already read it here; an
+    // absent database passes through, as the create flow does.
+    gate_tree_permission(
+        instance,
+        &request.auth.key,
+        &SigKey::from_pubkey(&request.auth.key),
+        &request.database_id,
+        Permission::Read,
+        false,
+    )
+    .await?;
+
+    let sync = instance.sync().ok_or(SyncError::SyncNotEnabled)?;
+    let sync_request = SyncTreeRequest {
+        tree_id: request.database_id,
+        our_tips: request.tips,
+        peer_pubkey: None,
+        requesting_key: Some(request.auth.key.clone()),
+        requesting_key_name: Some(request.requesting_key_name),
+        requested_permission: Some(request.requested_permission),
+        metadata: request.metadata,
+        auth: Some(request.auth),
+    };
+    let outcome = match sync
+        .bootstrap_with_signed_request(&request.address, &request.peer, sync_request)
+        .await
+    {
+        Ok(()) => TicketBootstrapOutcome::Complete,
+        Err(crate::Error::Sync(error)) => match *error {
+            SyncError::BootstrapPending {
+                request_id,
+                message,
+            } => TicketBootstrapOutcome::Pending {
+                request_id,
+                message,
+            },
+            SyncError::BootstrapRejected {
+                request_id,
+                message,
+            } => TicketBootstrapOutcome::Rejected {
+                request_id,
+                message,
+            },
+            other => return Err(crate::Error::Sync(Box::new(other))),
+        },
+        Err(error) => return Err(error),
+    };
+    Ok(ServiceResponse::TicketBootstrapOutcome(outcome))
 }
 
 /// Resolve `pubkey`'s permission against `tree_id`'s `auth_settings` and reject

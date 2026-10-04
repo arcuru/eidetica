@@ -1532,7 +1532,7 @@ impl Database {
     ///
     /// Returns an empty vector if the root itself is not `Verified` (nothing
     /// is observable in the default view until verification reaches the root).
-    async fn verified_frontier(&self) -> Result<Vec<ID>> {
+    pub(crate) async fn verified_frontier(&self) -> Result<Vec<ID>> {
         let instance = self.instance()?;
         let backend = instance.require_local_engine()?;
 

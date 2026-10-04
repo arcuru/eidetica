@@ -1632,7 +1632,14 @@ impl Transaction {
 
         // Add metadata with settings snapshot for all entries
         // Get the backend to access the settings snapshot (do async ops before RefCell borrow)
-        let db_snapshot = self.db.snapshot().await?;
+        // The caller's write lock cannot be re-entered by snapshot's
+        // opportunistic verification. Select the same native Verified frontier.
+        let db_snapshot =
+            if guard.is_some() && self.db.instance()?.backend().local_engine().is_some() {
+                Snapshot::from(self.db.verified_frontier().await?)
+            } else {
+                self.db.snapshot().await?
+            };
         let settings_snapshot = self
             .db
             .ops()

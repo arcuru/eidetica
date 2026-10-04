@@ -118,6 +118,8 @@ The top-level request enum is intentionally flat, keeping the pre-auth surface v
 | `GetInstanceMetadata`                          | Pre-auth — fetch server identity (used by `Instance::connect`)                                     |
 | `SessionKeyChallenge { pubkey }`               | Post-auth — request a challenge bound to `pubkey` so the client can prove possession               |
 | `SessionKeyRegister { pubkey, signature }`     | Post-auth — return the signed challenge; on success `pubkey` joins the connection's session keyset |
+| `TicketBootstrapPrepare { ticket }`            | Post-auth — select a ticket route; see [Ticket Bootstrap](#ticket-bootstrap)                       |
+| `TicketBootstrap(Box<TicketBootstrapRequest>)` | Post-auth — send a client-signed bootstrap request through the daemon's sync engine                |
 | `AuthenticatedDb(Box<AuthenticatedDbRequest>)` | A `DatabaseOp` — the single envelope for every storage operation                                   |
 
 `AuthenticatedDbRequest` carries an identity claim that the server validates against the connection's session keyset before dispatch:
@@ -173,7 +175,40 @@ Published views and private builds use opaque random tokens stored only in the c
 | `TrustedLoginChallenge { challenge, user_uuid, user_info }` | Challenge bytes + the user's full record (login)                   |
 | `TrustedLoginOk`                                            | Login succeeded; connection now authenticated                      |
 | `SessionKeyChallenge { challenge }`                         | Challenge bytes the client signs to register an additional key     |
+| `TicketBootstrapRoute { address, peer, tips }`              | Selected route, answering peer, and empty tips                     |
+| `TicketBootstrapOutcome(TicketBootstrapOutcome)`            | `Complete`, `Pending { .. }`, or `Rejected { .. }`                 |
 | `Error(ServiceError)`                                       | Error response                                                     |
+
+## Ticket Bootstrap
+
+`User::join` on a connected instance joins a database from a ticket without a client-side sync engine and without sending the user's private key to the daemon.
+A bootstrap request proof (`SyncRequestAuth`) is bound to the answering peer and the requester's advertised tips, so the exchange takes two requests:
+
+1. The client registers the requesting key in the session keyset, then sends `TicketBootstrapPrepare { ticket }`.
+   The daemon races the ticket's address hints with its own transports and returns the chosen `address`, the `peer` that answered, and empty `tips`; Prepare does not read or disclose local database state.
+2. The client signs a proof over `peer`, the database, and `tips` with the requesting key, and sends it with the requested permission, key name, and optional approver metadata in `TicketBootstrap`.
+   The daemon requires the proof's key to be in the session keyset and the proof to cover that exact empty-tip request, then sends it through its own sync engine.
+   The response must be confined to the requested database and every supplied Entry must verify; current requested permission is checked before publishing the tree/peer relationship.
+   Incremental send-back is refused on this path.
+   It re-handshakes the route before recording it, so the address must answer as `peer`; and if the daemon already holds the database, the proof's key must already be able to read it there, because the peer store is shared by every user of the daemon.
+
+Pending and rejected results travel as `TicketBootstrapOutcome` data rather than as `ServiceError`s, so the client rebuilds `SyncError::BootstrapPending` and `SyncError::BootstrapRejected` exactly.
+Neither outcome creates User state or a new serving relationship; existing legacy User rows are preserved.
+Only after a successful exchange does the client discover the valid SigKey and record mapping and preferences atomically in its User database, publishing cache from acknowledged or read-back verified state.
+An identical retry does not append equivalent configuration history, and preferences changed during the network wait are not overwritten.
+Success returns an opened `Database` only after those client-side writes finish.
+Pending requires an explicit `join` retry after approval; rejection is terminal for the request.
+Requests on a connection are handled in order, so the join occupies its connection until the peer answers.
+A dropped future or disconnected caller may leave peer-side effects, replicated data or a committed User Entry without its acknowledgement.
+Already-dispatched daemon work may continue after client EOF, but daemon/process death can interrupt it.
+Reconnect and retry explicitly; there is no cancellation API or automatic restart-safe completion.
+Cancelling a partial service frame retires that connection; cancelling only its response wait retains FIFO response association.
+Held/unreadable acquisition and native conflicting-authority/delegated-history recovery remain incomplete; see [current recovery limits](../user_guide/bootstrap.md#current-recovery-limits).
+
+Continuing replication is the daemon's, and its sync requests are signed with the daemon's device key.
+A database that grants only the joining user key, with no global grant, therefore needs separate device-key authorization for later pulls.
+`join` does not enroll a device or promise ongoing private background authority.
+The wildcard-authorized replication test covers global access, not private device enrollment.
 
 ## Session Keyset
 

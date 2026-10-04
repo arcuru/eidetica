@@ -18,8 +18,10 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock, Weak};
 
-use tokio::io::{ReadHalf, WriteHalf};
-use tokio::net::UnixStream;
+use tokio::net::{
+    UnixStream,
+    unix::{OwnedReadHalf, OwnedWriteHalf},
+};
 use tokio::sync::{Mutex, Notify, mpsc, oneshot};
 
 use crate::auth::crypto::PrivateKey;
@@ -33,8 +35,9 @@ use crate::instance::WeakInstance;
 use crate::service::error::service_error_to_eidetica_error;
 use crate::service::protocol::{
     AuthenticatedDbRequest, DatabaseOp, Handshake, HandshakeAck, MergeState, Notification,
-    PROTOCOL_VERSION, ReadScope, ServerFrame, ServiceRequest, ServiceResponse, TransactionContext,
-    WireCrdtValue, read_frame, write_frame,
+    PROTOCOL_VERSION, ReadScope, ServerFrame, ServiceRequest, ServiceResponse,
+    TicketBootstrapOutcome, TicketBootstrapRequest, TransactionContext, WireCrdtValue, read_frame,
+    write_frame,
 };
 use crate::snapshot::Snapshot;
 use crate::user::UserError;
@@ -201,7 +204,7 @@ struct RemoteConnectionInner {
     /// duration of one frame's write plus the FIFO push into [`Self::pending`];
     /// the await on the response itself happens *after* the lock is released
     /// so concurrent callers don't serialise on read-side latency.
-    writer: Mutex<WriteHalf<UnixStream>>,
+    writer: Mutex<Option<OwnedWriteHalf>>,
     /// FIFO of awaiting response slots. `request()` pushes one before
     /// releasing the writer lock; the reader task pops the front on every
     /// `ServerFrame::Response` so request and response order line up. The
@@ -475,6 +478,23 @@ pub struct RemoteConnection {
 /// after, as part of this drop.
 struct ConnLiveness(Arc<RemoteConnectionInner>);
 
+/// An interrupted frame cannot share its connection with another request.
+/// Dropping an owned write half shuts down the socket's write side immediately.
+struct FrameWriteGuard<'a> {
+    inner: &'a RemoteConnectionInner,
+    writer: &'a mut Option<OwnedWriteHalf>,
+    complete: bool,
+}
+
+impl Drop for FrameWriteGuard<'_> {
+    fn drop(&mut self) {
+        if !self.complete {
+            self.writer.take();
+            self.inner.mark_dead();
+        }
+    }
+}
+
 impl Drop for ConnLiveness {
     fn drop(&mut self) {
         self.0.mark_dead();
@@ -497,7 +517,7 @@ impl RemoteConnection {
     /// [`Self::attach_instance`] has been called).
     pub async fn connect(path: impl AsRef<Path>) -> crate::Result<Self> {
         let stream = UnixStream::connect(path.as_ref()).await?;
-        let (mut reader, mut writer) = tokio::io::split(stream);
+        let (mut reader, mut writer) = stream.into_split();
 
         // Send handshake
         let handshake = Handshake {
@@ -524,7 +544,7 @@ impl RemoteConnection {
         }
 
         let inner = Arc::new(RemoteConnectionInner {
-            writer: Mutex::new(writer),
+            writer: Mutex::new(Some(writer)),
             pending: std::sync::Mutex::new(VecDeque::new()),
             weak_instance: std::sync::Mutex::new(None),
             session: RwLock::new(None),
@@ -585,15 +605,10 @@ impl RemoteConnection {
     /// Concurrent `request()` calls do not serialise on the response
     /// wait — only on the (cheap) frame write.
     ///
-    /// Two `closed` checks gate the path: a cheap `Acquire` load before
-    /// acquiring the writer lock (the common-case fast path) and a second
-    /// re-check inside the lock *after* pushing the oneshot, in case the
-    /// reader exited concurrently between the first check and the push.
-    /// The reader sets `closed` with `Release` ordering *before* clearing
-    /// `pending`, so a load that sees `true` is guaranteed to see the
-    /// empty (or about-to-be-empty) queue. Without the post-push check,
-    /// a fresh request landing right after the reader clears could push
-    /// a sender into the orphan queue and `rx.await` forever.
+    /// Check `closed` before locking, under the lock, and after enqueueing.
+    /// An interrupted or failed write shuts down the write half and clears all
+    /// pending responses. Dropping only the response wait leaves its FIFO slot
+    /// for the reader to consume, so subsequent responses keep their association.
     async fn request(&self, req: ServiceRequest) -> crate::Result<ServiceResponse> {
         if self.inner.closed.load(Ordering::Acquire) {
             return Err(connection_aborted());
@@ -608,15 +623,21 @@ impl RemoteConnection {
             if self.inner.closed.load(Ordering::Acquire) {
                 return Err(connection_aborted());
             }
-            // Push *before* writing the frame so the FIFO is consistent
-            // with the order frames hit the wire. If the write fails we
-            // pop the just-pushed sender so a future caller doesn't get
-            // matched to a response that never comes.
+            // Cancellation/error while writing retires the whole connection:
+            // a partial frame cannot be completed by a subsequent request.
+            let mut frame = FrameWriteGuard {
+                inner: &self.inner,
+                writer: &mut writer,
+                complete: false,
+            };
             self.inner.pending_lock().push_back(tx);
-            if let Err(e) = write_frame(&mut *writer, &req).await {
-                let _ = self.inner.pending_lock().pop_back();
-                return Err(e);
+            // Reader teardown publishes closed before draining pending. The
+            // slot must exist before this last check or it can miss the drain.
+            if self.inner.closed.load(Ordering::Acquire) {
+                return Err(connection_aborted());
             }
+            write_frame(frame.writer.as_mut().ok_or_else(connection_aborted)?, &req).await?;
+            frame.complete = true;
         }
         rx.await.map_err(|_| connection_aborted())
     }
@@ -807,6 +828,82 @@ impl RemoteConnection {
         match response {
             ServiceResponse::DatabaseTicket(ticket) => Ok(ticket),
             other => Err(unexpected_response("DatabaseTicket", &other)),
+        }
+    }
+
+    /// Join a database from `ticket` through the daemon's sync engine.
+    ///
+    /// The daemon picks the route and sends the request; `signing_key` stays
+    /// in this process and signs only the peer-bound request proof. The key is
+    /// first registered in the connection's session keyset, which the daemon
+    /// requires before acting for it. `now_millis` is the proof timestamp.
+    ///
+    /// Pending and rejected requests return the same
+    /// [`SyncError::BootstrapPending`](crate::sync::SyncError::BootstrapPending)
+    /// and [`SyncError::BootstrapRejected`](crate::sync::SyncError::BootstrapRejected)
+    /// an embedded [`Sync`](crate::sync::Sync) would.
+    pub(crate) async fn bootstrap_ticket(
+        &self,
+        ticket: &crate::sync::DatabaseTicket,
+        signing_key: &PrivateKey,
+        requesting_key_name: &str,
+        requested_permission: crate::auth::Permission,
+        metadata: Option<crate::crdt::Doc>,
+        now_millis: u64,
+    ) -> crate::Result<()> {
+        use crate::sync::{SyncError, protocol::SyncRequestAuth};
+
+        self.register_session_key(signing_key).await?;
+        let response = self
+            .request_ok(ServiceRequest::TicketBootstrapPrepare {
+                ticket: ticket.clone(),
+            })
+            .await?;
+        let (address, peer, tips) = match response {
+            ServiceResponse::TicketBootstrapRoute {
+                address,
+                peer,
+                tips,
+            } => (address, peer, tips),
+            other => return Err(unexpected_response("TicketBootstrapRoute", &other)),
+        };
+        let auth =
+            SyncRequestAuth::sign(signing_key, &peer, ticket.database_id(), &tips, now_millis);
+        let response = self
+            .request_ok(ServiceRequest::TicketBootstrap(Box::new(
+                TicketBootstrapRequest {
+                    database_id: ticket.database_id().clone(),
+                    address,
+                    peer,
+                    tips,
+                    requesting_key_name: requesting_key_name.to_string(),
+                    requested_permission,
+                    metadata,
+                    auth,
+                },
+            )))
+            .await?;
+        match response {
+            ServiceResponse::TicketBootstrapOutcome(outcome) => match outcome {
+                TicketBootstrapOutcome::Complete => Ok(()),
+                TicketBootstrapOutcome::Pending {
+                    request_id,
+                    message,
+                } => Err(SyncError::BootstrapPending {
+                    request_id,
+                    message,
+                }
+                .into()),
+                TicketBootstrapOutcome::Rejected {
+                    request_id,
+                    message,
+                } => Err(SyncError::BootstrapRejected {
+                    request_id,
+                    message,
+                }
+                .into()),
+            },
+            other => Err(unexpected_response("TicketBootstrapOutcome", &other)),
         }
     }
 
@@ -1420,7 +1517,7 @@ fn connection_aborted() -> crate::Error {
 /// in turn drops every remaining oneshot sender in `pending`, surfacing
 /// as a `RecvError` on each awaiting `request()` (translated to a
 /// connection-closed `io::Error` there).
-async fn run_reader_task(mut reader: ReadHalf<UnixStream>, inner: Arc<RemoteConnectionInner>) {
+async fn run_reader_task(mut reader: OwnedReadHalf, inner: Arc<RemoteConnectionInner>) {
     loop {
         let frame_result: crate::Result<Option<ServerFrame>> = read_frame(&mut reader).await;
         let frame = match frame_result {
@@ -1750,11 +1847,11 @@ mod tests {
     /// subscription state machine without a daemon. No reader task is
     /// spawned and no wire traffic is sent; the peer end is returned so the
     /// caller keeps the socket open for the duration of the test.
-    fn test_conn() -> (RemoteConnection, tokio::net::UnixStream) {
+    pub(super) fn test_conn() -> (RemoteConnection, tokio::net::UnixStream) {
         let (client_side, peer) = tokio::net::UnixStream::pair().unwrap();
-        let (_reader, writer) = tokio::io::split(client_side);
+        let (_reader, writer) = client_side.into_split();
         let inner = Arc::new(RemoteConnectionInner {
-            writer: Mutex::new(writer),
+            writer: Mutex::new(Some(writer)),
             pending: std::sync::Mutex::new(VecDeque::new()),
             weak_instance: std::sync::Mutex::new(None),
             session: RwLock::new(None),
@@ -1859,5 +1956,143 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(1), conn.wait_closed_for_test())
             .await
             .expect("wait_closed_for_test must stay resolved once closed is published");
+    }
+}
+
+#[cfg(test)]
+mod frame_cancellation_tests {
+    use super::*;
+    use std::time::Duration;
+    use tokio::io::AsyncReadExt;
+
+    #[tokio::test]
+    async fn cancelled_partial_service_frame_retires_connection() {
+        let (conn, mut peer) = super::tests::test_conn();
+        // Larger than a socket's send buffer, but below the protocol cap.
+        let request = ServiceRequest::TrustedLoginUser {
+            username: "x".repeat(2 * 1024 * 1024),
+        };
+        let mut sending = Box::pin(conn.request(request));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), &mut sending)
+                .await
+                .is_err()
+        );
+        let mut prefix = [0; 4];
+        peer.read_exact(&mut prefix).await.unwrap();
+        let expected = u32::from_be_bytes(prefix) as usize;
+        assert!(
+            expected > 1024 * 1024,
+            "positive control: frame write never began"
+        );
+        drop(sending);
+        assert!(
+            conn.inner.closed.load(Ordering::Acquire),
+            "cancelled partial frame left a live FIFO connection"
+        );
+        assert!(
+            conn.inner.pending_lock().is_empty(),
+            "cancelled frame stranded a waiter"
+        );
+        assert!(
+            conn.request(ServiceRequest::GetInstanceMetadata)
+                .await
+                .is_err()
+        );
+        let mut remainder = Vec::new();
+        tokio::time::timeout(Duration::from_secs(1), peer.read_to_end(&mut remainder))
+            .await
+            .expect("retired frame must close the write side")
+            .unwrap();
+        assert!(
+            remainder.len() < expected,
+            "test did not cancel a partial frame"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_response_wait_keeps_fifo_association() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fifo.sock");
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        let reached = Arc::new(tokio::sync::Notify::new());
+        let remote_reached = reached.clone();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let _: Handshake = read_frame(&mut stream).await.unwrap().unwrap();
+            write_frame(
+                &mut stream,
+                &HandshakeAck {
+                    protocol_version: PROTOCOL_VERSION,
+                },
+            )
+            .await
+            .unwrap();
+            let first: ServiceRequest = read_frame(&mut stream).await.unwrap().unwrap();
+            assert!(
+                matches!(first, ServiceRequest::TrustedLoginUser { username } if username == "first")
+            );
+            remote_reached.notify_one();
+            let second: ServiceRequest = read_frame(&mut stream).await.unwrap().unwrap();
+            assert!(
+                matches!(second, ServiceRequest::TrustedLoginUser { username } if username == "second")
+            );
+            for challenge in [vec![1], vec![2]] {
+                write_frame(
+                    &mut stream,
+                    &ServerFrame::Response(Box::new(ServiceResponse::SessionKeyChallenge {
+                        challenge,
+                    })),
+                )
+                .await
+                .unwrap();
+            }
+        });
+        let conn = RemoteConnection::connect(&path).await.unwrap();
+        let mut first = Box::pin(conn.request(ServiceRequest::TrustedLoginUser {
+            username: "first".into(),
+        }));
+        tokio::select! {
+            _ = reached.notified() => {},
+            result = &mut first => panic!("first response unexpectedly completed: {result:?}"),
+            _ = tokio::time::sleep(Duration::from_secs(2)) => panic!("first frame did not reach the socket"),
+        }
+        drop(first);
+        assert!(
+            !conn.inner.closed.load(Ordering::Acquire),
+            "dropping a response waiter retired a complete frame"
+        );
+        let response = tokio::time::timeout(
+            Duration::from_secs(2),
+            conn.request(ServiceRequest::TrustedLoginUser {
+                username: "second".into(),
+            }),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(
+            matches!(response, ServiceResponse::SessionKeyChallenge { challenge } if challenge == vec![2]),
+            "cancelled response was misassociated"
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_frame_write_retires_fifo() {
+        let (conn, peer) = super::tests::test_conn();
+        drop(peer);
+        assert!(
+            conn.request(ServiceRequest::GetInstanceMetadata)
+                .await
+                .is_err()
+        );
+        assert!(conn.inner.closed.load(Ordering::Acquire));
+        assert!(conn.inner.pending_lock().is_empty());
+        assert!(
+            conn.request(ServiceRequest::GetInstanceMetadata)
+                .await
+                .is_err()
+        );
     }
 }

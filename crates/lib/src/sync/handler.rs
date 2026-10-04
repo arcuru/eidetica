@@ -23,7 +23,7 @@ use super::{
     user_sync_manager::UserSyncManager,
 };
 use crate::{
-    Database, Entry, Error, Instance, Result, WeakInstance,
+    Database, Entry, Error, Instance, Result, Snapshot, WeakInstance,
     auth::{
         Permission,
         crypto::{PublicKey, create_challenge_response, generate_challenge},
@@ -210,8 +210,10 @@ impl SyncHandlerImpl {
         let sync_tree = self.get_sync_tree().await?;
         let instance = self.instance()?;
         let lock = instance.tree_lock(&self.sync_tree_id);
+        sync_tree.snapshot().await?;
         let guard = lock.lock_owned().await;
-        let txn = sync_tree.new_transaction().await?;
+        let snapshot = Snapshot::from(sync_tree.verified_frontier().await?);
+        let txn = sync_tree.new_transaction_at(&snapshot).await?;
         let manager = BootstrapRequestManager::new(&txn);
 
         if let Some((request_id, request)) = manager
@@ -223,6 +225,16 @@ impl SyncHandlerImpl {
                     return Ok(BootstrapRequestOutcome::Rejected(request_id));
                 }
                 RequestStatus::Pending => {
+                    if Database::can_access(
+                        &instance,
+                        tree_id,
+                        requesting_key,
+                        &requested_permission,
+                    )
+                    .await?
+                    {
+                        return Ok(BootstrapRequestOutcome::Approved);
+                    }
                     return Ok(BootstrapRequestOutcome::Pending(request_id));
                 }
                 RequestStatus::Approved { .. } => {
@@ -523,8 +535,20 @@ impl SyncHandlerImpl {
         remote_address: &Option<Address>,
     ) -> Result<()> {
         let sync_tree = self.get_sync_tree().await?;
-        let txn = sync_tree.new_transaction().await?;
+        let instance = self.instance()?;
+        sync_tree.snapshot().await?;
+        let guard = instance.tree_lock(sync_tree.root_id()).lock_owned().await;
+        let snapshot = Snapshot::from(sync_tree.verified_frontier().await?);
+        let txn = sync_tree.new_transaction_at(&snapshot).await?;
         let peer_manager = PeerManager::new(&txn);
+        if let Some(existing) = peer_manager.get_peer_info(peer_pubkey).await?
+            && advertised_addresses
+                .iter()
+                .chain(remote_address.iter())
+                .all(|addr| existing.addresses.contains(addr))
+        {
+            return Ok(());
+        }
 
         // Try to register the peer (ignore if already exists)
         match peer_manager.register_peer(peer_pubkey, display_name).await {
@@ -551,7 +575,7 @@ impl SyncHandlerImpl {
             warn!(peer_pubkey = %peer_pubkey, address = ?addr, error = %e, "Failed to add remote address");
         }
 
-        txn.commit().await?;
+        txn.commit_under_tree_lock(guard).await?;
         Ok(())
     }
 
@@ -573,12 +597,21 @@ impl SyncHandlerImpl {
         peer_pubkey: &PublicKey,
     ) -> Result<()> {
         let sync_tree = self.get_sync_tree().await?;
-        let txn = sync_tree.new_transaction().await?;
+        let instance = self.instance()?;
+        sync_tree.snapshot().await?;
+        let guard = instance.tree_lock(sync_tree.root_id()).lock_owned().await;
+        let snapshot = Snapshot::from(sync_tree.verified_frontier().await?);
+        let txn = sync_tree.new_transaction_at(&snapshot).await?;
         let peer_manager = PeerManager::new(&txn);
 
-        // Add the tree sync relationship
+        if peer_manager
+            .is_tree_synced_with_peer(peer_pubkey, tree_id)
+            .await?
+        {
+            return Ok(());
+        }
         peer_manager.add_tree_sync(peer_pubkey, tree_id).await?;
-        txn.commit().await?;
+        txn.commit_under_tree_lock(guard).await?;
 
         debug!(tree_id = %tree_id, peer_pubkey = %peer_pubkey, "Tracked tree/peer sync relationship");
         Ok(())
@@ -699,27 +732,22 @@ impl SyncHandlerImpl {
         async move {
             trace!(tree_id = %request.tree_id, "Processing sync tree request");
 
-            // Track tree/peer sync relationship for bidirectional sync
-            // IMPORTANT: Only use context.peer_pubkey (device key from handshake)
-            // Do NOT use request.requesting_key (that's an auth key for database access)
-            if let Some(peer_pubkey) = &context.peer_pubkey {
-                if let Err(e) = self.track_tree_sync_relationship(&request.tree_id, peer_pubkey).await {
-                    // Log the error but don't fail the sync - relationship tracking is best-effort
-                    warn!(tree_id = %request.tree_id, peer_pubkey = %peer_pubkey, error = %e, "Failed to track tree/peer relationship");
-                }
+            // A named permission request must resolve its lifecycle even when
+            // the caller supplies tips; tips cannot bypass terminal rejection.
+            let response = if request.our_tips.is_empty() || request.requested_permission.is_some() {
+                self.handle_bootstrap_request(request).await
             } else {
-                debug!(tree_id = %request.tree_id, "No peer pubkey in context, skipping relationship tracking");
+                self.handle_incremental_sync(request).await
+            };
+            // A handshake or Pending request establishes no serving authority.
+            // Bind routing only after the read/possession/lifecycle checks pass.
+            if matches!(response, SyncResponse::Bootstrap(_) | SyncResponse::Incremental(_))
+                && let Some(peer_pubkey) = &context.peer_pubkey
+                && let Err(e) = self.track_tree_sync_relationship(&request.tree_id, peer_pubkey).await
+            {
+                warn!(tree_id = %request.tree_id, peer_pubkey = %peer_pubkey, error = %e, "Failed to track tree/peer relationship");
             }
-
-            // Check if peer needs bootstrap (empty tips indicates no local data)
-            if request.our_tips.is_empty() {
-                debug!(tree_id = %request.tree_id, "Peer needs bootstrap - sending full tree");
-                return self.handle_bootstrap_request(request).await;
-            }
-
-            // Handle incremental sync (peer has existing data, needs updates)
-            debug!(tree_id = %request.tree_id, peer_tips = request.our_tips.len(), "Handling incremental sync");
-            self.handle_incremental_sync(request).await
+            response
         }
         .instrument(info_span!("handle_sync_tree", tree = %request.tree_id))
         .await
