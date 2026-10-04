@@ -458,12 +458,23 @@ async fn read_only_binary_password_store_decrypts_before_codec_and_rejects_tampe
     tx.stage_projected_delta("rows", &RowsProjection, row("a", "first"))
         .await
         .unwrap();
+    let mut docs = tx
+        .get_store::<PasswordStore<DocStore>>("docs")
+        .await
+        .unwrap();
+    docs.initialize("correct", Doc::new()).await.unwrap();
+    docs.inner()
+        .await
+        .unwrap()
+        .set("secret", "opaque value")
+        .await
+        .unwrap();
     tx.get_settings()
         .unwrap()
         .set_global_auth_key(AuthKey::active(None, Permission::Read))
         .await
         .unwrap();
-    tx.commit().await.unwrap();
+    let doc_id = tx.commit().await.unwrap();
     // Use multiple payload entries, then discard every derived generation:
     // read-only handle initialization must not depend on warmed metadata.
     let tx = db.new_transaction().await.unwrap();
@@ -497,9 +508,58 @@ async fn read_only_binary_password_store_decrypts_before_codec_and_rejects_tampe
     let remote = Instance::connect(format!("unix://{}", socket.display()))
         .await
         .unwrap();
-    remote.login_user("reader", None).await.unwrap();
+    let reader = remote.login_user("reader", None).await.unwrap();
     let read_db = Database::open(&remote, db.root_id()).await.unwrap();
-    let tx = read_db.new_transaction().await.unwrap();
+    let bound_read_db = read_db
+        .clone()
+        .with_key(crate::database::DatabaseKey::global(
+            reader
+                .get_signing_key(&reader.get_default_key().unwrap())
+                .unwrap(),
+        ));
+    assert_eq!(
+        bound_read_db.current_permission().await.unwrap(),
+        Permission::Read
+    );
+    // Both session-authenticated and explicitly bound read-only handles can
+    // fold cold opaque history without publishing a shared derived cache.
+    for handle in [&read_db, &bound_read_db] {
+        let tx = handle.new_transaction().await.unwrap();
+        let mut docs = tx
+            .get_store::<PasswordStore<DocStore>>("docs")
+            .await
+            .unwrap();
+        docs.open("correct").unwrap();
+        assert_eq!(
+            docs.inner().await.unwrap().get("secret").await.unwrap(),
+            Value::Text("opaque value".into())
+        );
+    }
+    let request = state::opaque_request(
+        db.root_id(),
+        "docs",
+        ProjectionDescriptor {
+            name: "eidetica/opaque".into(),
+            version: 0,
+        },
+        doc_id.to_string().into_bytes(),
+        crate::backend::CacheScope::Shared,
+    );
+    assert!(
+        db.ops()
+            .resolve_store_state(&request)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        bound_read_db
+            .ops()
+            .begin_store_state_staging(request)
+            .await
+            .is_err()
+    );
+    let tx = bound_read_db.new_transaction().await.unwrap();
     let mut encrypted = tx
         .get_store::<PasswordStore<RowsStore>>("rows")
         .await
