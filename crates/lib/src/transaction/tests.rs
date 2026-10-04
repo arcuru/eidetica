@@ -401,6 +401,33 @@ async fn password_binary_codec_backend_matrix_roundtrip() {
     }
 }
 
+#[tokio::test]
+async fn get_store_rejects_malformed_registration_without_replacing_it() {
+    let (instance, _) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        crate::NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let (key, _) = generate_keypair();
+    let db = Database::create(&instance, key, Doc::new()).await.unwrap();
+    let tx = db.new_transaction().await.unwrap();
+    tx.get_store::<DocStore>(INDEX)
+        .await
+        .unwrap()
+        .set("broken", "not registration metadata")
+        .await
+        .unwrap();
+    let before = tx.get_local_data::<Doc>(INDEX).unwrap();
+    let result = tx.get_store::<CounterStore>("broken").await;
+    assert!(
+        matches!(result, Err(crate::Error::Store(ref error))
+            if matches!(**error, StoreError::DeserializationFailed { .. })),
+        "malformed registration must be an error, not a new Store"
+    );
+    assert_eq!(tx.get_local_data::<Doc>(INDEX).unwrap(), before);
+}
+
 #[cfg(all(unix, feature = "service"))]
 #[tokio::test]
 async fn read_only_binary_password_store_decrypts_before_codec_and_rejects_tamper() {
@@ -437,8 +464,8 @@ async fn read_only_binary_password_store_decrypts_before_codec_and_rejects_tampe
         .await
         .unwrap();
     tx.commit().await.unwrap();
-    // Match the existing read-only PasswordStore contract fixture: successive
-    // owner writes warm only daemon-side metadata; encrypted history stays cold.
+    // Use multiple payload entries, then discard every derived generation:
+    // read-only handle initialization must not depend on warmed metadata.
     let tx = db.new_transaction().await.unwrap();
     let mut encrypted = tx
         .get_store::<PasswordStore<RowsStore>>("rows")
@@ -452,6 +479,13 @@ async fn read_only_binary_password_store_decrypts_before_codec_and_rejects_tampe
     let entry = db.backend().unwrap().get(&id).await.unwrap();
     let mut corrupt = entry.data("rows").unwrap().to_vec();
     *corrupt.last_mut().unwrap() ^= 1;
+    for _ in 0..2 {
+        db.backend()
+            .unwrap()
+            .clear_derived_store_state()
+            .await
+            .unwrap();
+    }
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("password-codec.sock");
     let mut daemon = crate::service::ServiceServer::bind(instance.clone(), &socket)
