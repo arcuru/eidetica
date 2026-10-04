@@ -473,7 +473,7 @@ async fn test_password_table_uses_lazy_encrypted_record_cache() {
         PasswordStore::<Table<PasswordTestRecord>>::state_model()
             .descriptor()
             .name,
-        "eidetica/password/eidetica/table/rows/canonical-json:v0"
+        "eidetica/password/eidetica/table/rows/opaque:v1"
     );
     let records = memory
         .store_state_records(database.root_id(), "lazy_records")

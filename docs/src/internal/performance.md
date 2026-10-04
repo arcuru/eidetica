@@ -29,7 +29,7 @@ The recursive merge-base algorithm uses caching for performance optimization:
 
 ### Table projections
 
-`Table<T>` persists RFC 8785 canonical JSON rows in `LwwMap` Entry deltas.
+`Table<T, C = SerdeJson>` persists opaque row bytes in strict DAG-CBOR `TableData` Entry deltas.
 Cold record materialization streams physical row puts/deletes into bounded private
 chunks (128 mutations or 1 MiB) before publishing an immutable generation.
 This bounds the projected row chunk, **not** the entire rebuild: history retrieval

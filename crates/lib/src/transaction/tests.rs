@@ -2033,26 +2033,28 @@ async fn projected_staging_failures_leave_canonical_and_overlays_unchanged() {
     );
 }
 
-#[derive(Clone, Default, Deserialize)]
+#[derive(Clone, Default)]
 struct CommitFailRows {
     rows: StagedRows,
-    #[serde(skip)]
     calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
-impl Serialize for CommitFailRows {
-    fn serialize<S: serde::Serializer>(
-        &self,
-        serializer: S,
-    ) -> std::result::Result<S::Ok, S::Error> {
+impl Codec for CommitFailRows {
+    fn encode(&self) -> Result<Vec<u8>> {
         if self.calls.fetch_add(1, Ordering::SeqCst) > 0 {
-            return Err(serde::ser::Error::custom(
-                "injected commit serialization failure",
-            ));
+            return Err(crate::crdt::CRDTError::SerializationFailed {
+                reason: "injected commit encoding failure".into(),
+            }
+            .into());
         }
-        self.rows.serialize(serializer)
+        self.rows.encode()
+    }
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        Ok(Self {
+            rows: StagedRows::decode(bytes)?,
+            calls: Default::default(),
+        })
     }
 }
-impl Data for CommitFailRows {}
 impl CRDT for CommitFailRows {
     fn merge(&self, other: &Self) -> Result<Self> {
         Ok(Self {

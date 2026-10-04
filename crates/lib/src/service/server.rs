@@ -374,7 +374,7 @@ impl ServiceServer {
             _lock_file: lock_file,
         };
         server.register_store::<crate::store::DocStore>()?;
-        server.register_store::<crate::store::Table<serde_json::Value>>()?;
+        server.register_store::<crate::store::Table<Vec<u8>, crate::store::RawBytes>>()?;
         Ok(server)
     }
 
@@ -1679,7 +1679,9 @@ async fn dispatch_database_op(
                 ensure(&db, &store).await?;
                 Ok(ServiceResponse::Ok)
             } else {
-                Ok(ServiceResponse::StoreState((codec.read)(&db, &store).await?))
+                Ok(ServiceResponse::StoreState(
+                    (codec.read)(&db, &store).await?,
+                ))
             }
         }
 

@@ -9,6 +9,7 @@ mod index_store;
 mod integration;
 pub(crate) mod password_store;
 mod row_codec;
+mod table_codecs;
 mod table_data;
 mod table_operations;
 mod ydoc_operations;

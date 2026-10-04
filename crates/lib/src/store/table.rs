@@ -1,15 +1,16 @@
 use std::{marker::PhantomData, sync::Arc};
 
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
+use serde_bytes::ByteBuf;
 use uuid::Uuid;
 
 use crate::{
     Result, Store, Transaction,
     backend::RecordMutation,
-    crdt::{CanonicalJson, Lww, LwwMap},
+    crdt::Lww,
     store::{
-        ProjectionDescriptor, RecordProjection, Registered, StoreStateModel, errors::StoreError,
+        ProjectionDescriptor, RecordProjection, Registered, RowCodec, SerdeJson, StoreStateModel,
+        TableData, errors::StoreError,
     },
 };
 
@@ -17,27 +18,27 @@ const DEFAULT_SCAN_PAGE_SIZE: usize = 128;
 
 struct TableProjection;
 
-impl RecordProjection<LwwMap<String, CanonicalJson>> for TableProjection {
+impl RecordProjection<TableData> for TableProjection {
     fn server_store_type(&self) -> Option<&'static str> {
-        Some(<Table<serde_json::Value> as Registered>::type_id())
+        Some(<Table<Vec<u8>, super::RawBytes> as Registered>::type_id())
     }
 
     fn descriptor(&self) -> ProjectionDescriptor {
         ProjectionDescriptor {
-            name: "eidetica/table/rows/canonical-json:v0".to_string(),
-            version: 0,
+            name: "eidetica/table/rows/opaque:v1".to_string(),
+            version: 1,
         }
     }
 
     fn mutations<'a>(
         &'a self,
-        delta: &'a LwwMap<String, CanonicalJson>,
+        delta: &'a TableData,
     ) -> Result<Box<dyn Iterator<Item = Result<RecordMutation>> + Send + 'a>> {
-        Ok(Box::new(delta.operations().map(|(key, operation)| {
+        Ok(Box::new(delta.0.operations().map(|(key, operation)| {
             Ok(match operation {
                 Lww::Set(value) => RecordMutation::Put {
                     key: key.as_bytes().to_vec(),
-                    value: value.as_bytes().to_vec(),
+                    value: value.to_vec(),
                 },
                 Lww::Delete => RecordMutation::Delete {
                     key: key.as_bytes().to_vec(),
@@ -83,37 +84,44 @@ pub struct TablePage<T> {
 /// - Supports searching across all records with a predicate function
 ///
 /// # Type Parameters
-/// - `T`: The record type to be stored, which must be serializable, deserializable, and cloneable
+/// - `T`: The application row type, with no intrinsic Serde or Clone requirement.
+/// - `C`: A stateless row codec; defaults to direct [`SerdeJson`] encoding.
 ///
 /// This abstraction simplifies working with collections of similarly structured data
 /// by handling the details of:
 /// - Primary key generation and management
 /// - Serialization/deserialization of records
 /// - Storage within the underlying LWW map
-pub struct Table<T>
-where
-    T: Serialize + for<'de> Deserialize<'de> + Clone,
-{
+///
+/// Rows persist exactly as `C` encodes them, inside strict DAG-CBOR [`TableData`].
+/// Projection is independent of `T` and `C`. Row-format configuration and
+/// historical identity checks are not yet wired; callers must use a compatible
+/// codec for all history. No decoder or migration accepts `table:v0` data.
+pub struct Table<T, C = SerdeJson> {
     name: String,
     txn: Transaction,
-    phantom: PhantomData<T>,
+    phantom: PhantomData<fn() -> (T, C)>,
 }
 
-impl<T> Registered for Table<T>
-where
-    T: Serialize + for<'de> Deserialize<'de> + Clone,
-{
+impl<T, C> Clone for Table<T, C> {
+    fn clone(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            txn: self.txn.clone(),
+            phantom: PhantomData,
+        }
+    }
+}
+
+impl<T, C: RowCodec<T>> Registered for Table<T, C> {
     fn type_id() -> &'static str {
-        "table:v0"
+        "table:v1"
     }
 }
 
 #[async_trait]
-impl<T> Store for Table<T>
-where
-    T: Serialize + for<'de> Deserialize<'de> + Clone + Send + Sync,
-{
-    type Data = LwwMap<String, CanonicalJson>;
+impl<T, C: RowCodec<T>> Store for Table<T, C> {
+    type Data = TableData;
 
     fn state_model() -> StoreStateModel<Self::Data> {
         StoreStateModel::Records(Arc::new(TableProjection))
@@ -136,10 +144,7 @@ where
     }
 }
 
-impl<T> Table<T>
-where
-    T: Serialize + for<'de> Deserialize<'de> + Clone + Send + Sync,
-{
+impl<T, C: RowCodec<T>> Table<T, C> {
     /// Retrieves a row from the Table by its primary key.
     ///
     /// This method first checks for the record in the current transaction's
@@ -165,15 +170,13 @@ where
             .projected_get(&self.name, &projection, key.as_bytes())
             .await?
         {
-            Some(value) => CanonicalJson::parse(&value)
-                .and_then(|row| row.to_value())
-                .map_err(|e| {
-                    StoreError::DeserializationFailed {
-                        store: self.name.clone(),
-                        reason: format!("Failed to deserialize record for key '{key}': {e}"),
-                    }
-                    .into()
-                }),
+            Some(value) => C::decode(&value).map_err(|e| {
+                StoreError::DeserializationFailed {
+                    store: self.name.clone(),
+                    reason: format!("Failed to deserialize record for key '{key}': {e}"),
+                }
+                .into()
+            }),
             None => Err(StoreError::KeyNotFound {
                 store: self.name.clone(),
                 key: key.to_string(),
@@ -223,13 +226,12 @@ where
     /// Returns an error if there's a serialization error or the operation fails
     pub async fn set(&self, key: impl AsRef<str>, row: T) -> Result<()> {
         let key_str = key.as_ref();
-        let canonical =
-            CanonicalJson::from_value(&row).map_err(|e| StoreError::SerializationFailed {
-                store: self.name.clone(),
-                reason: format!("Failed to serialize record for key '{key_str}': {e}"),
-            })?;
-        let mut delta = LwwMap::new();
-        delta.set(key_str.to_string(), canonical);
+        let bytes = C::encode(&row).map_err(|e| StoreError::SerializationFailed {
+            store: self.name.clone(),
+            reason: format!("Failed to serialize record for key '{key_str}': {e}"),
+        })?;
+        let mut delta = TableData::default();
+        delta.0.set(key_str.to_string(), ByteBuf::from(bytes));
         self.txn
             .stage_projected_delta(&self.name, &TableProjection, delta)
             .await
@@ -264,8 +266,8 @@ where
             return Ok(false);
         }
 
-        let mut delta = LwwMap::new();
-        delta.delete(key_str.to_string());
+        let mut delta = TableData::default();
+        delta.0.delete(key_str.to_string());
         self.txn
             .stage_projected_delta(&self.name, &TableProjection, delta)
             .await?;
@@ -326,12 +328,10 @@ where
                     store: self.name.clone(),
                     reason: error.to_string(),
                 })?;
-            let row = CanonicalJson::parse(&value)
-                .and_then(|row| row.to_value())
-                .map_err(|error| StoreError::DeserializationFailed {
-                    store: self.name.clone(),
-                    reason: format!("Failed to deserialize record for key '{key}': {error}"),
-                })?;
+            let row = C::decode(&value).map_err(|error| StoreError::DeserializationFailed {
+                store: self.name.clone(),
+                reason: format!("Failed to deserialize record for key '{key}': {error}"),
+            })?;
             rows.push((key, row));
         }
         Ok(TablePage { rows, next })

@@ -117,8 +117,8 @@ not necessarily the same bytes as an individual Entry delta.
 
 ### Projected Table row cache
 
-`Table` declares projection `eidetica/table/rows/canonical-json:v0`, version 0. `PasswordStore<Table<T>>` namespaces
-that descriptor as `eidetica/password/eidetica/table/rows/canonical-json:v0`, version 0. The encrypted projection is
+`Table` declares projection `eidetica/table/rows/opaque:v1`, version 1. `PasswordStore<Table<T>>` namespaces
+that descriptor as `eidetica/password/eidetica/table/rows/opaque:v1`, version 1. The encrypted projection is
 built by streaming ordered Entry deltas through the Table projection into bounded private
 physical put/delete chunks, then publishing atomically. History retrieval still holds a
 `Vec<Entry>`; bounded row chunks do not bound total cold-build memory.

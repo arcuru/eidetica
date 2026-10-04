@@ -1845,6 +1845,7 @@ impl Transaction {
         }
     }
 
+    #[cfg(all(unix, feature = "service"))]
     pub(crate) async fn ensure_record_view<D: CRDT + Codec>(
         &self,
         store: &str,

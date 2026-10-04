@@ -4,16 +4,13 @@
 //! CRUD operations, search functionality, UUID generation, and multiple operations.
 
 use eidetica::store::Table;
-use eidetica::{
-    Snapshot, Store,
-    crdt::{CanonicalJson, LwwMap},
-};
+use eidetica::{Snapshot, Store, crdt::Codec, store::TableData};
 
 use super::helpers::*;
 use crate::helpers::*;
 
 #[tokio::test]
-async fn test_table_entry_delta_has_inline_canonical_json_and_tombstone() {
+async fn test_table_entry_delta_has_opaque_cbor_rows_and_tombstone() {
     let ctx = TestContext::new().with_database().await;
     let tx = ctx.database().new_transaction().await.unwrap();
     let table = tx
@@ -29,21 +26,18 @@ async fn test_table_entry_delta_has_inline_canonical_json_and_tombstone() {
     let entry = ctx.database().backend().unwrap().get(&id).await.unwrap();
     let bytes = entry.data("wire_rows").unwrap();
     assert_eq!(
-        std::str::from_utf8(bytes).unwrap(),
-        r#"[["",{"set":[true]}],["a.b",{"set":{"a":1,"z":2}}]]"#
+        hex::encode(bytes),
+        "828260a163736574465b747275655d8263612e62a1637365744d7b2261223a312c227a223a327d"
     );
-    let delta: LwwMap<String, CanonicalJson> = serde_json::from_slice(bytes).unwrap();
-    assert!(
-        serde_json::from_slice::<LwwMap<String, CanonicalJson>>(br#"{"a.b":"old Doc row"}"#)
-            .is_err()
-    );
+    let delta = TableData::decode(bytes).unwrap();
+    assert!(TableData::decode(br#"{"a.b":"old Doc row"}"#).is_err());
     assert_eq!(
-        delta.get(&"a.b".to_string()).unwrap().as_bytes(),
+        delta.0.get(&"a.b".to_string()).unwrap().as_ref(),
         br#"{"a":1,"z":2}"#
     );
     assert_eq!(
         Table::<serde_json::Value>::state_model().descriptor().name,
-        "eidetica/table/rows/canonical-json:v0"
+        "eidetica/table/rows/opaque:v1"
     );
 
     let tx = ctx.database().new_transaction().await.unwrap();
@@ -55,8 +49,8 @@ async fn test_table_entry_delta_has_inline_canonical_json_and_tombstone() {
     let id = tx.commit().await.unwrap();
     let entry = ctx.database().backend().unwrap().get(&id).await.unwrap();
     assert_eq!(
-        std::str::from_utf8(entry.data("wire_rows").unwrap()).unwrap(),
-        r#"[["a.b","delete"]]"#
+        hex::encode(entry.data("wire_rows").unwrap()),
+        "818263612e626664656c657465"
     );
 }
 
@@ -366,19 +360,18 @@ async fn test_table_exact_keys_multi_operation_and_cold_warm_reads() {
     assert_eq!(table.get("a").await.unwrap().value, 42);
     let id = tx.commit().await.unwrap();
     let entry = ctx.database().backend().unwrap().get(&id).await.unwrap();
-    let delta: LwwMap<String, CanonicalJson> =
-        serde_json::from_slice(entry.data("exact_keys").unwrap()).unwrap();
-    assert_eq!(delta.operations().count(), keys.len());
+    let delta = TableData::decode(entry.data("exact_keys").unwrap()).unwrap();
+    assert_eq!(delta.0.operations().count(), keys.len());
     assert_eq!(
-        delta.get(&"a".to_string()).unwrap().as_bytes(),
+        delta.0.get(&"a".to_string()).unwrap().as_ref(),
         br#"{"value":42}"#
     );
     assert_eq!(
-        delta.get(&"a.b".to_string()).unwrap().as_bytes(),
+        delta.0.get(&"a.b".to_string()).unwrap().as_ref(),
         br#"{"value":99}"#
     );
     assert!(matches!(
-        delta.operation(&"...".to_string()),
+        delta.0.operation(&"...".to_string()),
         Some(eidetica::crdt::Lww::Delete)
     ));
 
