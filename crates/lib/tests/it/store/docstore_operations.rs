@@ -68,24 +68,12 @@ async fn test_dict_set_and_get_via_op() {
 }
 
 #[tokio::test]
-async fn test_docstore_set_result_matches_set() {
+async fn test_docstore_set_stages_typed_values_and_paths() {
     let ctx = TestContext::new().with_database().await;
+    let txn = ctx.database().new_transaction().await.unwrap();
+    let store = txn.get_store::<DocStore>("data").await.unwrap();
 
-    let txn = ctx
-        .database()
-        .new_transaction()
-        .await
-        .expect("Failed to start transaction");
-    let via_set = txn
-        .get_store::<DocStore>("via_set")
-        .await
-        .expect("Failed to get via_set");
-    let via_set_result = txn
-        .get_store::<DocStore>("via_set_result")
-        .await
-        .expect("Failed to get via_set_result");
-
-    // Plain keys, overwrites, typed values and dotted paths, in the same order
+    // Plain keys, overwrites, typed values and dotted paths, in the same order.
     let writes: Vec<(&str, Value)> = vec![
         ("name", "Alice".into()),
         ("count", 1.into()),
@@ -96,66 +84,103 @@ async fn test_docstore_set_result_matches_set() {
         ("count", Value::Deleted),
     ];
     for (key, value) in writes {
-        via_set.set(key, value.clone()).await.expect("set failed");
-        via_set_result
-            .set_result(key, value)
-            .await
-            .expect("set_result failed");
+        store.set(key, value).await.unwrap();
     }
 
-    let staged_set = via_set.get_all().await.expect("get_all via_set");
-    let staged_set_result = via_set_result
-        .get_all()
-        .await
-        .expect("get_all via_set_result");
-    assert_eq!(staged_set, staged_set_result);
+    let staged = store.get_all().await.unwrap();
+    assert_eq!(staged.get("name"), Some(&Value::Text("Bob".to_string())));
+    assert!(staged.is_tombstone("count"));
     assert_eq!(
-        via_set_result
-            .get_path(path!("user.profile.email"))
-            .await
-            .unwrap(),
+        store.get("name").await.unwrap(),
+        Value::Text("Bob".to_string())
+    );
+    assert_eq!(
+        store.get_path(path!("user.profile.email")).await.unwrap(),
         Value::Text("bob@example.org".to_string())
     );
+    assert_eq!(
+        store.get_path(path!("user.verified")).await.unwrap(),
+        Value::Bool(true)
+    );
+    assert_key_not_found(store.get("count").await);
+    assert_key_not_found(store.get("missing").await);
 
-    // Staged writes stay invisible until commit
+    // Staged writes stay invisible until commit.
     let viewer = ctx
         .database()
-        .get_store_viewer::<DocStore>("via_set_result")
+        .get_store_viewer::<DocStore>("data")
         .await
-        .expect("Failed to get viewer");
+        .unwrap();
     assert_key_not_found(viewer.get("name").await);
+    txn.commit().await.unwrap();
 
-    txn.commit().await.expect("Failed to commit transaction");
-
-    let committed_set = ctx
+    let viewer = ctx
         .database()
-        .get_store_viewer::<DocStore>("via_set")
+        .get_store_viewer::<DocStore>("data")
         .await
-        .expect("viewer via_set")
-        .get_all()
-        .await
-        .expect("committed via_set");
-    let committed_set_result = ctx
-        .database()
-        .get_store_viewer::<DocStore>("via_set_result")
-        .await
-        .expect("viewer via_set_result")
-        .get_all()
-        .await
-        .expect("committed via_set_result");
-    assert_eq!(committed_set, committed_set_result);
+        .unwrap();
+    assert_eq!(viewer.get_all().await.unwrap(), staged);
     assert_eq!(
-        committed_set_result.get("name"),
-        Some(&Value::Text("Bob".to_string()))
+        viewer.get("name").await.unwrap(),
+        Value::Text("Bob".to_string())
     );
-    assert_key_not_found(
-        ctx.database()
-            .get_store_viewer::<DocStore>("via_set_result")
+    assert_key_not_found(viewer.get("count").await);
+}
+
+#[tokio::test]
+async fn test_docstore_get_deleted_keys_are_not_found() {
+    let ctx = TestContext::new().with_database().await;
+    create_dict_operation(
+        ctx.database(),
+        "data",
+        &[("deleted", "old"), ("kept", "value")],
+    )
+    .await;
+    let txn = ctx.database().new_transaction().await.unwrap();
+    let store = txn.get_store::<DocStore>("data").await.unwrap();
+
+    assert_dict_value(&store, "deleted", "old").await;
+    assert!(store.delete("deleted").await.unwrap());
+    // The staged tombstone must hide the historical value, not return Deleted.
+    assert_key_not_found(store.get("deleted").await);
+    assert_key_not_found(store.get_string("deleted").await.map(Value::from));
+    assert_key_not_found(store.get("missing").await);
+    assert_dict_value(&store, "kept", "value").await;
+
+    // Another view still sees the historical value until the deletion commits.
+    assert_dict_viewer_data(ctx.database(), "data", &[("deleted", "old")]).await;
+    txn.commit().await.unwrap();
+    let viewer = ctx
+        .database()
+        .get_store_viewer::<DocStore>("data")
+        .await
+        .unwrap();
+    assert_key_not_found(viewer.get("deleted").await);
+    assert_key_not_found(viewer.get_string("deleted").await.map(Value::from));
+    assert_key_not_found(viewer.get("missing").await);
+    assert_dict_value(&viewer, "kept", "value").await;
+
+    // A default can replace a staged tombstone through canonical get/set.
+    let txn = ctx.database().new_transaction().await.unwrap();
+    let store = txn.get_store::<DocStore>("data").await.unwrap();
+    store.set("deleted", "restored").await.unwrap();
+    assert_dict_value(&store, "deleted", "restored").await;
+    assert!(store.delete("deleted").await.unwrap());
+    assert_eq!(
+        store
+            .get_or_insert("deleted", String::from("default"))
             .await
-            .expect("viewer via_set_result")
-            .get("count")
-            .await,
+            .unwrap(),
+        "default"
     );
+    assert_dict_value(&store, "deleted", "default").await;
+    txn.commit().await.unwrap();
+    assert_dict_viewer_data(
+        ctx.database(),
+        "data",
+        &[("deleted", "default"), ("kept", "value")],
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -254,7 +279,7 @@ async fn test_dict_delete() {
 }
 
 #[tokio::test]
-async fn test_dict_set_value() {
+async fn test_dict_set_nested_value() {
     let ctx = TestContext::new().with_database().await;
 
     // Use helper to create nested map operation
@@ -410,7 +435,7 @@ async fn test_dict_update_nested_value() {
         // Create level1 -> level2_str structure
         let mut l1_map = Doc::new();
         l1_map.set("level2_str", "initial_value");
-        dict.set_value("level1", l1_map)
+        dict.set("level1", l1_map)
             .await
             .expect("Txn1: Failed to set level1");
     }
@@ -436,7 +461,7 @@ async fn test_dict_update_nested_value() {
         new_l1_map.set("level2_map", l2_map);
 
         // Completely replace the previous value at level1
-        dict.set_value("level1", new_l1_map.clone())
+        dict.set("level1", new_l1_map.clone())
             .await
             .expect("Txn2: Failed to overwrite level1");
 
@@ -511,7 +536,7 @@ async fn test_dict_comprehensive_operations() {
         let mut nested = Doc::new();
         nested.set("nested_key1", "nested_value1");
         nested.set("nested_key2", "nested_value2");
-        dict.set_value("nested", Value::Doc(nested.clone()))
+        dict.set("nested", Value::Doc(nested.clone()))
             .await
             .expect("Failed to set nested map");
     }

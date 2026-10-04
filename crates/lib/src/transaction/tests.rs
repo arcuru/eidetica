@@ -121,7 +121,7 @@ async fn test_prevent_auth_corruption() {
 }
 
 #[tokio::test]
-async fn test_docstore_set_result_matches_set_deserialization_error() {
+async fn test_docstore_set_preserves_malformed_staged_data() {
     let (instance, _admin) = Instance::create_backend(
         Box::new(InMemory::new()),
         crate::NewUser::passwordless("admin"),
@@ -139,15 +139,11 @@ async fn test_docstore_set_result_matches_set_deserialization_error() {
     let malformed = b"not JSON".to_vec();
     tx.update_subtree("data", malformed.clone()).await.unwrap();
     let set_error = store.set("name", "Alice").await.unwrap_err();
-    let set_result_error = store.set_result("name", "Alice").await.unwrap_err();
-    assert_eq!(set_error.to_string(), set_result_error.to_string());
-    for error in [set_error, set_result_error] {
-        assert!(matches!(
-            error,
-            crate::Error::Transaction(err)
-                if matches!(err.as_ref(), TransactionError::StoreDeserializationFailed { store, .. } if store == "data")
-        ));
-    }
+    assert!(matches!(
+        set_error,
+        crate::Error::Transaction(err)
+            if matches!(err.as_ref(), TransactionError::StoreDeserializationFailed { store, .. } if store == "data")
+    ));
     assert_eq!(
         tx.entry_builder
             .lock()

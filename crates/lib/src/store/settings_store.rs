@@ -67,7 +67,7 @@ impl SettingsStore {
     /// # Returns
     /// Result indicating success or failure
     pub async fn set_name(&self, name: &str) -> Result<()> {
-        self.inner.set_result("name", name).await
+        self.inner.set("name", name).await
     }
 
     /// Get a value from settings by key

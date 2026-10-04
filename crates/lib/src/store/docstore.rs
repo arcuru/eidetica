@@ -67,23 +67,21 @@ impl DocStore {
     /// * `key` - The key to retrieve the value for.
     ///
     /// # Returns
-    /// A `Result` containing the MapValue if found, or `Error::NotFound`.
+    /// A `Result<Value>` if found, or `StoreError::KeyNotFound` if missing or deleted.
     pub async fn get(&self, key: impl AsRef<str>) -> Result<Value> {
         let key = key.as_ref();
         // First check if there's any data in the transaction itself
         if let Some(data) = self.local_data()? {
-            match data.get(key) {
-                Some(Value::Deleted) => {
-                    return Err(StoreError::KeyNotFound {
-                        store: self.name.clone(),
-                        key: key.to_string(),
-                    }
-                    .into());
+            // Doc::get filters tombstones, so check deletion before falling back to history.
+            if data.is_tombstone(key) {
+                return Err(StoreError::KeyNotFound {
+                    store: self.name.clone(),
+                    key: key.to_string(),
                 }
-                Some(value) => return Ok(value.clone()),
-                None => {
-                    // Key not in local data, continue to backend
-                }
+                .into());
+            }
+            if let Some(value) = data.get(key) {
+                return Ok(value.clone());
             }
         }
 
@@ -115,41 +113,6 @@ impl DocStore {
         self.get(key).await.ok()
     }
 
-    /// Gets a value associated with a key from the Store (Result-based API for backward compatibility).
-    ///
-    /// This method prioritizes returning data staged within the current `Transaction`.
-    /// If the key is not found in the staged data it retrieves the fully merged historical
-    /// state from the backend up to the point defined by the `Transaction`'s parents and
-    /// returns the value from there.
-    ///
-    /// # Arguments
-    /// * `key` - The key to retrieve the value for.
-    ///
-    /// # Returns
-    /// A `Result` containing the MapValue if found, or `Error::NotFound`.
-    pub async fn get_result(&self, key: impl AsRef<str>) -> Result<Value> {
-        let key = key.as_ref();
-        // First check if there's any data in the transaction itself
-        if let Some(data) = self.local_data()?
-            && let Some(value) = data.get(key)
-        {
-            return Ok(value.clone());
-        }
-
-        // Otherwise, get the full state from the backend
-        let data: Doc = self.txn.get_full_state(&self.name).await?;
-
-        // Get the value
-        match data.get(key) {
-            Some(value) => Ok(value.clone()),
-            None => Err(StoreError::KeyNotFound {
-                store: self.name.clone(),
-                key: key.to_string(),
-            }
-            .into()),
-        }
-    }
-
     /// Gets a string value associated with a key from the Store.
     ///
     /// This is a convenience method that calls `get()` and expects the value to be a string.
@@ -162,7 +125,7 @@ impl DocStore {
     /// or if the value is not a string.
     pub async fn get_string(&self, key: impl AsRef<str>) -> Result<String> {
         let key_ref = key.as_ref();
-        match self.get_result(key_ref).await? {
+        match self.get(key_ref).await? {
             Value::Text(value) => Ok(value),
             Value::Doc(_) => Err(StoreError::TypeMismatch {
                 store: self.name.clone(),
@@ -255,36 +218,11 @@ impl DocStore {
         Ok(previous)
     }
 
-    /// Sets a key-value pair (Result-based API for backward compatibility).
-    ///
-    /// Equivalent to [`DocStore::set`]: the change is staged in the `Transaction`
-    /// and is **not** persisted to the backend until `Transaction::commit()` is called.
-    ///
-    /// # Arguments
-    /// * `key` - The key to set.
-    /// * `value` - The value to associate with the key (can be &str, String, Value, etc.)
-    ///
-    /// # Returns
-    /// A `Result<()>` indicating success or an error during serialization or staging.
-    pub async fn set_result(&self, key: impl Into<String>, value: impl Into<Value>) -> Result<()> {
-        self.set(key, value).await
-    }
-
     /// Convenience method to set a string value.
     pub async fn set_string(&self, key: impl Into<String>, value: impl Into<String>) -> Result<()> {
         self.set(key, Value::Text(value.into())).await
     }
 
-    /// Stages the setting of a nested value within the associated `Transaction`.
-    ///
-    /// This method allows setting any valid Value type (String, Map, or Deleted).
-    ///
-    /// # Arguments
-    /// * `key` - The key to set.
-    /// * `value` - The Value to associate with the key.
-    ///
-    /// # Returns
-    /// A `Result<()>` indicating success or an error during serialization or staging.
     /// Convenience method to get a List value.
     pub async fn get_list(&self, key: impl AsRef<str>) -> Result<List> {
         match self.get(key).await? {
@@ -319,16 +257,6 @@ impl DocStore {
     /// Convenience method to set a nested Doc value.
     pub async fn set_node(&self, key: impl Into<String>, node: impl Into<Doc>) -> Result<()> {
         self.set(key, Value::Doc(node.into())).await
-    }
-
-    /// Legacy method for backward compatibility - now just an alias to set
-    pub async fn set_value(&self, key: impl Into<String>, value: impl Into<Value>) -> Result<()> {
-        self.set(key, value).await
-    }
-
-    /// Legacy method for backward compatibility - now just an alias to get
-    pub async fn get_value(&self, key: impl AsRef<str>) -> Result<Value> {
-        self.get(key).await
     }
 
     /// Enhanced access methods with type inference
@@ -396,14 +324,6 @@ impl DocStore {
     /// An `Option<Value>` containing the value if found, or `None` if not found.
     pub async fn get_path_option(&self, path: impl AsRef<Path>) -> Option<Value> {
         self.get_path(path).await.ok()
-    }
-
-    /// Gets a value by path using dot notation (Result-based API for backward compatibility).
-    ///
-    /// # Returns
-    /// A `Result<Value>` containing the value if found, or an error if not found.
-    pub async fn get_path_result(&self, path: impl AsRef<Path>) -> Result<Value> {
-        self.get_path(path).await
     }
 }
 
@@ -532,7 +452,7 @@ impl DocStore {
             Ok(existing) => Ok(existing),
             Err(_) => {
                 // Key doesn't exist or wrong type - set default and return it
-                self.set_result(key_str, default.clone()).await?;
+                self.set(key_str, default.clone()).await?;
                 Ok(default)
             }
         }
@@ -916,7 +836,7 @@ impl DocStore {
     /// which will propagate the deletion when merged with other data. The change is **not**
     /// persisted to the backend until the `Transaction::commit()` method is called.
     ///
-    /// When using the `get` method, deleted keys will return `Error::NotFound`. However,
+    /// When using the `get` method, deleted keys return `StoreError::KeyNotFound`. However,
     /// the deletion is still tracked internally as a tombstone, which ensures that the
     /// deletion propagates correctly when merging with other versions of the data.
     ///

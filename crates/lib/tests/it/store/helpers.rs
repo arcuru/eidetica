@@ -63,7 +63,7 @@ pub async fn create_dict_with_nested_map(tree: &Database, subtree_name: &str) ->
     // Set nested map
     let mut nested = Doc::new();
     nested.set("inner", "nested_value");
-    dict.set_value("key2", Value::Doc(nested)).await.unwrap();
+    dict.set("key2", Value::Doc(nested)).await.unwrap();
 
     txn.commit().await.unwrap()
 }

@@ -251,7 +251,7 @@ async fn test_value_editor_delete_methods() -> Result<()> {
     user_data.set("profile", user_profile);
     user_data.set("role", "admin");
 
-    dict.set_value("user", user_data).await?;
+    dict.set("user", user_data).await?;
 
     // Get an editor for the user object
     let user_editor = dict.get_value_mut("user");
