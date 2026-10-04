@@ -40,7 +40,10 @@ use crate::{
         types::{AuthInfo, SigKey},
         validation::AuthValidator,
     },
-    backend::{RecordMutation, RecordMutations, RecordRange, RecordView, VerificationStatus},
+    backend::{
+        RecordMutation, RecordMutations, RecordRange, RecordView, StoreStateRequest,
+        VerificationStatus,
+    },
     constants::{INDEX, ROOT, SETTINGS},
     crdt::{CRDT, Codec, Doc, doc::Value},
     entry::{Entry, EntryBuilder, ID},
@@ -2304,10 +2307,7 @@ impl Transaction {
         };
 
         // Cache the computed merge result
-        let bytes = self.encrypt_if_needed(subtree_name, &result.encode()?)?;
-        state::store_cached(self.db.ops(), cache_request, bytes).await?;
-
-        Ok(result)
+        self.cache_computed_state(cache_request, result).await
     }
 
     /// Computes the CRDT state for a single entry using batch fetching.
@@ -2363,11 +2363,31 @@ impl Transaction {
             let result: T = self.fold_store_entries(subtree_name, &entries)?;
 
             // Step 4: Cache only the final result (encrypted if encryptor is registered)
-            let bytes = self.encrypt_if_needed(subtree_name, &result.encode()?)?;
-            state::store_cached(self.db.ops(), request, bytes).await?;
-
-            Ok(result)
+            self.cache_computed_state(request, result).await
         })
+    }
+
+    async fn cache_computed_state<T: Codec + Send>(
+        &self,
+        request: StoreStateRequest,
+        data: T,
+    ) -> Result<T> {
+        #[cfg(all(unix, feature = "service"))]
+        if self.db.ops().remote_connection().is_some()
+            && (request.store == SETTINGS
+                || self.db.auth_identity().is_none()
+                || !Box::pin(self.db.current_permission()).await?.can_write())
+        {
+            // Canonical Read does not grant client-side staging authority.
+            // Settings reads must not cache here: the permission check itself
+            // reads settings. The daemon can maintain that cache locally.
+            return Ok(data);
+        }
+        // This is only an optimization decision, not an authorization grant:
+        // remote publication still performs the server's current Write check.
+        let bytes = self.encrypt_if_needed(&request.store, &data.encode()?)?;
+        state::store_cached(self.db.ops(), request, bytes).await?;
+        Ok(data)
     }
 
     /// Folds already-fetched entries into a CRDT state from the default.
