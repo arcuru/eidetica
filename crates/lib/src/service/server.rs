@@ -211,11 +211,10 @@ pub struct ServiceServer {
     _lock_file: File,
 }
 
-type StoreRead =
-    for<'a> fn(
-        &'a Database,
-        &'a str,
-    ) -> Pin<Box<dyn Future<Output = crate::Result<Vec<u8>>> + Send + 'a>>;
+type StoreRead = for<'a> fn(
+    &'a Database,
+    &'a str,
+) -> Pin<Box<dyn Future<Output = crate::Result<Vec<u8>>> + Send + 'a>>;
 
 #[derive(Clone)]
 struct StoreCodec {
@@ -227,7 +226,7 @@ struct StoreCodec {
 fn read_store<'a, S: crate::store::Store>(
     db: &'a Database,
     name: &'a str,
-) -> Pin<Box<dyn Future<Output = crate::Result<serde_json::Value>> + Send + 'a>>
+) -> Pin<Box<dyn Future<Output = crate::Result<Vec<u8>>> + Send + 'a>>
 where
     S::Data: Send,
 {
@@ -1475,7 +1474,9 @@ async fn dispatch_database_op(
                 Err(err) => return Err(err),
                 Ok(_) => {}
             }
-            Ok(ServiceResponse::StoreState((codec.read)(&db, &store).await?))
+            Ok(ServiceResponse::StoreState(
+                (codec.read)(&db, &store).await?,
+            ))
         }
 
         DatabaseOp::GetStoreEntries { store, tips, scope } => {

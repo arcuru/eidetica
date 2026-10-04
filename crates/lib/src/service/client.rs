@@ -1289,12 +1289,22 @@ impl RemoteConnection {
                 let tips = self
                     .get_verified_tips(root_id.clone(), identity.clone())
                     .await?;
+                // store_at traverses Store parents, not the main DAG. A main
+                // frontier may end in an Entry which only changes another Store.
+                let store_tips = self
+                    .store_snapshot_at(
+                        root_id.clone(),
+                        identity.clone(),
+                        store.clone(),
+                        tips.clone().into_tips(),
+                    )
+                    .await?;
                 let entries = self
                     .get_store_entries(
                         root_id,
                         identity,
                         store.clone(),
-                        tips.clone().into_tips(),
+                        store_tips.into_tips(),
                         ReadScope::Verified,
                     )
                     .await?;
