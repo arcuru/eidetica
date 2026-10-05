@@ -1662,87 +1662,63 @@ async fn test_ids_added_excludes_unverified_entries() {
     );
 }
 
-/// Regression: a `Verified` entry committed on top of an `Unverified` parent
-/// must not permanently hide that parent from every future verify pass.
-///
-/// The targeted-walk `verify()` stops descending at any `Verified` entry,
-/// relying on a prefix-closure invariant ("a `Verified` entry hiding an
-/// `Unverified` descendant cannot occur") that is maintained only by cascading
-/// demote. But `Transaction::commit` stores `Verified` unconditionally — it
-/// validates signature and permissions, not parent status — so anchoring a
-/// commit in the unverified region via `new_transaction_at` breaks the
-/// invariant directly. Once that happens the walk treats the child as a
-/// settled boundary and the unverified ancestors become unreachable: they can
-/// never be promoted, and can never be reported as failed.
-///
-/// The pre-`7e593065ca` full-walk verify retried the whole tree each pass, so
-/// it recovered from this; the targeted walk does not.
-///
-/// IGNORED — this construction does not reach the scenario. `demote_to_unverified`
-/// followed by a tips-reading commit lets the access-time auto-verify hook
-/// re-promote the parent before the child is written, so the precondition
-/// asserts below fail (parent is `Verified` again, not `Unverified`) and the
-/// hazardous shape is never built. A real repro needs an entry that *cannot* be
-/// promoted — i.e. one whose pinned `_settings` are genuinely absent, as after a
-/// partial sync — rather than one that is merely marked down. Until that exists,
-/// this finding is UNPROVEN, not refuted.
-#[ignore = "construction healed by auto-verify; needs a genuinely-unpromotable entry"]
+/// An explicit historical boundary bypasses access-time auto-verification,
+/// so this checks the commit's parent gate rather than a healed live snapshot.
+/// A cached floor from before demotion must not promote a child over an
+/// Unverified parent and hide that parent from the targeted verify walk.
 #[tokio::test]
-async fn test_verify_reaches_unverified_ancestor_behind_verified_child() {
+async fn test_local_historical_commit_rejects_unverified_parent_without_storage() {
     let (instance, db) = setup_callback_test().await;
-
     let txn = db.new_transaction().await.unwrap();
-    let store = txn.get_store::<DocStore>("data").await.unwrap();
-    store.set("k", "v1").await.unwrap();
-    let id1 = txn.commit().await.unwrap();
-
-    // Force id1 Unverified: models an entry whose validation is still pending.
-    instance
-        .demote_to_unverified(db.root_id(), &id1)
+    txn.get_store::<DocStore>("data")
         .await
-        .unwrap();
-
-    // Commit a child anchored on the now-unverified tip.
-    let snapshot = db.snapshot().await.unwrap();
-    let txn = db.new_transaction_at(&snapshot).await.unwrap();
-    let store = txn.get_store::<DocStore>("data").await.unwrap();
-    store.set("k", "v2").await.unwrap();
-    let id2 = txn.commit().await.unwrap();
-
-    // Precondition: the test must actually have built the hazardous shape —
-    // a Verified child whose parent is the Unverified entry. If the commit
-    // path re-anchored elsewhere, or stored the child Unverified, this test
-    // proves nothing about the walk.
-    let engine = instance.require_local_engine().unwrap();
-    let id2_entry = engine.get(&id2).await.unwrap();
-    assert!(
-        id2_entry.parents().unwrap_or_default().contains(&id1),
-        "precondition: child must be anchored on the unverified parent"
-    );
-    assert_eq!(
-        engine.get_verification_status(&id2).await.unwrap(),
-        VerificationStatus::Verified,
-        "precondition: child must be stored Verified atop an Unverified parent"
-    );
-    assert_eq!(
-        engine.get_verification_status(&id1).await.unwrap(),
-        VerificationStatus::Unverified,
-        "precondition: parent must still be Unverified before the verify pass"
-    );
-
-    // A verify pass must still be able to reach and settle id1.
-    db.verify().await.unwrap();
-
-    let status = instance
-        .require_local_engine()
         .unwrap()
-        .get_verification_status(&id1)
+        .set("k", "v1")
         .await
         .unwrap();
-    assert_ne!(
-        status,
-        VerificationStatus::Unverified,
-        "verify() could not reach id1 behind a Verified child; the entry is \
-         permanently stranded in the Unverified region"
+    let parent = txn.commit().await.unwrap();
+    instance
+        .demote_to_unverified(db.root_id(), &parent)
+        .await
+        .unwrap();
+    let engine = instance.require_local_engine().unwrap();
+    let before = engine.get_tree(db.root_id()).await.unwrap().len();
+    let boundary = Snapshot::from([parent.clone()]);
+    let txn = db.new_transaction_at(&boundary).await.unwrap();
+    txn.get_store::<DocStore>("data")
+        .await
+        .unwrap()
+        .set("k", "v2")
+        .await
+        .unwrap();
+    let error = txn
+        .commit()
+        .await
+        .expect_err("a cached floor is not a Verified parent");
+    assert!(matches!(error, Error::Auth(e) if e.is_delegated_tree_unsynced()));
+    assert_eq!(
+        engine.get_verification_status(&parent).await.unwrap(),
+        VerificationStatus::Unverified
+    );
+    assert_eq!(
+        engine.get_tree(db.root_id()).await.unwrap().len(),
+        before,
+        "rejected local child must not be stored"
+    );
+
+    let report = db.verify().await.unwrap();
+    assert_eq!(report.verified, 1);
+    assert_eq!(report.failed, 0);
+    let txn = db.new_transaction_at(&boundary).await.unwrap();
+    txn.get_store::<DocStore>("data")
+        .await
+        .unwrap()
+        .set("k", "v2")
+        .await
+        .unwrap();
+    let child = txn.commit().await.unwrap();
+    assert_eq!(
+        engine.get_verification_status(&child).await.unwrap(),
+        VerificationStatus::Verified
     );
 }

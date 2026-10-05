@@ -1236,6 +1236,50 @@ async fn delegated_present_unverified_tip_is_retryable() {
         .await;
 }
 
+/// A current-tip cache and a Verified tip are not an ancestry proof. Even
+/// inconsistent low-level status labels cannot hide an unsettled ancestor
+/// from delegated validation (normal demotion cascades to descendants).
+#[tokio::test]
+async fn delegated_verified_tip_requires_every_ancestor_verified() {
+    let fx = fixture().await;
+    let latest = advance(&fx.identity, "identity-v2").await;
+    let claim = fx.via_identity(&fx.tips().await, &latest).await;
+    // i1 is neither the claim tip (i2) nor the configured pointer (i0).
+    // Checking just those directly named tips would miss this interior node.
+    let ancestor = &fx.i1[0];
+    for status in [VerificationStatus::Unverified, VerificationStatus::Failed] {
+        fx.engine()
+            .update_verification_status(ancestor, status)
+            .await
+            .unwrap();
+        assert_eq!(
+            fx.engine()
+                .get_verification_status(&latest[0])
+                .await
+                .unwrap(),
+            VerificationStatus::Verified,
+            "negative control must hide an unsettled ancestor behind a Verified tip"
+        );
+        match fx.validate(&claim).await {
+            Err(Error::Auth(e)) if e.is_delegated_tree_unsynced() => {
+                assert_eq!(status, VerificationStatus::Unverified);
+                assert!(
+                    matches!(*e, AuthError::DelegatedTreeUnsynced { ref missing, .. }
+                    if missing.contains(ancestor))
+                );
+            }
+            Ok(false) => assert_eq!(status, VerificationStatus::Failed),
+            result => panic!("unexpected verdict for {status:?}: {result:?}"),
+        }
+    }
+    fx.engine()
+        .update_verification_status(ancestor, VerificationStatus::Verified)
+        .await
+        .unwrap();
+    fx.accept(&claim, "restored complete Verified ancestry permits retry")
+        .await;
+}
+
 /// Clearing a disposable projection must reconstruct a Verified parent's
 /// state, never supply an empty floor for its descendant.
 #[tokio::test]
