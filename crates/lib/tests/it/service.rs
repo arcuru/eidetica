@@ -1229,6 +1229,24 @@ async fn read_only_table_cold_get_and_scan_use_server_maintenance() {
     let remote = eidetica::Database::open_remote(&client, remote_conn(&client), &root, identity)
         .await
         .unwrap();
+    let raw = remote
+        .get_store_viewer::<eidetica::store::RawTable>("rows")
+        .await
+        .unwrap();
+    assert_eq!(
+        raw.get("a.b").await.unwrap(),
+        serde_json::to_vec(&ServiceTodo {
+            title: "first".into(),
+            done: false,
+        })
+        .unwrap()
+    );
+    let raw_first = raw.scan_page(None, 1).await.unwrap();
+    assert_eq!(raw_first.rows[0].0, "a");
+    let raw_second = raw.scan_page(raw_first.next.as_ref(), 1).await.unwrap();
+    assert_eq!(raw_second.rows[0].0, "a.b");
+    assert!(raw_second.next.is_none());
+
     let table = remote
         .get_store_viewer::<Table<ServiceTodo>>("rows")
         .await
@@ -1243,6 +1261,29 @@ async fn read_only_table_cold_get_and_scan_use_server_maintenance() {
         ["a", "a.b"]
     );
     assert!(page.next.is_none());
+
+    db.with_transaction(|tx| async move {
+        tx.get_settings()?
+            .set_global_auth_key(AuthKey::new(
+                None,
+                Permission::Read,
+                eidetica::auth::types::KeyStatus::Revoked,
+            ))
+            .await
+    })
+    .await
+    .unwrap();
+    assert!(
+        raw.get("a.b").await.is_err(),
+        "cached format identity must not bypass a revoked Read grant"
+    );
+    assert!(raw.scan_page(None, 1).await.is_err());
+    assert!(
+        remote
+            .get_store_viewer::<eidetica::store::RawTable>("rows")
+            .await
+            .is_err()
+    );
 }
 
 /// Descriptor and registry identity are checked after the canonical read gate.
