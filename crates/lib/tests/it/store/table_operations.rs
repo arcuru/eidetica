@@ -55,7 +55,7 @@ async fn test_table_entry_delta_has_opaque_cbor_rows_and_tombstone() {
 }
 
 #[tokio::test]
-async fn test_table_delete_does_not_swallow_typed_decode_failure() {
+async fn test_table_unreadable_row_is_absent_without_deleting_raw_bytes() {
     let ctx = TestContext::new().with_database().await;
     let tx = ctx.database().new_transaction().await.unwrap();
     let table = tx
@@ -73,9 +73,14 @@ async fn test_table_delete_does_not_swallow_typed_decode_failure() {
         .get_store::<Table<SimpleRecord>>("typed_delete")
         .await
         .unwrap();
-    assert!(matches!(table.delete("row").await,
-        Err(eidetica::Error::Store(error)) if matches!(*error, eidetica::store::StoreError::DeserializationFailed { .. })));
-    assert!(table.scan_page(None, 5).await.is_err());
+    assert!(!table.delete("row").await.unwrap());
+    assert!(table.scan_page(None, 5).await.unwrap().rows.is_empty());
+    let raw = tx
+        .get_store::<eidetica::store::RawTable>("typed_delete")
+        .await
+        .unwrap();
+    assert_eq!(raw.get("row").await.unwrap(), br#"{"not_a_value":true}"#);
+    assert!(table.local_data().unwrap().is_none());
 }
 
 #[tokio::test]
