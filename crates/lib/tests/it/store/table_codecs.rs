@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::helpers::{setup_tree, test_backend};
 
-async fn database() -> (Instance, Database) {
+pub(super) async fn database() -> (Instance, Database) {
     // test_backend() alone falls back to InMemory in service mode; use the
     // connected instance helper so these tests actually exercise daemon RPC.
     if std::env::var("TEST_BACKEND").as_deref() == Ok("service") {

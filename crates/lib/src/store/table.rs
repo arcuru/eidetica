@@ -384,7 +384,8 @@ impl<T, C: RowCodec<T>> Table<T, C> {
     /// # Errors
     /// Returns an error if:
     /// * The record doesn't exist (`Error::NotFound`)
-    /// * There's a serialization/deserialization error
+    /// * The winning row cannot be decoded (`Error::NotFound`, with a warning)
+    /// * Configuration, authorization, decryption or storage fails
     pub async fn get(&self, key: impl AsRef<str>) -> Result<T> {
         let key = key.as_ref();
 
@@ -402,19 +403,29 @@ impl<T, C: RowCodec<T>> Table<T, C> {
             .txn
             .projected_get(&self.name, &TableProjection, key.as_bytes())
             .await?
+            .and_then(|bytes| self.decode_row(&bytes))
         {
-            Some(value) => C::decode(&value).map_err(|e| {
-                StoreError::DeserializationFailed {
-                    store: self.name.clone(),
-                    reason: format!("Failed to deserialize record for key '{key}': {e}"),
-                }
-                .into()
-            }),
+            Some(row) => Ok(row),
             None => Err(StoreError::KeyNotFound {
                 store: self.name.clone(),
                 key: key.to_string(),
             }
             .into()),
+        }
+    }
+
+    fn decode_row(&self, bytes: &[u8]) -> Option<T> {
+        match C::decode(bytes) {
+            Ok(row) => Some(row),
+            Err(_) => {
+                // Keys, payloads and arbitrary codec errors may contain secrets.
+                tracing::warn!(
+                    store = %self.name,
+                    codec = C::FORMAT_ID,
+                    "Skipping Table row that cannot be decoded with the selected codec"
+                );
+                None
+            }
         }
     }
 
@@ -544,7 +555,9 @@ impl<T, C: RowCodec<T>> Table<T, C> {
     ///
     /// Plain `Table` records use primary-key byte order. Wrappers such as
     /// `PasswordStore<Table<T>>` may transform keys, so their order is not
-    /// logical primary-key order.
+    /// logical primary-key order. Unreadable rows are skipped with warnings;
+    /// an empty page may still have a continuation cursor. The limit bounds
+    /// inspected records, not the number of successfully decoded rows.
     pub async fn scan_page(
         &self,
         cursor: Option<&TableCursor>,
@@ -571,11 +584,9 @@ impl<T, C: RowCodec<T>> Table<T, C> {
         } = raw_scan_page(&self.txn, &self.name, cursor, limit).await?;
         let mut rows = Vec::with_capacity(records.len());
         for (key, value) in records {
-            let row = C::decode(&value).map_err(|error| StoreError::DeserializationFailed {
-                store: self.name.clone(),
-                reason: format!("Failed to deserialize record for key '{key}': {error}"),
-            })?;
-            rows.push((key, row));
+            if let Some(row) = self.decode_row(&value) {
+                rows.push((key, row));
+            }
         }
         Ok(TablePage { rows, next })
     }

@@ -209,10 +209,13 @@ legacy `table:v0` decoder or migration.
 
 Table creation stores `C::FORMAT_ID` in `config.row_codec`, including inside
 PasswordStore's encrypted configuration. Typed opens, reads and writes reject a
-mismatched or missing identity. This identifies an encoding, not an application
-schema. Full causal historical identity enforcement is still being integrated;
-these current-configuration checks alone do not certify imported or conflicting
-history.
+mismatched or missing identity. Existing LWW configuration semantics select the
+required codec; historical disagreement does not veto the winning configuration.
+This identifies an encoding, not an application schema. Rows that the matching
+codec cannot decode are skipped with warnings, without deleting their raw bytes.
+Point reads report those rows as missing; scans can return an empty page with a
+continuation cursor. A failed row decode never falls back to an older row value.
+Authorization, decryption, storage and codec-selection errors still propagate.
 
 Use `RawTable` to inspect an existing Table without compiling its application row
 codec. Its `get` returns exact bytes, and `scan_page` returns bounded pages of row
