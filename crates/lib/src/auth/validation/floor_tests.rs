@@ -1344,6 +1344,72 @@ async fn losing_removal_does_not_clear_active_branch_floor() {
         .await;
 }
 
+/// Effective removal resets descendants, not the removing entry's authority.
+/// A revoked delegated Admin cannot erase an acknowledged revocation by signing
+/// its own removal against the older configured pointer.
+#[tokio::test]
+async fn delegated_removal_cannot_evade_inherited_revocation() {
+    let fx = fixture().await;
+    let other = PrivateKey::generate();
+    let txn = fx.identity.new_transaction().await.unwrap();
+    txn.get_settings()
+        .unwrap()
+        .set_auth_key(
+            &other.public_key(),
+            AuthKey::active(Some("other"), Permission::Admin(5)),
+        )
+        .await
+        .unwrap();
+    txn.get_settings()
+        .unwrap()
+        .revoke_auth_key(&fx.member_pub)
+        .await
+        .unwrap();
+    txn.commit().await.unwrap();
+    let revoked = fx.identity.snapshot().await.unwrap().into_tips();
+    let observed = fx
+        .delegated(
+            &fx.tips().await,
+            &[(fx.identity.root_id(), &revoked)],
+            &other,
+        )
+        .await;
+    fx.accept(&observed, "acknowledge revocation on the primary branch")
+        .await;
+
+    let mut deletion = Doc::new();
+    deletion.remove(format!("auth.delegations.{}", fx.identity.root_id()));
+    let removal = settings_entry(&fx, deletion).await;
+    let key = |tips: Vec<ID>, signer: &PrivateKey| SigKey::Delegation {
+        path: vec![DelegationStep {
+            tree: fx.identity.root_id().clone(),
+            tips,
+        }],
+        hint: KeyHint::from_pubkey(&signer.public_key()),
+    };
+    let forged = Fixture::sign(removal.clone(), key(fx.i0.clone(), &fx.member), &fx.member);
+    assert_eq!(
+        fx.submit_remote(forged).await,
+        VerificationStatus::Failed,
+        "removal must not let the revoked signer evade this entry's inherited floor"
+    );
+
+    // An authorized delegated Admin covering the inherited observation can
+    // remove the declaration. Its claim must not resurrect the removed floor
+    // in the published state: a subsequent direct Admin re-add starts fresh.
+    let authorized = Fixture::sign(removal, key(revoked, &other), &other);
+    assert_eq!(
+        fx.submit_remote(authorized).await,
+        VerificationStatus::Verified
+    );
+    let readd = settings_entry(&fx, pointer_write(fx.identity.root_id(), fx.i0.clone())).await;
+    let readd = fx
+        .accept(&readd, "direct Admin re-add after authorized removal")
+        .await;
+    let fresh = fx.via_identity(&[readd], &fx.i0).await;
+    assert_eq!(fx.submit_remote(fresh).await, VerificationStatus::Verified);
+}
+
 #[tokio::test]
 async fn same_entry_delegated_pointer_write_must_cover_new_pointer() {
     let fx = fixture().await;
