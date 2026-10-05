@@ -212,18 +212,25 @@ impl IrohTransportConfig {
 /// ```
 #[derive(Debug, Clone)]
 pub struct IrohTransportBuilder {
+    // None inherits N0's relay selection; Some(RelayMode::Disabled) opts out.
     relay_mode: Option<RelayMode>,
     secret_key: Option<SecretKey>,
+    // None inherits iroh's port mapping; Some(PortmapperConfig::Disabled) opts out.
     portmapper_config: Option<PortmapperConfig>,
     mdns: bool,
     n0_dns: bool,
 }
 
 impl IrohTransportBuilder {
-    /// Create a new builder with production defaults.
+    /// Create a builder with iroh's public services and local mDNS enabled.
     ///
-    /// Defers to iroh's `presets::N0` networking defaults, including relay
-    /// selection and router port mapping, with best-effort local mDNS added.
+    /// Relay selection and router port mapping inherit `presets::N0` unless
+    /// explicitly overridden. Their stored `None` values mean "inherit", not
+    /// "disabled"; effective settings are resolved when the endpoint is built.
+    /// This preserves iroh's `IROH_FORCE_STAGING_RELAYS` environment switch.
+    ///
+    /// n0 address publication and DNS/HTTPS resolution remain enabled, with
+    /// best-effort mDNS adding local lookup alongside those public services.
     pub fn new() -> Self {
         Self {
             relay_mode: None,
@@ -431,12 +438,14 @@ impl TransportBuilder for IrohTransportBuilder {
 
 /// Runtime configuration for IrohTransport (internal, not persisted).
 ///
-/// This holds the actual runtime values used by the transport,
-/// including the decoded secret key and relay mode.
+/// This holds the decoded secret key and optional networking overrides.
+/// Unset overrides are resolved by iroh when the endpoint is built.
 #[derive(Debug, Clone)]
 struct IrohRuntimeConfig {
+    // None inherits N0's relay selection; Some(RelayMode::Disabled) opts out.
     relay_mode: Option<RelayMode>,
     secret_key: Option<SecretKey>,
+    // None inherits iroh's port mapping; Some(PortmapperConfig::Disabled) opts out.
     portmapper_config: Option<PortmapperConfig>,
     mdns: bool,
     n0_dns: bool,
