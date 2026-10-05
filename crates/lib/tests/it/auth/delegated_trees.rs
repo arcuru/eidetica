@@ -1037,13 +1037,11 @@ async fn test_delegated_entry_validation_across_instances() -> Result<()> {
     Ok(())
 }
 
-/// Cross-instance: a delegation-signed entry that arrives over sync as
-/// `Unverified` (along with its identity database, also `Unverified`) must be
-/// promoted to `Verified` by `Database::verify()`. This exercises the
-/// `IN_VERIFY` guard cross-tree: resolving the delegation re-reads the
-/// identity database's settings, and that read must see the *raw* identity
-/// DAG (not its empty Verified frontier) or the delegation could never
-/// resolve during the very pass that would verify it.
+/// Cross-instance rejection/recovery and offline trust-reset recovery use the
+/// same dependency-first verification sequence. The receiver follows the local
+/// backend matrix (SQLite/Postgres/InMemory); the service wire path is covered
+/// separately in service.rs. No validation pass may recursively verify another
+/// tree under its own lock, even when all dependency bytes are already present.
 #[tokio::test]
 async fn test_delegated_entry_synced_unverified_then_verified() -> Result<()> {
     let (instance_a, mut user) = crate::helpers::test_local_instance_with_user("test_user").await;
@@ -1062,7 +1060,11 @@ async fn test_delegated_entry_synced_unverified_then_verified() -> Result<()> {
 
     // Replicate BOTH trees to instance B via plain `put` — i.e. exactly as
     // they arrive over sync: stored Unverified, no asserted status.
-    let instance_b = crate::helpers::test_local_instance().await;
+    let (instance_b, _admin) = Instance::create_backend(
+        crate::helpers::test_backend().await,
+        eidetica::NewUser::passwordless("receiver"),
+    )
+    .await?;
     for root in [pair.identity_db.root_id(), pair.target_db.root_id()] {
         for entry in instance_a.backend().get_tree(root).await? {
             instance_b.backend().put(entry).await?;
@@ -1118,6 +1120,62 @@ async fn test_delegated_entry_synced_unverified_then_verified() -> Result<()> {
             .into_tips()
             .contains(&delegated_entry),
         "verified delegated entry must be on the frontier"
+    );
+
+    // This is the offline operator procedure, with no concurrent readers or
+    // writers. Reset labels AND derived floors; retaining either trusts the
+    // old authorization rules rather than rebuilding from immutable entries.
+    instance_b
+        .backend()
+        .local_engine()
+        .expect("receiver is a local backend")
+        .reset_local_verification()
+        .await?;
+    assert_eq!(
+        instance_b
+            .backend()
+            .get_verification_status(&delegated_entry)
+            .await?,
+        VerificationStatus::Unverified
+    );
+    let report = tokio::time::timeout(std::time::Duration::from_secs(5), target_db_b.verify())
+        .await
+        .expect("dependency proof must defer without a cross-tree verification deadlock")?;
+    assert_eq!(
+        report.failed, 0,
+        "reset is not a negative verdict: {report:?}"
+    );
+    assert!(
+        report.still_unverified > 0,
+        "target must wait for dependency: {report:?}"
+    );
+    assert!(!target_db_b.snapshot().await?.contains(&delegated_entry));
+
+    Database::open(&instance_b, pair.identity_db.root_id())
+        .await?
+        .verify()
+        .await?;
+    let report = target_db_b.verify().await?;
+    assert_eq!(
+        report.failed, 0,
+        "rebuild must preserve valid entries: {report:?}"
+    );
+    assert_eq!(
+        report.still_unverified, 0,
+        "dependency-first retry must settle: {report:?}"
+    );
+    assert_eq!(
+        instance_b
+            .backend()
+            .get_verification_status(&delegated_entry)
+            .await?,
+        VerificationStatus::Verified
+    );
+    let txn = target_db_b.new_transaction().await?;
+    let store = txn.get_store::<DocStore>("data").await?;
+    assert_eq!(
+        store.get("synced_key").await?.as_text(),
+        Some("synced_value")
     );
 
     Ok(())

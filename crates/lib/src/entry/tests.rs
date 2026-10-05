@@ -641,3 +641,46 @@ fn test_dagcbor_wire_format_is_pinned() {
     assert_eq!(hex, WIRE_FORMAT_GOLDEN, "entry wire format changed");
     assert_eq!(entry.id().to_string(), WIRE_FORMAT_GOLDEN_ID);
 }
+
+/// Covers the signed nested-delegation shape, which the unsigned direct-key
+/// golden above does not exercise. Derived floors must never enter these bytes.
+#[test]
+fn test_delegated_dagcbor_wire_format_is_pinned() {
+    let key = SigKey::Delegation {
+        path: vec![
+            DelegationStep {
+                tree: ID::from_bytes("identity"),
+                tips: vec![ID::from_bytes("identity-tip")],
+            },
+            DelegationStep {
+                tree: ID::from_bytes("nested"),
+                tips: vec![ID::from_bytes("left"), ID::from_bytes("right")],
+            },
+        ],
+        hint: KeyHint::from_name("member"),
+    };
+    let entry = Entry::builder(ID::from_bytes("root"))
+        .add_parent(ID::from_bytes("parent"))
+        .set_subtree_data("test", b"value")
+        .set_auth(
+            AuthInfo::builder()
+                .key(key)
+                .signature("fixed-signature")
+                .build(),
+        )
+        .build()
+        .unwrap();
+    let bytes = entry.to_dagcbor().unwrap();
+    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(
+        hex,
+        "a363736967a2636b6579a16a44656c65676174696f6ea26468696e74a1646e616d65666d656d626572647061746882a2647469707381d82a58250001551e205799b0a0daf874cf76d9d025ed81ec75215c326ee35f3679e639a7edac1f36da6474726565d82a58250001551e2078556dc9bafdbe46049cacf3dc16fe70f259d220b9d2898771bf3a6c56d7d0a6a2647469707382d82a58250001551e2087e596f34bdd4ba9812a5222449c3ed968ef3313c6dc4316dd4e4fcea27e55f2d82a58250001551e20744caf711c80a1e8bfac2972e9b12c216ef03ea16489e78981a415c6eb11373a6474726565d82a58250001551e20dab52cf75933db6e195b1e9fb3428e91a177ab372af1d644bf15290ca15e3b63637369676f66697865642d7369676e61747572656474726565a264726f6f74d82a58250001551e2092a2b787a06d7272df43eaf87acc3b9c1d315d79d599d61c285983483e43199867706172656e747381d82a58250001551e20ebdea6058df2230dc25b7a7c7b487b470c508c2e0a5119c96893c443de3a9e7968737562747265657381a364646174614576616c7565646e616d65647465737467706172656e747380",
+        "delegated entry wire format changed"
+    );
+    assert_eq!(
+        entry.id().to_string(),
+        "bafyr4ifmouago5xqkoa5onoxcxkxlr6jlja4o37cu3wka47mo7hscbzy4y"
+    );
+    let decoded: Entry = serde_ipld_dagcbor::from_slice(&bytes).unwrap();
+    assert_eq!(decoded, entry);
+}
