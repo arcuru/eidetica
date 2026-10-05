@@ -6,7 +6,7 @@ This default applies to any Store data type and does not assume `Doc`.
 `Database::get_store_state::<S>` validates the registered Store type and returns `S::Data`; `get_doc_store_state` is explicitly DocStore-specific JSON convenience.
 The read-scoped `EnsureStoreStateGeneration` request carries the expected Store type and effective projection descriptor; after the ordinary canonical Read gate the server checks `_index` and its explicitly registered plaintext Store codecs. `ServiceServer::register_store::<S>` admits a concrete Store type and its effective projection descriptor before serving; the caller cannot register a codec over the socket or choose its descriptor. DocStore and opaque-row Table are registered by default. With `records_only: true`, maintenance ensures the row generation and returns `Ok`; otherwise it returns the encoded complete state. A matching type and descriptor resolve or build derived state internally and return `StoreState(Vec<u8>)` via the Store's `Codec::encode`; the client uses `Codec::decode`, never a staging token or a generic JSON conversion.
 An authenticated read-only user can invoke this maintenance, but cannot invoke the separate Write-gated staging operation.
-Unknown codecs and recordless storage report `RecordMaintenanceUnavailable`, which selects a typed, ordered Entry-history fold on the client; a verifiable registered descriptor mismatch, authorization failure or Codec error never does. The fallback resolves Store tips reachable from the Verified main frontier before traversing Store parents, so a later Entry affecting another Store cannot hide earlier deltas. Decoding consumes complete Codec values; malformed or trailing bytes propagate as errors.
+Unknown codecs and recordless storage report `RecordMaintenanceUnavailable`, which selects a typed, ordered Entry-history fold on the client; a verifiable registered descriptor mismatch, authorization failure or Codec error never does. The fallback resolves Store tips reachable from the Verified main frontier before traversing Store parents, so a later Entry affecting another Store cannot hide earlier deltas. Decoding consumes complete Codec values. Cache and wire decoding remain strict, as does source replay for non-Table Stores; Table source-payload tolerance is described below.
 Password-wrapped Stores remain opaque to server maintenance: `_index` does not expose the encrypted wrapped codec, so the server cannot authenticate even a claimed known wrapper descriptor. Any such claim yields `RecordMaintenanceUnavailable` after Read authorization and type identity validation, including a claimed plaintext descriptor; it cannot select a plaintext codec or publish a poisoned generation. An unlocked `PasswordStore<S>::get_state` on a service connection sends the expected wrapper descriptor through the canonical Read gate, then folds authorized Entry deltas after local decryption and `Codec::decode`; it neither receives a staging token nor publishes records. Wrong passwords fail during `open`, and ciphertext/authentication errors during folding propagate rather than becoming capability refusals. The generic remote `get_store_state::<PasswordStore<S>>` cannot supply a password; callers use the unlocked Store handle. Its `projected_get` and `projected_scan_page` accept a projection matching the wrapped Store descriptor, fold read-authorized decrypted history into physical-key order locally, and decode authenticated records through the registered password encryptor. Pages carry transaction-view/revision-bound cursors for local overlay mutations, not a durable snapshot of a changing remote frontier. This is a client-side read-only path, not server maintenance, and callers must supply the wrapped Store's projection. Table uses this path with its opaque `TableData` operations.
 
 Backends persist each Store state as an opaque byte-keyed record set.
@@ -27,6 +27,17 @@ Rust `T` or run `C`. A cold generation streams set/delete operations into bounde
 chunks, while typed reads decode only the requested rows. Repeated operations
 on a key in one transaction reduce to the final LWW operation and atomically
 update the canonical builder and read-your-writes overlays.
+
+LWW-winning configuration selects Table's format and row codec; historical
+configuration disagreement alone is not an error. A typed handle with the wrong
+codec still fails. A winning row that cannot be decoded is absent from the typed
+view, with a warning and no fallback to an older row. Source replay also skips a
+whole unreadable Table Entry payload with a warning, before emitting any of its
+mutations; this can leave older state visible. Both paths retain original bytes.
+The source exception requires concrete `TableData` and the Table or password-Table
+projection descriptor. It applies only after successful decryption, not to caches,
+staged data, wire responses, authorization, ancestry, I/O or mutation errors.
+Warnings omit row keys, payload contents and decoder error text.
 
 `PasswordStore` preserves the wrapped Store's state model but namespaces its
 descriptor. For a Table, the cached record key becomes a stable keyed hash of

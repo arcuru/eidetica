@@ -215,12 +215,19 @@ This identifies an encoding, not an application schema. Rows that the matching
 codec cannot decode are skipped with warnings, without deleting their raw bytes.
 Point reads report those rows as missing; scans can return an empty page with a
 continuation cursor. A failed row decode never falls back to an older row value.
-Authorization, decryption, storage and codec-selection errors still propagate.
+If a source Entry's Table operation payload cannot be decoded, replay skips the
+whole payload with a warning. No partial update or delete from that payload is
+applied, so older state may remain visible. Original Entry bytes are retained.
+This tolerance applies only to source payloads and application rows: authorization,
+decryption, ancestry, storage, cache, wire, staging and codec-selection errors
+still propagate. `Codec::decode` itself remains strict.
 
 Use `RawTable` to inspect an existing Table without compiling its application row
 codec. Its `get` returns exact bytes, and `scan_page` returns bounded pages of row
 IDs and bytes with the same ordering and cursor rules as typed access. It does
-not register missing Stores or select the `raw:v1` codec.
+not register missing Stores or select the `raw:v1` codec. It shares Table's
+source-payload replay policy; inspecting a skipped payload requires reading its
+original Entry rather than the row API.
 
 ```rust,no_run
 # async fn inspect(tx: &eidetica::Transaction) -> eidetica::Result<()> {
