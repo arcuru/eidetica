@@ -1284,7 +1284,7 @@ impl Transaction {
     }
 
     /// Read a typed row from the fixed historical view, overlaid with staged changes.
-    pub(crate) async fn projected_get<D: CRDT + Codec + Send>(
+    pub(crate) async fn projected_get<D: CRDT + Codec + Send + 'static>(
         &self,
         store: &str,
         projection: &dyn RecordProjection<D>,
@@ -1294,7 +1294,7 @@ impl Transaction {
             .await
     }
 
-    async fn projected_get_with_history<D: CRDT + Codec + Send>(
+    async fn projected_get_with_history<D: CRDT + Codec + Send + 'static>(
         &self,
         store: &str,
         projection: &dyn RecordProjection<D>,
@@ -1430,7 +1430,7 @@ impl Transaction {
     }
 
     /// Recordless fallback reduces typed history before projecting into physical order.
-    async fn projected_history<D: CRDT + Codec + Send>(
+    async fn projected_history<D: CRDT + Codec + Send + 'static>(
         &self,
         store: &str,
         projection: &dyn RecordProjection<D>,
@@ -1487,7 +1487,7 @@ impl Transaction {
     }
 
     /// Scan a typed projection using the backend's real immutable RecordView.
-    pub(crate) async fn projected_record_scan_page<D: CRDT + Codec + Send>(
+    pub(crate) async fn projected_record_scan_page<D: CRDT + Codec + Send + 'static>(
         &self,
         store: &str,
         projection: &dyn RecordProjection<D>,
@@ -1582,7 +1582,7 @@ impl Transaction {
         .await
     }
 
-    async fn projected_scan_with_history<D: CRDT + Codec + Send>(
+    async fn projected_scan_with_history<D: CRDT + Codec + Send + 'static>(
         &self,
         store: &str,
         projection: &dyn RecordProjection<D>,
@@ -1784,7 +1784,7 @@ impl Transaction {
             })
     }
 
-    async fn publish_record_view<D: CRDT + Codec>(
+    async fn publish_record_view<D: CRDT + Codec + 'static>(
         &self,
         store: &str,
         projection: &dyn RecordProjection<D>,
@@ -1792,17 +1792,11 @@ impl Transaction {
         entries: &[Entry],
     ) -> Result<RecordView> {
         if !self.encryptors.lock().unwrap().contains_key(store) {
-            return state::publish_records(
-                self.db.ops(),
-                request,
-                entries
-                    .iter()
-                    .filter_map(|entry| entry.data(store).ok().map(|bytes| bytes.as_slice())),
-                projection,
-            )
-            .await;
+            return state::publish_records(self.db.ops(), request, entries.iter(), projection)
+                .await;
         }
 
+        let descriptor = request.projection.clone();
         let token = self.db.ops().begin_store_state_staging(request).await?;
         let result = async {
             let mut chunk = Vec::new();
@@ -1811,7 +1805,11 @@ impl Transaction {
             for entry in entries {
                 if let Ok(bytes) = entry.data(store) {
                     let plaintext = self.decrypt_if_needed(store, bytes)?;
-                    let delta = D::decode(&plaintext)?;
+                    let Some(delta) =
+                        state::decode_source::<D>(store, entry, &plaintext, &descriptor)?
+                    else {
+                        continue;
+                    };
                     for mutation in projection.mutations(&delta)? {
                         let mutation = match mutation? {
                             RecordMutation::Put { key, value } => RecordMutation::Put {
@@ -1873,7 +1871,7 @@ impl Transaction {
     }
 
     #[cfg(all(unix, feature = "service"))]
-    pub(crate) async fn ensure_record_view<D: CRDT + Codec>(
+    pub(crate) async fn ensure_record_view<D: CRDT + Codec + 'static>(
         &self,
         store: &str,
         projection: &dyn RecordProjection<D>,
@@ -1888,7 +1886,7 @@ impl Transaction {
             .retain(|(name, _), _| name != store);
     }
 
-    async fn record_view<D: CRDT + Codec>(
+    async fn record_view<D: CRDT + Codec + 'static>(
         &self,
         store: &str,
         projection: &dyn RecordProjection<D>,
@@ -2237,7 +2235,7 @@ impl Transaction {
     /// if the subtree has no history prior to this transaction.
     pub(crate) async fn get_full_state<T>(&self, subtree_name: impl AsRef<str> + Send) -> Result<T>
     where
-        T: CRDT + Codec + Send,
+        T: CRDT + Codec + Send + 'static,
     {
         self.get_full_state_with_descriptor::<T>(
             subtree_name,
@@ -2255,7 +2253,7 @@ impl Transaction {
         descriptor: ProjectionDescriptor,
     ) -> Result<T>
     where
-        T: CRDT + Codec + Send,
+        T: CRDT + Codec + Send + 'static,
     {
         let subtree_name = subtree_name.as_ref();
 
@@ -2342,7 +2340,7 @@ impl Transaction {
         descriptor: &ProjectionDescriptor,
     ) -> Result<T>
     where
-        T: CRDT + Codec + Send,
+        T: CRDT + Codec + Send + 'static,
     {
         // Base case: no entries
         if entry_ids.is_empty() {
@@ -2389,7 +2387,7 @@ impl Transaction {
                 let state: T = self
                     .compute_single_entry_state_recursive(subtree_name, base, descriptor)
                     .await?;
-                self.merge_path_entries(subtree_name, state, &merge.path)
+                self.merge_path_entries(subtree_name, state, &merge.path, descriptor)
                     .await?
             }
             // With no merge base the histories are disjoint — a store
@@ -2405,7 +2403,7 @@ impl Transaction {
                     .ops()
                     .store_at(self.db.root_id(), subtree_name, &boundary)
                     .await?;
-                self.fold_store_entries(subtree_name, &entries)?
+                self.fold_store_entries(subtree_name, &entries, descriptor)?
             }
         };
 
@@ -2437,7 +2435,7 @@ impl Transaction {
         descriptor: &'a ProjectionDescriptor,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T>> + Send + 'a>>
     where
-        T: CRDT + Codec + Send + 'a,
+        T: CRDT + Codec + Send + 'static,
     {
         Box::pin(async move {
             let request = state::opaque_request(
@@ -2463,7 +2461,7 @@ impl Transaction {
                 .await?;
 
             // Step 3: Merge all entries in order (already sorted by height, root first)
-            let result: T = self.fold_store_entries(subtree_name, &entries)?;
+            let result: T = self.fold_store_entries(subtree_name, &entries, descriptor)?;
 
             // Step 4: Cache only the final result (encrypted if encryptor is registered)
             self.cache_computed_state(request, result).await
@@ -2505,16 +2503,26 @@ impl Transaction {
     ///
     /// The entries must be in fold order (height then ID, root first), as
     /// `store_at` returns them.
-    fn fold_store_entries<T>(&self, subtree_name: &str, entries: &[Entry]) -> Result<T>
+    fn fold_store_entries<T>(
+        &self,
+        subtree_name: &str,
+        entries: &[Entry],
+        descriptor: &ProjectionDescriptor,
+    ) -> Result<T>
     where
-        T: CRDT + Codec,
+        T: CRDT + Codec + 'static,
     {
         let mut result = T::default();
         for entry in entries {
             let local_data = if let Ok(data) = entry.data(subtree_name) {
                 // Decrypt before deserializing
                 let plaintext = self.decrypt_if_needed(subtree_name, data)?;
-                T::decode(&plaintext)?
+                let Some(delta) =
+                    state::decode_source::<T>(subtree_name, entry, &plaintext, descriptor)?
+                else {
+                    continue;
+                };
+                delta
             } else {
                 T::default()
             };
@@ -2537,9 +2545,10 @@ impl Transaction {
         subtree_name: &str,
         mut state: T,
         entry_ids: &[ID],
+        descriptor: &ProjectionDescriptor,
     ) -> Result<T>
     where
-        T: CRDT + Codec,
+        T: CRDT + Codec + 'static,
     {
         for entry_id in entry_ids {
             let entry = self.db.ops().get(entry_id).await?;
@@ -2548,7 +2557,12 @@ impl Transaction {
             let local_data = if let Ok(data) = entry.data(subtree_name) {
                 // Decrypt before deserializing
                 let plaintext = self.decrypt_if_needed(subtree_name, data)?;
-                T::decode(&plaintext)?
+                let Some(delta) =
+                    state::decode_source::<T>(subtree_name, &entry, &plaintext, descriptor)?
+                else {
+                    continue;
+                };
+                delta
             } else {
                 T::default()
             };

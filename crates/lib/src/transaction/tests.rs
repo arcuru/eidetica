@@ -1,5 +1,8 @@
 //! Tests for the transaction module.
 
+#[path = "tests/payload.rs"]
+mod payload;
+
 use super::*;
 
 use crate::{

@@ -1,15 +1,16 @@
-use std::collections::BTreeMap;
+use std::{any::TypeId, collections::BTreeMap};
 
 use crate::{
     Result,
     backend::{CacheScope, RecordMutation, RecordView, StoreStateLifecycle, StoreStateRequest},
     crdt::{CRDT, Codec},
-    entry::ID,
+    entry::{Entry, ID},
     instance::backend::Backend,
 };
 
-use super::ProjectionDescriptor;
-use super::RecordProjection;
+use super::{
+    PasswordStore, ProjectionDescriptor, RawBytes, RecordProjection, Store, Table, TableData,
+};
 
 /// Reserved key for the generic opaque whole-state projection.
 pub const OPAQUE_STATE_KEY: &[u8] = &[0x00];
@@ -43,19 +44,52 @@ pub(crate) fn records_request(
 
 pub(crate) const CHUNK_BYTES: usize = 1024 * 1024;
 
-pub(crate) async fn publish_records<'a, D: CRDT + Codec>(
+/// Decode only a source Entry's operation payload, after any decryption.
+/// Table's selected format tolerates unreadable history, not corrupt caches,
+/// staged data or wire responses. Both the concrete codec and the selected
+/// projection must belong to Table; custom non-Table projections stay strict.
+pub(crate) fn decode_source<D: Codec + 'static>(
+    store: &str,
+    entry: &Entry,
+    plaintext: &[u8],
+    descriptor: &ProjectionDescriptor,
+) -> Result<Option<D>> {
+    match D::decode(plaintext) {
+        Ok(delta) => Ok(Some(delta)),
+        Err(_)
+            if TypeId::of::<D>() == TypeId::of::<TableData>()
+                && (descriptor == &Table::<Vec<u8>, RawBytes>::state_model().descriptor()
+                    || descriptor
+                        == &PasswordStore::<Table<Vec<u8>, RawBytes>>::state_model()
+                            .descriptor()) =>
+        {
+            tracing::warn!(store, entry = %entry.id(), "Skipping unreadable table:v1 Entry payload");
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+pub(crate) async fn publish_records<'a, D: CRDT + Codec + 'static>(
     backend: &dyn Backend,
     request: StoreStateRequest,
-    deltas: impl Iterator<Item = &'a [u8]>,
+    entries: impl Iterator<Item = &'a Entry>,
     projection: &dyn RecordProjection<D>,
 ) -> Result<RecordView> {
+    let store = request.store.clone();
+    let descriptor = request.projection.clone();
     let token = backend.begin_store_state_staging(request).await?;
     let result = async {
         let mut chunk = Vec::new();
         let mut chunk_bytes = 0;
         let mut sequence = 0;
-        for bytes in deltas {
-            let delta = D::decode(bytes)?;
+        for entry in entries {
+            let Ok(bytes) = entry.data(&store) else {
+                continue;
+            };
+            let Some(delta) = decode_source::<D>(&store, entry, bytes, &descriptor)? else {
+                continue;
+            };
             for mutation in projection.mutations(&delta)? {
                 let mutation = mutation?;
                 let size = serde_json::to_vec(&mutation)?.len();

@@ -1284,7 +1284,7 @@ impl RemoteConnection {
     /// Only the read-authorized maintenance refusal permits a local history
     /// fold. The decryptor is supplied by an already unlocked client Store;
     /// ciphertext and passwords are never sent to the daemon for projection.
-    pub(crate) async fn get_store_state_with_decrypt<D: crate::crdt::CRDT + Codec>(
+    pub(crate) async fn get_store_state_with_decrypt<D: crate::crdt::CRDT + Codec + 'static>(
         &self,
         root_id: ID,
         identity: SigKey,
@@ -1306,7 +1306,9 @@ impl RemoteConnection {
     }
 
     /// Return the source frontier used by a read-authorized history fold.
-    pub(crate) async fn get_store_state_with_decrypt_and_frontier<D: crate::crdt::CRDT + Codec>(
+    pub(crate) async fn get_store_state_with_decrypt_and_frontier<
+        D: crate::crdt::CRDT + Codec + 'static,
+    >(
         &self,
         root_id: ID,
         identity: SigKey,
@@ -1327,7 +1329,7 @@ impl RemoteConnection {
                 DatabaseOp::EnsureStoreStateGeneration {
                     store: store.clone(),
                     expected_type: expected_type.to_string(),
-                    projection,
+                    projection: projection.clone(),
                 },
             )
             .await;
@@ -1366,7 +1368,15 @@ impl RemoteConnection {
                 let mut state = D::default();
                 for entry in entries {
                     if let Ok(data) = entry.data(&store) {
-                        state = state.merge(&D::decode(&decrypt(data)?)?)?;
+                        let plaintext = decrypt(data)?;
+                        if let Some(delta) = crate::store::state::decode_source::<D>(
+                            &store,
+                            &entry,
+                            &plaintext,
+                            &projection,
+                        )? {
+                            state = state.merge(&delta)?;
+                        }
                     }
                 }
                 Ok((state, Some(tips)))
