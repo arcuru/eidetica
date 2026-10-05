@@ -142,7 +142,7 @@ mod value_editor;
 pub use value_editor::ValueEditor;
 
 pub(crate) mod table;
-pub use table::{Table, TableCursor, TablePage};
+pub use table::{RawTable, Table, TableCursor, TablePage};
 
 mod settings_store;
 pub use settings_store::SettingsStore;

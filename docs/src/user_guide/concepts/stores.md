@@ -207,9 +207,31 @@ normalize row bytes. Plain scans follow exact UTF-8 key order in bounded pages,
 while encrypted scans follow opaque physical-key order. `table:v1` has no
 legacy `table:v0` decoder or migration.
 
-Row-format configuration and historical identity enforcement are not yet wired.
-Callers must use a compatible row codec for all history; a matching Store type
-ID alone does not establish row-format or application-schema compatibility.
+Table creation stores `C::FORMAT_ID` in `config.row_codec`, including inside
+PasswordStore's encrypted configuration. Typed opens, reads and writes reject a
+mismatched or missing identity. This identifies an encoding, not an application
+schema. Full causal historical identity enforcement is still being integrated;
+these current-configuration checks alone do not certify imported or conflicting
+history.
+
+Use `RawTable` to inspect an existing Table without compiling its application row
+codec. Its `get` returns exact bytes, and `scan_page` returns bounded pages of row
+IDs and bytes with the same ordering and cursor rules as typed access. It does
+not register missing Stores or select the `raw:v1` codec.
+
+```rust,no_run
+# async fn inspect(tx: &eidetica::Transaction) -> eidetica::Result<()> {
+use eidetica::store::RawTable;
+let rows = tx.get_store::<RawTable>("items").await?;
+let required_codec = rows.row_codec_id().await?;
+let bytes = rows.get("item-1").await?;
+let first_page = rows.scan_page(None, 100).await?;
+# Ok(())
+# }
+```
+
+For encrypted Tables, open `PasswordStore<RawTable>`, unlock it, and use its
+`inner()` handle. Raw access does not bypass read authorization or encryption.
 
 Use cases for `Table`:
 

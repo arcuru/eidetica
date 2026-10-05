@@ -29,7 +29,7 @@ use std::{
     future::Future,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -246,6 +246,17 @@ pub struct Transaction {
     #[cfg(all(unix, feature = "service"))]
     private_assistance: Arc<tokio::sync::Mutex<crate::service::client::PrivateCacheAssistance>>,
     projected_sealed: Arc<AtomicBool>,
+    encryption_revision: Arc<AtomicU64>,
+    row_formats: Arc<Mutex<HashMap<String, (TableFormatStamp, String)>>>,
+}
+
+/// A transaction-local witness; never persisted or shared across transaction views.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct TableFormatStamp {
+    index_parents: Vec<ID>,
+    index_data: Option<Vec<u8>>,
+    projected_revision: Option<u64>,
+    encryption_revision: u64,
 }
 
 /// Canonical typed delta and both read-your-writes overlays share one revision.
@@ -574,6 +585,8 @@ impl Transaction {
             #[cfg(all(unix, feature = "service"))]
             private_assistance: Arc::default(),
             projected_sealed: Arc::new(AtomicBool::new(false)),
+            encryption_revision: Arc::new(AtomicU64::new(0)),
+            row_formats: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -678,6 +691,7 @@ impl Transaction {
             .into());
         }
         self.encryptors.lock().unwrap().insert(subtree, encryptor);
+        self.encryption_revision.fetch_add(1, Ordering::AcqRel);
         Ok(())
     }
 
@@ -815,6 +829,19 @@ impl Transaction {
         } else {
             Ok(data.to_vec())
         }
+    }
+
+    /// Metadata decryption must never treat a locked Store's ciphertext as plaintext.
+    pub(crate) fn decrypt_store_metadata(&self, store: &str, ciphertext: &[u8]) -> Result<Vec<u8>> {
+        let encryptors = self.encryptors.lock().unwrap();
+        let encryptor = encryptors
+            .get(store)
+            .ok_or_else(|| StoreError::InvalidOperation {
+                store: store.into(),
+                operation: "inspect configuration".into(),
+                reason: "encrypted Store must be unlocked first".into(),
+            })?;
+        encryptor.decrypt(ciphertext)
     }
 
     /// Encrypt bytes if an encryptor is registered for the subtree, otherwise return them unchanged.
@@ -2044,6 +2071,56 @@ impl Transaction {
             .store_snapshot_at(self.db.root_id(), subtree_name, &boundary)
             .await
             .map(Snapshot::into_tips)
+    }
+
+    pub(crate) fn table_format_stamp(&self) -> Result<TableFormatStamp> {
+        let stages = self.projected.lock().unwrap();
+        let builder_ref = self.entry_builder.lock().unwrap();
+        let builder = builder_ref
+            .as_ref()
+            .ok_or(TransactionError::TransactionAlreadyCommitted)?;
+        Ok(TableFormatStamp {
+            index_parents: builder.subtree_parents(INDEX).unwrap_or_default(),
+            index_data: builder.data(INDEX).ok().cloned(),
+            projected_revision: stages.get(INDEX).map(|stage| stage.revision),
+            encryption_revision: self.encryption_revision.load(Ordering::Acquire),
+        })
+    }
+
+    pub(crate) fn cached_row_format(
+        &self,
+        store: &str,
+        stamp: &TableFormatStamp,
+    ) -> Option<String> {
+        self.row_formats
+            .lock()
+            .unwrap()
+            .get(store)
+            .filter(|(cached, _)| cached == stamp)
+            .map(|(_, format)| format.clone())
+    }
+
+    pub(crate) fn cache_row_format(&self, store: &str, stamp: TableFormatStamp, format: String) {
+        self.row_formats
+            .lock()
+            .unwrap()
+            .insert(store.into(), (stamp, format));
+    }
+
+    /// Distinguish an absent Store from unregistered data without decoding it.
+    pub(crate) async fn store_has_source(&self, store: &str) -> Result<bool> {
+        let parents = {
+            let stages = self.projected.lock().unwrap();
+            let builder_ref = self.entry_builder.lock().unwrap();
+            let builder = builder_ref
+                .as_ref()
+                .ok_or(TransactionError::TransactionAlreadyCommitted)?;
+            if stages.contains_key(store) || builder.data(store).is_ok() {
+                return Ok(true);
+            }
+            builder.parents()?
+        };
+        Ok(!self.get_subtree_tips(store, &parents).await?.is_empty())
     }
 
     /// Initialize subtree parents if this is the first time accessing this subtree

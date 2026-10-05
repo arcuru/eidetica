@@ -5,7 +5,7 @@ use std::rc::Rc;
 use eidetica::{
     Database, Instance, NewUser, Registered, Store,
     crdt::{Codec, Doc, Lww},
-    store::{PasswordStore, RawBytes, RowCodec, SerdeJson, Table, TableData},
+    store::{PasswordStore, RawBytes, RawTable, RowCodec, SerdeJson, Table, TableData},
 };
 use serde::{Deserialize, Serialize};
 
@@ -117,6 +117,214 @@ async fn test_table_full_integer_ranges_staged_warm_and_cold() {
             1
         );
     }
+}
+
+#[tokio::test]
+async fn test_raw_table_inspector_uses_unknown_codec_and_bounded_pages() {
+    let (instance, database) = database().await;
+    let tx = database.new_transaction().await.unwrap();
+    let table = tx
+        .get_store::<Table<LocalRow, LocalCodec>>("inspect")
+        .await
+        .unwrap();
+    assert_eq!(
+        table
+            .get_config()
+            .await
+            .unwrap()
+            .get("row_codec")
+            .unwrap()
+            .as_text(),
+        Some(LocalCodec::FORMAT_ID)
+    );
+    let payloads = [vec![0xff, 0, 0x80], vec![], b" { \"n\" : 1.00 } ".to_vec()];
+    for (i, bytes) in payloads.iter().enumerate() {
+        table
+            .set(i.to_string(), LocalRow(Rc::new(bytes.clone())))
+            .await
+            .unwrap();
+    }
+    let raw = tx.get_store::<RawTable>("inspect").await.unwrap();
+    assert_eq!(raw.row_codec_id().await.unwrap(), LocalCodec::FORMAT_ID);
+    assert_eq!(raw.get("0").await.unwrap(), payloads[0]);
+    let first = raw.scan_page(None, 1).await.unwrap();
+    assert_eq!(first.rows, vec![("0".into(), payloads[0].clone())]);
+    table.set("1", LocalRow(Rc::new(vec![]))).await.unwrap();
+    assert!(
+        raw.scan_page(first.next.as_ref(), 1).await.is_err(),
+        "overlay changes invalidate raw cursors too"
+    );
+    tx.commit().await.unwrap();
+    for cold in [false, true] {
+        if cold {
+            instance
+                .backend()
+                .clear_derived_store_state()
+                .await
+                .unwrap();
+        }
+        let raw = database
+            .get_store_viewer::<RawTable>("inspect")
+            .await
+            .unwrap();
+        let mut cursor = None;
+        for (i, bytes) in payloads.iter().enumerate() {
+            assert_eq!(raw.get(i.to_string()).await.unwrap(), *bytes);
+            let page = raw.scan_page(cursor.as_ref(), 1).await.unwrap();
+            assert_eq!(page.rows, vec![(i.to_string(), bytes.clone())]);
+            cursor = page.next;
+        }
+        assert!(cursor.is_none());
+    }
+    let tx = database.new_transaction().await.unwrap();
+    assert!(tx.get_store::<RawTable>("absent").await.is_err());
+    assert!(
+        tx.get_index()
+            .await
+            .unwrap()
+            .get_entry("absent")
+            .await
+            .is_err(),
+        "inspection must not register missing Stores"
+    );
+}
+
+struct WrongCodec;
+impl RowCodec<Vec<u8>> for WrongCodec {
+    const FORMAT_ID: &'static str = "tests/wrong:v1";
+    fn encode(_: &Vec<u8>) -> eidetica::Result<Vec<u8>> {
+        panic!("mismatched encoder invoked")
+    }
+    fn decode(_: &[u8]) -> eidetica::Result<Vec<u8>> {
+        panic!("mismatched decoder invoked")
+    }
+}
+
+#[tokio::test]
+async fn test_table_config_rejects_mismatched_and_stale_typed_handles() {
+    let (_instance, database) = database().await;
+    let tx = database.new_transaction().await.unwrap();
+    let table = tx
+        .get_store::<Table<Vec<u8>, RawBytes>>("identity")
+        .await
+        .unwrap();
+    table.set("row", vec![0xff]).await.unwrap();
+    assert!(
+        tx.get_store::<Table<Vec<u8>, WrongCodec>>("identity")
+            .await
+            .is_err()
+    );
+    let mut changed = Doc::new();
+    changed.set("row_codec", WrongCodec::FORMAT_ID);
+    tx.get_index()
+        .await
+        .unwrap()
+        .set_entry("identity", "table:v1", changed)
+        .await
+        .unwrap();
+    assert!(table.get("row").await.is_err());
+    assert!(table.set("row", vec![0]).await.is_err());
+    assert!(table.scan_page(None, 1).await.is_err());
+    assert!(table.delete("row").await.is_err());
+}
+
+#[tokio::test]
+async fn test_table_absent_view_is_empty_but_missing_format_on_data_is_rejected() {
+    let (_instance, database) = database().await;
+    let empty = database
+        .get_store_viewer::<Table<Vec<u8>, WrongCodec>>("absent")
+        .await
+        .unwrap();
+    assert!(empty.get("row").await.is_err());
+    assert!(empty.scan_page(None, 1).await.unwrap().rows.is_empty());
+    assert!(
+        empty
+            .search(|_| panic!("absent row predicate invoked"))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(empty.set("row", vec![]).await.is_err());
+
+    let tx = database.new_transaction().await.unwrap();
+    tx.get_index()
+        .await
+        .unwrap()
+        .set_entry("malformed", "table:v1", Doc::new())
+        .await
+        .unwrap();
+    assert!(
+        tx.get_store::<Table<serde_json::Value>>("malformed")
+            .await
+            .is_err()
+    );
+    assert!(tx.get_store::<RawTable>("malformed").await.is_err());
+
+    let table = tx
+        .get_store::<Table<Vec<u8>, RawBytes>>("unbound")
+        .await
+        .unwrap();
+    table.set("row", vec![0xff]).await.unwrap();
+    let index = tx
+        .get_store::<eidetica::store::DocStore>("_index")
+        .await
+        .unwrap();
+    index.delete("unbound").await.unwrap();
+    assert!(table.get("row").await.is_err());
+    assert!(
+        Table::<Vec<u8>, WrongCodec>::load(&tx, "unbound".into())
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        table
+            .local_data()
+            .unwrap()
+            .unwrap()
+            .0
+            .get(&"row".into())
+            .unwrap()
+            .as_ref(),
+        &[0xff]
+    );
+}
+
+#[tokio::test]
+async fn test_raw_table_inspector_unlocks_without_application_codec() {
+    let (_instance, database) = database().await;
+    let tx = database.new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<Table<LocalRow, LocalCodec>>>("inspect-secrets")
+        .await
+        .unwrap();
+    encrypted
+        .initialize("inspector-key", Doc::new())
+        .await
+        .unwrap();
+    encrypted
+        .inner()
+        .await
+        .unwrap()
+        .set("row", LocalRow(Rc::new(vec![0xff, 0, 0x80])))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let mut raw = tx
+        .get_store::<PasswordStore<RawTable>>("inspect-secrets")
+        .await
+        .unwrap();
+    assert!(raw.inner().await.is_err());
+    assert!(RawTable::load(&tx, "inspect-secrets".into()).await.is_err());
+    assert!(raw.open("wrong-key").is_err());
+    raw.open("inspector-key").unwrap();
+    let inner = raw.inner().await.unwrap();
+    assert_eq!(inner.row_codec_id().await.unwrap(), LocalCodec::FORMAT_ID);
+    assert_eq!(inner.get("row").await.unwrap(), vec![0xff, 0, 0x80]);
+    assert_eq!(
+        inner.scan_page(None, 1).await.unwrap().rows,
+        vec![("row".into(), vec![0xff, 0, 0x80])]
+    );
 }
 
 // No Serde, Clone, Send or Sync on the row; no Clone on the stateless codec.
