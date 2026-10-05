@@ -18,6 +18,7 @@ use eidetica::{
         transports::{http::HttpTransport, iroh::IrohTransport},
     },
 };
+use iroh::RelayMode;
 
 /// Test that BootstrapPending error is properly returned when manual approval is required.
 ///
@@ -177,7 +178,10 @@ async fn test_iroh_transport_concurrent_access() {
     {
         let sync_guard = sync.lock().await;
         sync_guard
-            .register_transport("iroh", IrohTransport::builder())
+            .register_transport(
+                "iroh",
+                IrohTransport::builder().relay_mode(RelayMode::Disabled),
+            )
             .await
             .unwrap();
         println!("✅ Iroh transport enabled");
@@ -291,7 +295,10 @@ async fn test_iroh_address_detection() {
 
     // Enable Iroh transport on client
     client_sync
-        .register_transport("iroh", IrohTransport::builder())
+        .register_transport(
+            "iroh",
+            IrohTransport::builder().relay_mode(RelayMode::Disabled),
+        )
         .await
         .unwrap();
 

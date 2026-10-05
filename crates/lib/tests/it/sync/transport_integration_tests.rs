@@ -6,6 +6,7 @@ use eidetica::{
         transports::{SyncTransport, http::HttpTransport, iroh::IrohTransport},
     },
 };
+use iroh::RelayMode;
 
 /// Test that both HTTP and Iroh transports follow the same interface
 #[tokio::test]
@@ -14,7 +15,10 @@ async fn test_transport_interface_consistency() {
         .bind("127.0.0.1:0")
         .build_sync()
         .unwrap();
-    let iroh_transport = IrohTransport::new().unwrap();
+    let iroh_transport = IrohTransport::builder()
+        .relay_mode(RelayMode::Disabled)
+        .build()
+        .unwrap();
 
     // Both should not be running initially
     assert!(!http_transport.is_server_running());
@@ -74,7 +78,10 @@ async fn test_transport_interface_consistency() {
 #[tokio::test]
 async fn test_transport_error_handling_consistency() {
     let http_transport = HttpTransport::new().unwrap();
-    let iroh_transport = IrohTransport::new().unwrap();
+    let iroh_transport = IrohTransport::builder()
+        .relay_mode(RelayMode::Disabled)
+        .build()
+        .unwrap();
 
     // Both should fail to send requests when no server is running
     let entry = Entry::root_builder()
@@ -107,8 +114,14 @@ async fn test_transport_isolation() {
         .bind("127.0.0.1:0")
         .build_sync()
         .unwrap();
-    let iroh1 = IrohTransport::new().unwrap();
-    let iroh2 = IrohTransport::new().unwrap();
+    let iroh1 = IrohTransport::builder()
+        .relay_mode(RelayMode::Disabled)
+        .build()
+        .unwrap();
+    let iroh2 = IrohTransport::builder()
+        .relay_mode(RelayMode::Disabled)
+        .build()
+        .unwrap();
 
     // All should be able to start servers independently
     let (_instance1, handler1) = super::helpers::setup_test_handler().await;
@@ -156,7 +169,12 @@ async fn test_transport_polymorphism() {
                 .build_sync()
                 .unwrap(),
         ),
-        Box::new(IrohTransport::new().unwrap()),
+        Box::new(
+            IrohTransport::builder()
+                .relay_mode(RelayMode::Disabled)
+                .build()
+                .unwrap(),
+        ),
     ];
 
     // Test that all transports implement the same interface
@@ -184,7 +202,10 @@ async fn test_concurrent_transport_operation() {
         .bind("127.0.0.1:0")
         .build_sync()
         .unwrap();
-    let iroh_transport = IrohTransport::new().unwrap();
+    let iroh_transport = IrohTransport::builder()
+        .relay_mode(RelayMode::Disabled)
+        .build()
+        .unwrap();
 
     // Start both concurrently
     let (_instance1, handler1) = super::helpers::setup_test_handler().await;

@@ -2,6 +2,7 @@ use eidetica::{
     Entry,
     sync::{Address, Sync, transports::iroh::IrohTransport},
 };
+use iroh::RelayMode;
 
 use crate::sync::helpers;
 
@@ -13,9 +14,12 @@ async fn test_sync_iroh_transport_integration() {
     assert!(sync.accept_connections().await.is_err());
 
     // Enable Iroh transport
-    sync.register_transport("iroh", IrohTransport::builder())
-        .await
-        .unwrap();
+    sync.register_transport(
+        "iroh",
+        IrohTransport::builder().relay_mode(RelayMode::Disabled),
+    )
+    .await
+    .unwrap();
 
     // Now server operations should work
     sync.accept_connections().await.unwrap();
@@ -72,7 +76,10 @@ async fn test_send_entries_iroh() {
     // Create server instance
     let (_base_db1, sync_server) = helpers::setup().await;
     sync_server
-        .register_transport("iroh", IrohTransport::builder())
+        .register_transport(
+            "iroh",
+            IrohTransport::builder().relay_mode(RelayMode::Disabled),
+        )
         .await
         .unwrap();
 
@@ -83,7 +90,10 @@ async fn test_send_entries_iroh() {
     // Create client instance
     let (_base_db2, sync_client) = helpers::setup().await;
     sync_client
-        .register_transport("iroh", IrohTransport::builder())
+        .register_transport(
+            "iroh",
+            IrohTransport::builder().relay_mode(RelayMode::Disabled),
+        )
         .await
         .unwrap();
 

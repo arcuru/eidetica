@@ -51,6 +51,7 @@ reqwest = { workspace = true }
 async-trait = { workspace = true }
 futures-util = { workspace = true }
 iroh = { workspace = true }
+iroh-mdns-address-lookup = { workspace = true }
 iroh-tickets = { workspace = true }
 argon2 = { workspace = true }
 aes-gcm = { workspace = true }

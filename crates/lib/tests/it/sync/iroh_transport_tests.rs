@@ -6,10 +6,14 @@ use eidetica::{
         transports::{SyncTransport, iroh::IrohTransport},
     },
 };
+use iroh::RelayMode;
 
 #[tokio::test]
 async fn test_iroh_transport_server_lifecycle() {
-    let transport = IrohTransport::new().unwrap();
+    let transport = IrohTransport::builder()
+        .relay_mode(RelayMode::Disabled)
+        .build()
+        .unwrap();
 
     // Server should not be running initially
     assert!(!transport.is_server_running());
@@ -26,7 +30,10 @@ async fn test_iroh_transport_server_lifecycle() {
 
 #[tokio::test]
 async fn test_iroh_transport_double_start_error() {
-    let transport = IrohTransport::new().unwrap();
+    let transport = IrohTransport::builder()
+        .relay_mode(RelayMode::Disabled)
+        .build()
+        .unwrap();
 
     // Start server
     let (_instance, handler) = super::helpers::setup_test_handler().await;
@@ -43,7 +50,10 @@ async fn test_iroh_transport_double_start_error() {
 
 #[tokio::test]
 async fn test_iroh_transport_stop_without_start() {
-    let transport = IrohTransport::new().unwrap();
+    let transport = IrohTransport::builder()
+        .relay_mode(RelayMode::Disabled)
+        .build()
+        .unwrap();
 
     // Attempting to stop when not running should fail
     let result = transport.stop_server().await;
@@ -52,7 +62,10 @@ async fn test_iroh_transport_stop_without_start() {
 
 #[tokio::test]
 async fn test_iroh_transport_get_server_address() {
-    let transport = IrohTransport::new().unwrap();
+    let transport = IrohTransport::builder()
+        .relay_mode(RelayMode::Disabled)
+        .build()
+        .unwrap();
 
     // Should return error when no server is running
     let result = transport.get_server_address();
@@ -78,7 +91,10 @@ async fn test_iroh_transport_get_server_address() {
 
 #[tokio::test]
 async fn test_iroh_transport_send_request_no_endpoint() {
-    let transport = IrohTransport::new().unwrap();
+    let transport = IrohTransport::builder()
+        .relay_mode(RelayMode::Disabled)
+        .build()
+        .unwrap();
 
     // Try to send request without initializing endpoint
     let entry = Entry::root_builder()
@@ -100,7 +116,10 @@ async fn test_iroh_transport_send_request_no_endpoint() {
 
 #[tokio::test]
 async fn test_iroh_transport_integration_lifecycle() {
-    let server_transport = IrohTransport::new().unwrap();
+    let server_transport = IrohTransport::builder()
+        .relay_mode(RelayMode::Disabled)
+        .build()
+        .unwrap();
 
     // Test complete server lifecycle
     assert!(!server_transport.is_server_running());
@@ -131,8 +150,14 @@ async fn test_iroh_transport_integration_lifecycle() {
 // Test that demonstrates the P2P nature of Iroh transport
 #[tokio::test]
 async fn test_iroh_transport_p2p_addressing() {
-    let transport1 = IrohTransport::new().unwrap();
-    let transport2 = IrohTransport::new().unwrap();
+    let transport1 = IrohTransport::builder()
+        .relay_mode(RelayMode::Disabled)
+        .build()
+        .unwrap();
+    let transport2 = IrohTransport::builder()
+        .relay_mode(RelayMode::Disabled)
+        .build()
+        .unwrap();
 
     // Start both transports
     let (_instance1, handler1) = super::helpers::setup_test_handler().await;

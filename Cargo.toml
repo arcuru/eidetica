@@ -70,7 +70,8 @@ async-trait = "0.1"
 # engine. Already in the tree via iroh/axum/reqwest; declared directly so the
 # use is explicit rather than incidental.
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
-iroh = { version = "1.0", default-features = false, features = ["tls-ring"] }
+iroh = "1.0"
+iroh-mdns-address-lookup = "0.6"
 iroh-tickets = "1.0"
 sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite", "postgres", "any"] }
 # CLI dependencies

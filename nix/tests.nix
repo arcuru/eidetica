@@ -226,6 +226,45 @@ in {
   };
 
   integration = {
+    # Multicast needs a real interface/route, which the Nix build sandbox lacks.
+    # Run the same-host sync regression in a LAN-only VM, with no public DNS.
+    mdns = pkgs.testers.nixosTest {
+      name = "eidetica-mdns-sync";
+
+      nodes.machine = _: {
+        # The debug nextest archive expands to about 3 GiB; use disk, not /tmp's tmpfs.
+        virtualisation.diskSize = 4096;
+        networking = {
+          dhcpcd.enable = false;
+          nameservers = ["127.0.0.1"];
+          firewall.allowedUDPPorts = [5353];
+          interfaces.eth1.ipv4.routes = [
+            {
+              address = "224.0.0.0";
+              prefixLength = 4;
+            }
+          ];
+        };
+        environment.systemPackages = [pkgs.cargo-nextest];
+      };
+
+      testScript = ''
+        machine.start()
+        machine.wait_for_unit("multi-user.target")
+        machine.succeed("mkdir -p /var/lib/nextest && cp -r ${testPkgs.src} /tmp/src && chmod -R u+w /tmp/src")
+        result = machine.succeed(
+          "cargo-nextest nextest run "
+          "--archive-file ${testPkgs.archive}/archive.tar.zst "
+          "--extract-to /var/lib/nextest --workspace-remap /tmp/src "
+          "--show-progress=none --run-ignored only --no-tests fail "
+          "-E 'test(=sync::iroh_e2e_test::test_iroh_mdns_same_host_sync)'",
+          timeout=60,
+        )
+        machine.log(result)
+        machine.log("mDNS-only same-host sync integration test passed!")
+      '';
+    };
+
     # Full NixOS VM integration test
     # Boots a VM, starts the service, and verifies it responds
     nixos = pkgs.testers.nixosTest {

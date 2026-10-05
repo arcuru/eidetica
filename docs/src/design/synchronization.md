@@ -502,6 +502,39 @@ The Iroh transport uses a builder pattern to support different deployment scenar
 - **Privacy**: Enterprises can run private relay infrastructure
 - **Simplicity**: Defaults work for most users without configuration
 
+**Upstream networking defaults:** Eidetica enables iroh's default Cargo features
+and uses `presets::N0` without overriding its networking settings unless the
+caller chooses an override. This includes router port mapping (UPnP, PCP,
+NAT-PMP). Relay selection also follows iroh's defaults, including its
+`IROH_FORCE_STAGING_RELAYS` environment switch; explicit `relay_mode(...)`
+choices take precedence.
+
+To disable router discovery and mapping at runtime, including when Cargo feature
+unification enables the capability through another dependency:
+
+```rust,no_run
+use eidetica::sync::transports::iroh::IrohTransport;
+use iroh::endpoint::PortmapperConfig;
+
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+let builder = IrohTransport::builder()
+    .portmapper_config(PortmapperConfig::Disabled);
+# let _transport = builder.build()?;
+# Ok(())
+# }
+```
+
+Pass this builder to `Sync::register_transport`, or call `build` for a standalone
+transport. The override applies to that transport's lifetime and is not persisted
+with its identity. Supply it again when constructing or registering a transport
+after a restart.
+
+Local mDNS address lookup is added best-effort to the native N0 endpoint.
+`mdns(false)` disables local advertisement and lookup; `n0_dns(false)` removes
+n0 publication and DNS/HTTPS resolution without changing relay or portmapper
+settings. Multicast initialization failure logs a warning but does not prevent
+direct connections or enabled n0 services. These selections are also runtime-only.
+
 **Address Serialization:**
 
 The Iroh transport uses iroh's standard `EndpointTicket` format
