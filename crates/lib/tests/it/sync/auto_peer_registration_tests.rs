@@ -241,6 +241,7 @@ async fn test_bootstrap_sync_tracks_tree_peer_relationship() {
         requested_permission: None,
         metadata: None,
         auth: None,
+        dependency_path: vec![],
     };
 
     let context = RequestContext {
@@ -324,6 +325,7 @@ async fn test_incremental_sync_tracks_tree_peer_relationship() {
         requested_permission: None,
         metadata: None,
         auth: None,
+        dependency_path: vec![],
     };
 
     let context = RequestContext {
@@ -380,6 +382,7 @@ async fn test_relationship_tracking_skipped_without_peer_pubkey() {
 
     let our_tips: eidetica::Snapshot = Vec::new().into();
     let sync_request = SyncTreeRequest {
+        dependency_path: vec![],
         tree_id: tree_id.clone(),
         our_tips: our_tips.clone(),
         peer_pubkey: None,
@@ -392,6 +395,7 @@ async fn test_relationship_tracking_skipped_without_peer_pubkey() {
             &server_pubkey,
             &tree_id,
             &our_tips,
+            &[],
             FixedClock::default().now_millis(),
         )),
     };
@@ -486,6 +490,7 @@ async fn test_multiple_trees_tracked_with_same_peer() {
         requested_permission: None,
         metadata: None,
         auth: None,
+        dependency_path: vec![],
     });
     let _response1 = handler.handle_request(&request1, &context).await;
 
@@ -499,6 +504,7 @@ async fn test_multiple_trees_tracked_with_same_peer() {
         requested_permission: None,
         metadata: None,
         auth: None,
+        dependency_path: vec![],
     });
     let _response2 = handler.handle_request(&request2, &context).await;
 
@@ -608,6 +614,7 @@ async fn test_sync_without_peer_identifier_works() {
         requested_permission: None,
         metadata: None,
         auth: None,
+        dependency_path: vec![],
     };
 
     // Context also without peer_pubkey
@@ -655,6 +662,7 @@ async fn test_bootstrap_auto_detects_permission_for_authorized_key() {
     // Bootstrap request with authorized key but no requested_permission
     let our_tips: eidetica::Snapshot = Vec::new().into();
     let sync_request = SyncTreeRequest {
+        dependency_path: vec![],
         tree_id: tree_id.clone(),
         our_tips: our_tips.clone(),
         peer_pubkey: None,
@@ -667,6 +675,7 @@ async fn test_bootstrap_auto_detects_permission_for_authorized_key() {
             &instance.id(),
             &tree_id,
             &our_tips,
+            &[],
             FixedClock::default().now_millis(),
         )),
     };
@@ -732,6 +741,7 @@ async fn test_bootstrap_rejects_unauthorized_key_when_permission_not_specified()
     // Bootstrap request with unauthorized key and no requested_permission
     let our_tips: eidetica::Snapshot = Vec::new().into();
     let sync_request = SyncTreeRequest {
+        dependency_path: vec![],
         tree_id: tree_id.clone(),
         our_tips: our_tips.clone(),
         peer_pubkey: None,
@@ -744,6 +754,7 @@ async fn test_bootstrap_rejects_unauthorized_key_when_permission_not_specified()
             &server_pubkey,
             &tree_id,
             &our_tips,
+            &[],
             FixedClock::default().now_millis(),
         )),
     };
@@ -816,6 +827,7 @@ async fn test_bootstrap_auto_detects_global_wildcard_permission() {
     // Bootstrap request with random key and no requested_permission
     let our_tips: eidetica::Snapshot = Vec::new().into();
     let sync_request = SyncTreeRequest {
+        dependency_path: vec![],
         tree_id: tree_id.clone(),
         our_tips: our_tips.clone(),
         peer_pubkey: None,
@@ -828,6 +840,7 @@ async fn test_bootstrap_auto_detects_global_wildcard_permission() {
             &server_pubkey,
             &tree_id,
             &our_tips,
+            &[],
             FixedClock::default().now_millis(),
         )),
     };
@@ -912,6 +925,7 @@ async fn test_bootstrap_uses_highest_permission_when_key_has_multiple() {
     // Bootstrap with the special key (has both Write(5) and Read via global)
     let our_tips: eidetica::Snapshot = Vec::new().into();
     let sync_request = SyncTreeRequest {
+        dependency_path: vec![],
         tree_id: tree_id.clone(),
         our_tips: our_tips.clone(),
         peer_pubkey: None,
@@ -924,6 +938,7 @@ async fn test_bootstrap_uses_highest_permission_when_key_has_multiple() {
             &server_pubkey,
             &tree_id,
             &our_tips,
+            &[],
             FixedClock::default().now_millis(),
         )),
     };

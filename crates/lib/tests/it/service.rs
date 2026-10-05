@@ -10,9 +10,12 @@ use std::time::Duration;
 use eidetica::Entry;
 use eidetica::Instance;
 use eidetica::NewUser;
-use eidetica::auth::crypto::{create_challenge_response, generate_keypair, sign_entry};
+use eidetica::auth::crypto::{PrivateKey, create_challenge_response, generate_keypair, sign_entry};
+use eidetica::auth::types::{
+    DelegatedTreeRef, DelegationStep, KeyHint, Permission, PermissionBounds, SigKey, TreeReference,
+};
 use eidetica::backend::database::InMemory;
-use eidetica::backend::{ProjectionDescriptor, StoreStateRequest};
+use eidetica::backend::{ProjectionDescriptor, StoreStateRequest, VerificationStatus};
 use eidetica::crdt::Doc;
 use eidetica::service::ServiceServer;
 use eidetica::service::protocol::{
@@ -25,6 +28,8 @@ use tempfile::TempDir;
 use tokio::io::{AsyncRead, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::net::UnixStream;
 use tokio::sync::watch;
+
+use crate::helpers::LocalBackendTestExt;
 
 /// Read the next server frame and unwrap it as a `ServiceResponse`. Tests
 /// that drive the server at the raw protocol layer don't subscribe to
@@ -1103,6 +1108,173 @@ async fn test_submit_cross_session_signed_by_tree_admin_becomes_verified() {
         !tips_after.iter().any(|t| initial_tips.contains(t)),
         "old tip must have been superseded by the submitted entry"
     );
+}
+
+async fn service_delegated_entry_fixture(
+    server: &Instance,
+) -> (eidetica::entry::ID, Vec<Entry>, eidetica::entry::ID, Entry) {
+    let delegated_key = PrivateKey::generate();
+    let delegated_pubkey = delegated_key.public_key();
+    let delegated_db = eidetica::Database::create(server, delegated_key.clone(), Doc::new())
+        .await
+        .unwrap();
+    let delegated_tips = delegated_db.snapshot().await.unwrap().into_tips();
+
+    let target_key = PrivateKey::generate();
+    let target_db = eidetica::Database::create(server, target_key, Doc::new())
+        .await
+        .unwrap();
+    let txn = target_db.new_transaction().await.unwrap();
+    txn.get_settings()
+        .unwrap()
+        .add_delegated_tree(DelegatedTreeRef {
+            permission_bounds: PermissionBounds {
+                max: Permission::Write(0),
+                min: None,
+            },
+            tree: TreeReference {
+                root: delegated_db.root_id().clone(),
+                tips: delegated_tips.clone(),
+            },
+        })
+        .await
+        .unwrap();
+    txn.commit().await.unwrap();
+
+    let delegated_identity = SigKey::Delegation {
+        path: vec![DelegationStep {
+            tree: delegated_db.root_id().clone(),
+            tips: delegated_tips,
+        }],
+        hint: KeyHint::from_pubkey(&delegated_pubkey),
+    };
+    let target = eidetica::Database::open(server, target_db.root_id())
+        .await
+        .unwrap()
+        .with_key(eidetica::database::DatabaseKey::with_identity(
+            delegated_key,
+            delegated_identity,
+        ));
+    let txn = target.new_transaction().await.unwrap();
+    txn.get_store::<DocStore>("note")
+        .await
+        .unwrap()
+        .set("service", "retryable")
+        .await
+        .unwrap();
+    let entry_id = txn.commit().await.unwrap();
+    let entry = server.backend().get(&entry_id).await.unwrap();
+    let delegated_entries = server
+        .backend()
+        .get_tree(delegated_db.root_id())
+        .await
+        .unwrap();
+    (
+        delegated_db.root_id().clone(),
+        delegated_entries,
+        target_db.root_id().clone(),
+        entry,
+    )
+}
+
+#[tokio::test]
+async fn test_submit_missing_delegated_history_stays_retryable_and_invisible() {
+    let (_socket_path, _tx, server, _dir) = start_test_server().await;
+    let (delegated_root, delegated_entries, target_root, delegated_entry) =
+        service_delegated_entry_fixture(&server).await;
+    let entry_id = delegated_entry.id();
+
+    let receiver_dir = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(receiver_dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let receiver_socket = receiver_dir.path().join("receiver.sock");
+    let (receiver, _admin) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        eidetica::NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    for entry in server.backend().get_tree(&target_root).await.unwrap() {
+        if entry.id() == entry_id {
+            continue;
+        }
+        let id = entry.id();
+        receiver.backend().put(entry).await.unwrap();
+        receiver
+            .backend()
+            .local_engine()
+            .unwrap()
+            .update_verification_status(&id, VerificationStatus::Verified)
+            .await
+            .unwrap();
+    }
+    let (shutdown, rx) = watch::channel(());
+    let daemon = ServiceServer::bind(receiver.clone(), receiver_socket.clone())
+        .await
+        .unwrap();
+    tokio::spawn(daemon.run(rx));
+
+    let client = Instance::connect(format!("unix://{}", receiver_socket.display()))
+        .await
+        .unwrap();
+    let _admin_user = client.login_user("admin", None).await.unwrap();
+    remote_conn(&client)
+        .submit_signed_entry(
+            target_root.clone(),
+            delegated_entry.auth().key.clone(),
+            delegated_entry,
+        )
+        .await
+        .expect("submission stays accepted while verification remains incomplete");
+
+    assert_eq!(
+        receiver
+            .backend()
+            .local_engine()
+            .unwrap()
+            .get_verification_status(&entry_id)
+            .await
+            .unwrap(),
+        VerificationStatus::Unverified,
+        "service submission must retain incomplete delegated proof for retry"
+    );
+    let target = eidetica::Database::open(&receiver, &target_root)
+        .await
+        .unwrap();
+    assert!(
+        !target.snapshot().await.unwrap().contains(&entry_id),
+        "incomplete delegated proof must not enter the service's Verified frontier"
+    );
+
+    for entry in delegated_entries {
+        receiver.backend().put(entry).await.unwrap();
+    }
+    eidetica::Database::open(&receiver, &delegated_root)
+        .await
+        .unwrap()
+        .verify()
+        .await
+        .unwrap();
+    let report = target.verify().await.unwrap();
+    assert_eq!(
+        report.failed, 0,
+        "completed proof must not fail: {report:?}"
+    );
+    assert_eq!(
+        receiver
+            .backend()
+            .local_engine()
+            .unwrap()
+            .get_verification_status(&entry_id)
+            .await
+            .unwrap(),
+        VerificationStatus::Verified,
+        "the service-retained entry must promote after its delegated proof arrives"
+    );
+    assert!(
+        target.snapshot().await.unwrap().contains(&entry_id),
+        "the promoted entry must enter the service's Verified frontier"
+    );
+    drop(shutdown);
 }
 
 /// An authenticated session submitting an entry whose signer holds no key

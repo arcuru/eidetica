@@ -34,6 +34,12 @@ The same protocol handles both cases:
 
 Both transports implement the same `SyncTransport` trait. Multiple transports can be enabled simultaneously.
 
+## Delegated database dependencies
+
+Verification can discover that an entry's delegated authentication snapshot is not fully replicated. The verify report names each delegated database root and its first known missing entries. Sync persists a parent-to-dependency edge, fetches that database from the same peer, follows any nested dependencies, then retries the parent entry.
+
+The edge is lifecycle state, not a transient retry hint. It keeps the dependency attached to the parent's peer relationships and lets the replica inherit the parent's effective sync/serving settings. Dependency requests must prove read authority on the parent and name a direct delegation edge before the server releases the child replica. A dependency remains a normal full replica and can later be tracked directly; explicit direct settings then take precedence without creating another copy. Shared dependencies and cycles are deduplicated per acquisition, and nesting beyond ten levels is rejected.
+
 ## Architecture
 
 ```mermaid

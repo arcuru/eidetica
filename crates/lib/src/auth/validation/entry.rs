@@ -9,7 +9,7 @@ use tracing::debug;
 
 use super::resolver::KeyResolver;
 use crate::{
-    Entry, Instance, Result,
+    Entry, Error, Instance, Result,
     auth::{
         crypto::verify_entry_signature,
         settings::AuthSettings,
@@ -94,6 +94,9 @@ impl AuthValidator {
             .await
         {
             Ok(auths) => auths,
+            Err(Error::Auth(e)) if e.is_delegated_tree_unsynced() => {
+                return Err(Error::Auth(e));
+            }
             Err(e) => {
                 debug!("Key resolution failed: {:?}", e);
                 return Ok(false);
