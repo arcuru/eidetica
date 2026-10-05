@@ -16,7 +16,6 @@ This document outlines the authentication and authorization scheme for Eidetica,
   - [Authentication Modes and Bootstrap Behavior](#authentication-modes-and-bootstrap-behavior)
     - [Unsigned Mode (No Authentication)](#unsigned-mode-no-authentication)
     - [Signed Mode (Mandatory Authentication)](#signed-mode-mandatory-authentication)
-    - [Automatic Bootstrap Transition](#automatic-bootstrap-transition)
     - [Future: Overlay Databases](#future-overlay-databases)
   - [Design Goals and Principles](#design-goals-and-principles)
     - [Primary Goals](#primary-goals)
@@ -42,6 +41,7 @@ This document outlines the authentication and authorization scheme for Eidetica,
       - [Committed Delegation Pointers](#committed-delegation-pointers)
       - [Causal Snapshot Validation](#causal-snapshot-validation)
       - [Incomplete Delegated Proof](#incomplete-delegated-proof)
+      - [Local State and Snapshot Boundaries](#local-state-and-snapshot-boundaries)
     - [Key Revocation](#key-revocation)
   - [Conflict Resolution and Merging](#conflict-resolution-and-merging)
     - [Key Status Changes in Delegated Databases: Examples](#key-status-changes-in-delegated-databases-examples)
@@ -80,7 +80,8 @@ The authentication system is **not** implemented as a pure consumer of the datab
 
 ## Authentication Modes and Bootstrap Behavior
 
-Eidetica databases support two distinct authentication modes with automatic transitions between them:
+The entry validator distinguishes unauthenticated histories from histories with configured authentication.
+`Database::create` bootstraps a signing key in the genuine genesis entry; a later signed settings write cannot bootstrap its own authority.
 
 ### Unsigned Mode (No Authentication)
 
@@ -121,7 +122,7 @@ The validation system uses two-layer protection to prevent and detect authentica
 
 | Auth State        | `_settings.auth` Value      | Unsigned Operations | Authenticated Operations | Status            |
 | ----------------- | --------------------------- | ------------------- | ------------------------ | ----------------- |
-| **Unsigned Mode** | Missing or `{}` (empty Doc) | ✓ Allowed           | ✓ Triggers bootstrap     | Valid             |
+| **Unsigned Mode** | Missing or `{}` (empty Doc) | ✓ Allowed           | Genesis bootstrap only   | Valid             |
 | **Signed Mode**   | Valid key configuration     | ✗ Rejected          | ✓ Validated              | Valid             |
 | **Corrupted**     | Wrong type (String, etc.)   | ✗ PREVENTED         | ✗ PREVENTED              | Cannot be created |
 | **Deleted**       | Tombstone (was deleted)     | ✗ PREVENTED         | ✗ PREVENTED              | Cannot be created |
@@ -250,7 +251,8 @@ Keys are stored by their public key string under the `keys` sub-object. Names ar
 
 ### Entry Signing Format
 
-Every entry in Eidetica must be signed. The authentication information is embedded in the entry structure:
+Normal transaction APIs require signing. Low-level unsigned entries are accepted only when no authentication is configured at their causal boundary.
+The authentication information is embedded in the entry structure:
 
 ```json
 {
@@ -268,18 +270,22 @@ Every entry in Eidetica must be signed. The authentication information is embedd
   "sig": {
     "sig": "ed25519_signature_base64_encoded",
     "key": {
-      "pubkey": "ed25519:PExACKOW0L7bKAM9mK_mH3L5EDwszC437uRzTqAbxpk"
+      "Direct": {
+        "hint": {
+          "pubkey": "ed25519:PExACKOW0L7bKAM9mK_mH3L5EDwszC437uRzTqAbxpk"
+        }
+      }
     }
   }
 }
 ```
 
-The `sig.key` field contains explicit hint fields for key lookup:
+The `sig.key` enum contains a `Direct` or `Delegation` variant, with explicit `hint` fields for key lookup:
 
 - **`pubkey`**: Direct public key string (e.g., `"ed25519:..."`)
 - **`name`**: Key name hint for lookup by name
 
-For global permissions, the pubkey field uses the format `"*:ed25519:ABC..."` where `*:` indicates global permission and the rest is the actual signer's public key.
+For global permissions, a direct hint sets `is_global: true` and carries the actual signer's public key.
 
 For delegation paths, the key includes a `path` array of delegation steps:
 
@@ -288,8 +294,12 @@ For delegation paths, the key includes a `path` array of delegation steps:
   "sig": {
     "sig": "ed25519_signature_base64_encoded",
     "key": {
-      "path": [{ "tree": "delegated_tree_root_id", "tips": ["tip1", "tip2"] }],
-      "pubkey": "ed25519:final_signer_pubkey"
+      "Delegation": {
+        "path": [
+          { "tree": "delegated_tree_root_id", "tips": ["tip1", "tip2"] }
+        ],
+        "hint": { "pubkey": "ed25519:final_signer_pubkey" }
+      }
     }
   }
 }
@@ -436,56 +446,11 @@ Delegated databases are normal databases, and their authentication settings are 
 
 ### Structure
 
-A delegated database reference in the main database's `_settings.auth` contains:
-
-```json
-{
-  "_settings": {
-    "auth": {
-      "example@eidetica.dev": {
-        "permission-bounds": {
-          "max": "write:15",
-          "min": "read" // optional, defaults to no minimum
-        },
-        "database": {
-          "root": "hash_of_root_entry",
-          "tips": ["hash1", "hash2"]
-        }
-      },
-      "another@example.com": {
-        "permission-bounds": {
-          "max": "admin:20" // min not specified, so no minimum bound
-        },
-        "database": {
-          "root": "hash_of_another_root",
-          "tips": ["hash3"]
-        }
-      }
-    }
-  }
-}
-```
-
-The referenced delegated database maintains its own `_settings.auth` with direct keys:
-
-```json
-{
-  "_settings": {
-    "auth": {
-      "KEY_LAPTOP": {
-        "pubkey": "ed25519:AAAAC3NzaC1lZDI1NTE5AAAAI...",
-        "permissions": "admin:0",
-        "status": "active"
-      },
-      "KEY_MOBILE": {
-        "pubkey": "ed25519:AAAAC3NzaC1lZDI1NTE5AAAAI...",
-        "permissions": "write:10",
-        "status": "active"
-      }
-    }
-  }
-}
-```
+Declarations are stored under `_settings.auth.delegations.<root-ID>`, not under a key name or email alias.
+`SettingsStore::add_delegated_tree` writes a `DelegatedTreeRef` containing permission bounds and a `TreeReference` (`root`, `tips`).
+The settings Doc represents the tips as numerically keyed fields; use the typed API rather than constructing raw Doc encodings.
+The referenced database maintains its own `_settings.auth.keys`, indexed by public key, and may itself contain delegation declarations.
+See the [user-guide example](../user_guide/authentication_guide.md#basic-delegation-setup).
 
 ### Permission Clamping
 
@@ -526,33 +491,31 @@ graph LR
 
 Delegated databases can reference other delegated databases, creating delegation chains:
 
+The serialized authentication fragment has an ordered path and a final hint:
+
 ```json
 {
-  "auth": {
+  "sig": {
     "sig": "signature_bytes",
-    "key": [
-      {
-        "key": "example@eidetica.dev",
-        "tips": ["current_tip"]
-      },
-      {
-        "key": "old-identity",
-        "tips": ["old_tip"]
-      },
-      {
-        "key": "LEGACY_KEY"
+    "key": {
+      "Delegation": {
+        "path": [
+          { "tree": "middle_root_ID", "tips": ["middle_tip_ID"] },
+          { "tree": "identity_root_ID", "tips": ["identity_tip_ID"] }
+        ],
+        "hint": { "name": "laptop" }
       }
-    ]
+    }
   }
 }
 ```
 
 **Delegation Chain Rules**:
 
-- The `auth.key` field contains an ordered list representing the delegation path
-- Each element has a `"key"` field and optionally `"tips"` for delegated databases
-- The final element must contain only a `"key"` field (the actual signing key)
-- Each step represents traversing from one database to the next in the delegation chain
+- Each path step names a root ID and a nonempty claimed snapshot
+- The final hint identifies a concrete signer by public key or name, not the global wildcard
+- Declarations are resolved from each preceding database's historical settings
+- The path is a flat list; it is not recursive wire data
 
 **Path Traversal**:
 
@@ -568,44 +531,115 @@ Delegated databases can reference other delegated databases, creating delegation
 
 ### Delegated Database References
 
-The main database must validate the delegated database structure as well as the main database.
+This section is the canonical contract for causal delegated authorization.
+The [implementation and regression map](../internal/authentication.md#invariant-to-regression-map) identifies the checks that enforce it.
 
 #### Committed Delegation Pointers
 
-Each delegated signature carries the snapshot it observed at every delegation step. The primary database also has a configured first-hop pointer in `DelegatedTreeRef.tree.tips`. A direct-key Admin may rewind that pointer to any valid delegated snapshot. Its write adds the new pointer to that entry's causal floor for descendants; a signature through the same delegation on that entry must already cover it. A delegated claim must also cover the inherited frontiers of all immediate main-tree parents. Configured pointers at deeper steps belong to their own delegated trees.
+A declaration in `_settings.auth.delegations` identifies a delegated database by its root Entry ID and configures a snapshot in `DelegatedTreeRef.tree.tips`.
+A signature supplies a separate **claimed snapshot** at each step of its delegation path.
+A snapshot is a canonical set of tip IDs, not a root identity, an authorization verdict, or evidence of the latest state.
+A claim **covers** a floor when every floor tip is an ancestor of at least one claimed tip; equality is allowed.
+Two incomparable branch tips must both be covered, not compared by height or selected by LWW.
+
+The primary database incorporates only its own first-hop configured pointers into its derived state.
+At deeper steps the resolver reads each declaration from the preceding delegated database's claimed historical settings and requires coverage of that declaration's pointer.
+The delegated databases also enforce their own causal rules when their entries are verified.
 
 #### Causal Snapshot Validation
 
-Validation is snapshot-pinned and causal, per delegated database root:
+For an entry `E`, validation follows these boundaries:
 
-1. **Tree membership and proof.** Every claimed and newly configured tip belongs to the referenced database and has complete locally `Verified` ancestry.
-2. **Snapshot-pinned resolution.** Permissions come from the claimed snapshot, not a live head; later changes do not retroactively change older signatures.
-3. **Derived per-entry floors.** Every signature step contributes a frontier keyed by delegated root. The entry joins its immediate parents' frontiers and each claim must cover its inherited frontier. At a merge, the claim must cover every parent; a validated claim replaces dominated tips. This state is a disposable Entry-ID-keyed projection, rebuilt from `Verified` parents on a cache miss.
-4. **First-hop settings pointer.** A first-hop configured pointer contributes to the floor. A direct-key Admin may rewind it without covering previous claims or configured pointers; later delegated signatures still must cover any retained inherited signature floors. Effective removal in the entry's **resulting merged** `_settings` clears only the removed first-hop root's accumulated floor. A concurrent removal that loses the settings merge does not clear it. Nested roots remain pinned across first-hop removal/re-addition, limiting this last-resort recovery path.
-5. **Permission validation.** The resolved key has sufficient permission at the claimed snapshot, subject to delegation bounds.
+1. **Pre-write authority.** Derive the complete canonical `_settings` frontier from `E`'s main parents and require its signed `settings_tips` metadata to equal that frontier. A signer cannot choose an older settings pin to evade a revocation already in its parents. Only a genuine genesis entry may authorize itself with its own initial settings.
+2. **Resulting settings.** A settings write must consume exactly its main parents' `_settings` frontier as its signed subtree parents. Fold the actual settings DAG, including `E`'s delta, to determine effective declarations after the entry. This post-entry state is not its pre-write signature pin and is never read from an unrelated live head.
+3. **Parent join.** Load the authorization state of every locally `Verified` immediate main parent. Union their per-root frontiers, including observations carried through direct-key signatures or signatures through other identities.
+4. **Pointer transition.** Effective absence of a first-hop declaration clears that root's direct component. On a settings write, add each resulting configured pointer to the retained direct floor. A direct-key Admin may set any valid pointer, including an older one, without covering the inherited floor; this does not erase retained observations.
+5. **Claims and proof.** At every signature step, the claim must cover both its declaration's pointer and the primary entry's inherited floor for that root. Every configured pointer and claimed snapshot requires correct tree membership and complete locally `Verified` delegated ancestry, not merely a `Verified` tip. Empty snapshots are invalid.
+6. **Signature and permissions.** Resolve keys at the claimed snapshots, apply permission bounds at each step, then check the signature and operation. A validated claim replaces the inherited component it covers; incomparable observations are retained when parents join.
 
-The signed Entry/AuthInfo encoding is unchanged. Before trusting an existing database under these rules, operators must explicitly reset all legacy verification statuses and derived caches with the separate local reset utility and reverify immutable Entries. No automatic migration/version marker is provided: omitting the reset may leave old `Verified` labels trusted. Snapshot floors do not establish live-head freshness or retroactive revocation.
+The projection separates **direct** and **nested** observations even when both refer to the same root.
+Removal resets only the direct component.
+Nested observations survive first-hop removal and re-addition; clearing them would discard observations made through another still-active route.
+A delegated settings signer must also cover a new first-hop pointer written on that same entry.
+It cannot use its settings write to relax its own pre-write permissions.
+
+**Merge example:** branches of a primary database claim identity snapshots `iA` and `iB`, both descending from `i0` but incomparable.
+Each sibling is valid against its own parents.
+A merge descendant must claim `{iA, iB}` or a later identity snapshot covering both.
+Selecting the pointer that wins the settings merge does not discard the losing branch's observed floor.
+
+**Rewind and removal example:** a primary entry has observed `i1`; a direct-key Admin rewinds its configured pointer to `i0`.
+That Admin write is allowed, but a descendant delegated claim at `i0` still fails because `i1` remains inherited.
+An effective removal followed by re-addition at `i0` starts a fresh direct floor.
+If a removal delta loses to a concurrent active settings write, it is not a reset.
+Conversely, if the merged resulting settings remove the declaration, the direct floor is cleared even when another parent had observed `i1`.
+This is an explicit recovery exception to monotonic floors, not a change to Doc conflict resolution.
+
+**Nested example:** primary database `P` signs through `M` to identity `I`, observing `m1` and `i1`.
+A later direct-key signature still carries both observations.
+Removing and re-adding `P -> M` resets the direct `M` component, but does not reset nested `I`.
+A subsequent path through `M` cannot claim `i0` below `i1`.
+If `P` also delegates directly to `I`, removing that direct declaration likewise cannot erase the nested `I` observation.
+This limits recovery by removal: an Admin cannot use it to discard every nested floor.
 
 #### Incomplete Delegated Proof
 
-Delegated authentication requires the history needed to reconstruct each claimed snapshot and its inherited floors. When a required entry is missing **or present but `Unverified`**, validation leaves the signed entry `Unverified` and outside the verified frontier. It reports the delegated root and dependency IDs so a later verification pass can retry without recursively verifying another tree under a per-tree lock. A bad signature, a wrong-tree claim, or a proven regression remains a definitive failure.
+| Condition                                                                                                                                                              | Decision                                                                                  |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| Missing main/settings/delegated ancestry, or delegated ancestry present but `Unverified`                                                                               | Retryable; retain the remote entry as `Unverified`, outside default reads                 |
+| Complete but forged causal pin, foreign-tree tip/parent, empty claim/pointer, proven regression, `Failed` delegated ancestor, bad signature or insufficient permission | Definitive rejection; remote verification marks `Failed`                                  |
+| Backend I/O, database or cache failure                                                                                                                                 | Propagate the operational error; do not convert it to permission denial or an empty floor |
 
-Fetching and dependency-first automatic retries are separate sync work; this validator supports explicit later re-verification. Delegated databases can be replicated as ordinary databases, served to peers, and directly tracked when local edits are needed.
+`DelegatedTreeUnsynced` names the delegated root and known dependency IDs.
+Despite the field name `missing`, those IDs can be present locally but not yet `Verified`.
+Local commits with undecidable proof return an error without storing a new entry.
+Remote ingest retains the immutable entry for retry; receiving bytes is not proof of authorization.
+Neither an immediate parent's label nor a published projection can independently promote a child.
+
+Verification holds a per-tree lock and suppresses access-time verification during the pass.
+The resolver must not recursively verify another database under that lock: nested dependencies could acquire locks in the opposite order or re-enter verification.
+Explicitly verify dependencies first and then retry the dependent database.
+Automatic dependency acquisition and dependency-first scheduling are deferred to [PR #126](https://github.com/arcuru/eidetica/pull/126); they are not supplied by these validation rules.
+See the supported [reset and re-verification procedure](../user_guide/cli.md#db-reset-local-verification-offline-trust-reset).
+
+#### Local State and Snapshot Boundaries
+
+Authorization frontiers are disposable, Entry-ID-keyed derived state, not signed fields.
+A cache miss for a `Verified` parent rebuilds from its `Verified` ancestry, never an empty default for a non-root entry.
+Partial builds are not published; a cached value is usable only after checking its source entry's local status.
+The signed Entry/AuthInfo encoding and IDs are unchanged.
+
+Local transaction settings reads, subtree-parent selection and the signed pre-write pin use the same fixed main-parent boundary, including historical transactions.
+SQL's current-boundary optimization reads main and store tips in one statement snapshot; InMemory holds its inner lock.
+Historical traversal rejects missing and foreign ancestors.
+The service preserves a nonempty incomplete-boundary error rather than returning an empty snapshot; only the empty pre-genesis boundary has the empty result.
+These rules prevent a concurrent grant from entering validation while the signature pins older settings.
+A connected client's local build is not a verdict: the service verifies the submitted entry on its own node.
+
+Raw current-tip caches are **not** completeness proofs: they index ingested entries, including unsettled ones.
+Their correctness for authorized reads/writes assumes immutable DAG data and validator-owned, prefix-closed verification labels.
+Complete main-ancestry and delegated-proof checks run independently before supported signed promotion.
+Manually promoting entries through low-level backend APIs, changing stored DAG data out of band, or retaining legacy labels can violate this precondition.
+Do not use a raw cached frontier to certify arbitrary incomplete or corrupt history.
+
+**Upgrade risk:** before trusting data checked under older authorization rules, operators must reset all local verification labels, including `Failed`, and all derived caches, then reverify immutable Entries.
+There is no automatic migration or verification-version marker.
+Skipping the reset may trust old `Verified` labels; clearing only the cache is not a substitute.
+The [CLI procedure](../user_guide/cli.md#db-reset-local-verification-offline-trust-reset) is operator-managed and offline.
 
 #### Implementation Status: Snapshot Pinning and Causal Floors
 
-The validation path (`crates/lib/src/auth/validation/delegation.rs`) implements the rules above. Delegation path length (`MAX_DELEGATION_STEPS`) and per-step claimed-tip count (`MAX_DELEGATION_TIPS`) are bounded, so a single signature key cannot force unbounded backend work before authorization is decided.
+The validation path implements these rules with at most 10 signature-path steps and 64 claimed tips per step; configured pointers checked during settings transitions have the same tip cap.
+These limits bound signature fan-out, not total historical traversal cost.
+Snapshot floors do not promise live-head freshness, immediate revocation across partitions, or retroactive invalidation of valid old siblings.
+The [verification model](verification.md#authority-reduction-revocation--the-known-gap) distinguishes causal revocation from the unimplemented retroactive branch policy.
 
 ### Key Revocation
 
-Delegated database key deletion is always treated as `revoked` status in the main database. This prevents new entries from building on the deleted key's content while preserving the historical content during merges. This approach maintains the integrity of existing entries while preventing future reliance on removed authentication credentials.
-
-By treating delegated database key deletion as `revoked` status, users can manage their own key lifecycle in the Main Database while ensuring that:
-
-- Historical entries remain valid and their content is preserved
-- New entries cannot use the revoked key's entries as parents
-- The merge operation proceeds normally with content preserved
-- Users cannot create conflicts that would affect other users' valid entries
+A key absent or revoked at the claimed delegated snapshot cannot authorize the signature.
+Once a primary branch has observed that snapshot, its descendants cannot resurrect the key by claiming an older snapshot below the inherited floor.
+Older siblings that never observed the reduction can still be valid; revocation does not retroactively reject their content or forbid using all entries they signed as parents.
+This is causal revocation, not a latest-head branch-invalidation policy.
 
 ## Conflict Resolution and Merging
 
@@ -613,7 +647,7 @@ Conflicts in the `_settings` database are resolved by the `crate::crdt::Doc` typ
 
 Priority rules apply only to **administrative permissions** - determining which keys can modify other keys - but do **not** influence the conflict resolution during merges.
 
-This is applied to delegated databases as well. A write to the Main Database must also recursively merge any changed settings in the delegated databases using the same LWW strategy to handle network splits in the delegated databases.
+Delegated databases apply their own Doc merge rules. A primary write resolves their settings at its claimed snapshots; it does not recursively merge their unrelated live heads.
 
 ### Key Status Changes in Delegated Databases: Examples
 
@@ -621,58 +655,11 @@ The following examples demonstrate how key status changes in delegated databases
 
 #### Example 1: Basic Delegated Database Key Status Change
 
-**Initial State**:
-
-```mermaid
-graph TD
-    subgraph "Main Database"
-        A["Entry A<br/>Settings: delegated_tree1 = max:write:10, min:read<br/>Tip: UA"]
-        B["Entry B<br/>Signed by delegated_tree1:laptop<br/>Tip: UA<br/>Status: Valid"]
-        C["Entry C<br/>Signed by delegated_tree1:laptop<br/>Tip: UB<br/>Status: Valid"]
-    end
-
-    subgraph "Delegated Database"
-        UA["Entry UA<br/>Settings: laptop = active"]
-        UB["Entry UB<br/>Signed by laptop"]
-    end
-
-    A --> B
-    B --> C
-    UA --> UB
-```
-
-**After Key Status Change in Delegated Database**:
-
-```mermaid
-graph TD
-    subgraph "Main Database"
-        A["Entry A<br/>Settings: user1 = write:15"]
-        B["Entry B<br/>Signed by delegated_tree1:laptop<br/>Tip: UA<br/>Status: Valid"]
-        C["Entry C<br/>Signed by delegated_tree1:laptop<br/>Tip: UB<br/>Status: Valid"]
-        D["Entry D<br/>Signed by delegated_tree1:mobile<br/>Tip: UC<br/>Status: Valid"]
-        E["Entry E<br/>Signed by delegated_tree1:laptop<br/>Parent: C<br/>Tip: UB<br/>Status: Valid"]
-        F["Entry F<br/>Signed by delegated_tree1:mobile<br/>Tip: UC<br/>Sees E but ignores since the key is invalid"]
-        G["Entry G<br/>Signed by delegated_tree1:desktop<br/>Tip: UB<br/>Still thinks delegated_tree1:laptop is valid"]
-        H["Entry H<br/>Signed by delegated_tree1:mobile<br/>Tip: UC<br/>Merges, as there is a valid key at G"]
-    end
-
-    subgraph "Delegated Database (delegated_tree1)"
-        UA["Entry UA<br/>Settings: laptop = active, mobile = active, desktop = active"]
-        UB["Entry UB<br/>Signed by laptop"]
-        UC["Entry UC<br/>Settings: laptop = revoked<br/>Signed by mobile"]
-    end
-
-    A --> B
-    B --> C
-    C --> D
-    D --> F
-    C --> E
-    E --> G
-    F --> H
-    G --> H
-    UA --> UB
-    UB --> UC
-```
+Suppose identity snapshots form `i0 -> i1 -> i2`, and `i2` revokes the laptop key.
+A primary entry signed by the laptop at `i1` can remain valid on a sibling whose parents have only observed `i1`.
+An entry that instead descends from a primary observation of `i2` must cover `i2`: claiming `i1` regresses, and claiming `i2` cannot authorize the revoked laptop.
+An active mobile key can sign a descendant at `i2` and merge the older valid sibling without deleting its content.
+See the [merge and nested examples](#causal-snapshot-validation) for inherited floors across multiple parents.
 
 #### Example 2: Last Write Wins Conflict Resolution
 
@@ -739,8 +726,8 @@ graph TD
 - **Settings Merge**: All authentication changes are merged using Doc CRDT semantics with Last Write Wins
 - **Timestamp Ordering**: Changes are resolved based on logical timestamps, with the most recent change taking precedence
 - **Historical Validity**: Entry B1 remains valid because it was created before the status change
-- **Content Preservation**: With "revoked" status, content is preserved in merges but cannot be used as parents for new entries
-- **Future Restrictions**: Future entries by contractor_alice would be rejected based on the applied status change
+- **Content Preservation**: Previously valid content remains mergeable and may still be a parent
+- **Future Restrictions**: Descendants whose causal settings include the revocation reject contractor_alice; pre-revocation siblings are not retroactively invalidated
 
 ## Security Considerations
 
@@ -756,7 +743,7 @@ graph TD
 - **Permission Boundary Violations**: Delegated database permissions are constrained within their specified min/max bounds
 - **Cross-Tree Tip Forgery**: Claimed delegation tips are validated as members of the referenced delegated database, not merely as entries existing somewhere in the backend
 - **Delegated-Tree Snapshot Regression (bounded)**: Auth resolution is pinned to the snapshot the signer claimed, which must cover both the configured first-hop pointer and per-root derived floors inherited through every parent. This does not establish live-head freshness or retroactive authority reduction (see §Implementation Status)
-- **Race Conditions**: Last Write Wins provides deterministic conflict resolution
+- **Snapshot Boundary Drift**: Fixed main-parent reads and atomic current-tip queries prevent concurrent settings writes from changing the authorization context of an already-built entry
 
 #### Requires Manual Recovery
 
@@ -782,7 +769,7 @@ graph TD
 #### Partial Mitigation
 
 - **DoS via Large Histories**: Priority system limits damage from compromised lower-priority keys
-- **DoS via Delegation Amplification**: Delegation path length and per-step claimed-tip count are bounded, capping the backend work an unauthenticated signature key can force before authorization; deeper amplification within those bounds is still possible
+- **DoS via Delegation Amplification**: Path length and per-step tip count bound fan-out, not total ancestry traversal cost; a permitted snapshot can still have a large history
 - **Delegated-Tree Snapshot Regression**: Claimed snapshots must cover the configured first-hop pointer and per-root derived floors inherited through every parent; this does not assert live-head freshness or make later authority reduction retroactive (see §Implementation Status)
 - **Social Engineering**: Administrative hierarchy limits scope of individual key compromise
 - **Timestamp Manipulation**: LWW conflict resolution is deterministic but may be influenced by the chosen timestamp resolution algorithm
@@ -821,12 +808,14 @@ Two rules connect them:
 
 1. **Local validation is the only path to `Verified`.** The storage layer
    stores every entry as `Unverified` on `put` and exposes no way for a
-   caller — local or a sync peer — to assert a status. Only a local
+   service client or sync peer to assert a status. Privileged local backend
+   promotion is validator-owned. Only a local
    validation pass (`Transaction` commit, or `Database::verify()`) may
    promote an entry to `Verified`. Validation is always performed against the
    `_settings` the entry _pins_ in its signed metadata, not the current
-   settings, so a later key revocation cannot retroactively invalidate
-   historical entries (revocation is handled on a separate path).
+   settings, after independently matching that pin to the causal main-parent
+   frontier. An unrelated later revocation cannot retroactively invalidate
+   valid historical siblings.
 
 2. **Verification is prefix-closed.** An entry is promoted to `Verified` only
    if every ancestor is already `Verified`; a `Failed` ancestor taints its
@@ -837,8 +826,8 @@ Two rules connect them:
    set. See the synchronization design doc for how this interacts with peers.
 
 The full status model — the three-state enum, why pinned-settings validation
-makes verification staleness-free, the disclosure posture, and the unbuilt
-authority-_reduction_ (revocation) gap — is documented in the
+binds validation to causal parents, the disclosure posture, and the boundary
+between causal revocation and unbuilt retroactive branch invalidation — is documented in the
 [Verification Model](verification.md) design doc.
 
 ### Sync Permissions
@@ -878,9 +867,9 @@ The authenticated bootstrap protocol enables devices to join existing databases 
 
 The current system uses entry metadata to reference settings tips. With authentication:
 
-- Metadata continues to reference current `_settings` tips for validation efficiency
-- Authentication validation uses the settings state at the referenced tips
-- This ensures entries are validated against the authentication rules that were current when created
+- Metadata pins the canonical pre-write `_settings` frontier of the fixed main parents
+- Validation derives that frontier independently before trusting the signed pin
+- Post-entry settings decide delegation removal; they cannot authorize the same non-genesis write
 
 ### Implementation Architecture
 
