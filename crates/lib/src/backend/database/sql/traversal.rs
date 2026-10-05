@@ -113,6 +113,10 @@ pub async fn store_snapshot_at(
     #[cfg(test)]
     pause_after_tips_query(tree).await;
     if current_tree_tips == main_entries.iter().cloned().collect() {
+        // This is a raw frontier index, not a proof of complete/Verified
+        // ancestry. Auth validation independently walks main/delegated history
+        // before promotion; manual status injection or legacy labels without
+        // an offline trust reset violate that boundary.
         return Ok(current_store_tips);
     }
 
@@ -176,10 +180,11 @@ pub async fn store_snapshot_at(
 
     // SAFETY: the only generated fragment is a sequence of numbered bind
     // placeholders derived from `main_entries.len()`; all values remain bound.
-    let mut query =
-        sqlx::query_as::<_, (Option<String>, Option<String>, Option<i32>)>(sqlx::AssertSqlSafe(sql))
-            .bind(store)
-            .bind(tree.to_string());
+    let mut query = sqlx::query_as::<_, (Option<String>, Option<String>, Option<i32>)>(
+        sqlx::AssertSqlSafe(sql),
+    )
+    .bind(store)
+    .bind(tree.to_string());
     for entry in main_entries {
         query = query.bind(entry.to_string());
     }

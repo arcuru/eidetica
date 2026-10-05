@@ -464,6 +464,15 @@ This updates the entry in Alice's database auth settings:
 
 ### Using Delegated Keys
 
+A delegation path names each delegated root and the snapshot the signer observed.
+Claims must cover the configured pointer and observations inherited from all parents;
+complete locally `Verified` dependency history is required.
+Admins may rewind a configured pointer, but that alone does not erase inherited
+floors. Effective removal resets only the direct component, not nested observations.
+See the canonical [causal rules and examples](../design/authentication.md#causal-snapshot-validation).
+If proof is incomplete, [verify dependencies first and retry](cli.md#re-verification-after-reset-or-incomplete-proof);
+automatic dependency acquisition/retry is deferred to [PR #126](https://github.com/arcuru/eidetica/pull/126).
+
 A delegation path is a sequence of steps that traverses from the delegating database to the signing key:
 
 ```rust
@@ -628,13 +637,16 @@ This allows:
 
 ### Upgrade prerequisite
 
-Before upgrading an existing database to the derived delegated-auth rules, explicitly run the separate local verification-reset utility to clear **every** old verification label and derived cache, then reverify immutable Entries. This is an operator-managed step, not an automatic migration. Skipping it may trust legacy `Verified` entries under the old rules. Missing and present-but-`Unverified` delegated history remains retryable; synchronize and explicitly reverify dependencies before retrying the dependent database.
+Before trusting an existing database under these rules, follow the
+[offline trust-reset and re-verification procedure](cli.md#db-reset-local-verification-offline-trust-reset).
+There is no automatic migration: skipping it may trust legacy `Verified` labels.
+Clearing only the derived cache is not a substitute.
 
 ### Best Practices
 
 1. **Use descriptive key names**: `"alice_laptop"`, `"deploy_bot"` for keys that will be looked up by name
 2. **Set appropriate permission bounds**: Don't grant more access than needed
-3. **Manage delegation tips deliberately**: An Admin can set any valid first-hop snapshot, including an older one. Delegated signatures must cover their inherited causal floors; removing and re-adding a first-hop delegation resets only that root's floor, not nested roots. This is a last-resort recovery tool, not live-head freshness or retroactive revocation
+3. **Manage delegation tips deliberately**: A pointer rewind alone does not reset inherited floors. See the [rewind, effective-removal and nested examples](../design/authentication.md#causal-snapshot-validation) before using removal as a recovery tool
 4. **Track delegated database root IDs**: Delegation paths use root IDs, so document which IDs correspond to which databases
 5. **Document delegation chains**: Complex hierarchies can be hard to debug
 

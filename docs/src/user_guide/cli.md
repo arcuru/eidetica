@@ -205,10 +205,11 @@ leave old `Verified` labels trusted under the new rules.** It resets _all_
 local statuses (`Verified` and `Failed` included) to `Unverified`, discards
 derived and incomplete Store-state namespaces, and keeps every immutable Entry
 and authoritative Store state. It does not verify entries itself. Start the new
-version only after the command succeeds; explicitly run ordinary
-`Database::verify()` for each database (including dependencies) or let normal
-verification on access/sync rebuild trust before relying on reads. Verification
-is prefix-closed: until ancestors verify, descendants remain `Unverified`.
+version only after the command succeeds, and follow the
+[re-verification procedure below](#re-verification-after-reset-or-incomplete-proof)
+before relying on reads. Access/sync can attempt verification but does not promise
+to acquire or settle delegated dependencies automatically. Verification is
+prefix-closed: until ancestors verify, descendants remain `Unverified`.
 If any reset step fails, leave the service stopped, diagnose and retry the
 command; do not trust the old status labels. An in-memory persistence file
 must exist and parse successfully; a missing or corrupt file is never treated
@@ -223,3 +224,56 @@ readers, whereas the trust reset deliberately drops it. The in-memory JSON
 persistence path has no cross-process ownership lock. On platforms without
 atomic replacement rename, take an offline backup and verify the reopened
 file before starting the service.
+
+### Re-verification after reset or incomplete proof
+
+There is currently **no `db verify` CLI subcommand** and the reset command does
+not run verification. Use a local SDK maintenance process with the same backend,
+without a concurrent daemon or other backend owner. `Database::verify()` is a
+node-local operation, not a client RPC to a connected service instance.
+
+1. After a successful reset, open the backend with the new version. Keep normal
+   consumers stopped until you have inspected the rebuilt trust state.
+2. Make the immutable main/settings histories and claimed/configured delegated
+   snapshots available through ordinary replication or the application's ingest
+   API. Reset preserves any Entries already present; it does not fetch missing ones.
+3. Explicitly verify delegated databases first, starting with their own
+   dependencies, then retry the primary database. Repeat only after a known
+   dependency arrives or verifies; running the primary pass alone cannot settle
+   a present-but-`Unverified` delegated proof.
+4. Inspect the returned `VerifyReport` and the default Verified-frontier reads.
+   `failed` and `still_unverified` describe entries considered in that pass,
+   not an inventory of all stored failures. A later empty report does not prove
+   the whole history is healthy. Record unresolved dependency IDs and rejected
+   branches rather than declaring recovery complete from a zero-error return.
+
+For example, on an already opened **local** `Instance`, with the relevant roots
+ordered dependency-first:
+
+```rust,no_run
+# use eidetica::{Database, Instance, ID};
+# async fn reverify(instance: &Instance, roots_dependency_first: &[ID]) -> eidetica::Result<()> {
+for root in roots_dependency_first {
+    let database = Database::open(instance, root).await?;
+    let report = database.verify().await?;
+    println!("{root}: {report:?}");
+    println!("visible tips: {:?}", database.snapshot().await?);
+}
+# Ok(())
+# }
+```
+
+A missing or present-but-`Unverified` dependency leaves the dependent entry
+`Unverified` and invisible to default reads. A proven invalid snapshot, signature
+or causal pin is `Failed`, not a dependency to fetch; ordinary retry does not
+clear that verdict. Operational storage errors should be diagnosed before retry.
+Do not manually set statuses to `Verified` or clear only the derived cache to
+force progress. An offline trust reset clears previous `Failed` decisions too,
+but the same invalid immutable entry will be rejected again under the new rules.
+
+The supported manual sequence is exercised by
+`test_delegated_entry_synced_unverified_then_verified`, including reset and
+rebuild on the local backend matrix. Automatic dependency acquisition and
+retry ordering are deferred to [PR #126](https://github.com/arcuru/eidetica/pull/126).
+See the [causal authorization contract](../design/authentication.md#delegated-database-references)
+for pointer rewinds, effective removal and the nested-floor recovery limitation.

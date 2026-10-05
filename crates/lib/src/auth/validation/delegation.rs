@@ -319,11 +319,11 @@ impl DelegationResolver {
 
             // Resolve the delegated tree's auth settings AS OF the claimed tips,
             // not its live head: permissions are evaluated at the state the signer
-            // actually observed. This is safe now that the snapshot cannot regress
-            // below the committed floor. Fetching the tree snapshot is both the
-            // completeness check and the materialization input, so this replaces
-            // the old extra full-history probe. Backends may satisfy it in one
-            // traversal/query; non-NotFound failures propagate unchanged.
+            // actually observed. The proof above checks the entire locally
+            // Verified ancestry, not a raw current-tip cache. Materialize that
+            // same immutable boundary; neither a live-head read nor nested
+            // verification under the caller's tree lock is a safe substitute.
+            // Non-NotFound backend failures remain operational errors.
             let snapshot = Snapshot::from(&step.tips);
             current_auth_settings = match current_backend
                 .get_tree_from_tips(&root_id, &snapshot)

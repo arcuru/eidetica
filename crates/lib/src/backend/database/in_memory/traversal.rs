@@ -555,6 +555,9 @@ pub(crate) fn store_snapshot_at(
         return sorting::tree_tips_from_entries(&entries);
     }
 
+    // This raw tip cache is not an ancestry proof. Auth validation separately
+    // checks complete main/delegated history before promoting signed entries;
+    // low-level status injection or old labels without a reset are not covered.
     // Fast path: if main_entries represents current tree tips, use cached subtree tips
     if main_entries == current_tree_tips {
         // Check cache first - O(1) lookup

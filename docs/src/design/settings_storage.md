@@ -88,8 +88,16 @@ the full `_settings` ancestor closure named by `settings_tips` (the normal
 partial-sync case), the entry's pinned settings are _incomplete_: it cannot
 be checked yet and stays `Unverified` until the missing `_settings` entries
 arrive, at which point a later `Database::verify()` pass promotes it. This is
-why an entry can be legitimately `Unverified` (transient: "can't tell yet")
-as opposed to `Failed` (terminal: "checked and rejected").
+why an entry can be legitimately `Unverified` ("can't tell yet")
+as opposed to `Failed` ("checked and rejected").
+
+A settings entry's subtree parents must also equal its main parents' canonical
+settings frontier. Local historical transactions derive both that frontier and
+the metadata pin from the same fixed main-parent snapshot. The entry's resulting
+merged settings are a separate post-write state used for delegation transitions;
+they cannot grant the same non-genesis entry authority. See the canonical
+[causal authorization rules](authentication.md#causal-snapshot-validation) and
+[snapshot boundaries](authentication.md#local-state-and-snapshot-boundaries).
 
 ## SettingsStore API
 

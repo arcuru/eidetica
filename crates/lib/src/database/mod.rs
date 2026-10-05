@@ -91,7 +91,8 @@ pub struct VerifyReport {
     pub verified: usize,
     /// Entries marked `Unverified` → `Failed` (definitively bad) this pass.
     pub failed: usize,
-    /// Entries left `Unverified` (pinned `_settings` not yet held locally).
+    /// Entries left `Unverified` (main/settings ancestry or locally Verified
+    /// delegated proof is not yet available).
     pub still_unverified: usize,
 }
 
@@ -1812,9 +1813,10 @@ impl Database {
     /// to, from the `settings_snapshot` recorded in its signed metadata.
     ///
     /// Validation must run against the settings the entry pinned — not the
-    /// current settings — so granting authority later cannot retroactively
-    /// invalidate an entry that pinned less, and (once revocation lands)
-    /// removals are handled on a separate, current-settings path.
+    /// current settings. The signed pin must match the independently derived
+    /// main-parent frontier: a revocation in those parents cannot be evaded by
+    /// choosing an older pin, while unrelated newer settings do not invalidate
+    /// a historical sibling.
     ///
     /// Returns [`PinnedSettings::Incomplete`] when this node does not hold the
     /// full pinned `_settings` ancestor set; the caller must then leave the
