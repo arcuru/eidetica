@@ -6,6 +6,7 @@ use eidetica::{
         transports::{SyncTransport, http::HttpTransport, iroh::IrohTransport},
     },
 };
+use iroh::RelayMode;
 
 use crate::helpers::test_local_instance as test_instance;
 
@@ -152,7 +153,10 @@ async fn test_http_v0_json_endpoint() {
 #[tokio::test]
 async fn test_iroh_transport_handler_integration() {
     // Create Iroh transport and verify it starts with a handler
-    let iroh_transport = IrohTransport::new().unwrap();
+    let iroh_transport = IrohTransport::builder()
+        .relay_mode(RelayMode::Disabled)
+        .build()
+        .unwrap();
     let (_instance, handler) = super::helpers::setup_test_handler().await;
 
     // Test that server can start with a handler (this validates the architecture)

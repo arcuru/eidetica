@@ -137,6 +137,33 @@ sync.accept_connections().await?;
 let my_address = sync.get_server_address_async().await?;  // Share this with peers
 ```
 
+Eidetica uses iroh's native default features and N0 networking settings, including relay selection and router port mapping.
+Unset relay settings also honor iroh's `IROH_FORCE_STAGING_RELAYS` environment switch; explicit relay choices take precedence.
+By default, Iroh advertises and resolves addresses on the local network using mDNS, and publishes to and resolves from n0's DNS service (via DNS and HTTPS).
+Known peers can be reached by endpoint ID even when their ticket's direct addresses are missing or stale.
+This address lookup does not discover databases or grant access to them.
+
+For same-host or same-LAN sync without public lookup or relay services:
+
+```rust,ignore
+use iroh::{RelayMode, endpoint::PortmapperConfig};
+use eidetica::sync::transports::iroh::IrohTransport;
+
+sync.register_transport(
+    "iroh",
+    IrohTransport::builder()
+        .relay_mode(RelayMode::Disabled)
+        .portmapper_config(PortmapperConfig::Disabled)
+        .n0_dns(false),
+).await?;
+sync.accept_connections().await?;
+```
+
+Use `.mdns(false)` to disable local address advertisement and lookup where multicast is unavailable or unwanted.
+If mDNS cannot initialize, the transport logs a warning and still permits direct connections and any enabled n0 services.
+These lookup and portmapper selections are runtime builder options; the transport's persisted node identity is unchanged.
+Supply the overrides again when constructing or registering the transport after a restart.
+
 ### Multiple Transports
 
 Enable multiple transports for maximum connectivity:

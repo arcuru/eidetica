@@ -4,12 +4,97 @@
 use std::time::Duration;
 
 use eidetica::{
+    Database,
+    auth::{Permission, types::AuthKey},
     entry::Entry,
+    store::DocStore,
     sync::{peer_types::Address, transports::iroh::IrohTransport},
 };
-use iroh::RelayMode;
+use iroh::{EndpointAddr, RelayMode, endpoint::PortmapperConfig};
+use iroh_tickets::{Ticket, endpoint::EndpointTicket};
 
 use super::helpers;
+
+/// Bootstrap a signed database between two same-host Instances using only mDNS.
+/// No ticket IPs, relay URLs, public DNS/HTTPS lookup, or HTTP fallback can help.
+#[tokio::test]
+#[ignore = "Requires multicast; run by the mDNS NixOS integration test"]
+async fn test_iroh_mdns_same_host_sync() {
+    let (_server_instance, _server_user, _server_key, database, tree_id, server_sync) =
+        helpers::setup_sync_enabled_server("mdns_server", "server_key", "mdns_database").await;
+    let (client_instance, client_user, client_key, client_sync) =
+        helpers::setup_sync_enabled_client("mdns_client", "client_key").await;
+    crate::helpers::add_auth_key(
+        &database,
+        &client_key,
+        AuthKey::active(Some("client_key"), Permission::Read),
+    )
+    .await;
+
+    let tx = database.new_transaction().await.unwrap();
+    tx.get_store::<DocStore>("messages")
+        .await
+        .unwrap()
+        .set("message", "discovered locally")
+        .await
+        .unwrap();
+    let entry_id = tx.commit().await.unwrap();
+
+    for sync in [&server_sync, &client_sync] {
+        sync.register_transport(
+            "iroh",
+            IrohTransport::builder()
+                .relay_mode(RelayMode::Disabled)
+                .portmapper_config(PortmapperConfig::Disabled)
+                .n0_dns(false),
+        )
+        .await
+        .unwrap();
+        sync.accept_connections().await.unwrap();
+    }
+
+    let server_ticket =
+        <EndpointTicket as Ticket>::decode_string(&server_sync.get_server_address().await.unwrap())
+            .unwrap();
+    let id_only = EndpointTicket::new(EndpointAddr::new(server_ticket.endpoint_addr().id));
+    assert!(id_only.endpoint_addr().addrs.is_empty());
+    let address = Address::iroh(id_only.encode_string());
+    assert!(!client_instance.has_database(&tree_id).await);
+
+    let signing_key = client_user.get_signing_key(&client_key).unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(20),
+        client_sync.sync_with_peer_for_bootstrap_with_key(
+            &address,
+            &tree_id,
+            &signing_key,
+            "client_key",
+            Permission::Read,
+        ),
+    )
+    .await
+    .expect("mDNS sync should complete without public services")
+    .expect("mDNS should resolve the ID-only ticket and bootstrap the database");
+
+    assert!(client_instance.has_entry(&entry_id).await);
+    let client_database = Database::open(&client_instance, &tree_id)
+        .await
+        .unwrap()
+        .with_key(signing_key);
+    let tx = client_database.new_transaction().await.unwrap();
+    assert_eq!(
+        tx.get_store::<DocStore>("messages")
+            .await
+            .unwrap()
+            .get("message")
+            .await
+            .unwrap(),
+        "discovered locally",
+    );
+
+    server_sync.stop_server().await.unwrap();
+    client_sync.stop_server().await.unwrap();
+}
 
 /// Test basic Iroh sync functionality with local direct connections
 /// This test verifies basic sync operation without relay overhead.

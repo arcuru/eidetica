@@ -5,6 +5,7 @@ use eidetica::{
         transports::{SyncTransport, http::HttpTransport, iroh::IrohTransport},
     },
 };
+use iroh::RelayMode;
 
 /// Test to demonstrate that HTTP and Iroh transports use aligned v0 versioning
 #[tokio::test]
@@ -14,7 +15,10 @@ async fn test_version_alignment() {
         .bind("127.0.0.1:0")
         .build_sync()
         .unwrap();
-    let iroh_transport = IrohTransport::new().unwrap();
+    let iroh_transport = IrohTransport::builder()
+        .relay_mode(RelayMode::Disabled)
+        .build()
+        .unwrap();
 
     // Start both servers
     let (_instance1, handler1) = super::helpers::setup_test_handler().await;

@@ -12,6 +12,9 @@ extend-exclude = [
 ratatui = "ratatui"  # Rust TUI library
 leafs = "leafs"  # Used in function names
 
+[default.extend-identifiers]
+UPnP = "UPnP"  # Universal Plug and Play
+
 [default]
 extend-ignore-re = [
     # Base64 encoded strings

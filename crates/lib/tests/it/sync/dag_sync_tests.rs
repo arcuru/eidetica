@@ -18,6 +18,7 @@ use eidetica::{
 };
 
 use super::helpers;
+use iroh::endpoint::PortmapperConfig;
 
 /// Helper to create a test entry with specific parents
 fn create_entry_with_parents(tree_id: &str, parents: Vec<ID>) -> Entry {
@@ -845,9 +846,12 @@ async fn test_iroh_transport_production_defaults() {
     let (_base_db, sync) = helpers::setup().await;
 
     // Test 1: Default constructor uses production relays
-    sync.register_transport("iroh", IrohTransport::builder())
-        .await
-        .unwrap();
+    sync.register_transport(
+        "iroh",
+        IrohTransport::builder().portmapper_config(PortmapperConfig::Disabled),
+    )
+    .await
+    .unwrap();
     sync.accept_connections().await.unwrap();
 
     // Just verify it starts without error - we can't test actual relay connectivity
@@ -860,7 +864,9 @@ async fn test_iroh_transport_production_defaults() {
     sync2
         .register_transport(
             "iroh",
-            IrohTransport::builder().relay_mode(RelayMode::Default),
+            IrohTransport::builder()
+                .relay_mode(RelayMode::Default)
+                .portmapper_config(PortmapperConfig::Disabled),
         )
         .await
         .unwrap();
@@ -880,7 +886,9 @@ async fn test_iroh_transport_staging_mode() {
 
     sync.register_transport(
         "iroh",
-        IrohTransport::builder().relay_mode(RelayMode::Staging),
+        IrohTransport::builder()
+            .relay_mode(RelayMode::Staging)
+            .portmapper_config(PortmapperConfig::Disabled),
     )
     .await
     .unwrap();
@@ -909,7 +917,9 @@ async fn test_iroh_transport_custom_relay_config() {
 
     sync.register_transport(
         "iroh",
-        IrohTransport::builder().relay_mode(RelayMode::Custom(relay_map)),
+        IrohTransport::builder()
+            .relay_mode(RelayMode::Custom(relay_map))
+            .portmapper_config(PortmapperConfig::Disabled),
     )
     .await
     .unwrap();

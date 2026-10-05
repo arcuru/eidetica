@@ -68,6 +68,17 @@ individual row records rather than falling back to a whole-`Doc` response.
 3. Use helpers from `tests/it/helpers.rs`
 4. Follow `test_<component>_<functionality>` naming
 
+## Local-network Iroh sync
+
+`test_iroh_mdns_same_host_sync` bootstraps a signed database between two Instances using an endpoint-ID-only ticket, with relays and public address lookup disabled.
+It requires multicast, so the sandboxed backend matrix skips it; `nix build .#integration.mdns` runs it explicitly in a LAN-only NixOS VM with no public DNS.
+The VM test is part of `just nix full`.
+To run it on a multicast-capable host:
+
+```bash
+cargo test -p eidetica --all-features --test it test_iroh_mdns_same_host_sync -- --ignored
+```
+
 ## Multi-instance sync harness
 
 Multi-peer convergence tests build on `eidetica::testing::Cluster` — a harness

@@ -9,8 +9,11 @@ use tokio::{sync::Mutex, time::timeout};
 use async_trait::async_trait;
 use iroh::{
     Endpoint, RelayMode, SecretKey,
-    endpoint::{Connection, RecvStream, SendStream, presets},
+    endpoint::{
+        Builder as EndpointBuilder, Connection, PortmapperConfig, RecvStream, SendStream, presets,
+    },
 };
+use iroh_mdns_address_lookup::MdnsAddressLookup;
 use iroh_tickets::{Ticket, endpoint::EndpointTicket};
 use serde::{Deserialize, Serialize};
 #[allow(unused_imports)] // Used by write_all method on streams
@@ -186,8 +189,9 @@ impl IrohTransportConfig {
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let transport = IrohTransport::builder()
 ///     .relay_mode(RelayMode::Disabled)
+///     .n0_dns(false)
 ///     .build()?;
-/// // Direct P2P only, no relay servers
+/// // Local mDNS discovery and direct P2P, no public services
 /// # Ok(())
 /// # }
 /// ```
@@ -208,19 +212,25 @@ impl IrohTransportConfig {
 /// ```
 #[derive(Debug, Clone)]
 pub struct IrohTransportBuilder {
-    relay_mode: RelayMode,
+    relay_mode: Option<RelayMode>,
     secret_key: Option<SecretKey>,
+    portmapper_config: Option<PortmapperConfig>,
+    mdns: bool,
+    n0_dns: bool,
 }
 
 impl IrohTransportBuilder {
     /// Create a new builder with production defaults.
     ///
-    /// By default, uses `RelayMode::Default` which connects to n0's
-    /// production relay infrastructure for NAT traversal.
+    /// Defers to iroh's `presets::N0` networking defaults, including relay
+    /// selection and router port mapping, with best-effort local mDNS added.
     pub fn new() -> Self {
         Self {
-            relay_mode: RelayMode::Default, // Use n0's production relays by default
+            relay_mode: None,
             secret_key: None,
+            portmapper_config: None,
+            mdns: true,
+            n0_dns: true,
         }
     }
 
@@ -247,7 +257,54 @@ impl IrohTransportBuilder {
     /// # }
     /// ```
     pub fn relay_mode(mut self, mode: RelayMode) -> Self {
-        self.relay_mode = mode;
+        self.relay_mode = Some(mode);
+        self
+    }
+
+    /// Override iroh's router port mapping configuration (UPnP, PCP, NAT-PMP).
+    ///
+    /// When unset, iroh's own default applies. Use `PortmapperConfig::Disabled`
+    /// to skip router discovery and mapping, even if another dependency enables
+    /// iroh's `portmapper` Cargo feature.
+    ///
+    /// This is a runtime-only override, not persisted with the node identity.
+    /// Supply it each time the transport is constructed or registered, including
+    /// after a restart.
+    ///
+    /// ```no_run
+    /// use eidetica::sync::transports::iroh::IrohTransport;
+    /// use iroh::endpoint::PortmapperConfig;
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let transport = IrohTransport::builder()
+    ///     .portmapper_config(PortmapperConfig::Disabled)
+    ///     .build()?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn portmapper_config(mut self, config: PortmapperConfig) -> Self {
+        self.portmapper_config = Some(config);
+        self
+    }
+
+    /// Enable or disable local-network mDNS address lookup (enabled by default).
+    ///
+    /// Advertises this endpoint's addresses to peers on the same host or LAN.
+    /// Disable it on networks where multicast is unavailable or unwanted.
+    pub fn mdns(mut self, enabled: bool) -> Self {
+        self.mdns = enabled;
+        self
+    }
+
+    /// Enable or disable n0 DNS address lookup (enabled by default).
+    ///
+    /// Controls publication to n0's DNS service and resolution via DNS and HTTPS.
+    /// Set this to false, along with [`Self::relay_mode`] set to
+    /// [`RelayMode::Disabled`], for local-only connections without public services.
+    /// To also skip router discovery and mapping, set [`Self::portmapper_config`]
+    /// to [`PortmapperConfig::Disabled`]. Like [`Self::mdns`], this is not persisted.
+    pub fn n0_dns(mut self, enabled: bool) -> Self {
+        self.n0_dns = enabled;
         self
     }
 
@@ -295,6 +352,9 @@ impl IrohTransportBuilder {
             runtime_config: IrohRuntimeConfig {
                 relay_mode: self.relay_mode,
                 secret_key: self.secret_key,
+                portmapper_config: self.portmapper_config,
+                mdns: self.mdns,
+                n0_dns: self.n0_dns,
             },
         })
     }
@@ -359,6 +419,9 @@ impl TransportBuilder for IrohTransportBuilder {
             runtime_config: IrohRuntimeConfig {
                 relay_mode: self.relay_mode,
                 secret_key: Some(secret_key),
+                portmapper_config: self.portmapper_config,
+                mdns: self.mdns,
+                n0_dns: self.n0_dns,
             },
         };
 
@@ -372,8 +435,11 @@ impl TransportBuilder for IrohTransportBuilder {
 /// including the decoded secret key and relay mode.
 #[derive(Debug, Clone)]
 struct IrohRuntimeConfig {
-    relay_mode: RelayMode,
+    relay_mode: Option<RelayMode>,
     secret_key: Option<SecretKey>,
+    portmapper_config: Option<PortmapperConfig>,
+    mdns: bool,
+    n0_dns: bool,
 }
 
 /// Iroh transport implementation using QUIC peer-to-peer networking.
@@ -383,10 +449,19 @@ struct IrohRuntimeConfig {
 ///
 /// # How It Works
 ///
-/// 1. **Discovery**: Peers find each other via relay servers or direct addresses
+/// 1. **Discovery**: Resolve peer addresses via local mDNS or n0 DNS lookup
 /// 2. **Connection**: Attempts direct connection through NAT hole-punching
 /// 3. **Fallback**: Uses relay servers if direct connection fails
 /// 4. **Upgrade**: Automatically upgrades to direct connection when possible
+///
+/// # Networking Defaults
+///
+/// Eidetica enables iroh's default Cargo features and uses its `presets::N0`
+/// endpoint defaults, including router port mapping (UPnP, PCP, NAT-PMP),
+/// with best-effort local mDNS address lookup added. Both local mDNS and n0
+/// publication/DNS/HTTPS resolution can be disabled via the builder.
+/// Applications can opt out at construction with
+/// [`IrohTransportBuilder::portmapper_config`]. This setting is not persisted.
 ///
 /// # Server Addresses
 ///
@@ -425,8 +500,8 @@ impl IrohTransport {
 
     /// Create a new Iroh transport instance with production defaults.
     ///
-    /// Uses `RelayMode::Default` which connects to n0's production relay
-    /// infrastructure. For custom configuration, use `IrohTransport::builder()`.
+    /// Uses iroh's `presets::N0` defaults (normally n0's production relays).
+    /// For explicit overrides, use `IrohTransport::builder()`.
     ///
     /// The endpoint will be lazily initialized on first use.
     ///
@@ -466,24 +541,47 @@ impl IrohTransport {
         IrohTransportBuilder::new()
     }
 
+    /// Configure the endpoint without binding sockets or starting discovery.
+    fn endpoint_builder(&self) -> EndpointBuilder {
+        let mut builder = Endpoint::builder(presets::N0).alpns(vec![SYNC_ALPN.to_vec()]);
+
+        if let Some(relay_mode) = &self.runtime_config.relay_mode {
+            builder = builder.relay_mode(relay_mode.clone());
+        }
+        if let Some(secret_key) = &self.runtime_config.secret_key {
+            builder = builder.secret_key(secret_key.clone());
+        }
+        if let Some(config) = &self.runtime_config.portmapper_config {
+            builder = builder.portmapper_config(config.clone());
+        }
+
+        if !self.runtime_config.n0_dns {
+            builder = builder.clear_address_lookup();
+        }
+
+        builder
+    }
+
     /// Initialize the Iroh endpoint if not already done.
     async fn ensure_endpoint(&self) -> Result<Endpoint> {
         let mut endpoint_lock = self.endpoint.lock().await;
 
         if endpoint_lock.is_none() {
-            // Create a new Iroh endpoint with configured relay mode
-            let mut builder = Endpoint::builder(presets::N0)
-                .alpns(vec![SYNC_ALPN.to_vec()])
-                .relay_mode(self.runtime_config.relay_mode.clone());
-
-            // Use the provided secret key for persistent identity
-            if let Some(secret_key) = &self.runtime_config.secret_key {
-                builder = builder.secret_key(secret_key.clone());
-            }
-
-            let endpoint = builder.bind().await.map_err(|e| {
+            let endpoint = self.endpoint_builder().bind().await.map_err(|e| {
                 SyncError::TransportInit(format!("Failed to create Iroh endpoint: {e}"))
             })?;
+
+            if self.runtime_config.mdns {
+                // Multicast can be unavailable in sandboxes and restricted networks.
+                // Register after binding to use the actual identity without changing N0 defaults.
+                match MdnsAddressLookup::builder().build(endpoint.id()) {
+                    Ok(mdns) => endpoint
+                        .address_lookup()
+                        .expect("just created the endpoint")
+                        .add(mdns),
+                    Err(error) => tracing::warn!(?error, "Local mDNS address lookup unavailable"),
+                }
+            }
 
             *endpoint_lock = Some(endpoint);
         }
@@ -761,6 +859,148 @@ impl SyncTransport for IrohTransport {
 mod tests {
     use super::*;
     use iroh::{EndpointAddr, TransportAddr};
+
+    // Iroh exposes these settings through Builder's Debug, but has no getters.
+    // Inspect only configuration markers, without binding or printing key material.
+    fn assert_endpoint_portmapper(transport: &IrohTransport, expected: PortmapperConfig) {
+        let config = format!("{:?}", transport.endpoint_builder());
+        assert!(config.contains(&format!("portmapper_config: {expected:?}")));
+        assert!(config.contains(&format!("alpn_protocols: {:?}", vec![SYNC_ALPN.to_vec()])));
+    }
+
+    #[tokio::test]
+    async fn test_default_networking_defers_to_iroh() {
+        let (persisted_transport, _) =
+            TransportBuilder::build(IrohTransport::builder(), Doc::new())
+                .await
+                .unwrap();
+        for transport in [
+            IrohTransport::new().unwrap(),
+            IrohTransportBuilder::new().build().unwrap(),
+            IrohTransportBuilder::default().build().unwrap(),
+            IrohTransport::builder().build().unwrap(),
+            persisted_transport,
+        ] {
+            assert!(transport.runtime_config.portmapper_config.is_none());
+            assert!(transport.runtime_config.relay_mode.is_none());
+            assert!(transport.runtime_config.mdns);
+            assert!(transport.runtime_config.n0_dns);
+            assert_endpoint_portmapper(&transport, PortmapperConfig::default());
+            let config = format!("{:?}", transport.endpoint_builder());
+            let default_relays = iroh::endpoint::default_relay_mode().relay_map();
+            assert!(config.contains(&format!("relay_map: {default_relays:?}")));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_portmapper_disabled_survives_all_build_paths() {
+        let key = SecretKey::from_bytes(&[42; 32]);
+        let builder = IrohTransport::builder()
+            .relay_mode(RelayMode::Disabled)
+            .secret_key(key.clone())
+            .portmapper_config(PortmapperConfig::Disabled)
+            .mdns(false)
+            .n0_dns(false);
+        let direct = builder.clone().build().unwrap();
+        let (generated, updated) = TransportBuilder::build(builder.clone(), Doc::new())
+            .await
+            .unwrap();
+        let persisted = updated.unwrap();
+        let mut expected = Doc::new();
+        expected.set(
+            SECRET_KEY_FIELD,
+            hex::encode(
+                generated
+                    .runtime_config
+                    .secret_key
+                    .as_ref()
+                    .unwrap()
+                    .to_bytes(),
+            ),
+        );
+        assert_eq!(persisted, expected, "only node identity is persisted");
+        let (restored, updated) = TransportBuilder::build(builder, persisted).await.unwrap();
+        assert!(updated.is_none());
+        assert_eq!(
+            restored
+                .runtime_config
+                .secret_key
+                .as_ref()
+                .unwrap()
+                .public(),
+            generated
+                .runtime_config
+                .secret_key
+                .as_ref()
+                .unwrap()
+                .public()
+        );
+        assert_eq!(
+            direct.runtime_config.secret_key.as_ref().unwrap().public(),
+            key.public()
+        );
+
+        for transport in [direct, generated, restored] {
+            assert!(matches!(
+                transport.runtime_config.portmapper_config,
+                Some(PortmapperConfig::Disabled)
+            ));
+            assert_endpoint_portmapper(&transport, PortmapperConfig::Disabled);
+            assert!(matches!(
+                transport.runtime_config.relay_mode,
+                Some(RelayMode::Disabled)
+            ));
+            let config = format!("{:?}", transport.endpoint_builder());
+            assert!(
+                !config.contains("Relay {"),
+                "explicit disabled relay reaches endpoint setup"
+            );
+
+            // Bind only with both mappings and relays disabled.
+            let endpoint = transport.ensure_endpoint().await.unwrap();
+            assert!(endpoint.address_lookup().unwrap().is_empty());
+            assert_eq!(
+                endpoint.id(),
+                transport
+                    .runtime_config
+                    .secret_key
+                    .as_ref()
+                    .unwrap()
+                    .public()
+            );
+            endpoint.close().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn lookup_selection_reaches_endpoint_in_both_build_paths() {
+        // Inspect the actual registered services: the public transport API hides them.
+        for n0_dns in [false, true] {
+            let builder = IrohTransport::builder()
+                .relay_mode(RelayMode::Disabled)
+                .portmapper_config(PortmapperConfig::Disabled)
+                .mdns(false)
+                .n0_dns(n0_dns);
+            let ephemeral = builder.clone().build().unwrap();
+            let (persistent, updated) = TransportBuilder::build(builder.clone(), Doc::new())
+                .await
+                .unwrap();
+            let (restored, updated) = TransportBuilder::build(builder, updated.unwrap())
+                .await
+                .unwrap();
+            assert!(updated.is_none());
+
+            for transport in [ephemeral, persistent, restored] {
+                let endpoint = transport.ensure_endpoint().await.unwrap();
+                assert_eq!(
+                    endpoint.address_lookup().unwrap().len(),
+                    if n0_dns { 3 } else { 0 },
+                    "mDNS must be disabled and n0 selection must reach the endpoint",
+                );
+                endpoint.close().await;
+            }
+        }
+    }
 
     /// Round-trip: EndpointAddr → EndpointTicket string → EndpointAddr
     #[test]
