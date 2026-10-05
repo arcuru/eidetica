@@ -1387,6 +1387,41 @@ async fn delegated_removal_cannot_evade_inherited_revocation() {
         }],
         hint: KeyHint::from_pubkey(&signer.public_key()),
     };
+    let local = Database::open(&fx.instance, fx.target.root_id())
+        .await
+        .unwrap()
+        .with_key(crate::database::DatabaseKey::with_identity(
+            fx.member.clone(),
+            key(fx.i0.clone(), &fx.member),
+        ));
+    let before = fx
+        .engine()
+        .get_tree(fx.target.root_id())
+        .await
+        .unwrap()
+        .len();
+    let txn = local.new_transaction().await.unwrap();
+    txn.get_store::<crate::store::DocStore>(SETTINGS)
+        .await
+        .unwrap()
+        .delete(format!("auth.delegations.{}", fx.identity.root_id()))
+        .await
+        .unwrap();
+    let error = txn
+        .commit()
+        .await
+        .expect_err("local self-removal must fail");
+    assert!(matches!(error, Error::Transaction(e)
+        if matches!(*e, crate::transaction::TransactionError::EntryValidationFailed)));
+    assert_eq!(
+        fx.engine()
+            .get_tree(fx.target.root_id())
+            .await
+            .unwrap()
+            .len(),
+        before
+    );
+
     let forged = Fixture::sign(removal.clone(), key(fx.i0.clone(), &fx.member), &fx.member);
     assert_eq!(
         fx.submit_remote(forged).await,
