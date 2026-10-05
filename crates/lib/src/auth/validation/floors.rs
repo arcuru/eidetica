@@ -33,6 +33,9 @@ pub(crate) struct DerivedFloors {
     backend: std::sync::Arc<dyn BackendImpl>,
     tree: ID,
     state: State,
+    // Effective removal resets the output, not the removing entry's authority.
+    // Retain these inherited observations only for its signature coverage gate.
+    removed_direct: HashMap<ID, Snapshot>,
 }
 
 /// Derive the complete canonical settings frontier at the specified main tips.
@@ -112,6 +115,7 @@ impl DerivedFloors {
             backend,
             tree: entry.root().unwrap_or_else(|| entry.id()),
             state: State::default(),
+            removed_direct: HashMap::new(),
         }
     }
 
@@ -506,9 +510,13 @@ impl DerivedFloors {
         for parent in entry.parents()? {
             parents.push(self.parent_state(&parent).await?);
         }
-        self.state = self
-            .transition(entry, self.join(parents.iter()), true)
-            .await?;
+        let inherited = self.join(parents.iter());
+        let inherited_direct = inherited.direct.clone();
+        self.state = self.transition(entry, inherited, true).await?;
+        self.removed_direct = inherited_direct
+            .into_iter()
+            .filter(|(root, _)| !self.state.direct.contains_key(root))
+            .collect();
         Ok(())
     }
 
@@ -518,6 +526,7 @@ impl DerivedFloors {
                 .direct
                 .get(root)
                 .into_iter()
+                .chain(self.removed_direct.get(root))
                 .chain(self.state.nested.get(root))
                 .flat_map(|snapshot| snapshot.iter())
                 .cloned()

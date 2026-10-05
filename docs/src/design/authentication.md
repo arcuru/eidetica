@@ -553,7 +553,7 @@ For an entry `E`, validation follows these boundaries:
 1. **Pre-write authority.** Derive the complete canonical `_settings` frontier from `E`'s main parents and require its signed `settings_tips` metadata to equal that frontier. A signer cannot choose an older settings pin to evade a revocation already in its parents. Only a genuine genesis entry may authorize itself with its own initial settings.
 2. **Resulting settings.** A settings write must consume exactly its main parents' `_settings` frontier as its signed subtree parents. Fold the actual settings DAG, including `E`'s delta, to determine effective declarations after the entry. This post-entry state is not its pre-write signature pin and is never read from an unrelated live head.
 3. **Parent join.** Load the authorization state of every locally `Verified` immediate main parent. Union their per-root frontiers, including observations carried through direct-key signatures or signatures through other identities.
-4. **Pointer transition.** Effective absence of a first-hop declaration clears that root's direct component. On a settings write, add each resulting configured pointer to the retained direct floor. A direct-key Admin may set any valid pointer, including an older one, without covering the inherited floor; this does not erase retained observations.
+4. **Pointer transition.** On a settings write, add each resulting configured pointer to the retained direct floor. A direct-key Admin may set any valid pointer, including an older one, without covering the inherited floor; this does not erase retained observations. Effective absence of a first-hop declaration clears that root's direct component in the resulting projection, but its inherited observations still constrain the removing entry's own signature.
 5. **Claims and proof.** At every signature step, the claim must cover both its declaration's pointer and the primary entry's inherited floor for that root. Every configured pointer and claimed snapshot requires correct tree membership and complete locally `Verified` delegated ancestry, not merely a `Verified` tip. Empty snapshots are invalid.
 6. **Signature and permissions.** Resolve keys at the claimed snapshots, apply permission bounds at each step, then check the signature and operation. A validated claim replaces the inherited component it covers; incomparable observations are retained when parents join.
 
@@ -561,7 +561,8 @@ The projection separates **direct** and **nested** observations even when both r
 Removal resets only the direct component.
 Nested observations survive first-hop removal and re-addition; clearing them would discard observations made through another still-active route.
 A delegated settings signer must also cover a new first-hop pointer written on that same entry.
-It cannot use its settings write to relax its own pre-write permissions.
+It cannot use its settings write to relax its own pre-write permissions or erase the inherited floor that authorizes that write.
+In particular, removing a declaration cannot let a revoked delegated Admin sign against an older snapshot; an authorized removal resets the direct floor only for descendants.
 
 **Merge example:** branches of a primary database claim identity snapshots `iA` and `iB`, both descending from `i0` but incomparable.
 Each sibling is valid against its own parents.
