@@ -295,3 +295,105 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod encrypted_tests {
+    use super::*;
+    #[tokio::test]
+    async fn local_encrypted_query_cache_repairs_ciphertext_but_not_binding() -> Result<()> {
+        use crate::{
+            Instance, NewUser,
+            crdt::Doc,
+            store::{PasswordStore, RawBytes, RawTable, Table},
+        };
+        let (instance, mut owner) = Instance::create_backend(
+            Box::new(crate::backend::database::InMemory::new()),
+            NewUser::passwordless("owner"),
+        )
+        .await?;
+        let db = owner
+            .create_database(Doc::new(), &owner.get_default_key()?)
+            .await?;
+        let write = db.new_transaction().await?;
+        let mut protected = write
+            .get_store::<PasswordStore<Table<Vec<u8>, RawBytes>>>("rows")
+            .await?;
+        protected.initialize("correct", Doc::new()).await?;
+        protected
+            .inner()
+            .await?
+            .set("a", vec![0xff, 0, 0x80])
+            .await?;
+        write.commit().await?;
+        let tx = db.new_transaction().await?;
+        let mut protected = tx.get_store::<PasswordStore<RawTable>>("rows").await?;
+        assert!(protected.open("wrong").is_err());
+        protected.open("correct")?;
+        let rows = protected.inner().await?;
+        assert_eq!(rows.get("a").await?, [0xff, 0, 0x80]);
+        let engine = instance.require_local_engine()?;
+        let memory = engine
+            .as_any()
+            .downcast_ref::<crate::backend::database::InMemory>()
+            .unwrap();
+        let before = memory.store_state_read_counts();
+        assert_eq!(rows.get("a").await?, [0xff, 0, 0x80]);
+        assert_eq!(
+            memory.store_state_read_counts(),
+            (before.0 + 1, before.1),
+            "local encrypted warm point must not scan all records"
+        );
+        let key = tx.physical_record_key("rows", b"a")?;
+        let original = {
+            let mut inner = memory.inner.write().unwrap();
+            let namespace = inner
+                .store_state_namespaces
+                .values_mut()
+                .find(|namespace| {
+                    namespace.ready
+                        && namespace.request.store == "rows"
+                        && namespace
+                            .request
+                            .projection
+                            .name
+                            .starts_with("eidetica/query-records/client/")
+                })
+                .unwrap();
+            namespace
+                .records
+                .insert(key.clone(), Some(vec![0xff]))
+                .unwrap()
+                .unwrap()
+        };
+        assert_eq!(
+            rows.get("a").await?,
+            [0xff, 0, 0x80],
+            "post-unlock corrupt derived ciphertext permits canonical reconstruction"
+        );
+        let (logical, mut value) = tx.decrypt_record("rows", &key, &original)?;
+        value[b"eidetica/query-record/v0\0".len()] ^= 1;
+        let wrong_binding = tx.encrypt_record("rows", &logical, &value)?;
+        {
+            let mut inner = memory.inner.write().unwrap();
+            let namespace = inner
+                .store_state_namespaces
+                .values_mut()
+                .find(|namespace| {
+                    namespace.ready
+                        && namespace.request.store == "rows"
+                        && namespace
+                            .request
+                            .projection
+                            .name
+                            .starts_with("eidetica/query-records/client/")
+                })
+                .unwrap();
+            namespace.records.insert(key, Some(wrong_binding));
+        }
+        assert!(
+            rows.get("a").await.is_err(),
+            "valid ciphertext with a different source binding stays a hard error"
+        );
+        Ok(())
+    }
+}

@@ -135,6 +135,7 @@ impl InMemory {
                         record_set.request.projection.name.as_str(),
                         "eidetica/table/rows/opaque:v0.1"
                             | "eidetica/query-records/eidetica/table/rows/opaque:v0.1"
+                            | "eidetica/query-records/client/eidetica/table/rows/opaque:v0.1"
                             | "eidetica/password/eidetica/table/rows/opaque:v0.1"
                             | "eidetica/private-assistance"
                     )

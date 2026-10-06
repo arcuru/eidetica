@@ -313,3 +313,149 @@ async fn table_query_registered_opaque_rows_skip_without_repair_and_strict_messa
     stop_proxy(task).await;
     drop(shutdown);
 }
+
+#[tokio::test]
+async fn table_query_exact_encrypted_upload_recovery_keeps_original_source() {
+    for fault in [Fault::LostChunkAck, Fault::LostFinishAck] {
+        let (socket, shutdown, server, dir) = start_test_server().await;
+        let (_client, root, _) = setup_db(&server, &socket, "owner").await;
+        let owner = server.login_user("owner", None).await.unwrap();
+        let db = owner.open_database(&root).await.unwrap();
+        let write = db.new_transaction().await.unwrap();
+        let mut encrypted = write
+            .get_store::<PasswordStore<Table<Vec<u8>, eidetica::store::RawBytes>>>("secret")
+            .await
+            .unwrap();
+        encrypted.initialize("correct", Doc::new()).await.unwrap();
+        encrypted
+            .inner()
+            .await
+            .unwrap()
+            .set("key", vec![0xff, 0, 0x80])
+            .await
+            .unwrap();
+        write.commit().await.unwrap();
+        let (proxy, seen, task) = observed_proxy(&socket, dir.path()).await;
+        let client = login_client(&proxy, "owner").await;
+        let remote = eidetica::Database::open(&client, &root).await.unwrap();
+        let tx = remote.new_transaction().await.unwrap();
+        let mut encrypted = tx
+            .get_store::<PasswordStore<RawTable>>("secret")
+            .await
+            .unwrap();
+        encrypted.open("correct").unwrap();
+        let rows = encrypted.inner().await.unwrap();
+        seen.lock().unwrap().reset(fault);
+        assert_eq!(rows.get("key").await.unwrap(), [0xff, 0, 0x80]);
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap();
+        let (source, representation) = seen
+            .lock()
+            .unwrap()
+            .requests
+            .iter()
+            .find_map(|op| {
+                if let Op::LookupPrivateMaterialization {
+                    source,
+                    representation,
+                    ..
+                } = op
+                {
+                    Some((source.clone(), representation.clone()))
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        let original = seen
+            .lock()
+            .unwrap()
+            .requests
+            .iter()
+            .find(|op| matches!(op, Op::PrivateAssistanceChunk { .. }))
+            .map(|op| serde_json::to_vec(op).unwrap())
+            .unwrap();
+        let later = db.new_transaction().await.unwrap();
+        let mut encrypted = later
+            .get_store::<PasswordStore<Table<Vec<u8>, eidetica::store::RawBytes>>>("secret")
+            .await
+            .unwrap();
+        encrypted.open("correct").unwrap();
+        encrypted
+            .inner()
+            .await
+            .unwrap()
+            .set("key", b"later".to_vec())
+            .await
+            .unwrap();
+        later.commit().await.unwrap();
+        let reconnect_dir = tempfile::tempdir().unwrap();
+        let (proxy, resumed, task) = observed_proxy(&socket, reconnect_dir.path()).await;
+        let client = login_client(&proxy, "owner").await;
+        let connection = remote_conn(&client);
+        resumed.lock().unwrap().reset(Fault::None);
+        tx.clone()
+            .resume_private_cache_upload(&connection)
+            .await
+            .unwrap();
+        {
+            let seen = resumed.lock().unwrap();
+            assert_eq!(seen.begin_count(), 0);
+            assert_eq!(seen.raw_count(), 0);
+            let retry = seen
+                .requests
+                .iter()
+                .find(|op| matches!(op, Op::PrivateAssistanceChunk { .. }))
+                .map(|op| serde_json::to_vec(op).unwrap());
+            if matches!(fault, Fault::LostChunkAck) {
+                assert_eq!(retry.unwrap(), original);
+            } else {
+                assert!(retry.is_none());
+            }
+        }
+        let response = connection
+            .private_assistance(
+                root.clone(),
+                connection.session_identity().unwrap(),
+                Op::LookupPrivateMaterialization {
+                    source: source.clone(),
+                    representation,
+                    range: Default::default(),
+                    after: None,
+                },
+            )
+            .await
+            .unwrap();
+        let ServiceResponse::PrivateMaterialization(Some(page)) = response else {
+            panic!("original Table upload not recovered")
+        };
+        assert_eq!(page.records.len(), 1);
+        let (key, value) = tx
+            .decode_private_record(&source, &page.records[0].0, &page.records[0].1)
+            .unwrap();
+        assert_eq!(key, b"key");
+        assert!(value.ends_with(&[0xff, 0, 0x80]));
+        let reopened = eidetica::Database::open(&client, &root).await.unwrap();
+        let pinned = reopened
+            .new_transaction_at(&source.source.main)
+            .await
+            .unwrap();
+        let mut protected = pinned
+            .get_store::<PasswordStore<RawTable>>("secret")
+            .await
+            .unwrap();
+        protected.open("correct").unwrap();
+        let rows = protected.inner().await.unwrap();
+        resumed.lock().unwrap().reset(Fault::None);
+        assert_eq!(rows.query(GetRow("key")).await.unwrap(), [0xff, 0, 0x80]);
+        assert_eq!(resumed.lock().unwrap().raw_count(), 0);
+        assert_eq!(resumed.lock().unwrap().begin_count(), 0);
+        assert_eq!(resumed.lock().unwrap().lookup_count(), 1);
+        assert!(tx.resume_private_cache_upload(&connection).await.is_err());
+        drop(client);
+        stop_proxy(task).await;
+        drop(shutdown);
+    }
+}

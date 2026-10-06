@@ -460,8 +460,18 @@ async fn test_password_table_uses_lazy_encrypted_record_cache() {
         memory.store_state_record_count(database.root_id(), "lazy_records"),
         2
     );
+    let after_cold = memory.store_state_read_counts();
+    assert_eq!(
+        after_cold, after_load,
+        "cold reconstruction selects from its valid result, not a second backend fetch"
+    );
+    assert_eq!(table.get("a").await.unwrap().value, 1);
     let after_get = memory.store_state_read_counts();
-    assert_eq!(after_get, (after_load.0 + 1, after_load.1));
+    assert_eq!(
+        after_get,
+        (after_cold.0 + 1, after_cold.1),
+        "warm encrypted point reads exactly one physical record"
+    );
 
     assert_eq!(table.scan_page(None, 1).await.unwrap().rows.len(), 1);
     let after_scan = memory.store_state_read_counts();
@@ -919,6 +929,17 @@ async fn test_password_table_cold_streams_on_selected_backend() {
     check_streamed_password_table(&database, store).await;
     #[cfg(all(unix, feature = "service"))]
     {
+        // Also preserve the legitimate explicit streaming substrate. Normal
+        // queries intentionally use a separate source-bound representation.
+        wrong.open("pass").unwrap();
+        let projection = match Table::<PasswordTestRecord>::state_model() {
+            eidetica::store::StoreStateModel::Records(projection) => projection,
+            _ => unreachable!(),
+        };
+        wrong
+            .projected_get(projection.as_ref(), b"missing")
+            .await
+            .unwrap();
         let request = streamed_projection_request(&database, store).await;
         let view = database
             .backend()
