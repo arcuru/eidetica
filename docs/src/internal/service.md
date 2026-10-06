@@ -59,6 +59,10 @@ Installed handlers may use only source/type-bound Shared Derived record work thr
 
 Unlocked PasswordStore<Table/RawTable> delegates under the actual `encrypted:password:v0` registration. Only capability refusal selects client assistance. An applicable private cache serves exact-key points or bounded physical pages without opaque-state hydration, client raw-history replay or full record scanning. On a miss or damaged derived ciphertext after unlock, the client reconstructs the original source once and attempts inline best-effort publication through the existing bounded assistance owner. Missing/wrong keys and authoritative source/decryption failures remain errors. Staged changes compose locally and are never published as committed-source caches. An unavailable record substrate after refusal disables optional cache use, not authoritative source validation.
 
+Local encrypted plans use the same Derived record staging substrate and framing,
+with local acting-identity/source binding. This is not a second cache engine or a
+server-side plaintext capability.
+
 Warm-path bounds describe client payload work, not total daemon work. Each query/private lookup still validates the canonical main/index/Store source and current authorization; that validation can traverse history on the daemon. Small pages can also require multiple bounded committed fetches when staged deletes hide rows. No throughput or whole-daemon constant-cost claim follows from zero legacy RPCs. A concurrent published winner is adopted by existing staging; optional republication does not guarantee replacement of a corrupt already-published namespace, so another logical read may reconstruct again until eviction. No broad cache clear or authority-state deletion is performed.
 
 ### Bounded canonical source reads
