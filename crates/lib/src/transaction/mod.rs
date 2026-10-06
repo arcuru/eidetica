@@ -254,6 +254,18 @@ impl Transaction {
         })
     }
 
+    /// Committed Store boundary retained by this transaction, excluding staging.
+    pub(crate) async fn store_snapshot(&self, store: &str) -> Result<Snapshot> {
+        self.init_subtree_parents(store).await?;
+        let guard = self.entry_builder.lock().unwrap();
+        let builder = guard
+            .as_ref()
+            .ok_or(TransactionError::TransactionAlreadyCommitted)?;
+        Ok(Snapshot::from(
+            builder.subtree_parents(store).unwrap_or_default(),
+        ))
+    }
+
     /// Delegate Store-specific bytes without transmitting speculative changes.
     /// The Store implementation owns any composition with its local staging.
     pub async fn query_store(

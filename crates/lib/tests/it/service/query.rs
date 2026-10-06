@@ -200,6 +200,16 @@ async fn store_query_local_and_socket_use_unlike_store_vocabularies_and_pinned_s
     let remote = user.open_database(db.root_id()).await.unwrap();
     let transaction = remote.new_transaction().await.unwrap();
     let source = transaction.query_source().unwrap();
+    let fresh = transaction.get_store::<DocStore>("fresh").await.unwrap();
+    assert_eq!(fresh.query(GetValue("missing")).await.unwrap(), None);
+    fresh.set("key", "staged").await.unwrap();
+    assert_eq!(
+        fresh.query(GetValue("key")).await.unwrap(),
+        Some(fresh.get("key").await.unwrap())
+    );
+    assert_eq!(fresh.query(GetValue("missing")).await.unwrap(), None);
+    fresh.delete("key").await.unwrap();
+    assert_eq!(fresh.query(GetValue("key")).await.unwrap(), None);
     let docs = transaction.get_store::<DocStore>("docs").await.unwrap();
     let counter = transaction
         .get_store::<CounterStore>("counter")

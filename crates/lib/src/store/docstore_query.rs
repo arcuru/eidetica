@@ -45,6 +45,17 @@ impl<'q> ExecuteQuery<GetValue<'q>> for DocStore {
                 return Ok(Some(value.clone()));
             }
         }
+        // A newly registered Store can have no committed history or metadata
+        // yet. Like get(), answer absence locally rather than asking the daemon
+        // to accept an uncommitted registration.
+        if self
+            .transaction()
+            .store_snapshot(self.name())
+            .await?
+            .is_empty()
+        {
+            return Ok(None);
+        }
         let reply = self
             .transaction()
             .query_store(
