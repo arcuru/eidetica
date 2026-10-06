@@ -27,13 +27,14 @@ pub(super) async fn database() -> (Instance, Database) {
             .await
             .unwrap();
     if std::env::var("TEST_BACKEND").as_deref() == Ok("sqlite") {
-        assert!(
-            instance
-                .backend()
-                .local_engine()
-                .unwrap()
-                .as_any()
-                .is::<eidetica::backend::database::Sqlite>(),
+        let engine = instance.backend().local_engine().unwrap();
+        let sql = engine
+            .as_any()
+            .downcast_ref::<eidetica::backend::database::SqlxBackend>()
+            .expect("SQLite factory must return a SQL backend");
+        assert_eq!(
+            sql.kind(),
+            eidetica::backend::database::DbKind::Sqlite,
             "SQLite checks must instantiate SQLite"
         );
     }

@@ -336,8 +336,10 @@ mod encrypted_tests {
             .as_any()
             .downcast_ref::<crate::backend::database::InMemory>()
             .unwrap();
+        #[cfg(feature = "testing")]
         let before = memory.store_state_read_counts();
         assert_eq!(rows.get("a").await?, [0xff, 0, 0x80]);
+        #[cfg(feature = "testing")]
         assert_eq!(
             memory.store_state_read_counts(),
             (before.0 + 1, before.1),
