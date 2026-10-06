@@ -138,14 +138,14 @@
       name = "shellcheck";
       packages = [pkgs.shellcheck pkgs.findutils];
       src = sources.shell;
-      command = ''find . -name "*.sh" -type f -exec shellcheck {} +'';
+      command = ''find . -path "./buck-out" -prune -o -name "*.sh" -type f -exec shellcheck {} +'';
     };
 
     yamllint = mkSimpleLinter {
       name = "yamllint";
       packages = [pkgs.yamllint pkgs.findutils];
       src = sources.yaml;
-      command = ''find . \( -name "*.yml" -o -name "*.yaml" \) -type f -exec yamllint -c .config/yamllint.yaml {} +'';
+      command = ''find . -path "./buck-out" -prune -o \( -name "*.yml" -o -name "*.yaml" \) -type f -exec yamllint -c .config/yamllint.yaml {} +'';
     };
 
     typos = mkSimpleLinter {
@@ -182,8 +182,8 @@
       name = "markdownlint";
       packages = [pkgs.markdownlint-cli pkgs.findutils];
       src = sources.markdown;
-      command = ''find . -name "*.md" -type f -exec markdownlint --config .config/markdownlint.yaml {} +'';
-      fixCommand = ''find . -name "*.md" -not -path "./target/*" -type f -exec markdownlint --fix --config .config/markdownlint.yaml {} +'';
+      command = ''find . -path "./buck-out" -prune -o -name "*.md" -type f -exec markdownlint --config .config/markdownlint.yaml {} +'';
+      fixCommand = ''find . -path "./buck-out" -prune -o -name "*.md" -not -path "./target/*" -type f -exec markdownlint --fix --config .config/markdownlint.yaml {} +'';
     };
 
     gitleaks = mkSimpleLinter {
