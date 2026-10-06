@@ -49,6 +49,7 @@ use crate::{
     store::table::CursorKind,
     store::{
         ProjectionDescriptor, RecordProjection, Registry, SettingsStore, StoreError, TableCursor,
+        query::{QuerySource, StoreQueryReply, StoreQueryRequest},
         state,
     },
 };
@@ -241,6 +242,48 @@ impl Drop for SystemSubtreeLockGuard {
 }
 
 impl Transaction {
+    /// The immutable main-parent boundary and read posture of this transaction.
+    pub fn query_source(&self) -> Result<QuerySource> {
+        let guard = self.entry_builder.lock().unwrap();
+        let builder = guard
+            .as_ref()
+            .ok_or(TransactionError::TransactionAlreadyCommitted)?;
+        Ok(QuerySource {
+            main: Snapshot::from(builder.parents().unwrap_or_default()),
+            scope: self.db.query_read_scope(),
+        })
+    }
+
+    /// Delegate Store-specific bytes without transmitting speculative changes.
+    /// The Store implementation owns any composition with its local staging.
+    pub async fn query_store(
+        &self,
+        store: &str,
+        expected_type: &str,
+        query: Vec<u8>,
+    ) -> Result<StoreQueryReply> {
+        let request = StoreQueryRequest {
+            store: store.into(),
+            expected_type: expected_type.into(),
+            source: self.query_source()?,
+            query,
+        };
+        let reply = self
+            .db
+            .ops()
+            .query_store(self.db.root_id(), &request)
+            .await?;
+        if reply.source != request.source {
+            return Err(StoreError::InvalidOperation {
+                store: store.into(),
+                operation: "query".into(),
+                reason: "reply changed the requested source".into(),
+            }
+            .into());
+        }
+        Ok(reply)
+    }
+
     /// Creates a new atomic transaction for a specific `Database` anchored at a snapshot.
     ///
     /// Initializes an internal `EntryBuilder` with its main parent pointers set to the

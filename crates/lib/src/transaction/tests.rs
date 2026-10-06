@@ -433,6 +433,7 @@ async fn binary_service_state_decodes_bytes_and_never_falls_back_on_bad_codec() 
             &mut stream,
             &HandshakeAck {
                 protocol_version: PROTOCOL_VERSION,
+                wire_revision: crate::service::protocol::WIRE_REVISION,
             },
         )
         .await
@@ -1441,7 +1442,7 @@ async fn fixed_parent_subtree_read_ignores_concurrent_live_write() {
     entered_rx.await.unwrap();
     let writer = database.new_transaction().await.unwrap();
     writer
-        .update_subtree("counter", serde_json::to_vec(&MaxCounter(7)).unwrap())
+        .update_subtree("counter", MaxCounter(7).encode().unwrap())
         .await
         .unwrap();
     writer.commit().await.unwrap();

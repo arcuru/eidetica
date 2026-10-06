@@ -566,6 +566,14 @@ impl Database {
         }
     }
 
+    pub(crate) fn query_read_scope(&self) -> crate::store::query::ReadScope {
+        if self.allow_unverified {
+            crate::store::query::ReadScope::AllowUnverified
+        } else {
+            crate::store::query::ReadScope::Verified
+        }
+    }
+
     /// Validate a `DatabaseKey` against this database's auth settings.
     ///
     /// Checks that:

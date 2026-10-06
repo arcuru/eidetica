@@ -43,16 +43,13 @@ use crate::service::error::ServiceError;
 use crate::snapshot::Snapshot;
 use crate::user::UserInfo;
 
-/// Protocol version. Version 1 carries generic Store state as Codec bytes.
-/// Clients and daemons must use the same version; there is no v0 compatibility.
-///
-/// This constant is the compatibility gate for serialized types in this
-/// protocol. `#[non_exhaustive]` does **not** protect wire compatibility: a
-/// peer on an older version fails to deserialize an unknown variant. Adding a
-/// variant to a serialized enum (e.g. [`WriteSource`](crate::instance::WriteSource)
-/// inside [`Notification::DatabaseWrite`]) is therefore a protocol version
-/// bump, not a backward-compatible addition.
-pub const PROTOCOL_VERSION: u32 = 1;
+/// Experimental stability label, not a compatibility commitment.
+pub const PROTOCOL_VERSION: u32 = 0;
+
+/// Common envelope revision. Incompatible request, response or notification
+/// changes advance this value; Store-owned payloads use the Store type ID.
+/// Both handshake directions require it: missing fields are never defaulted.
+pub const WIRE_REVISION: u32 = 1;
 
 /// Maximum frame size: 64 MiB.
 pub const MAX_FRAME_SIZE: u32 = 64 * 1024 * 1024;
@@ -67,12 +64,14 @@ pub const MAX_RECORD_PAGE_BYTES: u32 = 4 * 1024 * 1024;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Handshake {
     pub protocol_version: u32,
+    pub wire_revision: u32,
 }
 
 /// Handshake acknowledgment sent by the server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HandshakeAck {
     pub protocol_version: u32,
+    pub wire_revision: u32,
 }
 
 // ===========================================================================
@@ -84,18 +83,7 @@ pub struct HandshakeAck {
 // (tree, store, identity)-scoped. Carried in `ServiceRequest::AuthenticatedDb`.
 // ===========================================================================
 
-/// Which snapshot of the DAG an op observes. Mirrors the `Database`
-/// read posture: a write's parent tips are the tips of the *same* snapshot
-/// the caller reads (see the Verification Model design doc).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub enum ReadScope {
-    /// Default-safe: only the maximal all-`Verified` ancestor-closed prefix.
-    #[default]
-    Verified,
-    /// Also include `Unverified` entries (`Failed` always dropped). The
-    /// caller explicitly opted in via `Database::allow_unverified()`.
-    AllowUnverified,
-}
+pub use crate::store::query::ReadScope;
 
 /// Fixed Doc/settings values retain their JSON representation. Generic Store
 /// state uses the dedicated encoded-byte [`ServiceResponse::StoreState`].
@@ -142,6 +130,10 @@ pub type WireRecordMutations = Vec<(Vec<u8>, Option<Vec<u8>>)>;
 /// set-metadata) before dispatch.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DatabaseOp {
+    /// Read-scoped opaque dispatch at the asserted source and outer Store type.
+    QueryStore {
+        request: crate::store::query::StoreQueryRequest,
+    },
     /// Resolve cached state through an opaque view onto one published record set.
     ResolveStoreState { request: StoreStateRequest },
     /// Begin a private build.
@@ -288,7 +280,8 @@ impl DatabaseOp {
             // Gated against `_databases`, not the request's `root_id`; the
             // dispatcher special-cases this so the value here is advisory.
             DatabaseOp::SetInstanceMetadata { .. } => Permission::Admin(0),
-            DatabaseOp::BeginTransaction { .. }
+            DatabaseOp::QueryStore { .. }
+            | DatabaseOp::BeginTransaction { .. }
             | DatabaseOp::GetVerifiedTips
             | DatabaseOp::EnsureStoreStateGeneration { .. }
             | DatabaseOp::GetStoreEntries { .. }
@@ -468,6 +461,7 @@ pub enum ServerFrame {
 /// Response from server to client.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ServiceResponse {
+    StoreQuery(crate::store::query::StoreQueryReply),
     /// Single entry
     Entry(Entry),
     /// Multiple entries
@@ -610,6 +604,7 @@ mod tests {
     fn test_handshake_serde() {
         let h = Handshake {
             protocol_version: PROTOCOL_VERSION,
+            wire_revision: crate::service::protocol::WIRE_REVISION,
         };
         let json = serde_json::to_string(&h).unwrap();
         let h2: Handshake = serde_json::from_str(&json).unwrap();
@@ -620,6 +615,7 @@ mod tests {
     fn test_handshake_ack_serde() {
         let h = HandshakeAck {
             protocol_version: PROTOCOL_VERSION,
+            wire_revision: crate::service::protocol::WIRE_REVISION,
         };
         let json = serde_json::to_string(&h).unwrap();
         let h2: HandshakeAck = serde_json::from_str(&json).unwrap();
