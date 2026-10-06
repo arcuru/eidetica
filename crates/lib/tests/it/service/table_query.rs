@@ -273,6 +273,25 @@ async fn table_query_registered_opaque_rows_skip_without_repair_and_strict_messa
     let raw = tx.get_store::<RawTable>("rows").await.unwrap();
     seen.lock().unwrap().reset(Fault::None);
     assert_eq!(raw.get("bad-000").await.unwrap(), [0xff, 0, 0x80]);
+    let reply = tx
+        .query_store(
+            "rows",
+            "table:v0.1",
+            serde_json::to_vec(
+                &serde_json::json!({"Point":{"key":b"bad-000".to_vec(),"repair":true}}),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let eidetica::store::query::QueryOutcome::Result(bytes) = reply.outcome else {
+        panic!("installed opaque handler refused")
+    };
+    let result: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        result["reconstructed"], false,
+        "unreadable application rows are not damaged derived records"
+    );
     let threshold = std::rc::Rc::new(3usize);
     assert_eq!(
         table
