@@ -154,6 +154,7 @@ pub use settings_store::SettingsStore;
 
 pub mod assistance;
 pub mod query;
+pub(crate) mod query_records;
 mod registry;
 pub mod source;
 pub use query::ExecuteQuery;

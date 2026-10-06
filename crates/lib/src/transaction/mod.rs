@@ -17,6 +17,9 @@
 
 pub mod errors;
 mod private_read;
+mod record_read;
+#[allow(unused_imports)] // Consumed by record-shaped Store plans in the next layer.
+pub(crate) use record_read::RecordRead;
 
 #[cfg(test)]
 mod tests;
@@ -373,6 +376,16 @@ impl Transaction {
         source: &crate::store::source::StoreSource,
         budget: &mut private_read::ReadBudget,
     ) -> Result<D> {
+        self.fold_raw_source_with_decoder(source, budget, |_, bytes| Ok(Some(D::decode(bytes)?)))
+            .await
+    }
+
+    async fn fold_raw_source_with_decoder<D: CRDT + Codec>(
+        &self,
+        source: &crate::store::source::StoreSource,
+        budget: &mut private_read::ReadBudget,
+        decode: impl Fn(&Entry, &[u8]) -> Result<Option<D>>,
+    ) -> Result<D> {
         use crate::backend::BackendError;
         use crate::store::source::{Limits, RawStoreRequest};
         if source.database != *self.db.root_id() || source.source != self.query_source()? {
@@ -445,7 +458,9 @@ impl Transaction {
                     && !payload.is_empty()
                 {
                     let plaintext = self.decrypt_if_needed(&source.store, payload)?;
-                    state = state.merge(&D::decode(&plaintext)?)?;
+                    if let Some(delta) = decode(entry, &plaintext)? {
+                        state = state.merge(&delta)?;
+                    }
                 }
                 let parents = entry.subtree_parents(&source.store)?;
                 edges += parents.len();

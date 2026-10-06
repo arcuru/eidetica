@@ -79,7 +79,7 @@ impl<'q> ExecuteQuery<GetValue<'q>> for DocStore {
 }
 
 impl StoreQueryHandler for DocStore {
-    async fn handle_query(context: &StoreQueryContext, query: &[u8]) -> Result<QueryOutcome> {
+    async fn handle_query(context: &StoreQueryContext<'_>, query: &[u8]) -> Result<QueryOutcome> {
         let DocQuery::Get { key } = DocQuery::decode(query)?;
         let state = context.fold::<Self>()?;
         Ok(QueryOutcome::Result(serde_json::to_vec(&state.get(&key))?))

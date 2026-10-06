@@ -56,7 +56,19 @@ impl Store for CounterStore {
     }
 }
 impl StoreQueryHandler for CounterStore {
-    async fn handle_query(context: &StoreQueryContext, query: &[u8]) -> Result<QueryOutcome> {
+    async fn handle_query(context: &StoreQueryContext<'_>, query: &[u8]) -> Result<QueryOutcome> {
+        if query == b"RECORDS" {
+            let page = context
+                .records::<Self>(
+                    &CounterRecords,
+                    &crate::backend::RecordRange::default(),
+                    None,
+                    1,
+                    true,
+                )
+                .await?;
+            return Ok(QueryOutcome::Result(serde_json::to_vec(&page.page)?));
+        }
         assert_eq!(query, b"MAX\0", "only the delegated message is encoded");
         Ok(QueryOutcome::Result(context.fold::<Self>()?.encode()?))
     }
@@ -406,4 +418,78 @@ async fn raw_sdk_unknown_non_serde_store_folds_same_source_and_composes_staging(
     assert_eq!(state.0, 30);
     assert_eq!(tx.query_source()?, source);
     Ok(())
+}
+
+struct CounterRecords;
+impl crate::store::RecordProjection<Counter> for CounterRecords {
+    fn descriptor(&self) -> crate::store::ProjectionDescriptor {
+        crate::store::ProjectionDescriptor {
+            name: "test/query/counter-records".into(),
+            version: 0,
+        }
+    }
+    fn mutations<'a>(
+        &'a self,
+        state: &'a Counter,
+    ) -> Result<Box<dyn Iterator<Item = Result<crate::backend::RecordMutation>> + Send + 'a>> {
+        Ok(Box::new(std::iter::once(Ok(
+            crate::backend::RecordMutation::Put {
+                key: b"counter".to_vec(),
+                value: state.encode()?,
+            },
+        ))))
+    }
+}
+
+async fn record_handler_behavior(engine: Box<dyn BackendImpl>) -> Result<()> {
+    let (instance, mut owner) =
+        Instance::create_backend(engine, NewUser::passwordless("owner")).await?;
+    let db = owner
+        .create_database(Doc::new(), &owner.get_default_key()?)
+        .await?;
+    let mut backend = LocalBackend::new(instance.require_local_engine()?);
+    backend.register_store_query::<CounterStore>()?;
+    let db = db.with_test_ops(Arc::new(backend));
+    let write = db.new_transaction().await?;
+    write.get_store::<CounterStore>("counter").await?;
+    write
+        .update_subtree("counter", Counter(21).encode()?)
+        .await?;
+    write.commit().await?;
+    let txn = db.new_transaction().await?;
+    for _ in 0..2 {
+        let reply = txn
+            .query_store("counter", CounterStore::type_id(), b"RECORDS".to_vec())
+            .await?;
+        let QueryOutcome::Result(bytes) = reply.outcome else {
+            panic!("record handler refused")
+        };
+        let page: crate::backend::RecordPage = serde_json::from_slice(&bytes)?;
+        assert_eq!(
+            page.records,
+            vec![(b"counter".to_vec(), 21u64.to_le_bytes().to_vec())]
+        );
+    }
+    instance
+        .require_local_engine()?
+        .clear_derived_store_state()
+        .await?;
+    let reply = txn
+        .query_store("counter", CounterStore::type_id(), b"RECORDS".to_vec())
+        .await?;
+    assert!(matches!(reply.outcome, QueryOutcome::Result(_)));
+    Ok(())
+}
+
+#[tokio::test]
+async fn installed_handler_source_bound_records_memory() -> Result<()> {
+    record_handler_behavior(Box::new(InMemory::new())).await
+}
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn installed_handler_source_bound_records_sqlite() -> Result<()> {
+    record_handler_behavior(Box::new(
+        crate::backend::database::Sqlite::in_memory().await?,
+    ))
+    .await
 }
