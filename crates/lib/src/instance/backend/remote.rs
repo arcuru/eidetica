@@ -224,7 +224,7 @@ impl RemoteBackend {
 #[async_trait]
 impl Backend for RemoteBackend {
     async fn query_store(&self, tree: &ID, request: &StoreQueryRequest) -> Result<StoreQueryReply> {
-        self.conn
+        self.connection()
             .query_store(tree.clone(), self.identity(), request.clone())
             .await
     }

@@ -197,6 +197,9 @@ async fn store_query_local_and_socket_use_unlike_store_vocabularies_and_pinned_s
     tx.commit().await.unwrap();
     insert_counter(&db, &owner, SocketCounter(21).encode().unwrap()).await;
     let mut daemon = ServiceServer::bind(server.clone(), &socket).await.unwrap();
+    assert!(daemon.register_store_query::<DocStore>().is_err());
+    assert!(daemon.register_store::<DocStore>().is_err());
+    assert!(daemon.register_store::<PasswordStore<DocStore>>().is_err());
     daemon.register_store_query::<CounterStore>().unwrap();
     assert!(daemon.register_store_query::<CounterStore>().is_err());
     let (shutdown, rx) = watch::channel(());

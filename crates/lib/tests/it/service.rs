@@ -253,6 +253,31 @@ async fn registered_typed_socket_maintenance_is_read_scoped() {
         Some("value")
     );
 
+    // Installing a legacy maintenance codec does not implicitly supply query
+    // semantics. No StoreQueryHandler bound is required for this binary Store.
+    let source = eidetica::store::query::QuerySource {
+        main: db.snapshot().await.unwrap(),
+        scope: ReadScope::Verified,
+    };
+    let refusal = conn
+        .query_store(
+            root.clone(),
+            identity.clone(),
+            eidetica::store::query::StoreQueryRequest {
+                store: "counter".into(),
+                expected_type: CounterStore::type_id().into(),
+                source: source.clone(),
+                query: b"no-installed-query-vocabulary".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(refusal.source, source);
+    assert_eq!(
+        refusal.outcome,
+        eidetica::store::query::QueryOutcome::Unavailable
+    );
+
     let request = |store: &str, expected_type: &str, projection| {
         ServiceRequest::AuthenticatedDb(Box::new(AuthenticatedDbRequest {
             root_id: root.clone(),
