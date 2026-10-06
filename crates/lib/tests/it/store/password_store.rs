@@ -473,7 +473,7 @@ async fn test_password_table_uses_lazy_encrypted_record_cache() {
         PasswordStore::<Table<PasswordTestRecord>>::state_model()
             .descriptor()
             .name,
-        "eidetica/password/eidetica/table/rows/opaque:v1"
+        "eidetica/password/eidetica/table/rows/opaque:v0.1"
     );
     let records = memory
         .store_state_records(database.root_id(), "lazy_records")
@@ -732,6 +732,31 @@ pub(crate) async fn assert_wrong_physical_identity_rejected(
     store: &str,
 ) {
     use eidetica::backend::RecordRange;
+    // This fixture exercises the legitimate explicit maintenance substrate.
+    // Normal Store queries deliberately cannot consume legacy namespaces.
+    let tx = database.new_transaction().await.unwrap();
+    let mut handle = tx
+        .get_store::<PasswordStore<Table<PasswordTestRecord>>>(store)
+        .await
+        .unwrap();
+    handle.open("pass").unwrap();
+    let projection = match Table::<PasswordTestRecord>::state_model() {
+        eidetica::store::StoreStateModel::Records(projection) => projection,
+        _ => unreachable!(),
+    };
+    let local = eidetica::Database::open(control, database.root_id())
+        .await
+        .unwrap();
+    let local_tx = local.new_transaction().await.unwrap();
+    let mut local_handle = local_tx
+        .get_store::<PasswordStore<Table<PasswordTestRecord>>>(store)
+        .await
+        .unwrap();
+    local_handle.open("pass").unwrap();
+    local_handle
+        .projected_get(projection.as_ref(), b"missing")
+        .await
+        .unwrap();
     let backend = database.backend().unwrap();
     let request = streamed_projection_request(database, store).await;
     let view = backend
@@ -767,14 +792,22 @@ pub(crate) async fn assert_wrong_physical_identity_rejected(
         .await
         .unwrap();
     encrypted.open("pass").unwrap();
+    let source = tx
+        .raw_store_source(store, PasswordStore::<Table<PasswordTestRecord>>::type_id())
+        .await
+        .unwrap();
+    let view = backend
+        .resolve_store_state(&streamed_projection_request(database, store).await)
+        .await
+        .unwrap()
+        .unwrap();
+    let page = backend
+        .store_state_record_scan(&view, &RecordRange::default(), None, 1)
+        .await
+        .unwrap();
+    let (key, ciphertext) = &page.records[0];
     assert!(
-        encrypted
-            .inner()
-            .await
-            .unwrap()
-            .scan_page(None, 1)
-            .await
-            .is_err(),
+        tx.decode_private_record(&source, key, ciphertext).is_err(),
         "ciphertext under a foreign physical key must fail authentication"
     );
 }

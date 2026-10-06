@@ -38,7 +38,7 @@ fn doc_representation() -> PrivateRepresentation {
 }
 
 #[derive(Clone, Copy, Default)]
-enum Fault {
+pub(super) enum Fault {
     #[default]
     None,
     Corrupt,
@@ -50,6 +50,7 @@ enum Fault {
     BadRawSource,
     SourceUnavailable,
     BadResponse,
+    BadQueryResponse,
     ExpiredView,
     InvalidSource,
     InvalidToken,
@@ -62,30 +63,30 @@ enum Fault {
     LostFinishAck,
 }
 #[derive(Default)]
-struct Observation {
-    requests: Vec<Op>,
+pub(super) struct Observation {
+    pub(super) requests: Vec<Op>,
     fault: Fault,
 }
 impl Observation {
-    fn raw_count(&self) -> usize {
+    pub(super) fn raw_count(&self) -> usize {
         self.requests
             .iter()
             .filter(|op| matches!(op, Op::ReadRawStore { .. }))
             .count()
     }
-    fn lookup_count(&self) -> usize {
+    pub(super) fn lookup_count(&self) -> usize {
         self.requests
             .iter()
             .filter(|op| matches!(op, Op::LookupPrivateMaterialization { .. }))
             .count()
     }
-    fn begin_count(&self) -> usize {
+    pub(super) fn begin_count(&self) -> usize {
         self.requests
             .iter()
             .filter(|op| matches!(op, Op::BeginPrivateAssistance { .. }))
             .count()
     }
-    fn reset(&mut self, fault: Fault) {
+    pub(super) fn reset(&mut self, fault: Fault) {
         self.requests.clear();
         self.fault = fault;
     }
@@ -97,7 +98,7 @@ fn wire_error(error: BackendError) -> ServerFrame {
 
 // The proxy forwards to a real authenticated daemon. Mutations target exactly
 // one derived response or error class; source/history requests remain observable.
-async fn observed_proxy(
+pub(super) async fn observed_proxy(
     socket: &std::path::Path,
     dir: &std::path::Path,
 ) -> (
@@ -243,6 +244,13 @@ async fn observed_proxy(
                 });
             }
             if matches!(op, Some(Op::QueryStore { .. }))
+                && matches!(fault, Fault::BadQueryResponse)
+                && let ServerFrame::Response(ref mut r) = response
+                && let ServiceResponse::StoreQuery(reply) = r.as_mut()
+            {
+                reply.outcome = eidetica::store::query::QueryOutcome::Result(vec![0xff]);
+            }
+            if matches!(op, Some(Op::QueryStore { .. }))
                 && matches!(fault, Fault::ChangedRefusal)
                 && let ServerFrame::Response(ref mut r) = response
                 && let ServiceResponse::StoreQuery(reply) = r.as_mut()
@@ -265,7 +273,7 @@ async fn observed_proxy(
     });
     (proxy, observed, task)
 }
-async fn stop_proxy(task: tokio::task::JoinHandle<()>) {
+pub(super) async fn stop_proxy(task: tokio::task::JoinHandle<()>) {
     // Tests own this bounded fixture, not production detached work.
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());

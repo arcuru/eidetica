@@ -80,7 +80,7 @@ async fn select_codec(database: &Database, codec: &str) {
     tx.get_index()
         .await
         .unwrap()
-        .set_entry("rows", "table:v1", changed)
+        .set_entry("rows", "table:v0.1", changed)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -180,7 +180,7 @@ async fn test_table_history_current_codec_selects_rows_without_rewriting_bytes()
         vec![0xff]
     );
 
-    select_codec(&database, "json:v1").await;
+    select_codec(&database, "json:v0").await;
     for cold in [false, true, false] {
         if cold {
             instance
@@ -219,7 +219,7 @@ async fn test_table_history_current_codec_selects_rows_without_rewriting_bytes()
         assert_eq!(raw.get("good").await.unwrap(), b"[3]");
     }
     // A -> B -> A is allowed: configuration changes do not rewrite source data.
-    select_codec(&database, "raw:v1").await;
+    select_codec(&database, "raw:v0").await;
     assert_eq!(
         database
             .get_store_viewer::<Table<Vec<u8>, RawBytes>>("rows")
@@ -263,7 +263,7 @@ async fn test_table_history_missing_configuration_errors_without_erasing_rows() 
         .unwrap();
     tx.commit().await.unwrap();
     assert!(database.get_store_viewer::<RawTable>("rows").await.is_err());
-    select_codec(&database, "raw:v1").await;
+    select_codec(&database, "raw:v0").await;
     assert_eq!(
         database
             .get_store_viewer::<RawTable>("rows")
@@ -321,7 +321,7 @@ async fn test_table_history_conflicting_registrations_follow_lww_configuration()
         ]
     );
     match required.as_str() {
-        "raw:v1" => {
+        "raw:v0" => {
             assert!(tx.get_store::<Table<Vec<u8>>>("rows").await.is_err());
             let rows = tx
                 .get_store::<Table<Vec<u8>, RawBytes>>("rows")
@@ -330,7 +330,7 @@ async fn test_table_history_conflicting_registrations_follow_lww_configuration()
             assert_eq!(rows.get("left").await.unwrap(), vec![0xff]);
             assert_eq!(rows.get("right").await.unwrap(), b"[0]");
         }
-        "json:v1" => {
+        "json:v0" => {
             assert!(
                 tx.get_store::<Table<Vec<u8>, RawBytes>>("rows")
                     .await
@@ -368,7 +368,7 @@ async fn test_table_history_matching_first_registrations_merge() {
     left.commit().await.unwrap();
     right.commit().await.unwrap();
     let raw = database.get_store_viewer::<RawTable>("rows").await.unwrap();
-    assert_eq!(raw.row_codec_id().await.unwrap(), "raw:v1");
+    assert_eq!(raw.row_codec_id().await.unwrap(), "raw:v0");
     assert_eq!(
         raw.scan_page(None, 10).await.unwrap().rows,
         vec![("left".into(), vec![0xff]), ("right".into(), vec![0])]

@@ -103,6 +103,19 @@ impl<B: BackendImpl> BackendImpl for Recordless<B> {
         self.0.get(id).await
     }
 
+    async fn get_source_entry(&self, id: &ID) -> Result<Entry> {
+        self.0.get_source_entry(id).await
+    }
+
+    async fn current_source_frontiers(
+        &self,
+        tree: &ID,
+        main: &Snapshot,
+        stores: &[&str],
+    ) -> Result<Option<Vec<Snapshot>>> {
+        self.0.current_source_frontiers(tree, main, stores).await
+    }
+
     async fn get_verification_status(&self, id: &ID) -> Result<VerificationStatus> {
         self.0.get_verification_status(id).await
     }

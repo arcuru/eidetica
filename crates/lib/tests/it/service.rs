@@ -36,6 +36,7 @@ use crate::helpers::LocalBackendTestExt;
 mod private_assistance;
 mod query;
 mod sdk_cache;
+mod table_query;
 
 /// Read the next server frame and unwrap it as a `ServiceResponse`. Tests
 /// that drive the server at the raw protocol layer don't subscribe to
@@ -3298,8 +3299,11 @@ async fn test_opaque_table_cold_socket_projection_preserves_exact_bytes() {
     let records = memory.store_state_records(&root, "opaque_rows").unwrap();
     for (index, bytes) in payloads.iter().enumerate() {
         assert_eq!(
-            records.get(index.to_string().as_bytes()),
-            Some(&Some(bytes.clone()))
+            records
+                .get(index.to_string().as_bytes())
+                .and_then(|value| value.as_ref())
+                .map(|value| &value[b"eidetica/query-record/v0\0".len() + 64..]),
+            Some(bytes.as_slice())
         );
     }
     assert_eq!(table.scan_page(None, 3).await.unwrap().rows.len(), 3);
@@ -3420,8 +3424,8 @@ async fn test_encrypted_table_recordless_socket_reads_ordered_history() {
     task.await.unwrap().unwrap();
 }
 
-/// A warm encrypted `Table` point read stays on the service's point-record
-/// path: it neither scans the published row set nor reconstructs Store history.
+/// Warm encrypted Table reads use a bounded private exact-key page, not client
+/// history replay. Daemon source validation still has its own metadata cost.
 #[tokio::test]
 async fn test_warm_encrypted_table_service_point_read_is_lazy() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
@@ -3507,13 +3511,13 @@ async fn test_warm_encrypted_table_service_point_read_is_lazy() {
     assert_eq!(table.get("c").await.unwrap().title, "c");
     assert_eq!(
         memory.store_state_read_counts(),
-        (before_records.0 + 3, before_records.1),
-        "a warm point read fetches PasswordStore metadata and one table row without scanning"
+        (before_records.0 + 2, before_records.1 + 1),
+        "a warm point read fetches metadata and one bounded exact-key private page"
     );
     assert_eq!(
         memory.store_history_read_count(),
         before_history,
-        "a warm point read must not reconstruct Store history"
+        "no legacy whole-history Store fold is needed; source metadata validation remains separate"
     );
 }
 

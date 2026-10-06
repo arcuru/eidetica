@@ -1,4 +1,4 @@
-//! Public table:v1 building-block tests, without Table or backend integration.
+//! Public table:v0.1 building-block tests, without Table or backend integration.
 
 use std::collections::BTreeMap;
 
