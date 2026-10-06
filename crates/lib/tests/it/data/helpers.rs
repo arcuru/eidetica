@@ -141,7 +141,7 @@ pub fn create_mixed_map() -> Node {
 }
 
 /// Test serialization roundtrip for a Node
-pub fn test_serialization_roundtrip(map: &Node) -> Result<()> {
+pub fn test_serialization_roundtrip(map: &Node) -> Result<Doc> {
     let serialized = serde_json::to_string(map).expect("Serialization failed");
     let deserialized: Doc = serde_json::from_str(&serialized).expect("Deserialization failed");
 
@@ -160,7 +160,7 @@ pub fn test_serialization_roundtrip(map: &Node) -> Result<()> {
         );
     }
 
-    Ok(())
+    Ok(deserialized)
 }
 
 /// Assert that a value is a Map with expected content
