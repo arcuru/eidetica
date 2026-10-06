@@ -236,7 +236,7 @@ impl Backend for RemoteBackend {
         expected_type: &str,
         source: &crate::store::query::QuerySource,
     ) -> Result<crate::store::source::StoreSource> {
-        self.conn
+        self.connection()
             .store_source(
                 tree.clone(),
                 self.identity(),
@@ -252,7 +252,7 @@ impl Backend for RemoteBackend {
         tree: &ID,
         request: &crate::store::source::RawStoreRequest,
     ) -> Result<crate::store::source::RawStorePage> {
-        self.conn
+        self.connection()
             .raw_store_page(tree.clone(), self.identity(), request.clone())
             .await
     }
