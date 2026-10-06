@@ -63,7 +63,7 @@ pub(crate) fn decode_source<D: Codec + 'static>(
                         == &PasswordStore::<Table<Vec<u8>, RawBytes>>::state_model()
                             .descriptor()) =>
         {
-            tracing::warn!(store, entry = %entry.id(), "Skipping unreadable table:v1 Entry payload");
+            tracing::warn!(store, entry = %entry.id(), "Skipping unreadable table:v0.1 Entry payload");
             Ok(None)
         }
         Err(error) => Err(error),

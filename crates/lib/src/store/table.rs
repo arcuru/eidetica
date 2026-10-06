@@ -111,7 +111,7 @@ pub struct RawTable {
 
 impl Registered for RawTable {
     fn type_id() -> &'static str {
-        "table:v1"
+        "table:v0.1"
     }
 }
 
@@ -165,22 +165,32 @@ impl RawTable {
 
     /// Read exact row bytes without invoking an application decoder.
     pub async fn get(&self, key: impl AsRef<str>) -> Result<Vec<u8>> {
+        self.get_planned(key.as_ref()).await
+    }
+
+    pub(super) async fn get_planned(&self, key: &str) -> Result<Vec<u8>> {
         self.row_codec_id().await?;
-        let key = key.as_ref();
-        self.txn
-            .projected_get(&self.name, &TableProjection, key.as_bytes())
-            .await?
-            .ok_or_else(|| {
-                StoreError::KeyNotFound {
-                    store: self.name.clone(),
-                    key: key.into(),
-                }
-                .into()
-            })
+        let value = self.txn.table_query_get(&self.name, key.as_bytes()).await?;
+        self.row_codec_id().await?;
+        value.ok_or_else(|| {
+            StoreError::KeyNotFound {
+                store: self.name.clone(),
+                key: key.into(),
+            }
+            .into()
+        })
     }
 
     /// Read one bounded page in persisted record-key order.
     pub async fn scan_page(
+        &self,
+        cursor: Option<&TableCursor>,
+        limit: usize,
+    ) -> Result<TablePage<Vec<u8>>> {
+        self.scan_planned(cursor, limit).await
+    }
+
+    pub(super) async fn scan_planned(
         &self,
         cursor: Option<&TableCursor>,
         limit: usize,
@@ -196,9 +206,7 @@ async fn raw_scan_page(
     cursor: Option<&TableCursor>,
     limit: usize,
 ) -> Result<TablePage<Vec<u8>>> {
-    let (page, next) = txn
-        .projected_record_scan_page(name, &TableProjection, cursor, limit)
-        .await?;
+    let (page, next) = txn.table_query_scan(name, cursor, limit).await?;
     let rows = page
         .records
         .into_iter()
@@ -217,7 +225,7 @@ async fn raw_scan_page(
     Ok(TablePage { rows, next })
 }
 
-struct TableProjection;
+pub(crate) struct TableProjection;
 
 impl RecordProjection<TableData> for TableProjection {
     fn server_store_type(&self) -> Option<&'static str> {
@@ -226,7 +234,7 @@ impl RecordProjection<TableData> for TableProjection {
 
     fn descriptor(&self) -> ProjectionDescriptor {
         ProjectionDescriptor {
-            name: "eidetica/table/rows/opaque:v1".to_string(),
+            name: "eidetica/table/rows/opaque:v0.1".to_string(),
             version: 1,
         }
     }
@@ -256,6 +264,10 @@ pub struct TableCursor(pub(crate) CursorKind);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CursorKind {
+    Query {
+        cursor: Box<TableCursor>,
+        format: crate::transaction::TableFormatStamp,
+    },
     Projected {
         view: Uuid,
         revision: u64,
@@ -297,7 +309,8 @@ pub struct TablePage<T> {
 /// Rows persist exactly as `C` encodes them, inside strict DAG-CBOR [`TableData`].
 /// Projection is independent of `T` and `C`. Configuration binds typed access
 /// to `C::FORMAT_ID`; [`RawTable`] inspects rows without an application decoder.
-/// Full causal historical identity enforcement is still being integrated.
+/// LWW-winning configuration selects the format; unreadable winning rows are
+/// skipped with privacy-safe warnings, never replaced by older values.
 /// No decoder or migration accepts `table:v0` data.
 pub struct Table<T, C = SerdeJson> {
     name: String,
@@ -317,7 +330,7 @@ impl<T, C> Clone for Table<T, C> {
 
 impl<T, C: RowCodec<T>> Registered for Table<T, C> {
     fn type_id() -> &'static str {
-        "table:v1"
+        "table:v0.1"
     }
 }
 
@@ -387,8 +400,10 @@ impl<T, C: RowCodec<T>> Table<T, C> {
     /// * The winning row cannot be decoded (`Error::NotFound`, with a warning)
     /// * Configuration, authorization, decryption or storage fails
     pub async fn get(&self, key: impl AsRef<str>) -> Result<T> {
-        let key = key.as_ref();
+        self.get_planned(key.as_ref()).await
+    }
 
+    pub(super) async fn get_planned(&self, key: &str) -> Result<T> {
         if check_row_codec(&self.txn, &self.name, Some(C::FORMAT_ID), true)
             .await?
             .is_none()
@@ -399,12 +414,9 @@ impl<T, C: RowCodec<T>> Table<T, C> {
             }
             .into());
         }
-        match self
-            .txn
-            .projected_get(&self.name, &TableProjection, key.as_bytes())
-            .await?
-            .and_then(|bytes| self.decode_row(&bytes))
-        {
+        let value = self.txn.table_query_get(&self.name, key.as_bytes()).await?;
+        check_row_codec(&self.txn, &self.name, Some(C::FORMAT_ID), true).await?;
+        match value.and_then(|bytes| self.decode_row(&bytes)) {
             Some(row) => Ok(row),
             None => Err(StoreError::KeyNotFound {
                 store: self.name.clone(),
@@ -532,6 +544,13 @@ impl<T, C: RowCodec<T>> Table<T, C> {
     /// # Errors
     /// Returns an error if there's a serialization error or the operation fails
     pub async fn search(&self, query: impl Fn(&T) -> bool) -> Result<Vec<(String, T)>> {
+        self.search_planned(query).await
+    }
+
+    pub(super) async fn search_planned(
+        &self,
+        query: impl Fn(&T) -> bool,
+    ) -> Result<Vec<(String, T)>> {
         let mut result = Vec::new();
         let mut cursor = None;
         loop {
@@ -559,6 +578,14 @@ impl<T, C: RowCodec<T>> Table<T, C> {
     /// an empty page may still have a continuation cursor. The limit bounds
     /// inspected records, not the number of successfully decoded rows.
     pub async fn scan_page(
+        &self,
+        cursor: Option<&TableCursor>,
+        limit: usize,
+    ) -> Result<TablePage<T>> {
+        self.scan_planned(cursor, limit).await
+    }
+
+    pub(super) async fn scan_planned(
         &self,
         cursor: Option<&TableCursor>,
         limit: usize,

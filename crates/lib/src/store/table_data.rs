@@ -1,4 +1,4 @@
-//! Concrete operation/state encoding for the `table:v1` format.
+//! Concrete operation/state encoding for the `table:v0.1` format.
 
 use serde_bytes::ByteBuf;
 
@@ -7,7 +7,7 @@ use crate::crdt::{CRDT, CRDTError, Codec, LwwMap};
 
 /// Exact-key LWW operations with opaque application row bytes.
 ///
-/// The `table:v1` envelope is a DAG-CBOR sequence of key/operation pairs in
+/// The `table:v0.1` envelope is a DAG-CBOR sequence of key/operation pairs in
 /// UTF-8 lexicographic key order, with `Set` payloads encoded as byte strings.
 /// Tombstones remain part of both encoded operations and reduced state. Row
 /// bytes are never parsed or normalized, and this representation is independent
@@ -52,10 +52,10 @@ impl Codec for TableData {
             }
         })?);
         // The dependency accepts alternate lengths and pair order. Only the
-        // encoder's exact envelope is the table:v1 format.
+        // encoder's exact envelope is the table:v0.1 format.
         if data.encode()? != bytes {
             return Err(CRDTError::DeserializationFailed {
-                reason: "noncanonical table:v1 DAG-CBOR envelope".into(),
+                reason: "noncanonical table:v0.1 DAG-CBOR envelope".into(),
             }
             .into());
         }

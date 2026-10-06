@@ -18,8 +18,7 @@
 pub mod errors;
 mod private_read;
 mod record_read;
-#[allow(unused_imports)] // Consumed by record-shaped Store plans in the next layer.
-pub(crate) use record_read::RecordRead;
+mod table_read;
 
 #[cfg(test)]
 mod tests;
@@ -251,7 +250,7 @@ pub struct Transaction {
 }
 
 /// A transaction-local witness; never persisted or shared across transaction views.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TableFormatStamp {
     index_parents: Vec<ID>,
     index_data: Option<Vec<u8>>,
