@@ -39,6 +39,19 @@ use crate::user::system_databases::lookup_user_record;
 /// diagnostic now — registry-based routing went away in the per-db
 /// callback refactor.
 type ConnectionId = u64;
+// A response acknowledgment prevents pipelined requests from retaining an
+// unbounded queue of large frames; notifications keep their existing ordering.
+type QueuedFrame = (
+    ServerFrame,
+    Option<tokio::sync::oneshot::Sender<()>>,
+    Option<crate::store::source::Work>,
+);
+struct WriterGuard(tokio::task::AbortHandle);
+impl Drop for WriterGuard {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
 
 /// How long an idle session token survives before the next dispatch reclaims
 /// its backend resources.
@@ -73,12 +86,14 @@ struct SessionStaging {
 /// per-tree callback list, no separate fan-out mechanism required.
 struct ConnectionContext {
     conn_id: ConnectionId,
-    tx: mpsc::UnboundedSender<ServerFrame>,
+    tx: mpsc::UnboundedSender<QueuedFrame>,
     instance: Instance,
     subscribed: std::sync::Mutex<HashMap<ID, CallbackId>>,
     staging: std::sync::Mutex<HashMap<String, SessionStaging>>,
     token_idle_ttl: Duration,
     query_handlers: Vec<crate::store::query::QueryHandler>,
+    sources: Arc<crate::store::source::Sources>,
+    response_work: std::sync::Mutex<Option<crate::store::source::Work>>,
 }
 
 impl ConnectionContext {
@@ -121,6 +136,7 @@ impl Drop for ConnectionGuard {
             self.ctx.instance.remove_write_callback(tree_id, *id);
         }
         drop(subs);
+        self.ctx.sources.disconnect(self.ctx.conn_id);
     }
 }
 
@@ -183,6 +199,7 @@ enum ConnectionState {
 pub struct ServiceServer {
     instance: Instance,
     query_handlers: Vec<crate::store::query::QueryHandler>,
+    sources: Arc<crate::store::source::Sources>,
     socket_path: PathBuf,
     listener: UnixListener,
     socket_identity: SocketIdentity,
@@ -259,6 +276,10 @@ impl ServiceServer {
         Ok(Self {
             instance,
             query_handlers: crate::store::query::default_handlers(),
+            sources: Arc::new(crate::store::source::Sources::new(
+                crate::store::source::Limits::default(),
+                token_idle_ttl,
+            )),
             socket_path,
             listener,
             socket_identity,
@@ -300,9 +321,10 @@ impl ServiceServer {
                             let instance = self.instance.clone();
                             let token_idle_ttl = self.token_idle_ttl;
                             let query_handlers = self.query_handlers.clone();
+                            let sources = self.sources.clone();
                             let conn_id = next_conn_id.fetch_add(1, Ordering::Relaxed);
                             handlers.spawn(async move {
-                                if let Err(e) = handle_connection(stream, instance, conn_id, token_idle_ttl, query_handlers).await {
+                                if let Err(e) = handle_connection(stream, instance, conn_id, token_idle_ttl, query_handlers, sources).await {
                                     tracing::debug!(conn_id, "Connection handler error: {e}");
                                 }
                             });
@@ -555,7 +577,7 @@ impl Drop for ServiceServer {
 /// I/O is split across two tasks:
 ///
 /// - **Writer task** (spawned below) owns the `WriteHalf` and drains an
-///   `mpsc::UnboundedReceiver<ServerFrame>` into `write_frame` in
+///   `mpsc::UnboundedReceiver<QueuedFrame>` into `write_frame` in
 ///   submission order. Responses (dispatched from the request loop) and
 ///   server-pushed notifications (from subscribed per-db callbacks both
 ///   capture clones of the same `frame_tx`, so a single connection-local
@@ -575,6 +597,7 @@ async fn handle_connection(
     conn_id: ConnectionId,
     token_idle_ttl: Duration,
     query_handlers: Vec<crate::store::query::QueryHandler>,
+    sources: Arc<crate::store::source::Sources>,
 ) -> crate::Result<()> {
     let (mut reader, mut writer) = tokio::io::split(stream);
 
@@ -640,16 +663,21 @@ async fn handle_connection(
     // and calls `ids_added(cursor, post_tips)` to catch up. That makes
     // drop-oldest the right policy and considerably softens the cost of
     // dropping at all — but the work still needs doing for prod.
-    let (frame_tx, mut frame_rx) = mpsc::unbounded_channel::<ServerFrame>();
+    let (frame_tx, mut frame_rx) = mpsc::unbounded_channel::<QueuedFrame>();
     let writer_task = tokio::spawn(async move {
-        while let Some(frame) = frame_rx.recv().await {
+        while let Some((frame, written, work)) = frame_rx.recv().await {
             if let Err(e) = write_frame(&mut writer, &frame).await {
                 tracing::debug!(conn_id, "Connection writer error: {e}");
                 break;
             }
+            drop(work);
+            if let Some(written) = written {
+                let _ = written.send(());
+            }
         }
     });
 
+    let _writer_guard = WriterGuard(writer_task.abort_handle());
     let ctx = Arc::new(ConnectionContext {
         conn_id,
         tx: frame_tx.clone(),
@@ -658,6 +686,8 @@ async fn handle_connection(
         staging: std::sync::Mutex::new(HashMap::new()),
         token_idle_ttl,
         query_handlers,
+        sources,
+        response_work: std::sync::Mutex::new(None),
     });
     let guard = ConnectionGuard { ctx: ctx.clone() };
 
@@ -672,11 +702,21 @@ async fn handle_connection(
             };
 
             let response = dispatch(&instance, &mut state, &ctx, request).await;
+            let (written, acknowledgment) = tokio::sync::oneshot::channel();
+            let work = ctx.response_work.lock().unwrap().take();
             if frame_tx
-                .send(ServerFrame::Response(Box::new(response)))
+                .send((
+                    ServerFrame::Response(Box::new(response)),
+                    Some(written),
+                    work,
+                ))
                 .is_err()
             {
                 // Writer task has exited; nothing more we can send.
+                break;
+            }
+            let sent = acknowledgment.await;
+            if sent.is_err() {
                 break;
             }
         }
@@ -856,6 +896,43 @@ async fn dispatch_inner(
                 resolve_acting_pubkey(&identity, &login_pubkey, &keyset_snapshot)?
             };
 
+            // Source work admission includes the existing authorization I/O;
+            // the permission gate still precedes all authoritative data use.
+            let reader = crate::store::source::Reader {
+                user: session_user_uuid.clone(),
+                principal: acting_pubkey.to_string(),
+                connection: ctx.conn_id,
+            };
+            let work = match &op {
+                DatabaseOp::QueryStore { request } => {
+                    Some(ctx.sources.admit(&reader, &root_id, request)?)
+                }
+                DatabaseOp::ResolveStoreSource {
+                    store,
+                    expected_type,
+                    source,
+                } => {
+                    let query = crate::store::query::StoreQueryRequest {
+                        store: store.clone(),
+                        expected_type: expected_type.clone(),
+                        source: source.clone(),
+                        query: Vec::new(),
+                    };
+                    Some(ctx.sources.admit(&reader, &root_id, &query)?)
+                }
+                DatabaseOp::ReadRawStore { request } => {
+                    let query = crate::store::query::StoreQueryRequest {
+                        store: request.source.store.clone(),
+                        expected_type: request.source.type_id.clone(),
+                        source: request.source.source.clone(),
+                        query: Vec::new(),
+                    };
+                    Some(ctx.sources.admit(&reader, &root_id, &query)?)
+                }
+                _ => None,
+            };
+            *ctx.response_work.lock().unwrap() = work;
+
             // Per-tree permission gate. Unconditional for every op *except*
             // submit (verification in the handler is its boundary) and
             // set-metadata (gated against `_databases` below). Create-flow
@@ -879,7 +956,12 @@ async fn dispatch_inner(
                     &identity,
                     &root_id,
                     op.required_permission(),
-                    matches!(op, DatabaseOp::QueryStore { .. }),
+                    matches!(
+                        op,
+                        DatabaseOp::QueryStore { .. }
+                            | DatabaseOp::ReadRawStore { .. }
+                            | DatabaseOp::ResolveStoreSource { .. }
+                    ),
                 )
                 .await?;
             }
@@ -943,16 +1025,75 @@ async fn dispatch_database_op(
     op: DatabaseOp,
 ) -> crate::Result<ServiceResponse> {
     match op {
+        DatabaseOp::ResolveStoreSource {
+            store,
+            expected_type,
+            source,
+        } => {
+            let reader = crate::store::source::Reader {
+                user: user_uuid.into(),
+                principal: acting_pubkey.to_string(),
+                connection: ctx.conn_id,
+            };
+            let query = crate::store::query::StoreQueryRequest {
+                store,
+                expected_type,
+                source,
+                query: Vec::new(),
+            };
+            let source = ctx
+                .sources
+                .resolve(
+                    instance.require_local_engine()?.as_ref(),
+                    &reader,
+                    &root_id,
+                    &query,
+                )
+                .await?
+                .source;
+            let response = ServiceResponse::StoreSource(source);
+            crate::store::source::encoded_size(
+                &ServerFrame::Response(Box::new(response.clone())),
+                ctx.sources.limits.page_bytes,
+            )?;
+            Ok(response)
+        }
+        DatabaseOp::ReadRawStore { request } => {
+            let reader = crate::store::source::Reader {
+                user: user_uuid.into(),
+                principal: acting_pubkey.to_string(),
+                connection: ctx.conn_id,
+            };
+            ctx.sources
+                .check_source(&reader, &root_id, &request.source)?;
+            let page = ctx
+                .sources
+                .page(instance.require_local_engine()?.as_ref(), &reader, &request)
+                .await?;
+            Ok(ServiceResponse::RawStore(page))
+        }
         DatabaseOp::QueryStore { request } => {
+            let reader = crate::store::source::Reader {
+                user: user_uuid.into(),
+                principal: acting_pubkey.to_string(),
+                connection: ctx.conn_id,
+            };
             let engine = instance.require_local_engine()?;
             let reply = crate::store::query::execute(
                 engine.as_ref(),
                 &root_id,
                 &request,
                 &ctx.query_handlers,
+                &ctx.sources,
+                &reader,
             )
             .await?;
-            Ok(ServiceResponse::StoreQuery(reply))
+            let response = ServiceResponse::StoreQuery(reply);
+            crate::store::source::encoded_size(
+                &ServerFrame::Response(Box::new(response.clone())),
+                ctx.sources.limits.page_bytes,
+            )?;
+            Ok(response)
         }
         DatabaseOp::ResolveStoreState { request } => {
             let request = session_store_state_request(request, user_uuid, &root_id)?;
@@ -1434,7 +1575,7 @@ async fn dispatch_database_op(
                         post_tips: event.post_tips().clone(),
                         source: event.source(),
                     });
-                    let _ = tx.send(frame);
+                    let _ = tx.send((frame, None, None));
                     async move { Ok(()) }
                 },
             );

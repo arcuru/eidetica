@@ -551,6 +551,13 @@ pub trait BackendImpl: Send + Sync + Any {
     /// Returns an owned copy to support concurrent access with internal synchronization.
     async fn get(&self, id: &ID) -> Result<Entry>;
 
+    /// Fetch one canonical source Entry under the fixed source page ceiling,
+    /// checking stored size before cloning/loading its payload where possible.
+    /// The new source path never defaults to an unbounded whole-history read.
+    async fn get_source_entry(&self, _id: &ID) -> Result<Entry> {
+        Err(crate::backend::BackendError::SourceReadUnsupported.into())
+    }
+
     /// Gets the verification status of an entry.
     ///
     /// # Arguments
@@ -639,6 +646,19 @@ pub trait BackendImpl: Send + Sync + Any {
     /// * `tree` - The root ID of the parent tree.
     /// * `store` - The name of the store for which to find tips.
     async fn store_snapshot(&self, tree: &ID, store: &str) -> Result<Snapshot>;
+
+    /// Atomically return current Store frontiers only if `main` equals current
+    /// main tips. Bound the fetched frontier before allocating; `None` means a
+    /// historical boundary, not empty Store data. Internal resource ceiling,
+    /// never a wire/caller budget. Custom engines explicitly lack this capability.
+    async fn current_source_frontiers(
+        &self,
+        _tree: &ID,
+        _main: &Snapshot,
+        _stores: &[&str],
+    ) -> Result<Option<Vec<Snapshot>>> {
+        Err(crate::backend::BackendError::SourceReadUnsupported.into())
+    }
 
     /// Returns the store snapshot as of a specific main-tree snapshot.
     ///

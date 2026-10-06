@@ -9,9 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Result, Snapshot,
-    backend::{BackendImpl, VerificationStatus},
-    constants::INDEX,
-    crdt::{CRDT, Codec, Doc},
+    backend::BackendImpl,
+    crdt::{CRDT, Codec},
     entry::{Entry, ID},
     store::{DocStore, Registered, Store, StoreError},
 };
@@ -65,6 +64,29 @@ pub enum QueryOutcome {
 pub struct StoreQueryReply {
     pub source: QuerySource,
     pub outcome: QueryOutcome,
+    /// Only explicit refusal supplies an authenticated raw source for fallback.
+    pub raw_source: Option<super::source::StoreSource>,
+}
+
+impl StoreQueryReply {
+    pub fn validate(&self, tree: &ID, request: &StoreQueryRequest) -> Result<()> {
+        let valid = self.source == request.source
+            && match (&self.outcome, &self.raw_source) {
+                (QueryOutcome::Result(_), None) => true,
+                (QueryOutcome::Unavailable, Some(raw)) => {
+                    &raw.database == tree
+                        && raw.store == request.store
+                        && raw.type_id == request.expected_type
+                        && raw.source == request.source
+                        && !raw.seal.is_empty()
+                }
+                _ => false,
+            };
+        if !valid {
+            return Err(crate::backend::BackendError::InvalidRawSource.into());
+        }
+        Ok(())
+    }
 }
 
 /// Read-only context created after outer type and complete source validation.
@@ -181,112 +203,38 @@ fn fold_entries<D: CRDT + Codec>(store: &str, entries: &[Entry]) -> Result<D> {
     Ok(state)
 }
 
-async fn validate_posture(
-    engine: &dyn BackendImpl,
-    request: &StoreQueryRequest,
-    entries: &[Entry],
-) -> Result<()> {
-    for entry in entries {
-        let status = engine.get_verification_status(entry.id_ref()).await?;
-        if status == VerificationStatus::Failed
-            || (request.source.scope == ReadScope::Verified
-                && status != VerificationStatus::Verified)
-        {
-            return Err(StoreError::InvalidOperation {
-                store: request.store.clone(),
-                operation: "query".into(),
-                reason: format!(
-                    "source entry {} does not permit {:?}",
-                    entry.id(),
-                    request.source.scope
-                ),
-            }
-            .into());
-        }
-    }
-    Ok(())
-}
-
 pub(crate) async fn execute(
     engine: &dyn BackendImpl,
     tree: &ID,
     request: &StoreQueryRequest,
     handlers: &[QueryHandler],
+    sources: &super::source::Sources,
+    reader: &super::source::Reader,
 ) -> Result<StoreQueryReply> {
-    if request.source.main.is_empty() {
-        return Err(crate::transaction::TransactionError::EmptyTipsNotAllowed.into());
-    }
-    // The historical traversal rejects foreign and incomplete ancestry even
-    // when a raw tip cache claims this is the latest boundary.
-    let entries = engine
-        .get_tree_from_tips(tree, request.source.main.tips())
-        .await?;
-    if !entries.iter().any(|e| e.id_ref() == tree && e.is_root()) {
-        return Err(StoreError::InvalidOperation {
-            store: request.store.clone(),
-            operation: "query".into(),
-            reason: "source does not reach the database root".into(),
-        }
-        .into());
-    }
-    validate_posture(engine, request, &entries).await?;
-    let index_snapshot = engine
-        .store_snapshot_at(tree, INDEX, &request.source.main)
-        .await?;
-    let index_entries = engine.store_at(tree, INDEX, &index_snapshot).await?;
-    validate_posture(engine, request, &index_entries).await?;
-    let index = fold_entries::<Doc>(INDEX, &index_entries)?;
-    let metadata = index
-        .get(&request.store)
-        .and_then(|v| v.as_doc())
-        .ok_or_else(|| StoreError::InvalidConfiguration {
-            store: request.store.clone(),
-            reason: "Store is not registered at the requested source".into(),
-        })?;
-    let actual = metadata
-        .get("type")
-        .and_then(|v| v.as_text())
-        .ok_or_else(|| StoreError::InvalidConfiguration {
-            store: request.store.clone(),
-            reason: "source registration has no Store type".into(),
-        })?;
-    if actual != request.expected_type {
-        return Err(StoreError::TypeMismatch {
-            store: request.store.clone(),
-            expected: actual.into(),
-            actual: request.expected_type.clone(),
-        }
-        .into());
-    }
-    // In particular, an unlocked inner handle cannot select plaintext code
-    // for encrypted:password:v0 by asserting its hidden inner type.
+    let bound = sources.resolve(engine, reader, tree, request).await?;
     let handler = handlers
         .iter()
-        .find(|h| h.type_id == actual && !is_encrypted(actual));
+        .find(|h| h.type_id == bound.source.type_id && !is_encrypted(h.type_id));
     let outcome = if let Some(handler) = handler {
-        let type_id = actual.to_string();
-        let snapshot = engine
-            .store_snapshot_at(tree, &request.store, &request.source.main)
-            .await?;
-        // Store ancestry is distinct from main ancestry. Use the same pinned
-        // Store tips and canonical replay order as established Store reads.
-        let entries = engine.store_at(tree, &request.store, &snapshot).await?;
-        validate_posture(engine, request, &entries).await?;
         let context = StoreQueryContext {
             store: request.store.clone(),
-            type_id,
+            type_id: bound.source.type_id.clone(),
             source: request.source.clone(),
-            entries,
-            snapshot,
+            entries: bound.entries,
+            snapshot: bound.source.snapshot.clone(),
         };
         (handler.dispatch)(&context, &request.query).await?
     } else {
         QueryOutcome::Unavailable
     };
-    Ok(StoreQueryReply {
+    let raw_source = (outcome == QueryOutcome::Unavailable).then_some(bound.source);
+    let reply = StoreQueryReply {
         source: request.source.clone(),
         outcome,
-    })
+        raw_source,
+    };
+    super::source::encoded_size(&reply, sources.limits.page_bytes.saturating_sub(128))?;
+    Ok(reply)
 }
 
 #[cfg(test)]

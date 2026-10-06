@@ -77,6 +77,27 @@ pub trait Backend: Send + Sync + std::fmt::Debug {
         .into())
     }
 
+    /// Resolve a named Store's canonical raw source without invoking its query
+    /// implementation. Raw inspection uses the same type/posture validation.
+    async fn store_source(
+        &self,
+        _tree: &ID,
+        _store: &str,
+        _expected_type: &str,
+        _source: &crate::store::query::QuerySource,
+    ) -> Result<crate::store::source::StoreSource> {
+        Err(BackendError::SourceReadUnsupported.into())
+    }
+
+    /// Read canonical Entries, not daemon-merged unknown Store data.
+    async fn raw_store_page(
+        &self,
+        _tree: &ID,
+        _request: &crate::store::source::RawStoreRequest,
+    ) -> Result<crate::store::source::RawStorePage> {
+        Err(BackendError::SourceReadUnsupported.into())
+    }
+
     async fn resolve_store_state(
         &self,
         _request: &StoreStateRequest,

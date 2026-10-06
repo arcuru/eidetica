@@ -76,6 +76,34 @@ impl Backend for RemoteBackend {
             .await
     }
 
+    async fn store_source(
+        &self,
+        tree: &ID,
+        store: &str,
+        expected_type: &str,
+        source: &crate::store::query::QuerySource,
+    ) -> Result<crate::store::source::StoreSource> {
+        self.conn
+            .store_source(
+                tree.clone(),
+                self.identity(),
+                store.into(),
+                expected_type.into(),
+                source.clone(),
+            )
+            .await
+    }
+
+    async fn raw_store_page(
+        &self,
+        tree: &ID,
+        request: &crate::store::source::RawStoreRequest,
+    ) -> Result<crate::store::source::RawStorePage> {
+        self.conn
+            .raw_store_page(tree.clone(), self.identity(), request.clone())
+            .await
+    }
+
     async fn resolve_store_state(&self, request: &StoreStateRequest) -> Result<Option<RecordView>> {
         let view = self
             .conn

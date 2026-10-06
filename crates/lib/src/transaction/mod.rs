@@ -293,7 +293,162 @@ impl Transaction {
             }
             .into());
         }
+        reply.validate(self.db.root_id(), &request)?;
         Ok(reply)
+    }
+
+    /// Explicit raw inspection. A capability fallback must instead retain the
+    /// sealed source from its original refusal, not resolve this source again.
+    pub async fn raw_store_source(
+        &self,
+        store: &str,
+        expected_type: &str,
+    ) -> Result<crate::store::source::StoreSource> {
+        let source = self.query_source()?;
+        let raw = self
+            .db
+            .ops()
+            .store_source(self.db.root_id(), store, expected_type, &source)
+            .await?;
+        if raw.database != *self.db.root_id()
+            || raw.store != store
+            || raw.type_id != expected_type
+            || raw.source != source
+            || raw.seal.is_empty()
+        {
+            return Err(crate::backend::BackendError::InvalidRawSource.into());
+        }
+        Ok(raw)
+    }
+
+    /// Minimal Store-owned capability fallback. The Store chooses its delegated
+    /// message, remote result decoder, and local result mapping. Only explicit
+    /// refusal folds raw canonical deltas; malformed/size/auth/source/codec/I/O
+    /// errors propagate. No staged values or private materialization is published.
+    pub async fn query_store_or_fold<D: CRDT + Codec, T>(
+        &self,
+        store: &str,
+        outer_type: &str,
+        query: Vec<u8>,
+        remote: impl FnOnce(&[u8]) -> Result<T>,
+        local: impl FnOnce(D) -> Result<T>,
+    ) -> Result<T> {
+        let reply = self.query_store(store, outer_type, query).await?;
+        match reply.outcome {
+            crate::store::query::QueryOutcome::Result(bytes) => remote(&bytes),
+            crate::store::query::QueryOutcome::Unavailable => {
+                let source = reply
+                    .raw_source
+                    .ok_or(crate::backend::BackendError::InvalidRawSource)?;
+                local(self.fold_raw_source::<D>(&source).await?)
+            }
+        }
+    }
+
+    /// Reconstruct one sealed committed source, strictly with the installed
+    /// client codec and (for protected Stores) the already-unlocked encryptor.
+    /// Expired cursors get at most one same-source replay, with every discarded
+    /// Entry ID checked against previously consumed history. No fresh-tip RPC.
+    pub async fn fold_raw_source<D: CRDT + Codec>(
+        &self,
+        source: &crate::store::source::StoreSource,
+    ) -> Result<D> {
+        use crate::backend::BackendError;
+        use crate::store::source::{Limits, RawStoreRequest};
+        if source.database != *self.db.root_id() || source.source != self.query_source()? {
+            return Err(BackendError::InvalidRawSource.into());
+        }
+        if source.type_id.starts_with("encrypted:")
+            && !self.encryptors.lock().unwrap().contains_key(&source.store)
+        {
+            return Err(StoreError::InvalidOperation {
+                store: source.store.clone(),
+                operation: "raw fold".into(),
+                reason: "encrypted Store must be unlocked client-side".into(),
+            }
+            .into());
+        }
+        let limits = Limits::default();
+        let mut request = RawStoreRequest {
+            source: source.clone(),
+            cursor: None,
+        };
+        let mut state = D::default();
+        let mut consumed = Vec::new();
+        let mut required: std::collections::HashSet<ID> =
+            source.snapshot.tips().iter().cloned().collect();
+        let mut edges = 0;
+        let mut bytes = 0;
+        let mut replay = None;
+        let mut recovered = false;
+        let mut previous = None;
+        loop {
+            let page = match self
+                .db
+                .ops()
+                .raw_store_page(self.db.root_id(), &request)
+                .await
+            {
+                Ok(page) => page,
+                Err(crate::Error::Backend(e))
+                    if matches!(*e, BackendError::InvalidRawCursor) && !recovered =>
+                {
+                    tracing::debug!(store = %source.store, "raw cursor expired; replaying the original sealed source once");
+                    recovered = true;
+                    replay = Some(0usize);
+                    request.cursor = None;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            page.validate(&request)?;
+            for entry in &page.entries {
+                if let Some(ref mut offset) = replay {
+                    if *offset < consumed.len() {
+                        if consumed[*offset] != entry.id() {
+                            return Err(BackendError::InvalidRawSource.into());
+                        }
+                        *offset += 1;
+                        continue;
+                    }
+                    replay = None;
+                }
+                let order = (entry.subtree_height(&source.store)?, entry.id());
+                if previous.as_ref().is_some_and(|p| p >= &order) || consumed.len() >= limits.nodes
+                {
+                    return Err(BackendError::InvalidRawSource.into());
+                }
+                bytes += crate::store::source::encoded_size(entry, limits.page_bytes)?;
+                if bytes > limits.source_bytes {
+                    return Err(BackendError::SourceTooLarge.into());
+                }
+                if let Ok(payload) = entry.data(&source.store)
+                    && !payload.is_empty()
+                {
+                    let plaintext = self.decrypt_if_needed(&source.store, payload)?;
+                    state = state.merge(&D::decode(&plaintext)?)?;
+                }
+                let parents = entry.subtree_parents(&source.store)?;
+                edges += parents.len();
+                if edges > limits.nodes * 8 {
+                    return Err(BackendError::SourceTooLarge.into());
+                }
+                required.extend(parents);
+                consumed.push(entry.id());
+                previous = Some(order);
+            }
+            if page.next.is_none() {
+                if replay.is_some_and(|offset| offset < consumed.len()) {
+                    return Err(BackendError::InvalidRawSource.into());
+                }
+                let delivered: std::collections::HashSet<_> = consumed.iter().collect();
+                if required.iter().any(|id| !delivered.contains(id)) {
+                    return Err(BackendError::InvalidRawPage.into());
+                }
+                return Ok(state);
+            }
+            request.cursor = page.next;
+        }
     }
 
     /// Creates a new atomic transaction for a specific `Database` anchored at a snapshot.

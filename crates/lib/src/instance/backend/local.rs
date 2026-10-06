@@ -27,6 +27,7 @@ use crate::{
 pub struct LocalBackend {
     engine: Arc<dyn BackendImpl>,
     query_handlers: Vec<crate::store::query::QueryHandler>,
+    sources: Arc<crate::store::source::Sources>,
 }
 
 impl LocalBackend {
@@ -41,6 +42,7 @@ impl LocalBackend {
         Self {
             engine,
             query_handlers: crate::store::query::default_handlers(),
+            sources: Arc::new(crate::store::source::Sources::default()),
         }
     }
 }
@@ -54,7 +56,57 @@ impl std::fmt::Debug for LocalBackend {
 #[async_trait]
 impl Backend for LocalBackend {
     async fn query_store(&self, tree: &ID, request: &StoreQueryRequest) -> Result<StoreQueryReply> {
-        crate::store::query::execute(self.engine.as_ref(), tree, request, &self.query_handlers)
+        let reader = crate::store::source::Reader::local();
+        let _work = self.sources.admit(&reader, tree, request)?;
+        crate::store::query::execute(
+            self.engine.as_ref(),
+            tree,
+            request,
+            &self.query_handlers,
+            &self.sources,
+            &reader,
+        )
+        .await
+    }
+
+    async fn store_source(
+        &self,
+        tree: &ID,
+        store: &str,
+        expected_type: &str,
+        source: &crate::store::query::QuerySource,
+    ) -> Result<crate::store::source::StoreSource> {
+        let reader = crate::store::source::Reader::local();
+        let query = StoreQueryRequest {
+            store: store.into(),
+            expected_type: expected_type.into(),
+            source: source.clone(),
+            query: Vec::new(),
+        };
+        let _work = self.sources.admit(&reader, tree, &query)?;
+        Ok(self
+            .sources
+            .resolve(self.engine.as_ref(), &reader, tree, &query)
+            .await?
+            .source)
+    }
+
+    async fn raw_store_page(
+        &self,
+        tree: &ID,
+        request: &crate::store::source::RawStoreRequest,
+    ) -> Result<crate::store::source::RawStorePage> {
+        let reader = crate::store::source::Reader::local();
+        self.sources.check_source(&reader, tree, &request.source)?;
+        let query = crate::store::query::StoreQueryRequest {
+            store: request.source.store.clone(),
+            expected_type: request.source.type_id.clone(),
+            source: request.source.source.clone(),
+            query: Vec::new(),
+        };
+        let _work = self.sources.admit(&reader, tree, &query)?;
+        self.sources
+            .page(self.engine.as_ref(), &reader, request)
             .await
     }
 

@@ -6,7 +6,7 @@ use crate::{
     Result,
     crdt::{Codec, doc::Value},
     store::query::{QueryOutcome, StoreQueryContext, StoreQueryHandler},
-    store::{DocStore, ExecuteQuery, Registered, Store, StoreError},
+    store::{DocStore, ExecuteQuery, Registered, Store},
 };
 
 /// Borrowed public point query. Existing DocStore convenience methods remain
@@ -56,26 +56,18 @@ impl<'q> ExecuteQuery<GetValue<'q>> for DocStore {
         {
             return Ok(None);
         }
-        let reply = self
-            .transaction()
-            .query_store(
+        self.transaction()
+            .query_store_or_fold::<crate::crdt::Doc, _>(
                 self.name(),
                 Self::type_id(),
                 DocQuery::Get {
                     key: query.0.into(),
                 }
                 .encode()?,
+                |bytes| Ok(serde_json::from_slice(bytes)?),
+                |state| Ok(state.get(query.0).cloned()),
             )
-            .await?;
-        match reply.outcome {
-            QueryOutcome::Result(bytes) => Ok(serde_json::from_slice(&bytes)?),
-            QueryOutcome::Unavailable => Err(StoreError::InvalidOperation {
-                store: self.name().into(),
-                operation: "query".into(),
-                reason: "Doc point-query capability unavailable at the requested source".into(),
-            }
-            .into()),
-        }
+            .await
     }
 }
 

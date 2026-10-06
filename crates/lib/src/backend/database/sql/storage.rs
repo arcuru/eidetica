@@ -786,6 +786,27 @@ pub async fn get(backend: &SqlxBackend, id: &ID) -> Result<Entry> {
     }
 }
 
+/// Bound stored payload before fetching it, then count actual JSON expansion.
+pub async fn get_source_entry(backend: &SqlxBackend, id: &ID) -> Result<Entry> {
+    let cap = crate::store::source::Limits::default().page_bytes;
+    let row: Option<(Option<Vec<u8>>,)> = sqlx::query_as(
+        "SELECT CASE WHEN length(entry_cbor) <= $2 THEN entry_cbor ELSE NULL END FROM entries WHERE id = $1",
+    ).bind(id.to_string()).bind(cap as i64).fetch_optional(backend.pool()).await
+        .sql_context("Failed to get bounded source Entry")?;
+    let bytes = match row {
+        None => return Err(BackendError::EntryNotFound { id: id.clone() }.into()),
+        Some((None,)) => return Err(BackendError::SourceTooLarge.into()),
+        Some((Some(bytes),)) => bytes,
+    };
+    let entry: Entry =
+        serde_ipld_dagcbor::from_slice(&bytes).map_err(|e| BackendError::SqlxError {
+            reason: format!("CBOR deserialization failed: {e}"),
+            source: None,
+        })?;
+    crate::store::source::encoded_size(&entry, cap)?;
+    Ok(entry)
+}
+
 /// Get the verification status of an entry.
 pub async fn get_verification_status(backend: &SqlxBackend, id: &ID) -> Result<VerificationStatus> {
     let pool = backend.pool();

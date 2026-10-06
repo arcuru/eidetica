@@ -48,6 +48,12 @@ pub fn service_error_to_eidetica_error(err: ServiceError) -> crate::Error {
         ("store", "RecordMaintenanceUnavailable") => {
             StoreError::RecordMaintenanceUnavailable { store: err.message }.into()
         }
+        ("backend", "SourceTooLarge") => BackendError::SourceTooLarge.into(),
+        ("backend", "SourceAdmissionRefused") => BackendError::SourceAdmissionRefused.into(),
+        ("backend", "InvalidRawSource") => BackendError::InvalidRawSource.into(),
+        ("backend", "InvalidRawPage") => BackendError::InvalidRawPage.into(),
+        ("backend", "InvalidRawCursor") => BackendError::InvalidRawCursor.into(),
+        ("backend", "SourceReadUnsupported") => BackendError::SourceReadUnsupported.into(),
         ("backend", "StoreStateStorageUnsupported") => {
             BackendError::StoreStateStorageUnsupported.into()
         }
@@ -233,6 +239,12 @@ mod tests {
     #[test]
     fn test_all_mapped_pairs_roundtrip_module_and_kind() {
         let cases: Vec<crate::Error> = vec![
+            BackendError::SourceTooLarge.into(),
+            BackendError::SourceAdmissionRefused.into(),
+            BackendError::InvalidRawSource.into(),
+            BackendError::InvalidRawPage.into(),
+            BackendError::InvalidRawCursor.into(),
+            BackendError::SourceReadUnsupported.into(),
             StoreError::RecordMaintenanceUnavailable {
                 store: "data".into(),
             }

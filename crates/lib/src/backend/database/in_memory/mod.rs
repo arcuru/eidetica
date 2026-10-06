@@ -781,6 +781,19 @@ impl BackendImpl for InMemory {
     ///
     /// # Returns
     /// A `Result` containing the `VerificationStatus` if the entry exists, or a `DatabaseError::VerificationStatusNotFound` otherwise.
+    async fn get_source_entry(&self, id: &ID) -> Result<Entry> {
+        let inner = self.inner.read().unwrap();
+        let entry = inner
+            .entries
+            .get(id)
+            .ok_or_else(|| BackendError::EntryNotFound { id: id.clone() })?;
+        crate::store::source::encoded_size(
+            entry,
+            crate::store::source::Limits::default().page_bytes,
+        )?;
+        Ok(entry.clone())
+    }
+
     async fn get_verification_status(&self, id: &ID) -> Result<VerificationStatus> {
         let inner = self.inner.read().unwrap();
         inner
@@ -874,6 +887,46 @@ impl BackendImpl for InMemory {
         // Slow path: compute and cache with write lock
         let mut inner = self.inner.write().unwrap();
         traversal::store_snapshot(&mut inner, tree, subtree).map(Snapshot::new)
+    }
+
+    async fn current_source_frontiers(
+        &self,
+        tree: &ID,
+        main: &Snapshot,
+        stores: &[&str],
+    ) -> Result<Option<Vec<Snapshot>>> {
+        let max_tips = crate::store::source::Limits::default().nodes;
+        let inner = self.inner.read().unwrap();
+        let Some(cache) = inner.tips.get(tree) else {
+            return Ok(None);
+        };
+        if cache.tree_tips.len() != main.len()
+            || !main.tips().iter().all(|id| cache.tree_tips.contains(id))
+        {
+            return Ok(None);
+        }
+        let count: usize = stores
+            .iter()
+            .filter_map(|s| cache.subtree_tips.get(*s))
+            .map(HashSet::len)
+            .sum();
+        if count + cache.tree_tips.len() > max_tips {
+            return Err(BackendError::SourceTooLarge.into());
+        }
+        Ok(Some(
+            stores
+                .iter()
+                .map(|store| {
+                    Snapshot::from(
+                        cache
+                            .subtree_tips
+                            .get(*store)
+                            .map(|tips| tips.iter().cloned().collect::<Vec<_>>())
+                            .unwrap_or_default(),
+                    )
+                })
+                .collect(),
+        ))
     }
 
     async fn store_snapshot_at(

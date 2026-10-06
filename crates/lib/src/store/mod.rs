@@ -154,6 +154,7 @@ pub use settings_store::SettingsStore;
 
 pub mod query;
 mod registry;
+pub mod source;
 pub use query::ExecuteQuery;
 pub use registry::Registered;
 pub use registry::Registry;
