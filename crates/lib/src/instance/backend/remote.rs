@@ -19,6 +19,7 @@ use crate::{
     instance::WriteSource,
     service::{client::RemoteConnection, protocol::ReadScope},
     snapshot::Snapshot,
+    store::query::{StoreQueryReply, StoreQueryRequest},
 };
 
 /// A [`Backend`] that translates every storage operation to a wire RPC over a
@@ -69,6 +70,12 @@ impl RemoteBackend {
 
 #[async_trait]
 impl Backend for RemoteBackend {
+    async fn query_store(&self, tree: &ID, request: &StoreQueryRequest) -> Result<StoreQueryReply> {
+        self.conn
+            .query_store(tree.clone(), self.identity(), request.clone())
+            .await
+    }
+
     async fn resolve_store_state(&self, request: &StoreStateRequest) -> Result<Option<RecordView>> {
         let view = self
             .conn

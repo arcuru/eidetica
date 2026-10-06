@@ -41,9 +41,17 @@ The protocol uses **length-prefixed JSON frames** over a Unix domain socket.
 
 Each frame is a 4-byte big-endian length prefix followed by a JSON-serialized payload. Maximum frame size is 64 MiB (`MAX_FRAME_SIZE`); frames exceeding this are rejected on both read and write. `write_frame`/`read_frame` handle serialization and framing; `read_frame` returns `None` on clean EOF.
 
-`PROTOCOL_VERSION` is `1`: generic Store-state responses carry complete `Codec` bytes inside the JSON frame. Clients and daemons must agree on the version; v0 peers are rejected at the handshake with no compatibility fallback. Fixed Doc/settings values retain JSON encoding.
+`PROTOCOL_VERSION` remains `0`, the experimental stability label. `WIRE_REVISION` separately identifies the common envelope: both handshake directions require a matching revision, with no missing-field default, negotiation or legacy fallback. Generic Store-state responses carry complete `Codec` bytes inside the JSON frame; fixed Doc/settings values retain JSON encoding.
 
-`#[non_exhaustive]` does not protect wire compatibility — it only covers Rust source compatibility (exhaustive `match` arms in downstream code). Serialized enums like `WriteSource` (carried by `Notification::DatabaseWrite`) are versioned by `PROTOCOL_VERSION`: a peer on an older version fails to deserialize an unknown variant, so adding a variant is a version bump, not a backward-compatible addition.
+`#[non_exhaustive]` does not protect wire compatibility — it only covers Rust source compatibility (exhaustive `match` arms in downstream code). Serialized enums like `WriteSource` (carried by `Notification::DatabaseWrite`) are versioned by `WIRE_REVISION`: a peer on an older version fails to deserialize an unknown variant, so adding a variant requires a wire revision bump, not a backward-compatible addition.
+
+### Store-owned queries
+
+`Store::query(q)` forwards to the Store's `ExecuteQuery<Q>` implementation. Public queries need not implement Codec, Serde, Clone or Send, and may borrow application state. The Store chooses delegated bytes and composes committed results with its own staged changes; no universal overlay is transmitted.
+
+`QueryStore` is an additive authenticated Read operation. The daemon validates the complete requested main-tree source and verification posture, reads the outer `_index` registration there, checks the expected type assertion, then routes opaque bytes to installed Store code. Success and capability refusal retain that source. The handler context provides canonical source reads, not authoritative writes; this path bypasses legacy ambiguously type-keyed caches. Encrypted wrappers cannot select plaintext handlers by claiming their hidden inner type. Malformed queries, type mismatches and source failures remain errors, not capability fallback.
+
+DocStore supplies a borrowed `GetValue` point query. Legacy operations and convenience methods remain available; Table queries, bounded raw assistance and private-cache lifecycle integration are separate work.
 
 ### Connection Lifecycle
 
@@ -52,9 +60,9 @@ sequenceDiagram
     participant C as Client
     participant S as Server
 
-    C->>S: Handshake { protocol_version }
-    S->>C: HandshakeAck { protocol_version }
-    Note over C,S: Version mismatch → server closes connection
+    C->>S: Handshake { protocol_version, wire_revision }
+    S->>C: HandshakeAck { protocol_version, wire_revision }
+    Note over C,S: Version or revision mismatch → connection rejected
 
     Note over C,S: Connection state: PreAuth
 
@@ -81,7 +89,7 @@ sequenceDiagram
     Note over C: Client closes connection (EOF)
 ```
 
-1. **Handshake**: client sends `Handshake { protocol_version }`; server validates and acks. On mismatch the server acks with its own version and closes the connection.
+1. **Handshake**: client sends `Handshake { protocol_version, wire_revision }`; server validates and acks. Missing revisions fail decoding. On a version or revision mismatch the server acks with its own values and closes; the client also rejects incompatible acknowledgments before any operation.
 2. **Trusted login** (see Security Model below): a challenge-response over the user's root key. `GetInstanceMetadata` is the only other request permitted before login.
 3. **Optional session-key registration**: once authenticated, the client may prove possession of additional pubkeys via `SessionKeyChallenge`/`SessionKeyRegister`. Each successfully proven pubkey joins the connection's `session_keyset` and can then act as the identity on subsequent ops. See [Session Keyset](#session-keyset) below.
 4. **Authenticated request loop**: every storage operation travels inside `ServiceRequest::AuthenticatedDb`. One response per request, strictly sequential per connection (`RemoteConnection` serializes all I/O through a mutex).

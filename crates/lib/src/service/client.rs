@@ -503,6 +503,7 @@ impl RemoteConnection {
         // Send handshake
         let handshake = Handshake {
             protocol_version: PROTOCOL_VERSION,
+            wire_revision: crate::service::protocol::WIRE_REVISION,
         };
         write_frame(&mut writer, &handshake).await?;
 
@@ -514,12 +515,17 @@ impl RemoteConnection {
             ))
         })?;
 
-        if ack.protocol_version != PROTOCOL_VERSION {
+        if ack.protocol_version != PROTOCOL_VERSION
+            || ack.wire_revision != super::protocol::WIRE_REVISION
+        {
             return Err(crate::Error::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!(
-                    "Protocol version mismatch: client={}, server={}",
-                    PROTOCOL_VERSION, ack.protocol_version
+                    "Protocol/wire mismatch: client={}/{}, server={}/{}",
+                    PROTOCOL_VERSION,
+                    super::protocol::WIRE_REVISION,
+                    ack.protocol_version,
+                    ack.wire_revision
                 ),
             )));
         }
@@ -1080,6 +1086,22 @@ impl RemoteConnection {
     }
 
     // === Database operations (DatabaseOp via AuthenticatedDb envelope) ===
+
+    pub async fn query_store(
+        &self,
+        root_id: ID,
+        identity: SigKey,
+        request: crate::store::query::StoreQueryRequest,
+    ) -> crate::Result<crate::store::query::StoreQueryReply> {
+        let source = request.source.clone();
+        let response = self
+            .db_request(root_id, identity, DatabaseOp::QueryStore { request })
+            .await?;
+        match response {
+            ServiceResponse::StoreQuery(reply) if reply.source == source => Ok(reply),
+            other => Err(unexpected_response("source-bound StoreQuery", &other)),
+        }
+    }
 
     /// Acquire a [`TransactionContext`] for the given stores and scope.
     ///

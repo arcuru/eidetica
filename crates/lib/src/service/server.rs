@@ -78,6 +78,7 @@ struct ConnectionContext {
     subscribed: std::sync::Mutex<HashMap<ID, CallbackId>>,
     staging: std::sync::Mutex<HashMap<String, SessionStaging>>,
     token_idle_ttl: Duration,
+    query_handlers: Vec<crate::store::query::QueryHandler>,
 }
 
 impl ConnectionContext {
@@ -181,6 +182,7 @@ enum ConnectionState {
 /// service-layer cache.
 pub struct ServiceServer {
     instance: Instance,
+    query_handlers: Vec<crate::store::query::QueryHandler>,
     socket_path: PathBuf,
     listener: UnixListener,
     socket_identity: SocketIdentity,
@@ -208,6 +210,14 @@ impl SocketIdentity {
 }
 
 impl ServiceServer {
+    /// Install read-only plaintext Store code. Requests cannot install code or
+    /// route encrypted wrappers to a hidden plaintext implementation.
+    pub fn register_store_query<S: crate::store::query::StoreQueryHandler>(
+        &mut self,
+    ) -> crate::Result<()> {
+        crate::store::query::register_handler::<S>(&mut self.query_handlers)
+    }
+
     /// Bind the service socket and return a server ready to accept clients.
     ///
     /// # Arguments
@@ -248,6 +258,7 @@ impl ServiceServer {
 
         Ok(Self {
             instance,
+            query_handlers: crate::store::query::default_handlers(),
             socket_path,
             listener,
             socket_identity,
@@ -288,9 +299,10 @@ impl ServiceServer {
                         Ok((stream, _addr)) => {
                             let instance = self.instance.clone();
                             let token_idle_ttl = self.token_idle_ttl;
+                            let query_handlers = self.query_handlers.clone();
                             let conn_id = next_conn_id.fetch_add(1, Ordering::Relaxed);
                             handlers.spawn(async move {
-                                if let Err(e) = handle_connection(stream, instance, conn_id, token_idle_ttl).await {
+                                if let Err(e) = handle_connection(stream, instance, conn_id, token_idle_ttl, query_handlers).await {
                                     tracing::debug!(conn_id, "Connection handler error: {e}");
                                 }
                             });
@@ -562,6 +574,7 @@ async fn handle_connection(
     instance: Instance,
     conn_id: ConnectionId,
     token_idle_ttl: Duration,
+    query_handlers: Vec<crate::store::query::QueryHandler>,
 ) -> crate::Result<()> {
     let (mut reader, mut writer) = tokio::io::split(stream);
 
@@ -571,17 +584,23 @@ async fn handle_connection(
         None => return Ok(()), // Client disconnected before handshake
     };
 
-    if handshake.protocol_version != PROTOCOL_VERSION {
+    if handshake.protocol_version != PROTOCOL_VERSION
+        || handshake.wire_revision != super::protocol::WIRE_REVISION
+    {
         // Send error ack and close
         let ack = HandshakeAck {
             protocol_version: PROTOCOL_VERSION,
+            wire_revision: crate::service::protocol::WIRE_REVISION,
         };
         write_frame(&mut writer, &ack).await?;
         return Err(crate::Error::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!(
-                "Protocol version mismatch: client={}, server={}",
-                handshake.protocol_version, PROTOCOL_VERSION
+                "Protocol/wire mismatch: client={}/{}, server={}/{}",
+                handshake.protocol_version,
+                handshake.wire_revision,
+                PROTOCOL_VERSION,
+                super::protocol::WIRE_REVISION
             ),
         )));
     }
@@ -589,6 +608,7 @@ async fn handle_connection(
     // Send handshake ack
     let ack = HandshakeAck {
         protocol_version: PROTOCOL_VERSION,
+        wire_revision: crate::service::protocol::WIRE_REVISION,
     };
     write_frame(&mut writer, &ack).await?;
 
@@ -637,6 +657,7 @@ async fn handle_connection(
         subscribed: std::sync::Mutex::new(HashMap::new()),
         staging: std::sync::Mutex::new(HashMap::new()),
         token_idle_ttl,
+        query_handlers,
     });
     let guard = ConnectionGuard { ctx: ctx.clone() };
 
@@ -838,8 +859,9 @@ async fn dispatch_inner(
             // Per-tree permission gate. Unconditional for every op *except*
             // submit (verification in the handler is its boundary) and
             // set-metadata (gated against `_databases` below). Create-flow
-            // passthrough (false) for the rest, so a not-yet-propagated tree is
-            // waved through and database creation works.
+            // passthrough for legacy operations preserves database creation.
+            // QueryStore requires an existing authorized source, so it fails
+            // closed even when the requested database is unavailable.
             if is_set_metadata {
                 gate_tree_permission(
                     instance,
@@ -857,7 +879,7 @@ async fn dispatch_inner(
                     &identity,
                     &root_id,
                     op.required_permission(),
-                    false,
+                    matches!(op, DatabaseOp::QueryStore { .. }),
                 )
                 .await?;
             }
@@ -921,6 +943,17 @@ async fn dispatch_database_op(
     op: DatabaseOp,
 ) -> crate::Result<ServiceResponse> {
     match op {
+        DatabaseOp::QueryStore { request } => {
+            let engine = instance.require_local_engine()?;
+            let reply = crate::store::query::execute(
+                engine.as_ref(),
+                &root_id,
+                &request,
+                &ctx.query_handlers,
+            )
+            .await?;
+            Ok(ServiceResponse::StoreQuery(reply))
+        }
         DatabaseOp::ResolveStoreState { request } => {
             let request = session_store_state_request(request, user_uuid, &root_id)?;
             let view = match instance.backend().resolve_store_state(&request).await? {
@@ -2045,6 +2078,7 @@ mod tests {
         // Send a version that remains wrong when the protocol is bumped.
         let handshake = Handshake {
             protocol_version: PROTOCOL_VERSION.saturating_add(1),
+            wire_revision: crate::service::protocol::WIRE_REVISION,
         };
         write_frame(&mut writer, &handshake).await.unwrap();
 
@@ -2160,6 +2194,7 @@ mod tests {
             &mut writer,
             &Handshake {
                 protocol_version: PROTOCOL_VERSION,
+                wire_revision: crate::service::protocol::WIRE_REVISION,
             },
         )
         .await
@@ -2208,6 +2243,7 @@ mod tests {
             &mut writer,
             &Handshake {
                 protocol_version: PROTOCOL_VERSION,
+                wire_revision: crate::service::protocol::WIRE_REVISION,
             },
         )
         .await

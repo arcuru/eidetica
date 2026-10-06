@@ -35,6 +35,7 @@ use crate::{
     entry::{Entry, ID},
     instance::WriteSource,
     snapshot::Snapshot,
+    store::query::{StoreQueryReply, StoreQueryRequest},
 };
 
 /// The inputs for materializing a multi-tip store state, resolved in one
@@ -65,6 +66,17 @@ pub struct MergeSlice {
 /// backend carries is its acting identity (see [`RemoteBackend`]).
 #[async_trait]
 pub trait Backend: Send + Sync + std::fmt::Debug {
+    /// Execute opaque Store-owned bytes at an explicit main-tree source.
+    async fn query_store(&self, tree: &ID, request: &StoreQueryRequest) -> Result<StoreQueryReply> {
+        let _ = tree;
+        Err(crate::store::StoreError::InvalidOperation {
+            store: request.store.clone(),
+            operation: "query".into(),
+            reason: "backend cannot execute source-bound Store queries".into(),
+        }
+        .into())
+    }
+
     async fn resolve_store_state(
         &self,
         _request: &StoreStateRequest,

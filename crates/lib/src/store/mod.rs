@@ -139,7 +139,9 @@ mod errors;
 pub use errors::StoreError;
 
 mod docstore;
+mod docstore_query;
 pub use docstore::{DocStore, DocStoreInit};
+pub use docstore_query::GetValue;
 
 mod value_editor;
 pub use value_editor::ValueEditor;
@@ -150,7 +152,9 @@ pub use table::{Table, TableCursor, TablePage};
 mod settings_store;
 pub use settings_store::SettingsStore;
 
+pub mod query;
 mod registry;
+pub use query::ExecuteQuery;
 pub use registry::Registered;
 pub use registry::Registry;
 pub use registry::RegistryEntry;
@@ -185,6 +189,19 @@ pub trait Store: Sized + Registered + Send + Sync {
     /// This is the type stored within each individual Entry and in opaque state
     /// caches. Its Codec implementation chooses the complete durable byte format.
     type Data: CRDT + Codec + 'static;
+
+    /// Execute a typed query using this Store's own plan. Only delegated
+    /// messages require encoding; public queries may borrow application data.
+    fn query<'a, Q>(
+        &'a self,
+        query: Q,
+    ) -> impl std::future::Future<Output = Result<<Self as ExecuteQuery<Q>>::Output>> + 'a
+    where
+        Self: ExecuteQuery<Q>,
+        Q: 'a,
+    {
+        self.execute(query)
+    }
 
     /// Representation of this store's cached current state.
     ///

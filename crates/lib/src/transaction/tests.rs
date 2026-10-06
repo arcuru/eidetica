@@ -433,6 +433,7 @@ async fn binary_service_state_decodes_bytes_and_never_falls_back_on_bad_codec() 
             &mut stream,
             &HandshakeAck {
                 protocol_version: PROTOCOL_VERSION,
+                wire_revision: crate::service::protocol::WIRE_REVISION,
             },
         )
         .await

@@ -31,6 +31,8 @@ use tokio::sync::watch;
 
 use crate::helpers::LocalBackendTestExt;
 
+mod query;
+
 /// Read the next server frame and unwrap it as a `ServiceResponse`. Tests
 /// that drive the server at the raw protocol layer don't subscribe to
 /// notifications, so an interleaved `Notification` would be a real bug —
@@ -140,66 +142,6 @@ async fn test_connect_and_create_instance() {
     // Admin user bootstrapped at Instance creation
     assert_eq!(users.len(), 1);
     assert_eq!(users[0], "admin");
-}
-
-#[tokio::test]
-async fn service_v1_rejects_v0_client_and_daemon_handshakes() {
-    assert_eq!(PROTOCOL_VERSION, 1);
-    let (socket, _shutdown, _server, _dir) = start_test_server().await;
-    let mut stream = UnixStream::connect(&socket).await.unwrap();
-    write_frame(
-        &mut stream,
-        &Handshake {
-            protocol_version: 0,
-        },
-    )
-    .await
-    .unwrap();
-    let ack: HandshakeAck = read_frame(&mut stream).await.unwrap().unwrap();
-    assert_eq!(ack.protocol_version, 1);
-    let eof = tokio::time::timeout(
-        Duration::from_secs(5),
-        read_frame::<_, ServerFrame>(&mut stream),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    assert!(
-        eof.is_none(),
-        "v0 client must be disconnected before requests"
-    );
-
-    let dir = tempfile::tempdir().unwrap();
-    let old_socket = dir.path().join("old.sock");
-    let listener = tokio::net::UnixListener::bind(&old_socket).unwrap();
-    let peer = tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await.unwrap();
-        let handshake: Handshake = read_frame(&mut stream).await.unwrap().unwrap();
-        assert_eq!(handshake.protocol_version, 1);
-        write_frame(
-            &mut stream,
-            &HandshakeAck {
-                protocol_version: 0,
-            },
-        )
-        .await
-        .unwrap();
-        let eof: Option<ServiceRequest> = read_frame(&mut stream).await.unwrap();
-        assert!(
-            eof.is_none(),
-            "client must not send requests to a v0 daemon"
-        );
-    });
-    let error = eidetica::service::client::RemoteConnection::connect(&old_socket)
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(error, eidetica::Error::Io(ref io) if io.kind() == std::io::ErrorKind::InvalidData)
-    );
-    tokio::time::timeout(Duration::from_secs(5), peer)
-        .await
-        .unwrap()
-        .unwrap();
 }
 
 #[tokio::test]
@@ -379,6 +321,7 @@ async fn raw_handshake(socket_path: &PathBuf) -> (ReadHalf<UnixStream>, WriteHal
         &mut writer,
         &Handshake {
             protocol_version: PROTOCOL_VERSION,
+            wire_revision: eidetica::service::protocol::WIRE_REVISION,
         },
     )
     .await
