@@ -260,6 +260,25 @@ async fn private_assistance_read_only_raw_reuse_isolation_retarget_revocation_an
         status(&conn, &root, &identity, &token).await,
         StagingStatus::Published(_)
     ));
+    // Main/index source changes must separate identities even when these
+    // Store tips and the representation are exactly unchanged.
+    let unrelated = db.new_transaction().await.unwrap();
+    unrelated
+        .get_store::<DocStore>("side-docs")
+        .await
+        .unwrap()
+        .set("key", "unrelated")
+        .await
+        .unwrap();
+    unrelated.commit().await.unwrap();
+    let advanced = source(&conn, &db, &identity, "binary", CounterStore::type_id()).await;
+    assert_eq!(advanced.snapshot, raw.snapshot);
+    assert_ne!(advanced.source.main, raw.source.main);
+    assert!(
+        lookup(&conn, &identity, &advanced, representation())
+            .await
+            .is_none()
+    );
     let mut different = representation();
     different.configuration.push(1);
     assert!(lookup(&conn, &identity, &raw, different).await.is_none());
@@ -434,15 +453,37 @@ async fn private_assistance_read_only_raw_reuse_isolation_retarget_revocation_an
         .update_verification_status(original, VerificationStatus::Verified)
         .await
         .unwrap();
-    let active = begin(&conn, &identity, &raw, representation()).await;
+    let mut settings_like = representation();
+    settings_like.configuration = b"settings-like".to_vec();
+    let active = begin(&conn, &identity, &raw, settings_like).await;
     // Canonical auth is independent of client-supplied settings-like records.
-    let fake = chunk(
-        &root,
-        &identity,
-        &active,
-        br#"{"auth":{"global":{"permission":"Admin"}}}"#.to_vec(),
-    );
+    let fake_bytes = br#"{"auth":{"global":{"permission":{"Admin":0}}}}"#.to_vec();
+    let fake = chunk(&root, &identity, &active, fake_bytes.clone());
     conn.send_staging_chunk(&fake).await.unwrap();
+    conn.private_assistance(
+        root.clone(),
+        identity.clone(),
+        Op::FinishPrivateAssistance {
+            token: active.clone(),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(conn.private_assistance(root.clone(),identity.clone(),Op::PrivateMaterializationGet{token:active.clone(),key:b"state".to_vec()}).await.unwrap(),ServiceResponse::Record(Some(bytes)) if bytes==fake_bytes)
+    );
+    let write = remote.new_transaction().await.unwrap();
+    write
+        .get_store::<DocStore>("still-illicit")
+        .await
+        .unwrap()
+        .set("bad", true)
+        .await
+        .unwrap();
+    assert!(
+        write.commit().await.is_err(),
+        "even a live settings-like private materialization cannot grant Write"
+    );
     let revoke = db.new_transaction().await.unwrap();
     revoke
         .get_settings()
