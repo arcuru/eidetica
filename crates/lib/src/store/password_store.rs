@@ -294,6 +294,7 @@ struct PasswordEncryptor {
     password: Password,
     subtree_name: String,
     store_identity: Vec<u8>,
+    inner_type: Option<&'static str>,
     /// Cached derived key (zeroized on drop, thread-safe)
     derived_key: Arc<Mutex<DerivedKey>>,
 }
@@ -320,8 +321,14 @@ impl PasswordEncryptor {
             password,
             subtree_name,
             store_identity,
+            inner_type: None,
             derived_key: Arc::new(Mutex::new(DerivedKey::new())),
         }
+    }
+
+    fn for_store<S: Store>(mut self) -> Self {
+        self.inner_type = Some(S::type_id());
+        self
     }
 
     /// Execute a function with access to the encryption key (with caching)
@@ -401,6 +408,11 @@ impl PasswordEncryptor {
 }
 
 impl Encryptor for PasswordEncryptor {
+    fn store_type_ids(&self) -> Option<(&str, &str)> {
+        self.inner_type
+            .map(|inner| ("encrypted:password:v0", inner))
+    }
+
     fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>> {
         // Wire format: nonce (12 bytes) || ciphertext
         if ciphertext.len() < AES_GCM_NONCE_SIZE {
@@ -929,11 +941,14 @@ impl<S: Store> PasswordStore<S> {
         };
 
         // Register encryptor with transaction (store is now unlocked)
-        let encryptor = Box::new(PasswordEncryptor::new(
-            password_cache.clone(),
-            self.name.clone(),
-            self.transaction.database_id().to_string().as_bytes(),
-        ));
+        let encryptor = Box::new(
+            PasswordEncryptor::new(
+                password_cache.clone(),
+                self.name.clone(),
+                self.transaction.database_id().to_string().as_bytes(),
+            )
+            .for_store::<S>(),
+        );
         self.transaction.register_encryptor(&self.name, encryptor)?;
 
         // Update internal state
@@ -1094,11 +1109,14 @@ impl<S: Store> PasswordStore<S> {
         self.wrapped_info = Some(wrapped_info);
 
         // Register encryptor with the transaction for transparent encryption
-        let encryptor = Box::new(PasswordEncryptor::new(
-            password_cache,
-            self.name.clone(),
-            self.transaction.database_id().to_string().as_bytes(),
-        ));
+        let encryptor = Box::new(
+            PasswordEncryptor::new(
+                password_cache,
+                self.name.clone(),
+                self.transaction.database_id().to_string().as_bytes(),
+            )
+            .for_store::<S>(),
+        );
         self.transaction.register_encryptor(&self.name, encryptor)?;
 
         Ok(())

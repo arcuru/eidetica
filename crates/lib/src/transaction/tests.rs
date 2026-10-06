@@ -2206,10 +2206,14 @@ async fn raw_sdk_registered_success_and_hard_errors_never_fetch_raw() {
     let tx = db.new_transaction().await.unwrap();
     let query = br#"{"Get":{"key":"key"}}"#.to_vec();
     let answer = tx
-        .query_store_or_fold::<Doc, _>(
+        .query_store_or_cached_fold::<Doc, _>(
             "docs",
             crate::store::DocStore::type_id(),
             query.clone(),
+            crate::store::assistance::PrivateRepresentation {
+                format: crate::store::DocStore::state_model().descriptor(),
+                configuration: Vec::new(),
+            },
             |bytes| {
                 Ok(serde_json::from_slice::<Option<crate::crdt::doc::Value>>(
                     bytes,
@@ -2223,10 +2227,14 @@ async fn raw_sdk_registered_success_and_hard_errors_never_fetch_raw() {
     // Result codec failure, malformed query, wrong type, missing source Store,
     // query encoding limit, and unsupported backend capability are hard errors.
     assert!(
-        tx.query_store_or_fold::<Doc, Doc>(
+        tx.query_store_or_cached_fold::<Doc, Doc>(
             "docs",
             crate::store::DocStore::type_id(),
             query,
+            crate::store::assistance::PrivateRepresentation {
+                format: crate::store::DocStore::state_model().descriptor(),
+                configuration: Vec::new(),
+            },
             Doc::decode,
             |_| panic!("decode error cannot fall back")
         )
@@ -2248,10 +2256,14 @@ async fn raw_sdk_registered_success_and_hard_errors_never_fetch_raw() {
         ),
     ] {
         assert!(
-            tx.query_store_or_fold::<Doc, Doc>(
+            tx.query_store_or_cached_fold::<Doc, Doc>(
                 store,
                 type_id,
                 query,
+                crate::store::assistance::PrivateRepresentation {
+                    format: crate::store::DocStore::state_model().descriptor(),
+                    configuration: Vec::new(),
+                },
                 |_| panic!("hard error cannot decode"),
                 |_| panic!("hard error cannot fall back")
             )

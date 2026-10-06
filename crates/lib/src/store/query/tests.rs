@@ -384,10 +384,14 @@ async fn raw_sdk_unknown_non_serde_store_folds_same_source_and_composes_staging(
     );
     tx.update_subtree("counter", Counter(30).encode()?).await?;
     let committed = tx
-        .query_store_or_fold::<Counter, _>(
+        .query_store_or_cached_fold::<Counter, _>(
             "counter",
             CounterStore::type_id(),
             Vec::new(),
+            crate::store::assistance::PrivateRepresentation::opaque(
+                CounterStore::state_model().descriptor(),
+                CounterStore::type_id(),
+            ),
             Counter::decode,
             Ok,
         )

@@ -19,6 +19,20 @@ pub struct PrivateRepresentation {
     pub configuration: Vec<u8>,
 }
 
+/// SDK opaque-cache framing, distinct from record-shaped representations.
+pub(crate) const OPAQUE_ENCODING: &[u8] = b"eidetica/private-opaque-state/v0\0";
+
+impl PrivateRepresentation {
+    /// Identify the source-bound SDK envelope plus the Store's actual Codec.
+    /// Canonical registration/configuration is additionally fixed by the source.
+    pub fn opaque(format: ProjectionDescriptor, codec_identity: &str) -> Self {
+        Self {
+            format,
+            configuration: [OPAQUE_ENCODING, codec_identity.as_bytes()].concat(),
+        }
+    }
+}
+
 #[cfg(all(unix, feature = "service"))]
 pub(crate) const CHUNK_BYTES: usize = 1024 * 1024;
 
