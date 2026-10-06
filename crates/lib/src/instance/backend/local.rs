@@ -162,7 +162,9 @@ impl Backend for LocalBackend {
         token: &StagingToken,
         seconds: i64,
     ) -> Result<()> {
-        self.0.testing_age_store_state_staging(token, seconds).await
+        self.engine
+            .testing_age_store_state_staging(token, seconds)
+            .await
     }
     async fn stage_store_state_records(
         &self,
