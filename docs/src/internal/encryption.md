@@ -117,11 +117,17 @@ not necessarily the same bytes as an individual Entry delta.
 
 ### Projected Table row cache
 
-`Table` declares projection `eidetica/table/rows/opaque:v1`, version 1. `PasswordStore<Table<T>>` namespaces
-that descriptor as `eidetica/password/eidetica/table/rows/opaque:v1`, version 1. The encrypted projection is
-built by streaming ordered Entry deltas through the Table projection into bounded private
-physical put/delete chunks, then publishing atomically. History retrieval still holds a
-`Vec<Entry>`; bounded row chunks do not bound total cold-build memory.
+`Table` declares projection `eidetica/table/rows/opaque:v0.1`, version 1. `PasswordStore<Table<T>>` namespaces
+that descriptor as `eidetica/password/eidetica/table/rows/opaque:v0.1`, version 1. The encrypted projection is
+used by explicit projection maintenance. Normal unlocked Table queries reuse a
+source/representation-bound private record cache admitted by the daemon after Read
+authorization. The client folds bounded source pages on a cold miss, frames each
+logical row with its source/key/checksum identity, then encrypts and publishes it
+through ordered assistance chunks. The master key, inner type/configuration and
+plaintext remain client-side. Warm points/pages fetch only requested physical
+records; daemon source validation is separate and can traverse history. Cold
+reconstruction still holds complete bounded reduced state, so bounded uploads do
+not imply constant cold-build memory.
 
 Two 32-byte subkeys are derived from the master with BLAKE3's derive-key mode:
 
