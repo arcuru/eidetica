@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Result, Snapshot,
-    backend::BackendImpl,
+    backend::{BackendImpl, ProjectionDescriptor},
     crdt::{CRDT, Codec},
     entry::{Entry, ID},
     store::{DocStore, Registered, Store, StoreError},
@@ -128,7 +128,7 @@ impl StoreQueryContext<'_> {
         &self.entries
     }
 
-    /// Fold a registered plaintext Store strictly using its installed codec.
+    /// Fold a registered plaintext Store using its installed source policy.
     pub fn fold<S: Store>(&self) -> Result<S::Data> {
         if self.type_id != S::type_id() || is_encrypted(&self.type_id) {
             return Err(StoreError::TypeMismatch {
@@ -138,7 +138,7 @@ impl StoreQueryContext<'_> {
             }
             .into());
         }
-        fold_entries::<S::Data>(&self.store, &self.entries)
+        fold_entries::<S::Data>(&self.store, &self.entries, &S::state_model().descriptor())
     }
 }
 
@@ -197,15 +197,20 @@ fn is_encrypted(type_id: &str) -> bool {
     type_id.starts_with("encrypted:")
 }
 
-fn fold_entries<D: CRDT + Codec>(store: &str, entries: &[Entry]) -> Result<D> {
+fn fold_entries<D: CRDT + Codec + 'static>(
+    store: &str,
+    entries: &[Entry],
+    descriptor: &ProjectionDescriptor,
+) -> Result<D> {
     let mut state = D::default();
     for entry in entries {
         // A subtree node can carry only parents (no operation payload).
-        // Nonempty operation payloads still decode strictly.
+        // Only Table's selected source decoder may skip unreadable payloads.
         if let Ok(bytes) = entry.data(store)
             && !bytes.is_empty()
+            && let Some(delta) = super::state::decode_source::<D>(store, entry, bytes, descriptor)?
         {
-            state = state.merge(&D::decode(bytes)?)?;
+            state = state.merge(&delta)?;
         }
     }
     Ok(state)
