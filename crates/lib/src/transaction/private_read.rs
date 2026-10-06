@@ -15,7 +15,12 @@ pub(super) struct ReadBudget {
     reconstructed: bool,
 }
 impl ReadBudget {
-    fn reconstruct(&mut self) -> Result<()> {
+    #[allow(dead_code)] // Consumed by record-shaped Store plans.
+    pub(super) fn can_reconstruct(&self) -> bool {
+        !self.reconstructed
+    }
+
+    pub(super) fn reconstruct(&mut self) -> Result<()> {
         if self.reconstructed {
             return Err(BackendError::InvalidStoreStateView.into());
         }
@@ -80,6 +85,12 @@ impl Transaction {
         representation: PrivateRepresentation,
     ) -> Result<D> {
         let mut budget = ReadBudget::default();
+        if !representation
+            .configuration
+            .starts_with(crate::store::assistance::OPAQUE_ENCODING)
+        {
+            return Err(BackendError::InvalidRawSource.into());
+        }
         self.validate_private_read(source, &representation)?;
         #[cfg(all(unix, feature = "service"))]
         if let Some(connection) = self.db.ops().remote_connection() {
@@ -172,7 +183,7 @@ impl Transaction {
         self.fold_raw_source_with_budget(source, &mut budget).await
     }
 
-    fn validate_private_read(
+    pub(super) fn validate_private_read(
         &self,
         source: &StoreSource,
         representation: &PrivateRepresentation,
@@ -181,9 +192,6 @@ impl Transaction {
             || source.source != self.query_source()?
             || source.seal.is_empty()
             || representation.format.name.is_empty()
-            || !representation
-                .configuration
-                .starts_with(crate::store::assistance::OPAQUE_ENCODING)
         {
             return Err(BackendError::InvalidRawSource.into());
         }

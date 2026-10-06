@@ -64,7 +64,7 @@ impl Store for CounterStore {
     }
 }
 impl StoreQueryHandler for CounterStore {
-    async fn handle_query(context: &StoreQueryContext, query: &[u8]) -> Result<QueryOutcome> {
+    async fn handle_query(context: &StoreQueryContext<'_>, query: &[u8]) -> Result<QueryOutcome> {
         // Public threshold query delegates a different, exact binary message.
         if query == b"NO-CAP" {
             return Ok(QueryOutcome::Unavailable);
