@@ -165,3 +165,171 @@ async fn new_query_reads_bypass_ambiguous_legacy_opaque_caches() -> Result<()> {
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn uncommitted_doc_query_preserves_absence_values_and_tombstones() -> Result<()> {
+    let (_instance, mut owner) =
+        Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless("owner")).await?;
+    let db = owner
+        .create_database(Doc::new(), &owner.get_default_key()?)
+        .await?;
+    let txn = db.new_transaction().await?;
+    let docs = txn.get_store::<DocStore>("new-docs").await?;
+    assert!(
+        matches!(docs.get("missing").await, Err(crate::Error::Store(e)) if matches!(*e, StoreError::KeyNotFound { .. }))
+    );
+    assert_eq!(docs.query(GetValue("missing")).await?, None);
+    docs.set("key", "staged").await?;
+    assert_eq!(
+        docs.query(GetValue("key")).await?,
+        Some(docs.get("key").await?)
+    );
+    assert_eq!(docs.query(GetValue("missing")).await?, None);
+    docs.delete("key").await?;
+    assert!(
+        matches!(docs.get("key").await, Err(crate::Error::Store(e)) if matches!(*e, StoreError::KeyNotFound { .. }))
+    );
+    assert_eq!(docs.query(GetValue("key")).await?, None);
+    // The local empty-history answer must not relax daemon registration checks.
+    assert!(
+        txn.query_store(
+            "new-docs",
+            DocStore::type_id(),
+            br#"{"Get":{"key":"missing"}}"#.to_vec()
+        )
+        .await
+        .is_err()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn query_follows_canonical_store_history_beyond_main_ancestry() -> Result<()> {
+    for store in ["docs", INDEX] {
+        let (instance, mut owner) =
+            Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless("owner"))
+                .await?;
+        let db = owner
+            .create_database(Doc::new(), &owner.get_default_key()?)
+            .await?;
+        let txn = db.new_transaction().await?;
+        txn.get_store::<DocStore>("seed")
+            .await?
+            .set("seed", "value")
+            .await?;
+        if store == "docs" {
+            txn.get_store::<DocStore>("docs")
+                .await?
+                .set("base", "value")
+                .await?;
+        }
+        let seed = txn.commit().await?;
+        let engine = instance.require_local_engine()?;
+        let parents = engine
+            .store_snapshot_at(db.root_id(), store, &Snapshot::from([seed.clone()]))
+            .await?;
+        let mut delta = Doc::new();
+        if store == INDEX {
+            let mut metadata = Doc::new();
+            metadata.set("type", DocStore::type_id());
+            delta.set("docs", metadata);
+        } else {
+            delta.set("external", "store-parent");
+        }
+        // This fixture isolates traversal semantics. Verification labels are
+        // injected, as in the source-posture tests, not an auth-proof assertion.
+        let external = Entry::builder(db.root_id().clone())
+            .set_parents(vec![seed.clone()])
+            .set_height(20)
+            .set_subtree_parents(store, parents.into_tips())
+            .set_subtree_height(store, Some(20))
+            .set_subtree_data(store, delta.encode()?)
+            .build()?;
+        let external_id = external.id();
+        engine.put(external).await?;
+        engine
+            .update_verification_status(&external_id, VerificationStatus::Verified)
+            .await?;
+        let mut selected = Entry::builder(db.root_id().clone())
+            .set_parents(vec![seed.clone()])
+            .set_height(21)
+            .set_subtree_parents(store, vec![external_id.clone()])
+            .set_subtree_height(store, Some(21));
+        if store == INDEX {
+            let mut value = Doc::new();
+            value.set("external", "store-parent");
+            selected = selected.set_subtree_data("docs", value.encode()?);
+        }
+        let selected = selected.build()?;
+        let selected_id = selected.id();
+        engine.put(selected).await?;
+        engine
+            .update_verification_status(&selected_id, VerificationStatus::Verified)
+            .await?;
+        let sibling = Entry::builder(db.root_id().clone())
+            .set_parents(vec![seed])
+            .set_height(22)
+            .build()?;
+        let sibling_id = sibling.id();
+        engine.put(sibling).await?;
+        engine
+            .update_verification_status(&sibling_id, VerificationStatus::Verified)
+            .await?;
+        for main in [
+            Snapshot::from([selected_id.clone()]),
+            Snapshot::from([selected_id.clone(), sibling_id]),
+        ] {
+            assert!(
+                !engine
+                    .get_tree_from_tips(db.root_id(), main.tips())
+                    .await?
+                    .iter()
+                    .any(|e| e.id() == external_id)
+            );
+            let tips = engine.store_snapshot_at(db.root_id(), store, &main).await?;
+            assert!(
+                engine
+                    .store_at(db.root_id(), store, &tips)
+                    .await?
+                    .iter()
+                    .any(|e| e.id() == external_id)
+            );
+            let pinned = db.new_transaction_at(&main).await?;
+            let docs = pinned.get_store::<DocStore>("docs").await?;
+            assert_eq!(docs.get("external").await?.as_text(), Some("store-parent"));
+            assert_eq!(
+                docs.query(GetValue("external")).await?,
+                Some(docs.get("external").await?),
+                "canonical {store} ancestry must not be filtered by main ancestry"
+            );
+        }
+        // Newly consumed Store ancestors retain the existing posture check.
+        engine
+            .update_verification_status(&external_id, VerificationStatus::Unverified)
+            .await?;
+        let local = LocalBackend::new(engine);
+        let request = StoreQueryRequest {
+            store: "docs".into(),
+            expected_type: DocStore::type_id().into(),
+            source: QuerySource {
+                main: Snapshot::from([selected_id]),
+                scope: ReadScope::Verified,
+            },
+            query: br#"{"Get":{"key":"external"}}"#.to_vec(),
+        };
+        use crate::instance::backend::Backend;
+        assert!(local.query_store(db.root_id(), &request).await.is_err());
+        let request = StoreQueryRequest {
+            source: QuerySource {
+                scope: ReadScope::AllowUnverified,
+                ..request.source.clone()
+            },
+            ..request
+        };
+        assert!(matches!(
+            local.query_store(db.root_id(), &request).await?.outcome,
+            QueryOutcome::Result(_)
+        ));
+    }
+    Ok(())
+}

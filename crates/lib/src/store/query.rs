@@ -181,29 +181,12 @@ fn fold_entries<D: CRDT + Codec>(store: &str, entries: &[Entry]) -> Result<D> {
     Ok(state)
 }
 
-pub(crate) async fn execute(
+async fn validate_posture(
     engine: &dyn BackendImpl,
-    tree: &ID,
     request: &StoreQueryRequest,
-    handlers: &[QueryHandler],
-) -> Result<StoreQueryReply> {
-    if request.source.main.is_empty() {
-        return Err(crate::transaction::TransactionError::EmptyTipsNotAllowed.into());
-    }
-    // The historical traversal rejects foreign and incomplete ancestry even
-    // when a raw tip cache claims this is the latest boundary.
-    let mut entries = engine
-        .get_tree_from_tips(tree, request.source.main.tips())
-        .await?;
-    if !entries.iter().any(|e| e.id_ref() == tree && e.is_root()) {
-        return Err(StoreError::InvalidOperation {
-            store: request.store.clone(),
-            operation: "query".into(),
-            reason: "source does not reach the database root".into(),
-        }
-        .into());
-    }
-    for entry in &entries {
+    entries: &[Entry],
+) -> Result<()> {
+    for entry in entries {
         let status = engine.get_verification_status(entry.id_ref()).await?;
         if status == VerificationStatus::Failed
             || (request.source.scope == ReadScope::Verified
@@ -221,13 +204,38 @@ pub(crate) async fn execute(
             .into());
         }
     }
-    entries.sort_by(|a, b| {
-        a.subtree_height(INDEX)
-            .unwrap_or(0)
-            .cmp(&b.subtree_height(INDEX).unwrap_or(0))
-            .then_with(|| a.id_ref().cmp(b.id_ref()))
-    });
-    let index = fold_entries::<Doc>(INDEX, &entries)?;
+    Ok(())
+}
+
+pub(crate) async fn execute(
+    engine: &dyn BackendImpl,
+    tree: &ID,
+    request: &StoreQueryRequest,
+    handlers: &[QueryHandler],
+) -> Result<StoreQueryReply> {
+    if request.source.main.is_empty() {
+        return Err(crate::transaction::TransactionError::EmptyTipsNotAllowed.into());
+    }
+    // The historical traversal rejects foreign and incomplete ancestry even
+    // when a raw tip cache claims this is the latest boundary.
+    let entries = engine
+        .get_tree_from_tips(tree, request.source.main.tips())
+        .await?;
+    if !entries.iter().any(|e| e.id_ref() == tree && e.is_root()) {
+        return Err(StoreError::InvalidOperation {
+            store: request.store.clone(),
+            operation: "query".into(),
+            reason: "source does not reach the database root".into(),
+        }
+        .into());
+    }
+    validate_posture(engine, request, &entries).await?;
+    let index_snapshot = engine
+        .store_snapshot_at(tree, INDEX, &request.source.main)
+        .await?;
+    let index_entries = engine.store_at(tree, INDEX, &index_snapshot).await?;
+    validate_posture(engine, request, &index_entries).await?;
+    let index = fold_entries::<Doc>(INDEX, &index_entries)?;
     let metadata = index
         .get(&request.store)
         .and_then(|v| v.as_doc())
@@ -257,16 +265,13 @@ pub(crate) async fn execute(
         .find(|h| h.type_id == actual && !is_encrypted(actual));
     let outcome = if let Some(handler) = handler {
         let type_id = actual.to_string();
-        entries.retain(|e| e.in_subtree(&request.store));
-        entries.sort_by(|a, b| {
-            a.subtree_height(&request.store)
-                .unwrap_or(0)
-                .cmp(&b.subtree_height(&request.store).unwrap_or(0))
-                .then_with(|| a.id_ref().cmp(b.id_ref()))
-        });
         let snapshot = engine
             .store_snapshot_at(tree, &request.store, &request.source.main)
             .await?;
+        // Store ancestry is distinct from main ancestry. Use the same pinned
+        // Store tips and canonical replay order as established Store reads.
+        let entries = engine.store_at(tree, &request.store, &snapshot).await?;
+        validate_posture(engine, request, &entries).await?;
         let context = StoreQueryContext {
             store: request.store.clone(),
             type_id,
