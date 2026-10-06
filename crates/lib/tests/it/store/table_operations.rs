@@ -37,7 +37,7 @@ async fn test_table_entry_delta_has_opaque_cbor_rows_and_tombstone() {
     );
     assert_eq!(
         Table::<serde_json::Value>::state_model().descriptor().name,
-        "eidetica/table/rows/opaque:v1"
+        "eidetica/table/rows/opaque:v0.1"
     );
 
     let tx = ctx.database().new_transaction().await.unwrap();

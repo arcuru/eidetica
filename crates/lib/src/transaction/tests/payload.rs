@@ -291,7 +291,7 @@ async fn table_payload_warning_is_observable_and_omits_content() {
     assert_eq!(state, rows(&[("key", b"old")], &[]));
     let warning = String::from_utf8(writer.0.lock().unwrap().clone()).unwrap();
     assert!(warning.contains("WARN"));
-    assert!(warning.contains("Skipping unreadable table:v1 Entry payload"));
+    assert!(warning.contains("Skipping unreadable table:v0.1 Entry payload"));
     assert!(warning.contains(&id.to_string()));
     assert!(warning.contains(STORE));
     for secret in [

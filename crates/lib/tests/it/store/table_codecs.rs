@@ -15,12 +15,28 @@ pub(super) async fn database() -> (Instance, Database) {
     // test_backend() alone falls back to InMemory in service mode; use the
     // connected instance helper so these tests actually exercise daemon RPC.
     if std::env::var("TEST_BACKEND").as_deref() == Ok("service") {
-        return setup_tree().await;
+        let pair = setup_tree().await;
+        assert!(
+            pair.0.remote_connection().is_some(),
+            "service checks require an actual connected backend"
+        );
+        return pair;
     }
     let (instance, mut user) =
         Instance::create_backend(test_backend().await, NewUser::passwordless("table-codecs"))
             .await
             .unwrap();
+    if std::env::var("TEST_BACKEND").as_deref() == Ok("sqlite") {
+        assert!(
+            instance
+                .backend()
+                .local_engine()
+                .unwrap()
+                .as_any()
+                .is::<eidetica::backend::database::Sqlite>(),
+            "SQLite checks must instantiate SQLite"
+        );
+    }
     let key = user.get_default_key().unwrap();
     let database = user.create_database(Doc::new(), &key).await.unwrap();
     (instance, database)
@@ -57,7 +73,7 @@ async fn test_table_full_integer_ranges_staged_warm_and_cold() {
     let (instance, database) = database().await;
     let tx = database.new_transaction().await.unwrap();
     let table = tx.get_store::<Table<IntegerRow>>("integers").await.unwrap();
-    assert_eq!(Table::<IntegerRow>::type_id(), "table:v1");
+    assert_eq!(Table::<IntegerRow>::type_id(), "table:v0.1");
     assert_eq!(Table::<IntegerRow>::state_model().descriptor().version, 1);
     for (index, row) in integer_rows().into_iter().enumerate() {
         let key = index.to_string();
@@ -219,7 +235,7 @@ async fn test_table_config_rejects_mismatched_and_stale_typed_handles() {
     tx.get_index()
         .await
         .unwrap()
-        .set_entry("identity", "table:v1", changed)
+        .set_entry("identity", "table:v0.1", changed)
         .await
         .unwrap();
     assert!(table.get("row").await.is_err());
@@ -250,7 +266,7 @@ async fn test_table_absent_view_is_empty_but_missing_format_on_data_is_rejected(
     tx.get_index()
         .await
         .unwrap()
-        .set_entry("malformed", "table:v1", Doc::new())
+        .set_entry("malformed", "table:v0.1", Doc::new())
         .await
         .unwrap();
     assert!(
