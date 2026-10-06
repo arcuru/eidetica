@@ -660,7 +660,7 @@ impl Transaction {
                 .collect()
         })();
         match prepared {
-            Ok(mutations) => match self.db.instance().ok().and_then(|i| i.remote_connection()) {
+            Ok(mutations) => match self.db.ops().remote_connection() {
                 Some(connection) => {
                     assistance
                         .publish_best_effort(
