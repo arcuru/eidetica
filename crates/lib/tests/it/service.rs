@@ -33,6 +33,7 @@ use tokio::sync::watch;
 
 use crate::helpers::LocalBackendTestExt;
 
+mod private_assistance;
 mod query;
 
 /// Read the next server frame and unwrap it as a `ServiceResponse`. Tests

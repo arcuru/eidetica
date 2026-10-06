@@ -648,11 +648,13 @@ struct LegacyHandshake {
 #[tokio::test]
 async fn service_wire_revision_rejects_missing_legacy_and_mismatched_peers_before_auth() {
     assert_eq!(PROTOCOL_VERSION, 0);
+    assert_eq!(WIRE_REVISION, 4);
     let (socket, shutdown, _server, _dir) = start_test_server().await;
     for body in [
         serde_json::json!({"protocol_version":0}),
         serde_json::json!({"protocol_version":0,"wire_revision":1}),
         serde_json::json!({"protocol_version":0,"wire_revision":2}),
+        serde_json::json!({"protocol_version":0,"wire_revision":3}),
         serde_json::json!({"protocol_version":0,"wire_revision":WIRE_REVISION+1}),
         serde_json::json!({"protocol_version":1,"wire_revision":WIRE_REVISION}),
     ] {
@@ -680,6 +682,7 @@ async fn service_wire_revision_rejects_missing_legacy_and_mismatched_peers_befor
         serde_json::json!({"protocol_version":0}),
         serde_json::json!({"protocol_version":0,"wire_revision":1}),
         serde_json::json!({"protocol_version":0,"wire_revision":2}),
+        serde_json::json!({"protocol_version":0,"wire_revision":3}),
         serde_json::json!({"protocol_version":0,"wire_revision":WIRE_REVISION+1}),
         serde_json::json!({"protocol_version":1,"wire_revision":WIRE_REVISION}),
     ] {

@@ -49,6 +49,7 @@ pub fn service_error_to_eidetica_error(err: ServiceError) -> crate::Error {
             StoreError::RecordMaintenanceUnavailable { store: err.message }.into()
         }
         ("backend", "SourceTooLarge") => BackendError::SourceTooLarge.into(),
+        ("backend", "PrivateCacheQuotaExceeded") => BackendError::PrivateCacheQuotaExceeded.into(),
         ("backend", "SourceAdmissionRefused") => BackendError::SourceAdmissionRefused.into(),
         ("backend", "InvalidRawSource") => BackendError::InvalidRawSource.into(),
         ("backend", "InvalidRawPage") => BackendError::InvalidRawPage.into(),

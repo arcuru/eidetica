@@ -616,6 +616,105 @@ impl Transaction {
         Ok(())
     }
 
+    /// Minimal Store-plan helper, not automatic read migration. Call after a
+    /// committed-source result is valid. Protected records are encrypted here
+    /// once and retained by the assistance owner for exact retries.
+    #[cfg(all(unix, feature = "service"))]
+    pub async fn cache_private_records_best_effort<R>(
+        &self,
+        assistance: &mut crate::service::client::PrivateCacheAssistance,
+        source_and_representation: (
+            crate::store::source::StoreSource,
+            crate::store::assistance::PrivateRepresentation,
+        ),
+        records: Vec<(Vec<u8>, Vec<u8>)>,
+        result: R,
+    ) -> R {
+        let (source, representation) = source_and_representation;
+        let prepared = (|| -> Result<Vec<RecordMutation>> {
+            self.check_assisted_source(&source)?;
+            let builder = self.entry_builder.lock().unwrap();
+            let builder = builder
+                .as_ref()
+                .ok_or(TransactionError::TransactionAlreadyCommitted)?;
+            if [
+                &source.store,
+                crate::constants::INDEX,
+                crate::constants::SETTINGS,
+            ]
+            .iter()
+            .any(|name| builder.data(name).is_ok_and(|b| !b.is_empty()))
+                || self.projected.lock().unwrap().contains_key(&source.store)
+            {
+                return Err(crate::backend::BackendError::InvalidRawSource.into());
+            }
+            crate::store::source::encoded_size(&records, 16 * 1024 * 1024)?;
+            records
+                .into_iter()
+                .map(|(key, value)| {
+                    Ok(RecordMutation::Put {
+                        key: self.physical_record_key(&source.store, &key)?,
+                        value: self.encrypt_record(&source.store, &key, &value)?,
+                    })
+                })
+                .collect()
+        })();
+        match prepared {
+            Ok(mutations) => match self.db.instance().ok().and_then(|i| i.remote_connection()) {
+                Some(connection) => {
+                    assistance
+                        .publish_best_effort(
+                            &connection,
+                            self.db
+                                .auth_identity()
+                                .cloned()
+                                .or_else(|| connection.session_identity())
+                                .unwrap_or_default(),
+                            (source, representation),
+                            mutations,
+                            result,
+                        )
+                        .await
+                }
+                None => result,
+            },
+            Err(error) => {
+                tracing::warn!(%error, "optional private cache preparation failed");
+                result
+            }
+        }
+    }
+
+    /// Strict consuming-client record decryption. Missing unlock is an error,
+    /// never plaintext interpretation or a cache repair request.
+    #[cfg(all(unix, feature = "service"))]
+    pub fn decode_private_record(
+        &self,
+        source: &crate::store::source::StoreSource,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<(Vec<u8>, Vec<u8>)> {
+        self.check_assisted_source(source)?;
+        self.decrypt_record(&source.store, key, value)
+    }
+    #[cfg(all(unix, feature = "service"))]
+    fn check_assisted_source(&self, source: &crate::store::source::StoreSource) -> Result<()> {
+        if source.database != *self.database_id() || source.source != self.query_source()? {
+            return Err(crate::backend::BackendError::InvalidRawSource.into());
+        }
+        if source.type_id.starts_with("encrypted:")
+            && !self.encryptors.lock().unwrap().contains_key(&source.store)
+        {
+            return Err(StoreError::InvalidOperation {
+                store: source.store.clone(),
+                operation: "private materialization".into(),
+                reason: "encrypted Store must be unlocked client-side".into(),
+            }
+            .into());
+        }
+        Ok(())
+    }
+
     fn physical_record_key(&self, store: &str, logical_key: &[u8]) -> Result<Vec<u8>> {
         self.encryptors.lock().unwrap().get(store).map_or_else(
             || Ok(logical_key.to_vec()),
