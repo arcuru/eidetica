@@ -461,6 +461,7 @@ async fn table_payload_wire_decode_and_authorization_errors_remain_hard() {
             &mut stream,
             &HandshakeAck {
                 protocol_version: PROTOCOL_VERSION,
+                wire_revision: crate::service::protocol::WIRE_REVISION,
             },
         )
         .await

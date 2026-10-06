@@ -284,9 +284,20 @@ async fn query_follows_canonical_store_history_beyond_main_ancestry() -> Result<
         engine
             .update_verification_status(&selected_id, VerificationStatus::Verified)
             .await?;
+        let mut sibling_delta = Doc::new();
+        if store == INDEX {
+            let mut metadata = Doc::new();
+            metadata.set("type", DocStore::type_id());
+            sibling_delta.set("other-docs", metadata);
+        } else {
+            sibling_delta.set("sibling", "branch");
+        }
         let sibling = Entry::builder(db.root_id().clone())
             .set_parents(vec![seed])
             .set_height(22)
+            .set_subtree_parents(store, vec![external_id.clone()])
+            .set_subtree_height(store, Some(22))
+            .set_subtree_data(store, sibling_delta.encode()?)
             .build()?;
         let sibling_id = sibling.id();
         engine.put(sibling).await?;
@@ -329,6 +340,10 @@ async fn query_follows_canonical_store_history_beyond_main_ancestry() -> Result<
                 docs.query(GetValue("external")).await?,
                 Some(docs.get("external").await?),
                 "canonical {store} ancestry must not be filtered by main ancestry"
+            );
+            assert_eq!(
+                docs.query(GetValue("sibling")).await?,
+                docs.get_option("sibling").await
             );
         }
         // Newly consumed Store ancestors retain the existing posture check.
@@ -595,6 +610,75 @@ async fn doc_convenience_nested_staged_and_pinned_sqlite() -> Result<()> {
     let engine = crate::backend::database::Sqlite::in_memory().await?;
     assert_eq!(engine.kind(), crate::backend::database::DbKind::Sqlite);
     doc_convenience_behavior(Box::new(engine)).await
+}
+
+#[test]
+fn query_fold_retains_scoped_table_source_policy_and_opaque_rows() -> Result<()> {
+    use crate::store::{RawBytes, Table, TableData};
+    type Rows = Table<Vec<u8>, RawBytes>;
+    let mut data = TableData::default();
+    data.0.set(
+        "opaque".into(),
+        serde_bytes::ByteBuf::from(vec![0xff, 0, 0x80]),
+    );
+    data.0.delete("deleted".into());
+    let root = ID::from_bytes(b"fold-fixture");
+    let good = Entry::builder(root.clone())
+        .set_parents(vec![root.clone()])
+        .set_subtree_data("rows", data.encode()?)
+        .build()?;
+    let bad = Entry::builder(root.clone())
+        .set_parents(vec![root.clone()])
+        .set_subtree_data("rows", vec![0xff])
+        .build()?;
+    // Exercise the reusable fold only; this does not install a Table query
+    // handler or migrate Table convenience reads to queries.
+    let engine = InMemory::new();
+    let context = StoreQueryContext {
+        engine: &engine,
+        raw_source: crate::store::source::StoreSource {
+            database: root.clone(), store: "rows".into(), type_id: Rows::type_id().into(),
+            source: QuerySource { main: Snapshot::from([root.clone()]), scope: ReadScope::Verified },
+            snapshot: Snapshot::from([good.id(), bad.id()]), index_snapshot: Snapshot::default(),
+            registration: vec![], seal: "test".into(),
+        },
+        store: "rows".into(),
+        type_id: Rows::type_id().into(),
+        source: QuerySource {
+            main: Snapshot::from([root]),
+            scope: ReadScope::Verified,
+        },
+        snapshot: Snapshot::from([good.id(), bad.id()]),
+        entries: vec![good, bad],
+    };
+    assert_eq!(context.fold::<Rows>()?, data);
+    assert!(
+        fold_entries::<TableData>(
+            "rows",
+            &context.entries,
+            &ProjectionDescriptor {
+                name: "test:not-table".into(),
+                version: 0,
+            }
+        )
+        .is_err(),
+        "a custom projection must not inherit Table's source policy"
+    );
+    let context = StoreQueryContext {
+        type_id: DocStore::type_id().into(),
+        ..context
+    };
+    assert!(
+        context.fold::<DocStore>().is_err(),
+        "non-Table decoding stays strict"
+    );
+    // A binary registered codec must not inherit Table's warning policy.
+    let context = StoreQueryContext {
+        type_id: CounterStore::type_id().into(),
+        ..context
+    };
+    assert!(context.fold::<CounterStore>().is_err());
+    Ok(())
 }
 
 #[tokio::test]
