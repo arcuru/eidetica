@@ -25,11 +25,7 @@ async fn test_doc_serialization() {
     map.remove("deleted_key");
 
     // Test serialization roundtrip
-    test_serialization_roundtrip(&map).expect("Serialization roundtrip failed");
-
-    // Verify specific values survived serialization
-    let serialized = serde_json::to_string(&map).expect("Serialization failed");
-    let deserialized: Doc = serde_json::from_str(&serialized).expect("Deserialization failed");
+    let deserialized = test_serialization_roundtrip(&map).expect("Serialization roundtrip failed");
 
     // Verify string survived
     assert_text_value(deserialized.get("string_key").unwrap(), "string_value");
@@ -50,11 +46,8 @@ async fn test_serialization_complex_nested_structure() {
     let complex_map = create_complex_nested_structure();
 
     // Test roundtrip on complex structure
-    test_serialization_roundtrip(&complex_map).expect("Complex serialization failed");
-
-    // Verify structure integrity after serialization
-    let serialized = serde_json::to_string(&complex_map).expect("Serialization failed");
-    let deserialized: Doc = serde_json::from_str(&serialized).expect("Deserialization failed");
+    let deserialized =
+        test_serialization_roundtrip(&complex_map).expect("Complex serialization failed");
 
     // Verify nested structure preserved
     assert_nested_value(
@@ -70,11 +63,8 @@ async fn test_serialization_mixed_doc() {
     let mixed_map = create_mixed_map();
 
     // Test roundtrip
-    test_serialization_roundtrip(&mixed_map).expect("Mixed doc serialization failed");
-
-    // Verify all types preserved
-    let serialized = serde_json::to_string(&mixed_map).expect("Serialization failed");
-    let deserialized: Doc = serde_json::from_str(&serialized).expect("Deserialization failed");
+    let deserialized =
+        test_serialization_roundtrip(&mixed_map).expect("Mixed doc serialization failed");
 
     // Check string value
     assert_text_value(deserialized.get("string_val").unwrap(), "test_string");
@@ -93,10 +83,8 @@ async fn test_serialization_mixed_doc() {
 async fn test_serialization_empty_doc() {
     let empty_map = Doc::new();
 
-    test_serialization_roundtrip(&empty_map).expect("Empty doc serialization failed");
-
-    let serialized = serde_json::to_string(&empty_map).expect("Serialization failed");
-    let deserialized: Doc = serde_json::from_str(&serialized).expect("Deserialization failed");
+    let deserialized =
+        test_serialization_roundtrip(&empty_map).expect("Empty doc serialization failed");
 
     assert_eq!(deserialized.len(), 0, "Empty map should remain empty");
 }
@@ -108,10 +96,8 @@ async fn test_serialization_tombstone_only_doc() {
     tombstone_map.remove("tombstone2");
     tombstone_map.set("direct_tombstone", Value::Deleted);
 
-    test_serialization_roundtrip(&tombstone_map).expect("Tombstone-only doc serialization failed");
-
-    let serialized = serde_json::to_string(&tombstone_map).expect("Serialization failed");
-    let deserialized: Doc = serde_json::from_str(&serialized).expect("Deserialization failed");
+    let deserialized = test_serialization_roundtrip(&tombstone_map)
+        .expect("Tombstone-only doc serialization failed");
 
     // Verify all tombstones preserved
     assert_path_deleted(&deserialized, &["tombstone1"]);
