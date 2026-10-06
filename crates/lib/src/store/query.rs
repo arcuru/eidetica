@@ -169,10 +169,16 @@ fn dispatch<'a, S: StoreQueryHandler>(
 }
 
 pub(crate) fn default_handlers() -> Vec<QueryHandler> {
-    vec![QueryHandler {
-        type_id: DocStore::type_id(),
-        dispatch: dispatch::<DocStore>,
-    }]
+    vec![
+        QueryHandler {
+            type_id: DocStore::type_id(),
+            dispatch: dispatch::<DocStore>,
+        },
+        QueryHandler {
+            type_id: super::RawTable::type_id(),
+            dispatch: dispatch::<super::RawTable>,
+        },
+    ]
 }
 
 pub(crate) fn register_handler<S: StoreQueryHandler>(

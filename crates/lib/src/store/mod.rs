@@ -142,7 +142,9 @@ mod value_editor;
 pub use value_editor::ValueEditor;
 
 pub(crate) mod table;
+pub(crate) mod table_query;
 pub use table::{RawTable, Table, TableCursor, TablePage};
+pub use table_query::{GetRow, ScanRows, SearchRows};
 
 mod settings_store;
 pub use settings_store::SettingsStore;

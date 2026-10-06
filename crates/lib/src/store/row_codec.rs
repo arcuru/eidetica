@@ -17,14 +17,14 @@ use crate::Result;
 /// use eidetica::store::{RowCodec, SerdeJson};
 ///
 /// let row = vec![u128::MAX];
-/// assert_eq!(<SerdeJson as RowCodec<Vec<u128>>>::FORMAT_ID, "json:v1");
+/// assert_eq!(<SerdeJson as RowCodec<Vec<u128>>>::FORMAT_ID, "json:v0");
 /// let bytes = SerdeJson::encode(&row)?;
 /// let decoded: Vec<u128> = SerdeJson::decode(&bytes)?;
 /// assert_eq!(decoded, row);
 /// # Ok::<(), eidetica::Error>(())
 /// ```
 pub trait RowCodec<T>: Send + Sync {
-    /// Stable identity of the application byte format, such as `json:v1` or
+    /// Stable identity of the application byte format, such as `json:v0` or
     /// `myapp/invoice-binary:v2`. Use an application-owned format name, not a
     /// Rust type name or crate version; incompatible encodings need distinct IDs.
     ///
@@ -45,7 +45,7 @@ pub trait RowCodec<T>: Send + Sync {
 pub struct SerdeJson;
 
 impl<T: Serialize + DeserializeOwned> RowCodec<T> for SerdeJson {
-    const FORMAT_ID: &'static str = "json:v1";
+    const FORMAT_ID: &'static str = "json:v0";
 
     fn encode(row: &T) -> Result<Vec<u8>> {
         Ok(serde_json::to_vec(row)?)
@@ -62,7 +62,7 @@ impl<T: Serialize + DeserializeOwned> RowCodec<T> for SerdeJson {
 /// use eidetica::store::{RawBytes, RowCodec};
 ///
 /// let row = vec![0, 255, 0];
-/// assert_eq!(RawBytes::FORMAT_ID, "raw:v1");
+/// assert_eq!(RawBytes::FORMAT_ID, "raw:v0");
 /// assert_eq!(RawBytes::encode(&row)?, row);
 /// assert_eq!(RawBytes::decode(&row)?, row);
 /// # Ok::<(), eidetica::Error>(())
@@ -71,7 +71,7 @@ impl<T: Serialize + DeserializeOwned> RowCodec<T> for SerdeJson {
 pub struct RawBytes;
 
 impl RowCodec<Vec<u8>> for RawBytes {
-    const FORMAT_ID: &'static str = "raw:v1";
+    const FORMAT_ID: &'static str = "raw:v0";
 
     fn encode(row: &Vec<u8>) -> Result<Vec<u8>> {
         Ok(row.clone())

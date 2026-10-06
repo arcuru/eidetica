@@ -15,7 +15,6 @@ pub(super) struct ReadBudget {
     reconstructed: bool,
 }
 impl ReadBudget {
-    #[allow(dead_code)] // Consumed by record-shaped Store plans.
     pub(super) fn can_reconstruct(&self) -> bool {
         !self.reconstructed
     }
