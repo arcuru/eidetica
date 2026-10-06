@@ -8,6 +8,7 @@ use eidetica::store::query::{
     QueryOutcome, QuerySource, StoreQueryContext, StoreQueryHandler, StoreQueryRequest,
 };
 use eidetica::store::{ExecuteQuery, GetValue};
+use eidetica::{ID, Snapshot};
 use eidetica::{Registered, Result, Store, Transaction};
 
 // Adapted from the typed-codec fixture: no Serde and a nonzero identity.
@@ -105,7 +106,14 @@ impl<'q> ExecuteQuery<AtLeast<'q>> for CounterStore {
 }
 
 async fn insert_counter(db: &eidetica::Database, owner: &eidetica::user::User, bytes: Vec<u8>) {
-    let store = "counter";
+    insert_store_bytes(db, owner, "counter", bytes).await;
+}
+async fn insert_store_bytes(
+    db: &eidetica::Database,
+    owner: &eidetica::user::User,
+    store: &str,
+    bytes: Vec<u8>,
+) {
     let ctx = db
         .transaction_context(&[store.into()], ReadScope::Verified)
         .await
@@ -221,6 +229,19 @@ async fn store_query_local_and_socket_use_unlike_store_vocabularies_and_pinned_s
         .unwrap();
     assert_eq!(refused.source, source);
     assert_eq!(refused.outcome, QueryOutcome::Unavailable);
+    assert_eq!(
+        transaction
+            .query_store_or_fold::<SocketCounter, _>(
+                "counter",
+                CounterStore::type_id(),
+                b"NO-CAP".to_vec(),
+                SocketCounter::decode,
+                Ok
+            )
+            .await
+            .unwrap(),
+        SocketCounter(21)
+    );
     let invalid_result = transaction
         .get_store::<CounterStore>("bad-response")
         .await
@@ -627,6 +648,8 @@ async fn service_wire_revision_rejects_missing_legacy_and_mismatched_peers_befor
     let (socket, shutdown, _server, _dir) = start_test_server().await;
     for body in [
         serde_json::json!({"protocol_version":0}),
+        serde_json::json!({"protocol_version":0,"wire_revision":1}),
+        serde_json::json!({"protocol_version":0,"wire_revision":2}),
         serde_json::json!({"protocol_version":0,"wire_revision":WIRE_REVISION+1}),
         serde_json::json!({"protocol_version":1,"wire_revision":WIRE_REVISION}),
     ] {
@@ -652,6 +675,8 @@ async fn service_wire_revision_rejects_missing_legacy_and_mismatched_peers_befor
     }
     for body in [
         serde_json::json!({"protocol_version":0}),
+        serde_json::json!({"protocol_version":0,"wire_revision":1}),
+        serde_json::json!({"protocol_version":0,"wire_revision":2}),
         serde_json::json!({"protocol_version":0,"wire_revision":WIRE_REVISION+1}),
         serde_json::json!({"protocol_version":1,"wire_revision":WIRE_REVISION}),
     ] {
@@ -813,6 +838,7 @@ async fn store_query_client_rejects_a_result_from_a_different_source_or_posture(
                     eidetica::store::query::StoreQueryReply {
                         source,
                         outcome: QueryOutcome::Result(b"irrelevant bytes".to_vec()),
+                        raw_source: None,
                     },
                 ))),
             )
@@ -838,7 +864,761 @@ async fn store_query_client_rejects_a_result_from_a_different_source_or_posture(
         .await
         .unwrap()
         .unwrap_err();
-        assert!(error.to_string().contains("source-bound StoreQuery"));
+        assert!(error.to_string().contains("canonical Store source"));
+        tokio::time::timeout(Duration::from_secs(5), peer)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+}
+
+// Unknown to the daemon, deliberately non-Serde. Each historical delta has
+// opaque high-byte padding whose JSON expansion makes the aggregate >64 MiB.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct RawBinary(u64);
+impl CRDT for RawBinary {
+    fn merge(&self, other: &Self) -> Result<Self> {
+        Ok(Self(self.0.max(other.0)))
+    }
+}
+impl Codec for RawBinary {
+    fn encode(&self) -> Result<Vec<u8>> {
+        let mut bytes = vec![255; 900_000];
+        bytes[..8].copy_from_slice(&self.0.to_le_bytes());
+        Ok(bytes)
+    }
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let bytes =
+            bytes
+                .get(..8)
+                .ok_or_else(|| eidetica::crdt::CRDTError::DeserializationFailed {
+                    reason: "binary header missing".into(),
+                })?;
+        Ok(Self(u64::from_le_bytes(bytes.try_into().unwrap())))
+    }
+}
+struct RawBinaryStore {
+    txn: Transaction,
+    name: String,
+}
+impl Registered for RawBinaryStore {
+    fn type_id() -> &'static str {
+        "test:raw-binary:v0"
+    }
+}
+#[async_trait::async_trait]
+impl Store for RawBinaryStore {
+    type Data = RawBinary;
+    async fn load(txn: &Transaction, name: String) -> Result<Self> {
+        Ok(Self {
+            txn: txn.clone(),
+            name,
+        })
+    }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn transaction(&self) -> &Transaction {
+        &self.txn
+    }
+}
+struct RawAtLeast<'a>(&'a std::rc::Rc<u64>);
+impl<'q> ExecuteQuery<RawAtLeast<'q>> for RawBinaryStore {
+    type Output = bool;
+    async fn execute<'a>(&'a self, query: RawAtLeast<'q>) -> Result<bool>
+    where
+        RawAtLeast<'q>: 'a,
+    {
+        let committed = self
+            .txn
+            .query_store_or_fold::<RawBinary, _>(
+                self.name(),
+                Self::type_id(),
+                b"BINARY-MAX".to_vec(),
+                RawBinary::decode,
+                Ok,
+            )
+            .await?;
+        let combined = committed.merge(&self.local_data()?.unwrap_or_default())?;
+        Ok(combined.0 >= **query.0)
+    }
+}
+
+#[tokio::test]
+async fn raw_source_socket_aggregate_exceeds_old_frame_and_unknown_binary_reconstructs_at_original_source()
+ {
+    use eidetica::store::source::RawStoreRequest;
+    let (socket, shutdown, server, _dir) = start_test_server().await;
+    let (client, root, identity) = setup_db(&server, &socket, "raw-binary").await;
+    let owner = server.login_user("raw-binary", None).await.unwrap();
+    let db = owner.open_database(&root).await.unwrap();
+    let write = db.new_transaction().await.unwrap();
+    write.get_store::<RawBinaryStore>("binary").await.unwrap();
+    write.commit().await.unwrap();
+    for i in 1..=20 {
+        insert_store_bytes(&db, &owner, "binary", RawBinary(i).encode().unwrap()).await;
+    }
+    let remote = eidetica::Database::open(&client, &root).await.unwrap();
+    let tx = remote.new_transaction().await.unwrap();
+    let source = tx.query_source().unwrap();
+    let reply = tx
+        .query_store("binary", RawBinaryStore::type_id(), b"BINARY-MAX".to_vec())
+        .await
+        .unwrap();
+    assert_eq!(reply.outcome, QueryOutcome::Unavailable);
+    let raw = reply.raw_source.unwrap();
+    let engine = server.backend().local_engine().unwrap();
+    let canonical = engine
+        .store_at(&root, "binary", &raw.snapshot)
+        .await
+        .unwrap();
+    let encoded_sum: usize = canonical
+        .iter()
+        .map(|e| serde_json::to_vec(e).unwrap().len())
+        .sum();
+    assert!(encoded_sum > eidetica::service::protocol::MAX_FRAME_SIZE as usize);
+    println!(
+        "real canonical aggregate: {encoded_sum} JSON Entry bytes (>64 MiB), {} Entries",
+        canonical.len()
+    );
+    let expected = canonical
+        .iter()
+        .try_fold(RawBinary::default(), |state, entry| {
+            if let Ok(data) = entry.data("binary") {
+                state.merge(&RawBinary::decode(data)?)
+            } else {
+                Ok(state)
+            }
+        })
+        .unwrap();
+    let conn = client.remote_connection().unwrap();
+    let mut request = RawStoreRequest {
+        source: raw.clone(),
+        cursor: None,
+    };
+    let first = conn
+        .raw_store_page(root.clone(), identity.clone(), request.clone())
+        .await
+        .unwrap();
+    assert!(first.next.is_some());
+    insert_store_bytes(&db, &owner, "binary", RawBinary(999).encode().unwrap()).await;
+    let mut entries = first.entries.clone();
+    request.cursor = first.next;
+    let mut pages = 1;
+    while request.cursor.is_some() {
+        let page = conn
+            .raw_store_page(root.clone(), identity.clone(), request.clone())
+            .await
+            .unwrap();
+        let frame = ServerFrame::Response(Box::new(ServiceResponse::RawStore(page.clone())));
+        let actual = serde_json::to_vec(&frame).unwrap().len();
+        assert!(actual <= 4 * 1024 * 1024);
+        assert_eq!(page.source, raw);
+        page.validate(&request).unwrap();
+        entries.extend(page.entries);
+        request.cursor = page.next;
+        pages += 1;
+    }
+    assert_eq!(
+        entries, canonical,
+        "no omissions, duplicates, or latest-tip rebinding"
+    );
+    assert!(pages >= 20);
+    assert_eq!(
+        tx.fold_raw_source::<RawBinary>(&raw).await.unwrap(),
+        expected
+    );
+    // Actual reusable Store query: borrowed/non-Send public input.
+    let handle = tx.get_store::<RawBinaryStore>("binary").await.unwrap();
+    assert!(
+        !handle
+            .query(RawAtLeast(&std::rc::Rc::new(21)))
+            .await
+            .unwrap()
+    );
+    assert!(
+        handle
+            .query(RawAtLeast(&std::rc::Rc::new(20)))
+            .await
+            .unwrap()
+    );
+    assert_eq!(source, tx.query_source().unwrap());
+    let local_tx = db.new_transaction_at(&source.main).await.unwrap();
+    assert_eq!(
+        local_tx
+            .query_store_or_fold::<RawBinary, _>(
+                "binary",
+                RawBinaryStore::type_id(),
+                Vec::new(),
+                RawBinary::decode,
+                Ok
+            )
+            .await
+            .unwrap(),
+        expected
+    );
+    assert!(
+        tx.query_store_or_fold::<RawBinary, RawBinary>(
+            "binary",
+            DocStore::type_id(),
+            Vec::new(),
+            |_| panic!("type error cannot decode"),
+            |_| panic!("type error cannot fall back")
+        )
+        .await
+        .is_err()
+    );
+    drop(shutdown);
+}
+
+#[tokio::test]
+async fn raw_source_socket_protected_history_stays_encrypted_and_unlock_is_client_only() {
+    use eidetica::store::source::RawStoreRequest;
+    let (socket, shutdown, server, _dir) = start_test_server().await;
+    let (client, root, identity) = setup_db(&server, &socket, "raw-protected").await;
+    let owner = server.login_user("raw-protected", None).await.unwrap();
+    let db = owner.open_database(&root).await.unwrap();
+    let write = db.new_transaction().await.unwrap();
+    let mut protected = write
+        .get_store::<PasswordStore<DocStore>>("secret")
+        .await
+        .unwrap();
+    protected
+        .initialize("test-password", Doc::new())
+        .await
+        .unwrap();
+    protected
+        .inner()
+        .await
+        .unwrap()
+        .set("private", "unique-protected-plaintext")
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+    let remote = eidetica::Database::open(&client, &root).await.unwrap();
+    let tx = remote.new_transaction().await.unwrap();
+    let raw = tx
+        .query_store("secret", PasswordStore::<DocStore>::type_id(), Vec::new())
+        .await
+        .unwrap()
+        .raw_source
+        .unwrap();
+    let page = client
+        .remote_connection()
+        .unwrap()
+        .raw_store_page(
+            root.clone(),
+            identity,
+            RawStoreRequest {
+                source: raw.clone(),
+                cursor: None,
+            },
+        )
+        .await
+        .unwrap();
+    let canonical = server
+        .backend()
+        .local_engine()
+        .unwrap()
+        .store_at(&root, "secret", &raw.snapshot)
+        .await
+        .unwrap();
+    assert_eq!(page.entries, canonical);
+    for entry in &page.entries {
+        if let Ok(bytes) = entry.data("secret") {
+            assert!(
+                !bytes
+                    .windows(b"unique-protected-plaintext".len())
+                    .any(|w| w == b"unique-protected-plaintext")
+            );
+            assert!(Doc::decode(bytes).is_err());
+        }
+    }
+    assert!(
+        tx.fold_raw_source::<Doc>(&raw)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("unlocked client-side")
+    );
+    let mut locked = tx
+        .get_store::<PasswordStore<DocStore>>("secret")
+        .await
+        .unwrap();
+    assert!(locked.open("wrong-password").is_err());
+    assert!(tx.fold_raw_source::<Doc>(&raw).await.is_err());
+    locked.open("test-password").unwrap();
+    let later = db.new_transaction().await.unwrap();
+    let mut updated = later
+        .get_store::<PasswordStore<DocStore>>("secret")
+        .await
+        .unwrap();
+    updated.open("test-password").unwrap();
+    updated
+        .inner()
+        .await
+        .unwrap()
+        .set("private", "new-source")
+        .await
+        .unwrap();
+    later.commit().await.unwrap();
+    let state = tx
+        .query_store_or_fold::<Doc, _>(
+            "secret",
+            PasswordStore::<DocStore>::type_id(),
+            Vec::new(),
+            Doc::decode,
+            Ok,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        state.get("private").unwrap().as_text(),
+        Some("unique-protected-plaintext")
+    );
+    let other = remote.new_transaction().await.unwrap();
+    assert!(other.fold_raw_source::<Doc>(&raw).await.is_err());
+    // A corrupted canonical ciphertext is fatal, not repaired or returned empty.
+    insert_store_bytes(&db, &owner, "secret", vec![0; 32]).await;
+    let bad_tx = remote.new_transaction().await.unwrap();
+    let mut unlocked = bad_tx
+        .get_store::<PasswordStore<DocStore>>("secret")
+        .await
+        .unwrap();
+    unlocked.open("test-password").unwrap();
+    assert!(
+        bad_tx
+            .query_store_or_fold::<Doc, Doc>(
+                "secret",
+                PasswordStore::<DocStore>::type_id(),
+                Vec::new(),
+                |_| panic!("encrypted source has no daemon decoder"),
+                Ok
+            )
+            .await
+            .is_err()
+    );
+    drop(shutdown);
+}
+
+#[tokio::test]
+async fn raw_source_socket_continuations_reauthorize_and_refuse_retarget_and_oversize() {
+    use eidetica::store::source::RawStoreRequest;
+    let (socket, shutdown, server, _dir) = start_test_server().await;
+    let (client, root, identity) = setup_db(&server, &socket, "raw-owner").await;
+    create_user_via_admin(&server, "raw-other").await;
+    let owner = server.login_user("raw-owner", None).await.unwrap();
+    let other_user = server.login_user("raw-other", None).await.unwrap();
+    let db = owner.open_database(&root).await.unwrap();
+    let write = db.new_transaction().await.unwrap();
+    write.get_store::<RawBinaryStore>("binary").await.unwrap();
+    write.get_store::<CounterStore>("empty").await.unwrap();
+    write
+        .get_settings()
+        .unwrap()
+        .set_auth_key(
+            &other_user.get_default_key().unwrap(),
+            eidetica::auth::types::AuthKey::active(Some("reader"), Permission::Read),
+        )
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+    for value in [1, 2] {
+        insert_store_bytes(&db, &owner, "binary", RawBinary(value).encode().unwrap()).await;
+    }
+    let conn = client.remote_connection().unwrap();
+    let source = QuerySource {
+        main: db.snapshot().await.unwrap(),
+        scope: ReadScope::Verified,
+    };
+    let raw = conn
+        .query_store(
+            root.clone(),
+            identity.clone(),
+            request(source.clone(), "binary", RawBinaryStore::type_id(), b"raw"),
+        )
+        .await
+        .unwrap()
+        .raw_source
+        .unwrap();
+    let first_request = RawStoreRequest {
+        source: raw.clone(),
+        cursor: None,
+    };
+    let first = conn
+        .raw_store_page(root.clone(), identity.clone(), first_request.clone())
+        .await
+        .unwrap();
+    assert!(first.next.is_some());
+    let next = RawStoreRequest {
+        cursor: first.next.clone(),
+        ..first_request.clone()
+    };
+    for mutation in 0..4 {
+        let mut bad = next.clone();
+        match mutation {
+            0 => bad.source.store = "empty".into(),
+            1 => bad.source.type_id = CounterStore::type_id().into(),
+            2 => bad.source.source.main = Snapshot::EMPTY,
+            _ => bad.cursor.as_mut().unwrap().offset += 1,
+        };
+        assert!(
+            conn.raw_store_page(root.clone(), identity.clone(), bad)
+                .await
+                .is_err()
+        );
+    }
+    let other_client = Instance::connect(format!("unix://{}", socket.display()))
+        .await
+        .unwrap();
+    other_client.login_user("raw-other", None).await.unwrap();
+    let other = other_client.remote_connection().unwrap();
+    assert!(
+        other
+            .raw_store_page(
+                root.clone(),
+                SigKey::from_pubkey(&other_user.get_default_key().unwrap()),
+                next.clone()
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        conn.raw_store_page(
+            ID::from_bytes(b"wrong-root"),
+            identity.clone(),
+            next.clone()
+        )
+        .await
+        .is_err()
+    );
+    let mut owner_for_foreign = server.login_user("raw-owner", None).await.unwrap();
+    let foreign = owner_for_foreign
+        .create_database(Doc::new(), &owner_for_foreign.get_default_key().unwrap())
+        .await
+        .unwrap();
+    assert!(
+        conn.raw_store_page(foreign.root_id().clone(), identity.clone(), next.clone())
+            .await
+            .is_err()
+    );
+    // Empty registered history is distinct from a missing projection or Store.
+    let empty = conn
+        .query_store(
+            root.clone(),
+            identity.clone(),
+            request(source.clone(), "empty", CounterStore::type_id(), b"MAX\0"),
+        )
+        .await
+        .unwrap()
+        .raw_source
+        .unwrap();
+    let page = conn
+        .raw_store_page(
+            root.clone(),
+            identity.clone(),
+            RawStoreRequest {
+                source: empty,
+                cursor: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(page.next.is_none());
+    assert!(
+        page.entries
+            .iter()
+            .all(|e| e.data("empty").map_or(true, |d| d.is_empty()))
+    );
+    assert!(
+        conn.query_store(
+            root.clone(),
+            identity.clone(),
+            request(source.clone(), "missing", CounterStore::type_id(), b"MAX\0")
+        )
+        .await
+        .is_err()
+    );
+    let changed = db.new_transaction().await.unwrap();
+    let auth = changed.get_settings().unwrap();
+    auth.revoke_auth_key(&owner.get_default_key().unwrap())
+        .await
+        .unwrap();
+    let (_, replacement) = generate_keypair();
+    auth.set_auth_key(
+        &replacement,
+        eidetica::auth::types::AuthKey::active(Some("replacement"), Permission::Admin(0)),
+    )
+    .await
+    .unwrap();
+    changed.commit().await.unwrap();
+    assert!(
+        conn.raw_store_page(root.clone(), identity.clone(), next)
+            .await
+            .is_err()
+    );
+    // A fresh reader can use its own source; one Entry >4 MiB JSON is rejected
+    // before raw history collection, despite being smaller than global framing.
+    let (big_client, big_root, big_identity) = setup_db(&server, &socket, "raw-big").await;
+    let big_owner = server.login_user("raw-big", None).await.unwrap();
+    let big_db = big_owner.open_database(&big_root).await.unwrap();
+    let write = big_db.new_transaction().await.unwrap();
+    write.get_store::<CounterStore>("counter").await.unwrap();
+    write.commit().await.unwrap();
+    insert_counter(&big_db, &big_owner, vec![255; 1_100_000]).await;
+    let error = big_client
+        .remote_connection()
+        .unwrap()
+        .query_store(
+            big_root,
+            big_identity,
+            request(
+                QuerySource {
+                    main: big_db.snapshot().await.unwrap(),
+                    scope: ReadScope::Verified,
+                },
+                "counter",
+                CounterStore::type_id(),
+                b"MAX\0",
+            ),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, eidetica::Error::Backend(e) if matches!(*e, eidetica::backend::BackendError::SourceTooLarge))
+    );
+    drop(shutdown);
+}
+
+#[tokio::test]
+async fn raw_source_socket_expiry_and_reauthenticated_reconnect_rebind_only_sealed_source() {
+    use eidetica::store::source::RawStoreRequest;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let socket = dir.path().join("raw-expiry.sock");
+    let (server, mut owner) =
+        Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless("owner"))
+            .await
+            .unwrap();
+    let db = owner
+        .create_database(Doc::new(), &owner.get_default_key().unwrap())
+        .await
+        .unwrap();
+    let write = db.new_transaction().await.unwrap();
+    write.get_store::<RawBinaryStore>("binary").await.unwrap();
+    write.commit().await.unwrap();
+    for value in [1, 2] {
+        insert_store_bytes(&db, &owner, "binary", RawBinary(value).encode().unwrap()).await;
+    }
+    let daemon = ServiceServer::bind_with_token_idle_ttl_for_test(
+        server.clone(),
+        &socket,
+        Duration::from_secs(2),
+    )
+    .await
+    .unwrap();
+    let (shutdown, rx) = watch::channel(());
+    let task = tokio::spawn(daemon.run(rx));
+    let client = Instance::connect(format!("unix://{}", socket.display()))
+        .await
+        .unwrap();
+    client.login_user("owner", None).await.unwrap();
+    let remote = eidetica::Database::open(&client, db.root_id())
+        .await
+        .unwrap();
+    let tx = remote.new_transaction().await.unwrap();
+    let raw = tx
+        .raw_store_source("binary", RawBinaryStore::type_id())
+        .await
+        .unwrap();
+    let conn = client.remote_connection().unwrap();
+    let identity = SigKey::from_pubkey(&owner.get_default_key().unwrap());
+    let request = RawStoreRequest {
+        source: raw.clone(),
+        cursor: None,
+    };
+    let first = conn
+        .raw_store_page(db.root_id().clone(), identity.clone(), request.clone())
+        .await
+        .unwrap();
+    assert!(first.next.is_some());
+    insert_store_bytes(&db, &owner, "binary", RawBinary(999).encode().unwrap()).await;
+    tokio::time::sleep(Duration::from_millis(2200)).await;
+    let expired = RawStoreRequest {
+        cursor: first.next.clone(),
+        ..request.clone()
+    };
+    assert!(
+        matches!(conn.raw_store_page(db.root_id().clone(), identity.clone(), expired.clone()).await, Err(eidetica::Error::Backend(e)) if matches!(*e, eidetica::backend::BackendError::InvalidRawCursor))
+    );
+    let rebound = conn
+        .raw_store_page(db.root_id().clone(), identity.clone(), request.clone())
+        .await
+        .unwrap();
+    assert_eq!(rebound.entries, first.entries);
+    assert_eq!(rebound.source, raw);
+    let fresh_client = Instance::connect(format!("unix://{}", socket.display()))
+        .await
+        .unwrap();
+    fresh_client.login_user("owner", None).await.unwrap();
+    let reauthenticated = fresh_client.remote_connection().unwrap();
+    assert!(
+        reauthenticated
+            .raw_store_page(db.root_id().clone(), identity.clone(), expired)
+            .await
+            .is_err()
+    ); // old connection's cursor
+    let recovery = reauthenticated
+        .raw_store_page(db.root_id().clone(), identity.clone(), request.clone())
+        .await
+        .unwrap();
+    assert_eq!(recovery.entries, first.entries);
+    assert_eq!(recovery.source, raw);
+    let finished = reauthenticated
+        .raw_store_page(
+            db.root_id().clone(),
+            identity,
+            RawStoreRequest {
+                cursor: recovery.next,
+                ..request
+            },
+        )
+        .await
+        .unwrap();
+    assert!(finished.next.is_none());
+    // Source identity itself survives context expiry; a different daemon's seal
+    // cannot be guessed/rebound and restart must report explicit unavailability.
+    let remote2 = eidetica::Database::open(&fresh_client, db.root_id())
+        .await
+        .unwrap();
+    let pinned = remote2.new_transaction_at(&raw.source.main).await.unwrap();
+    // A deliberate first-page client decode pause expires the SDK's own raw
+    // context. Its one replay must compare/discard consumed IDs, not re-fold.
+    #[derive(Clone, Default)]
+    struct SlowBinary(RawBinary);
+    impl CRDT for SlowBinary {
+        fn merge(&self, other: &Self) -> Result<Self> {
+            Ok(Self(self.0.merge(&other.0)?))
+        }
+    }
+    impl Codec for SlowBinary {
+        fn encode(&self) -> Result<Vec<u8>> {
+            self.0.encode()
+        }
+        fn decode(bytes: &[u8]) -> Result<Self> {
+            static PAUSE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+            if PAUSE.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(2200));
+            }
+            Ok(Self(RawBinary::decode(bytes)?))
+        }
+    }
+    assert_eq!(
+        pinned.fold_raw_source::<SlowBinary>(&raw).await.unwrap().0,
+        RawBinary(2)
+    );
+    drop(shutdown);
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn raw_source_socket_malformed_responses_are_hard_errors_not_cursor_expiry() {
+    use eidetica::store::source::{RawCursor, RawStorePage, RawStoreRequest, StoreSource};
+    for mutation in 0..5 {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("bad-page.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let entry = Entry::root_builder()
+            .set_subtree_data("binary", vec![255; 8])
+            .build()
+            .unwrap();
+        let root = entry.id();
+        let source = StoreSource {
+            database: root.clone(),
+            store: "binary".into(),
+            type_id: RawBinaryStore::type_id().into(),
+            source: QuerySource {
+                main: Snapshot::from([root.clone()]),
+                scope: ReadScope::Verified,
+            },
+            snapshot: Snapshot::from([root.clone()]),
+            index_snapshot: Snapshot::EMPTY,
+            registration: Vec::new(),
+            seal: "opaque-source".into(),
+        };
+        let request = RawStoreRequest {
+            source: source.clone(),
+            cursor: Some(RawCursor {
+                context: "cursor".into(),
+                offset: 1,
+            }),
+        };
+        let peer = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let _: Handshake = read_frame(&mut stream).await.unwrap().unwrap();
+            write_frame(
+                &mut stream,
+                &HandshakeAck {
+                    protocol_version: 0,
+                    wire_revision: WIRE_REVISION,
+                },
+            )
+            .await
+            .unwrap();
+            let op: ServiceRequest = read_frame(&mut stream).await.unwrap().unwrap();
+            assert!(
+                matches!(op, ServiceRequest::AuthenticatedDb(ref e) if matches!(e.op, eidetica::service::protocol::DatabaseOp::ReadRawStore { .. }))
+            );
+            let mut page = RawStorePage {
+                source,
+                offset: 1,
+                entries: vec![entry],
+                next: Some(RawCursor {
+                    context: "cursor".into(),
+                    offset: 2,
+                }),
+            };
+            match mutation {
+                0 => page.source.store = "other".into(),
+                1 => page.offset = 2,
+                2 => page.next.as_mut().unwrap().context = "retarget".into(),
+                3 => {
+                    page.entries.push(page.entries[0].clone());
+                    page.next.as_mut().unwrap().offset = 3;
+                }
+                _ => {
+                    page.entries.clear();
+                    page.next = None;
+                }
+            }
+            write_frame(
+                &mut stream,
+                &ServerFrame::Response(Box::new(ServiceResponse::RawStore(page))),
+            )
+            .await
+            .unwrap();
+            // No retry, resolution or query can hide this malformed response.
+            let next = tokio::time::timeout(
+                Duration::from_millis(100),
+                read_frame::<_, ServiceRequest>(&mut stream),
+            )
+            .await;
+            assert!(next.is_err());
+        });
+        let conn = eidetica::service::client::RemoteConnection::connect(&socket)
+            .await
+            .unwrap();
+        let error = conn
+            .raw_store_page(root, SigKey::default(), request)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, eidetica::Error::Backend(e) if matches!(*e, eidetica::backend::BackendError::InvalidRawPage))
+        );
         tokio::time::timeout(Duration::from_secs(5), peer)
             .await
             .unwrap()

@@ -72,6 +72,49 @@ pub async fn store_snapshot(backend: &SqlxBackend, tree: &ID, store: &str) -> Re
     rows.into_iter().map(|(id,)| ID::parse(&id)).collect()
 }
 
+/// One statement snapshot, bounded rows; no recursive CTE or whole-history
+/// allocation. Only the two Store frontiers needed by source resolution.
+pub async fn current_source_frontiers(
+    backend: &SqlxBackend,
+    tree: &ID,
+    main: &crate::Snapshot,
+    stores: &[&str],
+) -> Result<Option<Vec<crate::Snapshot>>> {
+    let max_tips = crate::store::source::Limits::default().nodes;
+    if stores.len() != 2 {
+        return Err(BackendError::SourceReadUnsupported.into());
+    }
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT store_name, entry_id FROM tips WHERE tree_id = $1 AND store_name IN ('', $2, $3) LIMIT $4",
+    ).bind(tree.to_string()).bind(stores[0]).bind(stores[1])
+        .bind((max_tips + 1) as i64).fetch_all(backend.pool()).await
+        .sql_context("Failed to read bounded source frontiers")?;
+    if rows.len() > max_tips {
+        return Err(BackendError::SourceTooLarge.into());
+    }
+    let current = crate::Snapshot::from(
+        rows.iter()
+            .filter(|(s, _)| s.is_empty())
+            .map(|(_, id)| ID::parse(id))
+            .collect::<Result<Vec<_>>>()?,
+    );
+    if &current != main {
+        return Ok(None);
+    }
+    Ok(Some(
+        stores
+            .iter()
+            .map(|store| {
+                rows.iter()
+                    .filter(|(s, _)| s == store)
+                    .map(|(_, id)| ID::parse(id))
+                    .collect::<Result<Vec<_>>>()
+                    .map(crate::Snapshot::from)
+            })
+            .collect::<Result<Vec<_>>>()?,
+    ))
+}
+
 /// Get store tips that are reachable from the given main tree entries.
 pub async fn store_snapshot_at(
     backend: &SqlxBackend,

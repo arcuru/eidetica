@@ -1093,13 +1093,78 @@ impl RemoteConnection {
         identity: SigKey,
         request: crate::store::query::StoreQueryRequest,
     ) -> crate::Result<crate::store::query::StoreQueryReply> {
-        let source = request.source.clone();
         let response = self
-            .db_request(root_id, identity, DatabaseOp::QueryStore { request })
+            .db_request(
+                root_id.clone(),
+                identity,
+                DatabaseOp::QueryStore {
+                    request: request.clone(),
+                },
+            )
             .await?;
         match response {
-            ServiceResponse::StoreQuery(reply) if reply.source == source => Ok(reply),
+            ServiceResponse::StoreQuery(reply) => {
+                reply.validate(&root_id, &request)?;
+                Ok(reply)
+            }
             other => Err(unexpected_response("source-bound StoreQuery", &other)),
+        }
+    }
+
+    pub async fn store_source(
+        &self,
+        root_id: ID,
+        identity: SigKey,
+        store: String,
+        expected_type: String,
+        source: crate::store::query::QuerySource,
+    ) -> crate::Result<crate::store::source::StoreSource> {
+        let response = self
+            .db_request(
+                root_id.clone(),
+                identity,
+                DatabaseOp::ResolveStoreSource {
+                    store: store.clone(),
+                    expected_type: expected_type.clone(),
+                    source: source.clone(),
+                },
+            )
+            .await?;
+        match response {
+            ServiceResponse::StoreSource(raw)
+                if raw.database == root_id
+                    && raw.store == store
+                    && raw.type_id == expected_type
+                    && raw.source == source
+                    && !raw.seal.is_empty() =>
+            {
+                Ok(raw)
+            }
+            other => Err(unexpected_response("canonical StoreSource", &other)),
+        }
+    }
+
+    pub async fn raw_store_page(
+        &self,
+        root_id: ID,
+        identity: SigKey,
+        request: crate::store::source::RawStoreRequest,
+    ) -> crate::Result<crate::store::source::RawStorePage> {
+        let response = self
+            .db_request(
+                root_id,
+                identity,
+                DatabaseOp::ReadRawStore {
+                    request: request.clone(),
+                },
+            )
+            .await?;
+        match response {
+            ServiceResponse::RawStore(page) => {
+                page.validate(&request)?;
+                Ok(page)
+            }
+            other => Err(unexpected_response("source-bound RawStore", &other)),
         }
     }
 

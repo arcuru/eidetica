@@ -3,6 +3,7 @@ use crate::{
     Instance, NewUser, Transaction, backend::database::InMemory, instance::backend::LocalBackend,
     store::GetValue,
 };
+use crate::{backend::VerificationStatus, constants::INDEX, crdt::Doc};
 use std::{rc::Rc, sync::Arc};
 
 #[derive(Clone)]
@@ -296,6 +297,16 @@ async fn query_follows_canonical_store_history_beyond_main_ancestry() -> Result<
             );
             let pinned = db.new_transaction_at(&main).await?;
             let docs = pinned.get_store::<DocStore>("docs").await?;
+            let raw = pinned.raw_store_source("docs", DocStore::type_id()).await?;
+            assert_eq!(
+                pinned
+                    .fold_raw_source::<Doc>(&raw)
+                    .await?
+                    .get("external")
+                    .unwrap()
+                    .as_text(),
+                Some("store-parent")
+            );
             assert_eq!(docs.get("external").await?.as_text(), Some("store-parent"));
             assert_eq!(
                 docs.query(GetValue("external")).await?,
@@ -331,5 +342,64 @@ async fn query_follows_canonical_store_history_beyond_main_ancestry() -> Result<
             QueryOutcome::Result(_)
         ));
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn raw_sdk_unknown_non_serde_store_folds_same_source_and_composes_staging() -> Result<()> {
+    let (instance, mut owner) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        NewUser::passwordless("raw-owner"),
+    )
+    .await?;
+    let db = owner
+        .create_database(Doc::new(), &owner.get_default_key()?)
+        .await?;
+    let write = db.new_transaction().await?;
+    write.get_store::<CounterStore>("counter").await?;
+    write
+        .update_subtree("counter", Counter(21).encode()?)
+        .await?;
+    write.commit().await?;
+    let tx = db.new_transaction().await?;
+    let source = tx.query_source()?;
+    instance
+        .require_local_engine()?
+        .clear_derived_store_state()
+        .await?;
+    let reply = tx
+        .query_store("counter", CounterStore::type_id(), b"MAX\0".to_vec())
+        .await?;
+    assert_eq!(reply.outcome, QueryOutcome::Unavailable);
+    let later = db.new_transaction().await?;
+    later
+        .update_subtree("counter", Counter(99).encode()?)
+        .await?;
+    later.commit().await?;
+    assert_eq!(
+        tx.fold_raw_source::<Counter>(reply.raw_source.as_ref().unwrap())
+            .await?
+            .0,
+        21
+    );
+    tx.update_subtree("counter", Counter(30).encode()?).await?;
+    let committed = tx
+        .query_store_or_fold::<Counter, _>(
+            "counter",
+            CounterStore::type_id(),
+            Vec::new(),
+            Counter::decode,
+            Ok,
+        )
+        .await?;
+    let state = committed.merge(
+        &tx.get_store::<CounterStore>("counter")
+            .await?
+            .local_data()?
+            .unwrap(),
+    )?;
+    assert_eq!(committed.0, 21);
+    assert_eq!(state.0, 30);
+    assert_eq!(tx.query_source()?, source);
     Ok(())
 }

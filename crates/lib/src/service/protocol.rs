@@ -49,7 +49,7 @@ pub const PROTOCOL_VERSION: u32 = 0;
 /// Common envelope revision. Incompatible request, response or notification
 /// changes advance this value; Store-owned payloads use the Store type ID.
 /// Both handshake directions require it: missing fields are never defaulted.
-pub const WIRE_REVISION: u32 = 1;
+pub const WIRE_REVISION: u32 = 3;
 
 /// Maximum frame size: 64 MiB.
 pub const MAX_FRAME_SIZE: u32 = 64 * 1024 * 1024;
@@ -131,6 +131,14 @@ pub type WireRecordMutations = Vec<(Vec<u8>, Option<Vec<u8>>)>;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DatabaseOp {
     /// Read-scoped opaque dispatch at the asserted source and outer Store type.
+    ResolveStoreSource {
+        store: String,
+        expected_type: String,
+        source: crate::store::query::QuerySource,
+    },
+    ReadRawStore {
+        request: crate::store::source::RawStoreRequest,
+    },
     QueryStore {
         request: crate::store::query::StoreQueryRequest,
     },
@@ -280,7 +288,9 @@ impl DatabaseOp {
             // Gated against `_databases`, not the request's `root_id`; the
             // dispatcher special-cases this so the value here is advisory.
             DatabaseOp::SetInstanceMetadata { .. } => Permission::Admin(0),
-            DatabaseOp::QueryStore { .. }
+            DatabaseOp::ResolveStoreSource { .. }
+            | DatabaseOp::ReadRawStore { .. }
+            | DatabaseOp::QueryStore { .. }
             | DatabaseOp::BeginTransaction { .. }
             | DatabaseOp::GetVerifiedTips
             | DatabaseOp::EnsureStoreStateGeneration { .. }
@@ -462,6 +472,8 @@ pub enum ServerFrame {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ServiceResponse {
     StoreQuery(crate::store::query::StoreQueryReply),
+    RawStore(crate::store::source::RawStorePage),
+    StoreSource(crate::store::source::StoreSource),
     /// Single entry
     Entry(Entry),
     /// Multiple entries

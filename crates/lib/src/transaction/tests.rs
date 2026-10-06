@@ -498,6 +498,20 @@ struct RecordlessOps(std::sync::Arc<dyn crate::instance::backend::Backend>);
 
 #[async_trait::async_trait]
 impl crate::instance::backend::Backend for RecordlessOps {
+    async fn query_store(
+        &self,
+        tree: &ID,
+        request: &crate::store::query::StoreQueryRequest,
+    ) -> Result<crate::store::query::StoreQueryReply> {
+        self.0.query_store(tree, request).await
+    }
+    async fn raw_store_page(
+        &self,
+        _tree: &ID,
+        _request: &crate::store::source::RawStoreRequest,
+    ) -> Result<crate::store::source::RawStorePage> {
+        panic!("this spy must never fetch raw after registered success or a hard error")
+    }
     async fn get(&self, id: &ID) -> Result<Entry> {
         self.0.get(id).await
     }
@@ -1496,4 +1510,86 @@ async fn fixed_parent_auth_settings_read_ignores_concurrent_grant() {
     resume_tx.send(()).unwrap();
 
     assert_eq!(read_task.await.unwrap().unwrap(), baseline);
+}
+
+#[tokio::test]
+async fn raw_sdk_registered_success_and_hard_errors_never_fetch_raw() {
+    let (_instance, mut owner) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        crate::NewUser::passwordless("sdk-owner"),
+    )
+    .await
+    .unwrap();
+    let db = owner
+        .create_database(Doc::new(), &owner.get_default_key().unwrap())
+        .await
+        .unwrap();
+    let write = db.new_transaction().await.unwrap();
+    write
+        .get_store::<crate::store::DocStore>("docs")
+        .await
+        .unwrap()
+        .set("key", "value")
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+    let db = db
+        .clone()
+        .with_test_ops(std::sync::Arc::new(RecordlessOps(db.backend().unwrap())));
+    let tx = db.new_transaction().await.unwrap();
+    let query = br#"{"Get":{"key":"key"}}"#.to_vec();
+    let answer = tx
+        .query_store_or_fold::<Doc, _>(
+            "docs",
+            crate::store::DocStore::type_id(),
+            query.clone(),
+            |bytes| {
+                Ok(serde_json::from_slice::<Option<crate::crdt::doc::Value>>(
+                    bytes,
+                )?)
+            },
+            |_| panic!("success cannot fall back"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(answer.unwrap().as_text(), Some("value"));
+    // Result codec failure, malformed query, wrong type, missing source Store,
+    // query encoding limit, and unsupported backend capability are hard errors.
+    assert!(
+        tx.query_store_or_fold::<Doc, Doc>(
+            "docs",
+            crate::store::DocStore::type_id(),
+            query,
+            Doc::decode,
+            |_| panic!("decode error cannot fall back")
+        )
+        .await
+        .is_err()
+    );
+    for (store, type_id, query) in [
+        (
+            "docs",
+            crate::store::DocStore::type_id(),
+            b"malformed".to_vec(),
+        ),
+        ("docs", "wrong:v0", Vec::new()),
+        ("missing", crate::store::DocStore::type_id(), Vec::new()),
+        (
+            "docs",
+            crate::store::DocStore::type_id(),
+            vec![255; 1_100_000],
+        ),
+    ] {
+        assert!(
+            tx.query_store_or_fold::<Doc, Doc>(
+                store,
+                type_id,
+                query,
+                |_| panic!("hard error cannot decode"),
+                |_| panic!("hard error cannot fall back")
+            )
+            .await
+            .is_err()
+        );
+    }
 }
