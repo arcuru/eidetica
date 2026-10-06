@@ -288,7 +288,6 @@ impl ServiceServer {
             read: read_store::<S>,
         });
         Ok(())
-
     }
 
     /// Bind the service socket and return a server ready to accept clients.
