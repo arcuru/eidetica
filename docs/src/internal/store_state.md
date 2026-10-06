@@ -4,21 +4,26 @@ Stores define how their CRDT state is represented for reading.
 The default `StoreStateModel` caches state in one opaque record: it folds ordered Store deltas with the Store's `CRDT` implementation and stores the `Codec`-encoded result under a reserved key.
 This default applies to any Store data type and does not assume `Doc`.
 `Database::get_store_state::<S>` validates the registered Store type and returns `S::Data`; `get_doc_store_state` is explicitly DocStore-specific JSON convenience.
+
+## Retained explicit maintenance APIs
+
 The read-scoped `EnsureStoreStateGeneration` request carries the expected Store type and effective projection descriptor; after the ordinary canonical Read gate the server checks `_index` and its explicitly registered plaintext Store codecs. `ServiceServer::register_store::<S>` admits a concrete Store type and its effective projection descriptor before serving; the caller cannot register a codec over the socket or choose its descriptor. DocStore and opaque-row Table are registered by default. With `records_only: true`, maintenance ensures the row generation and returns `Ok`; otherwise it returns the encoded complete state. A matching type and descriptor resolve or build derived state internally and return `StoreState(Vec<u8>)` via the Store's `Codec::encode`; the client uses `Codec::decode`, never a staging token or a generic JSON conversion.
 An authenticated read-only user can invoke this maintenance, but cannot invoke the separate Write-gated staging operation.
 Unknown codecs and recordless storage report `RecordMaintenanceUnavailable`, which selects a typed, ordered Entry-history fold on the client; a verifiable registered descriptor mismatch, authorization failure or Codec error never does. The fallback resolves Store tips reachable from the Verified main frontier before traversing Store parents, so a later Entry affecting another Store cannot hide earlier deltas. Decoding consumes complete Codec values. Cache and wire decoding remain strict, as does source replay for non-Table Stores; Table source-payload tolerance is described below.
-Password-wrapped Stores remain opaque to server maintenance: `_index` does not expose the encrypted wrapped codec, so the server cannot authenticate even a claimed known wrapper descriptor. Any such claim yields `RecordMaintenanceUnavailable` after Read authorization and type identity validation, including a claimed plaintext descriptor; it cannot select a plaintext codec or publish a poisoned generation. An unlocked `PasswordStore<S>::get_state` on a service connection sends the expected wrapper descriptor through the canonical Read gate, then folds authorized Entry deltas after local decryption and `Codec::decode`; it neither receives a staging token nor publishes records. Wrong passwords fail during `open`, and ciphertext/authentication errors during folding propagate rather than becoming capability refusals. The generic remote `get_store_state::<PasswordStore<S>>` cannot supply a password; callers use the unlocked Store handle. Its `projected_get` and `projected_scan_page` accept a projection matching the wrapped Store descriptor, fold read-authorized decrypted history into physical-key order locally, and decode authenticated records through the registered password encryptor. Pages carry transaction-view/revision-bound cursors for local overlay mutations, not a durable snapshot of a changing remote frontier. This is a client-side read-only path, not server maintenance, and callers must supply the wrapped Store's projection. Table uses this path with its opaque `TableData` operations.
+Password-wrapped Stores remain opaque to server maintenance: `_index` does not expose the encrypted wrapped codec, so the server cannot authenticate even a claimed known wrapper descriptor. Any such claim yields `RecordMaintenanceUnavailable` after Read authorization and type identity validation, including a claimed plaintext descriptor; it cannot select a plaintext codec or publish a poisoned generation. An unlocked `PasswordStore<S>::get_state` on a service connection sends the expected wrapper descriptor through the canonical Read gate, then folds authorized Entry deltas after local decryption and `Codec::decode`; it neither receives a staging token nor publishes records. Wrong passwords fail during `open`, and ciphertext/authentication errors during folding propagate rather than becoming capability refusals. The generic remote `get_store_state::<PasswordStore<S>>` cannot supply a password; callers use the unlocked Store handle. Its `projected_get` and `projected_scan_page` accept a projection matching the wrapped Store descriptor, fold read-authorized decrypted history into physical-key order locally, and decode authenticated records through the registered password encryptor. Pages carry transaction-view/revision-bound cursors for local overlay mutations, not a durable snapshot of a changing remote frontier. This is a client-side read-only path, not server maintenance, and callers must supply the wrapped Store's projection. These explicit APIs remain available; normal inner Table/RawTable reads use their Store-owned query plans instead.
+
+## Table query records
 
 Backends persist each Store state as an opaque byte-keyed record set.
 Keys use unsigned lexicographic byte order, point reads address one key, and scans use half-open ranges with an exclusive continuation key.
 The backend does not parse record keys or values and does not know Store types.
 
-`Table<T, C = SerdeJson>` uses type ID `table:v1` and independent
+`Table<T, C = SerdeJson>` uses type ID `table:v0.1` and independent
 `TableData(LwwMap<String, ByteBuf>)` operation/state data. Its strict DAG-CBOR
 Codec preserves opaque row byte strings and delete tombstones; it rejects
 alternate encodings and trailing data. No decoder or migration accepts old
 `table:v0` histories. Its projection descriptor is
-`eidetica/table/rows/opaque:v1`, version 1. Exact UTF-8 primary keys (including
+`eidetica/table/rows/opaque:v0.1`, version 1. Exact UTF-8 primary keys (including
 empty strings, dots and Unicode) address one row without path normalization or
 ancestor conflicts. The row codec `C` alone encodes and decodes application
 rows, with `SerdeJson` using direct typed JSON and `RawBytes` preserving any
@@ -50,8 +55,23 @@ trust boundary.
 Table handles retain only their name and transaction. `get` deserializes one
 row, `scan_page` reads bounded deterministic pages, and `search` collects those
 pages only because its public return type is a `Vec`. Local and service-backed
-Tables use the same point and page operations. Custom backends without cached-record
-support fold typed history and project rows locally.
+Tables use the same Store-owned point/page plans, also exposed as `query(GetRow(...))`,
+`query(ScanRows { ... })` and `query(SearchRows(...))`. Pages inspect at most 128
+physical rows, even if the caller asks for more. Cursors bind the transaction,
+projection, format witness, source and staged revision. Overlay or remote-frontier
+changes invalidate them. Staged puts/deletes compose with committed physical pages,
+not a universal whole-state dirty-transaction fallback.
+
+The installed daemon handler copies opaque bytes without an application codec.
+Its Shared Derived query representation is separate from explicit projection
+namespaces and carries source/key/checksum framing. Encrypted/unknown capability
+refusal uses bounded canonical source assistance and private physical record reuse.
+Warm encrypted reads never require opaque-state hydration or a full record scan;
+cold reconstruction still folds the bounded source. Private publication is inline
+and optional. Canonical source validation on the daemon remains history-sensitive.
+Only derived payload corruption is repairable; source binding, authorization,
+missing keys, authoritative decryption and malformed response errors stay hard.
+A RowCodec failure skips that winning row without rebuilding valid opaque records.
 
 A record set has one lifecycle:
 
@@ -65,7 +85,7 @@ A builder creates private state, writes record chunks, then publishes atomically
 Aborting records a terminal token outcome and removes private records. A failed publication leaves the private build invisible; a caller may correct the error or abort it. An abandoned build remains private until lease-based reclamation. Two builders can derive the same target concurrently. Publication resolves that race to one shared record set and records `Adopted` for the loser.
 Format descriptors identify the Store-owned record format and version, so cached state from different formats or historical sources cannot collide.
 
-An explicit ordered staging chunk applies physical `Put` and `Delete` mutations in message order. Deleting a missing key succeeds; deleting a previously staged key removes its row rather than storing a null marker. A later put resurrects it, including across chunks. An empty private namespace can publish a resolvable empty generation. Table uses this physical path directly.
+An explicit ordered staging chunk applies physical `Put` and `Delete` mutations in message order. Deleting a missing key succeeds; deleting a previously staged key removes its row rather than storing a null marker. A later put resurrects it, including across chunks. An empty private namespace can publish a resolvable empty generation. Explicit projection maintenance and private assistance reuse this physical substrate.
 
 Remote record operations use session-scoped read views and backend-owned opaque staging tokens. The latter retain `Active`, `Published`, `Adopted`, `Aborted`, or `Expired` status across socket reconnects and service restarts when the backend is persisted. Chunk sequence and the digest of the last encoded wire chunk are stored with the backend token; an identical immediate retry is acknowledged without replay, while gaps, older retries and conflicting digests fail. SQL stores the token atomically with its namespace, and in-memory snapshots include both. `RemoteConnection::encode_staging_chunk` and `send_staging_chunk` let a caller retain and resend the exact encoded request after an ambiguous response, including on a newly authenticated connection. The high-level `RemoteBackend` keeps the exact encoded unacknowledged chunk (and any remaining pre-encoded chunks in its batch) with the token's sequence, target and original acting/session identities. An ambiguous I/O error includes the token and optional chunk sequence; further staging or publication is refused until the caller supplies a freshly authenticated `RemoteConnection` to `resume_staging`. Recovery checks the database/user-scoped token status, replays only the exact retained bytes against an Active token, resolves Published/Adopted to a fresh view, and never begins a second build or saves login credentials. Unknown, expired and mismatched tokens refuse recovery. Recovery replaces the backend handle's connection only after authorization and successful replay; it does not reconnect by itself. An ambiguous abort can also be resolved by status; a terminal Aborted token cannot be uploaded again.
 
@@ -77,13 +97,14 @@ Typed record projections now yield an iterator of ordered physical `Put` and
 `Delete` mutations from a canonical `D: CRDT` delta, without reconstructing
 an Entry from cached records. Cold materialization consumes one
 Entry delta and bounded mutation chunks (128 changes or 1 MiB), then publishes
-one immutable generation. History retrieval itself still returns `Vec<Entry>`.
+one immutable generation. Explicit legacy history collection still returns `Vec<Entry>`, with finite traversal and encoded-response bounds and explicit size refusal; ordinary query fallback uses bounded canonical source pages.
 Typed transaction point reads and physical-order pages resolve a real backend
 record view, merge the revisioned local overlay, and reject a page if that
 overlay changes while a backend fetch is awaited. On a backend without records,
 typed history is folded locally and projected for point reads and scans.
-Table uses this projection directly; `Transaction::commit_inner` does not
-synthesize Table deltas from cached records.
+Normal Table queries use this overlay scanner with Store-specific committed fetches;
+explicit backend/projection APIs remain available. `Transaction::commit_inner` does
+not synthesize Table deltas from cached records.
 
 ## Normal document reads
 

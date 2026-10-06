@@ -204,8 +204,19 @@ bytes. Custom codecs implement `RowCodec<T>` with a stable `FORMAT_ID` and need
 no Serde or Clone on `T`. Handles clone without `T: Clone` or `C: Clone`.
 Reads decode only requested rows; projections and history folds never parse or
 normalize row bytes. Plain scans follow exact UTF-8 key order in bounded pages,
-while encrypted scans follow opaque physical-key order. `table:v1` has no
-legacy `table:v0` decoder or migration.
+while encrypted scans follow opaque physical-key order. `table:v0.1` has no
+legacy `table:v0` decoder or migration. The built-in codec identities are `json:v0`
+and `raw:v0`; the experimental Store identity also versions Table query semantics.
+
+`get`, `scan_page` and `search` use Table-owned plans. The same plans are available
+through `Store::query` with `GetRow`, `ScanRows` and `SearchRows`. Only delegated
+physical point/page messages are serialized; public queries may borrow, and a
+search predicate need not be Send or Clone. A page inspects at most 128 physical
+rows. Cursors become stale after overlay, format or remote-frontier changes.
+Encrypted Tables keep their keys and application decoding client-side, automatically
+reuse private record caches, and reconstruct a missing or damaged derived cache
+once from the same source. Optional inline cache publication can add read latency
+but cannot replace a valid result with an upload failure.
 
 Table creation stores `C::FORMAT_ID` in `config.row_codec`, including inside
 PasswordStore's encrypted configuration. Typed opens, reads and writes reject a
@@ -219,13 +230,13 @@ If a source Entry's Table operation payload cannot be decoded, replay skips the
 whole payload with a warning. No partial update or delete from that payload is
 applied, so older state may remain visible. Original Entry bytes are retained.
 This tolerance applies only to source payloads and application rows: authorization,
-decryption, ancestry, storage, cache, wire, staging and codec-selection errors
-still propagate. `Codec::decode` itself remains strict.
+decryption, ancestry, storage, source-binding, wire, staging and codec-selection errors still propagate.
+Derived-cache payload repair is separate from row/source-payload skipping. `Codec::decode` itself remains strict.
 
 Use `RawTable` to inspect an existing Table without compiling its application row
 codec. Its `get` returns exact bytes, and `scan_page` returns bounded pages of row
 IDs and bytes with the same ordering and cursor rules as typed access. It does
-not register missing Stores or select the `raw:v1` codec. It shares Table's
+not register missing Stores or select the `raw:v0` codec. It shares Table's
 source-payload replay policy; inspecting a skipped payload requires reading its
 original Entry rather than the row API.
 
@@ -479,7 +490,7 @@ Eidetica automatically maintains an index of all user-created subtrees in a spec
 The `_index` subtree tracks:
 
 - **Subtree names**: Which subtrees exist in the database
-- **Store types**: What type of Store manages each subtree (e.g., "docstore:v0", "table:v1")
+- **Store types**: What type of Store manages each subtree (e.g., "docstore:v0", "table:v0.1")
 - **Configuration**: Store-specific settings for each subtree
 - **Subtree settings**: Common settings like height strategy overrides
 
