@@ -165,6 +165,7 @@ impl<'de> Deserialize<'de> for InMemory {
                 instance_secrets: serializable.instance_secrets,
                 tips: serializable.tips,
             }),
+            cache_limits: crate::backend::private_cache::Limits::default(),
             store_state_point_reads: std::sync::atomic::AtomicUsize::new(0),
             store_state_scan_reads: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(feature = "testing")]

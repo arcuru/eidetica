@@ -112,6 +112,7 @@ pub enum DbKind {
 /// }
 /// ```
 pub struct SqlxBackend {
+    pub(crate) cache_limits: crate::backend::private_cache::Limits,
     pool: Option<AnyPool>,
     kind: DbKind,
     _owner: Option<StorageOwner>,
@@ -560,6 +561,7 @@ impl SqlxBackend {
         }
 
         let backend = Self {
+            cache_limits: crate::backend::private_cache::Limits::default(),
             pool: Some(pool),
             kind: DbKind::Sqlite,
             _owner: storage,
@@ -776,6 +778,7 @@ impl SqlxBackend {
             .sql_context("Failed to connect to PostgreSQL")?;
 
         let backend = Self {
+            cache_limits: crate::backend::private_cache::Limits::default(),
             pool: Some(pool),
             kind: DbKind::Postgres,
             _owner: Some(StorageOwner::Postgres {

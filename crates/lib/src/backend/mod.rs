@@ -8,6 +8,8 @@
 //!
 //! Instance wraps BackendImpl in a `Backend` struct that provides a layer for future development.
 
+pub(crate) mod private_cache;
+
 use std::{any::Any, collections::BTreeMap};
 
 use async_trait::async_trait;

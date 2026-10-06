@@ -906,6 +906,27 @@ async fn dispatch_inner(
                 }
             };
 
+            if matches!(
+                inner.op,
+                DatabaseOp::BeginPrivateAssistance { .. }
+                    | DatabaseOp::PrivateAssistanceChunk { .. }
+                    | DatabaseOp::FinishPrivateAssistance { .. }
+                    | DatabaseOp::PrivateAssistanceStatus { .. }
+                    | DatabaseOp::CancelPrivateAssistance { .. }
+                    | DatabaseOp::LookupPrivateMaterialization { .. }
+                    | DatabaseOp::PrivateMaterializationGet { .. }
+                    | DatabaseOp::PrivateMaterializationPage { .. }
+            ) {
+                // Borrow the actual wire shape: no copy of an oversized request.
+                #[derive(serde::Serialize)]
+                enum Envelope<'a> {
+                    AuthenticatedDb(&'a AuthenticatedDbRequest),
+                }
+                crate::store::source::encoded_size(
+                    &Envelope::AuthenticatedDb(&inner),
+                    ctx.sources.limits.page_bytes,
+                )?;
+            }
             let AuthenticatedDbRequest {
                 root_id,
                 identity,
@@ -983,6 +1004,11 @@ async fn dispatch_inner(
                     };
                     Some(ctx.sources.admit(&reader, &root_id, &query)?)
                 }
+                DatabaseOp::BeginPrivateAssistance { source, .. }
+                | DatabaseOp::LookupPrivateMaterialization { source, .. } => Some(
+                    ctx.sources
+                        .admit(&reader, &root_id, &source_query(source))?,
+                ),
                 DatabaseOp::ReadRawStore { request } => {
                     let query = crate::store::query::StoreQueryRequest {
                         store: request.source.store.clone(),
@@ -1024,6 +1050,14 @@ async fn dispatch_inner(
                         DatabaseOp::QueryStore { .. }
                             | DatabaseOp::ReadRawStore { .. }
                             | DatabaseOp::ResolveStoreSource { .. }
+                            | DatabaseOp::BeginPrivateAssistance { .. }
+                            | DatabaseOp::PrivateAssistanceChunk { .. }
+                            | DatabaseOp::FinishPrivateAssistance { .. }
+                            | DatabaseOp::PrivateAssistanceStatus { .. }
+                            | DatabaseOp::CancelPrivateAssistance { .. }
+                            | DatabaseOp::LookupPrivateMaterialization { .. }
+                            | DatabaseOp::PrivateMaterializationGet { .. }
+                            | DatabaseOp::PrivateMaterializationPage { .. }
                     ),
                 )
                 .await?;
@@ -1088,6 +1122,105 @@ async fn dispatch_database_op(
     op: DatabaseOp,
 ) -> crate::Result<ServiceResponse> {
     match op {
+        DatabaseOp::BeginPrivateAssistance {
+            source,
+            representation,
+        } => {
+            let reader = private_reader(ctx, user_uuid, acting_pubkey);
+            ctx.sources.check_source(&reader, &root_id, &source)?;
+            ctx.sources
+                .validate_binding(instance.require_local_engine()?.as_ref(), &source)
+                .await?;
+            let target =
+                crate::store::assistance::Binding::target(&reader, &source, &representation)?;
+            let token = instance.backend().begin_store_state_staging(target).await?;
+            Ok(ServiceResponse::Token(token.namespace_id))
+        }
+        DatabaseOp::LookupPrivateMaterialization {
+            source,
+            representation,
+            range,
+            after,
+        } => {
+            let reader = private_reader(ctx, user_uuid, acting_pubkey);
+            ctx.sources.check_source(&reader, &root_id, &source)?;
+            ctx.sources
+                .validate_binding(instance.require_local_engine()?.as_ref(), &source)
+                .await?;
+            let target =
+                crate::store::assistance::Binding::target(&reader, &source, &representation)?;
+            let page = if let Some(view) = instance.backend().resolve_store_state(&target).await? {
+                Some(private_page(instance, &view, &range, after.as_deref()).await?)
+            } else {
+                None
+            };
+            bounded_private_response(ctx, ServiceResponse::PrivateMaterialization(page))
+        }
+        DatabaseOp::PrivateAssistanceChunk {
+            token,
+            chunk_id,
+            mutations,
+        } => {
+            let backend =
+                private_token(instance, ctx, user_uuid, acting_pubkey, &root_id, &token).await?;
+            let encoded = serde_json::to_vec(&mutations)?;
+            if encoded.len() > crate::store::assistance::CHUNK_BYTES {
+                return Err(crate::backend::BackendError::RecordTooLarge {
+                    encoded_bytes: encoded.len(),
+                }
+                .into());
+            }
+            let digest = blake3::hash(&encoded);
+            instance
+                .backend()
+                .stage_store_state_ordered_chunk(&backend, chunk_id, digest.as_bytes(), mutations)
+                .await?;
+            Ok(ServiceResponse::Ok)
+        }
+        DatabaseOp::FinishPrivateAssistance { token } => {
+            let backend =
+                private_token(instance, ctx, user_uuid, acting_pubkey, &root_id, &token).await?;
+            instance.backend().publish_store_state(backend).await?;
+            Ok(ServiceResponse::Ok)
+        }
+        DatabaseOp::PrivateAssistanceStatus { token } => {
+            let backend =
+                private_token(instance, ctx, user_uuid, acting_pubkey, &root_id, &token).await?;
+            Ok(ServiceResponse::StagingStatus(
+                instance
+                    .backend()
+                    .store_state_staging_status(&backend)
+                    .await?,
+            ))
+        }
+        DatabaseOp::CancelPrivateAssistance { token } => {
+            let backend =
+                private_token(instance, ctx, user_uuid, acting_pubkey, &root_id, &token).await?;
+            instance.backend().abort_store_state(backend).await?;
+            Ok(ServiceResponse::Ok)
+        }
+        DatabaseOp::PrivateMaterializationGet { token, key } => {
+            let backend =
+                private_token(instance, ctx, user_uuid, acting_pubkey, &root_id, &token).await?;
+            let view = private_view(instance, &backend).await?;
+            let record = instance
+                .backend()
+                .store_state_record_get(&view, &key)
+                .await?;
+            ensure_record_fits(record.as_ref())?;
+            bounded_private_response(ctx, ServiceResponse::Record(record))
+        }
+        DatabaseOp::PrivateMaterializationPage {
+            token,
+            range,
+            after,
+        } => {
+            let backend =
+                private_token(instance, ctx, user_uuid, acting_pubkey, &root_id, &token).await?;
+            let view = private_view(instance, &backend).await?;
+            let page = private_page(instance, &view, &range, after.as_deref()).await?;
+            bounded_private_response(ctx, ServiceResponse::PrivateMaterialization(Some(page)))
+        }
         DatabaseOp::ResolveStoreSource {
             store,
             expected_type,
@@ -1723,7 +1856,10 @@ fn session_store_state_request(
     user_uuid: &str,
     database: &ID,
 ) -> crate::Result<StoreStateRequest> {
-    if request.database != *database || request.lifecycle != StoreStateLifecycle::Derived {
+    if request.database != *database
+        || request.lifecycle != StoreStateLifecycle::Derived
+        || request.projection.name == crate::store::assistance::PRIVATE_PROJECTION
+    {
         return Err(crate::backend::BackendError::InvalidStoreStateStagingToken.into());
     }
     match &request.scope {
@@ -1749,11 +1885,97 @@ async fn scoped_staging_token(
         .store_state_staging_token(id)
         .await?
         .ok_or(crate::backend::BackendError::InvalidStoreStateStagingToken)?;
-    if token.target.database != *database || token.target.scope != CacheScope::User(user.to_owned())
+    if token.target.database != *database
+        || token.target.scope != CacheScope::User(user.to_owned())
+        || token.target.projection.name == crate::store::assistance::PRIVATE_PROJECTION
     {
         return Err(crate::backend::BackendError::InvalidStoreStateStagingToken.into());
     }
     Ok(token)
+}
+
+fn private_reader(
+    ctx: &ConnectionContext,
+    user: &str,
+    principal: &PublicKey,
+) -> crate::store::source::Reader {
+    crate::store::source::Reader {
+        user: user.into(),
+        principal: principal.to_string(),
+        connection: ctx.conn_id,
+    }
+}
+fn source_query(
+    source: &crate::store::source::StoreSource,
+) -> crate::store::query::StoreQueryRequest {
+    crate::store::query::StoreQueryRequest {
+        store: source.store.clone(),
+        expected_type: source.type_id.clone(),
+        source: source.source.clone(),
+        query: Vec::new(),
+    }
+}
+async fn private_token(
+    instance: &Instance,
+    ctx: &ConnectionContext,
+    user: &str,
+    principal: &PublicKey,
+    root: &ID,
+    id: &str,
+) -> crate::Result<StagingToken> {
+    let reader = private_reader(ctx, user, principal);
+    let (token, _) = instance
+        .backend()
+        .store_state_staging_token(id)
+        .await?
+        .ok_or(crate::backend::BackendError::InvalidStoreStateStagingToken)?;
+    if &token.target.database != root {
+        return Err(crate::backend::BackendError::InvalidStoreStateStagingToken.into());
+    }
+    let binding = crate::store::assistance::Binding::from_target(&reader, &token.target)?;
+    *ctx.response_work.lock().unwrap() = Some(ctx.sources.admit(
+        &reader,
+        root,
+        &source_query(&binding.source),
+    )?);
+    ctx.sources
+        .validate_binding(instance.require_local_engine()?.as_ref(), &binding.source)
+        .await?;
+    Ok(token)
+}
+async fn private_view(
+    instance: &Instance,
+    token: &StagingToken,
+) -> crate::Result<crate::backend::RecordView> {
+    match instance.backend().store_state_staging_status(token).await? {
+        Some(
+            crate::backend::StagingStatus::Published(view)
+            | crate::backend::StagingStatus::Adopted(view),
+        ) => Ok(view),
+        _ => Err(crate::backend::BackendError::InvalidStoreStateView.into()),
+    }
+}
+async fn private_page(
+    instance: &Instance,
+    view: &crate::backend::RecordView,
+    range: &crate::backend::RecordRange,
+    after: Option<&[u8]>,
+) -> crate::Result<crate::backend::RecordPage> {
+    let page = instance
+        .backend()
+        .store_state_record_scan(view, range, after, 128)
+        .await?;
+    bounded_page(page, crate::service::protocol::MAX_RECORD_PAGE_BYTES)
+}
+fn bounded_private_response(
+    ctx: &ConnectionContext,
+    response: ServiceResponse,
+) -> crate::Result<ServiceResponse> {
+    crate::store::source::encoded_size(
+        &ServerFrame::Response(Box::new(response.clone())),
+        ctx.sources.limits.page_bytes,
+    )?;
+    Ok(response)
 }
 
 /// Handle `ServiceRequest::TrustedLoginUser`: look up the user's full record,

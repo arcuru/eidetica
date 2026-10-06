@@ -444,6 +444,17 @@ impl Sources {
         source: &StoreSource,
     ) -> Result<BoundSource> {
         self.check_source(reader, &source.database, source)?;
+        self.validate_binding(engine, source).await
+    }
+
+    /// Only call with daemon-validated persisted metadata, never a replacement
+    /// descriptor from a client. Walk the ORIGINAL tips, not current frontiers.
+    pub(crate) async fn validate_binding(
+        &self,
+        engine: &dyn BackendImpl,
+        source: &StoreSource,
+    ) -> Result<BoundSource> {
+        encoded_size(source, self.limits.page_bytes)?;
         let mut walk = Walk::new(engine, &source.database, &source.source, self.limits);
         let main = walk.walk(source.source.main.tips(), None).await?;
         if !main.contains(&source.database) {
@@ -455,6 +466,23 @@ impl Sources {
         // do NOT call current_source_frontiers again on reconnect/expiry.
         let index_ids = walk.walk(source.index_snapshot.tips(), Some(INDEX)).await?;
         walk.check_store_boundary(&index_ids).await?;
+        let mut index = Doc::default();
+        for id in index_ids {
+            if let Ok(bytes) = walk.entries[&id].data(INDEX)
+                && !bytes.is_empty()
+            {
+                index = index.merge(&Doc::decode(bytes)?)?;
+            }
+        }
+        let registration = index
+            .get(&source.store)
+            .and_then(|v| v.as_doc())
+            .ok_or(BackendError::InvalidRawSource)?;
+        if registration.get("type").and_then(|v| v.as_text()) != Some(source.type_id.as_str())
+            || serde_json::to_vec(&serde_json::to_value(registration)?)? != source.registration
+        {
+            return Err(BackendError::InvalidRawSource.into());
+        }
         let ids = walk
             .walk(source.snapshot.tips(), Some(&source.store))
             .await?;

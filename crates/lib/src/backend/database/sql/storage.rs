@@ -76,6 +76,152 @@ async fn lock_store_state_namespace(
     Ok(())
 }
 
+// All private growth shares one transaction-scoped lock before target locks.
+// SQLite already serializes writers. No in-process counter survives a restart.
+async fn lock_private_quota(
+    backend: &SqlxBackend,
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    target: &StoreStateRequest,
+) -> Result<()> {
+    if !backend.is_sqlite() && crate::backend::private_cache::private_user(target).is_some() {
+        sqlx::query(
+            "SELECT pg_advisory_xact_lock(hashtextextended('eidetica/private-cache-quota', 0))",
+        )
+        .execute(&mut **tx)
+        .await
+        .sql_context("Failed to lock private quota")?;
+    }
+    Ok(())
+}
+async fn private_usage(
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    user: &str,
+) -> Result<(
+    crate::backend::private_cache::Usage,
+    crate::backend::private_cache::Usage,
+)> {
+    use crate::backend::private_cache::{Usage, namespace_metadata, private_user, token_metadata};
+    use futures_util::TryStreamExt;
+    let mut u = Usage::default();
+    let mut g = Usage::default();
+    // Stream metadata; never load the private record payloads for accounting.
+    type NamespaceRow = (
+        String,
+        String,
+        i64,
+        String,
+        String,
+        i64,
+        Vec<u8>,
+        Option<String>,
+        i64,
+    );
+    let mut rows = sqlx::query_as::<_, NamespaceRow>("SELECT n.database_id, n.store_name, n.lifecycle, n.scope_user_uuid, n.projection_name, n.projection_version, n.source_key, t.target_json,
+        CAST(COALESCE((SELECT SUM(128 + LENGTH(r.record_key) + COALESCE(LENGTH(r.record_value),0)) FROM store_state_records r WHERE r.namespace_id = n.namespace_id),0) AS BIGINT)
+        FROM store_state_namespaces n LEFT JOIN store_state_staging_tokens t ON t.namespace_id = n.namespace_id
+        WHERE n.scope_user_uuid != '' AND n.lifecycle != 1").fetch(&mut **tx);
+    while let Some((db, store, lifecycle, owner, name, version, key, token, records)) = rows
+        .try_next()
+        .await
+        .sql_context("Failed to account private namespaces")?
+    {
+        let request = if lifecycle == 2 {
+            serde_json::from_str::<StoreStateRequest>(
+                &token.ok_or(BackendError::InvalidStoreStateStagingToken)?,
+            )?
+        } else {
+            StoreStateRequest {
+                database: ID::parse(&db)?,
+                store,
+                lifecycle: StoreStateLifecycle::Derived,
+                scope: CacheScope::User(owner),
+                projection: crate::backend::ProjectionDescriptor {
+                    name,
+                    version: version as u32,
+                },
+                source_key: key,
+            }
+        };
+        if let Some(owner) = private_user(&request) {
+            let metadata = namespace_metadata(&request);
+            let item = Usage {
+                bytes: metadata.saturating_add(records as u64),
+                metadata,
+                namespaces: 1,
+                ..Usage::default()
+            };
+            g.add(item);
+            if owner == user {
+                u.add(item);
+            }
+        }
+    }
+    drop(rows);
+    let mut rows = sqlx::query_as::<_, (String, i64)>(
+        "SELECT target_json, outcome FROM store_state_staging_tokens",
+    )
+    .fetch(&mut **tx);
+    while let Some((target, outcome)) = rows
+        .try_next()
+        .await
+        .sql_context("Failed to account private outcomes")?
+    {
+        let target: StoreStateRequest = serde_json::from_str(&target)?;
+        if let Some(owner) = private_user(&target) {
+            let metadata = token_metadata(&target)?;
+            let item = Usage {
+                bytes: metadata,
+                metadata,
+                outcomes: 1,
+                active: u64::from(outcome == 0),
+                ..Usage::default()
+            };
+            g.add(item);
+            if owner == user {
+                u.add(item);
+            }
+        }
+    }
+    Ok((u, g))
+}
+async fn admit_private(
+    backend: &SqlxBackend,
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    target: &StoreStateRequest,
+) -> Result<()> {
+    if let Some(user) = crate::backend::private_cache::private_user(target) {
+        let (u, g) = private_usage(tx, user).await?;
+        backend
+            .cache_limits
+            .check(u, g, crate::backend::private_cache::admission(target)?)?;
+    }
+    Ok(())
+}
+async fn check_private_put(
+    backend: &SqlxBackend,
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    token: &StagingToken,
+    key: &[u8],
+    value: Option<&[u8]>,
+) -> Result<()> {
+    if let Some(user) = crate::backend::private_cache::private_user(&token.target) {
+        let (u, g) = private_usage(tx, user).await?;
+        let prior: Option<(i64,)> = sqlx::query_as("SELECT CAST(128 + LENGTH(record_key) + COALESCE(LENGTH(record_value),0) AS BIGINT) FROM store_state_records WHERE namespace_id = $1 AND record_key = $2")
+            .bind(&token.namespace_id).bind(key).fetch_optional(&mut **tx).await.sql_context("Failed to account private growth")?;
+        let growth = crate::backend::private_cache::record_bytes(key, value)
+            .saturating_sub(prior.map_or(0, |v| v.0 as u64));
+        backend.cache_limits.check(
+            u,
+            g,
+            crate::backend::private_cache::Usage {
+                bytes: growth,
+                ..Default::default()
+            },
+        )?;
+    }
+    Ok(())
+}
+
 pub async fn resolve_store_state(
     backend: &SqlxBackend,
     request: &StoreStateRequest,
@@ -119,7 +265,9 @@ pub async fn begin_store_state_staging(
             .await
             .sql_context("Failed to lock Store-state staging transaction")?;
     }
+    lock_private_quota(backend, &mut tx, &request).await?;
     lock_store_state_namespace(backend, &mut tx, &request, &namespace_id).await?;
+    admit_private(backend, &mut tx, &request).await?;
     sqlx::query(
         "INSERT INTO store_state_namespaces
          (namespace_id, database_id, store_name, lifecycle, status, scope_user_uuid,
@@ -172,6 +320,7 @@ pub async fn replace_unknown_store_state_staging(
             .await
             .sql_context("Failed to lock recovery")?;
     }
+    lock_private_quota(backend, &mut tx, &previous.target).await?;
     lock_store_state_namespace(backend, &mut tx, &previous.target, &previous.namespace_id).await?;
     let known: Option<(String,)> = sqlx::query_as(
         "SELECT namespace_id FROM store_state_staging_tokens WHERE namespace_id = $1",
@@ -201,6 +350,7 @@ pub async fn replace_unknown_store_state_staging(
     if winner.is_some() {
         return Ok(None);
     }
+    admit_private(backend, &mut tx, &previous.target).await?;
     let namespace_id = uuid::Uuid::now_v7().to_string();
     sqlx::query("INSERT INTO store_state_namespaces (namespace_id, database_id, store_name, lifecycle, status, scope_user_uuid, projection_name, projection_version, source_key, created_revision) VALUES ($1, $2, $3, $4, 0, $5, $6, $7, $8, NULL)")
         .bind(&namespace_id).bind(previous.target.database.to_string()).bind(&previous.target.store)
@@ -234,6 +384,7 @@ pub async fn stage_store_state_records(
             .await
             .sql_context("Failed to lock Store-state staging transaction")?;
     }
+    lock_private_quota(backend, &mut tx, &token.target).await?;
     lock_store_state_namespace(backend, &mut tx, &token.target, &token.namespace_id).await?;
     let staging: Option<(i64,)> = sqlx::query_as(
         "SELECT lifecycle FROM store_state_namespaces WHERE namespace_id = $1 AND status = 0",
@@ -254,6 +405,7 @@ pub async fn stage_store_state_records(
     #[cfg(feature = "testing")]
     super::fire_store_state_stage_pause(&token.namespace_id).await;
     for (key, value) in records {
+        check_private_put(backend, &mut tx, token, &key, value.as_deref()).await?;
         sqlx::query(
             "INSERT INTO store_state_records (namespace_id, record_key, record_value)
              VALUES ($1, $2, $3)
@@ -381,6 +533,7 @@ async fn apply_ordered_chunk(
             .await
             .sql_context("Failed to lock sequenced staging")?;
     }
+    lock_private_quota(backend, &mut tx, &token.target).await?;
     lock_store_state_namespace(backend, &mut tx, &token.target, &token.namespace_id).await?;
     type SequencedRow = (String, i64, i64, Option<Vec<u8>>, i64);
     let row: Option<SequencedRow> = sqlx::query_as(
@@ -406,11 +559,13 @@ async fn apply_ordered_chunk(
     for mutation in mutations {
         match mutation {
             RecordMutation::Put { key, value } => {
+                check_private_put(backend, &mut tx, token, &key, Some(&value)).await?;
                 sqlx::query("INSERT INTO store_state_records (namespace_id, record_key, record_value) VALUES ($1, $2, $3) ON CONFLICT (namespace_id, record_key) DO UPDATE SET record_value = EXCLUDED.record_value")
                     .bind(&token.namespace_id).bind(key).bind(value).execute(&mut *tx).await.sql_context("Failed to apply sequenced put")?;
             }
             RecordMutation::Delete { key } => {
                 if legacy_null_delete {
+                    check_private_put(backend, &mut tx, token, &key, None).await?;
                     sqlx::query("INSERT INTO store_state_records (namespace_id, record_key, record_value) VALUES ($1, $2, NULL) ON CONFLICT (namespace_id, record_key) DO UPDATE SET record_value = EXCLUDED.record_value")
                         .bind(&token.namespace_id).bind(key).execute(&mut *tx).await.sql_context("Failed to apply legacy tombstone")?;
                 } else {

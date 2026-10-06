@@ -152,6 +152,7 @@ pub use table::{Table, TableCursor, TablePage};
 mod settings_store;
 pub use settings_store::SettingsStore;
 
+pub mod assistance;
 pub mod query;
 mod registry;
 pub mod source;
