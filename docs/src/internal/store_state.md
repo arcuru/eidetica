@@ -66,6 +66,10 @@ The installed daemon handler copies opaque bytes without an application codec.
 Its Shared Derived query representation is separate from explicit projection
 namespaces and carries source/key/checksum framing. Encrypted/unknown capability
 refusal uses bounded canonical source assistance and private physical record reuse.
+Local encrypted plans also reuse client-derived encrypted physical records through
+the same backend staging substrate, under an acting-identity/source-bound Derived
+target distinct from handler and legacy projection namespaces. The daemon never
+consumes these client caches as authorization or plaintext handler state.
 Warm encrypted reads never require opaque-state hydration or a full record scan;
 cold reconstruction still folds the bounded source. Private publication is inline
 and optional. Canonical source validation on the daemon remains history-sensitive.
