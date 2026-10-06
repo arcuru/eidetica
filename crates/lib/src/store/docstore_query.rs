@@ -9,8 +9,8 @@ use crate::{
     store::{DocStore, ExecuteQuery, Registered, Store},
 };
 
-/// Borrowed public point query. Existing DocStore convenience methods remain
-/// unchanged; queries need not expose the delegated encoding to applications.
+/// Borrowed public point query. Store-owned execution handles delegation and
+/// private opaque reuse; applications need no cache/upload orchestration.
 pub struct GetValue<'a>(pub &'a str);
 
 #[derive(Serialize, Deserialize)]
@@ -56,14 +56,21 @@ impl<'q> ExecuteQuery<GetValue<'q>> for DocStore {
         {
             return Ok(None);
         }
+        let outer_type = self
+            .transaction()
+            .query_outer_type(self.name(), Self::type_id())?;
         self.transaction()
-            .query_store_or_fold::<crate::crdt::Doc, _>(
+            .query_store_or_cached_fold::<crate::crdt::Doc, _>(
                 self.name(),
-                Self::type_id(),
+                &outer_type,
                 DocQuery::Get {
                     key: query.0.into(),
                 }
                 .encode()?,
+                super::assistance::PrivateRepresentation::opaque(
+                    Self::state_model().descriptor(),
+                    Self::type_id(),
+                ),
                 |bytes| Ok(serde_json::from_slice(bytes)?),
                 |state| Ok(state.get(query.0).cloned()),
             )

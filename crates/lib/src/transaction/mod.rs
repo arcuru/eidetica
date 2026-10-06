@@ -16,6 +16,7 @@
 //! 3. Setting appropriate parent relationships (empty for first entry, or proper parents)
 
 pub mod errors;
+mod private_read;
 
 #[cfg(test)]
 mod tests;
@@ -140,6 +141,11 @@ pub(crate) trait Encryptor: Send + Sync {
     /// Encrypted data in implementation-defined format
     fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>>;
 
+    /// Validated outer/inner registration after client unlock, if supported.
+    fn store_type_ids(&self) -> Option<(&str, &str)> {
+        None
+    }
+
     fn physical_record_key(&self, logical_key: &[u8]) -> Result<Vec<u8>> {
         Ok(logical_key.to_vec())
     }
@@ -218,6 +224,8 @@ pub struct Transaction {
     #[cfg(test)]
     snapshot_pause: Arc<Mutex<Option<SnapshotPause>>>,
     projected: Arc<Mutex<HashMap<String, ProjectedStage>>>,
+    #[cfg(all(unix, feature = "service"))]
+    private_assistance: Arc<tokio::sync::Mutex<crate::service::client::PrivateCacheAssistance>>,
 }
 
 /// Canonical delta and both read-your-writes overlays share one revision.
@@ -356,6 +364,15 @@ impl Transaction {
         &self,
         source: &crate::store::source::StoreSource,
     ) -> Result<D> {
+        self.fold_raw_source_with_budget(source, &mut private_read::ReadBudget::default())
+            .await
+    }
+
+    async fn fold_raw_source_with_budget<D: CRDT + Codec>(
+        &self,
+        source: &crate::store::source::StoreSource,
+        budget: &mut private_read::ReadBudget,
+    ) -> Result<D> {
         use crate::backend::BackendError;
         use crate::store::source::{Limits, RawStoreRequest};
         if source.database != *self.db.root_id() || source.source != self.query_source()? {
@@ -383,7 +400,6 @@ impl Transaction {
         let mut edges = 0;
         let mut bytes = 0;
         let mut replay = None;
-        let mut recovered = false;
         let mut previous = None;
         loop {
             let page = match self
@@ -394,10 +410,10 @@ impl Transaction {
             {
                 Ok(page) => page,
                 Err(crate::Error::Backend(e))
-                    if matches!(*e, BackendError::InvalidRawCursor) && !recovered =>
+                    if matches!(*e, BackendError::InvalidRawCursor) && !budget.replayed =>
                 {
                     tracing::debug!(store = %source.store, "raw cursor expired; replaying the original sealed source once");
-                    recovered = true;
+                    budget.replayed = true;
                     replay = Some(0usize);
                     request.cursor = None;
                     continue;
@@ -512,6 +528,8 @@ impl Transaction {
             #[cfg(test)]
             snapshot_pause: Arc::new(Mutex::new(None)),
             projected: Arc::new(Mutex::new(HashMap::new())),
+            #[cfg(all(unix, feature = "service"))]
+            private_assistance: Arc::default(),
         })
     }
 

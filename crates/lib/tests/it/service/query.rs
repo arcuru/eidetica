@@ -394,17 +394,21 @@ async fn store_query_refusal_type_encryption_source_and_auth_are_distinct() {
         .get_store::<PasswordStore<DocStore>>("secret")
         .await
         .unwrap();
+    assert!(unlocked.inner().await.is_err());
     unlocked.open("test-password").unwrap();
-    // Unlocking validates the hidden inner format locally, but does not make
-    // its plaintext identity a daemon-visible outer registration.
-    assert!(
+    // The SDK uses the validated outer identity and folds privately after
+    // refusal. Unlock still cannot register/claim the plaintext type remotely.
+    assert_eq!(
         unlocked
             .inner()
             .await
             .unwrap()
             .query(GetValue("private"))
             .await
-            .is_err()
+            .unwrap()
+            .unwrap()
+            .as_text(),
+        Some("encrypted-source")
     );
     let conn = client.remote_connection().unwrap();
     let unknown = request(old.clone(), "counter", CounterStore::type_id(), b"MAX\0");
