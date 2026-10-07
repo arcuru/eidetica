@@ -117,7 +117,7 @@ env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u al
     mount --bind "$1" /etc/hosts
     ip address show
     ip route show
-    # Hide host runtime sockets, including nscd's host-side DNS cache.
+    # Hide host runtime sockets, including the host-side nscd DNS cache.
     mount -t tmpfs tmpfs /run
     exec "$2" --run-ignored only -E "test(test_iroh_ticket_target)" --success-output immediate
   ' bash "$hosts" "$runner"
