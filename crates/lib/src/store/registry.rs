@@ -242,6 +242,8 @@ impl Registry {
     ///
     /// # Returns
     /// true if the entry is registered, false otherwise
+    /// Legacy lossy wrapper: failures as well as absence become `false`.
+    /// Use `get_entry` for fallible metadata and security decisions.
     pub async fn contains(&self, name: impl AsRef<str>) -> bool {
         self.get_entry(name).await.is_ok()
     }
@@ -280,11 +282,9 @@ impl Registry {
     /// # Returns
     /// A vector of entry names that are registered
     pub async fn list(&self) -> Result<Vec<String>> {
-        let full_state: Doc = self
-            .inner
-            .transaction()
-            .get_full_state(self.inner.name())
-            .await?;
+        // Preserve this explicit listing's committed-only view while using
+        // the Doc-owned source plan, not a legacy cache generation.
+        let full_state = self.inner.committed_doc().await?;
 
         // Get all top-level keys from the Doc and clone them to owned Strings
         let keys: Vec<String> = full_state.keys().cloned().collect();
@@ -304,7 +304,7 @@ impl Registry {
     pub async fn get_subtree_settings(&self, name: impl AsRef<str>) -> Result<SubtreeSettings> {
         match self.get_entry(name).await {
             Ok(entry) => Ok(entry.settings),
-            Err(e) if e.is_not_found() => Ok(SubtreeSettings::default()),
+            Err(crate::Error::Store(e)) if e.is_not_found() => Ok(SubtreeSettings::default()),
             Err(e) => Err(e),
         }
     }

@@ -57,6 +57,7 @@ enum Fault {
     RepeatedExpiry,
     Quota,
     ChangedRefusal,
+    MetadataSourceMissing,
     LostChunkAck,
     LostFinishAck,
 }
@@ -233,6 +234,13 @@ async fn observed_proxy(
                 && matches!(fault, Fault::Quota)
             {
                 response = wire_error(BackendError::PrivateCacheQuotaExceeded);
+            }
+            if matches!(fault, Fault::MetadataSourceMissing)
+                && matches!(&op, Some(Op::QueryStore { request }) if request.store == "_index" || request.store == "_settings")
+            {
+                response = wire_error(BackendError::EntryNotFound {
+                    id: eidetica::entry::ID::from_bytes("damaged-source"),
+                });
             }
             if matches!(op, Some(Op::QueryStore { .. }))
                 && matches!(fault, Fault::ChangedRefusal)
@@ -972,6 +980,28 @@ async fn doc_convenience_socket_metadata_encrypted_quota_and_fallible_reads() {
     encrypted.open("correct").unwrap();
     let docs = encrypted.inner().await.unwrap();
     assert_normal_doc_wire(&seen.lock().unwrap());
+    seen.lock().unwrap().reset(Fault::MetadataSourceMissing);
+    assert!(
+        tx.get_index()
+            .await
+            .unwrap()
+            .get_subtree_settings("secret")
+            .await
+            .is_err()
+    );
+    assert!(tx.get_index().await.unwrap().list().await.is_err());
+    assert!(
+        tx.get_settings()
+            .unwrap()
+            .get_height_strategy()
+            .await
+            .is_err()
+    );
+    assert!(
+        tx.get_store::<DocStore>("must-not-register-on-source-failure")
+            .await
+            .is_err()
+    );
     seen.lock().unwrap().reset(Fault::Quota);
     assert_eq!(docs.get_node("user").await.unwrap().len(), 2);
     assert_eq!(seen.lock().unwrap().raw_count(), 1);
