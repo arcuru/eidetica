@@ -1293,8 +1293,8 @@ impl Database {
             .into_tips();
 
         // -- merged _settings state as serde_json::Value --------------
-        let txn = Transaction::new_at(self, &main_snapshot).await?;
-        let settings_doc: Doc = txn.get_full_state(SETTINGS).await?;
+        let txn = Transaction::new_at(&db_for_tips, &main_snapshot).await?;
+        let settings_doc = txn.get_settings()?.get_all().await?;
         let settings_value = serde_json::to_value(&settings_doc)?;
 
         Ok(TransactionContext {

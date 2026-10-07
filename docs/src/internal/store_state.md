@@ -66,3 +66,21 @@ typed history is folded locally and projected for point reads and scans.
 The existing Doc-backed Table remains on a collapsed compatibility projection
 and its canonical commit adapter until the Table format switch; this path is
 not a claim that Doc's hierarchical semantics can be streamed as flat rows.
+
+## Normal document reads
+
+DocStore conveniences and `query(GetValue)`, `query(GetPath)` and `query(GetAll)`
+use Store-owned committed-source plans, not projection-generation setup. Nested
+staging composes only the relevant top-level value for a point/path read;
+`get_all` composes the full Doc, including tombstones. The committed source stays
+pinned across concurrent writes. Reserved registry/settings metadata is fixed
+JSON folded from canonical history, never a client-private authorization cache.
+Encrypted inner Docs validate their protected identity client-side and use the
+existing bounded opaque assistance/recovery path under the encrypted outer type.
+Inline Derived publication cannot replace a valid read or signed commit result.
+
+The legacy `get_option`, `get_path_option`, `contains_key` and `contains_path`
+wrappers cannot report failures and still map them to `None`/`false`. Use fallible
+reads for source/auth/key decisions. Fallible read-modify helpers propagate these
+failures; only actual missing values or their existing value-type default rule
+permit insertion of a default.
