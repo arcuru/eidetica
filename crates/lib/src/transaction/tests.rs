@@ -309,7 +309,11 @@ async fn projected_binary_codec_decrypts_before_replay_and_encrypts_records() {
             .unwrap(),
         Some(b"secret".to_vec())
     );
-    let view = tx.record_view("rows", &RowsProjection).await.unwrap();
+    let view = tx
+        .record_view("rows", &RowsProjection)
+        .await
+        .unwrap()
+        .unwrap();
     let record = db
         .ops()
         .store_state_record_get(&view, b"key")
@@ -1083,7 +1087,11 @@ async fn projected_backend_matrix_physical_pages_and_cold_delete() {
             .unwrap(),
         Some(b"old".to_vec())
     );
-    let view = tx.record_view("rows", &RowsProjection).await.unwrap();
+    let view = tx
+        .record_view("rows", &RowsProjection)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         db.ops()
             .store_state_record_get(&view, b"139")
@@ -1183,7 +1191,11 @@ async fn projected_encrypted_physical_identity_and_recordless_fallback() {
             .unwrap(),
         Some(b"one".to_vec())
     );
-    let view = tx.record_view("rows", &RowsProjection).await.unwrap();
+    let view = tx
+        .record_view("rows", &RowsProjection)
+        .await
+        .unwrap()
+        .unwrap();
     let physical_a = KeyedRows.physical_record_key(b"a").unwrap();
     let physical_b = KeyedRows.physical_record_key(b"b").unwrap();
     let ciphertext = db
@@ -1273,7 +1285,11 @@ async fn projected_streaming_history_applies_deletes_across_chunks() {
             .unwrap(),
         Some(b"old".to_vec())
     );
-    let view = tx.record_view("rows", &RowsProjection).await.unwrap();
+    let view = tx
+        .record_view("rows", &RowsProjection)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         db.ops()
             .store_state_record_get(&view, b"000")
@@ -1325,7 +1341,11 @@ async fn projected_real_record_view_physical_scan_and_overlay() {
             .unwrap(),
         Some(b"old".to_vec())
     );
-    let view = tx.record_view("rows", &RowsProjection).await.unwrap();
+    let view = tx
+        .record_view("rows", &RowsProjection)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         db.ops().store_state_record_get(&view, b"b").await.unwrap(),
         Some(b"old".to_vec())
@@ -1392,7 +1412,11 @@ async fn projected_real_backend_fetch_rejects_racing_overlay() {
         .unwrap();
     tx.commit().await.unwrap();
     let tx = db.new_transaction().await.unwrap();
-    let view = tx.record_view("rows", &RowsProjection).await.unwrap();
+    let view = tx
+        .record_view("rows", &RowsProjection)
+        .await
+        .unwrap()
+        .unwrap();
     let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
     let (release_tx, release_rx) = tokio::sync::oneshot::channel();
     let reader = tx.clone();

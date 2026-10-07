@@ -4892,8 +4892,31 @@ async fn test_remote_backend_resume_lost_request_response_and_restart() {
     let fresh = Instance::connect(format!("unix://{}", socket.display()))
         .await
         .unwrap();
+    // Both retained operations occupy legitimate private in-flight quota. Login
+    // must load keys without requiring a third optional Derived publication.
+    for retained in [&token, &second] {
+        let (_, status) = server
+            .backend()
+            .store_state_staging_token(retained.testing_namespace_id())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(status, StagingStatus::Active);
+    }
     fresh.login_user("alice", None).await.unwrap();
     let conn = remote_conn(&fresh);
+    for retained in [&token, &second] {
+        assert_eq!(
+            conn.store_state_staging_status(
+                root.clone(),
+                identity.clone(),
+                retained.testing_namespace_id().into(),
+            )
+            .await
+            .unwrap(),
+            Some(StagingStatus::Active)
+        );
+    }
     assert!(
         conn.store_state_staging_status(
             eidetica::entry::ID::from_bytes("other-db"),

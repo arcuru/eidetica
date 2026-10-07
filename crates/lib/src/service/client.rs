@@ -1372,6 +1372,9 @@ impl RemoteConnection {
         tips: Vec<ID>,
         scope: ReadScope,
     ) -> crate::Result<Vec<Entry>> {
+        if tips.len() > crate::store::source::Limits::default().nodes {
+            return Err(crate::backend::BackendError::SourceTooLarge.into());
+        }
         let resp = self
             .db_request(
                 root_id,
@@ -1380,7 +1383,17 @@ impl RemoteConnection {
             )
             .await?;
         match resp {
-            ServiceResponse::Entries(entries) => Ok(entries),
+            ServiceResponse::Entries(entries) => {
+                let limits = crate::store::source::Limits::default();
+                if entries.len() > limits.nodes {
+                    return Err(crate::backend::BackendError::SourceTooLarge.into());
+                }
+                crate::store::source::encoded_size(
+                    &entries,
+                    limits.page_bytes.saturating_sub(128),
+                )?;
+                Ok(entries)
+            }
             other => Err(unexpected_response("Entries", &other)),
         }
     }

@@ -168,10 +168,15 @@ async fn new_query_reads_bypass_ambiguous_legacy_opaque_caches() -> Result<()> {
         .get_store::<DocStore>("docs")
         .await?;
     assert_eq!(
-        docs.get("key").await?.as_text(),
+        docs.transaction()
+            .get_full_state::<Doc>("docs")
+            .await?
+            .get("key")
+            .and_then(crate::crdt::doc::Value::as_text),
         Some("incorrect-cache"),
         "poison must actually hit the legacy path"
     );
+    assert_eq!(docs.get("key").await?.as_text(), Some("canonical"));
     assert_eq!(
         docs.query(GetValue("key")).await?.unwrap().as_text(),
         Some("canonical")
@@ -492,4 +497,96 @@ async fn installed_handler_source_bound_records_sqlite() -> Result<()> {
         crate::backend::database::Sqlite::in_memory().await?,
     ))
     .await
+}
+
+async fn doc_convenience_behavior(engine: Box<dyn BackendImpl>) -> Result<()> {
+    use crate::crdt::doc::{PathBuf, Value};
+    use crate::store::{GetAll, GetPath};
+    let (_instance, mut owner) =
+        Instance::create_backend(engine, NewUser::passwordless("doc-plans")).await?;
+    let db = owner
+        .create_database(Doc::new(), &owner.get_default_key()?)
+        .await?;
+    let write = db.new_transaction().await?;
+    let docs = write.get_store::<DocStore>("docs").await?;
+    docs.set("user.name", "Alice").await?;
+    docs.set("user.age", 30).await?;
+    docs.set("outside", "pinned").await?;
+    docs.set("", "empty-key").await?;
+    write.commit().await?;
+    let tx = db.new_transaction().await?;
+    let docs = tx.get_store::<DocStore>("docs").await?;
+    docs.set_path_str("user.name", "Bob").await?;
+    assert_eq!(
+        docs.get_node("user").await?.get("age"),
+        Some(&Value::from(30))
+    );
+    assert_eq!(
+        docs.get_path_as::<i64>(PathBuf::new().push("user").push("age"))
+            .await?,
+        30
+    );
+    assert_eq!(
+        docs.query(GetPath(crate::crdt::doc::Path::new("user.name")))
+            .await?,
+        Some(Value::from("Bob"))
+    );
+    let mut delta = docs.local_data()?.unwrap();
+    delta.remove("user.age");
+    tx.update_subtree("docs", delta.encode()?).await?;
+    assert!(
+        docs.get_path(crate::crdt::doc::Path::new("user.age"))
+            .await
+            .is_err()
+    );
+    assert!(!docs.contains_path_str("user.age").await);
+    assert_eq!(docs.get("user.name").await?, Value::from("Bob"));
+    assert_eq!(docs.get("").await?, Value::from("empty-key"));
+    assert_eq!(docs.get_all().await?, docs.query(GetAll).await?);
+    assert!(docs.get_all().await?.is_tombstone("user.age"));
+    let later = db.new_transaction().await?;
+    later
+        .get_store::<DocStore>("docs")
+        .await?
+        .set("outside", "new")
+        .await?;
+    later.commit().await?;
+    assert_eq!(docs.get("outside").await?, Value::from("pinned"));
+    let mut atomic = Doc::atomic();
+    atomic.set("name", "replacement");
+    docs.set_node("user", atomic).await?;
+    assert!(docs.get("user.age").await.is_err());
+    assert_eq!(docs.get_node("user").await?.len(), 1);
+    assert_eq!(
+        docs.insert("outside", "inserted").await?,
+        Some(Value::from("pinned"))
+    );
+    assert!(docs.delete("user").await?);
+    assert!(docs.get("user.name").await.is_err());
+    assert!(docs.get_all().await?.is_tombstone("user"));
+    let new = tx.get_store::<DocStore>("empty-new").await?;
+    assert!(new.get_all().await?.is_empty());
+    assert_eq!(new.get_or_insert("counter", 5).await?, 5);
+    new.modify_or_insert::<i64, _>("counter", 0, |v| *v += 1)
+        .await?;
+    assert_eq!(new.get_as::<i64>("counter").await?, 6);
+    // Concrete convenience futures remain usable in spawned callers.
+    fn send(_: impl std::future::Future + Send) {}
+    send(docs.get("outside"));
+    send(docs.get_all());
+    send(docs.get_path(crate::crdt::doc::Path::new("user.name")));
+    Ok(())
+}
+
+#[tokio::test]
+async fn doc_convenience_nested_staged_and_pinned_memory() -> Result<()> {
+    doc_convenience_behavior(Box::new(InMemory::new())).await
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn doc_convenience_nested_staged_and_pinned_sqlite() -> Result<()> {
+    let engine = crate::backend::database::Sqlite::in_memory().await?;
+    assert_eq!(engine.kind(), crate::backend::database::DbKind::Sqlite);
+    doc_convenience_behavior(Box::new(engine)).await
 }

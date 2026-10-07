@@ -1355,10 +1355,27 @@ impl Database {
         &self,
         store: &str,
         tips: &[ID],
-        _scope: crate::service::protocol::ReadScope,
+        scope: crate::service::protocol::ReadScope,
     ) -> Result<Vec<Entry>> {
-        let snapshot = Snapshot::from(tips.to_vec());
-        self.ops().store_at(self.root_id(), store, &snapshot).await
+        if let Some(connection) = self.ops().remote_connection() {
+            return connection
+                .get_store_entries(
+                    self.root_id().clone(),
+                    self.auth_identity().cloned().unwrap_or_default(),
+                    store.into(),
+                    tips.to_vec(),
+                    scope,
+                )
+                .await;
+        }
+        crate::store::source::collect_entries(
+            self.instance()?.require_local_engine()?.as_ref(),
+            self.root_id(),
+            store,
+            tips,
+            scope,
+        )
+        .await
     }
 
     /// Execute a closure within a transaction and commit the result.

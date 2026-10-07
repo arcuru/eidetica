@@ -892,3 +892,197 @@ async fn sdk_cache_transaction_owner_retains_exact_encrypted_upload_for_explicit
         drop(shutdown);
     }
 }
+
+fn assert_normal_doc_wire(seen: &Observation) {
+    assert!(
+        seen.requests
+            .iter()
+            .any(|op| matches!(op, Op::QueryStore { .. }))
+    );
+    assert!(
+        !seen.requests.iter().any(|op| matches!(
+            op,
+            Op::EnsureStoreStateGeneration { .. }
+                | Op::ResolveStoreState { .. }
+                | Op::GetStoreEntries { .. }
+                | Op::BeginStoreStateStaging { .. }
+        )),
+        "ordinary Doc/metadata reads must not orchestrate generations or collection"
+    );
+}
+
+#[tokio::test]
+async fn doc_convenience_socket_metadata_encrypted_quota_and_fallible_reads() {
+    let (socket, shutdown, server, dir) = start_test_server().await;
+    let (_client, root, _) = setup_db(&server, &socket, "owner").await;
+    create_user_via_admin(&server, "reader").await;
+    let owner = server.login_user("owner", None).await.unwrap();
+    let reader = server.login_user("reader", None).await.unwrap();
+    let db = owner.open_database(&root).await.unwrap();
+    let write = db.new_transaction().await.unwrap();
+    let mut encrypted = write
+        .get_store::<PasswordStore<DocStore>>("secret")
+        .await
+        .unwrap();
+    encrypted.initialize("correct", Doc::new()).await.unwrap();
+    let docs = encrypted.inner().await.unwrap();
+    docs.set("user.name", "canonical").await.unwrap();
+    docs.set("user.age", 30).await.unwrap();
+    write
+        .get_store::<DocStore>("plain")
+        .await
+        .unwrap()
+        .set("key", "plain")
+        .await
+        .unwrap();
+    write
+        .get_settings()
+        .unwrap()
+        .set_auth_key(
+            &reader.get_default_key().unwrap(),
+            eidetica::auth::types::AuthKey::active(None, Permission::Read),
+        )
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+    let (proxy, seen, task) = observed_proxy(&socket, dir.path()).await;
+    let client = login_client(&proxy, "reader").await;
+    assert!(
+        client.remote_connection().is_some(),
+        "must exercise an actual socket"
+    );
+    let remote = eidetica::Database::open(&client, &root).await.unwrap();
+    seen.lock().unwrap().reset(Fault::None);
+    let tx = remote.new_transaction().await.unwrap();
+    let plain = tx.get_store::<DocStore>("plain").await.unwrap();
+    assert_eq!(plain.get_string("key").await.unwrap(), "plain");
+    assert_eq!(plain.get_all().await.unwrap().len(), 1);
+    tx.get_index()
+        .await
+        .unwrap()
+        .get_entry("secret")
+        .await
+        .unwrap();
+    tx.get_settings().unwrap().auth_snapshot().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<DocStore>>("secret")
+        .await
+        .unwrap();
+    assert!(encrypted.open("wrong").is_err());
+    encrypted.open("correct").unwrap();
+    let docs = encrypted.inner().await.unwrap();
+    assert_normal_doc_wire(&seen.lock().unwrap());
+    seen.lock().unwrap().reset(Fault::Quota);
+    assert_eq!(docs.get_node("user").await.unwrap().len(), 2);
+    assert_eq!(seen.lock().unwrap().raw_count(), 1);
+    assert_eq!(seen.lock().unwrap().begin_count(), 1);
+    assert_normal_doc_wire(&seen.lock().unwrap());
+    seen.lock().unwrap().reset(Fault::None);
+    assert_eq!(
+        docs.get_path_as::<String>(eidetica::crdt::doc::Path::new("user.name"))
+            .await
+            .unwrap(),
+        "canonical"
+    );
+    assert_eq!(
+        docs.get_all().await.unwrap().get("user.age"),
+        Some(&eidetica::crdt::doc::Value::Int(30))
+    );
+    seen.lock().unwrap().reset(Fault::None);
+    assert_eq!(docs.get_string("user.name").await.unwrap(), "canonical");
+    assert_eq!(
+        seen.lock().unwrap().raw_count(),
+        0,
+        "warm convenience read must reuse opaque private bytes"
+    );
+    for fault in [
+        Fault::Denied,
+        Fault::InvalidSource,
+        Fault::ChangedRefusal,
+        Fault::BadKey,
+        Fault::BadRawSource,
+    ] {
+        seen.lock().unwrap().reset(fault);
+        assert!(docs.get("user.name").await.is_err());
+        assert!(docs.get_all().await.is_err());
+        assert!(docs.get_or_insert("new-key", 10).await.is_err());
+        assert!(
+            docs.get_or_insert_path(eidetica::crdt::doc::Path::new("new.path"), 10)
+                .await
+                .is_err()
+        );
+        assert!(docs.insert("new-key", "never").await.is_err());
+    }
+    // Preserve explicitly lossy public wrappers, not internal fallible decisions.
+    seen.lock().unwrap().reset(Fault::Denied);
+    assert!(docs.get_option("user.name").await.is_none());
+    assert!(!docs.contains_path_str("user.name").await);
+    seen.lock().unwrap().reset(Fault::None);
+    assert!(docs.get("new-key").await.is_err());
+    assert_normal_doc_wire(&seen.lock().unwrap());
+    stop_proxy(task).await;
+    drop(shutdown);
+}
+
+#[tokio::test]
+async fn doc_convenience_socket_optional_cache_fault_preserves_signed_commit() {
+    let (socket, shutdown, server, dir) = start_test_server().await;
+    let (_client, root, _) = setup_db(&server, &socket, "owner").await;
+    let owner = server.login_user("owner", None).await.unwrap();
+    let db = owner.open_database(&root).await.unwrap();
+    let write = db.new_transaction().await.unwrap();
+    let mut protected = write
+        .get_store::<PasswordStore<DocStore>>("secret")
+        .await
+        .unwrap();
+    protected.initialize("correct", Doc::new()).await.unwrap();
+    protected
+        .inner()
+        .await
+        .unwrap()
+        .set("key", "before")
+        .await
+        .unwrap();
+    write.commit().await.unwrap();
+    let (proxy, seen, task) = observed_proxy(&socket, dir.path()).await;
+    let client = login_client(&proxy, "owner").await;
+    let authenticated = client.login_user("owner", None).await.unwrap();
+    let remote = authenticated.open_database(&root).await.unwrap();
+    let tx = remote.new_transaction().await.unwrap();
+    let mut protected = tx
+        .get_store::<PasswordStore<DocStore>>("secret")
+        .await
+        .unwrap();
+    protected.open("correct").unwrap();
+    let docs = protected.inner().await.unwrap();
+    seen.lock().unwrap().reset(Fault::Quota);
+    assert_eq!(docs.get_string("key").await.unwrap(), "before");
+    docs.modify::<String, _>("key", |v| *v = "signed-after".into())
+        .await
+        .unwrap();
+    let id = tx.commit().await.unwrap();
+    assert_eq!(
+        server.backend().get_verification_status(&id).await.unwrap(),
+        VerificationStatus::Verified
+    );
+    seen.lock().unwrap().reset(Fault::None);
+    let tx = remote.new_transaction().await.unwrap();
+    let mut protected = tx
+        .get_store::<PasswordStore<DocStore>>("secret")
+        .await
+        .unwrap();
+    protected.open("correct").unwrap();
+    assert_eq!(
+        protected
+            .inner()
+            .await
+            .unwrap()
+            .get_string("key")
+            .await
+            .unwrap(),
+        "signed-after"
+    );
+    assert_normal_doc_wire(&seen.lock().unwrap());
+    stop_proxy(task).await;
+    drop(shutdown);
+}
