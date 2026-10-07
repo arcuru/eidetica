@@ -919,6 +919,7 @@ fn assert_normal_doc_wire(seen: &Observation) {
         !seen.requests.iter().any(|op| matches!(
             op,
             Op::EnsureStoreStateGeneration { .. }
+                | Op::EnsureRecordGeneration { .. }
                 | Op::ResolveStoreState { .. }
                 | Op::GetStoreEntries { .. }
                 | Op::BeginStoreStateStaging { .. }
@@ -1123,4 +1124,50 @@ async fn doc_convenience_socket_optional_cache_fault_preserves_signed_commit() {
     assert_normal_doc_wire(&seen.lock().unwrap());
     stop_proxy(task).await;
     drop(shutdown);
+}
+
+#[tokio::test]
+async fn doc_login_socket_password_bootstrap_and_retained_key_loading_use_queries() {
+    for password in [None, Some("correct-password")] {
+        let (socket, shutdown, server, dir) = start_test_server().await;
+        crate::helpers::create_user(&server, "reader", password)
+            .await
+            .unwrap();
+        let (proxy, seen, task) = observed_proxy(&socket, dir.path()).await;
+        let client = Instance::connect(format!("unix://{}", proxy.display()))
+            .await
+            .unwrap();
+        assert!(client.remote_connection().is_some());
+        if password.is_some() {
+            assert!(client.login_user("reader", Some("wrong")).await.is_err());
+        }
+        let mut user = client.login_user("reader", password).await.unwrap();
+        assert_eq!(
+            user.list_keys().unwrap().len(),
+            1,
+            "first-login bootstrap loads the root key"
+        );
+        assert_normal_doc_wire(&seen.lock().unwrap());
+        let extra = user.add_private_key(Some("persisted-key")).await.unwrap();
+        assert!(user.get_signing_key(&extra).is_ok());
+        stop_proxy(task).await;
+        drop(user);
+        drop(client);
+        let reconnect_dir = tempfile::tempdir_in(dir.path()).unwrap();
+        let (proxy, seen, task) = observed_proxy(&socket, reconnect_dir.path()).await;
+        let fresh = Instance::connect(format!("unix://{}", proxy.display()))
+            .await
+            .unwrap();
+        let loaded = fresh.login_user("reader", password).await.unwrap();
+        assert_eq!(
+            loaded.list_keys().unwrap().len(),
+            2,
+            "reauthentication must load the persisted non-root key"
+        );
+        assert!(loaded.list_keys().unwrap().contains(&extra));
+        assert!(loaded.get_signing_key(&extra).is_ok());
+        assert_normal_doc_wire(&seen.lock().unwrap());
+        stop_proxy(task).await;
+        drop(shutdown);
+    }
 }

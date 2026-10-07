@@ -234,7 +234,11 @@ async fn table_payload_all_unreadable_publishes_empty_default() {
         check_view(&db, false, &TableData::default()).await;
     }
     let tx = db.new_transaction().await.unwrap();
-    let view = tx.record_view(STORE, projection().as_ref()).await.unwrap();
+    let view = tx
+        .record_view(STORE, projection().as_ref())
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
         db.ops()
             .store_state_record_scan(&view, &RecordRange::default(), None, 1)
