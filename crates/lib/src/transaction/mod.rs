@@ -1277,7 +1277,12 @@ impl Transaction {
                             .get(&physical)
                             .cloned(),
                         Err(err) => return Err(err),
-                        Ok(view) => {
+                        Ok(None) => self
+                            .projected_history::<D>(store, projection)
+                            .await?
+                            .get(&physical)
+                            .cloned(),
+                        Ok(Some(view)) => {
                             match self.db.ops().store_state_record_get(&view, &physical).await {
                                 Err(err) if err.is_unsupported_store_state() => self
                                     .projected_history::<D>(store, projection)
@@ -1408,7 +1413,7 @@ impl Transaction {
         let view = match self.record_view(store, projection).await {
             Err(err) if err.is_unsupported_store_state() => None,
             Err(err) => return Err(err),
-            Ok(view) => Some(view),
+            Ok(view) => view,
         };
         let history = if view.is_none() {
             Some(self.projected_history::<D>(store, projection).await?)
@@ -1694,7 +1699,9 @@ impl Transaction {
             Err(err) if err.is_unsupported_store_state() => {
                 return self.record_get_from_history(store, &key).await;
             }
-            result => result?,
+            Ok(None) => return self.record_get_from_history(store, &key).await,
+            Ok(Some(view)) => view,
+            Err(error) => return Err(error),
         };
         match self
             .db
@@ -1714,7 +1721,9 @@ impl Transaction {
                     Err(err) if err.is_unsupported_store_state() => {
                         return self.record_get_from_history(store, &key).await;
                     }
-                    result => result?,
+                    Ok(None) => return self.record_get_from_history(store, &key).await,
+                    Ok(Some(view)) => view,
+                    Err(error) => return Err(error),
                 };
                 match self
                     .db
@@ -1775,7 +1784,13 @@ impl Transaction {
                     .record_scan_from_history(store, projection, after, limit)
                     .await;
             }
-            result => result?,
+            Ok(None) => {
+                return self
+                    .record_scan_from_history(store, projection, after, limit)
+                    .await;
+            }
+            Ok(Some(view)) => view,
+            Err(error) => return Err(error),
         };
         let logical_mutations = self
             .logical_record_mutations
@@ -1828,7 +1843,12 @@ impl Transaction {
                                 .record_scan_from_history(store, projection, after, limit)
                                 .await;
                         }
-                        Ok(view) => match self
+                        Ok(None) => {
+                            return self
+                                .record_scan_from_history(store, projection, after, limit)
+                                .await;
+                        }
+                        Ok(Some(view)) => match self
                             .db
                             .ops()
                             .store_state_record_scan(
@@ -2049,7 +2069,7 @@ impl Transaction {
         &self,
         store: &str,
         projection: &dyn RecordProjection<D>,
-    ) -> Result<RecordView> {
+    ) -> Result<Option<RecordView>> {
         self.init_subtree_parents(store).await?;
         let parents = self
             .entry_builder
@@ -2063,7 +2083,7 @@ impl Transaction {
         let descriptor = self.encrypted_projection_descriptor(store, projection.descriptor());
         let cache_key = (store.to_string(), descriptor.clone());
         if let Some(view) = self.record_views.lock().unwrap().get(&cache_key).cloned() {
-            return Ok(view);
+            return Ok(Some(view));
         }
         let request = state::records_request(
             self.db.root_id(),
@@ -2081,14 +2101,26 @@ impl Transaction {
                 .ops()
                 .store_at(self.db.root_id(), store, &boundary)
                 .await?;
-            self.publish_record_view(store, projection, request, &entries)
-                .await?
+            // Validate source/decryption/projection before attempting optional
+            // Derived publication. No source or key failure is downgraded here.
+            let state = self.fold_store_entries::<D>(store, &entries)?;
+            self.project_state(store, projection, &state)?;
+            match self
+                .publish_record_view(store, projection, request, &entries)
+                .await
+            {
+                Ok(view) => view,
+                Err(error) => {
+                    tracing::warn!(%store, %error, "optional legacy record publication failed");
+                    return Ok(None);
+                }
+            }
         };
         self.record_views
             .lock()
             .unwrap()
             .insert(cache_key, view.clone());
-        Ok(view)
+        Ok(Some(view))
     }
 
     /// Gets a handle to a specific `Store` for modification within this transaction.
@@ -2517,8 +2549,16 @@ impl Transaction {
         }
         // This is only an optimization decision, not an authorization grant:
         // remote publication still performs the server's current Write check.
-        let bytes = self.encrypt_if_needed(&request.store, &data.encode()?)?;
-        state::store_cached(self.db.ops(), request, bytes).await?;
+        let bytes = data
+            .encode()
+            .and_then(|bytes| self.encrypt_if_needed(&request.store, &bytes));
+        let publication = match bytes {
+            Ok(bytes) => state::store_cached(self.db.ops(), request, bytes).await,
+            Err(error) => Err(error),
+        };
+        if let Err(error) = publication {
+            tracing::warn!(%error, "optional legacy opaque cache publication failed");
+        }
         Ok(data)
     }
 
@@ -2636,7 +2676,12 @@ impl Transaction {
         };
 
         // Get settings using full CRDT state computation
-        let historical_settings = self.get_full_state::<Doc>(SETTINGS).await?;
+        let historical_settings = crate::store::DocStore {
+            name: SETTINGS.into(),
+            txn: self.clone(),
+        }
+        .committed_doc()
+        .await?;
 
         // Only genesis may authorize itself with staged auth. All later entries
         // validate against pre-write settings, even the first auth write.

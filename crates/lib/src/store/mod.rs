@@ -141,7 +141,7 @@ pub use errors::StoreError;
 mod docstore;
 mod docstore_query;
 pub use docstore::{DocStore, DocStoreInit};
-pub use docstore_query::GetValue;
+pub use docstore_query::{GetAll, GetPath, GetValue};
 
 mod value_editor;
 pub use value_editor::ValueEditor;

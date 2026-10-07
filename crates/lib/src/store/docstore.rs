@@ -3,7 +3,7 @@ use std::str::FromStr;
 use crate::{
     Error, Result, Store, Transaction,
     crdt::{
-        CRDT, CRDTError, Codec, Doc,
+        CRDTError, Codec, Doc,
         doc::{List, Path, PathBuf, PathError, Value},
     },
     store::{Registered, errors::StoreError},
@@ -70,33 +70,13 @@ impl DocStore {
     /// A `Result<Value>` if found, or `StoreError::KeyNotFound` if missing or deleted.
     pub async fn get(&self, key: impl AsRef<str>) -> Result<Value> {
         let key = key.as_ref();
-        // First check if there's any data in the transaction itself
-        if let Some(data) = self.local_data()? {
-            // Doc::get filters tombstones, so check deletion before falling back to history.
-            if data.is_tombstone(key) {
-                return Err(StoreError::KeyNotFound {
-                    store: self.name.clone(),
-                    key: key.to_string(),
-                }
-                .into());
-            }
-            if let Some(value) = data.get(key) {
-                return Ok(value.clone());
-            }
-        }
-
-        // Otherwise, get the full state from the backend
-        let data: Doc = self.txn.get_full_state(&self.name).await?;
-
-        // Return the value from the full state
-        match data.get(key) {
-            Some(value) => Ok(value.clone()),
-            None => Err(StoreError::KeyNotFound {
+        self.get_value_plan(key).await?.ok_or_else(|| {
+            StoreError::KeyNotFound {
                 store: self.name.clone(),
-                key: key.to_string(),
+                key: key.into(),
             }
-            .into()),
-        }
+            .into()
+        })
     }
 
     /// Gets a value associated with a key from the Store (HashMap-like API).
@@ -109,6 +89,8 @@ impl DocStore {
     ///
     /// # Returns
     /// An `Option` containing the cloned Value if found, or `None`.
+    /// Legacy lossy wrapper: every read failure becomes `None`, not just absence.
+    /// Use `get` for fallible reads or security-sensitive decisions.
     pub async fn get_option(&self, key: impl AsRef<str>) -> Option<Value> {
         self.get(key).await.ok()
     }
@@ -202,11 +184,9 @@ impl DocStore {
         // Get current data from the transaction, or create new if not existing
         let mut data = self.local_data()?.unwrap_or_default();
 
-        // Get the previous value (if any) before setting
-        let previous = data
-            .get(&key)
-            .cloned()
-            .filter(|v| !matches!(v, Value::Deleted));
+        // Read-modify operations propagate source/auth/key failures. Only an
+        // actual missing value becomes None, never a failed read.
+        let previous = self.get_value_plan(&key).await?;
 
         // Update the data
         data.set(&key, value);
@@ -297,31 +277,22 @@ impl DocStore {
     /// # Returns
     /// A `Result<Value>` containing the value if found, or an error if not found.
     pub async fn get_path(&self, path: impl AsRef<Path>) -> Result<Value> {
-        // First check if there's any local staged data
-        if let Some(data) = self.local_data()?
-            && let Some(value) = data.get(&path)
-        {
-            return Ok(value.clone());
-        }
-
-        // Otherwise, get the full state from the backend
-        let data: Doc = self.txn.get_full_state(&self.name).await?;
-
-        // Get the path from the full state
-        match data.get(&path) {
-            Some(value) => Ok(value.clone()),
-            None => Err(StoreError::KeyNotFound {
+        let key = path.as_ref().as_str();
+        self.get_value_plan(key).await?.ok_or_else(|| {
+            StoreError::KeyNotFound {
                 store: self.name.clone(),
-                key: path.as_ref().as_str().to_string(),
+                key: key.into(),
             }
-            .into()),
-        }
+            .into()
+        })
     }
 
     /// Gets a value by path using dot notation (HashMap-like API).
     ///
     /// # Returns
     /// An `Option<Value>` containing the value if found, or `None` if not found.
+    /// Legacy lossy wrapper: every read failure becomes `None`, not just absence.
+    /// Use `get_path` for fallible reads or security-sensitive decisions.
     pub async fn get_path_option(&self, path: impl AsRef<Path>) -> Option<Value> {
         self.get_path(path).await.ok()
     }
@@ -450,11 +421,15 @@ impl DocStore {
         // Try to get existing value first
         match self.get_as::<T>(key_str).await {
             Ok(existing) => Ok(existing),
-            Err(_) => {
-                // Key doesn't exist or wrong type - set default and return it
+            Err(error)
+                if matches!(error, Error::Store(ref e) if matches!(**e, StoreError::KeyNotFound { .. }))
+                    || matches!(error, Error::CRDT(ref e) if matches!(**e, CRDTError::TypeMismatch { .. })) =>
+            {
+                // Missing or wrong value type retains the legacy default behavior.
                 self.set(key_str, default.clone()).await?;
                 Ok(default)
             }
+            Err(error) => Err(error),
         }
     }
 
@@ -602,11 +577,15 @@ impl DocStore {
         // Try to get existing value first
         match self.get_path_as(path.as_ref()).await {
             Ok(existing) => Ok(existing),
-            Err(_) => {
-                // Path doesn't exist or wrong type - set default and return it
+            Err(error)
+                if matches!(error, Error::Store(ref e) if matches!(**e, StoreError::KeyNotFound { .. }))
+                    || matches!(error, Error::CRDT(ref e) if matches!(**e, CRDTError::TypeMismatch { .. })) =>
+            {
+                // Missing or wrong value type retains the legacy default behavior.
                 self.set_path(path, default.clone()).await?;
                 Ok(default)
             }
+            Err(error) => Err(error),
         }
     }
 
@@ -940,14 +919,7 @@ impl DocStore {
     /// # Returns
     /// A `Result` containing the merged `Doc` data structure with nested maps for path-based data.
     pub async fn get_all(&self) -> Result<Doc> {
-        let mut data = self.txn.get_full_state::<Doc>(&self.name).await?;
-
-        // Merge with local staged data if any
-        if let Some(local) = self.local_data()? {
-            data = data.merge(&local)?;
-        }
-
-        Ok(data)
+        self.get_all_plan().await
     }
 
     /// Returns true if the DocStore contains the given key
@@ -978,22 +950,10 @@ impl DocStore {
     /// # Ok(())
     /// # }
     /// ```
+    /// Legacy lossy wrapper: a read failure is indistinguishable from absence.
+    /// Never use this boolean as an authorization or source-validity decision.
     pub async fn contains_key(&self, key: impl AsRef<str>) -> bool {
-        let key = key.as_ref();
-
-        // Check local staged data first
-        if let Ok(Some(data)) = self.local_data()
-            && data.contains_key(key)
-        {
-            return true;
-        }
-
-        // Check backend data
-        if let Ok(backend_data) = self.txn.get_full_state::<Doc>(&self.name).await {
-            backend_data.contains_key(key)
-        } else {
-            false
-        }
+        self.get(key).await.is_ok()
     }
 
     /// Returns true if the DocStore contains the given path
@@ -1030,20 +990,10 @@ impl DocStore {
     /// # Ok(())
     /// # }
     /// ```
+    /// Legacy lossy wrapper: a read failure is indistinguishable from absence.
+    /// Never use this boolean as an authorization or source-validity decision.
     pub async fn contains_path(&self, path: impl AsRef<Path>) -> bool {
-        // Check local staged data first
-        if let Ok(Some(data)) = self.local_data()
-            && data.get(&path).is_some()
-        {
-            return true;
-        }
-
-        // Check backend data
-        if let Ok(backend_data) = self.txn.get_full_state::<Doc>(&self.name).await {
-            backend_data.get(&path).is_some()
-        } else {
-            false
-        }
+        self.get_path(path).await.is_ok()
     }
 
     /// Returns true if the DocStore contains the given path with string paths for runtime normalization
