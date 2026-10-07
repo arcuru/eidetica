@@ -79,6 +79,59 @@ To run it on a multicast-capable host:
 cargo test -p eidetica --all-features --test it test_iroh_mdns_same_host_sync -- --ignored
 ```
 
+## Ticket-supplied Iroh dial targets
+
+The ignored `test_iroh_ticket_target_*` tests observe the production
+`IrohTransport::send_request` ticket decoding and dial path with local listeners.
+They characterize attempted dialing, not successful QUIC/relay connections,
+database access, or an outbound-target policy.
+A malformed-ticket control must produce no UDP traffic; valid tickets must reach
+UDP listeners at loopback and private IPv4 literals, and a TCP listener for an
+HTTPS relay hostname resolving to a private IPv4 address.
+Relays retain the inherited configuration; public address lookup, mDNS, and port
+mapping are disabled to remove unrelated discovery traffic.
+No production configuration or authorization checks are changed.
+
+On Linux with unprivileged user/network/mount namespaces enabled, build outside
+the namespace, then run the cached test runner in a namespace with only loopback
+and a private address assigned to it.
+The hosts mapping is bind-mounted only inside that mount namespace; no host
+configuration or external network is touched.
+The tests refuse non-loopback IPv4 routes and fail before dialing if the private
+fixture address or hostname mapping is missing.
+
+```bash
+# Enter the dev shell (the archive runner needs cargo on PATH).
+nix develop
+# Build without running the ignored tests on the host network.
+nix run .#test-inmemory -- --no-tests pass -E 'test(test_iroh_ticket_target)'
+runner=$(nix eval --raw .#apps.x86_64-linux.test-inmemory.program)
+hosts=$(mktemp)
+printf '127.0.0.1 localhost\n10.77.0.1 ticket-relay.test\n' > "$hosts"
+# Remove proxy settings so relay dialing cannot be diverted through a host proxy.
+env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy \
+  unshare --user --map-root-user --net --mount --propagation private \
+  bash -eu -c '
+    ip link set lo up
+    ip addr add 10.77.0.1/32 dev lo
+    mount --bind "$1" /etc/hosts
+    ip address show
+    ip route show
+    # Hide host runtime sockets, including nscd's host-side DNS cache.
+    mount -t tmpfs tmpfs /run
+    exec "$2" --run-ignored only -E "test(test_iroh_ticket_target)" --success-output immediate
+  ' bash "$hosts" "$runner"
+rm "$hosts"
+```
+
+Both tests have bounded observation windows.
+A received datagram or accepted TCP connection proves an attempt before any
+application authorization; it does not prove an arbitrary service can be read,
+that a relay TLS handshake succeeds, or that any database permissions were bypassed.
+These are characterization assertions for the current dependency behavior, not a
+requirement to keep allowing such targets if a later policy is adopted.
+The normal sandboxed test matrix skips them.
+
 ## Multi-instance sync harness
 
 Multi-peer convergence tests build on `eidetica::testing::Cluster` — a harness
