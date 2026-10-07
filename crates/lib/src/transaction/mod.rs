@@ -1360,7 +1360,12 @@ impl Transaction {
                                             .get(&physical)
                                             .cloned(),
                                         Err(err) => return Err(err),
-                                        Ok(view) => match self
+                                        Ok(None) => self
+                                            .projected_history::<D>(store, projection)
+                                            .await?
+                                            .get(&physical)
+                                            .cloned(),
+                                        Ok(Some(view)) => match self
                                             .db
                                             .ops()
                                             .store_state_record_get(&view, &physical)
@@ -1529,7 +1534,12 @@ impl Transaction {
                             Err(err) if err.is_invalid_store_state_view() => {
                                 self.invalidate_record_view(store);
                                 match self.record_view(store, projection).await {
-                                    Ok(view) => match backend
+                                    Ok(None) => {
+                                        let history =
+                                            self.projected_history::<D>(store, projection).await?;
+                                        page_from_history(&history, after.as_deref(), count)
+                                    }
+                                    Ok(Some(view)) => match backend
                                         .store_state_record_scan(
                                             &view,
                                             &RecordRange::default(),
@@ -1850,7 +1860,7 @@ impl Transaction {
         result
     }
 
-    async fn publish_record_view_optional<D: CRDT + Codec>(
+    async fn publish_record_view_optional<D: CRDT + Codec + 'static>(
         &self,
         store: &str,
         projection: &dyn RecordProjection<D>,
@@ -1858,9 +1868,12 @@ impl Transaction {
         entries: &[Entry],
     ) -> Result<Option<RecordView>> {
         // Source/key/projection failures are not optional cache failures.
-        let state = self.fold_store_entries::<D>(store, entries)?;
+        let state = self.fold_store_entries::<D>(store, entries, &projection.descriptor())?;
         self.project_state(store, projection, &state)?;
-        match self.publish_record_view(store, projection, request, entries).await {
+        match self
+            .publish_record_view(store, projection, request, entries)
+            .await
+        {
             Ok(view) => Ok(Some(view)),
             Err(error) => {
                 tracing::warn!(%store, %error, "optional legacy record publication failed");
@@ -1971,7 +1984,10 @@ impl Transaction {
                     .ops()
                     .store_at(self.db.root_id(), store, &boundary)
                     .await?;
-                match self.publish_record_view_optional(store, projection, request, &entries).await? {
+                match self
+                    .publish_record_view_optional(store, projection, request, &entries)
+                    .await?
+                {
                     Some(view) => view,
                     None => return Ok(None),
                 }
@@ -1984,7 +2000,10 @@ impl Transaction {
                     .ops()
                     .store_at(self.db.root_id(), store, &boundary)
                     .await?;
-                match self.publish_record_view_optional(store, projection, request, &entries).await? {
+                match self
+                    .publish_record_view_optional(store, projection, request, &entries)
+                    .await?
+                {
                     Some(view) => view,
                     None => return Ok(None),
                 }

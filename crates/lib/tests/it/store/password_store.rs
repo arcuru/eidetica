@@ -910,6 +910,14 @@ async fn test_password_table_cold_streams_on_selected_backend() {
     )
     .await
     .unwrap();
+    if std::env::var("TEST_BACKEND").as_deref() == Ok("sqlite") {
+        let engine = instance.backend().local_engine().unwrap();
+        let sql = engine
+            .as_any()
+            .downcast_ref::<eidetica::backend::database::SqlxBackend>()
+            .expect("selected SQLite cold stream must use a SQL backend");
+        assert_eq!(sql.kind(), eidetica::backend::database::DbKind::Sqlite);
+    }
     let mut admin = instance.login_user("admin", None).await.unwrap();
     let key = admin.add_private_key(Some("rows")).await.unwrap();
     let database = admin.create_database(Doc::new(), &key).await.unwrap();

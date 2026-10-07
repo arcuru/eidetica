@@ -3511,8 +3511,8 @@ async fn test_warm_encrypted_table_service_point_read_is_lazy() {
     assert_eq!(table.get("c").await.unwrap().title, "c");
     assert_eq!(
         memory.store_state_read_counts(),
-        (before_records.0 + 2, before_records.1 + 1),
-        "a warm point read fetches metadata and one bounded exact-key private page"
+        (before_records.0, before_records.1 + 1),
+        "metadata queries read canonical source, not old cache records; the warm row fetch is one bounded exact-key private page"
     );
     assert_eq!(
         memory.store_history_read_count(),
@@ -5233,7 +5233,7 @@ async fn test_remote_backend_resume_lost_request_response_and_restart() {
             .unwrap(),
         Some(b"second".to_vec())
     );
-    let second_view = backend.publish_store_state(second).await.unwrap();
+    let second_view = backend.publish_store_state(second.clone()).await.unwrap();
     assert_eq!(
         backend
             .store_state_record_get(&second_view, b"reply")
@@ -5241,12 +5241,18 @@ async fn test_remote_backend_resume_lost_request_response_and_restart() {
             .unwrap(),
         Some(b"accepted".to_vec())
     );
-    assert!(matches!(
-        conn.store_state_staging_status(root, identity, token.testing_namespace_id().to_string())
+    for retained in [&token, &second] {
+        assert!(matches!(
+            conn.store_state_staging_status(
+                root.clone(),
+                identity.clone(),
+                retained.testing_namespace_id().to_string()
+            )
             .await
             .unwrap(),
-        Some(StagingStatus::Published(_))
-    ));
+            Some(StagingStatus::Published(_))
+        ));
+    }
 }
 
 /// A lost publication acknowledgement resolves the terminal token to a new
