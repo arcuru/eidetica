@@ -124,7 +124,7 @@ impl SettingsStore {
                     .into()
                 })
             }
-            Err(e) if e.is_not_found() => Ok(HeightStrategy::default()),
+            Err(crate::Error::Store(e)) if e.is_not_found() => Ok(HeightStrategy::default()),
             Err(e) => Err(e),
         }
     }

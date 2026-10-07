@@ -566,6 +566,12 @@ async fn doc_convenience_behavior(engine: Box<dyn BackendImpl>) -> Result<()> {
     assert!(docs.get_all().await?.is_tombstone("user"));
     let new = tx.get_store::<DocStore>("empty-new").await?;
     assert!(new.get_all().await?.is_empty());
+    let listing = tx.get_index().await?.list().await?;
+    assert!(listing.contains(&"docs".into()));
+    assert!(
+        !listing.contains(&"empty-new".into()),
+        "registry listing retains its committed-only contract"
+    );
     assert_eq!(new.get_or_insert("counter", 5).await?, 5);
     new.modify_or_insert::<i64, _>("counter", 0, |v| *v += 1)
         .await?;
