@@ -606,6 +606,30 @@ const POSTGRES_OWNERSHIP_TABLE: &str = "_eidetica_storage_owner";
 #[cfg(feature = "postgres")]
 const POSTGRES_NAMESPACE_LOCK: &str = "hashtextextended(format('eidetica-storage-v1:%s/%s:%s/%s', octet_length(current_database()), current_database(), octet_length(current_schema()), current_schema()), 0)";
 
+/// Release a failed constructor's PostgreSQL claim before reporting the failure.
+///
+/// Closing a session only asks the server to end it, and its advisory locks persist until
+/// that session exits, so an immediate retry could still find the namespace owned. The
+/// still-open owner session therefore waits for the exclusive namespace lock, which it can
+/// take only after every pool session has exited, then releases its own locks. Cleanup
+/// failures leave release to session exit and never replace the original error.
+#[cfg(feature = "postgres")]
+async fn release_failed_postgres_claim(pool: Option<AnyPool>, mut owner: AnyConnection) {
+    if let Some(pool) = pool {
+        pool.close().await;
+    }
+    // Bound the wait if a session cannot exit; preserve the constructor's original error.
+    let _ = owner.execute("SET lock_timeout = '5s'").await;
+    // SAFETY: the lock expression is a compile-time constant.
+    let _ = owner
+        .execute(sqlx::AssertSqlSafe(format!(
+            "SELECT pg_advisory_lock({POSTGRES_NAMESPACE_LOCK})"
+        )))
+        .await;
+    let _ = owner.execute("SELECT pg_advisory_unlock_all()").await;
+    let _ = owner.close().await;
+}
+
 #[cfg(feature = "postgres")]
 impl SqlxBackend {
     /// Connect to a PostgreSQL database using a connection URL.
@@ -695,6 +719,42 @@ impl SqlxBackend {
             .into());
         }
 
+        let token = uuid::Uuid::new_v4().to_string();
+        let pool = match Self::finish_postgres_claim(&mut owner, url, schema_name, &token).await {
+            Ok(pool) => pool,
+            Err(error) => {
+                release_failed_postgres_claim(None, owner).await;
+                return Err(error);
+            }
+        };
+
+        let mut backend = Self {
+            pool: Some(pool),
+            kind: DbKind::Postgres,
+            _owner: None,
+            #[cfg(feature = "testing")]
+            postgres_token: Some(token),
+        };
+
+        // Initialize schema (tables will be created in the current search_path)
+        if let Err(error) = schema::initialize(&backend).await {
+            release_failed_postgres_claim(backend.pool.take(), owner).await;
+            return Err(error);
+        }
+        backend._owner = Some(StorageOwner::Postgres {
+            _connection: tokio::sync::Mutex::new(owner),
+        });
+
+        Ok(backend)
+    }
+
+    /// Publish this claim's ownership token, fence the owner session, and open the pool.
+    async fn finish_postgres_claim(
+        owner: &mut AnyConnection,
+        url: &str,
+        schema_name: Option<String>,
+        token: &str,
+    ) -> Result<AnyPool> {
         // SAFETY: the ownership table name is a compile-time constant.
         owner
             .execute(sqlx::AssertSqlSafe(format!(
@@ -702,13 +762,12 @@ impl SqlxBackend {
             )))
             .await
             .sql_context("Failed to initialize PostgreSQL storage ownership metadata")?;
-        let token = uuid::Uuid::new_v4().to_string();
         // SAFETY: the table name is a constant; the ownership token stays bound.
         sqlx::query(sqlx::AssertSqlSafe(format!(
             "INSERT INTO {POSTGRES_OWNERSHIP_TABLE} (id, token) VALUES (1, $1) ON CONFLICT (id) DO UPDATE SET token = EXCLUDED.token"
         )))
-        .bind(&token)
-        .execute(&mut owner)
+        .bind(token)
+        .execute(&mut *owner)
         .await
         .sql_context("Failed to publish PostgreSQL storage ownership token")?;
         // SAFETY: both advisory-lock expressions use only a compile-time constant.
@@ -740,8 +799,8 @@ impl SqlxBackend {
             pool_options = pool_options.max_connections(5);
         }
 
-        let token_for_hook = token.clone();
-        let pool = pool_options
+        let token_for_hook = token.to_owned();
+        pool_options
             .after_connect(move |conn, _meta| {
                 let schema = schema_for_hook.clone();
                 let token = token_for_hook.clone();
@@ -773,22 +832,7 @@ impl SqlxBackend {
             })
             .connect(url)
             .await
-            .sql_context("Failed to connect to PostgreSQL")?;
-
-        let backend = Self {
-            pool: Some(pool),
-            kind: DbKind::Postgres,
-            _owner: Some(StorageOwner::Postgres {
-                _connection: tokio::sync::Mutex::new(owner),
-            }),
-            #[cfg(feature = "testing")]
-            postgres_token: Some(token),
-        };
-
-        // Initialize schema (tables will be created in the current search_path)
-        schema::initialize(&backend).await?;
-
-        Ok(backend)
+            .sql_context("Failed to connect to PostgreSQL")
     }
 
     /// Connect to a PostgreSQL database with test isolation.
@@ -1092,6 +1136,69 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn failed_postgres_claim_waits_for_pool_session_locks() {
+        if std::env::var("TEST_BACKEND").as_deref() != Ok("postgres") {
+            return;
+        }
+
+        let url = std::env::var("TEST_POSTGRES_URL")
+            .unwrap_or_else(|_| "postgres://localhost/eidetica_test".to_string());
+        let mut backend = SqlxBackend::connect_postgres_isolated(&url).await.unwrap();
+        // Detach a real pool session to model server-side shutdown lag after SQLx closes
+        // its pool. The shared lock stays held until this test explicitly releases it.
+        let mut lingering = backend.pool().acquire().await.unwrap().detach();
+        let Some(StorageOwner::Postgres { _connection }) = backend._owner.take() else {
+            panic!("PostgreSQL backend must hold an ownership session");
+        };
+        let mut owner = _connection.into_inner();
+        let (owner_pid,): (i32,) = sqlx::query_as("SELECT pg_backend_pid()")
+            .fetch_one(&mut owner)
+            .await
+            .unwrap();
+        let cleanup = tokio::spawn(release_failed_postgres_claim(backend.pool.take(), owner));
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                assert!(
+                    !cleanup.is_finished(),
+                    "cleanup must wait until the lingering session releases its shared lock"
+                );
+                let (waiting,): (bool,) = sqlx::query_as(
+                    "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE pid = $1 \
+                     AND locktype = 'advisory' AND mode = 'ExclusiveLock' AND NOT granted)",
+                )
+                .bind(owner_pid)
+                .fetch_one(&mut lingering)
+                .await
+                .unwrap();
+                if waiting {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("cleanup must reach the namespace-lock barrier");
+        lingering
+            .execute("SELECT pg_advisory_unlock_all()")
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), cleanup)
+            .await
+            .expect("cleanup must finish after the lingering session releases its lock")
+            .unwrap();
+        let (holders,): (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM pg_locks WHERE pid = $1 AND locktype = 'advisory'",
+        )
+        .bind(owner_pid)
+        .fetch_one(&mut lingering)
+        .await
+        .unwrap();
+        assert_eq!(holders, 0, "cleanup must release the owner session's locks");
+        lingering.close().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn failed_postgres_initialization_releases_ownership() {
         if std::env::var("TEST_BACKEND").as_deref() != Ok("postgres") {
             return;
@@ -1119,11 +1226,14 @@ mod tests {
         .await
         .unwrap();
 
+        let error =
+            match SqlxBackend::connect_postgres_with_schema(&url, Some(schema.clone())).await {
+                Ok(_) => panic!("the conflicting view must make schema initialization fail"),
+                Err(error) => error,
+            };
         assert!(
-            SqlxBackend::connect_postgres_with_schema(&url, Some(schema.clone()))
-                .await
-                .is_err(),
-            "the conflicting view must make schema initialization fail"
+            error.to_string().contains("Index creation failed"),
+            "cleanup must preserve the original initialization error: {error}"
         );
         // SAFETY: the only interpolated identifier is the UUID-derived test schema.
         sqlx::query(sqlx::AssertSqlSafe(format!("DROP VIEW {schema}.entries")))
