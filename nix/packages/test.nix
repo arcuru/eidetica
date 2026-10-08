@@ -175,6 +175,9 @@
     // {
       pname = "test-check-minimal";
       cargoNextestExtraArgs = nextestCheckArgs;
+      # Leaf check: nothing consumes its target directory, and Cargo's
+      # bookkeeping files make that archive differ between identical builds.
+      doInstallCargoArtifacts = false;
     });
 
   # Service backend check (Linux only, requires Unix sockets)
