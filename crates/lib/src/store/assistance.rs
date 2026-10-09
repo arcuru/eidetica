@@ -3,12 +3,14 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::backend::ProjectionDescriptor;
 #[cfg(all(unix, feature = "service"))]
+use crate::store::source::Reader;
 use crate::{
     Result,
-    backend::{BackendError, CacheScope, StoreStateLifecycle, StoreStateRequest},
-    store::source::{Reader, StoreSource},
+    backend::{
+        BackendError, CacheScope, ProjectionDescriptor, StoreStateLifecycle, StoreStateRequest,
+    },
+    store::source::StoreSource,
 };
 
 /// Physical representation identity, including Store-owned configuration bytes.
@@ -36,18 +38,44 @@ impl PrivateRepresentation {
 #[cfg(all(unix, feature = "service"))]
 pub(crate) const CHUNK_BYTES: usize = 1024 * 1024;
 
-#[cfg(all(unix, feature = "service"))]
 pub(crate) const PRIVATE_PROJECTION: &str = "eidetica/private-assistance";
 
-/// Persisted in the backend's immutable token target and published source key.
+/// Persisted in the backend's immutable token target, separate from value keys.
 /// No per-daemon secret is needed to recover an acknowledged token. The socket
 /// legacy paths cannot create or use this reserved target.
-#[cfg(all(unix, feature = "service"))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Binding {
     pub source: StoreSource,
     pub principal: String,
     pub representation: PrivateRepresentation,
+}
+
+/// Published bytes have an immutable value identity; active/durable tokens
+/// retain the full original Binding for per-use admission and exact recovery.
+/// This changes no token or common-wire shape and applies only to this reserved
+/// private Derived representation, never authoritative or legacy targets.
+pub(crate) fn value_target(request: &StoreStateRequest) -> Result<StoreStateRequest> {
+    let mut target = request.clone();
+    if target.projection.name == PRIVATE_PROJECTION {
+        let binding: Binding = serde_json::from_slice(&target.source_key)
+            .map_err(|_| BackendError::InvalidStoreStateStagingToken)?;
+        if target.lifecycle == StoreStateLifecycle::Authoritative
+            || target.projection.version != 0
+            || !matches!(target.scope, CacheScope::User(_))
+            || binding.source.database != target.database
+            || binding.source.store != target.store
+            || !binding.source.seal.is_empty()
+        {
+            return Err(crate::backend::BackendError::InvalidStoreStateStagingToken.into());
+        }
+        target.source_key = serde_json::to_vec(&(
+            "eidetica/private-value/v0",
+            binding.principal,
+            crate::store::query_records::binding(&binding.source, &binding.representation)?
+                .as_bytes(),
+        ))?;
+    }
+    Ok(target)
 }
 #[cfg(all(unix, feature = "service"))]
 impl Binding {

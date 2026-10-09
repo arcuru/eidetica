@@ -1677,18 +1677,27 @@ async fn test_local_historical_commit_rejects_unverified_parent_without_storage(
         .await
         .unwrap();
     let parent = txn.commit().await.unwrap();
-    instance
-        .demote_to_unverified(db.root_id(), &parent)
-        .await
-        .unwrap();
     let engine = instance.require_local_engine().unwrap();
     let before = engine.get_tree(db.root_id()).await.unwrap().len();
     let boundary = Snapshot::from([parent.clone()]);
-    let txn = db.new_transaction_at(&boundary).await.unwrap();
+    // Explicit loose read admission keeps this fixture focused on the separate
+    // authoritative commit-parent check, not the strict normal-read gate.
+    let txn = db
+        .clone()
+        .allow_unverified()
+        .new_transaction_at(&boundary)
+        .await
+        .unwrap();
     txn.get_store::<DocStore>("data")
         .await
         .unwrap()
         .set("k", "v2")
+        .await
+        .unwrap();
+    // Prepare against a permitted pinned source, then demote it before commit.
+    // The read admission gate must not prevent reaching the commit-parent gate.
+    instance
+        .demote_to_unverified(db.root_id(), &parent)
         .await
         .unwrap();
     let error = txn

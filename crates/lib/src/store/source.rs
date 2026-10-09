@@ -861,6 +861,7 @@ async fn collect_entries_with_limits(
     };
     let mut walk = Walk::new(engine, tree, &source, limits);
     let ids = walk.walk(tips, Some(store)).await?;
+    walk.check_boundary(tips, &ids).await?;
     let entries: Vec<_> = ids
         .iter()
         .map(|id| walk.entries.remove(id).unwrap())
