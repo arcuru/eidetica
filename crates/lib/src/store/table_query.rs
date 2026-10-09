@@ -133,7 +133,14 @@ impl StoreQueryHandler for RawTable {
         };
         let page = context
             .records::<Self>(&TableProjection, &range, after.as_deref(), limit, repair)
-            .await?;
+            .await;
+        let page = match page {
+            Ok(page) => page,
+            Err(error) if error.is_unsupported_store_state() => {
+                return Ok(QueryOutcome::Unavailable);
+            }
+            Err(error) => return Err(error),
+        };
         Ok(QueryOutcome::Result(serde_json::to_vec(&page)?))
     }
 }

@@ -16,6 +16,7 @@ pub(super) async fn database() -> (Instance, Database) {
     // connected instance helper so these tests actually exercise daemon RPC.
     if std::env::var("TEST_BACKEND").as_deref() == Ok("service") {
         let pair = setup_tree().await;
+        #[cfg(all(unix, feature = "service"))]
         assert!(
             pair.0.remote_connection().is_some(),
             "service checks require an actual connected backend"
@@ -26,6 +27,7 @@ pub(super) async fn database() -> (Instance, Database) {
         Instance::create_backend(test_backend().await, NewUser::passwordless("table-codecs"))
             .await
             .unwrap();
+    #[cfg(feature = "sqlite")]
     if std::env::var("TEST_BACKEND").as_deref() == Ok("sqlite") {
         let engine = instance.backend().local_engine().unwrap();
         let sql = engine

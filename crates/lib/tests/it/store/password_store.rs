@@ -197,27 +197,84 @@ async fn test_password_store_cache_is_encrypted() {
         .unwrap();
     store.open("password").unwrap();
     let docstore = store.inner().await.unwrap();
-    let _ = docstore.get("key1").await; // triggers state computation and caching
-
-    // Check the derived projection holds encrypted data, not plaintext
-    let backend = database.backend().unwrap();
-    let request = eidetica::backend::StoreStateRequest {
-        database: database.root_id().clone(),
-        store: "secrets".to_string(),
-        lifecycle: eidetica::backend::StoreStateLifecycle::Derived,
-        scope: eidetica::backend::CacheScope::Shared,
-        projection: eidetica::backend::ProjectionDescriptor {
-            name: "eidetica/opaque".to_string(),
-            version: 0,
-        },
-        source_key: entry_id2.to_string().into_bytes(),
+    assert_eq!(docstore.get_string("key1").await.unwrap(), "value1");
+    // Inspect the representation this path actually publishes. Socket normal
+    // reads use private assistance; local explicit maintenance retains its own
+    // opaque namespace. Neither can satisfy the encryption check by absence.
+    #[cfg(all(unix, feature = "service"))]
+    let cached_from_remote = if let Some(conn) = _instance.remote_connection() {
+        use eidetica::service::protocol::{DatabaseOp, ServiceResponse};
+        let identity = conn.session_identity().unwrap();
+        let source = conn
+            .store_source(
+                database.root_id().clone(),
+                identity.clone(),
+                "secrets".into(),
+                PasswordStore::<DocStore>::type_id().into(),
+                eidetica::store::query::QuerySource {
+                    main: database.snapshot().await.unwrap(),
+                    scope: eidetica::store::query::ReadScope::Verified,
+                },
+            )
+            .await
+            .unwrap();
+        let response = conn
+            .private_assistance(
+                database.root_id().clone(),
+                identity,
+                DatabaseOp::LookupPrivateMaterialization {
+                    source,
+                    representation: eidetica::store::assistance::PrivateRepresentation::opaque(
+                        DocStore::state_model().descriptor(),
+                        DocStore::type_id(),
+                    ),
+                    range: Default::default(),
+                    after: None,
+                },
+            )
+            .await
+            .unwrap();
+        let ServiceResponse::PrivateMaterialization(Some(page)) = response else {
+            panic!("normal encrypted socket read must publish its private ciphertext");
+        };
+        assert_eq!(page.records.len(), 1);
+        assert_eq!(
+            page.records[0].0.len(),
+            32,
+            "private physical key is protected"
+        );
+        Some(page.records[0].1.clone())
+    } else {
+        None
     };
-    let view = backend
-        .resolve_store_state(&request)
-        .await
-        .unwrap()
-        .expect("reading an encrypted store must publish its derived projection");
-    if let Some(cached) = backend.store_state_record_get(&view, &[0]).await.unwrap() {
+    #[cfg(not(all(unix, feature = "service")))]
+    let cached_from_remote: Option<Vec<u8>> = None;
+    let cached = if let Some(cached) = cached_from_remote {
+        cached
+    } else {
+        let state = store.get_state().await.unwrap();
+        assert!(state.get("key1").is_some());
+        let backend = database.backend().unwrap();
+        let request = eidetica::backend::StoreStateRequest {
+            database: database.root_id().clone(),
+            store: "secrets".to_string(),
+            lifecycle: eidetica::backend::StoreStateLifecycle::Derived,
+            scope: eidetica::backend::CacheScope::Shared,
+            projection: PasswordStore::<DocStore>::state_model().descriptor(),
+            source_key: entry_id2.to_string().into_bytes(),
+        };
+        let view = backend
+            .resolve_store_state(&request)
+            .await
+            .unwrap()
+            .expect("explicit encrypted maintenance must publish its derived projection");
+        backend
+            .store_state_record_get(&view, &[0])
+            .await
+            .unwrap()
+            .expect("published opaque ciphertext must exist")
+    };
+    {
         // The projection holds raw ciphertext bytes; no plaintext should leak.
         let contains_bytes = |needle: &[u8]| cached.windows(needle.len()).any(|w| w == needle);
         assert!(
@@ -910,6 +967,7 @@ async fn test_password_table_cold_streams_on_selected_backend() {
     )
     .await
     .unwrap();
+    #[cfg(feature = "sqlite")]
     if std::env::var("TEST_BACKEND").as_deref() == Ok("sqlite") {
         let engine = instance.backend().local_engine().unwrap();
         let sql = engine

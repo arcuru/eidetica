@@ -555,8 +555,14 @@ async fn table_payload_staging_and_size_errors_remain_hard() {
     let large = rows(&[("large", &vec![0xff; state::CHUNK_BYTES])], &[])
         .encode()
         .unwrap();
-    let large_id = append(&db, large, false).await;
-    let large_entry = db.ops().get(&large_id).await.unwrap();
+    // This exercises the record staging ceiling, not bounded Entry transport.
+    // Construct the projection input locally so the source-frame ceiling cannot
+    // reject setup before publish_records reaches RecordTooLarge.
+    let large_entry = crate::Entry::builder(db.root_id().clone())
+        .set_parents(vec![id])
+        .set_subtree_data(STORE, large)
+        .build()
+        .unwrap();
     let request = state::records_request(
         db.root_id(),
         STORE,
