@@ -26,10 +26,14 @@ pub(crate) fn binding(
     source: &StoreSource,
     representation: &PrivateRepresentation,
 ) -> Result<blake3::Hash> {
-    let mut source = source.clone();
-    source.seal.clear();
+    // A view selects/admit-checks the Snapshot before cache access. Neither
+    // the view's verification scope nor its seal changes this immutable value.
     Ok(blake3::hash(&serde_json::to_vec(&(
-        source,
+        &source.database,
+        &source.store,
+        &source.type_id,
+        &source.snapshot,
+        &source.registration,
         representation,
     ))?))
 }
@@ -251,7 +255,9 @@ impl StoreQueryContext<'_> {
                 Err(error) => return Err(error),
             },
             Ok(None) => {}
-            Err(error) if error.is_unsupported_store_state() => {}
+            // Explicit capability refusal lets the SDK retain one bounded
+            // reconstruction across all pages of the logical read.
+            Err(error) if error.is_unsupported_store_state() => return Err(error),
             Err(error) => return Err(error),
         }
         if !repair {

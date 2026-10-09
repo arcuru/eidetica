@@ -34,8 +34,9 @@ fn store_state_scope(scope: &CacheScope) -> &str {
 }
 
 /// Canonical identity of a Store-state target, for cross-transaction locking.
-fn store_state_target_key(target: &StoreStateRequest) -> String {
-    format!(
+fn store_state_target_key(target: &StoreStateRequest) -> Result<String> {
+    let target = crate::store::assistance::value_target(target)?;
+    Ok(format!(
         "{}|{}|{}|{}|{}|{}|{}",
         target.database,
         target.store,
@@ -44,7 +45,7 @@ fn store_state_target_key(target: &StoreStateRequest) -> String {
         target.projection.name,
         target.projection.version,
         hex::encode(&target.source_key),
-    )
+    ))
 }
 
 /// Serialize a stage/publish critical section on PostgreSQL.
@@ -66,7 +67,7 @@ async fn lock_store_state_namespace(
     if backend.is_sqlite() {
         return Ok(());
     }
-    for key in [store_state_target_key(target), namespace_id.to_string()] {
+    for key in [store_state_target_key(target)?, namespace_id.to_string()] {
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
             .bind(key)
             .execute(&mut **tx)
@@ -226,6 +227,7 @@ pub async fn resolve_store_state(
     backend: &SqlxBackend,
     request: &StoreStateRequest,
 ) -> Result<Option<RecordView>> {
+    let request = crate::store::assistance::value_target(request)?;
     let row: Option<(String,)> = sqlx::query_as(
         "SELECT namespace_id FROM store_state_namespaces
          WHERE database_id = $1 AND store_name = $2 AND lifecycle = $3 AND status = 1
@@ -305,6 +307,7 @@ pub async fn replace_unknown_store_state_staging(
     backend: &SqlxBackend,
     previous: &StagingToken,
 ) -> Result<Option<StagingToken>> {
+    let value_target = crate::store::assistance::value_target(&previous.target)?;
     let now = now_secs();
     if !crate::backend::forgotten_token_is_old(&previous.namespace_id, now) {
         return Ok(None);
@@ -345,7 +348,7 @@ pub async fn replace_unknown_store_state_staging(
         .bind(previous.target.database.to_string()).bind(&previous.target.store)
         .bind(previous.target.lifecycle.as_db_int()).bind(store_state_scope(&previous.target.scope))
         .bind(&previous.target.projection.name).bind(i64::from(previous.target.projection.version))
-        .bind(&previous.target.source_key).fetch_optional(&mut *tx).await
+        .bind(&value_target.source_key).fetch_optional(&mut *tx).await
         .sql_context("Failed to check recovery generation")?;
     if winner.is_some() {
         return Ok(None);
@@ -656,6 +659,7 @@ pub async fn reclaim_expired_store_state(backend: &SqlxBackend) -> Result<u64> {
 
 /// Publish or adopt exactly one target, with a durable terminal result.
 pub async fn publish_store_state(backend: &SqlxBackend, token: StagingToken) -> Result<RecordView> {
+    let value_target = crate::store::assistance::value_target(&token.target)?;
     let mut tx = backend
         .pool()
         .begin()
@@ -688,7 +692,7 @@ pub async fn publish_store_state(backend: &SqlxBackend, token: StagingToken) -> 
         "SELECT namespace_id FROM store_state_namespaces WHERE database_id = $1 AND store_name = $2 AND lifecycle = $3 AND status = 1 AND scope_user_uuid = $4 AND projection_name = $5 AND projection_version = $6 AND source_key = $7")
         .bind(token.target.database.to_string()).bind(&token.target.store).bind(token.target.lifecycle.as_db_int())
         .bind(store_state_scope(&token.target.scope)).bind(&token.target.projection.name)
-        .bind(i64::from(token.target.projection.version)).bind(&token.target.source_key)
+        .bind(i64::from(token.target.projection.version)).bind(&value_target.source_key)
         .fetch_optional(&mut *tx).await.sql_context("Failed to resolve published winner")?;
     let (outcome, view) = if let Some((winner,)) = winner {
         (2, winner)
@@ -699,7 +703,7 @@ pub async fn publish_store_state(backend: &SqlxBackend, token: StagingToken) -> 
             return Err(BackendError::InvalidStoreStateStagingToken.into());
         }
         let result = sqlx::query("UPDATE store_state_namespaces SET lifecycle = $1, status = 1, source_key = $2 WHERE namespace_id = $3 AND lifecycle = $4 AND status = 0")
-            .bind(token.target.lifecycle.as_db_int()).bind(&token.target.source_key).bind(&token.namespace_id)
+            .bind(token.target.lifecycle.as_db_int()).bind(&value_target.source_key).bind(&token.namespace_id)
             .bind(StoreStateLifecycle::Staging.as_db_int()).execute(&mut *tx).await.sql_context("Failed to publish namespace")?;
         if result.rows_affected() != 1 {
             return Err(BackendError::InvalidStoreStateStagingToken.into());

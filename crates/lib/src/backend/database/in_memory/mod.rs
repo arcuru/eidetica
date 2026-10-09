@@ -381,12 +381,13 @@ impl Default for InMemory {
 #[async_trait]
 impl BackendImpl for InMemory {
     async fn resolve_store_state(&self, request: &StoreStateRequest) -> Result<Option<RecordView>> {
+        let request = crate::store::assistance::value_target(request)?;
         let inner = self.inner.read().unwrap();
         Ok(inner
             .store_state_namespaces
             .iter()
             .find(|(_, namespace)| {
-                namespace.ready && !namespace.unlinked && namespace.request == *request
+                namespace.ready && !namespace.unlinked && namespace.request == request
             })
             .map(|(namespace_id, _)| RecordView {
                 namespace_id: namespace_id.clone(),
@@ -438,6 +439,7 @@ impl BackendImpl for InMemory {
         &self,
         previous: &StagingToken,
     ) -> Result<Option<StagingToken>> {
+        let value_target = crate::store::assistance::value_target(&previous.target)?;
         let mut inner = self.inner.write().unwrap();
         let now = staging_now();
         if !crate::backend::forgotten_token_is_old(&previous.namespace_id, now)
@@ -445,7 +447,7 @@ impl BackendImpl for InMemory {
             || inner
                 .store_state_namespaces
                 .values()
-                .any(|ns| ns.ready && !ns.unlinked && ns.request == previous.target)
+                .any(|ns| ns.ready && !ns.unlinked && ns.request == value_target)
             || inner.staging_tokens.values().any(|state| {
                 state.target == previous.target
                     && state.status == StagingStatus::Active
@@ -726,6 +728,7 @@ impl BackendImpl for InMemory {
     }
 
     async fn publish_store_state(&self, token: StagingToken) -> Result<RecordView> {
+        let value_target = crate::store::assistance::value_target(&token.target)?;
         let mut inner = self.inner.write().unwrap();
         let state = inner
             .staging_tokens
@@ -742,7 +745,7 @@ impl BackendImpl for InMemory {
         if let Some((winner, _)) = inner
             .store_state_namespaces
             .iter()
-            .find(|(_, ns)| ns.ready && !ns.unlinked && ns.request == token.target)
+            .find(|(_, ns)| ns.ready && !ns.unlinked && ns.request == value_target)
         {
             let view = RecordView {
                 namespace_id: winner.clone(),
@@ -768,7 +771,7 @@ impl BackendImpl for InMemory {
         if namespace.records.values().any(Option::is_none) {
             return Err(BackendError::InvalidStoreStateStagingToken.into());
         }
-        namespace.request = token.target;
+        namespace.request = value_target;
         namespace.ready = true;
         let view = RecordView {
             namespace_id: token.namespace_id.clone(),

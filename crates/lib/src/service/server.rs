@@ -988,9 +988,11 @@ async fn dispatch_inner(
                 connection: ctx.conn_id,
             };
             let work = match &op {
-                DatabaseOp::QueryStore { request } => {
-                    Some(ctx.sources.admit(&reader, &root_id, request)?)
-                }
+                DatabaseOp::QueryStore { request } => Some(
+                    ctx.sources
+                        .admit_serialized(&reader, &root_id, request)
+                        .await?,
+                ),
                 DatabaseOp::ResolveStoreSource {
                     store,
                     expected_type,
@@ -1002,12 +1004,17 @@ async fn dispatch_inner(
                         source: source.clone(),
                         query: Vec::new(),
                     };
-                    Some(ctx.sources.admit(&reader, &root_id, &query)?)
+                    Some(
+                        ctx.sources
+                            .admit_serialized(&reader, &root_id, &query)
+                            .await?,
+                    )
                 }
                 DatabaseOp::BeginPrivateAssistance { source, .. }
                 | DatabaseOp::LookupPrivateMaterialization { source, .. } => Some(
                     ctx.sources
-                        .admit(&reader, &root_id, &source_query(source))?,
+                        .admit_serialized(&reader, &root_id, &source_query(source))
+                        .await?,
                 ),
                 DatabaseOp::ReadRawStore { request } => {
                     let query = crate::store::query::StoreQueryRequest {
@@ -1016,7 +1023,11 @@ async fn dispatch_inner(
                         source: request.source.source.clone(),
                         query: Vec::new(),
                     };
-                    Some(ctx.sources.admit(&reader, &root_id, &query)?)
+                    Some(
+                        ctx.sources
+                            .admit_serialized(&reader, &root_id, &query)
+                            .await?,
+                    )
                 }
                 _ => None,
             };
@@ -1933,11 +1944,11 @@ async fn private_token(
         return Err(crate::backend::BackendError::InvalidStoreStateStagingToken.into());
     }
     let binding = crate::store::assistance::Binding::from_target(&reader, &token.target)?;
-    *ctx.response_work.lock().unwrap() = Some(ctx.sources.admit(
-        &reader,
-        root,
-        &source_query(&binding.source),
-    )?);
+    let work = ctx
+        .sources
+        .admit_serialized(&reader, root, &source_query(&binding.source))
+        .await?;
+    *ctx.response_work.lock().unwrap() = Some(work);
     ctx.sources
         .validate_binding(instance.require_local_engine()?.as_ref(), &binding.source)
         .await?;

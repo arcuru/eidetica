@@ -274,12 +274,7 @@ fn private_state_binding(
     source: &StoreSource,
     representation: &PrivateRepresentation,
 ) -> Result<blake3::Hash> {
-    let mut source = source.clone();
-    source.seal.clear();
-    Ok(blake3::hash(&serde_json::to_vec(&(
-        source,
-        representation,
-    ))?))
+    crate::store::query_records::binding(source, representation)
 }
 
 #[cfg(all(unix, feature = "service"))]

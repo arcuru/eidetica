@@ -260,8 +260,102 @@ async fn private_assistance_read_only_raw_reuse_isolation_retarget_revocation_an
         status(&conn, &root, &identity, &token).await,
         StagingStatus::Published(_)
     ));
-    // Main/index source changes must separate identities even when these
-    // Store tips and the representation are exactly unchanged.
+    // Admission descriptors and tokens remain pinned, but view scope and
+    // unrelated main/index movement do not duplicate an immutable Store value.
+    let loose = conn
+        .store_source(
+            root.clone(),
+            identity.clone(),
+            "binary".into(),
+            CounterStore::type_id().into(),
+            eidetica::store::query::QuerySource {
+                scope: ReadScope::AllowUnverified,
+                ..raw.source.clone()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(loose.snapshot, raw.snapshot);
+    assert_eq!(
+        lookup(&conn, &identity, &loose, representation())
+            .await
+            .unwrap()
+            .records,
+        vec![(b"state".to_vec(), built.encode().unwrap())]
+    );
+    let same_value = begin(&conn, &identity, &loose, representation()).await;
+    conn.send_staging_chunk(&chunk(
+        &root,
+        &identity,
+        &same_value,
+        built.encode().unwrap(),
+    ))
+    .await
+    .unwrap();
+    conn.private_assistance(
+        root.clone(),
+        identity.clone(),
+        Op::FinishPrivateAssistance {
+            token: same_value.clone(),
+        },
+    )
+    .await
+    .unwrap();
+    let published = status(&conn, &root, &identity, &token).await;
+    let adopted = status(&conn, &root, &identity, &same_value).await;
+    assert!(
+        matches!((published, adopted), (StagingStatus::Published(a), StagingStatus::Adopted(b)) if a == b),
+        "the two original admission bindings reuse exactly one value namespace"
+    );
+    let engine = server.backend().local_engine().unwrap();
+    let pinned_tip = &raw.source.main.tips()[0];
+    engine
+        .update_verification_status(pinned_tip, eidetica::backend::VerificationStatus::Failed)
+        .await
+        .unwrap();
+    assert!(
+        conn.private_assistance(
+            root.clone(),
+            identity.clone(),
+            Op::LookupPrivateMaterialization {
+                source: raw.clone(),
+                representation: representation(),
+                range: RecordRange::default(),
+                after: None,
+            }
+        )
+        .await
+        .is_err(),
+        "warm lookup must check the current request's strict admission"
+    );
+    assert!(
+        conn.private_assistance(
+            root.clone(),
+            identity.clone(),
+            Op::PrivateAssistanceStatus {
+                token: token.clone(),
+            }
+        )
+        .await
+        .is_err(),
+        "a durable strict token never changes to the loose binding"
+    );
+    assert!(
+        conn.private_assistance(
+            root.clone(),
+            identity.clone(),
+            Op::PrivateAssistanceStatus {
+                token: same_value.clone(),
+            }
+        )
+        .await
+        .is_err(),
+        "a pinned loose token also refuses a now-Failed selected tip"
+    );
+    engine
+        .update_verification_status(pinned_tip, eidetica::backend::VerificationStatus::Verified)
+        .await
+        .unwrap();
     let unrelated = db.new_transaction().await.unwrap();
     unrelated
         .get_store::<DocStore>("side-docs")
@@ -274,10 +368,12 @@ async fn private_assistance_read_only_raw_reuse_isolation_retarget_revocation_an
     let advanced = source(&conn, &db, &identity, "binary", CounterStore::type_id()).await;
     assert_eq!(advanced.snapshot, raw.snapshot);
     assert_ne!(advanced.source.main, raw.source.main);
-    assert!(
+    assert_eq!(
         lookup(&conn, &identity, &advanced, representation())
             .await
-            .is_none()
+            .unwrap()
+            .records,
+        vec![(b"state".to_vec(), built.encode().unwrap())]
     );
     let mut different = representation();
     different.configuration.push(1);

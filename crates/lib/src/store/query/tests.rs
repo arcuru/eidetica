@@ -596,3 +596,137 @@ async fn doc_convenience_nested_staged_and_pinned_sqlite() -> Result<()> {
     assert_eq!(engine.kind(), crate::backend::database::DbKind::Sqlite);
     doc_convenience_behavior(Box::new(engine)).await
 }
+
+#[tokio::test]
+async fn immutable_snapshot_value_survives_status_changes_and_view_reuse() -> Result<()> {
+    use crate::{
+        backend::RecordRange,
+        store::source::{Reader, Sources},
+    };
+    let (instance, mut owner) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        NewUser::passwordless("immutable-source"),
+    )
+    .await?;
+    let db = owner
+        .create_database(Doc::new(), &owner.get_default_key()?)
+        .await?;
+    let seed = db.new_transaction().await?;
+    seed.get_store::<CounterStore>("counter").await?;
+    seed.commit().await?;
+    let first = db.new_transaction().await?;
+    first
+        .update_subtree("counter", Counter(99).encode()?)
+        .await?;
+    let interior = first.commit().await?;
+    let last = db.new_transaction().await?;
+    last.update_subtree("counter", Counter(21).encode()?)
+        .await?;
+    last.commit().await?;
+    let engine = instance.require_local_engine()?;
+    let sources = Sources::default();
+    let reader = Reader::local();
+    let request = StoreQueryRequest {
+        store: "counter".into(),
+        expected_type: CounterStore::type_id().into(),
+        source: QuerySource {
+            main: db.snapshot().await?,
+            scope: ReadScope::AllowUnverified,
+        },
+        query: Vec::new(),
+    };
+    let bound = sources
+        .resolve(engine.as_ref(), &reader, db.root_id(), &request)
+        .await?;
+    let context = StoreQueryContext {
+        engine: engine.as_ref(),
+        raw_source: bound.source.clone(),
+        store: "counter".into(),
+        type_id: CounterStore::type_id().into(),
+        source: request.source.clone(),
+        snapshot: bound.source.snapshot.clone(),
+        entries: bound.entries,
+    };
+    let range = RecordRange::default();
+    let warm = context
+        .records::<CounterStore>(&CounterRecords, &range, None, 1, true)
+        .await?;
+    assert!(warm.reconstructed);
+    assert_eq!(warm.page.records[0].1, 99u64.to_le_bytes());
+    for status in [VerificationStatus::Unverified, VerificationStatus::Failed] {
+        engine.update_verification_status(&interior, status).await?;
+        let same = sources
+            .resolve(engine.as_ref(), &reader, db.root_id(), &request)
+            .await?;
+        assert_eq!(same.source.snapshot, context.snapshot);
+        assert_eq!(
+            same.entries, context.entries,
+            "never filter an unchanged Snapshot"
+        );
+        let strict = StoreQueryRequest {
+            source: QuerySource {
+                scope: ReadScope::Verified,
+                ..request.source.clone()
+            },
+            ..request.clone()
+        };
+        assert!(
+            sources
+                .resolve(engine.as_ref(), &reader, db.root_id(), &strict)
+                .await
+                .is_err(),
+            "strict admission must run even with a warm value"
+        );
+        let cached = context
+            .records::<CounterStore>(&CounterRecords, &range, None, 1, true)
+            .await?;
+        assert!(!cached.reconstructed);
+        assert_eq!(cached.page.records[0].1, 99u64.to_le_bytes());
+        engine.clear_derived_store_state().await?;
+        let cold = context
+            .records::<CounterStore>(&CounterRecords, &range, None, 1, true)
+            .await?;
+        assert!(cold.reconstructed);
+        assert_eq!(cold.page.records, cached.page.records);
+    }
+    // A fresh strict selection is a different Snapshot, not a mutated old value.
+    let selected = StoreQueryRequest {
+        source: QuerySource {
+            main: db.snapshot().await?,
+            scope: ReadScope::Verified,
+        },
+        ..request.clone()
+    };
+    let earlier = sources
+        .resolve(engine.as_ref(), &reader, db.root_id(), &selected)
+        .await?;
+    assert_ne!(earlier.source.snapshot, context.snapshot);
+    engine
+        .update_verification_status(&interior, VerificationStatus::Verified)
+        .await?;
+    let strict = StoreQueryRequest {
+        source: QuerySource {
+            scope: ReadScope::Verified,
+            ..request.source.clone()
+        },
+        ..request
+    };
+    let same = sources
+        .resolve(engine.as_ref(), &reader, db.root_id(), &strict)
+        .await?;
+    let strict_context = StoreQueryContext {
+        raw_source: same.source,
+        source: strict.source,
+        entries: same.entries,
+        ..context
+    };
+    let cached = strict_context
+        .records::<CounterStore>(&CounterRecords, &range, None, 1, true)
+        .await?;
+    assert!(
+        !cached.reconstructed,
+        "raw/verified share one admitted immutable value"
+    );
+    assert_eq!(cached.page.records[0].1, 99u64.to_le_bytes());
+    Ok(())
+}
