@@ -967,6 +967,7 @@ async fn test_password_table_cold_streams_on_selected_backend() {
     )
     .await
     .unwrap();
+    #[cfg(feature = "sqlite")]
     if std::env::var("TEST_BACKEND").as_deref() == Ok("sqlite") {
         let engine = instance.backend().local_engine().unwrap();
         let sql = engine
