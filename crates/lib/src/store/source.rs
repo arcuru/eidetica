@@ -213,6 +213,11 @@ pub(crate) struct Sources {
     pub limits: Limits,
     ttl: Duration,
     state: Mutex<Accounting>,
+    // coding: one source worker; use per-source locks if throughput warrants it.
+    // Pending callers are capped by the existing context count and idle lifetime;
+    // no request-spawning queue, enlarged work quota or refusal retry is involved.
+    serial: Arc<tokio::sync::Mutex<()>>,
+    callers: Arc<tokio::sync::Semaphore>,
 }
 impl Default for Sources {
     fn default() -> Self {
@@ -226,6 +231,10 @@ impl Sources {
             limits,
             ttl,
             state: Mutex::new(Accounting::default()),
+            serial: Arc::new(tokio::sync::Mutex::new(())),
+            callers: Arc::new(tokio::sync::Semaphore::new(
+                limits.user_contexts.min(limits.global_contexts),
+            )),
         }
     }
 
@@ -287,7 +296,32 @@ impl Sources {
             sources: self.clone(),
             user: reader.user.clone(),
             key,
+            _serialization: None,
         })
+    }
+
+    pub(crate) async fn admit_serialized(
+        self: &Arc<Self>,
+        reader: &Reader,
+        tree: &ID,
+        request: &StoreQueryRequest,
+    ) -> Result<Work> {
+        if request.source.main.len() > self.limits.nodes
+            || encoded_size(request, self.limits.query_bytes).is_err()
+        {
+            return Err(BackendError::SourceTooLarge.into());
+        }
+        let caller = self
+            .callers
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| BackendError::SourceAdmissionRefused)?;
+        let guard = tokio::time::timeout(self.ttl, self.serial.clone().lock_owned())
+            .await
+            .map_err(|_| BackendError::SourceAdmissionRefused)?;
+        let mut work = self.admit(reader, tree, request)?;
+        work._serialization = Some((caller, guard));
+        Ok(work)
     }
 
     fn seal(&self, reader: &Reader, source: &StoreSource) -> String {
@@ -329,6 +363,8 @@ impl Sources {
         if !main_ids.contains(tree) || !walk.entries[tree].is_root() {
             return Err(BackendError::InvalidRawSource.into());
         }
+        walk.check_boundary(request.source.main.tips(), &main_ids)
+            .await?;
         // Match the established current-frontier fast path atomically, without
         // an unbounded snapshot or recursive backend collection. Otherwise use
         // the already bounded, immutable main closure to derive Store tips.
@@ -343,6 +379,7 @@ impl Sources {
             ),
         };
         let index_ids = walk.walk(index_snapshot.tips(), Some(INDEX)).await?;
+        walk.check_store_boundary(&index_ids).await?;
         let mut index = Doc::default();
         for id in &index_ids {
             if let Ok(bytes) = walk.entries[id].data(INDEX)
@@ -374,6 +411,7 @@ impl Sources {
             .into());
         }
         let ids = walk.walk(snapshot.tips(), Some(&request.store)).await?;
+        walk.check_store_boundary(&ids).await?;
         let mut source = StoreSource {
             database: tree.clone(),
             store: request.store.clone(),
@@ -386,7 +424,7 @@ impl Sources {
         };
         source.seal = self.seal(reader, &source);
         encoded_size(&source, self.limits.page_bytes.saturating_sub(128))?;
-        let posture = walk.entries.keys().cloned().collect();
+        let posture = walk.posture(&source);
         let entries = ids
             .iter()
             .map(|id| walk.entries.remove(id).unwrap())
@@ -411,13 +449,17 @@ impl Sources {
         if !main.contains(&source.database) {
             return Err(BackendError::InvalidRawSource.into());
         }
+        walk.check_boundary(source.source.main.tips(), &main)
+            .await?;
         // These immutable tips were sealed at initial resolution. In particular
         // do NOT call current_source_frontiers again on reconnect/expiry.
-        walk.walk(source.index_snapshot.tips(), Some(INDEX)).await?;
+        let index_ids = walk.walk(source.index_snapshot.tips(), Some(INDEX)).await?;
+        walk.check_store_boundary(&index_ids).await?;
         let ids = walk
             .walk(source.snapshot.tips(), Some(&source.store))
             .await?;
-        let posture = walk.entries.keys().cloned().collect();
+        walk.check_store_boundary(&ids).await?;
+        let posture = walk.posture(source);
         Ok(BoundSource {
             source: source.clone(),
             ids,
@@ -529,8 +571,8 @@ impl Sources {
             }
             (ctx.ids.clone(), ctx.posture.clone())
         };
-        // Permission is rechecked by dispatch before this method, and status
-        // of every originally consumed main/index/Store ancestor is current.
+        // Permission is rechecked by dispatch; view admission rechecks the
+        // strict closure or the original loose tips, never filters page data.
         for id in posture {
             check_posture(engine, &id, request.source.source.scope).await?;
         }
@@ -594,6 +636,10 @@ pub(crate) struct Work {
     sources: Arc<Sources>,
     user: String,
     key: String,
+    _serialization: Option<(
+        tokio::sync::OwnedSemaphorePermit,
+        tokio::sync::OwnedMutexGuard<()>,
+    )>,
 }
 impl Drop for Work {
     fn drop(&mut self) {
@@ -686,7 +732,6 @@ impl<'a> Walk<'a> {
                     return Err(BackendError::SourceTooLarge.into());
                 }
                 self.bytes += bytes;
-                check_posture(self.engine, &id, self.source.scope).await?;
                 self.entries.insert(id.clone(), entry);
             }
             let entry = &self.entries[&id];
@@ -712,6 +757,40 @@ impl<'a> Walk<'a> {
         });
         Ok(ids)
     }
+    // Admission follows the existing views: strict is an ancestor-closed
+    // Verified prefix; explicit loose checks selected tips, not a value filter.
+    async fn check_boundary(&self, tips: &[ID], closure: &[ID]) -> Result<()> {
+        let ids = if self.source.scope == ReadScope::Verified {
+            closure
+        } else {
+            tips
+        };
+        for id in ids {
+            check_posture(self.engine, id, self.source.scope).await?;
+        }
+        Ok(())
+    }
+
+    fn posture(&self, source: &StoreSource) -> Vec<ID> {
+        if self.source.scope == ReadScope::Verified {
+            self.entries.keys().cloned().collect()
+        } else {
+            source.source.main.tips().to_vec()
+        }
+    }
+
+    async fn check_store_boundary(&self, closure: &[ID]) -> Result<()> {
+        if self.source.scope == ReadScope::Verified {
+            for id in closure {
+                check_posture(self.engine, id, ReadScope::Verified).await?;
+            }
+        }
+        // Explicit loose uses the already selected raw main boundary. Store
+        // tips derived from it stay immutable, including Failed interior data.
+        // Selecting different Store tips here would silently retarget paging.
+        Ok(())
+    }
+
     fn frontier(&self, main: &[ID], store: &str) -> Result<Snapshot> {
         let entries: Vec<_> = main
             .iter()

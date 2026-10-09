@@ -883,9 +883,18 @@ async fn test_database_submit_signed_entry() {
         ctx.main_parents.iter().map(|(id, _)| id.clone()).collect();
     let entry = Entry::builder(root_id.clone())
         .set_parents(parents)
+        .set_height(ctx.main_parents.iter().map(|(_, h)| *h).max().unwrap_or(0) + 1)
+        .set_metadata(
+            serde_json::to_vec(&serde_json::json!({
+                "settings_tips": ctx.settings_tips,
+                "entropy": serde_json::Value::Null,
+            }))
+            .unwrap(),
+        )
         .set_subtree_data("submitted", b"{\"submitted\":true}")
         .build()
-        .unwrap();
+        .unwrap()
+        .with_auth(|auth| auth.key = eidetica::auth::types::SigKey::from_pubkey(&key));
     let signature = sign_entry(&entry, &signing_key).unwrap();
     let entry = entry.with_auth(|auth| auth.signature = Some(signature));
     let entry_id = entry.id();
