@@ -57,7 +57,10 @@ impl std::fmt::Debug for LocalBackend {
 impl Backend for LocalBackend {
     async fn query_store(&self, tree: &ID, request: &StoreQueryRequest) -> Result<StoreQueryReply> {
         let reader = crate::store::source::Reader::local();
-        let _work = self.sources.admit(&reader, tree, request)?;
+        let _work = self
+            .sources
+            .admit_serialized(&reader, tree, request)
+            .await?;
         crate::store::query::execute(
             self.engine.as_ref(),
             tree,
@@ -83,7 +86,7 @@ impl Backend for LocalBackend {
             source: source.clone(),
             query: Vec::new(),
         };
-        let _work = self.sources.admit(&reader, tree, &query)?;
+        let _work = self.sources.admit_serialized(&reader, tree, &query).await?;
         Ok(self
             .sources
             .resolve(self.engine.as_ref(), &reader, tree, &query)
@@ -104,7 +107,7 @@ impl Backend for LocalBackend {
             source: request.source.source.clone(),
             query: Vec::new(),
         };
-        let _work = self.sources.admit(&reader, tree, &query)?;
+        let _work = self.sources.admit_serialized(&reader, tree, &query).await?;
         self.sources
             .page(self.engine.as_ref(), &reader, request)
             .await

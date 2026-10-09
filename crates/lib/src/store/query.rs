@@ -32,7 +32,8 @@ pub enum ReadScope {
     /// Only an all-Verified, ancestor-closed source is permitted.
     #[default]
     Verified,
-    /// Explicit opt-in to Unverified entries; Failed ancestry is still refused.
+    /// Explicit raw view: selected tips must not be Failed. Immutable
+    /// materialization does not filter interior payloads by live status.
     AllowUnverified,
 }
 

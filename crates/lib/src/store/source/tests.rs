@@ -518,3 +518,136 @@ async fn source_sqlite_bounded_current_historical_and_oversize_entry() {
         );
     }
 }
+
+#[tokio::test]
+async fn higher_view_selects_ancestors_without_retargeting_pinned_store_snapshots() -> Result<()> {
+    let (_instance, engine, db, request) = fixture().await;
+    let sources = Sources::default();
+    let reader = Reader::local();
+    let initial = sources
+        .resolve(engine.as_ref(), &reader, db.root_id(), &request)
+        .await?;
+    let tip = initial.source.snapshot.tips()[0].clone();
+    // Advance main without changing this Store. The loose main boundary is
+    // explicitly selected here, above source resolution and the value cache.
+    let write = db.new_transaction().await?;
+    write.get_settings()?.set_name("unrelated").await?;
+    write.commit().await?;
+    let loose = StoreQueryRequest {
+        source: QuerySource {
+            main: db.clone().allow_unverified().snapshot().await?,
+            scope: ReadScope::AllowUnverified,
+        },
+        ..request.clone()
+    };
+    let pinned = sources
+        .resolve(engine.as_ref(), &reader, db.root_id(), &loose)
+        .await?;
+    engine
+        .update_verification_status(&tip, VerificationStatus::Failed)
+        .await?;
+    assert!(
+        sources
+            .recover(engine.as_ref(), &reader, &initial.source)
+            .await
+            .is_err()
+    );
+    let same = sources
+        .resolve(engine.as_ref(), &reader, db.root_id(), &loose)
+        .await?;
+    assert_eq!(same.source.snapshot, pinned.source.snapshot);
+    assert_eq!(
+        same.entries, pinned.entries,
+        "loose paging cannot filter/retarget a Store Snapshot"
+    );
+    sources
+        .recover(engine.as_ref(), &reader, &pinned.source)
+        .await?;
+    // Existing strict higher-layer selection may choose an ancestor boundary.
+    let selected = StoreQueryRequest {
+        source: QuerySource {
+            main: db.snapshot().await?,
+            scope: ReadScope::Verified,
+        },
+        ..request
+    };
+    let earlier = sources
+        .resolve(engine.as_ref(), &reader, db.root_id(), &selected)
+        .await?;
+    assert_ne!(earlier.source.source.main, pinned.source.source.main);
+    assert_eq!(
+        earlier.source.snapshot,
+        Snapshot::from(engine.get(&tip).await?.subtree_parents("docs")?)
+    );
+    assert!(earlier.entries.iter().all(|entry| entry.id_ref() != &tip));
+    assert!(
+        sources
+            .validate_binding(engine.as_ref(), &initial.source)
+            .await
+            .is_err(),
+        "fresh selection must not make the old pin recoverable at different tips"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn source_serialization_bounds_pending_callers_and_releases_on_cancellation() -> Result<()> {
+    let mut small = limits();
+    small.global_contexts = 2;
+    let sources = Arc::new(Sources::new(small, Duration::from_secs(1)));
+    let reader = Reader::local();
+    let tree = ID::from_bytes(b"tree");
+    let request = StoreQueryRequest {
+        store: "docs".into(),
+        expected_type: DocStore::type_id().into(),
+        source: QuerySource {
+            main: Snapshot::from([tree.clone()]),
+            scope: ReadScope::Verified,
+        },
+        query: Vec::new(),
+    };
+    let first = sources.admit_serialized(&reader, &tree, &request).await?;
+    let pending = {
+        let (sources, reader, tree, request) = (
+            sources.clone(),
+            reader.clone(),
+            tree.clone(),
+            request.clone(),
+        );
+        tokio::spawn(async move { sources.admit_serialized(&reader, &tree, &request).await })
+    };
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while sources.callers.available_permits() != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    admission(
+        sources
+            .admit_serialized(&reader, &tree, &request)
+            .await
+            .err()
+            .unwrap(),
+    );
+    pending.abort();
+    match pending.await {
+        Err(error) => assert!(error.is_cancelled()),
+        Ok(_) => panic!("pending caller was not cancelled"),
+    }
+    assert_eq!(sources.callers.available_permits(), 1);
+    // A held source cannot be waited on indefinitely either.
+    admission(
+        sources
+            .admit_serialized(&reader, &tree, &request)
+            .await
+            .err()
+            .unwrap(),
+    );
+    drop(first);
+    assert_eq!(sources.callers.available_permits(), 2);
+    let last = sources.admit_serialized(&reader, &tree, &request).await?;
+    drop(last);
+    assert!(sources.state.lock().unwrap().jobs.is_empty());
+    Ok(())
+}
