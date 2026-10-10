@@ -11,9 +11,9 @@ use crate::backend::RecordMutation;
 /// Each delta may be consumed incrementally; callers apply changes in Entry order.
 pub trait RecordProjection<D: CRDT>: Send + Sync {
     fn descriptor(&self) -> ProjectionDescriptor;
-    /// Legacy hierarchical projections must collapse conflicts before publication.
-    fn legacy_collapsed(&self) -> bool {
-        false
+    /// Registered plaintext codec eligible for read-scoped server maintenance.
+    fn server_store_type(&self) -> Option<&'static str> {
+        None
     }
     fn mutations<'a>(
         &'a self,
@@ -37,13 +37,6 @@ pub trait RecordProjection<D: CRDT>: Send + Sync {
     fn staged_key_shadows_cached(&self, staged_key: &[u8], cached_key: &[u8]) -> bool {
         self.staged_keys_conflict(staged_key, cached_key)
     }
-
-    /// Whether a staged key is a descendant of a caller-facing key.
-    fn staged_key_descends_from(&self, staged_key: &[u8], key: &[u8]) -> bool {
-        staged_key
-            .strip_prefix(key)
-            .is_some_and(|suffix| suffix.starts_with(b"."))
-    }
 }
 
 struct DescribedProjection<D: CRDT + 'static> {
@@ -56,8 +49,8 @@ impl<D: CRDT + 'static> RecordProjection<D> for DescribedProjection<D> {
         self.descriptor.clone()
     }
 
-    fn legacy_collapsed(&self) -> bool {
-        self.inner.legacy_collapsed()
+    fn server_store_type(&self) -> Option<&'static str> {
+        self.inner.server_store_type()
     }
 
     fn mutations<'a>(
@@ -77,10 +70,6 @@ impl<D: CRDT + 'static> RecordProjection<D> for DescribedProjection<D> {
 
     fn staged_key_shadows_cached(&self, staged_key: &[u8], cached_key: &[u8]) -> bool {
         self.inner.staged_key_shadows_cached(staged_key, cached_key)
-    }
-
-    fn staged_key_descends_from(&self, staged_key: &[u8], key: &[u8]) -> bool {
-        self.inner.staged_key_descends_from(staged_key, key)
     }
 }
 
@@ -138,6 +127,12 @@ impl<D: CRDT + 'static> StoreStateModel<D> {
 mod errors;
 pub use errors::StoreError;
 
+pub mod row_codec;
+pub use row_codec::{RawBytes, RowCodec, SerdeJson};
+
+mod table_data;
+pub use table_data::TableData;
+
 mod docstore;
 mod docstore_query;
 pub use docstore::{DocStore, DocStoreInit};
@@ -147,7 +142,9 @@ mod value_editor;
 pub use value_editor::ValueEditor;
 
 pub(crate) mod table;
-pub use table::{Table, TableCursor, TablePage};
+pub(crate) mod table_query;
+pub use table::{RawTable, Table, TableCursor, TablePage};
+pub use table_query::{GetRow, ScanRows, SearchRows};
 
 mod settings_store;
 pub use settings_store::SettingsStore;

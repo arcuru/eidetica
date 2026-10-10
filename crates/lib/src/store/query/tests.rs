@@ -284,9 +284,20 @@ async fn query_follows_canonical_store_history_beyond_main_ancestry() -> Result<
         engine
             .update_verification_status(&selected_id, VerificationStatus::Verified)
             .await?;
+        let mut sibling_delta = Doc::new();
+        if store == INDEX {
+            let mut metadata = Doc::new();
+            metadata.set("type", DocStore::type_id());
+            sibling_delta.set("other-docs", metadata);
+        } else {
+            sibling_delta.set("sibling", "branch");
+        }
         let sibling = Entry::builder(db.root_id().clone())
             .set_parents(vec![seed])
             .set_height(22)
+            .set_subtree_parents(store, vec![external_id.clone()])
+            .set_subtree_height(store, Some(22))
+            .set_subtree_data(store, sibling_delta.encode()?)
             .build()?;
         let sibling_id = sibling.id();
         engine.put(sibling).await?;
@@ -329,6 +340,10 @@ async fn query_follows_canonical_store_history_beyond_main_ancestry() -> Result<
                 docs.query(GetValue("external")).await?,
                 Some(docs.get("external").await?),
                 "canonical {store} ancestry must not be filtered by main ancestry"
+            );
+            assert_eq!(
+                docs.query(GetValue("sibling")).await?,
+                docs.get_option("sibling").await
             );
         }
         // Newly consumed Store ancestors retain the existing posture check.
@@ -595,6 +610,202 @@ async fn doc_convenience_nested_staged_and_pinned_sqlite() -> Result<()> {
     let engine = crate::backend::database::Sqlite::in_memory().await?;
     assert_eq!(engine.kind(), crate::backend::database::DbKind::Sqlite);
     doc_convenience_behavior(Box::new(engine)).await
+}
+
+#[test]
+fn query_fold_retains_scoped_table_source_policy_and_opaque_rows() -> Result<()> {
+    use crate::store::{RawBytes, Table, TableData};
+    type Rows = Table<Vec<u8>, RawBytes>;
+    let mut data = TableData::default();
+    data.0.set(
+        "opaque".into(),
+        serde_bytes::ByteBuf::from(vec![0xff, 0, 0x80]),
+    );
+    data.0.delete("deleted".into());
+    let root = ID::from_bytes(b"fold-fixture");
+    let good = Entry::builder(root.clone())
+        .set_parents(vec![root.clone()])
+        .set_subtree_data("rows", data.encode()?)
+        .build()?;
+    let bad = Entry::builder(root.clone())
+        .set_parents(vec![root.clone()])
+        .set_subtree_data("rows", vec![0xff])
+        .build()?;
+    // Exercise the reusable fold only; this does not install a Table query
+    // handler or migrate Table convenience reads to queries.
+    let engine = InMemory::new();
+    let context = StoreQueryContext {
+        engine: &engine,
+        raw_source: crate::store::source::StoreSource {
+            database: root.clone(),
+            store: "rows".into(),
+            type_id: Rows::type_id().into(),
+            source: QuerySource {
+                main: Snapshot::from([root.clone()]),
+                scope: ReadScope::Verified,
+            },
+            snapshot: Snapshot::from([good.id(), bad.id()]),
+            index_snapshot: Snapshot::default(),
+            registration: vec![],
+            seal: "test".into(),
+        },
+        store: "rows".into(),
+        type_id: Rows::type_id().into(),
+        source: QuerySource {
+            main: Snapshot::from([root]),
+            scope: ReadScope::Verified,
+        },
+        snapshot: Snapshot::from([good.id(), bad.id()]),
+        entries: vec![good, bad],
+    };
+    assert_eq!(context.fold::<Rows>()?, data);
+    assert!(
+        fold_entries::<TableData>(
+            "rows",
+            &context.entries,
+            &ProjectionDescriptor {
+                name: "test:not-table".into(),
+                version: 0,
+            }
+        )
+        .is_err(),
+        "a custom projection must not inherit Table's source policy"
+    );
+    let context = StoreQueryContext {
+        type_id: DocStore::type_id().into(),
+        ..context
+    };
+    assert!(
+        context.fold::<DocStore>().is_err(),
+        "non-Table decoding stays strict"
+    );
+    // A binary registered codec must not inherit Table's warning policy.
+    let context = StoreQueryContext {
+        type_id: CounterStore::type_id().into(),
+        ..context
+    };
+    assert!(context.fold::<CounterStore>().is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn table_query_plain_cache_repair_binding_and_legacy_isolation() -> Result<()> {
+    use crate::backend::{CacheScope, StoreStateLifecycle, StoreStateRequest};
+    use crate::store::{GetRow, RawTable, ScanRows, Table};
+    let (instance, mut owner) =
+        Instance::create_backend(Box::new(InMemory::new()), NewUser::passwordless("owner")).await?;
+    let db = owner
+        .create_database(Doc::new(), &owner.get_default_key()?)
+        .await?;
+    let write = db.new_transaction().await?;
+    let rows = write.get_store::<Table<String>>("rows").await?;
+    rows.set("a", "original".into()).await?;
+    rows.set("b", "second".into()).await?;
+    let mut legacy = Doc::new();
+    legacy.set("row_codec", "json:v0");
+    write
+        .get_index()
+        .await?
+        .set_entry("legacy", "table:v0", legacy)
+        .await?;
+    let tip = write.commit().await?;
+    let engine = instance.require_local_engine()?;
+    // A retained incompatible cache is neither read nor deleted by the new plan.
+    let old = engine
+        .begin_store_state_staging(StoreStateRequest {
+            database: db.root_id().clone(),
+            store: "rows".into(),
+            scope: CacheScope::Shared,
+            lifecycle: StoreStateLifecycle::Derived,
+            projection: ProjectionDescriptor {
+                name: "eidetica/table/rows/opaque:v1".into(),
+                version: 1,
+            },
+            source_key: tip.to_string().into_bytes(),
+        })
+        .await?;
+    engine
+        .stage_store_state_records(
+            &old,
+            [(b"a".to_vec(), Some(b"\"legacy-poison\"".to_vec()))].into(),
+        )
+        .await?;
+    let old = engine.publish_store_state(old).await?;
+    let tx = db.new_transaction().await?;
+    assert!(tx.get_store::<Table<String>>("legacy").await.is_err());
+    assert!(tx.get_store::<RawTable>("legacy").await.is_err());
+    let rows = tx.get_store::<Table<String>>("rows").await?;
+    assert_eq!(rows.query(GetRow("a")).await?, "original");
+    assert_eq!(
+        engine.store_state_record_get(&old, b"a").await?,
+        Some(b"\"legacy-poison\"".to_vec())
+    );
+    let memory = engine.as_any().downcast_ref::<InMemory>().unwrap();
+    let mutate = |offset: Option<usize>| {
+        let mut state = memory.inner.write().unwrap();
+        let record = state
+            .store_state_namespaces
+            .values_mut()
+            .find(|namespace| {
+                namespace.ready
+                    && namespace.request.store == "rows"
+                    && namespace
+                        .request
+                        .projection
+                        .name
+                        .starts_with("eidetica/query-records/")
+            })
+            .unwrap();
+        let bytes = record
+            .records
+            .get_mut(b"a".as_slice())
+            .unwrap()
+            .as_mut()
+            .unwrap();
+        let index = offset.unwrap_or(bytes.len() - 1);
+        bytes[index] ^= 1;
+    };
+    mutate(None);
+    assert_eq!(
+        rows.get("a").await?,
+        "original",
+        "damaged derived bytes reconstruct canonical source once"
+    );
+    // The installed handler cannot manufacture another reconstruction when this
+    // logical-read allowance has already been consumed. No broad cache clearing.
+    assert!(
+        tx.query_store(
+            "rows",
+            RawTable::type_id(),
+            br#"{"Point":{"key":[97],"repair":false}}"#.to_vec()
+        )
+        .await
+        .is_err()
+    );
+    mutate(None); // Restore checksum before testing a binding mismatch.
+    mutate(Some(b"eidetica/query-record/v0\0".len()));
+    assert!(
+        rows.get("a").await.is_err(),
+        "different-source envelopes are not disposable payload corruption"
+    );
+    mutate(Some(b"eidetica/query-record/v0\0".len()));
+    let page = rows
+        .query(ScanRows {
+            cursor: None,
+            limit: 1,
+        })
+        .await?;
+    rows.set("b", "staged".into()).await?;
+    assert!(rows.scan_page(page.next.as_ref(), 1).await.is_err());
+    assert_eq!(rows.get("b").await?, "staged");
+    assert_eq!(
+        db.get_store_viewer::<Table<String>>("rows")
+            .await?
+            .get("b")
+            .await?,
+        "second"
+    );
+    Ok(())
 }
 
 #[tokio::test]

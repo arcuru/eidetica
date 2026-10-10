@@ -38,7 +38,7 @@ fn doc_representation() -> PrivateRepresentation {
 }
 
 #[derive(Clone, Copy, Default)]
-enum Fault {
+pub(super) enum Fault {
     #[default]
     None,
     Corrupt,
@@ -50,6 +50,7 @@ enum Fault {
     BadRawSource,
     SourceUnavailable,
     BadResponse,
+    BadQueryResponse,
     ExpiredView,
     InvalidSource,
     InvalidToken,
@@ -62,30 +63,30 @@ enum Fault {
     LostFinishAck,
 }
 #[derive(Default)]
-struct Observation {
-    requests: Vec<Op>,
+pub(super) struct Observation {
+    pub(super) requests: Vec<Op>,
     fault: Fault,
 }
 impl Observation {
-    fn raw_count(&self) -> usize {
+    pub(super) fn raw_count(&self) -> usize {
         self.requests
             .iter()
             .filter(|op| matches!(op, Op::ReadRawStore { .. }))
             .count()
     }
-    fn lookup_count(&self) -> usize {
+    pub(super) fn lookup_count(&self) -> usize {
         self.requests
             .iter()
             .filter(|op| matches!(op, Op::LookupPrivateMaterialization { .. }))
             .count()
     }
-    fn begin_count(&self) -> usize {
+    pub(super) fn begin_count(&self) -> usize {
         self.requests
             .iter()
             .filter(|op| matches!(op, Op::BeginPrivateAssistance { .. }))
             .count()
     }
-    fn reset(&mut self, fault: Fault) {
+    pub(super) fn reset(&mut self, fault: Fault) {
         self.requests.clear();
         self.fault = fault;
     }
@@ -97,7 +98,7 @@ fn wire_error(error: BackendError) -> ServerFrame {
 
 // The proxy forwards to a real authenticated daemon. Mutations target exactly
 // one derived response or error class; source/history requests remain observable.
-async fn observed_proxy(
+pub(super) async fn observed_proxy(
     socket: &std::path::Path,
     dir: &std::path::Path,
 ) -> (
@@ -243,6 +244,13 @@ async fn observed_proxy(
                 });
             }
             if matches!(op, Some(Op::QueryStore { .. }))
+                && matches!(fault, Fault::BadQueryResponse)
+                && let ServerFrame::Response(ref mut r) = response
+                && let ServiceResponse::StoreQuery(reply) = r.as_mut()
+            {
+                reply.outcome = eidetica::store::query::QueryOutcome::Result(vec![0xff]);
+            }
+            if matches!(op, Some(Op::QueryStore { .. }))
                 && matches!(fault, Fault::ChangedRefusal)
                 && let ServerFrame::Response(ref mut r) = response
                 && let ServiceResponse::StoreQuery(reply) = r.as_mut()
@@ -265,7 +273,7 @@ async fn observed_proxy(
     });
     (proxy, observed, task)
 }
-async fn stop_proxy(task: tokio::task::JoinHandle<()>) {
+pub(super) async fn stop_proxy(task: tokio::task::JoinHandle<()>) {
     // Tests own this bounded fixture, not production detached work.
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
@@ -911,6 +919,7 @@ fn assert_normal_doc_wire(seen: &Observation) {
         !seen.requests.iter().any(|op| matches!(
             op,
             Op::EnsureStoreStateGeneration { .. }
+                | Op::EnsureRecordGeneration { .. }
                 | Op::ResolveStoreState { .. }
                 | Op::GetStoreEntries { .. }
                 | Op::BeginStoreStateStaging { .. }
@@ -1115,4 +1124,50 @@ async fn doc_convenience_socket_optional_cache_fault_preserves_signed_commit() {
     assert_normal_doc_wire(&seen.lock().unwrap());
     stop_proxy(task).await;
     drop(shutdown);
+}
+
+#[tokio::test]
+async fn doc_login_socket_password_bootstrap_and_retained_key_loading_use_queries() {
+    for password in [None, Some("correct-password")] {
+        let (socket, shutdown, server, dir) = start_test_server().await;
+        crate::helpers::create_user(&server, "reader", password)
+            .await
+            .unwrap();
+        let (proxy, seen, task) = observed_proxy(&socket, dir.path()).await;
+        let client = Instance::connect(format!("unix://{}", proxy.display()))
+            .await
+            .unwrap();
+        assert!(client.remote_connection().is_some());
+        if password.is_some() {
+            assert!(client.login_user("reader", Some("wrong")).await.is_err());
+        }
+        let mut user = client.login_user("reader", password).await.unwrap();
+        assert_eq!(
+            user.list_keys().unwrap().len(),
+            1,
+            "first-login bootstrap loads the root key"
+        );
+        assert_normal_doc_wire(&seen.lock().unwrap());
+        let extra = user.add_private_key(Some("persisted-key")).await.unwrap();
+        assert!(user.get_signing_key(&extra).is_ok());
+        stop_proxy(task).await;
+        drop(user);
+        drop(client);
+        let reconnect_dir = tempfile::tempdir_in(dir.path()).unwrap();
+        let (proxy, seen, task) = observed_proxy(&socket, reconnect_dir.path()).await;
+        let fresh = Instance::connect(format!("unix://{}", proxy.display()))
+            .await
+            .unwrap();
+        let loaded = fresh.login_user("reader", password).await.unwrap();
+        assert_eq!(
+            loaded.list_keys().unwrap().len(),
+            2,
+            "reauthentication must load the persisted non-root key"
+        );
+        assert!(loaded.list_keys().unwrap().contains(&extra));
+        assert!(loaded.get_signing_key(&extra).is_ok());
+        assert_normal_doc_wire(&seen.lock().unwrap());
+        stop_proxy(task).await;
+        drop(shutdown);
+    }
 }

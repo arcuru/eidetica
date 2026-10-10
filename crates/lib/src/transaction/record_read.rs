@@ -16,21 +16,19 @@ use crate::{
     },
 };
 
-#[allow(dead_code)] // Consumed by record-shaped Store plans.
 #[derive(Default)]
 pub(crate) struct RecordRead {
     pub(super) budget: super::private_read::ReadBudget,
     rebuilt: Option<ReconstructedRecords>,
 }
 
-#[allow(dead_code)] // Owned by a record-shaped Store read.
 struct ReconstructedRecords {
     identity: blake3::Hash,
     records: BTreeMap<Vec<u8>, Vec<u8>>,
 }
 
 impl Transaction {
-    #[allow(dead_code, clippy::too_many_arguments)] // Fixed source/query/projection boundaries.
+    #[allow(clippy::too_many_arguments)] // Fixed source/query/projection boundaries.
     pub(crate) async fn query_record_page<D: CRDT + Codec>(
         &self,
         store: &str,

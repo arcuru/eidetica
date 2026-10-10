@@ -16,7 +16,7 @@ Use these when discussing Entry internals, Merkle-DAG structure, or serialized d
 
 - **Database**: Collection of entries with shared authentication and history
 - **Store**: Typed data access (DocStore, Table, YDoc) operating on named subtrees
-- **Projection**: A Store-defined representation of current CRDT state. The default is one opaque whole-state record.
+- **Projection**: A Store-defined representation of current CRDT state. The default is one opaque whole-state record; Table projects ordered LwwMap Entry deltas to per-row records.
 - **Namespace**: A backend-owned set of ordered opaque Store-state records for one database, Store, projection, source, and trust scope.
 - **Derived namespace**: Immutable disposable state materialized from historical Entries.
 - **Authoritative namespace**: Durable current Store state that cache clearing cannot select.

@@ -104,8 +104,8 @@ nonce[12] || AES-GCM ciphertext-and-tag
 ```
 
 These are raw subtree payload bytes inside `Entry`; they are not JSON or base64 wrappers. The
-plaintext format belongs to the wrapped Store (for example, JSON for `Doc`-backed Stores or a Yrs
-binary update). This encryption call also supplies no additional authenticated data. Entry
+plaintext format belongs to the wrapped Store (for example, canonical `LwwMap` row deltas for
+Table, `Doc` JSON for DocStore, or a Yrs binary update). This encryption call also supplies no additional authenticated data. Entry
 identity, signatures, parents, Store name, and database membership are protected by the Entry/DAG
 authentication layers, not by row-envelope AAD.
 
@@ -117,9 +117,17 @@ not necessarily the same bytes as an individual Entry delta.
 
 ### Projected Table row cache
 
-`Table` declares projection `eidetica/table/rows`, version 0. `PasswordStore<Table<T>>` namespaces
-that descriptor as `eidetica/password/eidetica/table/rows`, version 0. The encrypted projection is
-built after decrypting Entry deltas and applying the Table projection.
+`Table` declares projection `eidetica/table/rows/opaque:v0.1`, version 1. `PasswordStore<Table<T>>` namespaces
+that descriptor as `eidetica/password/eidetica/table/rows/opaque:v0.1`, version 1. The encrypted projection is
+used by explicit projection maintenance. Normal unlocked Table queries reuse a
+source/representation-bound private record cache admitted by the daemon after Read
+authorization. The client folds bounded source pages on a cold miss, frames each
+logical row with its source/key/checksum identity, then encrypts and publishes it
+through ordered assistance chunks. The master key, inner type/configuration and
+plaintext remain client-side. Warm points/pages fetch only requested physical
+records; daemon source validation is separate and can traverse history. Cold
+reconstruction still holds complete bounded reduced state, so bounded uploads do
+not imply constant cold-build memory.
 
 Two 32-byte subkeys are derived from the master with BLAKE3's derive-key mode:
 
@@ -131,7 +139,7 @@ record-value subkey = derive_key("eidetica/password-store/record-value/v1", mast
 The physical key is BLAKE3 keyed-hash output:
 
 ```text
-physical_key = keyed_hash(record-key subkey, normalized logical key)  // 32 bytes
+physical_key = keyed_hash(record-key subkey, exact UTF-8 logical key)  // 32 bytes
 ```
 
 The value plaintext is a serde JSON byte serialization of an envelope containing byte arrays:
@@ -176,9 +184,9 @@ The tests maintainers should start with are:
 
 ## Row semantics and leakage
 
-For an unencrypted Table, a cache record key is the normalized UTF-8 logical key and its value is
+For an unencrypted Table, a cache record key is the exact UTF-8 logical key and its value is
 the JSON row bytes. For an encrypted Table, neither is stored in plaintext. The physical key is
-stable for the same master key and normalized logical key, so equality and access patterns remain
+stable for the same master key and exact UTF-8 logical key, so equality and access patterns remain
 visible. The physical key also defines scan and cursor order; it intentionally does not preserve
 logical-key sorting or range locality.
 

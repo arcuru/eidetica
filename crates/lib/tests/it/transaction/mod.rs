@@ -10,4 +10,4 @@ mod data_operations;
 mod height_strategy;
 mod helpers;
 mod path_finding;
-mod record_fallback;
+pub(crate) mod record_fallback;

@@ -22,7 +22,7 @@ The `_index` subtree is a special system subtree that serves as a registry for a
 **Key Features**:
 
 - **Automatic Registration**: Subtrees are automatically registered when first accessed via `get_store()`
-- **Type Metadata**: Stores the Store type identifier (e.g., "docstore:v0", "table:v0")
+- **Type Metadata**: Stores the Store type identifier (e.g., "docstore:v0", "table:v0.1")
 - **Configuration Storage**: Stores Store-specific configuration as JSON
 - **Query API**: Provides Registry for querying registered subtrees
 
@@ -80,7 +80,7 @@ Each registered subtree has an entry in `_index` with the following structure:
 {
   "_index": {
     "users": {
-      "type": "table:v0",
+      "type": "table:v0.1",
       "config": "{}"
     },
     "documents": {
@@ -126,7 +126,7 @@ This allows subtrees to appear in Entries purely to satisfy the constraint witho
 
 The `Registered` trait provides type identification for registry integration:
 
-- **`type_id()`**: Returns unique identifier with version (e.g., "docstore:v0", "table:v0")
+- **`type_id()`**: Returns unique identifier with version (e.g., "docstore:v0", "table:v0.1")
 - **`supports_type_id()`**: Check if this type can load from a stored type_id (for version migration)
 
 ### Store Trait Extensions

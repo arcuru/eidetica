@@ -736,3 +736,366 @@ forced. Existing Table remains Doc-backed, `table:v0` and `canonical-json:v0`
 remain unchanged, and no old/new compatibility or migration is provided.
 Remaining Phases 3-6: Table switch, encryption/service Table parity, docs,
 benchmarks, and a final accumulated gate; no push or PR.
+
+## Phase 4: incompatible canonical LwwMap Table switch (2026-09-23)
+
+Intended: replace Doc-backed `Table<T>` Entry data with `LwwMap<String,
+CanonicalJson>` without changing the `table:v0` or `canonical-json:v0` IDs; no
+compatibility decoder for old Doc histories. Use exact UTF-8 keys, stream typed
+set/delete deltas into physical records, keep transaction-local overlay and
+encrypted/recordless/service reads, and remove the legacy commit adapter.
+
+Performed: Table now stages RFC 8785 rows and tombstones through the existing
+atomic revision-checked projected staging path; typed `T` appears only on
+set/insert and get/page/search. Direct LWW projection uses exact keys (including
+empty, dot, prefix and distinct Unicode spellings). Removed hierarchical Table
+projection, path normalization, collapsed publication, legacy transaction
+record staging and Table-specific commit reconstruction. A new projection
+identity includes `canonical-json:v0`; service read-scoped registered Table
+maintenance ensures the record generation instead of only reducing whole-state
+JSON. Expired cached views are re-resolved for point and page reads, with
+recordless history fallback after unsupported reads. Existing password row
+cache and real authenticated Unix socket fixtures pass; cursor tests now compare
+rows across different transaction view identities instead of equating opaque
+view-bound cursors. Old Doc-path-conflict fixture expectations were replaced.
+
+New fixtures: `test_table_entry_delta_has_inline_canonical_json_and_tombstone`
+checks persisted Entry bytes, strict old Doc payload rejection and descriptor;
+`test_table_exact_keys_multi_operation_and_cold_warm_reads` checks exact
+empty/dotted/prefix/slash/composed/decomposed/emoji keys, multi-op overwrite,
+delete/resurrection, ordered pages, search and cache clearing; and
+`test_table_delete_does_not_swallow_typed_decode_failure` checks that typed
+boundary errors propagate. Existing password physical-order, encrypted
+recordless fallback and service cold/warm/expired-view fixtures exercise the
+changed paths. Negative controls: corrupting the expected `a` value in the
+exact-key test yielded 0 passed / 1 failed, then restored; swallowing the typed
+delete error yielded 0 passed / 1 failed, then restored. First direct full
+integration run yielded 1037 passed / 10 failed (legacy Doc expectations,
+cache-count descriptor, stale view). Second run yielded 1040 passed / 5 failed;
+third 1044 passed / 1 failed (cross-view cursor equality). Diagnosed and
+repaired those rather than accepting a partial gate.
+
+Final formatted-source `nix develop -c nix run .#fix` succeeded with clippy,
+deadnix, markdownlint, statix and treefmt (0 changed). Final
+`nix develop -c just nix full` exited 0: InMemory, SQLite, PostgreSQL and
+service each **1540 tests run: 1540 passed, 5 skipped**; minimal **1379
+tests run: 1379 passed, 5 skipped**. Nix logs show PASS for all three named
+new fixtures in the full runners, the service warm encrypted Table test, and
+encrypted recordless pagination; NixOS service and OCI container integration
+VMs passed. `git diff --check` clean. Signed committed-tip gate to follow.
+
+Scope ceiling: this is the Table **format switch**, not completion of Phases
+5-6. Encrypted projection's existing cold builder still gathers a logical
+`RecordMutations` map before writing one physical batch (not bounded streaming
+for very large password tables). A read-only unlocked PasswordStore's remote
+projected path folds authenticated full history client-side, rather than using
+a server-maintained encrypted generation. New Table-specific encrypted
+wrong-password/tamper, real service ordered-delete/recordless-on-socket and
+large encrypted chunk fixtures, docs/benchmarks and final accumulated parity
+are still required before the todo can be handed off. No mixed old/new
+`table:v0` data is supported; regenerate old databases/fixtures, never bump
+silently to `v1`. Branch remains local, no push/PR.
+
+Signed-tip verification for Phase 4: commit `64ffab2428` has a valid bot
+ED25519 signature, clean worktree; `nix flake metadata --json` reported
+revision `64ffab2428d525674e298dcd49012cd0ecf41fa9` and `dirtyRev: null`.
+`nix develop -c just nix full` exited 0 on that revision (reused the exact
+formatted-source test derivations). `nix derivation show
+.#checks.x86_64-linux.test` listed five backend runner inputs; `nix log` on
+each reported: in-memory, SQLite, PostgreSQL and service each `1540 tests
+run: 1540 passed, 5 skipped`; minimal `1379 tests run: 1379 passed, 5
+skipped`. No separate service deployment was made; the new Table socket
+fixtures ran against a test daemon, not a production daemon. The signed-tip
+run also reused the passing NixOS and OCI VM checks. No push or PR.
+
+## Phase 5: bounded encrypted Table cold projection slice (2026-09-23)
+
+Intended: transform each historical row mutation to its keyed physical record and authenticated value without retaining the full logical Table; preserve put/delete ordering across 128-mutation and 1 MiB chunk boundaries, then publish atomically. Full Phase 5 also requires tamper/no-partial-publication and SQL/service parity.
+
+Performed: encrypted `publish_record_view` now decodes each historical Entry, streams its projected mutations into bounded ordered chunks, transforms each key and encrypts each put before staging, stages physical deletes and publishes only after all chunks succeed. The existing ordered staging implementation removes deleted physical rows and publishes the private generation atomically. Shared chunk framing and digest logic is reused from plaintext projection. Non-encrypted path unchanged; `table:v0` and `canonical-json:v0` unchanged.
+
+Focused regression `test_password_table_cold_streams_overwrite_delete_and_resurrection`: three historical Entries, 260 rows across the chunk limit, overwrite and delete across chunks, 44 resurrections, cold clear and 217 physical rows, wrong password before publication, paginated physical-order scan and opaque 32-byte keys. Direct `nix develop -c cargo test --all-features -p eidetica --test it test_password_table_cold_streams_overwrite_delete_and_resurrection -- --nocapture`: **1 passed; 0 failed**. Negative control turning physical deletes into authenticated puts: **0 passed; 1 failed** (260 records instead of 217), restored. First attempt failed to compile due to moved borrowed keys, then fixture erroneously expected immediate reclaim after one clear; corrected to two clears per two-phase derived reclamation. `nix develop -c nix run .#fix` passed (clippy, deadnix, markdownlint, statix, treefmt); `git diff --check` clean. Formatted-source `nix develop -c just nix full` exit 0: in-memory, SQLite, PostgreSQL and service runners each **1541 tests run: 1541 passed, 5 skipped**; minimal **1380 tests run: 1380 passed, 5 skipped**. Named regression PASS in all runners, but it intentionally creates a local InMemory engine even in SQL/service runners; it does NOT prove SQL or socket encrypted cold streaming. NixOS and OCI VM integrations passed. Signed committed-tip gate to follow.
+
+Newly required before Phase 5 completion: make an actual backend-neutral encrypted cold fixture run on SQLite/PostgreSQL/service daemon, and prove a late malformed/tampered encrypted historical Entry aborts after earlier chunks without partial publication, plus swapped physical ciphertext/key tamper on real backend. Existing `PasswordEncryptor` unit fixtures check wrong store, wrong physical key, malformed/modified ciphertext; they are not cold publication failure evidence. Retain Phase 6 service ordered-delete/recordless socket parity, docs/benchmarks and final accumulated gate. No push/PR.
+
+## Phase 5 continuation: encrypted Table cold matrix and socket parity (2026-09-23)
+
+Intended: exercise the real selected in-memory, SQLite and isolated PostgreSQL engines rather than treating a local InMemory fixture under SQL runners as backend evidence; exercise authenticated Unix RPC and a recordless socket, ordered encrypted put/delete/resurrection across 260 rows and the 128-mutation boundary, a late signed corrupt encrypted Entry with no published generation, and ciphertext under a foreign physical key. Preserve `table:v0` and `canonical-json:v0`.
+
+Performed: extracted the previous 260-row fixture into shared populate/assert helpers; retained its local InMemory instrumentation. `test_password_table_cold_streams_on_selected_backend` constructs `Instance::create_backend(test_backend())` for actual in-memory/SQLite/PostgreSQL (explicitly skips `service`, whose `test_backend` is a local InMemory fallback). After clearing derived state, it verifies wrong password, expected 217 rows and values, physical rather than logical order, all expected keys, and the actual selected backend's published 217 opaque ciphertext records in physical-key order. A new signed late opaque Entry becomes the newest store tip, then the cold build fails and the exact derived request remains unpublished. A separate fixture publishes a deliberately mismatched physical key/ciphertext pair on the selected backend and checks scan authentication failure. The authenticated socket fixture uses a daemon and client with distinct `Instance` handles, verifies the same rows and cold client scan, wrong password, late corrupt signed Entry and no client-visible generation, and swaps a physical key through the server-side owner seam to verify socket read rejection. A recordless InMemory engine behind a real authenticated Unix socket verifies client-side decrypted history and physical-order pages without record support. No production source or wire version changed.
+
+Boundary: the authenticated service read-only client projects ordered decrypted history locally, not the encrypted server-side cold builder; the server-side materialization in the socket fixture is prepared by local writes and physically inspected through the daemon's engine. The true encrypted cold builder and late abort run on actual in-memory, SQLite, PostgreSQL in the backend-neutral fixture. This does not claim a server-maintained encrypted projection over RPC. Service runner's `test_backend` fallback does not count as service evidence; only named socket fixtures do.
+
+Negative controls: omitting the late socket Entry failed `0 passed; 1 failed` on the expected error; omitting the late SQL Entry failed `0 passed; 1 failed`; leaving the physical key unchanged failed `0 passed; 1 failed`; replacing encrypted deletes with malformed puts failed the actual SQLite cold fixture `0 passed; 1 failed` (record authentication error). All restored, SQLite focused fixture `1 passed; 0 failed`, socket streamed and identity focused `1/1` and `2/2`, recordless socket `1 passed; 0 failed`. An intermediate full Nix gate failed only the new socket record-count assertion (260 instead of 217): a single clear leaves a reader-pinned generation; corrected the fixture to use the documented two-phase clear and reran the full gate.
+
+Final formatted-source `nix develop -c nix run .#fix` passed clippy/deadnix/markdownlint/statix/treefmt; `nix develop -c just nix full` exit 0 with actual Nix test derivation logs: in-memory, SQLite, PostgreSQL, service each **1546 tests run: 1546 passed, 5 skipped**; minimal **1381 tests run: 1381 passed, 5 skipped**; named new fixtures PASS where applicable. NixOS service and OCI container VMs passed. Re-run this accumulated full gate on the signed committed tip. Remaining todo scope: Phase 6 docs/benchmarks, final accumulated checks and handoff; no push/PR.
+
+## Phase 6 partial: documentation and comparable Table measurements (2026-09-23)
+
+Intended: describe Map/Lww/LwwMap, deterministic Entry-order and the incompatible
+Doc-to-canonical-JSON Table format; fix the cold benchmark, compare baseline and
+branch payload, writes, reads, scans and encryption; record a cold rebuild memory
+measurement, then finish the accumulated gate. Per the approved contract,
+`table:v0` and `canonical-json:v0` remain unchanged; old databases/fixtures must
+be rebuilt, not mixed with the new format.
+
+Performed: corrected public/internal CRDT, Table, cache, Store-state, encryption,
+performance and testing text. Clarified exact UTF-8 keys, typed read boundary,
+physical encrypted order and client-side read-only service fallback (not server
+maintenance). Existing Map/Lww/LwwMap Rust doctest examples remain executable.
+Repaired both cold benchmark variants by clearing derived generations after
+setup; the 1k/10k cold point benchmark no longer pre-reads a row. Added identical
+Table payload reporting, fresh one/32-row commit, 100-row paged scan, and fresh
+32-row plaintext/password-wrapped scan cases to the old and new harness.
+
+Measurement protocol: old `e0f4645178` detached baseline and candidate starting
+at `d80f463da9` with only the _same_ benchmark harness edit temporarily copied
+to the baseline (not committed there); both built in release profile with the
+same flake toolchain and `TEST_BACKEND=inmemory`. Run sequentially, on the same
+x86_64 AMD Ryzen 9 7900 (12 cores/24 threads), 124 GiB RAM host. At start:
+~49 GiB available RAM, load averages 3.37/5.38/11.17; background load was **not**
+quiescent. Exact command per tree:
+
+```sh
+TEST_BACKEND=inmemory nix develop -c cargo bench -p eidetica --bench table_cache_benchmarks -- 'table_(payload_bytes|write|page|warm_cache|cold_point_read)' --sample-size 10 --warm-up-time 0.1 --measurement-time 0.2
+TEST_BACKEND=inmemory nix develop -c cargo bench -p eidetica --bench table_cache_benchmarks -- table_encrypted_page --sample-size 10 --warm-up-time 0.1 --measurement-time 0.2
+```
+
+Payload numbers are the `Entry::data("bench_table")` subtree byte lengths for
+the same exact keys and typed rows; Entry headers/signatures and storage index
+are excluded. The payload-only harness prints byte lengths, not a meaningless
+sub-nanosecond Criterion `black_box(size)` timing. Results (baseline → branch;
+Criterion 95% confidence interval for time, 10 samples):
+
+| Workload                                      |             Old Doc |          New LwwMap |
+| --------------------------------------------- | ------------------: | ------------------: |
+| one-row payload                               |                85 B |                63 B |
+| 32-row payload in one commit                  |              2414 B |              2113 B |
+| fresh one-row write+commit                    | [75.195, 76.341] µs | [76.201, 79.935] µs |
+| fresh 32-row write+commit                     | [115.19, 119.01] µs | [806.94, 825.48] µs |
+| warm point, 100 historical single-row commits | [61.025, 62.154] µs | [59.933, 62.162] µs |
+| corrected cold first point, 1k batched rows   | [3.3316, 3.4327] ms | [1.5949, 1.6404] ms |
+| corrected cold first point, 10k batched rows  | [302.23, 313.11] ms | [16.863, 18.459] ms |
+| scan 100 rows, page size 10                   | [90.202, 91.092] µs | [186.16, 188.25] µs |
+| scan 100 rows, page size 50                   | [88.389, 88.803] µs | [171.97, 175.63] µs |
+| fresh plain 32-row scan                       | [39.339, 42.467] µs | [104.60, 105.93] µs |
+| fresh encrypted 32-row scan                   | [22.469, 24.261] ms | [17.268, 18.278] ms |
+
+The fresh encrypted scan includes `PasswordStore::open`/Argon2id, first-generation
+build, authenticated row decoding, and 32-row scan; the plain leg includes its
+first build. This is **not** isolated per-record encryption overhead or a warm
+point-read comparison. Plain/encrypted legs have different configuration/history
+payloads. A fresh 32-row transaction is substantially slower on the new path;
+do not present the redesign as an across-the-board speedup. The 10k candidate
+reported Criterion's estimated 664-second collection warning (setup dominates,
+not timed); its 10 timed reads still completed. Short 0.2s target, only 10
+samples, dynamic CPU clocks and shared host load limit precision; intervals
+that overlap (warm 100) do not establish a change. The older benchmark groups
+with one commit per inserted row show per-history setup cost, not fixed-row
+complexity. These numbers describe InMemory only, not SQLite/PostgreSQL/socket.
+
+**Cold peak-memory limitation:** no peak RSS claim. `iter_with_setup` builds a
+new database and many Entries inside the _same_ Criterion process on every
+sample, so `/usr/bin/time -v` or `/proc/self/status` maximum resident set over
+that process measures cumulative setup/allocator high-water plus Criterion,
+not the cold projection. An isolated one-shot child with a prebuilt persisted
+fixture and a process-level baseline RSS (or allocation instrumentation scoped
+to reconstruction) is needed to attribute cold-build peak memory. The current
+history API still collects `Vec<Entry>` even though row mutations stream in
+bounded 128-change/1-MiB private chunks. Churn-heavy payload, delete-heavy
+payload, encrypted cold-build-only and warm encrypted point comparisons likewise
+remain unmeasured. No claim of bounded total cold RSS or general throughput win.
+
+`nix develop -c cargo check -p eidetica --bench table_cache_benchmarks` compiled
+the changed harness; both benchmark legs emitted time CIs and payload bytes.
+`nix develop -c nix run .#fix` succeeded (clippy, deadnix, markdownlint,
+statix, treefmt 0 changed in final run). Final formatted-source
+`nix develop -c just nix full` exited 0: in-memory, SQLite, PostgreSQL and
+service each **1546 tests run: 1546 passed, 5 skipped**; minimal **1381 tests
+run: 1381 passed, 5 skipped**. NixOS service and OCI container integration
+VMs both reported passed. The gate exercises Table/encryption/socket behavior
+from preceding phases; Criterion results are separate InMemory measurements.
+`git diff --check` clean. Signed-tip recheck follows the local commit. No
+push/PR.
+
+## Phase 6 follow-up: batch and plain-scan regression diagnosis (2026-09-23)
+
+Intended: reproduce 32-row write and plain-scan regressions against the unchanged
+baseline with an identical harness; isolate cost before selecting a narrow safe
+optimization, preserve canonical Entry bytes, revision-atomic staging, Table
+semantics and stale-cursor checks. Do not infer a broad performance win.
+
+Performed: reused the existing identical, uncommitted benchmark harness on old
+`e0f4645178` and the signed candidate `44f8849584`. Both ran sequentially on
+this host with `TEST_BACKEND=inmemory`, release profile under `nix develop`,
+Criterion CLI `--sample-size 15 --warm-up-time 0.3 --measurement-time 0.5`;
+no source-level Criterion sample overrides in this bench. Available RAM ~50 GiB,
+load 5.06/7.37/10.29: shared host not quiescent. Exact benchmark filter:
+`table_(write|page|encrypted_page)`. Timing is full fresh write/commit, warm
+100-row scan in 10/50-row pages, and fresh 32-row plain/encrypted scan,
+respectively. All reported intervals below are Criterion time 95% CIs.
+
+| Workload                                                   |            Baseline |    Candidate before |         Candidate after |
+| ---------------------------------------------------------- | ------------------: | ------------------: | ----------------------: |
+| 32-row fresh write                                         | [110.48, 114.27] µs | [826.25, 834.34] µs | not changed/re-measured |
+| warm 100-row scan / 10                                     | [90.389, 91.373] µs | [183.96, 187.11] µs |     [173.09, 175.20] µs |
+| warm 100-row scan / 50                                     | [89.073, 90.986] µs | [176.60, 182.59] µs |     [166.86, 169.01] µs |
+| fresh plain 32-row scan                                    | [37.164, 37.808] µs | [106.09, 107.48] µs |     [102.24, 105.46] µs |
+| fresh encrypted 32-row scan (includes password derivation) | [18.049, 19.802] ms | [17.850, 19.294] ms |     [17.917, 19.332] ms |
+
+Read-side path inspection: on the new path every page (even with no staged
+rows) copies the backend page into a BTreeMap and re-collects it, while the old
+scan returned the backend page directly. A narrow unstaged fast path returns
+the backend's bounded ordered page directly, wrapping its physical continuation
+in the same opaque transaction/view/revision/projection/frontier cursor; keeps
+revision checks after the await (including failed fetch) and after decoding.
+The fresh plain interval moves down slightly and warm 100-row intervals move
+down ~5-7% in this run, but the ~2x scan regression remains. The evidence does
+not isolate the other costs of typed record resolution, canonical decoding,
+revision validation and backend page iteration. Do not eliminate their safety
+checks merely for speed. An added regression exercises exact continuation,
+end-of-scan, a stage racing the await, and stale continuation after a stage;
+restoring old code makes it fail (old merge calls fetch twice with a backend
+that returns a continuation), fixed path passes.
+
+Write-side discriminating ablations were deliberately temporary and reverted.
+Replacing the generic all-staged-key conflict predicate with an exact-key lookup
+(no valid general projection semantics) measured 32-row write
+[829.92, 840.10] µs: not the cause. Bypassing canonical cumulative
+merge/deserialization and writing only the latest delta (invalid history/row
+semantics) measured [222.09, 228.15] µs, compared to [826.25, 834.34] µs
+before. This identifies repeated full canonical state merge/serialization in
+`stage_projected_delta` on every row as the dominant measured batch cost; it
+cannot be simply skipped without losing prior rows in the committed Entry.
+A mutable accumulator, deferred serialization, or batched staging API would
+alter the revision-atomic contract and require design/edge testing; this bounded
+diagnosis leaves batch writes unchanged rather than landing a speculative fix.
+One-row commits stayed near baseline. Do not generalize the read fast path to
+staged overlays or encrypted fallback: they still require merge/decrypt and
+cursor checks. Backend numbers are InMemory only, not SQL or live RPC.
+
+Verification: restoring original scanner with the new focused fixture produced
+`0 passed; 1 failed` (second fetch on backend continuation); repaired scanner
+produced `1 passed; 0 failed`. `nix develop -c nix run .#fix` passed
+clippy/deadnix/markdownlint/statix/treefmt; `git diff --check` clean.
+Formatted-source `nix develop -c just nix full` exited 0: actual Nix runner
+summaries were in-memory, SQLite, PostgreSQL, service **1547 tests run:
+1547 passed, 5 skipped** each (SQLite 1 leaky); minimal **1382 tests run:
+1382 passed, 5 skipped**. The new cursor/race fixture was PASS in all five
+runners; both NixOS service and OCI container integrations passed. Signed-tip
+recheck follows. Remaining Phase 6 cold RSS/churn/encrypted point and final
+handoff still belong to the parent task; no push/PR or version bump.
+
+## Phase 6 continuation: serialize canonical transaction delta once (2026-09-23)
+
+Intended: diagnose the measured 32-row write regression, keep revision-atomic
+canonical Entry bytes and logical/physical overlay with last operation per key,
+no await under the install lock, concurrent writers, encrypted Table and failed
+serialization atomicity. Keep `table:v0` unchanged; compare identical InMemory
+32-row fresh-commit Criterion runs before and after.
+
+Performed: `stage_projected_delta` retains an erased typed CRDT accumulator
+alongside the overlay at one revision instead of decoding and reserializing the
+full canonical delta on every row. It validates each incoming delta's serializer
+and projection before install. At commit, serialize the accumulator outside the
+install lock, compare all store revisions, clone the Entry builder, apply all
+canonical bytes and subtree tips, then install the new builder and seal projected
+writes under the lock. Failed serialization or builder cleanup leaves the old
+builder and overlays intact. Subsequent commit encryption and Entry signing use
+the sealed builder; get_local_data still serializes on demand, so callers can
+read typed staged data without mutating the builder. All awaits occur outside
+the revision/install critical section. Existing generic `RecordProjection` and
+`CRDT::merge` remain supported; no Table-specific serialization shortcut.
+
+Before (the clean parent tip), after (working candidate, same bench source):
+`TEST_BACKEND=inmemory nix develop -c cargo bench -p eidetica --bench
+table_cache_benchmarks -- 'table_write/commit/32' --sample-size 15
+--warm-up-time 0.3 --measurement-time 0.5`. Ryzen 9 7900 shared host, load
+not quiescent (~2.88/13.62/16.48 at final read; 51 GiB available RAM).
+Criterion 95% time CIs: **[823.97, 880.39] µs before** vs **[257.60,
+260.30] µs after final changes**, ~3.3x lower point estimate with nonoverlapping
+intervals, but still >2x the earlier old-Doc baseline [110.48, 114.27] µs.
+An intermediate candidate measured [253.19, 256.01] µs; final comparison is
+the final candidate. 15 samples, 0.5s measurement target and shared-host clocks
+limit external generalization. Payload printed 2113 B for both; no SQL/socket
+throughput claim. Tradeoff: stage still serializes each incoming delta once,
+clones the growing accumulator and logical/physical overlays, and commit retries
+on concurrent revisions; the accumulator replaces stored bytes in projected
+state, with on-demand serialization for get_local_data. Residual write overhead
+and cold RSS/churn/encrypted-point Phase 6 measurements remain open.
+
+Correctness: strengthened the existing exact-key integration test to inspect
+the persisted Entry after set/delete/set in one transaction: ten canonical
+operations, latest `a` and resurrected `a.b` values and the `...` tombstone;
+then cold/warm reads and physical-order pages. Test negative control replacing
+the expected operation count with 1 failed **0 passed; 1 failed**, restored
+**1 passed; 0 failed**. Concurrent same-revision disjoint writers' existing
+barrier test required one-shot serializer synchronization after the new
+per-delta validation; it still proves both overlay revisions and persisted
+canonical rows. New fail-on-second-serialization fixture fails commit after a
+successful stage and checks unchanged builder, logical/physical overlays,
+revision, seal and absent persisted history. Focused projected suite **12 passed;
+0 failed**. Actual encrypted 260-row Table cold builds, corruption/identity,
+and authenticated socket fixtures remain in the accumulated Nix matrix.
+
+One intermediate gate failed the mixed-height-strategy integration fixture
+**1547/1548** in each full backend and **1382/1383** minimal: sealing an
+unrelated `init_subtree_parents` after commit's read-scoped get_index blocked
+loading per-store height settings, so the independent store inherited timestamp
+height. Removed only that new seal check; direct fixture **1 passed; 0 failed**.
+Final `nix develop -c nix run .#fix` passed clippy, deadnix, markdownlint,
+statix and treefmt; final formatted-source `nix develop -c just nix full` exit
+0: in-memory, SQLite, PostgreSQL and service each **1548 tests run: 1548
+passed, 5 skipped**; minimal **1383 tests run: 1383 passed, 5 skipped**;
+NixOS service and OCI VM integration tests passed. `git diff --check` clean.
+These gate fixtures validate actual backend and socket behavior; committed-tip
+gate and handoff remain to follow. No push/PR.
+
+## Phase 6 persisted cold rebuild and payload follow-up (2026-09-23)
+
+Intended: measure cold Table peak process RSS without construction in the reader process, old Doc-backed `e0f4645178` against new `28d151e896` with identical inputs and source-identical harness; cover delete/resurrection Entry payload, warm encrypted point and encrypted cold build. Recheck optional 32-row commit/scan only if useful; the prior 32-row commit after optimization is already recorded above.
+
+Performed: added `crates/lib/examples/table_rebuild_probe.rs` to both revisions (baseline copy temporary, uncommitted). `prepare` constructs a file-backed SQLite fixture with 128 puts per Entry (10,000 rows / 79 data Entries for plain; 1,000 rows / 8 data Entries for encrypted), exact keys and values, then calls `clear_derived_store_state` twice to unlink and reclaim derived generations. A separate `read` process opens by saved root, samples `/proc/self/status` VmRSS/VmHWM before the first point, reads row N/2 and asserts its id, then reports elapsed time and peak HWM. No setup writes or Criterion allocations occur in the reading process. The read includes SQLite/Instance open, lazy first projection, and for encrypted the password open/Argon2 and decryption. Peak HWM is **process high-water, not isolated projection allocation**; baseline RSS is recorded so the increment can be seen. The initial one-clear iteration was insufficient to reclaim pinned generations; a second clear plus `sqlite3` inspection now checks zero linked namespaces (`status=1`) before cloning fixtures. A naive repeat on an already read SQLite file measured a warm generation in milliseconds: those numbers were **discarded**, not used as cold evidence. Another initial copy without checkpoint could retain a WAL that was not included; final samples checkpoint the source before copying.
+
+Exact build and measurement commands (run from each tree, same measured source SHA-256 `01b0c8f1c1b1425bc29f6e9e7e635ed5891d3d3e76f44db659583377ec8b4d9a` (later formatting-only cleanup: `db9f816e165163bb70e700a80281f7d9ba56a568cb54806ebc1c967dfd9701ad`; readings predate that cleanup)):
+
+```sh
+nix develop -c cargo build --release -p eidetica --example table_rebuild_probe
+# Set bin to that tree's target/release/examples/table_rebuild_probe; use distinct files per revision.
+"$bin" prepare "$fixture.sqlite" 10000 plain
+sqlite3 "$fixture.sqlite" 'select count(*) from store_state_namespaces where status=1; PRAGMA wal_checkpoint(TRUNCATE);'
+# The count MUST be 0. Use a fresh copy for each read, copying the saved .root too.
+cp "$fixture.sqlite" "$sample.sqlite"; cp "${fixture%.sqlite}.root" "${sample%.sqlite}.root"
+"$bin" read "$sample.sqlite" 10000 plain
+# Repeat prepare/checkpoint/copy/read with 1000 encrypted; three independent copies each.
+```
+
+`TEST_BACKEND` is not used by the standalone example: SQLite file backend is selected explicitly. Final plain 10k cold reads (old → new; each `before HWM / after HWM` KiB, elapsed milliseconds, three separate cloned files):
+
+| Leg        | Three `(before → after HWM KiB; ms)`                                  |
+| ---------- | --------------------------------------------------------------------- |
+| Old Doc    | 7336 → 14020; 430.586 · 7268 → 13292; 436.259 · 7272 → 13308; 439.820 |
+| New LwwMap | 7568 → 11144; 331.318 · 7704 → 11316; 304.534 · 7716 → 11476; 351.922 |
+
+Encrypted 1k cold first point (includes Argon2id): old 7264 → 28252; 92.793 ms · 7152 → 28100; 84.654 ms · 7256 → 28080; 83.231 ms; new 7684 → 28184; 87.943 ms · 7776 → 28216; 85.241 ms · 7828 → 28656; 95.929 ms. These are raw one-shot observations, **not** confidence intervals, isolated projection allocation, or a claim of bounded total RSS. The new plain leg has lower observed process HWM in these samples, but history still collects `Vec<Entry>` and is not proven bounded by 128 mutations/1 MiB. Encrypted 1k HWM is dominated by the password path and is not evidence of reduced encrypted projection memory. Separate cold-process probes validate the actual returned row and did not create a generation until read. A negative check requesting the absent row 1000 from a 1000-row file panicked with `Store(KeyNotFound ...)`, confirming the read assertion is downstream of the persisted fixture.
+
+Added a Criterion payload reporter for three historical 128-key Entries: first put all 128, then delete 96 (32 live remain), then resurrect all 128. Same `BenchRecord` values, keys and operations in both trees; `Entry::data("bench_table")` bytes per phase old **[9540, 4870, 9650] (total 24060 B)** vs new **[8375, 4665, 8485] (total 21525 B)**. This excludes Entry metadata/signatures and SQLite overhead; it is historical payload, not live record-set size. The reporter asserts all 96 deletes succeeded. Same source-identical final Criterion harness SHA-256 `dc721682ec8d7da573118238b3514d0a3e10f0b1e2813c80e22764c95e7d8865` on both trees, temporarily copied to baseline and not committed there. The final warm point fixture opens a password wrapper **once** before timing and times `Table::get` on an already published row, retaining the unlocked Table handle (no per-iteration Argon2). Identical command per tree, sequential:
+
+```sh
+TEST_BACKEND=inmemory nix develop -c cargo bench -p eidetica --bench table_cache_benchmarks -- 'table_churn_payload' --sample-size 10 --warm-up-time 0.1 --measurement-time 0.2
+TEST_BACKEND=inmemory nix develop -c cargo bench -p eidetica --bench table_cache_benchmarks -- 'table_warm_point_mode' --sample-size 15 --warm-up-time 0.3 --measurement-time 0.5
+```
+
+The first command's only meaningful result is printed bytes, not Criterion timing. Warm point Criterion 95% time CIs (15 samples): old plain [304.27, 309.17] ns, encrypted [1.6833, 1.7436] µs; new plain [1.6544, 1.6611] µs, encrypted [3.4784, 3.6091] µs. Plain vs encrypted configurations have different initial histories; use **within-mode old/new** comparisons, not encryption-only cost subtraction. An earlier warm fixture erroneously re-opened the password and rebuilt the handle on **every** iteration, reporting ~20 ms; replaced it and reran both revisions. The corrected warm new path is slower in this small InMemory row workload, not an across-the-board win. Criterion history files in each worktree can display a stale “change” versus earlier harness revisions: only the absolute intervals above are compared.
+
+Hardware: same x86_64 Ryzen 9 7900 (12 cores/24 threads), 124 GiB RAM, ~47–50 GiB available; shared host load ~3.22/3.56/6.56 near end. Builds and legs run sequentially, but machine was not quiescent; clocks, SQLite I/O/page cache and cold OS cache are uncontrolled. The original 1k/10k Criterion point results above were InMemory and must **not** be compared to these SQLite wall-times. Warm sample duration 0.5 s; no source-level sample override in these groups. Historical payload and cold process RSS are distinct observables; do not infer linear scaling or a general throughput win.
+
+Harness objective checks: both measured copies compile in release; SHA-256 match for each; `read` on absent key fails; final independent SQLite source files report zero linked namespaces before copies; each cold read returns exact row id, and the warm benchmark operates on a retained opened handle. After formatting-only probe cleanup, the new release binary read a fresh copy and returned row 5000; querying absent row 10000 panicked with `Store(KeyNotFound ...)`. `nix develop -c nix run .#fix` finished with clippy/deadnix/markdownlint/statix and treefmt (0 changes in final run); `git diff --check` clean. First full `nix develop -c just nix full` failed only minimal-feature example compilation because SQLite was not gated; adding `required-features = ["sqlite"]` to the example fixed that. Final formatted-source full gate exited 0: in-memory, SQLite, PostgreSQL and service nextest each **1548 tests run: 1548 passed, 5 skipped**; minimal **1383 tests run: 1383 passed, 5 skipped**; NixOS service and OCI container VM integrations passed. The formatted-source gate does not benchmark the example: the separate positive/negative runs above exercise it. Signed-tip check and handoff follow; no push/PR.
+
+## Single review pass recovery: read-only Table cold generation (2026-09-23)
+
+Intended: restore the interrupted reviewer/fixer's seven-file working diff atop signed `1750aea5dc`; do not reset or repeat the branch-wide semantic review. The release blocker is that an authenticated Read-only remote Table cold point/page read previously attempted client-side publication, which requires Write. Retained negative `lww-readonly-red.log` records **0 passed; 1 failed** at `table.get("a.b")` with `PermissionDenied ... Write(0)`. Its companion login diagnostic caught a second regression: a newly created user's empty `keys` Table has no `_index` codec entry, so server ensure must refuse maintenance and let the existing client path build it. Retained no-transaction ablation passed login **1 passed; 0 failed**, while the attempted ensure without the empty-store exception failed **0 passed; 1 failed** (`KeyNotFound _index: keys`). Neither error should be masked as a successful record generation.
+
+Performed: preserve the seven recovered files. The registered plaintext Table projection identifies its server codec, while arbitrary projections do not gain maintenance authority. A separate Read-gated RPC checks the server's registered `_index` type and effective descriptor before internally ensuring the record view; it returns only Ok, not a token or full merged map. Empty/unregistered tables return a capability refusal for the existing fallback; unavailable record substrates use history fallback; encrypted stores remain client-decrypted and are never dispatched through plaintext maintenance. No version/codec change (`table:v0`, `canonical-json:v0`), old-format compatibility, push or PR. Retained restored focused `lww-readonly-green.log` shows **1 passed; 0 failed**. On the recovered tree, focused socket runs of `read_only_table_cold_get_and_scan_use_server_maintenance`, `test_user_lifecycle`, `read_scoped_ensure_generation_authorizes_before_maintenance`, and `registered_typed_socket_maintenance_is_read_scoped` each show **1 passed; 0 failed**; logs `lww-recover-*.log`. These touch the actual daemon and remote socket; the earlier red read test was downstream of the missing Write grant. `nix develop -c nix run .#fix` completed clippy/deadnix/markdownlint/statix/treefmt; final committed-tip full Nix matrix and signatures to be recorded after commit.
+
+The first signed-tip full gate on `0fe91d6d4d` was **red**, not a pass: each full-feature runner reported **1549 tests run: 1546 passed, 3 failed, 5 skipped** (minimal passed). The three failures were encrypted Table socket fixtures: `RecordMaintenanceUnavailable` at password_store.rs:582 and service.rs:2828. Cause: the recovered diff returned an error for encrypted projection cold misses even when the authenticated writer could publish its own locally decrypted record view. Kept server plaintext dispatch forbidden and restored the prior local build for encrypted or unregistered projections; did not weaken the remote read grant. Exact named regressions `test_encrypted_table_streamed_cold_rebuild_over_socket`, `test_encrypted_table_socket_rejects_wrong_physical_identity`, `test_warm_encrypted_table_service_point_read_is_lazy`, and the new read-only Table socket test now each report **1 passed; 0 failed** (`lww-recover2-*.log`). Final full gate must be rerun on the repaired signed tip.

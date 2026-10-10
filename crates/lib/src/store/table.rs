@@ -1,121 +1,260 @@
 use std::{marker::PhantomData, sync::Arc};
 
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
+use serde_bytes::ByteBuf;
 use uuid::Uuid;
 
 use crate::{
     Result, Store, Transaction,
-    backend::{RecordMutation, RecordMutations},
-    crdt::{
-        Doc,
-        doc::{Value, path::normalize_path},
-    },
+    backend::RecordMutation,
+    crdt::{Doc, Lww},
     store::{
-        ProjectionDescriptor, RecordProjection, Registered, StoreStateModel, errors::StoreError,
+        ProjectionDescriptor, RecordProjection, Registered, RowCodec, SerdeJson, StoreStateModel,
+        TableData, errors::StoreError,
     },
 };
 
 const DEFAULT_SCAN_PAGE_SIZE: usize = 128;
 
-struct TableProjection;
-
-fn project_doc_delta(delta: &Doc, prefix: &str, out: &mut RecordMutations) {
-    for (key, value) in delta.iter_all() {
-        let key = if prefix.is_empty() {
-            key.clone()
-        } else {
-            format!("{prefix}.{key}")
-        };
-        match value {
-            Value::Doc(doc) => project_doc_delta(doc, &key, out),
-            Value::Text(value) => {
-                insert_projected_record(out, key.into_bytes(), Some(value.as_bytes().to_vec()))
-            }
-            Value::Deleted => insert_projected_record(out, key.into_bytes(), None),
-            _ => {}
+async fn check_row_codec(
+    txn: &Transaction,
+    name: &str,
+    selected: Option<&str>,
+    allow_absent: bool,
+) -> Result<Option<String>> {
+    txn.init_subtree_parents(crate::constants::INDEX).await?;
+    let required = loop {
+        let stamp = txn.table_format_stamp()?;
+        if let Some(required) = txn.cached_row_format(name, &stamp) {
+            break Some(required);
         }
+        let required = read_row_codec(txn, name, allow_absent).await?;
+        // Registry initialization can add parent pointers; edits made while the
+        // read was awaiting must never be certified by the old metadata stamp.
+        if txn.table_format_stamp()? != stamp {
+            continue;
+        }
+        if let Some(required) = &required {
+            txn.cache_row_format(name, stamp, required.clone());
+        }
+        break required;
+    };
+    if let (Some(selected), Some(required)) = (selected, &required)
+        && selected != required
+    {
+        return Err(StoreError::TypeMismatch {
+            store: name.into(),
+            expected: required.clone(),
+            actual: selected.into(),
+        }
+        .into());
     }
+    Ok(required)
 }
 
-fn insert_projected_record(out: &mut RecordMutations, key: Vec<u8>, value: Option<Vec<u8>>) {
-    out.retain(|existing_key, _| !TableProjection.staged_keys_conflict(existing_key, &key));
-    out.insert(key, value);
-}
-
-// The Doc-backed Table still stages legacy records; this adapter is removed
-// with the table:v0 format switch.
-pub(crate) fn legacy_doc_delta(mutations: &RecordMutations) -> Result<Doc> {
-    let mut delta = Doc::new();
-    for (key, value) in mutations {
-        let key = std::str::from_utf8(key).map_err(|error| StoreError::SerializationFailed {
-            store: "Table".to_string(),
-            reason: error.to_string(),
+async fn read_row_codec(
+    txn: &Transaction,
+    name: &str,
+    allow_absent: bool,
+) -> Result<Option<String>> {
+    let info = match txn.get_index().await?.get_entry(name).await {
+        Ok(info) => info,
+        Err(crate::Error::Store(error)) if error.is_not_found() && allow_absent => {
+            if !txn.store_has_source(name).await? {
+                return Ok(None);
+            }
+            return Err(StoreError::InvalidConfiguration {
+                store: name.into(),
+                reason: "Table data has no registered row format".into(),
+            }
+            .into());
+        }
+        Err(error) => return Err(error),
+    };
+    let (store_type, config) = if info.type_id == super::PasswordStore::<RawTable>::type_id() {
+        super::password_store::unlocked_config(txn, name, info.config)?
+    } else {
+        (info.type_id, info.config)
+    };
+    if store_type != RawTable::type_id() {
+        return Err(StoreError::TypeMismatch {
+            store: name.into(),
+            expected: RawTable::type_id().into(),
+            actual: store_type,
+        }
+        .into());
+    }
+    let required = config
+        .get("row_codec")
+        .and_then(|value| value.as_text())
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| StoreError::InvalidConfiguration {
+            store: name.into(),
+            reason: "Table requires a non-empty row_codec identity".into(),
         })?;
-        let _ = match value {
-            Some(value) => delta.set(
-                key,
-                std::str::from_utf8(value).map_err(|error| StoreError::SerializationFailed {
-                    store: "Table".to_string(),
-                    reason: error.to_string(),
-                })?,
-            ),
-            None => delta.remove(key),
-        };
-    }
-    Ok(delta)
+    Ok(Some(required.into()))
 }
 
-impl RecordProjection<Doc> for TableProjection {
-    fn legacy_collapsed(&self) -> bool {
-        true
+/// Codec-independent, read-only row access for database inspectors.
+///
+/// Unlike `Table<Vec<u8>, RawBytes>`, this does not select a row format. It
+/// exposes the bytes of any configured row codec without decoding them.
+/// Open an existing Store with `tx.get_store::<RawTable>(name)`. For encrypted
+/// Tables, open `PasswordStore<RawTable>`, unlock it, then call `inner()`.
+/// Point reads and scans use the same projections, authorization and cursors as
+/// typed Tables; no whole-Table materialization is introduced by this facade.
+#[derive(Clone)]
+pub struct RawTable {
+    name: String,
+    txn: Transaction,
+}
+
+impl Registered for RawTable {
+    fn type_id() -> &'static str {
+        "table:v0.1"
+    }
+}
+
+#[async_trait]
+impl Store for RawTable {
+    type Data = TableData;
+
+    fn state_model() -> StoreStateModel<Self::Data> {
+        StoreStateModel::Records(Arc::new(TableProjection))
+    }
+
+    async fn load(txn: &Transaction, name: String) -> Result<Self> {
+        check_row_codec(txn, &name, None, false).await?;
+        Ok(Self {
+            name,
+            txn: txn.clone(),
+        })
+    }
+
+    async fn register(_txn: &Transaction, name: String) -> Result<Self> {
+        Err(StoreError::InvalidOperation {
+            store: name,
+            operation: "inspect".into(),
+            reason: "raw inspection cannot create a Table; choose a row codec when creating it"
+                .into(),
+        }
+        .into())
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn transaction(&self) -> &Transaction {
+        &self.txn
+    }
+}
+
+impl RawTable {
+    /// The persisted row codec identity, not an inferred application schema.
+    pub async fn row_codec_id(&self) -> Result<String> {
+        check_row_codec(&self.txn, &self.name, None, false)
+            .await?
+            .ok_or_else(|| {
+                StoreError::InvalidConfiguration {
+                    store: self.name.clone(),
+                    reason: "missing row format".into(),
+                }
+                .into()
+            })
+    }
+
+    /// Read exact row bytes without invoking an application decoder.
+    pub async fn get(&self, key: impl AsRef<str>) -> Result<Vec<u8>> {
+        self.get_planned(key.as_ref()).await
+    }
+
+    pub(super) async fn get_planned(&self, key: &str) -> Result<Vec<u8>> {
+        self.row_codec_id().await?;
+        let value = self.txn.table_query_get(&self.name, key.as_bytes()).await?;
+        self.row_codec_id().await?;
+        value.ok_or_else(|| {
+            StoreError::KeyNotFound {
+                store: self.name.clone(),
+                key: key.into(),
+            }
+            .into()
+        })
+    }
+
+    /// Read one bounded page in persisted record-key order.
+    pub async fn scan_page(
+        &self,
+        cursor: Option<&TableCursor>,
+        limit: usize,
+    ) -> Result<TablePage<Vec<u8>>> {
+        self.scan_planned(cursor, limit).await
+    }
+
+    pub(super) async fn scan_planned(
+        &self,
+        cursor: Option<&TableCursor>,
+        limit: usize,
+    ) -> Result<TablePage<Vec<u8>>> {
+        self.row_codec_id().await?;
+        raw_scan_page(&self.txn, &self.name, cursor, limit).await
+    }
+}
+
+async fn raw_scan_page(
+    txn: &Transaction,
+    name: &str,
+    cursor: Option<&TableCursor>,
+    limit: usize,
+) -> Result<TablePage<Vec<u8>>> {
+    let (page, next) = txn.table_query_scan(name, cursor, limit).await?;
+    let rows = page
+        .records
+        .into_iter()
+        .map(|(key, value)| {
+            String::from_utf8(key)
+                .map(|key| (key, value))
+                .map_err(|error| {
+                    StoreError::DeserializationFailed {
+                        store: name.into(),
+                        reason: error.to_string(),
+                    }
+                    .into()
+                })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(TablePage { rows, next })
+}
+
+pub(crate) struct TableProjection;
+
+impl RecordProjection<TableData> for TableProjection {
+    fn server_store_type(&self) -> Option<&'static str> {
+        Some(<Table<Vec<u8>, super::RawBytes> as Registered>::type_id())
     }
 
     fn descriptor(&self) -> ProjectionDescriptor {
         ProjectionDescriptor {
-            name: "eidetica/table/rows".to_string(),
-            version: 0,
+            name: "eidetica/table/rows/opaque:v0.1".to_string(),
+            version: 1,
         }
     }
 
     fn mutations<'a>(
         &'a self,
-        delta: &'a Doc,
+        delta: &'a TableData,
     ) -> Result<Box<dyn Iterator<Item = Result<RecordMutation>> + Send + 'a>> {
-        // Doc's hierarchical conflicts need a collapsed view until Table migrates.
-        let mut out = RecordMutations::new();
-        project_doc_delta(delta, "", &mut out);
-        Ok(Box::new(out.into_iter().map(|(key, value)| {
-            Ok(match value {
-                Some(value) => RecordMutation::Put { key, value },
-                None => RecordMutation::Delete { key },
+        Ok(Box::new(delta.0.operations().map(|(key, operation)| {
+            Ok(match operation {
+                Lww::Set(value) => RecordMutation::Put {
+                    key: key.as_bytes().to_vec(),
+                    value: value.to_vec(),
+                },
+                Lww::Delete => RecordMutation::Delete {
+                    key: key.as_bytes().to_vec(),
+                },
+                Lww::NoOp => unreachable!("keyed NoOp is not a canonical map operation"),
             })
         })))
-    }
-
-    fn normalize_record_key(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        let key = std::str::from_utf8(key).map_err(|error| StoreError::SerializationFailed {
-            store: "Table".to_string(),
-            reason: error.to_string(),
-        })?;
-        let normalized = normalize_path(key);
-        Ok((key.is_empty() || !normalized.is_empty()).then_some(normalized.into_bytes()))
-    }
-
-    fn staged_keys_conflict(&self, left: &[u8], right: &[u8]) -> bool {
-        left == right
-            || left
-                .strip_prefix(right)
-                .is_some_and(|suffix| suffix.starts_with(b"."))
-            || right
-                .strip_prefix(left)
-                .is_some_and(|suffix| suffix.starts_with(b"."))
-    }
-
-    fn staged_key_descends_from(&self, staged_key: &[u8], key: &[u8]) -> bool {
-        staged_key
-            .strip_prefix(key)
-            .is_some_and(|suffix| suffix.starts_with(b"."))
     }
 }
 
@@ -125,8 +264,10 @@ pub struct TableCursor(pub(crate) CursorKind);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CursorKind {
-    // table:v0 remains Doc-backed until the format switch.
-    Legacy(Vec<u8>),
+    Query {
+        cursor: Box<TableCursor>,
+        format: crate::transaction::TableFormatStamp,
+    },
     Projected {
         view: Uuid,
         revision: u64,
@@ -156,43 +297,74 @@ pub struct TablePage<T> {
 /// - Supports searching across all records with a predicate function
 ///
 /// # Type Parameters
-/// - `T`: The record type to be stored, which must be serializable, deserializable, and cloneable
+/// - `T`: The application row type, with no intrinsic Serde or Clone requirement.
+/// - `C`: A stateless row codec; defaults to direct [`SerdeJson`] encoding.
 ///
 /// This abstraction simplifies working with collections of similarly structured data
 /// by handling the details of:
 /// - Primary key generation and management
 /// - Serialization/deserialization of records
-/// - Storage within the underlying CRDT (Doc)
-pub struct Table<T>
-where
-    T: Serialize + for<'de> Deserialize<'de> + Clone,
-{
+/// - Storage within the underlying LWW map
+///
+/// Rows persist exactly as `C` encodes them, inside strict DAG-CBOR [`TableData`].
+/// Projection is independent of `T` and `C`. Configuration binds typed access
+/// to `C::FORMAT_ID`; [`RawTable`] inspects rows without an application decoder.
+/// LWW-winning configuration selects the format; unreadable winning rows are
+/// skipped with privacy-safe warnings, never replaced by older values.
+/// No decoder or migration accepts `table:v0` data.
+pub struct Table<T, C = SerdeJson> {
     name: String,
     txn: Transaction,
-    phantom: PhantomData<T>,
+    phantom: PhantomData<fn() -> (T, C)>,
 }
 
-impl<T> Registered for Table<T>
-where
-    T: Serialize + for<'de> Deserialize<'de> + Clone,
-{
+impl<T, C> Clone for Table<T, C> {
+    fn clone(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            txn: self.txn.clone(),
+            phantom: PhantomData,
+        }
+    }
+}
+
+impl<T, C: RowCodec<T>> Registered for Table<T, C> {
     fn type_id() -> &'static str {
-        "table:v0"
+        "table:v0.1"
     }
 }
 
 #[async_trait]
-impl<T> Store for Table<T>
-where
-    T: Serialize + for<'de> Deserialize<'de> + Clone + Send + Sync,
-{
-    type Data = Doc;
+impl<T, C: RowCodec<T>> Store for Table<T, C> {
+    type Data = TableData;
 
     fn state_model() -> StoreStateModel<Self::Data> {
         StoreStateModel::Records(Arc::new(TableProjection))
     }
 
+    fn default_config() -> Doc {
+        let mut config = Doc::new();
+        config.set("row_codec", C::FORMAT_ID);
+        config
+    }
+
+    async fn register(txn: &Transaction, subtree_name: String) -> Result<Self> {
+        if C::FORMAT_ID.is_empty() {
+            return Err(StoreError::InvalidConfiguration {
+                store: subtree_name,
+                reason: "row codec identity must not be empty".into(),
+            }
+            .into());
+        }
+        txn.get_index()
+            .await?
+            .set_entry(&subtree_name, Self::type_id(), Self::default_config())
+            .await?;
+        Self::load(txn, subtree_name).await
+    }
+
     async fn load(txn: &Transaction, subtree_name: String) -> Result<Self> {
+        check_row_codec(txn, &subtree_name, Some(C::FORMAT_ID), true).await?;
         Ok(Self {
             name: subtree_name,
             txn: txn.clone(),
@@ -209,10 +381,7 @@ where
     }
 }
 
-impl<T> Table<T>
-where
-    T: Serialize + for<'de> Deserialize<'de> + Clone + Send + Sync,
-{
+impl<T, C: RowCodec<T>> Table<T, C> {
     /// Retrieves a row from the Table by its primary key.
     ///
     /// This method first checks for the record in the current transaction's
@@ -228,28 +397,47 @@ where
     /// # Errors
     /// Returns an error if:
     /// * The record doesn't exist (`Error::NotFound`)
-    /// * There's a serialization/deserialization error
+    /// * The winning row cannot be decoded (`Error::NotFound`, with a warning)
+    /// * Configuration, authorization, decryption or storage fails
     pub async fn get(&self, key: impl AsRef<str>) -> Result<T> {
-        let key = key.as_ref();
+        self.get_planned(key.as_ref()).await
+    }
 
-        let projection = TableProjection;
-        match self
-            .txn
-            .record_get(&self.name, &projection, key.as_bytes())
+    pub(super) async fn get_planned(&self, key: &str) -> Result<T> {
+        if check_row_codec(&self.txn, &self.name, Some(C::FORMAT_ID), true)
             .await?
+            .is_none()
         {
-            Some(value) => serde_json::from_slice(&value).map_err(|e| {
-                StoreError::DeserializationFailed {
-                    store: self.name.clone(),
-                    reason: format!("Failed to deserialize record for key '{key}': {e}"),
-                }
-                .into()
-            }),
+            return Err(StoreError::KeyNotFound {
+                store: self.name.clone(),
+                key: key.into(),
+            }
+            .into());
+        }
+        let value = self.txn.table_query_get(&self.name, key.as_bytes()).await?;
+        check_row_codec(&self.txn, &self.name, Some(C::FORMAT_ID), true).await?;
+        match value.and_then(|bytes| self.decode_row(&bytes)) {
+            Some(row) => Ok(row),
             None => Err(StoreError::KeyNotFound {
                 store: self.name.clone(),
                 key: key.to_string(),
             }
             .into()),
+        }
+    }
+
+    fn decode_row(&self, bytes: &[u8]) -> Option<T> {
+        match C::decode(bytes) {
+            Ok(row) => Some(row),
+            Err(_) => {
+                // Keys, payloads and arbitrary codec errors may contain secrets.
+                tracing::warn!(
+                    store = %self.name,
+                    codec = C::FORMAT_ID,
+                    "Skipping Table row that cannot be decoded with the selected codec"
+                );
+                None
+            }
         }
     }
 
@@ -272,17 +460,7 @@ where
         // Generate a UUIDv4 for the primary key
         let primary_key = Uuid::new_v4().to_string();
 
-        let serialized_row =
-            serde_json::to_vec(&row).map_err(|e| StoreError::SerializationFailed {
-                store: self.name.clone(),
-                reason: format!("Failed to serialize record: {e}"),
-            })?;
-        self.txn.stage_record(
-            &self.name,
-            &TableProjection,
-            primary_key.as_bytes().to_vec(),
-            Some(serialized_row),
-        )?;
+        self.set(&primary_key, row).await?;
 
         // Return the primary key
         Ok(primary_key)
@@ -304,17 +482,16 @@ where
     /// Returns an error if there's a serialization error or the operation fails
     pub async fn set(&self, key: impl AsRef<str>, row: T) -> Result<()> {
         let key_str = key.as_ref();
-        let serialized_row =
-            serde_json::to_vec(&row).map_err(|e| StoreError::SerializationFailed {
-                store: self.name.clone(),
-                reason: format!("Failed to serialize record for key '{key_str}': {e}"),
-            })?;
-        self.txn.stage_record(
-            &self.name,
-            &TableProjection,
-            key_str.as_bytes().to_vec(),
-            Some(serialized_row),
-        )
+        check_row_codec(&self.txn, &self.name, Some(C::FORMAT_ID), false).await?;
+        let bytes = C::encode(&row).map_err(|e| StoreError::SerializationFailed {
+            store: self.name.clone(),
+            reason: format!("Failed to serialize record for key '{key_str}': {e}"),
+        })?;
+        let mut delta = TableData::default();
+        delta.0.set(key_str.to_string(), ByteBuf::from(bytes));
+        self.txn
+            .stage_projected_delta(&self.name, &TableProjection, delta)
+            .await
     }
 
     /// Deletes a row from the Table by its primary key.
@@ -335,24 +512,22 @@ where
         let key_str = key.as_ref();
 
         // Check if the record exists (checks both local and full state)
-        let exists = self.get(key_str).await.is_ok()
-            || self.txn.record_has_staged_descendant(
-                &self.name,
-                &TableProjection,
-                key_str.as_bytes(),
-            )?;
-
-        // If the record doesn't exist, return false early
+        let exists = match self.get(key_str).await {
+            Ok(_) => true,
+            Err(crate::Error::Store(error)) if matches!(*error, StoreError::KeyNotFound { .. }) => {
+                false
+            }
+            Err(error) => return Err(error),
+        };
         if !exists {
             return Ok(false);
         }
 
-        self.txn.stage_record(
-            &self.name,
-            &TableProjection,
-            key_str.as_bytes().to_vec(),
-            None,
-        )?;
+        let mut delta = TableData::default();
+        delta.0.delete(key_str.to_string());
+        self.txn
+            .stage_projected_delta(&self.name, &TableProjection, delta)
+            .await?;
 
         // Return true since we confirmed the record existed
         Ok(true)
@@ -369,6 +544,13 @@ where
     /// # Errors
     /// Returns an error if there's a serialization error or the operation fails
     pub async fn search(&self, query: impl Fn(&T) -> bool) -> Result<Vec<(String, T)>> {
+        self.search_planned(query).await
+    }
+
+    pub(super) async fn search_planned(
+        &self,
+        query: impl Fn(&T) -> bool,
+    ) -> Result<Vec<(String, T)>> {
         let mut result = Vec::new();
         let mut cursor = None;
         loop {
@@ -392,49 +574,47 @@ where
     ///
     /// Plain `Table` records use primary-key byte order. Wrappers such as
     /// `PasswordStore<Table<T>>` may transform keys, so their order is not
-    /// logical primary-key order.
+    /// logical primary-key order. Unreadable rows are skipped with warnings;
+    /// an empty page may still have a continuation cursor. The limit bounds
+    /// inspected records, not the number of successfully decoded rows.
     pub async fn scan_page(
         &self,
         cursor: Option<&TableCursor>,
         limit: usize,
     ) -> Result<TablePage<T>> {
-        let projection = TableProjection;
-        let page = self
-            .txn
-            .record_scan(
-                &self.name,
-                &projection,
-                match cursor.map(|cursor| &cursor.0) {
-                    Some(CursorKind::Legacy(key)) => Some(key.as_slice()),
-                    Some(CursorKind::Projected { .. }) => {
-                        return Err(StoreError::StaleCursor {
-                            store: self.name.clone(),
-                        }
-                        .into());
-                    }
-                    None => None,
-                },
-                limit,
-            )
-            .await?;
-        let mut rows = Vec::with_capacity(page.records.len());
-        for (key, value) in page.records {
-            let key =
-                String::from_utf8(key).map_err(|error| StoreError::DeserializationFailed {
+        self.scan_planned(cursor, limit).await
+    }
+
+    pub(super) async fn scan_planned(
+        &self,
+        cursor: Option<&TableCursor>,
+        limit: usize,
+    ) -> Result<TablePage<T>> {
+        if check_row_codec(&self.txn, &self.name, Some(C::FORMAT_ID), true)
+            .await?
+            .is_none()
+        {
+            if cursor.is_some() {
+                return Err(StoreError::StaleCursor {
                     store: self.name.clone(),
-                    reason: error.to_string(),
-                })?;
-            let row = serde_json::from_slice(&value).map_err(|error| {
-                StoreError::DeserializationFailed {
-                    store: self.name.clone(),
-                    reason: format!("Failed to deserialize record for key '{key}': {error}"),
                 }
-            })?;
-            rows.push((key, row));
+                .into());
+            }
+            return Ok(TablePage {
+                rows: vec![],
+                next: None,
+            });
         }
-        Ok(TablePage {
-            rows,
-            next: page.next.map(|key| TableCursor(CursorKind::Legacy(key))),
-        })
+        let TablePage {
+            rows: records,
+            next,
+        } = raw_scan_page(&self.txn, &self.name, cursor, limit).await?;
+        let mut rows = Vec::with_capacity(records.len());
+        for (key, value) in records {
+            if let Some(row) = self.decode_row(&value) {
+                rows.push((key, row));
+            }
+        }
+        Ok(TablePage { rows, next })
     }
 }

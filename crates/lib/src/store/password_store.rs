@@ -42,7 +42,7 @@ use base64ct::{Base64, Encoding};
 
 use crate::{
     Result, Transaction,
-    crdt::{CRDTError, Doc, doc::Value},
+    crdt::{CRDT, CRDTError, Doc, doc::Value},
     store::{ProjectionDescriptor, Registered, Store, StoreError, StoreStateModel},
     transaction::Encryptor,
 };
@@ -240,6 +240,28 @@ struct WrappedStoreInfo {
     #[serde(rename = "type")]
     type_id: String,
     config: Doc,
+}
+
+/// Read the current encrypted metadata through the transaction's unlocked key,
+/// rather than trusting a previously opened wrapper's cached configuration.
+pub(crate) fn unlocked_config(
+    txn: &Transaction,
+    store: &str,
+    config: Doc,
+) -> Result<(String, Doc)> {
+    let config = PasswordStoreConfig::try_from(config)?;
+    if config.wrapped_config.nonce.len() != AES_GCM_NONCE_SIZE {
+        return Err(StoreError::InvalidConfiguration {
+            store: store.into(),
+            reason: "invalid wrapped configuration nonce length".into(),
+        }
+        .into());
+    }
+    let mut bytes = config.wrapped_config.nonce;
+    bytes.extend(config.wrapped_config.ciphertext);
+    let plaintext = txn.decrypt_store_metadata(store, &bytes)?;
+    let info: WrappedStoreInfo = serde_json::from_slice(&plaintext)?;
+    Ok((info.type_id, info.config))
 }
 
 /// Internal state of a PasswordStore
@@ -897,7 +919,7 @@ impl<S: Store> PasswordStore<S> {
         // Encrypt wrapped store metadata
         let wrapped_info = WrappedStoreInfo {
             type_id: wrapped_type_id,
-            config: wrapped_config,
+            config: S::default_config().merge(&wrapped_config)?,
         };
         let wrapped_json = serde_json::to_string(&wrapped_info)?;
         let config_nonce = Aes256Gcm::generate_nonce(&mut OsRng);
@@ -1154,7 +1176,7 @@ impl<S: Store> PasswordStore<S> {
 
     /// Read one projected row using the unlocked password and physical-key identity.
     /// The remote read-only path folds authorized history locally, never stages
-    /// server maintenance. This is a typed projection API, not a Table format switch.
+    /// server maintenance. The caller supplies the wrapped Store's typed projection.
     pub async fn projected_get(
         &self,
         projection: &dyn super::RecordProjection<S::Data>,
