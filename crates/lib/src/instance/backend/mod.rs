@@ -30,7 +30,7 @@ use crate::{
     Result,
     backend::{
         BackendError, BackendImpl, InstanceMetadata, RecordMutations, RecordPage, RecordRange,
-        RecordView, StagingToken, StoreStateRequest, VerificationStatus,
+        RecordView, StagingStatus, StagingToken, StoreStateRequest, VerificationStatus,
     },
     entry::{Entry, ID},
     instance::WriteSource,
@@ -74,6 +74,40 @@ pub trait Backend: Send + Sync + std::fmt::Debug {
     async fn begin_store_state_staging(&self, _request: StoreStateRequest) -> Result<StagingToken> {
         Err(BackendError::StoreStateStorageUnsupported.into())
     }
+    async fn store_state_staging_status(
+        &self,
+        _token: &StagingToken,
+    ) -> Result<Option<StagingStatus>> {
+        Err(BackendError::StoreStateStorageUnsupported.into())
+    }
+    async fn store_state_staging_token(
+        &self,
+        _id: &str,
+    ) -> Result<Option<(StagingToken, StagingStatus)>> {
+        Err(BackendError::StoreStateStorageUnsupported.into())
+    }
+    async fn stage_store_state_chunk(
+        &self,
+        _token: &StagingToken,
+        _sequence: u64,
+        _digest: &[u8],
+        _records: RecordMutations,
+    ) -> Result<()> {
+        Err(BackendError::StoreStateStorageUnsupported.into())
+    }
+    async fn reclaim_expired_store_state(&self) -> Result<u64> {
+        Err(BackendError::StoreStateStorageUnsupported.into())
+    }
+    async fn stage_store_state_ordered_chunk(
+        &self,
+        _token: &StagingToken,
+        _sequence: u64,
+        _digest: &[u8],
+        _mutations: Vec<crate::backend::RecordMutation>,
+    ) -> Result<()> {
+        Err(BackendError::StoreStateStorageUnsupported.into())
+    }
+
     async fn stage_store_state_records(
         &self,
         _token: &StagingToken,

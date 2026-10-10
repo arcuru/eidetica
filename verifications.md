@@ -37,3 +37,99 @@ for ordered staging and durable token status; concurrent transaction staging
 and stale-cursor race tests; generic typed state and permission/fallback tests;
 Table/encrypted/service integration matrix; full Nix gate and actual measured
 benchmarks. Do not interpret this ledger as verification of those paths.
+
+## Phase 0 continuation: service ordering and backend conformance slice
+
+Intended: token-wide next-sequence and exact wire-chunk digest enforcement at
+the service boundary, remote Backend sequencing across separate stage calls,
+publication retry on the same live connection, and backend-neutral assertions
+for cancellation and abort/publish visibility. This is **not** durable status,
+lease renewal, or complete Phase 0; the legacy Table stays Doc-backed.
+
+Performed: the service sequence test failed on a future sequence before the
+fix (1 failed / 0 passed); the service publication retry test failed with
+InvalidStoreStateStagingToken before the fix (1 failed / 0 passed). Both now
+exercise the live socket and pass. `nix develop -c nix run .#fix` succeeded;
+`nix develop -c just nix full` after the final code change succeeded, with
+nextest summaries: in-memory 1503 passed, 5 skipped; SQLite 1503 passed,
+5 skipped (2 leaky); PostgreSQL 1503 passed, 5 skipped; service 1503 passed,
+5 skipped (6 leaky); minimal 1359 passed, 5 skipped. The service gate exercises the
+existing Doc-backed Table and the new staging-token tests, not redesigned Table.
+
+Newly required: durable server/backend token status (including adopted,
+aborted, expired), lease renewal/reclamation and restart survival; digest and
+sequence persisted with the target in all backends rather than only an active
+socket; client retry of identical encoded chunks after ambiguous transport
+failure; true backend-neutral ordered put/delete conformance once explicit
+mutations exist; transaction-state revision, cursor, typed state/capability,
+and full remaining Phase 0 contracts before Phase 2 or any Table switch.
+
+## Phase 0 continuation: ordered physical mutation slice
+
+Intended: add an explicit ordered `Put`/`Delete` chunk path across the backend
+trait, in-memory, SQLite, PostgreSQL and authenticated service RPC without
+switching the Doc-backed Table. Delete removes the private row; put after delete
+resurrects it; empty generations publish. Preserve the existing collapsed
+Doc-overlay tombstone path, including its publish-time null rejection.
+
+Performed: backend-neutral conformance fixture sends put/delete/put across
+sequences, retries the immediate accepted sequence, rejects older/gapped and
+conflicting chunks, publishes a physically empty namespace after a same-chunk
+put/delete, and resolves a never-written generation. A live authenticated
+service-socket fixture exercises the ordered RPC and empty publication. Negative
+control disabling the in-memory physical removal failed with 0 passed / 1
+failed at the empty scan assertion (exit 101), then the restored test passed.
+Focused `TEST_BACKEND=sqlite` fixture passed 1/1; live socket fixture passed
+1/1. `nix develop -c nix run .#fix` succeeded. Final formatted-source `nix develop -c just nix full` succeeded: in-memory,
+SQLite, PostgreSQL and service each 1514 passed / 5 skipped; minimal 1365
+passed / 5 skipped; NixOS service and OCI container integration passed. A
+committed-tip rerun is recorded below after the signed commit.
+
+Newly required: exact encoded-chunk replay after ambiguous transport (adapter
+still lacks it), bounded terminal-token retention and unknown-token safety,
+revision-checked transaction staging, stale cursors, typed Store-state and
+permission/fallback fixtures, before Phase 2 or the Table switch. Existing
+`table:v0` and Doc Table behavior remain unchanged.
+
+## Phase 0 continuation: durable staging-token slice (recovered dirty worktree)
+
+Intended: preserve the previous worker's 15 dirty files and prove that in-memory
+snapshots and SQL transactions retain staging outcomes, sequence and last digest;
+remote status and publication survive reconnect/restart; five-minute lease plus
+five-minute grace reclaim only unpublished orphans. Preserve old custom backend
+service access and existing Doc-backed Table. This does **not** complete Phase 0.
+
+Performed: reviewed the dirty diff and ran `git diff --check`. `nix develop -c
+cargo test -p eidetica --all-features --test it staging_ -- --nocapture`:
+8 passed; 0 failed. Focused `backend::store_state_records::` matrix with explicit
+`TEST_BACKEND`: in-memory 22 passed, SQLite 22 passed, service 22 passed; bare
+PostgreSQL 2 passed / 20 failed because the direct command lacked the test
+container credentials (`password authentication failed for user "ava"`), **not**
+a code verdict. The hermetic PostgreSQL Nix test instead passed below.
+
+A real socket test of a recordless custom backend exposed that running the new
+reclamation hook before _every_ request denied login. Negative control with
+that call intact: 0 passed / 1 failed, `StoreStateStorageUnsupported` on
+connection; after ignoring only the typed unsupported capability, the
+connection succeeds but login still failed because the service error lost the
+typed unsupported marker. Mapping that variant across the wire yields 1 passed /
+0 failed for the new login test. Both failures were reproduced before the fix.
+
+After `nix develop -c nix run .#fix`, `nix develop -c just nix full` finished
+successfully on the dirty source tree (build, lint, doc, checks and VM/container
+integration). Nix backend nextest logs: in-memory 1512 passed / 5 skipped;
+SQLite 1512 passed / 5 skipped; PostgreSQL 1512 passed / 5 skipped; service
+1512 passed / 5 skipped; minimal 1364 passed / 5 skipped. `git diff --check`
+clean. The new backend fixtures reach sequence/replay, abort/publish race,
+reclamation and persistent SQLite restart; socket fixtures reach reconnect and
+service rebind; this is not a redesigned Table or encrypted-row test. Prior
+worker exit logs were unavailable in its retained scratch directory, so its
+nonzero cause cannot be established from that run.
+
+Newly required: explicit backend staging put/delete/put with physical deletes,
+client replay of the _exact_ encoded chunk after an ambiguous response, bounded
+terminal-token retention and safe unknown-token replacement, stable service
+permissions/status validation across users and databases, transaction revision
+atomicity, stale-cursor race and typed state/capability fixtures; then Phases
+2-6 with encryption/service parity and benchmarks. Do not switch Table until
+all Phase 0 contracts are executable; `table:v0` stays unchanged.

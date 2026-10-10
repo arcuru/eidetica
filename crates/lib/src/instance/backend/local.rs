@@ -45,6 +45,43 @@ impl Backend for LocalBackend {
     async fn begin_store_state_staging(&self, request: StoreStateRequest) -> Result<StagingToken> {
         self.0.begin_store_state_staging(request).await
     }
+    async fn store_state_staging_status(
+        &self,
+        token: &StagingToken,
+    ) -> Result<Option<crate::backend::StagingStatus>> {
+        self.0.store_state_staging_status(token).await
+    }
+    async fn store_state_staging_token(
+        &self,
+        id: &str,
+    ) -> Result<Option<(StagingToken, crate::backend::StagingStatus)>> {
+        self.0.store_state_staging_token(id).await
+    }
+    async fn stage_store_state_chunk(
+        &self,
+        token: &StagingToken,
+        sequence: u64,
+        digest: &[u8],
+        records: RecordMutations,
+    ) -> Result<()> {
+        self.0
+            .stage_store_state_chunk(token, sequence, digest, records)
+            .await
+    }
+    async fn stage_store_state_ordered_chunk(
+        &self,
+        token: &StagingToken,
+        sequence: u64,
+        digest: &[u8],
+        mutations: Vec<crate::backend::RecordMutation>,
+    ) -> Result<()> {
+        self.0
+            .stage_store_state_ordered_chunk(token, sequence, digest, mutations)
+            .await
+    }
+    async fn reclaim_expired_store_state(&self) -> Result<u64> {
+        self.0.reclaim_expired_store_state().await
+    }
     async fn stage_store_state_records(
         &self,
         token: &StagingToken,

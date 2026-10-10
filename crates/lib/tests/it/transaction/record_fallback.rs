@@ -29,6 +29,35 @@ use eidetica::{
 
 static ENCRYPTED_FALLBACK_TEST: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+#[cfg(all(unix, feature = "service"))]
+#[tokio::test]
+async fn recordless_backend_can_serve_a_client_without_reclamation() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let socket = dir.path().join("recordless.sock");
+    let (server, _admin) = Instance::create_backend(
+        Box::new(Recordless(InMemory::new(), None)),
+        NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let (shutdown, receiver) = tokio::sync::watch::channel(());
+    let service = eidetica::service::ServiceServer::bind(server.clone(), &socket)
+        .await
+        .unwrap();
+    let task = tokio::spawn(service.run(receiver));
+    let client = Instance::connect(format!("unix://{}", socket.display()))
+        .await
+        .unwrap();
+    assert_eq!(client.id(), server.id());
+    let user = client.login_user("admin", None).await.unwrap();
+    assert!(user.get_default_key().is_ok());
+    shutdown.send(()).unwrap();
+    task.await.unwrap().unwrap();
+}
+
 /// A pre-record-substrate backend: full entry storage, no record support.
 struct Recordless<B>(B, Option<Arc<StaleThenUnsupported>>);
 

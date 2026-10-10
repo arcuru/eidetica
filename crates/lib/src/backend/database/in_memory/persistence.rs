@@ -7,7 +7,7 @@ use std::{collections::HashMap, path::Path, sync::RwLock};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use super::{InMemory, InMemoryInner, TreeTipsCache};
+use super::{InMemory, InMemoryInner, MemoryStagingToken, RecordNamespace, TreeTipsCache};
 use crate::{
     Error, Result,
     backend::{InstanceMetadata, InstanceSecrets, VerificationStatus, errors::BackendError},
@@ -51,6 +51,10 @@ struct SerializableDatabase {
     version: u8,
     entries: HashMap<ID, Entry>,
     #[serde(default)]
+    store_state_namespaces: HashMap<String, PersistentNamespace>,
+    #[serde(default)]
+    staging_tokens: HashMap<String, MemoryStagingToken>,
+    #[serde(default)]
     verification_status: HashMap<ID, VerificationStatus>,
     /// Instance metadata containing device public key and system database IDs
     #[serde(default)]
@@ -72,6 +76,42 @@ struct SerializableDatabase {
     tips: HashMap<ID, TreeTipsCache>,
 }
 
+/// JSON object keys cannot contain arbitrary record bytes, so snapshot
+/// namespaces encode records as ordered key/value pairs instead.
+#[derive(Serialize, Deserialize)]
+struct PersistentNamespace {
+    request: crate::backend::StoreStateRequest,
+    ready: bool,
+    unlinked: bool,
+    records: Vec<(Vec<u8>, Option<Vec<u8>>)>,
+}
+
+impl From<&RecordNamespace> for PersistentNamespace {
+    fn from(value: &RecordNamespace) -> Self {
+        Self {
+            request: value.request.clone(),
+            ready: value.ready,
+            unlinked: value.unlinked,
+            records: value
+                .records
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+        }
+    }
+}
+
+impl From<PersistentNamespace> for RecordNamespace {
+    fn from(value: PersistentNamespace) -> Self {
+        Self {
+            request: value.request,
+            ready: value.ready,
+            unlinked: value.unlinked,
+            records: value.records.into_iter().collect(),
+        }
+    }
+}
+
 impl Serialize for InMemory {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
@@ -85,6 +125,12 @@ impl Serialize for InMemory {
             SerializableDatabase {
                 version: PERSISTENCE_VERSION,
                 entries: inner.entries.clone(),
+                store_state_namespaces: inner
+                    .store_state_namespaces
+                    .iter()
+                    .map(|(id, ns)| (id.clone(), PersistentNamespace::from(ns)))
+                    .collect(),
+                staging_tokens: inner.staging_tokens.clone(),
                 verification_status: inner.verification_status.clone(),
                 instance_metadata: inner.instance_metadata.clone(),
                 instance_secrets: inner.instance_secrets.clone(),
@@ -108,8 +154,12 @@ impl<'de> Deserialize<'de> for InMemory {
         Ok(InMemory {
             inner: RwLock::new(InMemoryInner {
                 entries: serializable.entries,
-                // Derived and staging Store-state records are disposable.
-                store_state_namespaces: HashMap::new(),
+                store_state_namespaces: serializable
+                    .store_state_namespaces
+                    .into_iter()
+                    .map(|(id, ns)| (id, ns.into()))
+                    .collect(),
+                staging_tokens: serializable.staging_tokens,
                 verification_status: serializable.verification_status,
                 instance_metadata: serializable.instance_metadata,
                 instance_secrets: serializable.instance_secrets,
@@ -146,6 +196,12 @@ pub(crate) fn save_to_file<P: AsRef<Path>>(backend: &InMemory, path: P) -> Resul
         SerializableDatabase {
             version: PERSISTENCE_VERSION,
             entries: inner.entries.clone(),
+            store_state_namespaces: inner
+                .store_state_namespaces
+                .iter()
+                .map(|(id, ns)| (id.clone(), PersistentNamespace::from(ns)))
+                .collect(),
+            staging_tokens: inner.staging_tokens.clone(),
             verification_status: inner.verification_status.clone(),
             instance_metadata: inner.instance_metadata.clone(),
             instance_secrets: inner.instance_secrets.clone(),
