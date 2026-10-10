@@ -269,7 +269,7 @@ async fn fixed_parent_subtree_read_ignores_concurrent_live_write() {
     entered_rx.await.unwrap();
     let writer = database.new_transaction().await.unwrap();
     writer
-        .update_subtree("counter", serde_json::to_vec(&MaxCounter(7)).unwrap())
+        .update_subtree("counter", MaxCounter(7).encode().unwrap())
         .await
         .unwrap();
     writer.commit().await.unwrap();
