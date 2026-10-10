@@ -309,7 +309,11 @@ async fn projected_binary_codec_decrypts_before_replay_and_encrypts_records() {
             .unwrap(),
         Some(b"secret".to_vec())
     );
-    let view = tx.record_view("rows", &RowsProjection).await.unwrap();
+    let view = tx
+        .record_view("rows", &RowsProjection)
+        .await
+        .unwrap()
+        .unwrap();
     let record = db
         .ops()
         .store_state_record_get(&view, b"key")
@@ -318,6 +322,340 @@ async fn projected_binary_codec_decrypts_before_replay_and_encrypts_records() {
         .unwrap();
     assert_ne!(record, b"secret");
     assert_eq!(BinaryEnvelope.decrypt(&record).unwrap(), b"secret");
+}
+
+// Uses the actual selected engine (or authenticated service) and real AEAD,
+// unlike BinaryEnvelope/KeyedRows which only isolate encoding/physical-key laws.
+#[tokio::test]
+async fn password_binary_codec_backend_matrix_roundtrip() {
+    use crate::store::PasswordStore;
+    let (instance, _daemon) = projection_backend().await;
+    let mut admin = instance.login_user("admin", None).await.unwrap();
+    let key = admin.get_default_key().unwrap();
+    let db = admin.create_database(Doc::new(), &key).await.unwrap();
+    let tx = db.new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<RowsStore>>("rows")
+        .await
+        .unwrap();
+    encrypted.initialize("correct", Doc::new()).await.unwrap();
+    tx.stage_projected_delta("rows", &RowsProjection, row("a", "first"))
+        .await
+        .unwrap();
+    let id = tx.commit().await.unwrap();
+    let entry = db.backend().unwrap().get(&id).await.unwrap();
+    let ciphertext = entry.data("rows").unwrap();
+    assert!(StagedRows::decode(ciphertext).is_err());
+    assert_ne!(ciphertext, &row("a", "first").encode().unwrap());
+    let tx = db.new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<RowsStore>>("rows")
+        .await
+        .unwrap();
+    encrypted.open("correct").unwrap();
+    let mut changes = row("b", "second");
+    changes.0.delete("a".into());
+    tx.stage_projected_delta("rows", &RowsProjection, changes)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    // Remote reads always fold authorized ciphertext; client clear is a no-op.
+    let backend = db.backend().unwrap();
+    let rounds = if backend.local_engine().is_some() {
+        3
+    } else {
+        2
+    };
+    for round in 0..rounds {
+        if round == 2 {
+            backend.clear_derived_store_state().await.unwrap();
+        }
+        let tx = db.new_transaction().await.unwrap();
+        let mut encrypted = tx
+            .get_store::<PasswordStore<RowsStore>>("rows")
+            .await
+            .unwrap();
+        encrypted.open("correct").unwrap();
+        let state = encrypted.get_state().await.unwrap();
+        assert_eq!(state.0.get(&"b".into()).map(String::as_str), Some("second"));
+        assert!(matches!(
+            state.0.operation(&"a".into()),
+            Some(crate::crdt::Lww::Delete)
+        ));
+        assert_eq!(
+            encrypted
+                .projected_get(&RowsProjection, b"a")
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            encrypted
+                .projected_get(&RowsProjection, b"b")
+                .await
+                .unwrap(),
+            Some(b"second".to_vec())
+        );
+        let (page, end) = encrypted
+            .projected_scan_page(&RowsProjection, None, 8)
+            .await
+            .unwrap();
+        assert_eq!(page.records, vec![(b"b".to_vec(), b"second".to_vec())]);
+        assert!(end.is_none());
+    }
+}
+
+#[tokio::test]
+async fn get_store_rejects_malformed_registration_without_replacing_it() {
+    let (instance, _) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        crate::NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let (key, _) = generate_keypair();
+    let db = Database::create(&instance, key, Doc::new()).await.unwrap();
+    let tx = db.new_transaction().await.unwrap();
+    tx.get_store::<DocStore>(INDEX)
+        .await
+        .unwrap()
+        .set("broken", "not registration metadata")
+        .await
+        .unwrap();
+    let before = tx.get_local_data::<Doc>(INDEX).unwrap();
+    let result = tx.get_store::<CounterStore>("broken").await;
+    assert!(
+        matches!(result, Err(crate::Error::Store(ref error))
+            if matches!(**error, StoreError::DeserializationFailed { .. })),
+        "malformed registration must be an error, not a new Store"
+    );
+    assert_eq!(tx.get_local_data::<Doc>(INDEX).unwrap(), before);
+}
+
+#[cfg(all(unix, feature = "service"))]
+#[tokio::test]
+async fn read_only_binary_password_store_decrypts_before_codec_and_rejects_tamper() {
+    use crate::auth::types::{AuthKey, Permission};
+    use crate::store::PasswordStore;
+    use std::time::Duration;
+    let (instance, mut admin) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        crate::NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    admin
+        .admin()
+        .await
+        .unwrap()
+        .create_user(crate::NewUser::passwordless("reader"))
+        .await
+        .unwrap();
+    let key = admin.get_default_key().unwrap();
+    let db = admin.create_database(Doc::new(), &key).await.unwrap();
+    let tx = db.new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<RowsStore>>("rows")
+        .await
+        .unwrap();
+    encrypted.initialize("correct", Doc::new()).await.unwrap();
+    tx.stage_projected_delta("rows", &RowsProjection, row("a", "first"))
+        .await
+        .unwrap();
+    let mut docs = tx
+        .get_store::<PasswordStore<DocStore>>("docs")
+        .await
+        .unwrap();
+    docs.initialize("correct", Doc::new()).await.unwrap();
+    docs.inner()
+        .await
+        .unwrap()
+        .set("secret", "opaque value")
+        .await
+        .unwrap();
+    tx.get_settings()
+        .unwrap()
+        .set_global_auth_key(AuthKey::active(None, Permission::Read))
+        .await
+        .unwrap();
+    let doc_id = tx.commit().await.unwrap();
+    // Use multiple payload entries, then discard every derived generation:
+    // read-only handle initialization must not depend on warmed metadata.
+    let tx = db.new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<RowsStore>>("rows")
+        .await
+        .unwrap();
+    encrypted.open("correct").unwrap();
+    tx.stage_projected_delta("rows", &RowsProjection, row("b", "second"))
+        .await
+        .unwrap();
+    let id = tx.commit().await.unwrap();
+    let entry = db.backend().unwrap().get(&id).await.unwrap();
+    let mut corrupt = entry.data("rows").unwrap().to_vec();
+    *corrupt.last_mut().unwrap() ^= 1;
+    for _ in 0..2 {
+        db.backend()
+            .unwrap()
+            .clear_derived_store_state()
+            .await
+            .unwrap();
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("password-codec.sock");
+    let mut daemon = crate::service::ServiceServer::bind(instance.clone(), &socket)
+        .await
+        .unwrap();
+    assert!(daemon.register_store::<PasswordStore<RowsStore>>().is_err());
+    let (stop, rx) = tokio::sync::watch::channel(());
+    let task = tokio::spawn(daemon.run(rx));
+    let remote = Instance::connect(format!("unix://{}", socket.display()))
+        .await
+        .unwrap();
+    let reader = remote.login_user("reader", None).await.unwrap();
+    let read_db = Database::open(&remote, db.root_id()).await.unwrap();
+    let bound_read_db = read_db
+        .clone()
+        .with_key(crate::database::DatabaseKey::global(
+            reader
+                .get_signing_key(&reader.get_default_key().unwrap())
+                .unwrap(),
+        ));
+    assert_eq!(
+        bound_read_db.current_permission().await.unwrap(),
+        Permission::Read
+    );
+    // Both session-authenticated and explicitly bound read-only handles can
+    // fold cold opaque history without publishing a shared derived cache.
+    for handle in [&read_db, &bound_read_db] {
+        let tx = handle.new_transaction().await.unwrap();
+        let mut docs = tx
+            .get_store::<PasswordStore<DocStore>>("docs")
+            .await
+            .unwrap();
+        docs.open("correct").unwrap();
+        assert_eq!(
+            docs.inner().await.unwrap().get("secret").await.unwrap(),
+            Value::Text("opaque value".into())
+        );
+    }
+    let request = state::opaque_request(
+        db.root_id(),
+        "docs",
+        ProjectionDescriptor {
+            name: "eidetica/opaque".into(),
+            version: 0,
+        },
+        doc_id.to_string().into_bytes(),
+        crate::backend::CacheScope::Shared,
+    );
+    assert!(
+        db.ops()
+            .resolve_store_state(&request)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        bound_read_db
+            .ops()
+            .begin_store_state_staging(request)
+            .await
+            .is_err()
+    );
+    let tx = bound_read_db.new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<RowsStore>>("rows")
+        .await
+        .unwrap();
+    assert!(encrypted.open("wrong").is_err());
+    assert!(encrypted.get_state().await.is_err());
+    encrypted.open("correct").unwrap();
+    assert_eq!(
+        encrypted
+            .get_state()
+            .await
+            .unwrap()
+            .0
+            .get(&"a".into())
+            .map(String::as_str),
+        Some("first")
+    );
+    assert_eq!(
+        encrypted
+            .projected_get(&RowsProjection, b"b")
+            .await
+            .unwrap(),
+        Some(b"second".to_vec())
+    );
+    let (page, cursor) = encrypted
+        .projected_scan_page(&RowsProjection, None, 1)
+        .await
+        .unwrap();
+    assert_eq!(page.records.len(), 1);
+    assert!(cursor.is_some());
+    let writer = db.new_transaction().await.unwrap();
+    let mut encrypted_writer = writer
+        .get_store::<PasswordStore<RowsStore>>("rows")
+        .await
+        .unwrap();
+    encrypted_writer.open("correct").unwrap();
+    writer
+        .stage_projected_delta("rows", &RowsProjection, row("c", "third"))
+        .await
+        .unwrap();
+    writer.commit().await.unwrap();
+    is_stale(
+        encrypted
+            .projected_scan_page(&RowsProjection, cursor.as_ref(), 1)
+            .await,
+    );
+    assert_eq!(
+        encrypted
+            .projected_scan_page(&RowsProjection, None, 8)
+            .await
+            .unwrap()
+            .0
+            .records
+            .len(),
+        3
+    );
+    // Knowing the password is not canonical Write authorization.
+    tx.stage_projected_delta("rows", &RowsProjection, row("forbidden", "value"))
+        .await
+        .unwrap();
+    assert!(tx.commit().await.is_err());
+    let tx = db.new_transaction().await.unwrap();
+    tx.update_subtree("rows", corrupt).await.unwrap();
+    tx.commit().await.unwrap();
+    let tx = read_db.new_transaction().await.unwrap();
+    let mut encrypted = tx
+        .get_store::<PasswordStore<RowsStore>>("rows")
+        .await
+        .unwrap();
+    encrypted.open("correct").unwrap();
+    for error in [
+        encrypted.get_state().await.unwrap_err(),
+        encrypted
+            .projected_get(&RowsProjection, b"a")
+            .await
+            .unwrap_err(),
+        encrypted
+            .projected_scan_page(&RowsProjection, None, 8)
+            .await
+            .unwrap_err(),
+    ] {
+        assert!(
+            matches!(error, crate::Error::Store(ref error) if matches!(**error, StoreError::ImplementationError { .. })),
+            "{error}"
+        );
+    }
+    stop.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
 }
 
 #[cfg(all(unix, feature = "service"))]
@@ -441,7 +779,7 @@ async fn binary_service_state_decodes_bytes_and_never_falls_back_on_bad_codec() 
         let good = MaxCounter(9).encode().unwrap();
         let mut bad = good.clone();
         bad.push(0);
-        for bytes in [good, bad] {
+        for bytes in [good, Vec::new(), bad] {
             let request: ServiceRequest = read_frame(&mut stream).await.unwrap().unwrap();
             assert!(
                 matches!(request, ServiceRequest::AuthenticatedDb(ref request) if matches!(request.op, DatabaseOp::EnsureStoreStateGeneration { .. }))
@@ -453,8 +791,31 @@ async fn binary_service_state_decodes_bytes_and_never_falls_back_on_bad_codec() 
             .await
             .unwrap();
         }
-        // A decoding error is not a capability refusal: there must be no
-        // GetVerifiedTips/GetStoreEntries fallback request on this socket.
+        for (module, kind) in [
+            ("auth", "PermissionDenied"),
+            ("auth", "SigningKeyMismatch"),
+            ("store", "TypeMismatch"),
+            ("crdt", "DeserializationFailed"),
+        ] {
+            let request: ServiceRequest = read_frame(&mut stream).await.unwrap().unwrap();
+            assert!(
+                matches!(request, ServiceRequest::AuthenticatedDb(ref request) if matches!(request.op, DatabaseOp::EnsureStoreStateGeneration { .. }))
+            );
+            write_frame(
+                &mut stream,
+                &ServerFrame::Response(Box::new(ServiceResponse::Error(
+                    crate::service::error::ServiceError {
+                        module: module.into(),
+                        kind: kind.into(),
+                        message: "explicit refusal".into(),
+                    },
+                ))),
+            )
+            .await
+            .unwrap();
+        }
+        // A Codec/auth/type/descriptor error is not a capability refusal:
+        // there must be no GetVerifiedTips/GetStoreEntries fallback request.
         assert!(
             tokio::time::timeout(
                 Duration::from_millis(100),
@@ -471,11 +832,29 @@ async fn binary_service_state_decodes_bytes_and_never_falls_back_on_bad_codec() 
             .unwrap(),
         MaxCounter(9)
     );
-    assert!(matches!(
-        conn.get_store_state::<CounterStore>(ID::default(), SigKey::default(), "counter".into())
+    for _ in 0..2 {
+        assert!(matches!(
+            conn.get_store_state::<CounterStore>(
+                ID::default(),
+                SigKey::default(),
+                "counter".into()
+            )
             .await,
-        Err(crate::Error::CRDT(_))
-    ));
+            Err(crate::Error::CRDT(_))
+        ));
+    }
+    for kind in [
+        "PermissionDenied",
+        "SigningKeyMismatch",
+        "TypeMismatch",
+        "DeserializationFailed",
+    ] {
+        let error = conn
+            .get_store_state::<CounterStore>(ID::default(), SigKey::default(), "counter".into())
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains(kind), "{error}");
+    }
     tokio::time::timeout(Duration::from_secs(5), peer)
         .await
         .unwrap()
@@ -564,14 +943,13 @@ impl crate::instance::backend::Backend for RecordlessOps {
 
 #[tokio::test]
 async fn projected_recordless_fallback_reduces_typed_history() {
-    let (instance, _) = Instance::create_backend(
-        Box::new(InMemory::new()),
-        crate::NewUser::passwordless("admin"),
-    )
-    .await
-    .unwrap();
-    let (key, _) = generate_keypair();
-    let db = Database::create(&instance, key, Doc::new()).await.unwrap();
+    let (instance, _daemon) = projection_backend().await;
+    let mut admin = instance.login_user("admin", None).await.unwrap();
+    let key = match admin.get_default_key() {
+        Ok(key) => key,
+        Err(_) => admin.add_private_key(Some("projection")).await.unwrap(),
+    };
+    let db = admin.create_database(Doc::new(), &key).await.unwrap();
     let tx = db.new_transaction().await.unwrap();
     tx.stage_projected_delta("rows", &RowsProjection, row("a", "old"))
         .await
@@ -617,6 +995,248 @@ async fn projected_recordless_fallback_reduces_typed_history() {
         .unwrap();
     assert_eq!(page.records, vec![(b"c".to_vec(), b"new".to_vec())]);
     assert!(end.is_none());
+}
+
+// Unlike unit fixtures exercised by every runner, this factory selects the real
+// backend named by the matrix. Service uses an authenticated socket, not its engine.
+async fn projection_backend() -> (
+    Instance,
+    Option<(tokio::sync::watch::Sender<()>, tempfile::TempDir)>,
+) {
+    let backend: Box<dyn crate::backend::BackendImpl> =
+        match std::env::var("TEST_BACKEND").as_deref() {
+            #[cfg(feature = "sqlite")]
+            Ok("sqlite") => Box::new(crate::backend::database::Sqlite::in_memory().await.unwrap()),
+            #[cfg(feature = "postgres")]
+            Ok("postgres") => Box::new(
+                crate::backend::database::Postgres::connect_isolated(
+                    &std::env::var("TEST_POSTGRES_URL")
+                        .unwrap_or_else(|_| "postgres://localhost/eidetica_test".into()),
+                )
+                .await
+                .unwrap(),
+            ),
+            #[cfg(all(unix, feature = "service"))]
+            Ok("service") => {
+                let dir = tempfile::tempdir().unwrap();
+                let socket = dir.path().join("projection.sock");
+                let (server, _) = Instance::create_backend(
+                    Box::new(InMemory::new()),
+                    crate::NewUser::passwordless("admin"),
+                )
+                .await
+                .unwrap();
+                let mut admin = server.login_user("admin", None).await.unwrap();
+                admin.add_private_key(Some("projection")).await.unwrap();
+                let daemon = crate::service::ServiceServer::bind(server, socket.clone())
+                    .await
+                    .unwrap();
+                let (stop, rx) = tokio::sync::watch::channel(());
+                tokio::spawn(daemon.run(rx));
+                let client = Instance::connect(format!("unix://{}", socket.display()))
+                    .await
+                    .unwrap();
+                client.login_user("admin", None).await.unwrap();
+                return (client, Some((stop, dir)));
+            }
+            Ok("inmemory") | Err(_) => Box::new(InMemory::new()),
+            Ok(other) => panic!("unsupported projection backend: {other}"),
+        };
+    let (instance, _) = Instance::create_backend(backend, crate::NewUser::passwordless("admin"))
+        .await
+        .unwrap();
+    (instance, None)
+}
+
+#[tokio::test]
+async fn projected_backend_matrix_physical_pages_and_cold_delete() {
+    let (instance, _daemon) = projection_backend().await;
+    let mut admin = instance.login_user("admin", None).await.unwrap();
+    let key = match admin.get_default_key() {
+        Ok(key) => key,
+        Err(_) => admin.add_private_key(Some("projection")).await.unwrap(),
+    };
+    let db = admin.create_database(Doc::new(), &key).await.unwrap();
+    let tx = db.new_transaction().await.unwrap();
+    let mut rows = crate::crdt::LwwMap::new();
+    for i in 0..140 {
+        rows.set(format!("{i:03}"), "old".to_string());
+    }
+    tx.stage_projected_delta("rows", &RowsProjection, StagedRows(rows))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let tx = db.new_transaction().await.unwrap();
+    let mut deleted = crate::crdt::LwwMap::new();
+    deleted.delete("000".to_string());
+    deleted.delete("139".to_string());
+    tx.stage_projected_delta("rows", &RowsProjection, StagedRows(deleted))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let tx = db.new_transaction().await.unwrap();
+    assert_eq!(
+        tx.projected_get("rows", &RowsProjection, b"000")
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        tx.projected_get("rows", &RowsProjection, b"128")
+            .await
+            .unwrap(),
+        Some(b"old".to_vec())
+    );
+    let view = tx
+        .record_view("rows", &RowsProjection)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        db.ops()
+            .store_state_record_get(&view, b"139")
+            .await
+            .unwrap(),
+        None
+    );
+    tx.stage_projected_delta("rows", &RowsProjection, row("001", "updated"))
+        .await
+        .unwrap();
+    tx.stage_projected_delta("rows", &RowsProjection, row("zzz", "new"))
+        .await
+        .unwrap();
+    let mut after = None;
+    let mut keys = Vec::new();
+    loop {
+        let (page, next) = tx
+            .projected_record_scan_page("rows", &RowsProjection, after.as_ref(), 7)
+            .await
+            .unwrap();
+        keys.extend(page.records);
+        after = next;
+        if after.is_none() {
+            break;
+        }
+    }
+    assert_eq!(keys.len(), 139);
+    assert_eq!(keys.first(), Some(&(b"001".to_vec(), b"updated".to_vec())));
+    assert_eq!(keys.last(), Some(&(b"zzz".to_vec(), b"new".to_vec())));
+    assert!(!keys.iter().any(|(k, _)| k == b"139"));
+    assert_eq!(
+        db.ops()
+            .store_state_record_get(&view, b"001")
+            .await
+            .unwrap(),
+        Some(b"old".to_vec())
+    );
+}
+
+// Deliberately simple test-only transform: authenticates the logical key in the
+// record envelope and makes its physical order different from logical order.
+struct KeyedRows;
+impl Encryptor for KeyedRows {
+    fn encrypt(&self, bytes: &[u8]) -> Result<Vec<u8>> {
+        Ok(bytes.iter().map(|byte| byte ^ 0x5a).collect())
+    }
+    fn decrypt(&self, bytes: &[u8]) -> Result<Vec<u8>> {
+        self.encrypt(bytes)
+    }
+    fn physical_record_key(&self, key: &[u8]) -> Result<Vec<u8>> {
+        Ok(key.iter().map(|byte| !byte).collect())
+    }
+    fn encrypt_record(&self, key: &[u8], value: &[u8]) -> Result<Vec<u8>> {
+        let mut envelope = vec![key.len() as u8];
+        envelope.extend_from_slice(key);
+        envelope.extend_from_slice(value);
+        self.encrypt(&envelope)
+    }
+    fn decrypt_record(&self, _: &[u8], bytes: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
+        let envelope = self.decrypt(bytes)?;
+        let (len, rest) = envelope.split_first().unwrap();
+        let (key, value) = rest.split_at(*len as usize);
+        Ok((key.to_vec(), value.to_vec()))
+    }
+    fn projection_descriptor(&self, descriptor: ProjectionDescriptor) -> ProjectionDescriptor {
+        ProjectionDescriptor {
+            name: format!("keyed/{}", descriptor.name),
+            version: descriptor.version,
+        }
+    }
+}
+
+#[tokio::test]
+async fn projected_encrypted_physical_identity_and_recordless_fallback() {
+    let (instance, _daemon) = projection_backend().await;
+    let mut admin = instance.login_user("admin", None).await.unwrap();
+    let key = match admin.get_default_key() {
+        Ok(key) => key,
+        Err(_) => admin.add_private_key(Some("projection")).await.unwrap(),
+    };
+    let db = admin.create_database(Doc::new(), &key).await.unwrap();
+    let tx = db.new_transaction().await.unwrap();
+    tx.register_encryptor("rows", Box::new(KeyedRows)).unwrap();
+    tx.stage_projected_delta("rows", &RowsProjection, row("a", "one"))
+        .await
+        .unwrap();
+    tx.stage_projected_delta("rows", &RowsProjection, row("b", "two"))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let tx = db.new_transaction().await.unwrap();
+    tx.register_encryptor("rows", Box::new(KeyedRows)).unwrap();
+    assert_eq!(
+        tx.projected_get("rows", &RowsProjection, b"a")
+            .await
+            .unwrap(),
+        Some(b"one".to_vec())
+    );
+    let view = tx
+        .record_view("rows", &RowsProjection)
+        .await
+        .unwrap()
+        .unwrap();
+    let physical_a = KeyedRows.physical_record_key(b"a").unwrap();
+    let physical_b = KeyedRows.physical_record_key(b"b").unwrap();
+    let ciphertext = db
+        .ops()
+        .store_state_record_get(&view, &physical_a)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(ciphertext, b"one");
+    assert!(
+        matches!(tx.decode_projected_record("rows", &physical_b, &ciphertext), Err(crate::Error::Store(error)) if matches!(*error, StoreError::DataCorruption { .. }))
+    );
+    let (page, end) = tx
+        .projected_record_scan_page("rows", &RowsProjection, None, 1)
+        .await
+        .unwrap();
+    assert_eq!(page.records, vec![(b"b".to_vec(), b"two".to_vec())]);
+    let (page, end) = tx
+        .projected_record_scan_page("rows", &RowsProjection, end.as_ref(), 1)
+        .await
+        .unwrap();
+    assert_eq!(page.records, vec![(b"a".to_vec(), b"one".to_vec())]);
+    assert!(end.is_none());
+
+    let recordless = db
+        .clone()
+        .with_test_ops(std::sync::Arc::new(RecordlessOps(db.backend().unwrap())));
+    let tx = recordless.new_transaction().await.unwrap();
+    tx.register_encryptor("rows", Box::new(KeyedRows)).unwrap();
+    assert_eq!(
+        tx.projected_get("rows", &RowsProjection, b"a")
+            .await
+            .unwrap(),
+        Some(b"one".to_vec())
+    );
+    let (page, next) = tx
+        .projected_record_scan_page("rows", &RowsProjection, None, 1)
+        .await
+        .unwrap();
+    assert_eq!(page.records, vec![(b"b".to_vec(), b"two".to_vec())]);
+    assert!(next.is_some());
 }
 
 #[tokio::test]
@@ -665,7 +1285,11 @@ async fn projected_streaming_history_applies_deletes_across_chunks() {
             .unwrap(),
         Some(b"old".to_vec())
     );
-    let view = tx.record_view("rows", &RowsProjection).await.unwrap();
+    let view = tx
+        .record_view("rows", &RowsProjection)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         db.ops()
             .store_state_record_get(&view, b"000")
@@ -717,7 +1341,11 @@ async fn projected_real_record_view_physical_scan_and_overlay() {
             .unwrap(),
         Some(b"old".to_vec())
     );
-    let view = tx.record_view("rows", &RowsProjection).await.unwrap();
+    let view = tx
+        .record_view("rows", &RowsProjection)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         db.ops().store_state_record_get(&view, b"b").await.unwrap(),
         Some(b"old".to_vec())
@@ -771,21 +1399,24 @@ async fn projected_real_record_view_physical_scan_and_overlay() {
 
 #[tokio::test]
 async fn projected_real_backend_fetch_rejects_racing_overlay() {
-    let (instance, _) = Instance::create_backend(
-        Box::new(InMemory::new()),
-        crate::NewUser::passwordless("admin"),
-    )
-    .await
-    .unwrap();
-    let (key, _) = generate_keypair();
-    let db = Database::create(&instance, key, Doc::new()).await.unwrap();
+    let (instance, _daemon) = projection_backend().await;
+    let mut admin = instance.login_user("admin", None).await.unwrap();
+    let key = match admin.get_default_key() {
+        Ok(key) => key,
+        Err(_) => admin.add_private_key(Some("projection")).await.unwrap(),
+    };
+    let db = admin.create_database(Doc::new(), &key).await.unwrap();
     let tx = db.new_transaction().await.unwrap();
     tx.stage_projected_delta("rows", &RowsProjection, row("a", "old"))
         .await
         .unwrap();
     tx.commit().await.unwrap();
     let tx = db.new_transaction().await.unwrap();
-    let view = tx.record_view("rows", &RowsProjection).await.unwrap();
+    let view = tx
+        .record_view("rows", &RowsProjection)
+        .await
+        .unwrap()
+        .unwrap();
     let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
     let (release_tx, release_rx) = tokio::sync::oneshot::channel();
     let reader = tx.clone();
@@ -799,6 +1430,7 @@ async fn projected_real_backend_fetch_rejects_racing_overlay() {
                 RowsProjection.descriptor(),
                 None,
                 1,
+                None,
                 move |after, limit| {
                     entered.take().unwrap().send(()).unwrap();
                     let wait = release.take().unwrap();
@@ -828,6 +1460,44 @@ async fn projected_real_backend_fetch_rejects_racing_overlay() {
     is_stale(task.await.unwrap());
 }
 
+#[cfg(all(unix, feature = "service"))]
+#[tokio::test]
+async fn remote_scan_rejects_overlay_mutation_during_final_frontier_await() {
+    let (instance, _) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        crate::NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let (key, _) = generate_keypair();
+    let db = Database::create(&instance, key, Doc::new()).await.unwrap();
+    let tx = db.new_transaction().await.unwrap();
+    let frontier = db.snapshot().await.unwrap();
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let reader = tx.clone();
+    let expected = frontier.clone();
+    let task = tokio::spawn(async move {
+        reader
+            .check_remote_scan_frontier("rows", 0, &expected, async {
+                entered_tx.send(()).unwrap();
+                release_rx.await.unwrap();
+                Ok(expected.clone())
+            })
+            .await
+    });
+    entered_rx.await.unwrap();
+    tx.stage_projected_delta("rows", &RowsProjection, row("a", "new"))
+        .await
+        .unwrap();
+    release_tx.send(()).unwrap();
+    assert!(
+        matches!(task.await.unwrap(), Err(crate::Error::Store(error)) if matches!(*error, StoreError::StaleCursor { .. }))
+    );
+    // The unchanged remote tips alone cannot justify returning the old page.
+    assert_eq!(db.snapshot().await.unwrap(), frontier);
+}
+
 #[tokio::test]
 async fn projected_page_cursor_rejects_put_delete_and_other_view() {
     let (instance, _) = Instance::create_backend(
@@ -852,9 +1522,14 @@ async fn projected_page_cursor_rejects_put_delete_and_other_view() {
         })
     };
     let (first, cursor) = tx
-        .projected_scan_page("rows", RowsProjection.descriptor(), None, 1, |_, _| {
-            backend()
-        })
+        .projected_scan_page(
+            "rows",
+            RowsProjection.descriptor(),
+            None,
+            1,
+            None,
+            |_, _| backend(),
+        )
         .await
         .unwrap();
     assert_eq!(first.records, vec![(b"a".to_vec(), b"one".to_vec())]);
@@ -869,6 +1544,7 @@ async fn projected_page_cursor_rejects_put_delete_and_other_view() {
             RowsProjection.descriptor(),
             Some(&cursor),
             1,
+            None,
             |after, _| {
                 let records = physical
                     .iter()
@@ -899,6 +1575,7 @@ async fn projected_page_cursor_rejects_put_delete_and_other_view() {
                 RowsProjection.descriptor(),
                 Some(&cursor),
                 1,
+                None,
                 |_, _| backend(),
             )
             .await,
@@ -906,7 +1583,7 @@ async fn projected_page_cursor_rejects_put_delete_and_other_view() {
     let mut different = RowsProjection.descriptor();
     different.version += 1;
     is_stale(
-        tx.projected_scan_page("rows", different, Some(&cursor), 1, |_, _| backend())
+        tx.projected_scan_page("rows", different, Some(&cursor), 1, None, |_, _| backend())
             .await,
     );
     tx.stage_projected_delta("rows", &RowsProjection, row("d", "four"))
@@ -918,14 +1595,20 @@ async fn projected_page_cursor_rejects_put_delete_and_other_view() {
             RowsProjection.descriptor(),
             Some(&cursor),
             1,
+            None,
             |_, _| backend(),
         )
         .await,
     );
     let (_, cursor) = tx
-        .projected_scan_page("rows", RowsProjection.descriptor(), None, 1, |_, _| {
-            backend()
-        })
+        .projected_scan_page(
+            "rows",
+            RowsProjection.descriptor(),
+            None,
+            1,
+            None,
+            |_, _| backend(),
+        )
         .await
         .unwrap();
     let mut deletion = crate::crdt::LwwMap::new();
@@ -939,6 +1622,7 @@ async fn projected_page_cursor_rejects_put_delete_and_other_view() {
             RowsProjection.descriptor(),
             cursor.as_ref(),
             1,
+            None,
             |_, _| backend(),
         )
         .await,
@@ -966,17 +1650,24 @@ async fn projected_page_discards_awaited_fetch_after_racing_mutation() {
         let mut entered = Some(entered_tx);
         let mut release = Some(release_rx);
         reader
-            .projected_scan_page("rows", RowsProjection.descriptor(), None, 1, move |_, _| {
-                entered.take().unwrap().send(()).unwrap();
-                let wait = release.take().unwrap();
-                async move {
-                    wait.await.unwrap();
-                    Ok(crate::backend::RecordPage {
-                        records: vec![(b"b".to_vec(), b"old".to_vec())],
-                        next: None,
-                    })
-                }
-            })
+            .projected_scan_page(
+                "rows",
+                RowsProjection.descriptor(),
+                None,
+                1,
+                None,
+                move |_, _| {
+                    entered.take().unwrap().send(()).unwrap();
+                    let wait = release.take().unwrap();
+                    async move {
+                        wait.await.unwrap();
+                        Ok(crate::backend::RecordPage {
+                            records: vec![(b"b".to_vec(), b"old".to_vec())],
+                            next: None,
+                        })
+                    }
+                },
+            )
             .await
     });
     entered_rx.await.unwrap();
@@ -1539,10 +2230,14 @@ async fn raw_sdk_registered_success_and_hard_errors_never_fetch_raw() {
     let tx = db.new_transaction().await.unwrap();
     let query = br#"{"Get":{"key":"key"}}"#.to_vec();
     let answer = tx
-        .query_store_or_fold::<Doc, _>(
+        .query_store_or_cached_fold::<Doc, _>(
             "docs",
             crate::store::DocStore::type_id(),
             query.clone(),
+            crate::store::assistance::PrivateRepresentation {
+                format: crate::store::DocStore::state_model().descriptor(),
+                configuration: Vec::new(),
+            },
             |bytes| {
                 Ok(serde_json::from_slice::<Option<crate::crdt::doc::Value>>(
                     bytes,
@@ -1556,10 +2251,14 @@ async fn raw_sdk_registered_success_and_hard_errors_never_fetch_raw() {
     // Result codec failure, malformed query, wrong type, missing source Store,
     // query encoding limit, and unsupported backend capability are hard errors.
     assert!(
-        tx.query_store_or_fold::<Doc, Doc>(
+        tx.query_store_or_cached_fold::<Doc, Doc>(
             "docs",
             crate::store::DocStore::type_id(),
             query,
+            crate::store::assistance::PrivateRepresentation {
+                format: crate::store::DocStore::state_model().descriptor(),
+                configuration: Vec::new(),
+            },
             Doc::decode,
             |_| panic!("decode error cannot fall back")
         )
@@ -1581,10 +2280,14 @@ async fn raw_sdk_registered_success_and_hard_errors_never_fetch_raw() {
         ),
     ] {
         assert!(
-            tx.query_store_or_fold::<Doc, Doc>(
+            tx.query_store_or_cached_fold::<Doc, Doc>(
                 store,
                 type_id,
                 query,
+                crate::store::assistance::PrivateRepresentation {
+                    format: crate::store::DocStore::state_model().descriptor(),
+                    configuration: Vec::new(),
+                },
                 |_| panic!("hard error cannot decode"),
                 |_| panic!("hard error cannot fall back")
             )

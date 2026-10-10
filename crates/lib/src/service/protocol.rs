@@ -49,7 +49,7 @@ pub const PROTOCOL_VERSION: u32 = 0;
 /// Common envelope revision. Incompatible request, response or notification
 /// changes advance this value; Store-owned payloads use the Store type ID.
 /// Both handshake directions require it: missing fields are never defaulted.
-pub const WIRE_REVISION: u32 = 3;
+pub const WIRE_REVISION: u32 = 4;
 
 /// Maximum frame size: 64 MiB.
 pub const MAX_FRAME_SIZE: u32 = 64 * 1024 * 1024;
@@ -130,6 +130,42 @@ pub type WireRecordMutations = Vec<(Vec<u8>, Option<Vec<u8>>)>;
 /// set-metadata) before dispatch.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DatabaseOp {
+    /// Source-sealed admission; destination, user and Derived lifecycle are fixed by the daemon.
+    BeginPrivateAssistance {
+        source: crate::store::source::StoreSource,
+        representation: crate::store::assistance::PrivateRepresentation,
+    },
+    PrivateAssistanceChunk {
+        token: String,
+        chunk_id: u64,
+        mutations: Vec<crate::backend::RecordMutation>,
+    },
+    FinishPrivateAssistance {
+        token: String,
+    },
+    PrivateAssistanceStatus {
+        token: String,
+    },
+    CancelPrivateAssistance {
+        token: String,
+    },
+    /// Physical raw storage access, not a Store query language. None is a miss;
+    /// Some(empty page) is an existing empty materialization.
+    LookupPrivateMaterialization {
+        source: crate::store::source::StoreSource,
+        representation: crate::store::assistance::PrivateRepresentation,
+        range: RecordRange,
+        after: Option<Vec<u8>>,
+    },
+    PrivateMaterializationGet {
+        token: String,
+        key: Vec<u8>,
+    },
+    PrivateMaterializationPage {
+        token: String,
+        range: RecordRange,
+        after: Option<Vec<u8>>,
+    },
     /// Read-scoped opaque dispatch at the asserted source and outer Store type.
     ResolveStoreSource {
         store: String,
@@ -143,9 +179,13 @@ pub enum DatabaseOp {
         request: crate::store::query::StoreQueryRequest,
     },
     /// Resolve cached state through an opaque view onto one published record set.
-    ResolveStoreState { request: StoreStateRequest },
+    ResolveStoreState {
+        request: StoreStateRequest,
+    },
     /// Begin a private build.
-    BeginStoreStateStaging { request: StoreStateRequest },
+    BeginStoreStateStaging {
+        request: StoreStateRequest,
+    },
     /// Upload one idempotent chunk into the private build.
     StageStoreStateRecords {
         token: String,
@@ -159,13 +199,22 @@ pub enum DatabaseOp {
         mutations: Vec<crate::backend::RecordMutation>,
     },
     /// Publish the private build and return a view onto the published record set.
-    PublishStoreState { token: String },
+    PublishStoreState {
+        token: String,
+    },
     /// Resolve the durable outcome of an ambiguous staging operation.
-    StoreStateStagingStatus { token: String },
+    StoreStateStagingStatus {
+        token: String,
+    },
     /// Discard an unfinished private build.
-    AbortStoreState { token: String },
+    AbortStoreState {
+        token: String,
+    },
     /// Fetch one record from a published record set.
-    StoreStateRecordGet { view: String, key: Vec<u8> },
+    StoreStateRecordGet {
+        view: String,
+        key: Vec<u8>,
+    },
     /// Fetch one bounded page from a published record set.
     StoreStateRecordScan {
         view: String,
@@ -187,7 +236,9 @@ pub enum DatabaseOp {
     /// the per-tree permission gate is **not** applied (the server's
     /// verification pass against the tree's pinned auth is the boundary). The
     /// `required_permission()` value below is advisory only for this variant.
-    SubmitSignedEntry { entry: Box<Entry> },
+    SubmitSignedEntry {
+        entry: Box<Entry>,
+    },
     /// The database's Verified-frontier tips (server runs `Database::snapshot`
     /// on its local instance). Gate Read.
     GetVerifiedTips,
@@ -210,24 +261,34 @@ pub enum DatabaseOp {
     },
     /// Subtree tips reachable from given main-tree entry IDs.
     /// Used by Transaction internals to discover store entries.
-    GetStoreTipsUpToEntries { store: String, up_to: Vec<ID> },
+    GetStoreTipsUpToEntries {
+        store: String,
+        up_to: Vec<ID>,
+    },
 
     /// Lowest common ancestor + path to tip entries in a store DAG.
     /// Fused to one RPC so base and path resolve against a single server
     /// view; answered from separate requests they can straddle a sync
     /// ingest and disagree.
-    ComputeMergeState { store: String, entry_ids: Vec<ID> },
+    ComputeMergeState {
+        store: String,
+        entry_ids: Vec<ID>,
+    },
 
     /// Fetch a single entry by id (gated post-fetch by its owning tree). Gate
     /// Read.
-    GetEntry { id: ID },
+    GetEntry {
+        id: ID,
+    },
 
     /// Rewrite the daemon's instance metadata (system-DB pointers). Gated by
     /// `Admin` on `_databases` (a daemon-global system tree, resolved
     /// server-side — *not* the request's `root_id`), so the per-tree gate is
     /// special-cased for this variant in the dispatcher. Boxed to keep the
     /// enum's stack footprint small — `InstanceMetadata` dominates its size.
-    SetInstanceMetadata { metadata: Box<InstanceMetadata> },
+    SetInstanceMetadata {
+        metadata: Box<InstanceMetadata>,
+    },
 
     /// Subscribe this connection to write notifications for the request's
     /// `root_id`, with an explicit initial cursor (`tips`).
@@ -254,7 +315,9 @@ pub enum DatabaseOp {
     /// the cursor stays at whatever it was). Gate Read on `root_id`.
     /// Subscriptions are cleared automatically when the connection
     /// drops.
-    SubscribeWrites { tips: Snapshot },
+    SubscribeWrites {
+        tips: Snapshot,
+    },
 
     /// Stop pushing write notifications for the request's `root_id` to this
     /// connection. Idempotent: unsubscribing a tree that wasn't subscribed
@@ -288,7 +351,15 @@ impl DatabaseOp {
             // Gated against `_databases`, not the request's `root_id`; the
             // dispatcher special-cases this so the value here is advisory.
             DatabaseOp::SetInstanceMetadata { .. } => Permission::Admin(0),
-            DatabaseOp::ResolveStoreSource { .. }
+            DatabaseOp::BeginPrivateAssistance { .. }
+            | DatabaseOp::PrivateAssistanceChunk { .. }
+            | DatabaseOp::FinishPrivateAssistance { .. }
+            | DatabaseOp::PrivateAssistanceStatus { .. }
+            | DatabaseOp::CancelPrivateAssistance { .. }
+            | DatabaseOp::LookupPrivateMaterialization { .. }
+            | DatabaseOp::PrivateMaterializationGet { .. }
+            | DatabaseOp::PrivateMaterializationPage { .. }
+            | DatabaseOp::ResolveStoreSource { .. }
             | DatabaseOp::ReadRawStore { .. }
             | DatabaseOp::QueryStore { .. }
             | DatabaseOp::BeginTransaction { .. }
@@ -471,6 +542,7 @@ pub enum ServerFrame {
 /// Response from server to client.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ServiceResponse {
+    PrivateMaterialization(Option<RecordPage>),
     StoreQuery(crate::store::query::StoreQueryReply),
     RawStore(crate::store::source::RawStorePage),
     StoreSource(crate::store::source::StoreSource),

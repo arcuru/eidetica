@@ -42,6 +42,21 @@ use crate::user::UserError;
 use crate::user::crypto::{decrypt_private_key, derive_encryption_key};
 use crate::user::types::{KeyStorage, UserInfo};
 
+/// Result of a chunk upload: a terminal build has a newly issued view token
+/// scoped to the supplied authenticated connection.
+#[derive(Debug, PartialEq, Eq)]
+pub enum StagingChunkOutcome {
+    Staged,
+    Published(String),
+}
+
+fn invalid_staging_recovery() -> crate::Error {
+    crate::Error::Io(std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        "only staging chunks may be recovered",
+    ))
+}
+
 /// How long an `Idle` per-tree subscription is kept warm before the
 /// sweep sends `UnsubscribeWrites`. A re-registration arriving inside
 /// this window transitions back to `Subscribed` without a wire call.
@@ -1087,6 +1102,30 @@ impl RemoteConnection {
 
     // === Database operations (DatabaseOp via AuthenticatedDb envelope) ===
 
+    /// Exceptional private-assistance transport. It cannot submit a legacy
+    /// arbitrary-target operation; application Store queries do not expose it.
+    pub async fn private_assistance(
+        &self,
+        root: ID,
+        identity: SigKey,
+        op: DatabaseOp,
+    ) -> crate::Result<ServiceResponse> {
+        if !matches!(
+            op,
+            DatabaseOp::BeginPrivateAssistance { .. }
+                | DatabaseOp::PrivateAssistanceChunk { .. }
+                | DatabaseOp::FinishPrivateAssistance { .. }
+                | DatabaseOp::PrivateAssistanceStatus { .. }
+                | DatabaseOp::CancelPrivateAssistance { .. }
+                | DatabaseOp::LookupPrivateMaterialization { .. }
+                | DatabaseOp::PrivateMaterializationGet { .. }
+                | DatabaseOp::PrivateMaterializationPage { .. }
+        ) {
+            return Err(invalid_staging_recovery());
+        }
+        self.db_request(root, identity, op).await
+    }
+
     pub async fn query_store(
         &self,
         root_id: ID,
@@ -1202,47 +1241,106 @@ impl RemoteConnection {
         identity: SigKey,
         store: String,
     ) -> crate::Result<S::Data> {
+        self.get_store_state_with_decrypt::<S::Data>(
+            root_id,
+            identity,
+            store,
+            S::type_id(),
+            S::state_model().descriptor(),
+            |bytes| Ok(bytes.to_vec()),
+        )
+        .await
+    }
+
+    /// Only the read-authorized maintenance refusal permits a local history
+    /// fold. The decryptor is supplied by an already unlocked client Store;
+    /// ciphertext and passwords are never sent to the daemon for projection.
+    pub(crate) async fn get_store_state_with_decrypt<D: crate::crdt::CRDT + Codec>(
+        &self,
+        root_id: ID,
+        identity: SigKey,
+        store: String,
+        expected_type: &str,
+        projection: crate::backend::ProjectionDescriptor,
+        decrypt: impl Fn(&[u8]) -> crate::Result<Vec<u8>>,
+    ) -> crate::Result<D> {
+        self.get_store_state_with_decrypt_and_frontier(
+            root_id,
+            identity,
+            store,
+            expected_type,
+            projection,
+            decrypt,
+        )
+        .await
+        .map(|(state, _)| state)
+    }
+
+    /// Return the source frontier used by a read-authorized history fold.
+    pub(crate) async fn get_store_state_with_decrypt_and_frontier<D: crate::crdt::CRDT + Codec>(
+        &self,
+        root_id: ID,
+        identity: SigKey,
+        store: String,
+        expected_type: &str,
+        projection: crate::backend::ProjectionDescriptor,
+        decrypt: impl Fn(&[u8]) -> crate::Result<Vec<u8>>,
+    ) -> crate::Result<(D, Option<crate::Snapshot>)> {
+        let identity = if identity == SigKey::default() {
+            self.session_identity().unwrap_or_default()
+        } else {
+            identity
+        };
         let response = self
             .db_request(
                 root_id.clone(),
                 identity.clone(),
                 DatabaseOp::EnsureStoreStateGeneration {
                     store: store.clone(),
-                    expected_type: S::type_id().to_string(),
-                    projection: S::state_model().descriptor(),
+                    expected_type: expected_type.to_string(),
+                    projection,
                 },
             )
             .await;
         match response {
-            Ok(ServiceResponse::StoreState(bytes)) => S::Data::decode(&bytes),
+            Ok(ServiceResponse::StoreState(bytes)) => Ok((D::decode(&bytes)?, None)),
             Err(crate::Error::Store(error))
                 if matches!(
                     *error,
                     crate::store::StoreError::RecordMaintenanceUnavailable { .. }
                 ) =>
             {
-                use crate::crdt::CRDT;
                 let tips = self
                     .get_verified_tips(root_id.clone(), identity.clone())
+                    .await?;
+                // store_at traverses Store parents, not the main DAG. A main
+                // frontier may end in an Entry which only changes another Store.
+                let store_tips = self
+                    .store_snapshot_at(
+                        root_id.clone(),
+                        identity.clone(),
+                        store.clone(),
+                        tips.clone().into_tips(),
+                    )
                     .await?;
                 let entries = self
                     .get_store_entries(
                         root_id,
                         identity,
                         store.clone(),
-                        tips.into_tips(),
+                        store_tips.into_tips(),
                         ReadScope::Verified,
                     )
                     .await?;
                 // The fallback may not publish: it owns no server maintenance
                 // capability. Fold only authorized, ordered canonical history.
-                let mut state = S::Data::default();
+                let mut state = D::default();
                 for entry in entries {
                     if let Ok(data) = entry.data(&store) {
-                        state = state.merge(&S::Data::decode(data)?)?;
+                        state = state.merge(&D::decode(&decrypt(data)?)?)?;
                     }
                 }
-                Ok(state)
+                Ok((state, Some(tips)))
             }
             Err(error) => Err(error),
             Ok(other) => Err(unexpected_response("StoreState", &other)),
@@ -1274,6 +1372,9 @@ impl RemoteConnection {
         tips: Vec<ID>,
         scope: ReadScope,
     ) -> crate::Result<Vec<Entry>> {
+        if tips.len() > crate::store::source::Limits::default().nodes {
+            return Err(crate::backend::BackendError::SourceTooLarge.into());
+        }
         let resp = self
             .db_request(
                 root_id,
@@ -1282,7 +1383,17 @@ impl RemoteConnection {
             )
             .await?;
         match resp {
-            ServiceResponse::Entries(entries) => Ok(entries),
+            ServiceResponse::Entries(entries) => {
+                let limits = crate::store::source::Limits::default();
+                if entries.len() > limits.nodes {
+                    return Err(crate::backend::BackendError::SourceTooLarge.into());
+                }
+                crate::store::source::encoded_size(
+                    &entries,
+                    limits.page_bytes.saturating_sub(128),
+                )?;
+                Ok(entries)
+            }
             other => Err(unexpected_response("Entries", &other)),
         }
     }
@@ -1293,6 +1404,11 @@ impl RemoteConnection {
         root_id: ID,
         identity: SigKey,
     ) -> crate::Result<Snapshot> {
+        let identity = if identity == SigKey::default() {
+            self.session_identity().unwrap_or_default()
+        } else {
+            identity
+        };
         let resp = self
             .db_request(root_id, identity, DatabaseOp::GetVerifiedTips)
             .await?;
@@ -1499,7 +1615,9 @@ impl RemoteConnection {
     ) -> crate::Result<Vec<u8>> {
         if !matches!(
             op,
-            DatabaseOp::StageStoreStateRecords { .. } | DatabaseOp::StageStoreStateOrdered { .. }
+            DatabaseOp::StageStoreStateRecords { .. }
+                | DatabaseOp::StageStoreStateOrdered { .. }
+                | DatabaseOp::PrivateAssistanceChunk { .. }
         ) {
             return Err(crate::Error::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -1520,7 +1638,7 @@ impl RemoteConnection {
     /// Server errors (including sequence conflicts) are not retried.
     pub async fn send_staging_chunk(&self, payload: &[u8]) -> crate::Result<()> {
         let req: ServiceRequest = serde_json::from_slice(payload)?;
-        if !matches!(req, ServiceRequest::AuthenticatedDb(ref envelope) if matches!(envelope.op, DatabaseOp::StageStoreStateRecords { .. } | DatabaseOp::StageStoreStateOrdered { .. }))
+        if !matches!(req, ServiceRequest::AuthenticatedDb(ref envelope) if matches!(envelope.op, DatabaseOp::StageStoreStateRecords { .. } | DatabaseOp::StageStoreStateOrdered { .. } | DatabaseOp::PrivateAssistanceChunk { .. }))
         {
             return Err(crate::Error::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -1531,6 +1649,86 @@ impl RemoteConnection {
         match resp {
             ServiceResponse::Error(e) => Err(service_error_to_eidetica_error(e)),
             other => Self::expect_ok(other),
+        }
+    }
+
+    /// Resolve an ambiguous chunk send using a connection the caller has already
+    /// reconnected and authenticated. The original bytes are kept until the
+    /// acknowledgement; an unknown/terminal token never starts a new build.
+    /// A published token is resolved to a fresh session-scoped view instead of
+    /// replaying into a terminal build.
+    pub async fn send_staging_chunk_with_recovery(
+        &self,
+        authenticated: &Self,
+        payload: &[u8],
+    ) -> crate::Result<StagingChunkOutcome> {
+        let req: ServiceRequest = serde_json::from_slice(payload)?;
+        let ServiceRequest::AuthenticatedDb(envelope) = req else {
+            return Err(invalid_staging_recovery());
+        };
+        let token = match &envelope.op {
+            DatabaseOp::StageStoreStateRecords { token, .. }
+            | DatabaseOp::StageStoreStateOrdered { token, .. } => token.clone(),
+            _ => return Err(invalid_staging_recovery()),
+        };
+        match self.send_staging_chunk(payload).await {
+            Ok(()) => Ok(StagingChunkOutcome::Staged),
+            Err(crate::Error::Io(_)) => {
+                let root = envelope.root_id;
+                let identity = envelope.identity;
+                match authenticated
+                    .store_state_staging_status(root.clone(), identity.clone(), token.clone())
+                    .await?
+                {
+                    Some(crate::backend::StagingStatus::Active) => {
+                        authenticated.send_staging_chunk(payload).await?;
+                        Ok(StagingChunkOutcome::Staged)
+                    }
+                    Some(crate::backend::StagingStatus::Published(_))
+                    | Some(crate::backend::StagingStatus::Adopted(_)) => {
+                        Ok(StagingChunkOutcome::Published(
+                            authenticated
+                                .publish_store_state(root, identity, token)
+                                .await?,
+                        ))
+                    }
+                    _ => Err(crate::backend::BackendError::InvalidStoreStateStagingToken.into()),
+                }
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Publish once, resolving an ambiguous transport result through the
+    /// authenticated replacement. A missing or terminal token fails closed.
+    pub async fn publish_store_state_with_recovery(
+        &self,
+        authenticated: &Self,
+        root: ID,
+        identity: SigKey,
+        token: String,
+    ) -> crate::Result<String> {
+        match self
+            .publish_store_state(root.clone(), identity.clone(), token.clone())
+            .await
+        {
+            Ok(view) => Ok(view),
+            Err(crate::Error::Io(_)) => {
+                match authenticated
+                    .store_state_staging_status(root.clone(), identity.clone(), token.clone())
+                    .await?
+                {
+                    Some(crate::backend::StagingStatus::Active)
+                    | Some(crate::backend::StagingStatus::Published(_))
+                    | Some(crate::backend::StagingStatus::Adopted(_)) => {
+                        authenticated
+                            .publish_store_state(root, identity, token)
+                            .await
+                    }
+                    _ => Err(crate::backend::BackendError::InvalidStoreStateStagingToken.into()),
+                }
+            }
+            Err(error) => Err(error),
         }
     }
 
@@ -2090,5 +2288,184 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(1), conn.wait_closed_for_test())
             .await
             .expect("wait_closed_for_test must stay resolved once closed is published");
+    }
+}
+
+/// One SDK-owned inline attempt. No worker, credentials, implicit relogin or
+/// automatic fresh target. A caller-provided authenticated connection can
+/// resume only this retained token and its exact already-encrypted frames.
+#[derive(Default)]
+pub struct PrivateCacheAssistance {
+    pending: Option<PrivateUpload>,
+}
+struct PrivateUpload {
+    root: ID,
+    identity: SigKey,
+    token: String,
+    chunks: VecDeque<Vec<u8>>,
+}
+impl PrivateCacheAssistance {
+    pub fn has_pending_upload(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    /// Called only AFTER source reconstruction succeeds. Publication failure
+    /// is diagnostic; this function always returns the already-valid result.
+    pub async fn publish_best_effort<R>(
+        &mut self,
+        connection: &RemoteConnection,
+        identity: SigKey,
+        source_and_representation: (
+            crate::store::source::StoreSource,
+            crate::store::assistance::PrivateRepresentation,
+        ),
+        mutations: Vec<crate::backend::RecordMutation>,
+        result: R,
+    ) -> R {
+        if self.pending.is_some() {
+            tracing::warn!("private cache upload still awaiting explicit recovery");
+            return result;
+        }
+        let (source, representation) = source_and_representation;
+        let attempt = async {
+            // Bound the retained SDK bytes before admission. Exact encrypted
+            // mutations are supplied once, never regenerated during retry.
+            crate::store::source::encoded_size(&mutations, 16 * 1024 * 1024)?;
+            let response = connection
+                .private_assistance(
+                    source.database.clone(),
+                    identity.clone(),
+                    DatabaseOp::BeginPrivateAssistance {
+                        source: source.clone(),
+                        representation,
+                    },
+                )
+                .await?;
+            let ServiceResponse::Token(token) = response else {
+                return Err(unexpected_response("private token", &response));
+            };
+            self.pending = Some(PrivateUpload {
+                root: source.database,
+                identity,
+                token,
+                chunks: VecDeque::new(),
+            });
+            let upload = self.pending.as_mut().unwrap();
+            let mut chunk = Vec::new();
+            let mut sequence = 0;
+            let mut chunk_bytes = 2usize;
+            for mutation in mutations {
+                let size = crate::store::source::encoded_size(
+                    &mutation,
+                    crate::store::assistance::CHUNK_BYTES,
+                )?;
+                if !chunk.is_empty()
+                    && (chunk.len() >= 128
+                        || chunk_bytes + size + 1 > crate::store::assistance::CHUNK_BYTES)
+                {
+                    upload.push(sequence, std::mem::take(&mut chunk))?;
+                    sequence += 1;
+                    chunk_bytes = 2;
+                }
+                chunk_bytes += size + usize::from(!chunk.is_empty());
+                chunk.push(mutation);
+            }
+            if !chunk.is_empty() {
+                upload.push(sequence, chunk)?;
+            }
+            self.resume(connection).await
+        }
+        .await;
+        if let Err(error) = attempt {
+            tracing::warn!(%error, "optional private cache publication failed");
+            if !matches!(
+                error,
+                crate::Error::Io(_) | crate::Error::AmbiguousStaging { .. }
+            ) {
+                // Known refusal or preparation error cannot leave a truncated
+                // frame list eligible for resume/publication.
+                if let Some(upload) = self.pending.take() {
+                    let _ = connection
+                        .private_assistance(
+                            upload.root,
+                            upload.identity,
+                            DatabaseOp::CancelPrivateAssistance {
+                                token: upload.token,
+                            },
+                        )
+                        .await;
+                }
+            }
+        }
+        result
+    }
+
+    /// Current Read and the original persisted binding are checked by the
+    /// daemon even for terminal outcomes. Unknown/expired is never a new begin.
+    pub async fn resume(&mut self, authenticated: &RemoteConnection) -> crate::Result<()> {
+        let upload = self
+            .pending
+            .as_mut()
+            .ok_or(crate::backend::BackendError::InvalidStoreStateStagingToken)?;
+        let response = authenticated
+            .private_assistance(
+                upload.root.clone(),
+                upload.identity.clone(),
+                DatabaseOp::PrivateAssistanceStatus {
+                    token: upload.token.clone(),
+                },
+            )
+            .await?;
+        match response {
+            ServiceResponse::StagingStatus(Some(
+                crate::backend::StagingStatus::Published(_)
+                | crate::backend::StagingStatus::Adopted(_),
+            )) => {
+                self.pending = None;
+                return Ok(());
+            }
+            ServiceResponse::StagingStatus(Some(crate::backend::StagingStatus::Active)) => {}
+            _ => return Err(crate::backend::BackendError::InvalidStoreStateStagingToken.into()),
+        }
+        while let Some(payload) = upload.chunks.front() {
+            authenticated.send_staging_chunk(payload).await?;
+            upload.chunks.pop_front();
+        }
+        let response = authenticated
+            .private_assistance(
+                upload.root.clone(),
+                upload.identity.clone(),
+                DatabaseOp::FinishPrivateAssistance {
+                    token: upload.token.clone(),
+                },
+            )
+            .await?;
+        RemoteConnection::expect_ok(response)?;
+        self.pending = None;
+        Ok(())
+    }
+}
+impl PrivateUpload {
+    fn push(
+        &mut self,
+        sequence: u64,
+        mutations: Vec<crate::backend::RecordMutation>,
+    ) -> crate::Result<()> {
+        let bytes = RemoteConnection::encode_staging_chunk(
+            self.root.clone(),
+            self.identity.clone(),
+            DatabaseOp::PrivateAssistanceChunk {
+                token: self.token.clone(),
+                chunk_id: sequence,
+                mutations,
+            },
+        )?;
+        if bytes.len() > crate::store::source::Limits::default().page_bytes
+            || self.chunks.iter().map(Vec::len).sum::<usize>() + bytes.len() > 16 * 1024 * 1024
+        {
+            return Err(crate::backend::BackendError::SourceTooLarge.into());
+        }
+        self.chunks.push_back(bytes);
+        Ok(())
     }
 }

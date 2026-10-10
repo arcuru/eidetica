@@ -294,6 +294,7 @@ struct PasswordEncryptor {
     password: Password,
     subtree_name: String,
     store_identity: Vec<u8>,
+    inner_type: Option<&'static str>,
     /// Cached derived key (zeroized on drop, thread-safe)
     derived_key: Arc<Mutex<DerivedKey>>,
 }
@@ -320,8 +321,14 @@ impl PasswordEncryptor {
             password,
             subtree_name,
             store_identity,
+            inner_type: None,
             derived_key: Arc::new(Mutex::new(DerivedKey::new())),
         }
+    }
+
+    fn for_store<S: Store>(mut self) -> Self {
+        self.inner_type = Some(S::type_id());
+        self
     }
 
     /// Execute a function with access to the encryption key (with caching)
@@ -401,6 +408,11 @@ impl PasswordEncryptor {
 }
 
 impl Encryptor for PasswordEncryptor {
+    fn store_type_ids(&self) -> Option<(&str, &str)> {
+        self.inner_type
+            .map(|inner| ("encrypted:password:v0", inner))
+    }
+
     fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>> {
         // Wire format: nonce (12 bytes) || ciphertext
         if ciphertext.len() < AES_GCM_NONCE_SIZE {
@@ -929,11 +941,14 @@ impl<S: Store> PasswordStore<S> {
         };
 
         // Register encryptor with transaction (store is now unlocked)
-        let encryptor = Box::new(PasswordEncryptor::new(
-            password_cache.clone(),
-            self.name.clone(),
-            self.transaction.database_id().to_string().as_bytes(),
-        ));
+        let encryptor = Box::new(
+            PasswordEncryptor::new(
+                password_cache.clone(),
+                self.name.clone(),
+                self.transaction.database_id().to_string().as_bytes(),
+            )
+            .for_store::<S>(),
+        );
         self.transaction.register_encryptor(&self.name, encryptor)?;
 
         // Update internal state
@@ -1094,11 +1109,14 @@ impl<S: Store> PasswordStore<S> {
         self.wrapped_info = Some(wrapped_info);
 
         // Register encryptor with the transaction for transparent encryption
-        let encryptor = Box::new(PasswordEncryptor::new(
-            password_cache,
-            self.name.clone(),
-            self.transaction.database_id().to_string().as_bytes(),
-        ));
+        let encryptor = Box::new(
+            PasswordEncryptor::new(
+                password_cache,
+                self.name.clone(),
+                self.transaction.database_id().to_string().as_bytes(),
+            )
+            .for_store::<S>(),
+        );
         self.transaction.register_encryptor(&self.name, encryptor)?;
 
         Ok(())
@@ -1112,6 +1130,88 @@ impl<S: Store> PasswordStore<S> {
     /// Check if the store is initialized (has encryption configuration)
     pub fn is_initialized(&self) -> bool {
         self.state() != PasswordStoreState::Uninitialized
+    }
+
+    /// Read the unlocked wrapped CRDT through authenticated service history
+    /// when the server cannot maintain an encrypted projection. The password
+    /// stays in this transaction; a capability refusal never masks a bad key.
+    pub async fn get_state(&self) -> Result<S::Data>
+    where
+        S::Data: Send,
+    {
+        if !self.is_open() {
+            return Err(StoreError::InvalidOperation {
+                store: self.name.clone(),
+                operation: "get_state".to_string(),
+                reason: "Store not opened - call open() first".to_string(),
+            }
+            .into());
+        }
+        self.transaction
+            .unlocked_store_state::<Self>(&self.name)
+            .await
+    }
+
+    /// Read one projected row using the unlocked password and physical-key identity.
+    /// The remote read-only path folds authorized history locally, never stages
+    /// server maintenance. This is a typed projection API, not a Table format switch.
+    pub async fn projected_get(
+        &self,
+        projection: &dyn super::RecordProjection<S::Data>,
+        key: &[u8],
+    ) -> Result<Option<Vec<u8>>>
+    where
+        S::Data: Send,
+    {
+        self.require_open("projected_get")?;
+        self.check_projection(projection)?;
+        self.transaction
+            .unlocked_projected_get::<S>(&self.name, projection, key)
+            .await
+    }
+
+    /// Scan one physical-order page; continuation is stale after an overlay change.
+    pub async fn projected_scan_page(
+        &self,
+        projection: &dyn super::RecordProjection<S::Data>,
+        cursor: Option<&super::TableCursor>,
+        limit: usize,
+    ) -> Result<(crate::backend::RecordPage, Option<super::TableCursor>)>
+    where
+        S::Data: Send,
+    {
+        self.require_open("projected_scan_page")?;
+        self.check_projection(projection)?;
+        self.transaction
+            .unlocked_projected_scan_page::<S>(&self.name, projection, cursor, limit)
+            .await
+    }
+
+    fn check_projection(&self, projection: &dyn super::RecordProjection<S::Data>) -> Result<()> {
+        let expected = S::state_model().descriptor();
+        let actual = projection.descriptor();
+        if expected != actual {
+            return Err(StoreError::TypeMismatch {
+                store: self.name.clone(),
+                expected: format!("{expected:?}"),
+                actual: format!("{actual:?}"),
+            }
+            .into());
+        }
+        Ok(())
+    }
+
+    fn require_open(&self, operation: &str) -> Result<()> {
+        if self.is_open() {
+            Ok(())
+        } else {
+            Err(StoreError::InvalidOperation {
+                store: self.name.clone(),
+                operation: operation.to_string(),
+                reason: "Store not opened - call open() first".to_string(),
+            }
+            .into())
+        }
     }
 
     /// Get the wrapped store, providing transparent encryption.
@@ -1203,6 +1303,18 @@ mod tests {
         assert_eq!(
             *first.record_value_material().unwrap(),
             *second.record_value_material().unwrap()
+        );
+    }
+
+    #[test]
+    fn encrypted_entry_tamper_is_not_a_maintenance_refusal() {
+        let encryptor = encryptor("secrets");
+        let mut ciphertext = encryptor.encrypt(br#"{"a":1}"#).unwrap();
+        assert_eq!(encryptor.decrypt(&ciphertext).unwrap(), br#"{"a":1}"#);
+        *ciphertext.last_mut().unwrap() ^= 1;
+        let error = encryptor.decrypt(&ciphertext).unwrap_err();
+        assert!(
+            !matches!(error, crate::Error::Store(ref e) if matches!(**e, StoreError::RecordMaintenanceUnavailable { .. }))
         );
     }
 

@@ -520,6 +520,80 @@ async fn source_sqlite_bounded_current_historical_and_oversize_entry() {
 }
 
 #[tokio::test]
+async fn legacy_collection_enforces_walk_and_response_bounds() {
+    let (_instance, engine, db, request) = fixture().await;
+    let tips = engine
+        .store_snapshot_at(db.root_id(), "docs", &request.source.main)
+        .await
+        .unwrap();
+    let mut sufficient = limits();
+    sufficient.page_bytes = 64 * 1024;
+    sufficient.source_bytes = 128 * 1024;
+    let entries = collect_entries_with_limits(
+        engine.as_ref(),
+        db.root_id(),
+        "docs",
+        tips.tips(),
+        ReadScope::Verified,
+        sufficient,
+    )
+    .await
+    .unwrap();
+    assert_eq!(entries.len(), 8);
+    let mut small = limits();
+    small.nodes = 2;
+    assert!(
+        matches!(collect_entries_with_limits(engine.as_ref(), db.root_id(), "docs", tips.tips(), ReadScope::Verified, small).await, Err(crate::Error::Backend(e)) if matches!(*e, BackendError::SourceTooLarge))
+    );
+    let mut small = limits();
+    small.page_bytes = 12 * 1024;
+    assert!(
+        matches!(collect_entries_with_limits(engine.as_ref(), db.root_id(), "docs", tips.tips(), ReadScope::Verified, small).await, Err(crate::Error::Backend(e)) if matches!(*e, BackendError::SourceTooLarge))
+    );
+}
+
+#[tokio::test]
+async fn reserved_metadata_is_fixed_not_unregistered_doc_fallback() {
+    let (_instance, engine, db, request) = fixture().await;
+    let sources = Sources::default();
+    for store in [INDEX, SETTINGS] {
+        let query = StoreQueryRequest {
+            store: store.into(),
+            ..request.clone()
+        };
+        let bound = sources
+            .resolve(engine.as_ref(), &Reader::local(), db.root_id(), &query)
+            .await
+            .unwrap();
+        assert_eq!(bound.source.type_id, DocStore::type_id());
+        sources
+            .validate_binding(engine.as_ref(), &bound.source)
+            .await
+            .unwrap();
+        let query = StoreQueryRequest {
+            expected_type: "unknown:v0".into(),
+            ..query
+        };
+        assert!(
+            sources
+                .resolve(engine.as_ref(), &Reader::local(), db.root_id(), &query)
+                .await
+                .is_err()
+        );
+    }
+    let query = StoreQueryRequest {
+        store: "unregistered".into(),
+        ..request
+    };
+    assert!(
+        sources
+            .resolve(engine.as_ref(), &Reader::local(), db.root_id(), &query)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
 async fn higher_view_selects_ancestors_without_retargeting_pinned_store_snapshots() -> Result<()> {
     let (_instance, engine, db, request) = fixture().await;
     let sources = Sources::default();

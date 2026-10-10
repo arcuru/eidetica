@@ -49,6 +49,7 @@ pub fn service_error_to_eidetica_error(err: ServiceError) -> crate::Error {
             StoreError::RecordMaintenanceUnavailable { store: err.message }.into()
         }
         ("backend", "SourceTooLarge") => BackendError::SourceTooLarge.into(),
+        ("backend", "PrivateCacheQuotaExceeded") => BackendError::PrivateCacheQuotaExceeded.into(),
         ("backend", "SourceAdmissionRefused") => BackendError::SourceAdmissionRefused.into(),
         ("backend", "InvalidRawSource") => BackendError::InvalidRawSource.into(),
         ("backend", "InvalidRawPage") => BackendError::InvalidRawPage.into(),
@@ -117,6 +118,7 @@ fn extract_id_from_message(message: &str) -> Option<ID> {
 fn error_kind_name(err: &crate::Error) -> String {
     match err {
         crate::Error::Io(_) => "Io".to_string(),
+        crate::Error::AmbiguousStaging { .. } => "AmbiguousStaging".to_string(),
         crate::Error::Serialize(_) => "Serialize".to_string(),
         crate::Error::Auth(e) => format!("{e:?}")
             .split_once(|c: char| !c.is_alphanumeric())
@@ -304,6 +306,7 @@ mod tests {
     fn wire_mapping_exhaustiveness_guard(err: &crate::Error) {
         match err {
             crate::Error::Io(_) => {}
+            crate::Error::AmbiguousStaging { .. } => {}
             crate::Error::Serialize(_) => {}
             crate::Error::Auth(_) => {}
             crate::Error::Backend(_) => {}

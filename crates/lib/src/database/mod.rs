@@ -1293,8 +1293,8 @@ impl Database {
             .into_tips();
 
         // -- merged _settings state as serde_json::Value --------------
-        let txn = Transaction::new_at(self, &main_snapshot).await?;
-        let settings_doc: Doc = txn.get_full_state(SETTINGS).await?;
+        let txn = Transaction::new_at(&db_for_tips, &main_snapshot).await?;
+        let settings_doc = txn.get_settings()?.get_all().await?;
         let settings_value = serde_json::to_value(&settings_doc)?;
 
         Ok(TransactionContext {
@@ -1355,10 +1355,27 @@ impl Database {
         &self,
         store: &str,
         tips: &[ID],
-        _scope: crate::service::protocol::ReadScope,
+        scope: crate::service::protocol::ReadScope,
     ) -> Result<Vec<Entry>> {
-        let snapshot = Snapshot::from(tips.to_vec());
-        self.ops().store_at(self.root_id(), store, &snapshot).await
+        if let Some(connection) = self.ops().remote_connection() {
+            return connection
+                .get_store_entries(
+                    self.root_id().clone(),
+                    self.auth_identity().cloned().unwrap_or_default(),
+                    store.into(),
+                    tips.to_vec(),
+                    scope,
+                )
+                .await;
+        }
+        crate::store::source::collect_entries(
+            self.instance()?.require_local_engine()?.as_ref(),
+            self.root_id(),
+            store,
+            tips,
+            scope,
+        )
+        .await
     }
 
     /// Execute a closure within a transaction and commit the result.

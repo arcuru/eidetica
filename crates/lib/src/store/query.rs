@@ -5,6 +5,7 @@
 
 use std::{future::Future, pin::Pin};
 
+pub use super::query_records::DerivedRecordPage;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -91,17 +92,19 @@ impl StoreQueryReply {
 }
 
 /// Read-only context created after outer type and complete source validation.
-/// It cannot submit writes or expose an unbound backend. No derived cache is
-/// consumed here: legacy opaque cache keys do not identify the Store type.
-pub struct StoreQueryContext {
-    store: String,
-    type_id: String,
+/// It cannot submit authoritative writes or expose an unbound backend. Installed
+/// handlers may use source-bound Derived records, never private client caches.
+pub struct StoreQueryContext<'a> {
+    pub(super) engine: &'a dyn BackendImpl,
+    pub(super) raw_source: super::source::StoreSource,
+    pub(super) store: String,
+    pub(super) type_id: String,
     source: QuerySource,
     entries: Vec<Entry>,
     snapshot: Snapshot,
 }
 
-impl StoreQueryContext {
+impl StoreQueryContext<'_> {
     pub fn source(&self) -> &QuerySource {
         &self.source
     }
@@ -109,6 +112,10 @@ impl StoreQueryContext {
     /// Store tips derived at the validated main-tree boundary.
     pub fn snapshot(&self) -> &Snapshot {
         &self.snapshot
+    }
+
+    pub fn registration(&self) -> &[u8] {
+        &self.raw_source.registration
     }
 
     pub fn store(&self) -> &str {
@@ -138,13 +145,13 @@ impl StoreQueryContext {
 /// Installed Store code, not executable code supplied by a request.
 pub trait StoreQueryHandler: Store {
     fn handle_query<'a>(
-        context: &'a StoreQueryContext,
+        context: &'a StoreQueryContext<'a>,
         query: &'a [u8],
     ) -> impl Future<Output = Result<QueryOutcome>> + Send + 'a;
 }
 
 type Dispatch = for<'a> fn(
-    &'a StoreQueryContext,
+    &'a StoreQueryContext<'a>,
     &'a [u8],
 ) -> Pin<Box<dyn Future<Output = Result<QueryOutcome>> + Send + 'a>>;
 
@@ -155,7 +162,7 @@ pub(crate) struct QueryHandler {
 }
 
 fn dispatch<'a, S: StoreQueryHandler>(
-    context: &'a StoreQueryContext,
+    context: &'a StoreQueryContext<'a>,
     query: &'a [u8],
 ) -> Pin<Box<dyn Future<Output = Result<QueryOutcome>> + Send + 'a>> {
     Box::pin(S::handle_query(context, query))
@@ -218,6 +225,8 @@ pub(crate) async fn execute(
         .find(|h| h.type_id == bound.source.type_id && !is_encrypted(h.type_id));
     let outcome = if let Some(handler) = handler {
         let context = StoreQueryContext {
+            engine,
+            raw_source: bound.source.clone(),
             store: request.store.clone(),
             type_id: bound.source.type_id.clone(),
             source: request.source.clone(),

@@ -112,6 +112,7 @@ pub struct InMemory {
     /// to eliminate lock ordering concerns between entries, verification
     /// status, and tips.
     pub(crate) inner: RwLock<InMemoryInner>,
+    pub(crate) cache_limits: crate::backend::private_cache::Limits,
     store_state_point_reads: AtomicUsize,
     store_state_scan_reads: AtomicUsize,
     #[cfg(feature = "testing")]
@@ -186,6 +187,7 @@ impl InMemory {
                 instance_secrets: None,
                 tips: HashMap::new(),
             }),
+            cache_limits: crate::backend::private_cache::Limits::default(),
             store_state_point_reads: AtomicUsize::new(0),
             store_state_scan_reads: AtomicUsize::new(0),
             #[cfg(feature = "testing")]
@@ -282,6 +284,94 @@ impl InMemory {
     }
 }
 
+fn private_usage(
+    inner: &InMemoryInner,
+    user: &str,
+) -> Result<(
+    crate::backend::private_cache::Usage,
+    crate::backend::private_cache::Usage,
+)> {
+    use crate::backend::private_cache::{Usage, namespace_metadata, record_bytes, token_metadata};
+    let mut u = Usage::default();
+    let mut g = Usage::default();
+    for (id, ns) in &inner.store_state_namespaces {
+        let request = inner
+            .staging_tokens
+            .get(id)
+            .filter(|_| !ns.ready)
+            .map_or(&ns.request, |t| &t.target);
+        if let Some(owner) = crate::backend::private_cache::private_user(request) {
+            let metadata = namespace_metadata(request);
+            let records = ns
+                .records
+                .iter()
+                .map(|(k, v)| record_bytes(k, v.as_deref()))
+                .sum::<u64>();
+            let item = Usage {
+                bytes: metadata + records,
+                metadata,
+                namespaces: 1,
+                ..Usage::default()
+            };
+            g.add(item);
+            if owner == user {
+                u.add(item);
+            }
+        }
+    }
+    for token in inner.staging_tokens.values() {
+        if let Some(owner) = crate::backend::private_cache::private_user(&token.target) {
+            let metadata = token_metadata(&token.target)?;
+            let item = Usage {
+                bytes: metadata,
+                metadata,
+                outcomes: 1,
+                active: u64::from(token.status == StagingStatus::Active),
+                ..Usage::default()
+            };
+            g.add(item);
+            if owner == user {
+                u.add(item);
+            }
+        }
+    }
+    Ok((u, g))
+}
+fn check_private_growth(
+    inner: &InMemoryInner,
+    target: &StoreStateRequest,
+    id: &str,
+    records: &RecordMutations,
+    limits: crate::backend::private_cache::Limits,
+) -> Result<()> {
+    if let Some(user) = crate::backend::private_cache::private_user(target) {
+        let (u, g) = private_usage(inner, user)?;
+        let ns = inner
+            .store_state_namespaces
+            .get(id)
+            .ok_or(BackendError::InvalidStoreStateStagingToken)?;
+        let mut old = 0;
+        let mut new = 0;
+        for (k, v) in records {
+            if let Some(prior) = ns.records.get(k) {
+                old += crate::backend::private_cache::record_bytes(k, prior.as_deref());
+            }
+            // Conservative charge for legacy tombstones; ordered deletes release
+            // this reservation on recomputation, never count as stored nulls.
+            new += crate::backend::private_cache::record_bytes(k, v.as_deref());
+        }
+        limits.check(
+            u,
+            g,
+            crate::backend::private_cache::Usage {
+                bytes: new.saturating_sub(old),
+                ..Default::default()
+            },
+        )?;
+    }
+    Ok(())
+}
+
 impl Default for InMemory {
     fn default() -> Self {
         Self::new()
@@ -291,12 +381,13 @@ impl Default for InMemory {
 #[async_trait]
 impl BackendImpl for InMemory {
     async fn resolve_store_state(&self, request: &StoreStateRequest) -> Result<Option<RecordView>> {
+        let request = crate::store::assistance::value_target(request)?;
         let inner = self.inner.read().unwrap();
         Ok(inner
             .store_state_namespaces
             .iter()
             .find(|(_, namespace)| {
-                namespace.ready && !namespace.unlinked && namespace.request == *request
+                namespace.ready && !namespace.unlinked && namespace.request == request
             })
             .map(|(namespace_id, _)| RecordView {
                 namespace_id: namespace_id.clone(),
@@ -314,6 +405,11 @@ impl BackendImpl for InMemory {
         request.lifecycle = StoreStateLifecycle::Staging;
         let namespace_id = uuid::Uuid::now_v7().to_string();
         let mut inner = self.inner.write().unwrap();
+        if let Some(user) = crate::backend::private_cache::private_user(&target) {
+            let (u, g) = private_usage(&inner, user)?;
+            self.cache_limits
+                .check(u, g, crate::backend::private_cache::admission(&target)?)?;
+        }
         inner.staging_tokens.insert(
             namespace_id.clone(),
             MemoryStagingToken {
@@ -343,6 +439,7 @@ impl BackendImpl for InMemory {
         &self,
         previous: &StagingToken,
     ) -> Result<Option<StagingToken>> {
+        let value_target = crate::store::assistance::value_target(&previous.target)?;
         let mut inner = self.inner.write().unwrap();
         let now = staging_now();
         if !crate::backend::forgotten_token_is_old(&previous.namespace_id, now)
@@ -350,7 +447,7 @@ impl BackendImpl for InMemory {
             || inner
                 .store_state_namespaces
                 .values()
-                .any(|ns| ns.ready && !ns.unlinked && ns.request == previous.target)
+                .any(|ns| ns.ready && !ns.unlinked && ns.request == value_target)
             || inner.staging_tokens.values().any(|state| {
                 state.target == previous.target
                     && state.status == StagingStatus::Active
@@ -362,6 +459,14 @@ impl BackendImpl for InMemory {
         let namespace_id = uuid::Uuid::now_v7().to_string();
         let mut staging = previous.target.clone();
         staging.lifecycle = StoreStateLifecycle::Staging;
+        if let Some(user) = crate::backend::private_cache::private_user(&previous.target) {
+            let (u, g) = private_usage(&inner, user)?;
+            self.cache_limits.check(
+                u,
+                g,
+                crate::backend::private_cache::admission(&previous.target)?,
+            )?;
+        }
         inner.staging_tokens.insert(
             namespace_id.clone(),
             MemoryStagingToken {
@@ -450,6 +555,13 @@ impl BackendImpl for InMemory {
         let next = sequence
             .checked_add(1)
             .ok_or(BackendError::InvalidStoreStateStagingToken)?;
+        check_private_growth(
+            &inner,
+            &token.target,
+            &token.namespace_id,
+            &records,
+            self.cache_limits,
+        )?;
         let namespace = inner
             .store_state_namespaces
             .get_mut(&token.namespace_id)
@@ -490,6 +602,20 @@ impl BackendImpl for InMemory {
         let next = sequence
             .checked_add(1)
             .ok_or(BackendError::InvalidStoreStateStagingToken)?;
+        let records = mutations
+            .iter()
+            .map(|m| match m {
+                RecordMutation::Put { key, value } => (key.clone(), Some(value.clone())),
+                RecordMutation::Delete { key } => (key.clone(), None),
+            })
+            .collect::<RecordMutations>();
+        check_private_growth(
+            &inner,
+            &token.target,
+            &token.namespace_id,
+            &records,
+            self.cache_limits,
+        )?;
         let namespace = inner
             .store_state_namespaces
             .get_mut(&token.namespace_id)
@@ -573,6 +699,13 @@ impl BackendImpl for InMemory {
         records: RecordMutations,
     ) -> Result<()> {
         let mut inner = self.inner.write().unwrap();
+        check_private_growth(
+            &inner,
+            &token.target,
+            &token.namespace_id,
+            &records,
+            self.cache_limits,
+        )?;
         let state = inner
             .staging_tokens
             .get_mut(&token.namespace_id)
@@ -595,6 +728,7 @@ impl BackendImpl for InMemory {
     }
 
     async fn publish_store_state(&self, token: StagingToken) -> Result<RecordView> {
+        let value_target = crate::store::assistance::value_target(&token.target)?;
         let mut inner = self.inner.write().unwrap();
         let state = inner
             .staging_tokens
@@ -611,7 +745,7 @@ impl BackendImpl for InMemory {
         if let Some((winner, _)) = inner
             .store_state_namespaces
             .iter()
-            .find(|(_, ns)| ns.ready && !ns.unlinked && ns.request == token.target)
+            .find(|(_, ns)| ns.ready && !ns.unlinked && ns.request == value_target)
         {
             let view = RecordView {
                 namespace_id: winner.clone(),
@@ -637,7 +771,7 @@ impl BackendImpl for InMemory {
         if namespace.records.values().any(Option::is_none) {
             return Err(BackendError::InvalidStoreStateStagingToken.into());
         }
-        namespace.request = token.target;
+        namespace.request = value_target;
         namespace.ready = true;
         let view = RecordView {
             namespace_id: token.namespace_id.clone(),

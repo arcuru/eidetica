@@ -60,6 +60,8 @@ pub enum BackendError {
     /// Retained or in-flight source work cannot currently be admitted.
     #[error("Canonical source work admission refused")]
     SourceAdmissionRefused,
+    #[error("Private cache resource quota exceeded")]
+    PrivateCacheQuotaExceeded,
     /// Source binding is invalid or its current posture disallows reads.
     #[error("Invalid or unavailable canonical Store source")]
     InvalidRawSource,

@@ -661,7 +661,7 @@ async fn test_find_merge_base_with_bypass_path() {
     );
 }
 
-/// Test that multi-tip merge state is cached and reused.
+/// Test that explicit opaque maintenance caches and reuses multi-tip merge state.
 ///
 /// This verifies that when reading from multiple tips, the computed merge state
 /// is cached using a synthetic ID based on sorted tip IDs, and subsequent reads
@@ -720,6 +720,16 @@ async fn test_multi_tip_merge_state_caching() {
     let store = tx.get_store::<DocStore>("data").await.unwrap();
     let state = store.get_all().await.unwrap();
 
+    // Ordinary Doc queries have their own source-bound representation. This
+    // fixture inspects the retained explicit opaque-maintenance cache instead.
+    assert_eq!(
+        ctx.database()
+            .get_store_state::<DocStore>("data")
+            .await
+            .unwrap(),
+        state
+    );
+
     // Verify we got the merged state
     assert!(state.get("base").is_some(), "Should have base data");
     assert!(state.get("left").is_some(), "Should have left branch data");
@@ -752,6 +762,13 @@ async fn test_multi_tip_merge_state_caching() {
         .unwrap();
     let store2 = tx2.get_store::<DocStore>("data").await.unwrap();
     let state2 = store2.get_all().await.unwrap();
+    assert_eq!(
+        ctx.database()
+            .get_store_state::<DocStore>("data")
+            .await
+            .unwrap(),
+        state2
+    );
 
     // Verify same data is returned from cache
     assert!(
@@ -792,7 +809,14 @@ async fn test_multi_tip_cache_key_is_order_independent() {
         .await
         .unwrap();
     let store1 = tx1.get_store::<DocStore>("data").await.unwrap();
-    let _ = store1.get_all().await.unwrap();
+    let state1 = store1.get_all().await.unwrap();
+    assert_eq!(
+        ctx.database()
+            .get_store_state::<DocStore>("data")
+            .await
+            .unwrap(),
+        state1
+    );
 
     // Get the cache key (sorted by ID ordering, then converted to strings)
     let mut sorted_ids = [diamond.left.clone(), diamond.right.clone()];
@@ -836,7 +860,14 @@ async fn test_multi_tip_cache_key_is_order_independent() {
         .await
         .unwrap();
     let store2 = tx2.get_store::<DocStore>("data").await.unwrap();
-    let _ = store2.get_all().await.unwrap();
+    let state2 = store2.get_all().await.unwrap();
+    assert_eq!(
+        ctx.database()
+            .get_store_state::<DocStore>("data")
+            .await
+            .unwrap(),
+        state2
+    );
 
     // Should use the SAME cache key (tips are sorted internally)
     let cached_reverse = ctx

@@ -5,8 +5,10 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions, TryLockError};
+use std::future::Future;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -86,6 +88,7 @@ struct SessionStaging {
 /// per-tree callback list, no separate fan-out mechanism required.
 struct ConnectionContext {
     conn_id: ConnectionId,
+    store_codecs: Arc<Vec<StoreCodec>>,
     tx: mpsc::UnboundedSender<QueuedFrame>,
     instance: Instance,
     subscribed: std::sync::Mutex<HashMap<ID, CallbackId>>,
@@ -200,11 +203,34 @@ pub struct ServiceServer {
     instance: Instance,
     query_handlers: Vec<crate::store::query::QueryHandler>,
     sources: Arc<crate::store::source::Sources>,
+    store_codecs: Vec<StoreCodec>,
     socket_path: PathBuf,
     listener: UnixListener,
     socket_identity: SocketIdentity,
     token_idle_ttl: Duration,
     _lock_file: File,
+}
+
+type StoreRead = for<'a> fn(
+    &'a Database,
+    &'a str,
+) -> Pin<Box<dyn Future<Output = crate::Result<Vec<u8>>> + Send + 'a>>;
+
+#[derive(Clone)]
+struct StoreCodec {
+    type_id: &'static str,
+    descriptor: crate::backend::ProjectionDescriptor,
+    read: StoreRead,
+}
+
+fn read_store<'a, S: crate::store::Store>(
+    db: &'a Database,
+    name: &'a str,
+) -> Pin<Box<dyn Future<Output = crate::Result<Vec<u8>>> + Send + 'a>>
+where
+    S::Data: Send,
+{
+    Box::pin(async move { db.get_store_state::<S>(name).await?.encode() })
 }
 
 #[derive(Clone, Copy)]
@@ -233,6 +259,35 @@ impl ServiceServer {
         &mut self,
     ) -> crate::Result<()> {
         crate::store::query::register_handler::<S>(&mut self.query_handlers)
+    }
+
+    /// Admit a plaintext Store codec for read-scoped maintenance. Registration
+    /// is explicit: an `_index` type or a caller descriptor alone cannot make
+    /// the daemon deserialize history with an arbitrary codec.
+    pub fn register_store<S: crate::store::Store>(&mut self) -> crate::Result<()>
+    where
+        S::Data: Send,
+    {
+        use crate::store::{Registered, StoreError};
+        let type_id = S::type_id();
+        if self
+            .store_codecs
+            .iter()
+            .any(|codec| codec.type_id == type_id)
+            || type_id == crate::store::PasswordStore::<crate::store::DocStore>::type_id()
+        {
+            return Err(StoreError::InvalidConfiguration {
+                store: type_id.into(),
+                reason: "Store codec already registered or encrypted".into(),
+            }
+            .into());
+        }
+        self.store_codecs.push(StoreCodec {
+            type_id,
+            descriptor: S::state_model().descriptor(),
+            read: read_store::<S>,
+        });
+        Ok(())
     }
 
     /// Bind the service socket and return a server ready to accept clients.
@@ -273,19 +328,23 @@ impl ServiceServer {
             }
         };
 
-        Ok(Self {
+        let mut server = Self {
             instance,
             query_handlers: crate::store::query::default_handlers(),
             sources: Arc::new(crate::store::source::Sources::new(
                 crate::store::source::Limits::default(),
                 token_idle_ttl,
             )),
+            store_codecs: Vec::new(),
             socket_path,
             listener,
             socket_identity,
             token_idle_ttl,
             _lock_file: lock_file,
-        })
+        };
+        server.register_store::<crate::store::DocStore>()?;
+        server.register_store::<crate::store::Table<serde_json::Value>>()?;
+        Ok(server)
     }
 
     /// Get the socket path.
@@ -299,6 +358,7 @@ impl ServiceServer {
     /// * `shutdown` - A watch receiver; the server stops when the sender is dropped.
     pub async fn run(self, mut shutdown: watch::Receiver<()>) -> crate::Result<()> {
         tracing::info!("Service server listening on {}", self.socket_path.display());
+        let store_codecs = Arc::new(self.store_codecs.clone());
 
         // Diagnostic per-connection counter — purely for logging. No
         // registry-based routing needed; each connection's subscriptions
@@ -319,12 +379,13 @@ impl ServiceServer {
                     match accept_result {
                         Ok((stream, _addr)) => {
                             let instance = self.instance.clone();
+                            let store_codecs = store_codecs.clone();
                             let token_idle_ttl = self.token_idle_ttl;
                             let query_handlers = self.query_handlers.clone();
                             let sources = self.sources.clone();
                             let conn_id = next_conn_id.fetch_add(1, Ordering::Relaxed);
                             handlers.spawn(async move {
-                                if let Err(e) = handle_connection(stream, instance, conn_id, token_idle_ttl, query_handlers, sources).await {
+                                if let Err(e) = handle_connection(stream, instance, store_codecs, conn_id, token_idle_ttl, query_handlers, sources).await {
                                     tracing::debug!(conn_id, "Connection handler error: {e}");
                                 }
                             });
@@ -594,6 +655,7 @@ impl Drop for ServiceServer {
 async fn handle_connection(
     stream: tokio::net::UnixStream,
     instance: Instance,
+    store_codecs: Arc<Vec<StoreCodec>>,
     conn_id: ConnectionId,
     token_idle_ttl: Duration,
     query_handlers: Vec<crate::store::query::QueryHandler>,
@@ -680,6 +742,7 @@ async fn handle_connection(
     let _writer_guard = WriterGuard(writer_task.abort_handle());
     let ctx = Arc::new(ConnectionContext {
         conn_id,
+        store_codecs,
         tx: frame_tx.clone(),
         instance: instance.clone(),
         subscribed: std::sync::Mutex::new(HashMap::new()),
@@ -843,6 +906,27 @@ async fn dispatch_inner(
                 }
             };
 
+            if matches!(
+                inner.op,
+                DatabaseOp::BeginPrivateAssistance { .. }
+                    | DatabaseOp::PrivateAssistanceChunk { .. }
+                    | DatabaseOp::FinishPrivateAssistance { .. }
+                    | DatabaseOp::PrivateAssistanceStatus { .. }
+                    | DatabaseOp::CancelPrivateAssistance { .. }
+                    | DatabaseOp::LookupPrivateMaterialization { .. }
+                    | DatabaseOp::PrivateMaterializationGet { .. }
+                    | DatabaseOp::PrivateMaterializationPage { .. }
+            ) {
+                // Borrow the actual wire shape: no copy of an oversized request.
+                #[derive(serde::Serialize)]
+                enum Envelope<'a> {
+                    AuthenticatedDb(&'a AuthenticatedDbRequest),
+                }
+                crate::store::source::encoded_size(
+                    &Envelope::AuthenticatedDb(&inner),
+                    ctx.sources.limits.page_bytes,
+                )?;
+            }
             let AuthenticatedDbRequest {
                 root_id,
                 identity,
@@ -904,9 +988,11 @@ async fn dispatch_inner(
                 connection: ctx.conn_id,
             };
             let work = match &op {
-                DatabaseOp::QueryStore { request } => {
-                    Some(ctx.sources.admit(&reader, &root_id, request)?)
-                }
+                DatabaseOp::QueryStore { request } => Some(
+                    ctx.sources
+                        .admit_serialized(&reader, &root_id, request)
+                        .await?,
+                ),
                 DatabaseOp::ResolveStoreSource {
                     store,
                     expected_type,
@@ -918,8 +1004,18 @@ async fn dispatch_inner(
                         source: source.clone(),
                         query: Vec::new(),
                     };
-                    Some(ctx.sources.admit(&reader, &root_id, &query)?)
+                    Some(
+                        ctx.sources
+                            .admit_serialized(&reader, &root_id, &query)
+                            .await?,
+                    )
                 }
+                DatabaseOp::BeginPrivateAssistance { source, .. }
+                | DatabaseOp::LookupPrivateMaterialization { source, .. } => Some(
+                    ctx.sources
+                        .admit_serialized(&reader, &root_id, &source_query(source))
+                        .await?,
+                ),
                 DatabaseOp::ReadRawStore { request } => {
                     let query = crate::store::query::StoreQueryRequest {
                         store: request.source.store.clone(),
@@ -927,7 +1023,11 @@ async fn dispatch_inner(
                         source: request.source.source.clone(),
                         query: Vec::new(),
                     };
-                    Some(ctx.sources.admit(&reader, &root_id, &query)?)
+                    Some(
+                        ctx.sources
+                            .admit_serialized(&reader, &root_id, &query)
+                            .await?,
+                    )
                 }
                 _ => None,
             };
@@ -961,6 +1061,14 @@ async fn dispatch_inner(
                         DatabaseOp::QueryStore { .. }
                             | DatabaseOp::ReadRawStore { .. }
                             | DatabaseOp::ResolveStoreSource { .. }
+                            | DatabaseOp::BeginPrivateAssistance { .. }
+                            | DatabaseOp::PrivateAssistanceChunk { .. }
+                            | DatabaseOp::FinishPrivateAssistance { .. }
+                            | DatabaseOp::PrivateAssistanceStatus { .. }
+                            | DatabaseOp::CancelPrivateAssistance { .. }
+                            | DatabaseOp::LookupPrivateMaterialization { .. }
+                            | DatabaseOp::PrivateMaterializationGet { .. }
+                            | DatabaseOp::PrivateMaterializationPage { .. }
                     ),
                 )
                 .await?;
@@ -1025,6 +1133,105 @@ async fn dispatch_database_op(
     op: DatabaseOp,
 ) -> crate::Result<ServiceResponse> {
     match op {
+        DatabaseOp::BeginPrivateAssistance {
+            source,
+            representation,
+        } => {
+            let reader = private_reader(ctx, user_uuid, acting_pubkey);
+            ctx.sources.check_source(&reader, &root_id, &source)?;
+            ctx.sources
+                .validate_binding(instance.require_local_engine()?.as_ref(), &source)
+                .await?;
+            let target =
+                crate::store::assistance::Binding::target(&reader, &source, &representation)?;
+            let token = instance.backend().begin_store_state_staging(target).await?;
+            Ok(ServiceResponse::Token(token.namespace_id))
+        }
+        DatabaseOp::LookupPrivateMaterialization {
+            source,
+            representation,
+            range,
+            after,
+        } => {
+            let reader = private_reader(ctx, user_uuid, acting_pubkey);
+            ctx.sources.check_source(&reader, &root_id, &source)?;
+            ctx.sources
+                .validate_binding(instance.require_local_engine()?.as_ref(), &source)
+                .await?;
+            let target =
+                crate::store::assistance::Binding::target(&reader, &source, &representation)?;
+            let page = if let Some(view) = instance.backend().resolve_store_state(&target).await? {
+                Some(private_page(instance, &view, &range, after.as_deref()).await?)
+            } else {
+                None
+            };
+            bounded_private_response(ctx, ServiceResponse::PrivateMaterialization(page))
+        }
+        DatabaseOp::PrivateAssistanceChunk {
+            token,
+            chunk_id,
+            mutations,
+        } => {
+            let backend =
+                private_token(instance, ctx, user_uuid, acting_pubkey, &root_id, &token).await?;
+            let encoded = serde_json::to_vec(&mutations)?;
+            if encoded.len() > crate::store::assistance::CHUNK_BYTES {
+                return Err(crate::backend::BackendError::RecordTooLarge {
+                    encoded_bytes: encoded.len(),
+                }
+                .into());
+            }
+            let digest = blake3::hash(&encoded);
+            instance
+                .backend()
+                .stage_store_state_ordered_chunk(&backend, chunk_id, digest.as_bytes(), mutations)
+                .await?;
+            Ok(ServiceResponse::Ok)
+        }
+        DatabaseOp::FinishPrivateAssistance { token } => {
+            let backend =
+                private_token(instance, ctx, user_uuid, acting_pubkey, &root_id, &token).await?;
+            instance.backend().publish_store_state(backend).await?;
+            Ok(ServiceResponse::Ok)
+        }
+        DatabaseOp::PrivateAssistanceStatus { token } => {
+            let backend =
+                private_token(instance, ctx, user_uuid, acting_pubkey, &root_id, &token).await?;
+            Ok(ServiceResponse::StagingStatus(
+                instance
+                    .backend()
+                    .store_state_staging_status(&backend)
+                    .await?,
+            ))
+        }
+        DatabaseOp::CancelPrivateAssistance { token } => {
+            let backend =
+                private_token(instance, ctx, user_uuid, acting_pubkey, &root_id, &token).await?;
+            instance.backend().abort_store_state(backend).await?;
+            Ok(ServiceResponse::Ok)
+        }
+        DatabaseOp::PrivateMaterializationGet { token, key } => {
+            let backend =
+                private_token(instance, ctx, user_uuid, acting_pubkey, &root_id, &token).await?;
+            let view = private_view(instance, &backend).await?;
+            let record = instance
+                .backend()
+                .store_state_record_get(&view, &key)
+                .await?;
+            ensure_record_fits(record.as_ref())?;
+            bounded_private_response(ctx, ServiceResponse::Record(record))
+        }
+        DatabaseOp::PrivateMaterializationPage {
+            token,
+            range,
+            after,
+        } => {
+            let backend =
+                private_token(instance, ctx, user_uuid, acting_pubkey, &root_id, &token).await?;
+            let view = private_view(instance, &backend).await?;
+            let page = private_page(instance, &view, &range, after.as_deref()).await?;
+            bounded_private_response(ctx, ServiceResponse::PrivateMaterialization(Some(page)))
+        }
         DatabaseOp::ResolveStoreSource {
             store,
             expected_type,
@@ -1361,7 +1568,7 @@ async fn dispatch_database_op(
             expected_type,
             projection,
         } => {
-            use crate::store::{DocStore, Registered, Store, StoreError, Table};
+            use crate::store::StoreError;
 
             // The per-tree Read gate above runs before looking up metadata or
             // doing internal cache maintenance. Never trust the caller's codec.
@@ -1376,36 +1583,20 @@ async fn dispatch_database_op(
                 }
                 .into());
             }
-            let known = if actual == DocStore::type_id() {
-                DocStore::state_model().descriptor()
-            } else if actual == Table::<serde_json::Value>::type_id() {
-                Table::<serde_json::Value>::state_model().descriptor()
-            } else if actual == crate::store::PasswordStore::<DocStore>::type_id() {
-                // PasswordStore's registry identity does not reveal its wrapped
-                // codec. Both known wrappers have distinct effective descriptors;
-                // validate the claim, but never materialize encrypted history
-                // without the key or accept a caller-produced projection.
-                let candidates = [
-                    crate::store::PasswordStore::<DocStore>::state_model().descriptor(),
-                    crate::store::PasswordStore::<Table<serde_json::Value>>::state_model()
-                        .descriptor(),
-                ];
-                if !candidates.contains(&projection) {
-                    return Err(StoreError::TypeMismatch {
-                        store,
-                        expected: format!("{candidates:?}"),
-                        actual: format!("{projection:?}"),
-                    }
-                    .into());
-                }
-                return Err(StoreError::RecordMaintenanceUnavailable { store }.into());
-            } else {
+            // An encrypted wrapper conceals the underlying codec in `_index`.
+            // Neither an encrypted nor a claimed plaintext descriptor proves
+            // its effective projection. Never dispatch it to a plaintext codec.
+            let Some(codec) = ctx
+                .store_codecs
+                .iter()
+                .find(|codec| codec.type_id == actual)
+            else {
                 return Err(StoreError::RecordMaintenanceUnavailable { store }.into());
             };
-            if projection != known {
+            if projection != codec.descriptor {
                 return Err(StoreError::TypeMismatch {
                     store,
-                    expected: format!("{known:?}"),
+                    expected: format!("{:?}", codec.descriptor),
                     actual: format!("{projection:?}"),
                 }
                 .into());
@@ -1415,7 +1606,7 @@ async fn dispatch_database_op(
             let probe = crate::store::state::opaque_request(
                 &root_id,
                 &store,
-                known,
+                codec.descriptor.clone(),
                 Vec::new(),
                 CacheScope::Shared,
             );
@@ -1426,15 +1617,9 @@ async fn dispatch_database_op(
                 Err(err) => return Err(err),
                 Ok(_) => {}
             }
-            // Both supported plaintext codecs currently encode Doc. A new
-            // canonical Data type must get its own registered dispatch here.
-            let value = if actual == DocStore::type_id() {
-                db.get_store_state::<DocStore>(&store).await?
-            } else {
-                db.get_store_state::<Table<serde_json::Value>>(&store)
-                    .await?
-            };
-            Ok(ServiceResponse::StoreState(value.encode()?))
+            Ok(ServiceResponse::StoreState(
+                (codec.read)(&db, &store).await?,
+            ))
         }
 
         DatabaseOp::GetStoreEntries { store, tips, scope } => {
@@ -1682,7 +1867,10 @@ fn session_store_state_request(
     user_uuid: &str,
     database: &ID,
 ) -> crate::Result<StoreStateRequest> {
-    if request.database != *database || request.lifecycle != StoreStateLifecycle::Derived {
+    if request.database != *database
+        || request.lifecycle != StoreStateLifecycle::Derived
+        || request.projection.name == crate::store::assistance::PRIVATE_PROJECTION
+    {
         return Err(crate::backend::BackendError::InvalidStoreStateStagingToken.into());
     }
     match &request.scope {
@@ -1708,11 +1896,97 @@ async fn scoped_staging_token(
         .store_state_staging_token(id)
         .await?
         .ok_or(crate::backend::BackendError::InvalidStoreStateStagingToken)?;
-    if token.target.database != *database || token.target.scope != CacheScope::User(user.to_owned())
+    if token.target.database != *database
+        || token.target.scope != CacheScope::User(user.to_owned())
+        || token.target.projection.name == crate::store::assistance::PRIVATE_PROJECTION
     {
         return Err(crate::backend::BackendError::InvalidStoreStateStagingToken.into());
     }
     Ok(token)
+}
+
+fn private_reader(
+    ctx: &ConnectionContext,
+    user: &str,
+    principal: &PublicKey,
+) -> crate::store::source::Reader {
+    crate::store::source::Reader {
+        user: user.into(),
+        principal: principal.to_string(),
+        connection: ctx.conn_id,
+    }
+}
+fn source_query(
+    source: &crate::store::source::StoreSource,
+) -> crate::store::query::StoreQueryRequest {
+    crate::store::query::StoreQueryRequest {
+        store: source.store.clone(),
+        expected_type: source.type_id.clone(),
+        source: source.source.clone(),
+        query: Vec::new(),
+    }
+}
+async fn private_token(
+    instance: &Instance,
+    ctx: &ConnectionContext,
+    user: &str,
+    principal: &PublicKey,
+    root: &ID,
+    id: &str,
+) -> crate::Result<StagingToken> {
+    let reader = private_reader(ctx, user, principal);
+    let (token, _) = instance
+        .backend()
+        .store_state_staging_token(id)
+        .await?
+        .ok_or(crate::backend::BackendError::InvalidStoreStateStagingToken)?;
+    if &token.target.database != root {
+        return Err(crate::backend::BackendError::InvalidStoreStateStagingToken.into());
+    }
+    let binding = crate::store::assistance::Binding::from_target(&reader, &token.target)?;
+    let work = ctx
+        .sources
+        .admit_serialized(&reader, root, &source_query(&binding.source))
+        .await?;
+    *ctx.response_work.lock().unwrap() = Some(work);
+    ctx.sources
+        .validate_binding(instance.require_local_engine()?.as_ref(), &binding.source)
+        .await?;
+    Ok(token)
+}
+async fn private_view(
+    instance: &Instance,
+    token: &StagingToken,
+) -> crate::Result<crate::backend::RecordView> {
+    match instance.backend().store_state_staging_status(token).await? {
+        Some(
+            crate::backend::StagingStatus::Published(view)
+            | crate::backend::StagingStatus::Adopted(view),
+        ) => Ok(view),
+        _ => Err(crate::backend::BackendError::InvalidStoreStateView.into()),
+    }
+}
+async fn private_page(
+    instance: &Instance,
+    view: &crate::backend::RecordView,
+    range: &crate::backend::RecordRange,
+    after: Option<&[u8]>,
+) -> crate::Result<crate::backend::RecordPage> {
+    let page = instance
+        .backend()
+        .store_state_record_scan(view, range, after, 128)
+        .await?;
+    bounded_page(page, crate::service::protocol::MAX_RECORD_PAGE_BYTES)
+}
+fn bounded_private_response(
+    ctx: &ConnectionContext,
+    response: ServiceResponse,
+) -> crate::Result<ServiceResponse> {
+    crate::store::source::encoded_size(
+        &ServerFrame::Response(Box::new(response.clone())),
+        ctx.sources.limits.page_bytes,
+    )?;
+    Ok(response)
 }
 
 /// Handle `ServiceRequest::TrustedLoginUser`: look up the user's full record,

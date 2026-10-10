@@ -72,6 +72,17 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 /// delegates `Display` and `source()` through the wrapper.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// The caller must supply a newly authenticated connection to resolve this upload.
+    #[error(
+        "Remote Store-state staging outcome is ambiguous for token {token}, chunk {chunk:?}: {source}"
+    )]
+    AmbiguousStaging {
+        token: String,
+        chunk: Option<u64>,
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -157,7 +168,7 @@ impl Error {
             Error::Entry(_) => "entry",
             Error::Id(_) => "id",
             Error::User(_) => "user",
-            Error::Io(_) => "io",
+            Error::Io(_) | Error::AmbiguousStaging { .. } => "io",
             Error::Serialize(_) => "serialize",
         }
     }
