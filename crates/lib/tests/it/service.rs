@@ -36,6 +36,7 @@ use crate::helpers::LocalBackendTestExt;
 mod private_assistance;
 mod query;
 mod sdk_cache;
+mod table_query;
 
 /// Read the next server frame and unwrap it as a `ServiceResponse`. Tests
 /// that drive the server at the raw protocol layer don't subscribe to
@@ -1176,6 +1177,111 @@ async fn read_scoped_ensure_generation_authorizes_before_maintenance() {
     };
     assert!(
         conn.begin_store_state_staging(bob_identity.clone(), request)
+            .await
+            .is_err()
+    );
+}
+
+/// A read-only service client can cold-read a Table through server-owned
+/// maintenance; it must not need a client staging token to materialize rows.
+#[tokio::test]
+async fn read_only_table_cold_get_and_scan_use_server_maintenance() {
+    use eidetica::auth::types::{AuthKey, Permission};
+    let (socket, _shutdown, server, _dir) = start_test_server().await;
+    create_user_via_admin(&server, "alice").await;
+    create_user_via_admin(&server, "bob").await;
+    let mut alice = server.login_user("alice", None).await.unwrap();
+    let key = alice.get_default_key().unwrap();
+    let db = alice.create_database(Doc::new(), &key).await.unwrap();
+    let root = db.root_id().clone();
+    db.with_transaction(|tx| async move {
+        let table = tx.get_store::<Table<ServiceTodo>>("rows").await?;
+        table
+            .set(
+                "a.b",
+                ServiceTodo {
+                    title: "first".into(),
+                    done: false,
+                },
+            )
+            .await?;
+        table
+            .set(
+                "a",
+                ServiceTodo {
+                    title: "second".into(),
+                    done: true,
+                },
+            )
+            .await?;
+        tx.get_settings()?
+            .set_global_auth_key(AuthKey::active(None, Permission::Read))
+            .await?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let client = Instance::connect(format!("unix://{}", socket.display()))
+        .await
+        .unwrap();
+    client.login_user("bob", None).await.unwrap();
+    let bob = server.login_user("bob", None).await.unwrap();
+    let identity = eidetica::auth::types::SigKey::from_pubkey(&bob.get_default_key().unwrap());
+    let remote = eidetica::Database::open_remote(&client, remote_conn(&client), &root, identity)
+        .await
+        .unwrap();
+    let raw = remote
+        .get_store_viewer::<eidetica::store::RawTable>("rows")
+        .await
+        .unwrap();
+    assert_eq!(
+        raw.get("a.b").await.unwrap(),
+        serde_json::to_vec(&ServiceTodo {
+            title: "first".into(),
+            done: false,
+        })
+        .unwrap()
+    );
+    let raw_first = raw.scan_page(None, 1).await.unwrap();
+    assert_eq!(raw_first.rows[0].0, "a");
+    let raw_second = raw.scan_page(raw_first.next.as_ref(), 1).await.unwrap();
+    assert_eq!(raw_second.rows[0].0, "a.b");
+    assert!(raw_second.next.is_none());
+
+    let table = remote
+        .get_store_viewer::<Table<ServiceTodo>>("rows")
+        .await
+        .unwrap();
+    assert_eq!(table.get("a.b").await.unwrap().title, "first");
+    let page = table.scan_page(None, 10).await.unwrap();
+    assert_eq!(
+        page.rows
+            .iter()
+            .map(|(k, _)| k.as_str())
+            .collect::<Vec<_>>(),
+        ["a", "a.b"]
+    );
+    assert!(page.next.is_none());
+
+    db.with_transaction(|tx| async move {
+        tx.get_settings()?
+            .set_global_auth_key(AuthKey::new(
+                None,
+                Permission::Read,
+                eidetica::auth::types::KeyStatus::Revoked,
+            ))
+            .await
+    })
+    .await
+    .unwrap();
+    assert!(
+        raw.get("a.b").await.is_err(),
+        "cached format identity must not bypass a revoked Read grant"
+    );
+    assert!(raw.scan_page(None, 1).await.is_err());
+    assert!(
+        remote
+            .get_store_viewer::<eidetica::store::RawTable>("rows")
             .await
             .is_err()
     );
@@ -3160,8 +3266,166 @@ async fn test_historical_table_service_reads_use_row_record_set() {
     assert!(second.next.is_none());
 }
 
-/// A warm encrypted `Table` point read stays on the service's point-record
-/// path: it neither scans the published row set nor reconstructs Store history.
+/// Default daemon Table maintenance copies bytes without a JSON row decoder.
+#[tokio::test]
+async fn test_opaque_table_cold_socket_projection_preserves_exact_bytes() {
+    use eidetica::store::RawBytes;
+    type BytesTable = Table<Vec<u8>, RawBytes>;
+    let (socket, _stop, server, _dir) = start_test_server().await;
+    let (client, root, identity) = setup_db(&server, &socket, "alice").await;
+    let owner = server.login_user("alice", None).await.unwrap();
+    let database = owner.open_database(&root).await.unwrap();
+    let tx = database.new_transaction().await.unwrap();
+    let table = tx.get_store::<BytesTable>("opaque_rows").await.unwrap();
+    let payloads = [vec![], vec![0xff, 0, 0x80], b" { \"n\" : 1.00 } ".to_vec()];
+    for (index, bytes) in payloads.iter().enumerate() {
+        table.set(index.to_string(), bytes.clone()).await.unwrap();
+    }
+    tx.commit().await.unwrap();
+    server.backend().clear_derived_store_state().await.unwrap();
+    let engine = server.backend().local_engine().unwrap();
+    let memory = engine.as_any().downcast_ref::<InMemory>().unwrap();
+    assert_eq!(memory.store_state_record_count(&root, "opaque_rows"), 0);
+    let remote =
+        eidetica::Database::open_remote(&client, remote_conn(&client), &root, identity.clone())
+            .await
+            .unwrap();
+    let table = remote
+        .get_store_viewer::<BytesTable>("opaque_rows")
+        .await
+        .unwrap();
+    assert_eq!(table.get("1").await.unwrap(), payloads[1]);
+    assert_eq!(memory.store_state_record_count(&root, "opaque_rows"), 3);
+    let records = memory.store_state_records(&root, "opaque_rows").unwrap();
+    for (index, bytes) in payloads.iter().enumerate() {
+        assert_eq!(
+            records
+                .get(index.to_string().as_bytes())
+                .and_then(|value| value.as_ref())
+                .map(|value| &value[b"eidetica/query-record/v0\0".len() + 64..]),
+            Some(bytes.as_slice())
+        );
+    }
+    assert_eq!(table.scan_page(None, 3).await.unwrap().rows.len(), 3);
+    // A second actual server clear reaches the encoded complete-state RPC,
+    // rather than merely resolving the first point-read generation.
+    server.backend().clear_derived_store_state().await.unwrap();
+    let state = remote_conn(&client)
+        .get_store_state::<BytesTable>(root, identity, "opaque_rows".into())
+        .await
+        .unwrap();
+    for (index, bytes) in payloads.iter().enumerate() {
+        assert_eq!(state.0.get(&index.to_string()).unwrap().as_ref(), bytes);
+    }
+}
+
+/// Full encrypted cold rebuild over an authenticated Unix socket, not a local
+/// fixture running under the service test runner.
+#[tokio::test]
+async fn test_encrypted_table_streamed_cold_rebuild_over_socket() {
+    let (socket, _stop, server, _dir) = start_test_server().await;
+    create_user_via_admin(&server, "alice").await;
+    let mut alice = server.login_user("alice", None).await.unwrap();
+    let key = alice.get_default_key().unwrap();
+    let db = alice.create_database(Doc::new(), &key).await.unwrap();
+    let store = "socket_streamed_rows";
+    super::store::password_store::populate_streamed_password_table(&db, store).await;
+    server.backend().clear_derived_store_state().await.unwrap();
+    server.backend().clear_derived_store_state().await.unwrap();
+    let client = login_client(&socket, "alice").await;
+    let identity = eidetica::Database::find_sigkeys(&server, db.root_id(), &key)
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap()
+        .0;
+    let remote =
+        eidetica::Database::open_remote(&client, remote_conn(&client), db.root_id(), identity)
+            .await
+            .unwrap();
+    let tx = remote.new_transaction().await.unwrap();
+    let mut wrong = tx
+        .get_store::<PasswordStore<Table<super::store::password_store::PasswordTestRecord>>>(store)
+        .await
+        .unwrap();
+    assert!(wrong.open("wrong").is_err());
+    super::store::password_store::check_streamed_password_table(&remote, store).await;
+    let memory = server.backend().local_engine().unwrap();
+    let memory = memory.as_any().downcast_ref::<InMemory>().unwrap();
+    let records = memory.store_state_records(db.root_id(), store).unwrap();
+    assert_eq!(records.len(), 217);
+    assert!(
+        records
+            .iter()
+            .all(|(key, value)| key.len() == 32 && value.is_some())
+    );
+    // A late, validly signed Entry with a corrupt encrypted payload must fail
+    // after earlier chunks were staged, without exposing the new generation.
+    super::store::password_store::inject_late_corrupt_encrypted_entry(&db, &alice, store).await;
+    server.backend().clear_derived_store_state().await.unwrap();
+    server.backend().clear_derived_store_state().await.unwrap();
+    super::store::password_store::assert_failed_cold_build_unpublished(&remote, store).await;
+}
+
+#[tokio::test]
+async fn test_encrypted_table_socket_rejects_wrong_physical_identity() {
+    let (socket, _stop, server, _dir) = start_test_server().await;
+    create_user_via_admin(&server, "alice").await;
+    let mut alice = server.login_user("alice", None).await.unwrap();
+    let key = alice.get_default_key().unwrap();
+    let db = alice.create_database(Doc::new(), &key).await.unwrap();
+    let store = "socket_identity_rows";
+    super::store::password_store::populate_streamed_password_table(&db, store).await;
+    let client = login_client(&socket, "alice").await;
+    let identity = eidetica::Database::find_sigkeys(&server, db.root_id(), &key)
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap()
+        .0;
+    let remote =
+        eidetica::Database::open_remote(&client, remote_conn(&client), db.root_id(), identity)
+            .await
+            .unwrap();
+    super::store::password_store::check_streamed_password_table(&remote, store).await;
+    super::store::password_store::assert_wrong_physical_identity_rejected(&remote, &server, store)
+        .await;
+}
+
+#[tokio::test]
+async fn test_encrypted_table_recordless_socket_reads_ordered_history() {
+    use super::transaction::record_fallback::Recordless;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let socket = dir.path().join("recordless-rows.sock");
+    let (server, _) = Instance::create_backend(
+        Box::new(Recordless::new(InMemory::new())),
+        NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let mut admin = server.login_user("admin", None).await.unwrap();
+    let key = admin.add_private_key(Some("rows")).await.unwrap();
+    let db = admin.create_database(Doc::new(), &key).await.unwrap();
+    let store = "recordless_rows";
+    super::store::password_store::populate_streamed_password_table(&db, store).await;
+    let (stop, rx) = watch::channel(());
+    let daemon = ServiceServer::bind(server.clone(), &socket).await.unwrap();
+    let task = tokio::spawn(daemon.run(rx));
+    let client = Instance::connect(format!("unix://{}", socket.display()))
+        .await
+        .unwrap();
+    let remote_user = client.login_user("admin", None).await.unwrap();
+    let remote = remote_user.open_database(db.root_id()).await.unwrap();
+    super::store::password_store::check_streamed_password_table(&remote, store).await;
+    stop.send(()).unwrap();
+    task.await.unwrap().unwrap();
+}
+
+/// Warm encrypted Table reads use a bounded private exact-key page, not client
+/// history replay. Daemon source validation still has its own metadata cost.
 #[tokio::test]
 async fn test_warm_encrypted_table_service_point_read_is_lazy() {
     let (socket_path, _tx, server, _dir) = start_test_server().await;
@@ -3247,13 +3511,13 @@ async fn test_warm_encrypted_table_service_point_read_is_lazy() {
     assert_eq!(table.get("c").await.unwrap().title, "c");
     assert_eq!(
         memory.store_state_read_counts(),
-        (before_records.0 + 3, before_records.1),
-        "a warm point read fetches PasswordStore metadata and one table row without scanning"
+        (before_records.0, before_records.1 + 1),
+        "metadata queries read canonical source, not old cache records; the warm row fetch is one bounded exact-key private page"
     );
     assert_eq!(
         memory.store_history_read_count(),
         before_history,
-        "a warm point read must not reconstruct Store history"
+        "no legacy whole-history Store fold is needed; source metadata validation remains separate"
     );
 }
 
@@ -4969,7 +5233,7 @@ async fn test_remote_backend_resume_lost_request_response_and_restart() {
             .unwrap(),
         Some(b"second".to_vec())
     );
-    let second_view = backend.publish_store_state(second).await.unwrap();
+    let second_view = backend.publish_store_state(second.clone()).await.unwrap();
     assert_eq!(
         backend
             .store_state_record_get(&second_view, b"reply")
@@ -4977,12 +5241,18 @@ async fn test_remote_backend_resume_lost_request_response_and_restart() {
             .unwrap(),
         Some(b"accepted".to_vec())
     );
-    assert!(matches!(
-        conn.store_state_staging_status(root, identity, token.testing_namespace_id().to_string())
+    for retained in [&token, &second] {
+        assert!(matches!(
+            conn.store_state_staging_status(
+                root.clone(),
+                identity.clone(),
+                retained.testing_namespace_id().to_string()
+            )
             .await
             .unwrap(),
-        Some(StagingStatus::Published(_))
-    ));
+            Some(StagingStatus::Published(_))
+        ));
+    }
 }
 
 /// A lost publication acknowledgement resolves the terminal token to a new

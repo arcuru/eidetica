@@ -196,6 +196,64 @@ for (id, user) in active_users {
 # }
 ```
 
+Table keys are exact opaque UTF-8 strings: `a`, `a.b`, `.` and the empty key are independent.
+`Table<T, C = SerdeJson>` stores exactly the bytes produced by row codec `C`
+in strict DAG-CBOR `TableData` operations. The default codec encodes typed JSON
+directly, retaining full Rust integer ranges; `RawBytes` preserves arbitrary
+bytes. Custom codecs implement `RowCodec<T>` with a stable `FORMAT_ID` and need
+no Serde or Clone on `T`. Handles clone without `T: Clone` or `C: Clone`.
+Reads decode only requested rows; projections and history folds never parse or
+normalize row bytes. Plain scans follow exact UTF-8 key order in bounded pages,
+while encrypted scans follow opaque physical-key order. `table:v0.1` has no
+legacy `table:v0` decoder or migration. The built-in codec identities are `json:v0`
+and `raw:v0`; the experimental Store identity also versions Table query semantics.
+
+`get`, `scan_page` and `search` use Table-owned plans. The same plans are available
+through `Store::query` with `GetRow`, `ScanRows` and `SearchRows`. Only delegated
+physical point/page messages are serialized; public queries may borrow, and a
+search predicate need not be Send or Clone. A page inspects at most 128 physical
+rows. Cursors become stale after overlay, format or remote-frontier changes.
+Encrypted Tables keep their keys and application decoding client-side, automatically
+reuse private record caches, and reconstruct a missing or damaged derived cache
+once from the same source. Optional inline cache publication can add read latency
+but cannot replace a valid result with an upload failure.
+
+Table creation stores `C::FORMAT_ID` in `config.row_codec`, including inside
+PasswordStore's encrypted configuration. Typed opens, reads and writes reject a
+mismatched or missing identity. Existing LWW configuration semantics select the
+required codec; historical disagreement does not veto the winning configuration.
+This identifies an encoding, not an application schema. Rows that the matching
+codec cannot decode are skipped with warnings, without deleting their raw bytes.
+Point reads report those rows as missing; scans can return an empty page with a
+continuation cursor. A failed row decode never falls back to an older row value.
+If a source Entry's Table operation payload cannot be decoded, replay skips the
+whole payload with a warning. No partial update or delete from that payload is
+applied, so older state may remain visible. Original Entry bytes are retained.
+This tolerance applies only to source payloads and application rows: authorization,
+decryption, ancestry, storage, source-binding, wire, staging and codec-selection errors still propagate.
+Derived-cache payload repair is separate from row/source-payload skipping. `Codec::decode` itself remains strict.
+
+Use `RawTable` to inspect an existing Table without compiling its application row
+codec. Its `get` returns exact bytes, and `scan_page` returns bounded pages of row
+IDs and bytes with the same ordering and cursor rules as typed access. It does
+not register missing Stores or select the `raw:v0` codec. It shares Table's
+source-payload replay policy; inspecting a skipped payload requires reading its
+original Entry rather than the row API.
+
+```rust,no_run
+# async fn inspect(tx: &eidetica::Transaction) -> eidetica::Result<()> {
+use eidetica::store::RawTable;
+let rows = tx.get_store::<RawTable>("items").await?;
+let required_codec = rows.row_codec_id().await?;
+let bytes = rows.get("item-1").await?;
+let first_page = rows.scan_page(None, 100).await?;
+# Ok(())
+# }
+```
+
+For encrypted Tables, open `PasswordStore<RawTable>`, unlock it, and use its
+`inner()` handle. Raw access does not bypass read authorization or encryption.
+
 Use cases for `Table`:
 
 - Collections of structured objects
@@ -432,7 +490,7 @@ Eidetica automatically maintains an index of all user-created subtrees in a spec
 The `_index` subtree tracks:
 
 - **Subtree names**: Which subtrees exist in the database
-- **Store types**: What type of Store manages each subtree (e.g., "docstore:v0", "table:v0")
+- **Store types**: What type of Store manages each subtree (e.g., "docstore:v0", "table:v0.1")
 - **Configuration**: Store-specific settings for each subtree
 - **Subtree settings**: Common settings like height strategy overrides
 
@@ -615,7 +673,7 @@ Each Store type implements its own merge logic, typically triggered implicitly w
 
 - **`DocStore`**: Uses the internal `Doc` type with **structural merge** by default. When merging concurrent writes to the _same key_ or path, the write associated with the later `Entry` "wins" (LWW), and its value is kept. Writes to different keys are simply combined. Deleted keys (via `delete()`) are tracked with tombstones to ensure deletions propagate properly. Docs marked as **atomic** (via `Doc::atomic()`) use full **Last-Writer-Wins** replacement — the entire Doc replaces its predecessor rather than merging field-by-field. This is used for data that should be treated as a complete unit.
 
-- **`Table<T>`**: Also uses **LWW for updates to the _same row ID_**. If two concurrent operations modify the same row, the later write wins. Inserts of _different_ rows are combined (all inserted rows are kept). Deletions generally take precedence over concurrent updates (though precise semantics might evolve).
+- **`Table<T, C = SerdeJson>`**: Uses an opaque-byte `TableData` delta. Different row IDs coexist; on the same exact key, the last set or delete in deterministic Entry reduction order wins. “Last” is not wall-clock time, and deletion has no unconditional precedence over a later set.
 
 **Note:** The CRDT merge logic happens internally when a `Transaction` loads the initial state of a Store or when a store viewer is created. You typically don't invoke merge logic directly.
 

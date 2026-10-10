@@ -1233,6 +1233,35 @@ impl RemoteConnection {
         }
     }
 
+    /// Ask the server to build a registered plaintext record generation after
+    /// canonical Read authorization, without returning the full merged state.
+    pub async fn ensure_record_generation(
+        &self,
+        root_id: ID,
+        identity: SigKey,
+        store: String,
+        expected_type: &str,
+        projection: crate::backend::ProjectionDescriptor,
+    ) -> crate::Result<()> {
+        let identity = if identity == SigKey::default() {
+            self.session_identity().unwrap_or_default()
+        } else {
+            identity
+        };
+        let response = self
+            .db_request(
+                root_id,
+                identity,
+                DatabaseOp::EnsureRecordGeneration {
+                    store,
+                    expected_type: expected_type.to_string(),
+                    projection,
+                },
+            )
+            .await?;
+        Self::expect_ok(response)
+    }
+
     /// Fetch a registered Store's state; only an explicit maintenance
     /// capability refusal selects client-side typed history reduction.
     pub async fn get_store_state<S: crate::store::Store>(
@@ -1255,7 +1284,7 @@ impl RemoteConnection {
     /// Only the read-authorized maintenance refusal permits a local history
     /// fold. The decryptor is supplied by an already unlocked client Store;
     /// ciphertext and passwords are never sent to the daemon for projection.
-    pub(crate) async fn get_store_state_with_decrypt<D: crate::crdt::CRDT + Codec>(
+    pub(crate) async fn get_store_state_with_decrypt<D: crate::crdt::CRDT + Codec + 'static>(
         &self,
         root_id: ID,
         identity: SigKey,
@@ -1277,7 +1306,9 @@ impl RemoteConnection {
     }
 
     /// Return the source frontier used by a read-authorized history fold.
-    pub(crate) async fn get_store_state_with_decrypt_and_frontier<D: crate::crdt::CRDT + Codec>(
+    pub(crate) async fn get_store_state_with_decrypt_and_frontier<
+        D: crate::crdt::CRDT + Codec + 'static,
+    >(
         &self,
         root_id: ID,
         identity: SigKey,
@@ -1298,7 +1329,7 @@ impl RemoteConnection {
                 DatabaseOp::EnsureStoreStateGeneration {
                     store: store.clone(),
                     expected_type: expected_type.to_string(),
-                    projection,
+                    projection: projection.clone(),
                 },
             )
             .await;
@@ -1337,7 +1368,15 @@ impl RemoteConnection {
                 let mut state = D::default();
                 for entry in entries {
                     if let Ok(data) = entry.data(&store) {
-                        state = state.merge(&D::decode(&decrypt(data)?)?)?;
+                        let plaintext = decrypt(data)?;
+                        if let Some(delta) = crate::store::state::decode_source::<D>(
+                            &store,
+                            &entry,
+                            &plaintext,
+                            &projection,
+                        )? {
+                            state = state.merge(&delta)?;
+                        }
                     }
                 }
                 Ok((state, Some(tips)))
