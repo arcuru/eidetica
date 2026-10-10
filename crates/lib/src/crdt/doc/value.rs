@@ -11,7 +11,7 @@ use std::fmt;
 use super::list::List;
 use crate::crdt::{
     CRDTError, Doc,
-    traits::{CRDT, Data},
+    traits::{CRDT, Codec},
 };
 
 /// Values that can be stored in CRDT documents.
@@ -593,5 +593,13 @@ impl PartialEq<Value> for bool {
     }
 }
 
-// Data trait implementation
-impl Data for Value {}
+// Codec trait implementation
+impl Codec for Value {
+    fn encode(&self) -> crate::Result<Vec<u8>> {
+        Ok(serde_json::to_vec(self)?)
+    }
+
+    fn decode(bytes: &[u8]) -> crate::Result<Self> {
+        Ok(serde_json::from_slice(bytes)?)
+    }
+}

@@ -41,7 +41,7 @@ use crate::{
     },
     backend::{RecordMutations, RecordRange, RecordView, VerificationStatus},
     constants::{INDEX, ROOT, SETTINGS},
-    crdt::{CRDT, Data, Doc, doc::Value},
+    crdt::{CRDT, Codec, Doc, doc::Value},
     entry::{Entry, EntryBuilder, ID},
     height::HeightStrategy,
     instance::WriteSource,
@@ -939,7 +939,7 @@ impl Transaction {
             for entry in entries {
                 if let Ok(bytes) = entry.data(store) {
                     let plaintext = self.decrypt_if_needed(store, bytes)?;
-                    let delta: Doc = serde_json::from_slice(&plaintext)?;
+                    let delta = Doc::decode(&plaintext)?;
                     projection.project_delta(&delta, &mut logical)?;
                 }
             }
@@ -1133,15 +1133,15 @@ impl Transaction {
     ///
     /// # Behavior
     /// - If the subtree doesn't exist or has no data, returns `Ok(None)`
-    /// - If the subtree exists but has empty data (empty string or whitespace), returns `Ok(None)`
-    /// - Otherwise deserializes the JSON data to type `T` and returns `Ok(Some(T))`
+    /// - An empty payload is the existing EntryBuilder no-data sentinel: returns `Ok(None)`
+    /// - Otherwise decodes the bytes using `T::decode` and returns `Ok(Some(T))`
     ///
     /// # Errors
     /// Returns an error if the transaction has already been committed or if the
     /// subtree data exists but cannot be deserialized to type `T`.
     pub fn get_local_data<T>(&self, subtree_name: impl AsRef<str>) -> Result<Option<T>>
     where
-        T: Data,
+        T: Codec,
     {
         let subtree_name = subtree_name.as_ref();
         let builder_ref = self.entry_builder.lock().unwrap();
@@ -1153,7 +1153,7 @@ impl Transaction {
             if data.is_empty() {
                 Ok(None)
             } else {
-                serde_json::from_slice(data).map(Some).map_err(|e| {
+                T::decode(data).map(Some).map_err(|e| {
                     TransactionError::StoreDeserializationFailed {
                         store: subtree_name.to_string(),
                         reason: e.to_string(),
@@ -1188,7 +1188,7 @@ impl Transaction {
     /// if the subtree has no history prior to this transaction.
     pub(crate) async fn get_full_state<T>(&self, subtree_name: impl AsRef<str> + Send) -> Result<T>
     where
-        T: CRDT + Send,
+        T: CRDT + Codec + Send,
     {
         self.get_full_state_with_descriptor::<T>(
             subtree_name,
@@ -1206,7 +1206,7 @@ impl Transaction {
         descriptor: ProjectionDescriptor,
     ) -> Result<T>
     where
-        T: CRDT + Send,
+        T: CRDT + Codec + Send,
     {
         let subtree_name = subtree_name.as_ref();
 
@@ -1293,7 +1293,7 @@ impl Transaction {
         descriptor: &ProjectionDescriptor,
     ) -> Result<T>
     where
-        T: CRDT + Send,
+        T: CRDT + Codec + Send,
     {
         // Base case: no entries
         if entry_ids.is_empty() {
@@ -1321,7 +1321,7 @@ impl Transaction {
         );
         if let Some(bytes) = state::load_cached(self.db.ops(), &cache_request).await? {
             let decrypted = self.decrypt_if_needed(subtree_name, &bytes)?;
-            let result: T = serde_json::from_slice(&decrypted)?;
+            let result: T = T::decode(&decrypted)?;
             return Ok(result);
         }
 
@@ -1361,7 +1361,7 @@ impl Transaction {
         };
 
         // Cache the computed merge result
-        let bytes = self.encrypt_if_needed(subtree_name, &serde_json::to_vec(&result)?)?;
+        let bytes = self.encrypt_if_needed(subtree_name, &result.encode()?)?;
         state::store_cached(self.db.ops(), cache_request, bytes).await?;
 
         Ok(result)
@@ -1391,7 +1391,7 @@ impl Transaction {
         descriptor: &'a ProjectionDescriptor,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T>> + Send + 'a>>
     where
-        T: CRDT + Send + 'a,
+        T: CRDT + Codec + Send + 'a,
     {
         Box::pin(async move {
             let request = state::opaque_request(
@@ -1403,7 +1403,7 @@ impl Transaction {
             );
             if let Some(bytes) = state::load_cached(self.db.ops(), &request).await? {
                 let decrypted = self.decrypt_if_needed(subtree_name, &bytes)?;
-                let result: T = serde_json::from_slice(&decrypted)?;
+                let result: T = T::decode(&decrypted)?;
                 return Ok(result);
             }
 
@@ -1420,7 +1420,7 @@ impl Transaction {
             let result: T = self.fold_store_entries(subtree_name, &entries)?;
 
             // Step 4: Cache only the final result (encrypted if encryptor is registered)
-            let bytes = self.encrypt_if_needed(subtree_name, &serde_json::to_vec(&result)?)?;
+            let bytes = self.encrypt_if_needed(subtree_name, &result.encode()?)?;
             state::store_cached(self.db.ops(), request, bytes).await?;
 
             Ok(result)
@@ -1433,14 +1433,14 @@ impl Transaction {
     /// `store_at` returns them.
     fn fold_store_entries<T>(&self, subtree_name: &str, entries: &[Entry]) -> Result<T>
     where
-        T: CRDT,
+        T: CRDT + Codec,
     {
         let mut result = T::default();
         for entry in entries {
             let local_data = if let Ok(data) = entry.data(subtree_name) {
                 // Decrypt before deserializing
                 let plaintext = self.decrypt_if_needed(subtree_name, data)?;
-                serde_json::from_slice::<T>(&plaintext)?
+                T::decode(&plaintext)?
             } else {
                 T::default()
             };
@@ -1465,7 +1465,7 @@ impl Transaction {
         entry_ids: &[ID],
     ) -> Result<T>
     where
-        T: CRDT,
+        T: CRDT + Codec,
     {
         for entry_id in entry_ids {
             let entry = self.db.ops().get(entry_id).await?;
@@ -1474,7 +1474,7 @@ impl Transaction {
             let local_data = if let Ok(data) = entry.data(subtree_name) {
                 // Decrypt before deserializing
                 let plaintext = self.decrypt_if_needed(subtree_name, data)?;
-                serde_json::from_slice::<T>(&plaintext)?
+                T::decode(&plaintext)?
             } else {
                 T::default()
             };
@@ -1524,8 +1524,7 @@ impl Transaction {
             let staged = self.logical_record_mutations.lock().unwrap().clone();
             for (store, mutations) in staged {
                 let delta = crate::store::table::encode_entry_delta(&mutations)?;
-                self.update_subtree(store, serde_json::to_vec(&delta)?)
-                    .await?;
+                self.update_subtree(store, delta.encode()?).await?;
             }
         }
 
@@ -1599,7 +1598,7 @@ impl Transaction {
 
             // Find missing subtrees
             let missing = if let Some(ref index_data) = index_data_opt
-                && let Ok(index_doc) = serde_json::from_slice::<Doc>(index_data)
+                && let Ok(index_doc) = Doc::decode(index_data)
             {
                 index_doc
                     .keys()

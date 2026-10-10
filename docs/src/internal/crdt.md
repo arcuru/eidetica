@@ -27,6 +27,38 @@ Uses a recursive merge-base approach for computing CRDT states:
 - **Path Merging**: Merges all entries from merge base to parents with proper ordering
 - **Local Integration**: Applies current entry's data to final state
 
+## Ordered map operations
+
+`Lww<T>` is a right-biased `NoOp`/`Set`/`Delete` register. “Last” means
+last in deterministic Entry reduction order (height, then Entry ID), **not**
+wall-clock timestamp. `NoOp` is its identity; a delete remains a tombstone.
+
+`Map<K, V: CRDT>` merges per key, leaving keys present on only one side
+untouched. It does not define deletion or assume that merging a value is a
+replacement. A general `Map<String, Counter>` therefore cannot use the cheap
+row projection of `LwwMap<K, V>`, which composes `Map<K, Lww<V>>` and presents
+only live values through its ordinary iteration API. Both maps serialize as
+key-ordered sequences of unique key/operation pairs, not JSON objects.
+
+Merge-only composition needs no Serde or encoding traits on nested values.
+Opaque `serde_bytes::ByteBuf` values can represent rows without parsing or
+normalizing their contents. The existing Table remains Doc-backed.
+
+## Store encoding
+
+`Codec: Sized` defines `encode(&self) -> Result<Vec<u8>>` and
+`decode(&[u8]) -> Result<Self>` for complete operation/state values. It has no
+Clone or Serde supertraits and no blanket Serde implementation. `CRDT` requires
+only Clone, Default and merge; `Store::Data` requires both CRDT and Codec.
+Decoding must preserve tombstones and all state affecting subsequent merges,
+consume a complete value, and reject malformed or trailing data.
+
+Doc, Value, List, YrsBinary and the Serde-enabled map/register codecs explicitly
+retain their JSON representations. A custom Store can implement a binary codec
+without implementing Serde; a durable format change needs a new Store identity.
+Encoding precedes encryption, and replay decrypts before decoding. Projection
+algebra alone does not require Codec.
+
 ## Doc Merge Semantics
 
 The `Doc` type supports two merge modes controlled by an `atomic` flag:

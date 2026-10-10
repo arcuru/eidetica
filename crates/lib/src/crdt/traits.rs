@@ -1,33 +1,48 @@
 //! Core traits for CRDT (Conflict-free Replicated Data Type) implementations.
 //!
 //! This module defines the fundamental traits that all CRDT implementations must satisfy:
-//! - `Data`: A marker trait for types that can be stored in Eidetica
+//! - `Codec`: The explicit byte-encoding contract for Store data
 //! - `CRDT`: The core trait defining merge semantics for conflict resolution
 
 use crate::Result;
 
-/// Marker trait for data types that can be stored in Eidetica.
+/// Complete operation/state encoding at a Store's persistence boundary.
 ///
-/// This trait requires serialization capabilities and cloning for data structures
-/// that can be stored in the Eidetica database. All storable types must support
-/// JSON serialization/deserialization and cloning for efficient data operations.
+/// Implementations choose a stable byte format without performing storage I/O.
+/// Decoding an encoded value must preserve all state affecting future merges,
+/// including tombstones and default/identity behavior. Decoders must consume a
+/// complete value and reject malformed or trailing data rather than returning
+/// defaults. A durable format change requires a new Store type identity.
 ///
-/// Implementing this trait signifies that a type can be safely used as the data component
-/// of an Entry in the database.
+/// Encoding is independent of cloning and Serde. There is no blanket Serde
+/// implementation, so custom binary formats can implement this trait directly.
 ///
 /// # Examples
 ///
 /// ```
-/// use eidetica::crdt::Data;
+/// use eidetica::{crdt::Codec, Result};
 ///
-/// #[derive(Clone, serde::Serialize, serde::Deserialize)]
-/// struct MyData {
-///     value: String,
+/// #[derive(serde::Serialize, serde::Deserialize)]
+/// struct MyData { value: String }
+///
+/// impl Codec for MyData {
+///     fn encode(&self) -> Result<Vec<u8>> {
+///         Ok(serde_json::to_vec(self)?)
+///     }
+///     fn decode(bytes: &[u8]) -> Result<Self> {
+///         Ok(serde_json::from_slice(bytes)?)
+///     }
 /// }
-///
-/// impl Data for MyData {}
+/// let state = MyData { value: "example".into() };
+/// assert_eq!(MyData::decode(&state.encode()?)?.value, state.value);
+/// # Ok::<(), eidetica::Error>(())
 /// ```
-pub trait Data: Clone + serde::Serialize + serde::de::DeserializeOwned {}
+pub trait Codec: Sized {
+    /// Encode all merge-relevant operation/state data.
+    fn encode(&self) -> Result<Vec<u8>>;
+    /// Decode exactly one complete operation/state value.
+    fn decode(bytes: &[u8]) -> Result<Self>;
+}
 
 /// A trait for Conflict-free Replicated Data Types (CRDTs).
 ///
@@ -35,13 +50,13 @@ pub trait Data: Clone + serde::Serialize + serde::de::DeserializeOwned {}
 /// resolve conflicts without requiring coordination between nodes. They guarantee that
 /// concurrent updates can be merged deterministically, ensuring eventual consistency.
 ///
-/// All CRDT types must also implement the `Data` trait, ensuring they can be stored
-/// and serialized within the Eidetica database.
+/// Algebraic composition requires no encoding or Serde traits. Store data also
+/// implements [`Codec`] at the persistence boundary.
 ///
 /// # Examples
 ///
 /// ```
-/// use eidetica::crdt::{CRDT, Data, Doc};
+/// use eidetica::crdt::{CRDT, Doc};
 /// use eidetica::Result;
 ///
 /// let mut kv1 = Doc::new();
@@ -53,7 +68,7 @@ pub trait Data: Clone + serde::Serialize + serde::de::DeserializeOwned {}
 /// let merged = kv1.merge(&kv2).unwrap();
 /// // Doc uses last-write-wins semantics for scalar values
 /// ```
-pub trait CRDT: Data + Default {
+pub trait CRDT: Clone + Default {
     /// Merge this CRDT with another instance, returning a new merged instance.
     ///
     /// This operation must be:
