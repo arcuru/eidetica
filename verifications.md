@@ -382,3 +382,357 @@ formatted-source full gate again reported 1527 passed / 5 skipped on each
 full-feature backend runner and 1375 passed / 5 skipped on minimal, with both
 VM integration tests passing. `rg encode_entry_delta crates/lib/src` returned
 no matches; the legacy Doc Table commit adapter remains as `legacy_doc_delta`.
+
+## Phase 0 continuation: actual typed projection backend matrix
+
+Intended: execute physical-key point reads and paged transaction overlays, cold
+streaming deletes across the 128-mutation chunk boundary, and a gated backend
+fetch race on the storage engine actually selected by each runner. Include a
+recordless seam on that same engine and a test-only authenticated-key envelope
+for encrypted physical-key identity and client-side history decryption. Do not
+switch the Doc-backed Table or claim its future service codec is implemented.
+
+Performed: `projected_backend_matrix_physical_pages_and_cold_delete` uses
+SQLite in-memory, isolated PostgreSQL schema, in-memory backend, or a live Unix
+socket daemon authenticated as its bootstrap user according to `TEST_BACKEND`;
+creates a signed database with the user API. It commits 140 typed rows, commits
+Deletes at keys 000 and 139 in a separate Entry, resolves a cold RecordView,
+checks physical absence and an interior surviving key, then pages with exclusive
+physical cursors at limit 7 through staged update and insert; the published
+view retains its old bytes. The existing `projected_real_backend_fetch_rejects_racing_overlay`
+now gates the actual selected backend's scan until a competing stage and rejects
+StaleCursor. `projected_recordless_fallback_reduces_typed_history` now forwards
+Entry reads through that selected engine, refusing all record methods. The
+new `projected_encrypted_physical_identity_and_recordless_fallback` uses a
+test-only reversible ciphertext envelope binding the logical key, a reversed
+physical key sort, mismatch rejection, physical-order paging, and recordless
+history decryption on each selected engine including the authenticated socket.
+It is not a PasswordStore interoperability test or server-side maintenance grant.
+
+Negative control: disabling Deletes in the streaming projection made the SQLite
+matrix fixture fail 0 passed / 1 failed (exit 101) at the deleted point read;
+restored and reran the complete gate. A first negative control removed only the
+legacy collapsed-path Delete and stayed green: it does not exercise this typed
+projection and cannot be used as evidence. No production defect was observed in
+these tested paths; no production code changed. The service path here uses
+client-authorized record staging; it does not establish read-scoped typed
+maintenance, which is still missing.
+
+Final `nix develop -c nix run .#fix` succeeded; `nix develop -c just nix full`
+passed on restored formatted source. Nextest summaries: in-memory, SQLite,
+PostgreSQL, service each 1529 tests run: 1529 passed, 5 skipped; minimal 1377
+tests run: 1377 passed, 5 skipped. All four named tests reported PASS in each
+runner; NixOS service and OCI container integration tests passed. These are
+unit-module tests to access internal typed APIs but select real SQL engines and
+socket RPC, rather than rerunning an in-memory engine under matrix labels.
+
+Newly required: true encrypted PasswordStore identity and remote read-only
+client decrypting fallback, service authorization and typed maintenance
+dispatch, automatic remote ambiguous chunk retry/recovery, then Table switch,
+legacy removal, service/encryption parity, benchmarks and another full gate.
+Existing Doc-backed Table and `table:v0` remain unchanged; no PR or push.
+
+## Phase 0 continuation: unlocked PasswordStore authenticated history fallback
+
+Intended: supply a real encrypted client-side typed Store history read after canonical Read authorization and an explicit server maintenance capability refusal, without a client staging token. Reject descriptor claims; keep decrypt failures separate from capability refusal. Preserve the Doc-backed Table and `table:v0` pending remaining contracts.
+
+Performed: `PasswordStore<S>::get_state` requires `open`, then uses the transaction's registered decryptor with a typed remote EnsureStoreStateGeneration request. On the server's `RecordMaintenanceUnavailable`, the client fetches verified tips and authorized ordered Entry history, decrypts each subtree delta locally and merges `S::Data`; other errors propagate. Local handles use existing typed full-state logic. The socket fixture creates two actual encrypted DocStore Entry deltas, gives another user only global Read, unlocks locally, reads both values, rejects a bad password, confirms the generic ciphertext-only API cannot parse them, denies staging, and rejects unauthenticated and authenticated mismatched descriptors. The existing same-suite `store_state_read_rejects_wrong_descriptor_and_unauthorized_reader` fixture checks denied canonical Read cannot become fallback. A unit fixture modifies ciphertext and confirms decryption failure is not `RecordMaintenanceUnavailable`. No Table switch or client publication occurs.
+
+Negative control: temporarily removed decryption in the fallback Entry fold; the new socket fixture failed 0 passed / 1 failed (exit 101) at the encrypted state read with a serde error. Restored and ran the full gate. Focused restored live socket and tamper tests each passed 1/1.
+
+Final formatted-source `nix develop -c nix run .#fix` succeeded; `nix develop -c just nix full` exited 0. Nix nextest: in-memory 1531 run / 1531 passed / 5 skipped; SQLite 1531/1531 (1 leaky) / 5 skipped; PostgreSQL 1531/1531 / 5 skipped; service 1531/1531 (1 leaky) / 5 skipped; minimal 1378/1378 / 5 skipped. Both changed fixtures PASS in every applicable runner; NixOS service and OCI container integration passed. Scope limit: the socket fixture's daemon runs InMemory even in the outer backend matrix; it tests a real authenticated read-only socket and actual PasswordStore crypto, not tampered Entry replay over an authenticated socket. Generic `get_store_state::<PasswordStore<S>>` remains unusable without an unlocked handle. Typed projected get/scan and read-scoped server maintenance for future non-Doc codecs remain separate; Doc Table and table:v0 unchanged. Remaining Phase 0: authorized remote ambiguous retry/recovery, registered typed descriptor dispatch beyond current plaintext codecs, and tampered-history path test before the Table switch.
+
+## Phase 0 continuation: explicit authenticated staging recovery seam
+
+Intended: allow a caller owning credentials to supply a newly authenticated connection after an ambiguous transport result, preserving exact encoded chunk bytes; never have RemoteBackend silently mint login credentials or start a replacement build. Resolve terminal publication to a new session-scoped view; fail closed on unknown or denied token.
+
+Performed: `RemoteConnection::send_staging_chunk_with_recovery` retains the caller's request bytes, queries scoped status only after I/O ambiguity, sends those bytes again only for Active and resolves Published/Adopted by idempotent publish on the supplied connection. `publish_store_state_with_recovery` similarly resolves an ambiguous publish. Neither reconnects nor authenticates internally; the caller supplies the already authenticated connection. A real socket fixture restarts the daemon with the same backend, denies unauthenticated, wrong-user and wrong-database recovery, acknowledges an identical retry, uploads the next ordered chunk without starting another build, recovers ambiguous publication and checks the fresh view reads the intended row. Negative control bypassing recovery failed 0 passed / 1 failed (exit 101) at the unauthenticated denial; restored focused fixture passed 1/1. This is an explicit opt-in coordination seam, not automatic recovery of arbitrary `RemoteBackend` calls; the latter cannot own login credentials. Failure on a second ambiguous response remains caller-visible with the original payload for subsequent retry.
+
+Final `nix develop -c nix run .#fix` succeeded; formatted-source `nix develop -c just nix full` exited 0. In-memory, SQLite, PostgreSQL and service nextest each reported 1532 tests run / 1532 passed / 5 skipped (SQLite 1 leaky); minimal 1378/1378 / 5 skipped. The named socket test PASS appears in all four full-feature runners (its daemon uses InMemory); NixOS and OCI VM integration passed. Doc Table and table:v0 remain unchanged. Remaining Phase 0: stronger typed descriptor dispatch and encrypted projected get/scan/tampered Entry socket fixture; whole redesign, parity and benchmarks remain incomplete. No push/PR.
+
+## Phase 0 continuation: password-projected read-only history and signed tamper
+
+Intended: exercise real `PasswordStore<S>` encryption, not a test envelope, for
+point and physical-order paged typed projection on an authenticated read-only
+socket. Preserve the existing descriptor mismatch, password, and cursor
+contracts. Never stage client maintenance or switch the Doc-backed Table format.
+
+Performed: `PasswordStore<S>::projected_get` and `projected_scan_page` require an
+unlocked handle and a projection matching the wrapped Store descriptor. On a
+remote instance they use the existing canonical Read-gated typed ensure request,
+fold authorized verified Entry history with the locally registered decryptor,
+project physical keyed records and decode through the password record AEAD.
+The socket fixture reads two real encrypted DocStore Entries as a second user
+with global Read and no Write; point get returns the right row and two pages
+return both rows in opaque physical order. A cursor from another transaction
+returns StaleCursor. Wrong password fails at open; a locked handle cannot use
+the projected API; an incorrect projection returns TypeMismatch, not
+RecordMaintenanceUnavailable. A malformed descriptor sent to the authenticated
+socket is rejected before the maintenance refusal.
+
+The same fixture signs an Entry with an intentionally invalid opaque encrypted
+payload using the authorized owner key, submits it over the socket, confirms
+its ID occurs in Bob's Verified frontier, and then confirms both point and page
+reads on a fresh unlocked read-only handle propagate the actual decrypt error
+(`ImplementationError`), not the capability refusal. This is not corruption
+of an existing immutable Entry: the forged Entry has a distinct content ID and
+valid signature, and the fixture's isolated in-memory daemon is disposable.
+Negative controls: removing the projection-descriptor check failed the socket
+test (0 passed/1 failed, exit 101); removing submission and frontier assertion
+from the tamper fixture caused the decrypt-error assertion to fail on the old
+valid plaintext (0/1, exit 101). Restored focused test passed 1/1. An initial
+negative run omitted a larger segment and failed compilation; it was discarded
+and the second negative run reached the intended downstream assertion.
+
+`nix develop -c nix run .#fix` succeeded; full `nix develop -c just nix full`
+on formatted dirty source succeeded after one retry. First run: 1532/1532
+in-memory, SQLite, service, and 1378/1378 minimal (5 skipped each), but
+PostgreSQL ownership-release timing test failed 1531/1532 (unrelated test,
+`StorageAlreadyOwned` immediately after dropping its backend). Retry of the
+unchanged source completed 1532/1532 PostgreSQL, 5 skipped; full gate and both
+NixOS/OCI VM integrations passed. Nix logs for all five derivations confirm
+the complete counts and socket fixture PASS in every full-feature runner; the
+service fixture uses an in-memory daemon under each outer runner. `nix flake
+metadata` identified the formatted dirty source snapshot, containing the
+signed corrupt Entry test and typed API. No Table format change (`table:v0`).
+
+Remaining: currently remote projected reads fold full decrypted history per
+point/page; an independently authenticated read-only record view could avoid
+that cost later. Page cursors detect local transaction overlay/view changes,
+not a remote frontier changing between page calls. Server codec dispatch for
+additional plaintext typed Stores, automatic high-level staging recovery,
+full Table redesign/parity/benchmarks and another full gate are still open.
+
+## Phase 0 — explicit typed server codec dispatch (2026-09-23)
+
+Intended: a Read-gated typed registry from `_index`, not caller-selected
+plaintext maintenance; unknown or encrypted effective projection must not
+create a cache generation. Keep existing `table:v0` and Doc-backed Table.
+
+Performed: `ServiceServer::register_store::<S>` registers an explicit plaintext
+Store type, descriptor and typed state decoder before serving; defaults remain
+DocStore and Doc-backed Table. The authenticated ensure handler checks `_index`
+type identity and registered effective descriptor strictly before probing or
+building state. An unregistered codec or encrypted wrapper (whose wrapped
+codec is concealed by `_index`) returns distinct
+`RecordMaintenanceUnavailable` after the canonical Read gate, even for a
+claimed plaintext descriptor. Duplicate and encrypted registration is refused.
+No Table format change, push or PR.
+
+A real Unix socket fixture serves a custom non-Doc `SocketCounter` through a
+registered daemon, verifies default DocStore and a Read-only client, rejects
+wrong type/version/codec descriptor, and confirms a subsequent canonical read
+is unchanged. A second daemon sharing the backend but not the registration
+returns `RecordMaintenanceUnavailable` on the authenticated socket and the
+client folds typed history; pre-auth request is denied and Write-only staging
+remains denied. Encrypted wrapper with both the wrapped descriptor and a
+plaintext descriptor refuses maintenance. Negative control disabling registered
+codec descriptor equality made this fixture fail (0 passed, 1 failed): it
+returned `CrdtValue(Number(7))` for the wrong version. Restored test passed
+1/1. The first full Nix gate failed two older tests expecting `TypeMismatch`
+for unverifiable encrypted descriptors (1531/1533 in in-memory and SQLite);
+updated those assertions to the fail-closed capability contract, then ran the
+full gate again on formatted source.
+
+`nix develop -c nix run .#fix` exit 0 (clippy, deadnix, markdownlint,
+statix, treefmt). Final `nix develop -c just nix full` exit 0: in-memory,
+SQLite, PostgreSQL and service each 1533 passed / 5 skipped; minimal 1378
+passed / 5 skipped; changed real-socket fixture PASS in all four full-feature
+runners; NixOS service and OCI VM integration tests passed. Flake metadata
+locked dirtyRev `0f642f4f3e-dirty` on formatted working source; committed-tip
+gate to follow after the signed commit.
+
+Remaining: automatic high-level remote staging retry/recovery, remote-frontier
+cursor snapshot and full Table redesign/encryption parity/benchmarks. Re-run
+complete accumulated checks on final implementation; no Table switch before
+Phase 0 fixtures are complete.
+
+## Phase 0 — remote projected cursor frontier (2026-09-23)
+
+Intended: read-only unlocked PasswordStore scans on a live authenticated socket
+must never continue a previous page against a newly Verified source frontier;
+local overlay changes during the last network await also reject the page.
+Preserve the Doc-backed Table and `table:v0`.
+
+Recovered and evaluated the previous worker's two uncommitted files without
+reset: the new client helper had not yet returned a frontier (and its tuple
+return did not compile); the cursor field had no producer or checker. Completed
+the helper by returning the Verified tips used to fetch authorized Entry
+history, compared them with the next page's cursor, and checked the current
+Verified tips and overlay revision after the last await before returning.
+The pre-existing get-verified-tips helper needed the authenticated session
+identity when the database supplies its default identity; otherwise the
+read-only socket request was denied. No remote record maintenance or Table
+format switch was added. A frontier change between the final tip check and
+caller observation remains inherently possible; this is a stale-check, not a
+server-pinned multi-request snapshot.
+
+The live socket fixture reads two pages with no writer, commits a third
+PasswordStore Entry via the owner between pages, rejects the old read-only
+client cursor with StaleCursor, and sees three records on a fresh page.
+Negative control removing the cursor frontier comparison failed at this
+assertion (0 passed / 1 failed, exit 101); restored fixture passed 1/1.
+A deterministic unit fixture pauses the final tip-check future while the
+transaction overlay changes, and rejects even when returned tips are
+unchanged; bypassing the post-await revision comparison failed 0/1 (exit
+101), restored 1/1.
+
+`nix develop -c nix run .#fix` succeeded (clippy, deadnix, markdownlint,
+statix, treefmt). Final formatted-source `nix develop -c just nix full`
+succeeded: in-memory 1534/1534 (1 leaky), SQLite 1534/1534,
+PostgreSQL 1534/1534, service 1534/1534, minimal 1378/1378; 5 skipped
+each. Both new/extended fixtures PASS in the four full-feature runners;
+the socket daemon uses InMemory under each runner. NixOS service and OCI
+container VM integrations passed. No push/PR. Remaining: automatic high-level
+remote staging recovery, full Table redesign/parity/benchmarks and complete
+accumulated verification before delivery.
+
+## Phase 0 — explicit high-level authenticated upload recovery (2026-09-23)
+
+Intended: RemoteBackend must retain encoded chunks through ambiguous transport and
+require a caller-supplied reauthenticated connection to resume the same token;
+publication must resolve by status without a fresh build or saved credentials.
+Preserve the existing Doc-backed Table and `table:v0`.
+
+Performed: the adapter now binds token upload state to its original target and
+acting/session identity, holds its exact encoded unacknowledged request plus
+remaining pre-encoded batch chunks, and fences staging/publish/abort during
+ambiguous I/O or cancellation. An ambiguous error carries the token and
+optional chunk sequence. Explicit `resume_staging` checks status on the supplied
+connection, acknowledges/replays retained chunks in sequence, resolves a
+terminal publication to a new session view, and replaces the backend socket
+only after authorized success. Aborted, expired, unknown, mismatched-target or
+wrong-session attempts cannot publish or restart a build. An ambiguous begin
+remains an orphan lease/reclamation case because no token was returned.
+
+Real authenticated socket fixtures cover lost request on a closed socket, a
+server-accepted chunk with lost adapter acknowledgement across daemon restart,
+wrong user/unauthenticated and wrong-db status refusal, later ordered delete
+and put, and a lost publication acknowledgement resolved to a new view. The
+socket server uses InMemory in each Nix runner. Negative control omitting the
+exact retained replay failed 0 passed / 1 failed (exit 101) at
+`InvalidStoreStateStagingToken`; restored focused tests passed 2/2.
+`nix develop -c nix run .#fix` succeeded (clippy, deadnix, markdownlint,
+statix, treefmt). Final formatted-source `nix develop -c just nix full` exit 0:
+in-memory, SQLite, PostgreSQL and service each 1536/1536 passed (5 skipped),
+minimal 1378/1378 passed (5 skipped); both named socket fixtures PASS in all
+four full-feature runners; NixOS service and OCI container integrations passed.
+A committed-tip gate follows the signed commit.
+
+Phase 0 is not declared complete: the design's backend-neutral lost-publication
+request/response and reclamation race matrix is partially exercised by separate
+fixtures, but an explicit full inventory against all Phase 0 contract conditions
+and reproducible cancellation / concurrent recovery test remain needed before
+switching Table. Phase 4 Table switch, encryption/service parity, docs and
+benchmarks are still open. No `table:v0` change and no push/PR.
+
+## Phase 0 fixture inventory — approved six-contract gate (2026-09-23)
+
+This checklist maps **Phase 0 of the approved design** to runnable checks, not the
+later Table acceptance checklist. Execute the accumulated full gate with
+`nix develop -c nix run .#fix` and `nix develop -c just nix full`; the backend
+conformance tests use `test_backend()` under `TEST_BACKEND=inmemory|sqlite|postgres|service`.
+The `service` implementation of that backend-neutral factory falls back to a
+local backend for raw staging operations (no test clock on the RPC), so the
+separate live-socket checks below are essential. A checked box means a fixture
+exists, not that the entire Table redesign is delivered.
+
+- [x] **CanonicalJson golden parsing/bytes:** `crdt::canonical_json::tests::rfc_and_boundary_vectors` (number boundaries, negative zero, Unicode UTF-16 ordering, escapes, invalid numbers and duplicate keys), `typed_readers_cannot_change_canonical_bytes`, `canonical_row_survives_entry_cbor_roundtrip`, and `row_operation_is_inline_json_not_an_escaped_doc_string`.
+- [x] **Token lifecycle, order, digest, retry and lease:** `backend::store_state_records::{ordered_physical_staging_and_empty_generation,sequenced_token_status_adoption_and_abort,terminal_horizon_and_unknown_replacement_guards,expired_orphan_is_reclaimed_and_terminal_result_is_retained}` exercise physical put/delete/put, empty generation, gaps/conflicts/stale replay, status and bounded retention. `service::{test_remote_staging_rejects_late_and_conflicting_replays,test_exact_staging_chunk_retry_after_reconnect_and_delete,test_remote_backend_resume_lost_request_response_and_restart}` cover encoded wire digest/reconnect. `backend::store_state_records::lost_publication_request_expires_before_safe_rebuild` deliberately does not call publish: a 599-second lease/grace probe cannot reclaim; 601 seconds expires the partial build, rejects late publication and permits only a complete replacement. `lost_publish_response_is_resolved_by_token_retry` and `service::test_remote_backend_resume_lost_publication_response` test the opposite (request committed, response lost).
+- [x] **Atomic transaction revision:** `transaction::tests::{projected_staging_installs_concurrent_writes_in_canonical_and_both_overlays,projected_staging_failures_leave_canonical_and_overlays_unchanged}`. Canonical and physical overlay install or neither installs; a gated competing writer cannot lose either update.
+- [x] **Projection laws:** `crdt::map::tests::reference_projection_obeys_identity_merge_and_composition` plus `merge_laws_and_tombstones`, `crdt::lww::tests::exhaustive_associativity_and_identity`; typed streaming deletion across chunk boundary: `transaction::tests::projected_backend_matrix_physical_pages_and_cold_delete` and `projected_streaming_history_applies_deletes_across_chunks`.
+- [x] **Stale cursors, typed state, maintenance refusal:** `transaction::tests::{projected_page_cursor_rejects_put_delete_and_other_view,projected_page_discards_awaited_fetch_after_racing_mutation,projected_real_backend_fetch_rejects_racing_overlay,remote_scan_rejects_overlay_mutation_during_final_frontier_await,typed_store_state_folds_custom_crdt_without_doc_conversion,projected_recordless_fallback_reduces_typed_history}`; `service::{registered_typed_socket_maintenance_is_read_scoped,store_state_read_rejects_wrong_descriptor_and_unauthorized_reader,read_only_password_store_folds_authenticated_remote_history}`. Real socket frontier-change check is in the password read-only test; a stale-check is not a pinned cross-request snapshot.
+- [x] **Failure, cancellation, lost request/response, race, orphan reclamation:** backend matrix `backend::store_state_records::{failed_publish_is_invisible_and_ready_derived_is_immutable,cancelled_build_stays_private_and_replacement_publishes,lost_publication_request_expires_before_safe_rebuild,lost_publish_response_is_resolved_by_token_retry,expiration_racing_publication_has_one_terminal_winner,staging_publication_and_abort_race_is_terminal,terminal_horizon_and_unknown_replacement_guards}`. The publish/sweep race synchronizes the start and asserts exactly Published or Expired and matching resolvability/reclaim count; a completed publish remains immutable through a later sweep. `service::{test_remote_backend_resume_lost_request_response_and_restart,test_remote_backend_resume_lost_publication_response,test_remote_backend_cancelled_upload_concurrent_recovery}` use authenticated Unix sockets: the latter pauses a high-level send _after_ encoding but _before_ transmission, cancels the future, verifies no partial published target, then starts two concurrent authenticated recovery calls: exactly one resumes the original token/chunk, the other is fenced; publication exposes only the complete row.
+
+**Genuine scope gaps:** backend-neutral lease-aging and simultaneous sweeper
+interleavings are exercised against real InMemory, SQLite and isolated
+PostgreSQL in their own Nix runners, **not** through a service RPC because
+that test-only clock is deliberately unavailable to service clients. Live
+service cancellation and both lost-publication sides instead run against an
+InMemory daemon and a real authenticated socket, not an SQL-backed daemon.
+The barrier races only order whole public operations; they do not guarantee a
+specific internal mid-transaction interleaving (the PostgreSQL
+`same_token_stage_vs_publish_is_serialized` test separately gates that SQL
+critical section). A deterministic live-socket lease/sweep race would require
+an internal server test seam, not a public clock-control RPC. No new Table
+behavior, migration, or encrypted Table parity can be claimed from Phase 0.
+
+Performed on this slice: direct focused restored local tests returned 1 passed /
+0 failed each for the new lost-request, amended race and live-socket cancelled
+upload fixture. Negative control dropping pending uploads produced 0 passed /
+1 failed in the cancellation test (timeout at the gate; no upload reached it),
+then restored. Final formatted dirty-source full Nix gate passed: in-memory,
+SQLite, PostgreSQL and service each `1538 tests run: 1538 passed, 5 skipped`;
+minimal `1379 tests run: 1379 passed, 5 skipped`. Nix logs show PASS for
+both changed backend fixtures in all five runners and for the new socket
+fixture in all four full-feature runners. NixOS service and OCI container
+integration VMs passed. The signed-tip gate is recorded after commit below.
+
+## Phase 0 service parity — persistent SQLite RPC (2026-09-23)
+
+Intended: close the fixture inventory's SQL-backed daemon gap without exposing a
+clock-control request or bypassing authenticated scope. The `testing` feature
+adds only a local Instance-to-backend token-aging/reclaim seam; it retrieves the
+backend-owned target for the opaque token instead of accepting a caller's
+claimed target. Production builds and the service protocol have no such method.
+The daemon's ordinary request dispatch also reclaims expired builds. The
+fixture explicitly drives reclamation locally when a precise count matters.
+
+Performed: `sqlite_service_lost_publication_request_expires_and_restarts`
+starts an authenticated Unix socket backed by a file SQLite database; stages a
+partial row but drops the publication request, advances the private lease to
+599 seconds (not reclaimable), then to 601 seconds (Expired). It rejects late
+publish, checks the partial row never resolves, denies pre-auth, wrong-database
+and wrong-user status and replacement, and stages/publishes a complete
+replacement. It shuts down the daemon, releases exclusive ownership, opens the
+same SQLite file and socket anew, then verifies Expired and Published outcomes
+and the exact published row through authenticated RPC. This checks persistent
+token state, not a fresh in-memory backend behind a socket.
+
+`sqlite_service_publish_vs_reclaim_has_one_terminal_result` synchronizes
+publication RPC and local reclamation against the same aged SQLite token,
+accepting only Expired with no published view or Published with the complete
+row resolvable. The service may reclaim before the explicit sweep during its
+normal dispatch, so its sweep count is not a winner oracle. It also publishes
+another complete token before aging it, and checks a subsequent sweep cannot
+expire or remove it. Wire view IDs are session handles, not generation IDs;
+therefore compare readable content/status instead of equality of two view IDs.
+This barrier establishes competing whole operations, not an artificially
+paused SQL statement; the existing PostgreSQL stage/publish pause tests cover
+an internal critical section separately.
+
+Focused `nix develop -c cargo test -p eidetica --all-features --test it
+sqlite_service_ -- --nocapture` on the formatted source: **2 passed, 0
+failed**, no ignored, 1049 filtered out. During construction the fixture
+initially failed 0/2 because a service user scope changes the backend target;
+the seam now fetches the actual target by token ID. A second assertion failed
+1/2 because wire handles are freshly minted on each resolution; it now checks
+actual record contents. Negative control in the published-first branch
+asserting an incorrect reclaim count of 1 failed **0 passed / 1 failed** at
+`left: 0 right: 1`; restored 2/2. The final suite reaches actual service
+authorization, SQLite lease transition, restart persistence and both terminal
+race branches' acceptance predicate (published-first independently exercised).
+
+`nix develop -c nix run .#fix` succeeded (clippy, deadnix, markdownlint,
+statix, treefmt). Formatted-source `nix develop -c just nix full` passed:
+in-memory, SQLite, PostgreSQL and service each **1540 tests run: 1540 passed,
+5 skipped**; minimal **1379 tests run: 1379 passed, 5 skipped**. Both new
+named tests reported PASS in each full-feature runner; each explicitly creates
+its own file-backed SQLite daemon, regardless of outer `TEST_BACKEND`. NixOS
+service and OCI container integration tests passed. `git diff --check` clean.
+Signed committed-tip gate to follow. A file-backed PostgreSQL service daemon
+was not added: hermetic PostgreSQL backend conformance already exercises the
+lease/race in its Nix runner, while the added service test covers persistent
+SQL ownership and restart with SQLite. This does **not** establish a
+PostgreSQL-backed RPC restart test; add one if that extra parity is required.
+
+**Phase 0 readiness for the Table format switch:** the six approved Phase 0
+contract groups in the preceding inventory now have executable fixtures,
+including the previously missing authenticated persistent-SQL service lease,
+orphan, restart and publication-vs-reclamation path. This is readiness to
+_begin_ the incompatible Table format switch, not a claim that the Table
+redesign is delivered or that every scheduling order was deterministically
+forced. Existing Table remains Doc-backed, `table:v0` and `canonical-json:v0`
+remain unchanged, and no old/new compatibility or migration is provided.
+Remaining Phases 3-6: Table switch, encryption/service Table parity, docs,
+benchmarks, and a final accumulated gate; no push or PR.

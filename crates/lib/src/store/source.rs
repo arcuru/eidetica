@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     Result, Snapshot,
     backend::{BackendError, BackendImpl, VerificationStatus},
-    constants::INDEX,
+    constants::{INDEX, SETTINGS},
     crdt::{CRDT, Codec, Doc},
     entry::{Entry, ID},
     store::{
@@ -388,13 +388,7 @@ impl Sources {
                 index = index.merge(&Doc::decode(bytes)?)?;
             }
         }
-        let registration = index
-            .get(&request.store)
-            .and_then(|v| v.as_doc())
-            .ok_or_else(|| StoreError::InvalidConfiguration {
-                store: request.store.clone(),
-                reason: "Store is not registered at the requested source".into(),
-            })?;
+        let registration = canonical_registration(&index, &request.store)?;
         let type_id = registration
             .get("type")
             .and_then(|v| v.as_text())
@@ -419,7 +413,7 @@ impl Sources {
             source: request.source.clone(),
             snapshot,
             index_snapshot,
-            registration: serde_json::to_vec(&serde_json::to_value(registration)?)?,
+            registration: serde_json::to_vec(&serde_json::to_value(&registration)?)?,
             seal: String::new(),
         };
         source.seal = self.seal(reader, &source);
@@ -444,6 +438,17 @@ impl Sources {
         source: &StoreSource,
     ) -> Result<BoundSource> {
         self.check_source(reader, &source.database, source)?;
+        self.validate_binding(engine, source).await
+    }
+
+    /// Only call with daemon-validated persisted metadata, never a replacement
+    /// descriptor from a client. Walk the ORIGINAL tips, not current frontiers.
+    pub(crate) async fn validate_binding(
+        &self,
+        engine: &dyn BackendImpl,
+        source: &StoreSource,
+    ) -> Result<BoundSource> {
+        encoded_size(source, self.limits.page_bytes)?;
         let mut walk = Walk::new(engine, &source.database, &source.source, self.limits);
         let main = walk.walk(source.source.main.tips(), None).await?;
         if !main.contains(&source.database) {
@@ -455,6 +460,20 @@ impl Sources {
         // do NOT call current_source_frontiers again on reconnect/expiry.
         let index_ids = walk.walk(source.index_snapshot.tips(), Some(INDEX)).await?;
         walk.check_store_boundary(&index_ids).await?;
+        let mut index = Doc::default();
+        for id in index_ids {
+            if let Ok(bytes) = walk.entries[&id].data(INDEX)
+                && !bytes.is_empty()
+            {
+                index = index.merge(&Doc::decode(bytes)?)?;
+            }
+        }
+        let registration = canonical_registration(&index, &source.store)?;
+        if registration.get("type").and_then(|v| v.as_text()) != Some(source.type_id.as_str())
+            || serde_json::to_vec(&serde_json::to_value(&registration)?)? != source.registration
+        {
+            return Err(BackendError::InvalidRawSource.into());
+        }
         let ids = walk
             .walk(source.snapshot.tips(), Some(&source.store))
             .await?;
@@ -807,6 +826,71 @@ impl<'a> Walk<'a> {
                 .collect::<Vec<_>>(),
         ))
     }
+}
+
+/// Explicit legacy collection: finite canonical traversal and a finite single
+/// response, not the ordinary query transport. Large histories must use pages.
+#[cfg(all(unix, feature = "service"))]
+pub(crate) async fn collect_entries(
+    engine: &dyn BackendImpl,
+    tree: &ID,
+    store: &str,
+    tips: &[ID],
+    scope: ReadScope,
+) -> Result<Vec<Entry>> {
+    collect_entries_with_limits(engine, tree, store, tips, scope, Limits::default()).await
+}
+
+#[cfg(any(test, all(unix, feature = "service")))]
+async fn collect_entries_with_limits(
+    engine: &dyn BackendImpl,
+    tree: &ID,
+    store: &str,
+    tips: &[ID],
+    scope: ReadScope,
+    limits: Limits,
+) -> Result<Vec<Entry>> {
+    // Check before cloning caller-supplied tips. Walk enforces node/edge/byte
+    // bounds while fetching, including per-Entry encoded size and posture.
+    if tips.len() > limits.nodes {
+        return Err(BackendError::SourceTooLarge.into());
+    }
+    let source = QuerySource {
+        main: Snapshot::from(tips.to_vec()),
+        scope,
+    };
+    let mut walk = Walk::new(engine, tree, &source, limits);
+    let ids = walk.walk(tips, Some(store)).await?;
+    walk.check_boundary(tips, &ids).await?;
+    let entries: Vec<_> = ids
+        .iter()
+        .map(|id| walk.entries.remove(id).unwrap())
+        .collect();
+    // Reserve common envelope space; refuse explicitly rather than truncate.
+    encoded_size(&entries, limits.page_bytes.saturating_sub(128))?;
+    Ok(entries)
+}
+
+// These two subtrees are fixed JSON metadata, not ordinary unregistered Stores.
+// Source resolution folds their canonical history directly, avoiding recursion
+// through Registry/Doc queries and any private client materialization.
+fn canonical_registration(index: &Doc, store: &str) -> Result<Doc> {
+    if store == INDEX || store == SETTINGS {
+        let mut registration = Doc::new();
+        registration.set("type", "docstore:v0");
+        return Ok(registration);
+    }
+    index
+        .get(store)
+        .and_then(|v| v.as_doc())
+        .cloned()
+        .ok_or_else(|| {
+            StoreError::InvalidConfiguration {
+                store: store.into(),
+                reason: "Store is not registered at the requested source".into(),
+            }
+            .into()
+        })
 }
 
 #[cfg(test)]

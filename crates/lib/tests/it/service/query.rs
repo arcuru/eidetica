@@ -64,7 +64,7 @@ impl Store for CounterStore {
     }
 }
 impl StoreQueryHandler for CounterStore {
-    async fn handle_query(context: &StoreQueryContext, query: &[u8]) -> Result<QueryOutcome> {
+    async fn handle_query(context: &StoreQueryContext<'_>, query: &[u8]) -> Result<QueryOutcome> {
         // Public threshold query delegates a different, exact binary message.
         if query == b"NO-CAP" {
             return Ok(QueryOutcome::Unavailable);
@@ -197,6 +197,9 @@ async fn store_query_local_and_socket_use_unlike_store_vocabularies_and_pinned_s
     tx.commit().await.unwrap();
     insert_counter(&db, &owner, SocketCounter(21).encode().unwrap()).await;
     let mut daemon = ServiceServer::bind(server.clone(), &socket).await.unwrap();
+    assert!(daemon.register_store_query::<DocStore>().is_err());
+    assert!(daemon.register_store::<DocStore>().is_err());
+    assert!(daemon.register_store::<PasswordStore<DocStore>>().is_err());
     daemon.register_store_query::<CounterStore>().unwrap();
     assert!(daemon.register_store_query::<CounterStore>().is_err());
     let (shutdown, rx) = watch::channel(());
@@ -391,17 +394,21 @@ async fn store_query_refusal_type_encryption_source_and_auth_are_distinct() {
         .get_store::<PasswordStore<DocStore>>("secret")
         .await
         .unwrap();
+    assert!(unlocked.inner().await.is_err());
     unlocked.open("test-password").unwrap();
-    // Unlocking validates the hidden inner format locally, but does not make
-    // its plaintext identity a daemon-visible outer registration.
-    assert!(
+    // The SDK uses the validated outer identity and folds privately after
+    // refusal. Unlock still cannot register/claim the plaintext type remotely.
+    assert_eq!(
         unlocked
             .inner()
             .await
             .unwrap()
             .query(GetValue("private"))
             .await
-            .is_err()
+            .unwrap()
+            .unwrap()
+            .as_text(),
+        Some("encrypted-source")
     );
     let conn = client.remote_connection().unwrap();
     let unknown = request(old.clone(), "counter", CounterStore::type_id(), b"MAX\0");
@@ -645,11 +652,13 @@ struct LegacyHandshake {
 #[tokio::test]
 async fn service_wire_revision_rejects_missing_legacy_and_mismatched_peers_before_auth() {
     assert_eq!(PROTOCOL_VERSION, 0);
+    assert_eq!(WIRE_REVISION, 4);
     let (socket, shutdown, _server, _dir) = start_test_server().await;
     for body in [
         serde_json::json!({"protocol_version":0}),
         serde_json::json!({"protocol_version":0,"wire_revision":1}),
         serde_json::json!({"protocol_version":0,"wire_revision":2}),
+        serde_json::json!({"protocol_version":0,"wire_revision":3}),
         serde_json::json!({"protocol_version":0,"wire_revision":WIRE_REVISION+1}),
         serde_json::json!({"protocol_version":1,"wire_revision":WIRE_REVISION}),
     ] {
@@ -677,6 +686,7 @@ async fn service_wire_revision_rejects_missing_legacy_and_mismatched_peers_befor
         serde_json::json!({"protocol_version":0}),
         serde_json::json!({"protocol_version":0,"wire_revision":1}),
         serde_json::json!({"protocol_version":0,"wire_revision":2}),
+        serde_json::json!({"protocol_version":0,"wire_revision":3}),
         serde_json::json!({"protocol_version":0,"wire_revision":WIRE_REVISION+1}),
         serde_json::json!({"protocol_version":1,"wire_revision":WIRE_REVISION}),
     ] {

@@ -156,6 +156,16 @@ impl Backend for LocalBackend {
     async fn reclaim_expired_store_state(&self) -> Result<u64> {
         self.engine.reclaim_expired_store_state().await
     }
+    #[cfg(feature = "testing")]
+    async fn testing_age_store_state_staging(
+        &self,
+        token: &StagingToken,
+        seconds: i64,
+    ) -> Result<()> {
+        self.engine
+            .testing_age_store_state_staging(token, seconds)
+            .await
+    }
     async fn stage_store_state_records(
         &self,
         token: &StagingToken,

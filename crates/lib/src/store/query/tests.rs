@@ -56,7 +56,19 @@ impl Store for CounterStore {
     }
 }
 impl StoreQueryHandler for CounterStore {
-    async fn handle_query(context: &StoreQueryContext, query: &[u8]) -> Result<QueryOutcome> {
+    async fn handle_query(context: &StoreQueryContext<'_>, query: &[u8]) -> Result<QueryOutcome> {
+        if query == b"RECORDS" {
+            let page = context
+                .records::<Self>(
+                    &CounterRecords,
+                    &crate::backend::RecordRange::default(),
+                    None,
+                    1,
+                    true,
+                )
+                .await?;
+            return Ok(QueryOutcome::Result(serde_json::to_vec(&page.page)?));
+        }
         assert_eq!(query, b"MAX\0", "only the delegated message is encoded");
         Ok(QueryOutcome::Result(context.fold::<Self>()?.encode()?))
     }
@@ -156,10 +168,15 @@ async fn new_query_reads_bypass_ambiguous_legacy_opaque_caches() -> Result<()> {
         .get_store::<DocStore>("docs")
         .await?;
     assert_eq!(
-        docs.get("key").await?.as_text(),
+        docs.transaction()
+            .get_full_state::<Doc>("docs")
+            .await?
+            .get("key")
+            .and_then(crate::crdt::doc::Value::as_text),
         Some("incorrect-cache"),
         "poison must actually hit the legacy path"
     );
+    assert_eq!(docs.get("key").await?.as_text(), Some("canonical"));
     assert_eq!(
         docs.query(GetValue("key")).await?.unwrap().as_text(),
         Some("canonical")
@@ -384,10 +401,14 @@ async fn raw_sdk_unknown_non_serde_store_folds_same_source_and_composes_staging(
     );
     tx.update_subtree("counter", Counter(30).encode()?).await?;
     let committed = tx
-        .query_store_or_fold::<Counter, _>(
+        .query_store_or_cached_fold::<Counter, _>(
             "counter",
             CounterStore::type_id(),
             Vec::new(),
+            crate::store::assistance::PrivateRepresentation::opaque(
+                CounterStore::state_model().descriptor(),
+                CounterStore::type_id(),
+            ),
             Counter::decode,
             Ok,
         )
@@ -401,5 +422,311 @@ async fn raw_sdk_unknown_non_serde_store_folds_same_source_and_composes_staging(
     assert_eq!(committed.0, 21);
     assert_eq!(state.0, 30);
     assert_eq!(tx.query_source()?, source);
+    Ok(())
+}
+
+struct CounterRecords;
+impl crate::store::RecordProjection<Counter> for CounterRecords {
+    fn descriptor(&self) -> crate::store::ProjectionDescriptor {
+        crate::store::ProjectionDescriptor {
+            name: "test/query/counter-records".into(),
+            version: 0,
+        }
+    }
+    fn mutations<'a>(
+        &'a self,
+        state: &'a Counter,
+    ) -> Result<Box<dyn Iterator<Item = Result<crate::backend::RecordMutation>> + Send + 'a>> {
+        Ok(Box::new(std::iter::once(Ok(
+            crate::backend::RecordMutation::Put {
+                key: b"counter".to_vec(),
+                value: state.encode()?,
+            },
+        ))))
+    }
+}
+
+async fn record_handler_behavior(engine: Box<dyn BackendImpl>) -> Result<()> {
+    let (instance, mut owner) =
+        Instance::create_backend(engine, NewUser::passwordless("owner")).await?;
+    let db = owner
+        .create_database(Doc::new(), &owner.get_default_key()?)
+        .await?;
+    let mut backend = LocalBackend::new(instance.require_local_engine()?);
+    backend.register_store_query::<CounterStore>()?;
+    let db = db.with_test_ops(Arc::new(backend));
+    let write = db.new_transaction().await?;
+    write.get_store::<CounterStore>("counter").await?;
+    write
+        .update_subtree("counter", Counter(21).encode()?)
+        .await?;
+    write.commit().await?;
+    let txn = db.new_transaction().await?;
+    for _ in 0..2 {
+        let reply = txn
+            .query_store("counter", CounterStore::type_id(), b"RECORDS".to_vec())
+            .await?;
+        let QueryOutcome::Result(bytes) = reply.outcome else {
+            panic!("record handler refused")
+        };
+        let page: crate::backend::RecordPage = serde_json::from_slice(&bytes)?;
+        assert_eq!(
+            page.records,
+            vec![(b"counter".to_vec(), 21u64.to_le_bytes().to_vec())]
+        );
+    }
+    instance
+        .require_local_engine()?
+        .clear_derived_store_state()
+        .await?;
+    let reply = txn
+        .query_store("counter", CounterStore::type_id(), b"RECORDS".to_vec())
+        .await?;
+    assert!(matches!(reply.outcome, QueryOutcome::Result(_)));
+    Ok(())
+}
+
+#[tokio::test]
+async fn installed_handler_source_bound_records_memory() -> Result<()> {
+    record_handler_behavior(Box::new(InMemory::new())).await
+}
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn installed_handler_source_bound_records_sqlite() -> Result<()> {
+    record_handler_behavior(Box::new(
+        crate::backend::database::Sqlite::in_memory().await?,
+    ))
+    .await
+}
+
+async fn doc_convenience_behavior(engine: Box<dyn BackendImpl>) -> Result<()> {
+    use crate::crdt::doc::{PathBuf, Value};
+    use crate::store::{GetAll, GetPath};
+    let (_instance, mut owner) =
+        Instance::create_backend(engine, NewUser::passwordless("doc-plans")).await?;
+    let db = owner
+        .create_database(Doc::new(), &owner.get_default_key()?)
+        .await?;
+    let write = db.new_transaction().await?;
+    let docs = write.get_store::<DocStore>("docs").await?;
+    docs.set("user.name", "Alice").await?;
+    docs.set("user.age", 30).await?;
+    docs.set("outside", "pinned").await?;
+    docs.set("", "empty-key").await?;
+    write.commit().await?;
+    let tx = db.new_transaction().await?;
+    let docs = tx.get_store::<DocStore>("docs").await?;
+    docs.set_path_str("user.name", "Bob").await?;
+    assert_eq!(
+        docs.get_node("user").await?.get("age"),
+        Some(&Value::from(30))
+    );
+    assert_eq!(
+        docs.get_path_as::<i64>(PathBuf::new().push("user").push("age"))
+            .await?,
+        30
+    );
+    assert_eq!(
+        docs.query(GetPath(crate::crdt::doc::Path::new("user.name")))
+            .await?,
+        Some(Value::from("Bob"))
+    );
+    let mut delta = docs.local_data()?.unwrap();
+    delta.remove("user.age");
+    tx.update_subtree("docs", delta.encode()?).await?;
+    assert!(
+        docs.get_path(crate::crdt::doc::Path::new("user.age"))
+            .await
+            .is_err()
+    );
+    assert!(!docs.contains_path_str("user.age").await);
+    assert_eq!(docs.get("user.name").await?, Value::from("Bob"));
+    assert_eq!(docs.get("").await?, Value::from("empty-key"));
+    assert_eq!(docs.get_all().await?, docs.query(GetAll).await?);
+    assert!(docs.get_all().await?.is_tombstone("user.age"));
+    let later = db.new_transaction().await?;
+    later
+        .get_store::<DocStore>("docs")
+        .await?
+        .set("outside", "new")
+        .await?;
+    later.commit().await?;
+    assert_eq!(docs.get("outside").await?, Value::from("pinned"));
+    let mut atomic = Doc::atomic();
+    atomic.set("name", "replacement");
+    docs.set_node("user", atomic).await?;
+    assert!(docs.get("user.age").await.is_err());
+    assert_eq!(docs.get_node("user").await?.len(), 1);
+    assert_eq!(
+        docs.insert("outside", "inserted").await?,
+        Some(Value::from("pinned"))
+    );
+    assert!(docs.delete("user").await?);
+    assert!(docs.get("user.name").await.is_err());
+    assert!(docs.get_all().await?.is_tombstone("user"));
+    let new = tx.get_store::<DocStore>("empty-new").await?;
+    assert!(new.get_all().await?.is_empty());
+    let listing = tx.get_index().await?.list().await?;
+    assert!(listing.contains(&"docs".into()));
+    assert!(
+        !listing.contains(&"empty-new".into()),
+        "registry listing retains its committed-only contract"
+    );
+    assert_eq!(new.get_or_insert("counter", 5).await?, 5);
+    new.modify_or_insert::<i64, _>("counter", 0, |v| *v += 1)
+        .await?;
+    assert_eq!(new.get_as::<i64>("counter").await?, 6);
+    // Concrete convenience futures remain usable in spawned callers.
+    fn send(_: impl std::future::Future + Send) {}
+    send(docs.get("outside"));
+    send(docs.get_all());
+    send(docs.get_path(crate::crdt::doc::Path::new("user.name")));
+    Ok(())
+}
+
+#[tokio::test]
+async fn doc_convenience_nested_staged_and_pinned_memory() -> Result<()> {
+    doc_convenience_behavior(Box::new(InMemory::new())).await
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn doc_convenience_nested_staged_and_pinned_sqlite() -> Result<()> {
+    let engine = crate::backend::database::Sqlite::in_memory().await?;
+    assert_eq!(engine.kind(), crate::backend::database::DbKind::Sqlite);
+    doc_convenience_behavior(Box::new(engine)).await
+}
+
+#[tokio::test]
+async fn immutable_snapshot_value_survives_status_changes_and_view_reuse() -> Result<()> {
+    use crate::{
+        backend::RecordRange,
+        store::source::{Reader, Sources},
+    };
+    let (instance, mut owner) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        NewUser::passwordless("immutable-source"),
+    )
+    .await?;
+    let db = owner
+        .create_database(Doc::new(), &owner.get_default_key()?)
+        .await?;
+    let seed = db.new_transaction().await?;
+    seed.get_store::<CounterStore>("counter").await?;
+    seed.commit().await?;
+    let first = db.new_transaction().await?;
+    first
+        .update_subtree("counter", Counter(99).encode()?)
+        .await?;
+    let interior = first.commit().await?;
+    let last = db.new_transaction().await?;
+    last.update_subtree("counter", Counter(21).encode()?)
+        .await?;
+    last.commit().await?;
+    let engine = instance.require_local_engine()?;
+    let sources = Sources::default();
+    let reader = Reader::local();
+    let request = StoreQueryRequest {
+        store: "counter".into(),
+        expected_type: CounterStore::type_id().into(),
+        source: QuerySource {
+            main: db.snapshot().await?,
+            scope: ReadScope::AllowUnverified,
+        },
+        query: Vec::new(),
+    };
+    let bound = sources
+        .resolve(engine.as_ref(), &reader, db.root_id(), &request)
+        .await?;
+    let context = StoreQueryContext {
+        engine: engine.as_ref(),
+        raw_source: bound.source.clone(),
+        store: "counter".into(),
+        type_id: CounterStore::type_id().into(),
+        source: request.source.clone(),
+        snapshot: bound.source.snapshot.clone(),
+        entries: bound.entries,
+    };
+    let range = RecordRange::default();
+    let warm = context
+        .records::<CounterStore>(&CounterRecords, &range, None, 1, true)
+        .await?;
+    assert!(warm.reconstructed);
+    assert_eq!(warm.page.records[0].1, 99u64.to_le_bytes());
+    for status in [VerificationStatus::Unverified, VerificationStatus::Failed] {
+        engine.update_verification_status(&interior, status).await?;
+        let same = sources
+            .resolve(engine.as_ref(), &reader, db.root_id(), &request)
+            .await?;
+        assert_eq!(same.source.snapshot, context.snapshot);
+        assert_eq!(
+            same.entries, context.entries,
+            "never filter an unchanged Snapshot"
+        );
+        let strict = StoreQueryRequest {
+            source: QuerySource {
+                scope: ReadScope::Verified,
+                ..request.source.clone()
+            },
+            ..request.clone()
+        };
+        assert!(
+            sources
+                .resolve(engine.as_ref(), &reader, db.root_id(), &strict)
+                .await
+                .is_err(),
+            "strict admission must run even with a warm value"
+        );
+        let cached = context
+            .records::<CounterStore>(&CounterRecords, &range, None, 1, true)
+            .await?;
+        assert!(!cached.reconstructed);
+        assert_eq!(cached.page.records[0].1, 99u64.to_le_bytes());
+        engine.clear_derived_store_state().await?;
+        let cold = context
+            .records::<CounterStore>(&CounterRecords, &range, None, 1, true)
+            .await?;
+        assert!(cold.reconstructed);
+        assert_eq!(cold.page.records, cached.page.records);
+    }
+    // A fresh strict selection is a different Snapshot, not a mutated old value.
+    let selected = StoreQueryRequest {
+        source: QuerySource {
+            main: db.snapshot().await?,
+            scope: ReadScope::Verified,
+        },
+        ..request.clone()
+    };
+    let earlier = sources
+        .resolve(engine.as_ref(), &reader, db.root_id(), &selected)
+        .await?;
+    assert_ne!(earlier.source.snapshot, context.snapshot);
+    engine
+        .update_verification_status(&interior, VerificationStatus::Verified)
+        .await?;
+    let strict = StoreQueryRequest {
+        source: QuerySource {
+            scope: ReadScope::Verified,
+            ..request.source.clone()
+        },
+        ..request
+    };
+    let same = sources
+        .resolve(engine.as_ref(), &reader, db.root_id(), &strict)
+        .await?;
+    let strict_context = StoreQueryContext {
+        raw_source: same.source,
+        source: strict.source,
+        entries: same.entries,
+        ..context
+    };
+    let cached = strict_context
+        .records::<CounterStore>(&CounterRecords, &range, None, 1, true)
+        .await?;
+    assert!(
+        !cached.reconstructed,
+        "raw/verified share one admitted immutable value"
+    );
+    assert_eq!(cached.page.records[0].1, 99u64.to_le_bytes());
     Ok(())
 }

@@ -141,7 +141,7 @@ pub use errors::StoreError;
 mod docstore;
 mod docstore_query;
 pub use docstore::{DocStore, DocStoreInit};
-pub use docstore_query::GetValue;
+pub use docstore_query::{GetAll, GetPath, GetValue};
 
 mod value_editor;
 pub use value_editor::ValueEditor;
@@ -152,7 +152,9 @@ pub use table::{Table, TableCursor, TablePage};
 mod settings_store;
 pub use settings_store::SettingsStore;
 
+pub mod assistance;
 pub mod query;
+pub(crate) mod query_records;
 mod registry;
 pub mod source;
 pub use query::ExecuteQuery;
