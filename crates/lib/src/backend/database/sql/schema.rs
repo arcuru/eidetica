@@ -31,6 +31,15 @@ use super::{SqlxBackend, SqlxResultExt};
 pub const SCHEMA_VERSION: i64 = 0;
 
 const CREATE_STORE_STATE_TABLES: &[&str] = &[
+    "CREATE TABLE IF NOT EXISTS store_state_staging_tokens (
+        namespace_id TEXT PRIMARY KEY NOT NULL,
+        target_json TEXT NOT NULL,
+        outcome BIGINT NOT NULL,
+        view_id TEXT,
+        last_activity BIGINT NOT NULL,
+        next_sequence BIGINT NOT NULL DEFAULT 0,
+        last_digest BYTEA
+    )",
     "CREATE TABLE IF NOT EXISTS store_state_namespaces (
         namespace_id TEXT PRIMARY KEY NOT NULL,
         database_id TEXT NOT NULL,
