@@ -3,7 +3,7 @@ use std::str::FromStr;
 use crate::{
     Error, Result, Store, Transaction,
     crdt::{
-        CRDT, CRDTError, Doc,
+        CRDT, CRDTError, Codec, Doc,
         doc::{List, Path, PathBuf, PathError, Value},
     },
     store::{Registered, errors::StoreError},
@@ -176,7 +176,7 @@ impl DocStore {
         data.set(&key, value);
 
         // Serialize and update the transaction
-        let serialized = serde_json::to_vec(&data)?;
+        let serialized = data.encode()?;
         self.txn.update_subtree(&self.name, serialized).await
     }
 
@@ -212,7 +212,7 @@ impl DocStore {
         data.set(&key, value);
 
         // Serialize and update the transaction
-        let serialized = serde_json::to_vec(&data)?;
+        let serialized = data.encode()?;
         self.txn.update_subtree(&self.name, serialized).await?;
 
         Ok(previous)
@@ -760,7 +760,7 @@ impl DocStore {
         data.set(&path, value);
 
         // Serialize and update the transaction
-        let serialized = serde_json::to_vec(&data)?;
+        let serialized = data.encode()?;
         self.txn.update_subtree(&self.name, serialized).await
     }
 
@@ -887,7 +887,7 @@ impl DocStore {
         data.remove(key_str);
 
         // Serialize and update the transaction
-        let serialized = serde_json::to_vec(&data)?;
+        let serialized = data.encode()?;
         self.txn.update_subtree(&self.name, serialized).await?;
         Ok(true)
     }

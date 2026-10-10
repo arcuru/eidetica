@@ -1,21 +1,34 @@
 //! Tests for the transaction module.
 
 use super::*;
-use serde::{Deserialize, Serialize};
 
 use crate::{
     Instance,
     auth::crypto::generate_keypair,
     backend::database::InMemory,
     backend::{CacheScope, ProjectionDescriptor, StoreStateLifecycle, StoreStateRequest},
-    crdt::{CRDT, Data},
+    crdt::{CRDT, Codec},
     store::{DocStore, Registered},
 };
 
-#[derive(Clone, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Default, Debug, PartialEq, Eq)]
 struct MaxCounter(u64);
 
-impl Data for MaxCounter {}
+impl Codec for MaxCounter {
+    fn encode(&self) -> Result<Vec<u8>> {
+        Ok(self.0.to_le_bytes().to_vec())
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let bytes =
+            bytes
+                .try_into()
+                .map_err(|_| crate::crdt::CRDTError::DeserializationFailed {
+                    reason: "expected exactly eight counter bytes".into(),
+                })?;
+        Ok(Self(u64::from_le_bytes(bytes)))
+    }
+}
 
 impl CRDT for MaxCounter {
     fn merge(&self, other: &Self) -> Result<Self> {
@@ -169,9 +182,12 @@ async fn opaque_non_doc_state_materializes_cold_warm_and_after_clear() {
         .unwrap();
 
     let tx = database.new_transaction().await.unwrap();
-    tx.update_subtree("counter", serde_json::to_vec(&MaxCounter(7)).unwrap())
+    let store = tx.get_store::<CounterStore>("counter").await.unwrap();
+    assert_eq!(store.local_data().unwrap(), None);
+    tx.update_subtree("counter", MaxCounter(7).encode().unwrap())
         .await
         .unwrap();
+    assert_eq!(store.local_data().unwrap(), Some(MaxCounter(7)));
     tx.commit().await.unwrap();
 
     let tx = database.new_transaction().await.unwrap();

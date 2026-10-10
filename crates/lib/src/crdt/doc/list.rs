@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 // Import Value from the value module
 use super::value::Value;
-use crate::crdt::{CRDTError, traits::Data};
+use crate::crdt::{CRDTError, traits::Codec};
 
 /// Represents a position in a CRDT list using rational numbers.
 ///
@@ -589,5 +589,13 @@ impl FromIterator<Value> for List {
     }
 }
 
-// Data trait implementations
-impl Data for List {}
+// Codec trait implementations
+impl Codec for List {
+    fn encode(&self) -> crate::Result<Vec<u8>> {
+        Ok(serde_json::to_vec(self)?)
+    }
+
+    fn decode(bytes: &[u8]) -> crate::Result<Self> {
+        Ok(serde_json::from_slice(bytes)?)
+    }
+}

@@ -30,7 +30,7 @@ use std::{collections::HashMap, fmt};
 
 use crate::crdt::{
     CRDTError,
-    traits::{CRDT, Data},
+    traits::{CRDT, Codec},
 };
 
 // Submodules
@@ -708,5 +708,13 @@ impl Doc {
 // Node is now an alias for Doc, so no conversion implementations needed
 // The standard From<T> for T implementation in core handles this automatically
 
-// Data trait implementation
-impl Data for Doc {}
+// Codec trait implementation
+impl Codec for Doc {
+    fn encode(&self) -> crate::Result<Vec<u8>> {
+        Ok(serde_json::to_vec(self)?)
+    }
+
+    fn decode(bytes: &[u8]) -> crate::Result<Self> {
+        Ok(serde_json::from_slice(bytes)?)
+    }
+}

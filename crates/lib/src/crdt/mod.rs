@@ -13,15 +13,19 @@
 //!
 //! # Traits
 //!
-//! - [`Data`] - Marker trait for types that can be stored in Eidetica
+//! - [`Codec`] - Explicit byte encoding for Store operations and state
 //! - [`CRDT`] - Core trait defining merge semantics for conflict resolution
 
 // Core modules
 pub mod doc;
 pub mod errors;
+pub mod lww;
+pub mod map;
 pub mod traits;
 
 // Re-export core types
 pub use doc::Doc;
 pub use errors::CRDTError;
-pub use traits::{CRDT, Data};
+pub use lww::Lww;
+pub use map::{LwwMap, Map};
+pub use traits::{CRDT, Codec};
