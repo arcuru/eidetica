@@ -3247,8 +3247,8 @@ async fn test_warm_encrypted_table_service_point_read_is_lazy() {
     assert_eq!(table.get("c").await.unwrap().title, "c");
     assert_eq!(
         memory.store_state_read_counts(),
-        (before_records.0 + 3, before_records.1),
-        "a warm point read fetches PasswordStore metadata and one table row without scanning"
+        (before_records.0 + 1, before_records.1),
+        "metadata queries use canonical source; the warm table row needs one point read and no scan"
     );
     assert_eq!(
         memory.store_history_read_count(),
