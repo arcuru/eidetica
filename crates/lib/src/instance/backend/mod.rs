@@ -35,6 +35,7 @@ use crate::{
     entry::{Entry, ID},
     instance::WriteSource,
     snapshot::Snapshot,
+    store::query::{StoreQueryReply, StoreQueryRequest},
 };
 
 /// The inputs for materializing a multi-tip store state, resolved in one
@@ -65,6 +66,38 @@ pub struct MergeSlice {
 /// backend carries is its acting identity (see [`RemoteBackend`]).
 #[async_trait]
 pub trait Backend: Send + Sync + std::fmt::Debug {
+    /// Execute opaque Store-owned bytes at an explicit main-tree source.
+    async fn query_store(&self, tree: &ID, request: &StoreQueryRequest) -> Result<StoreQueryReply> {
+        let _ = tree;
+        Err(crate::store::StoreError::InvalidOperation {
+            store: request.store.clone(),
+            operation: "query".into(),
+            reason: "backend cannot execute source-bound Store queries".into(),
+        }
+        .into())
+    }
+
+    /// Resolve a named Store's canonical raw source without invoking its query
+    /// implementation. Raw inspection uses the same type/posture validation.
+    async fn store_source(
+        &self,
+        _tree: &ID,
+        _store: &str,
+        _expected_type: &str,
+        _source: &crate::store::query::QuerySource,
+    ) -> Result<crate::store::source::StoreSource> {
+        Err(BackendError::SourceReadUnsupported.into())
+    }
+
+    /// Read canonical Entries, not daemon-merged unknown Store data.
+    async fn raw_store_page(
+        &self,
+        _tree: &ID,
+        _request: &crate::store::source::RawStoreRequest,
+    ) -> Result<crate::store::source::RawStorePage> {
+        Err(BackendError::SourceReadUnsupported.into())
+    }
+
     async fn resolve_store_state(
         &self,
         _request: &StoreStateRequest,

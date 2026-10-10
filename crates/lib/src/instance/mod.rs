@@ -57,7 +57,7 @@ pub use new_user::NewUser;
 /// carries a `source`), and a peer on an older protocol version fails to
 /// deserialize a variant it does not know. Adding a variant is therefore a
 /// protocol change, not a backward-compatible addition: bump
-/// [`crate::service::protocol::PROTOCOL_VERSION`] (and
+/// [`crate::service::protocol::WIRE_REVISION`] (and
 /// [`crate::sync::protocol::PROTOCOL_VERSION`], which guards the sync wire)
 /// and treat old peers as incompatible. Always include a wildcard arm when
 /// matching.

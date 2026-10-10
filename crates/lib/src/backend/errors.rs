@@ -54,6 +54,25 @@ pub enum BackendError {
         encoded_bytes: usize,
     },
 
+    /// Fixed source/query budget exceeded; never capability refusal.
+    #[error("Canonical source or response exceeds its fixed byte/work bound")]
+    SourceTooLarge,
+    /// Retained or in-flight source work cannot currently be admitted.
+    #[error("Canonical source work admission refused")]
+    SourceAdmissionRefused,
+    /// Source binding is invalid or its current posture disallows reads.
+    #[error("Invalid or unavailable canonical Store source")]
+    InvalidRawSource,
+    /// A raw response envelope/order is malformed, not a recoverable lease.
+    #[error("Malformed canonical Store page")]
+    InvalidRawPage,
+    /// A continuation is expired, malformed, out of order or retargeted.
+    #[error("Invalid or expired canonical Store cursor")]
+    InvalidRawCursor,
+    /// A backend has no bounded atomic current-frontier capability.
+    #[error("Bounded canonical source reads are unsupported by this backend")]
+    SourceReadUnsupported,
+
     /// Entry not found by ID.
     #[error("Entry not found: {id}")]
     EntryNotFound {

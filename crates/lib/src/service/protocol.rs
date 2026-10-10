@@ -43,16 +43,13 @@ use crate::service::error::ServiceError;
 use crate::snapshot::Snapshot;
 use crate::user::UserInfo;
 
-/// Protocol version. Version 0 indicates an unstable protocol that may change
-/// without notice between releases.
-///
-/// This constant is the compatibility gate for serialized types in this
-/// protocol. `#[non_exhaustive]` does **not** protect wire compatibility: a
-/// peer on an older version fails to deserialize an unknown variant. Adding a
-/// variant to a serialized enum (e.g. [`WriteSource`](crate::instance::WriteSource)
-/// inside [`Notification::DatabaseWrite`]) is therefore a protocol version
-/// bump, not a backward-compatible addition.
+/// Experimental stability label, not a compatibility commitment.
 pub const PROTOCOL_VERSION: u32 = 0;
+
+/// Common envelope revision. Incompatible request, response or notification
+/// changes advance this value; Store-owned payloads use the Store type ID.
+/// Both handshake directions require it: missing fields are never defaulted.
+pub const WIRE_REVISION: u32 = 3;
 
 /// Maximum frame size: 64 MiB.
 pub const MAX_FRAME_SIZE: u32 = 64 * 1024 * 1024;
@@ -67,12 +64,14 @@ pub const MAX_RECORD_PAGE_BYTES: u32 = 4 * 1024 * 1024;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Handshake {
     pub protocol_version: u32,
+    pub wire_revision: u32,
 }
 
 /// Handshake acknowledgment sent by the server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HandshakeAck {
     pub protocol_version: u32,
+    pub wire_revision: u32,
 }
 
 // ===========================================================================
@@ -84,22 +83,10 @@ pub struct HandshakeAck {
 // (tree, store, identity)-scoped. Carried in `ServiceRequest::AuthenticatedDb`.
 // ===========================================================================
 
-/// Which snapshot of the DAG an op observes. Mirrors the `Database`
-/// read posture: a write's parent tips are the tips of the *same* snapshot
-/// the caller reads (see the Verification Model design doc).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub enum ReadScope {
-    /// Default-safe: only the maximal all-`Verified` ancestor-closed prefix.
-    #[default]
-    Verified,
-    /// Also include `Unverified` entries (`Failed` always dropped). The
-    /// caller explicitly opted in via `Database::allow_unverified()`.
-    AllowUnverified,
-}
+pub use crate::store::query::ReadScope;
 
-/// A CRDT store's materialized state on the wire. Concrete `Store<T>` typing
-/// stays client-side sugar over this; the cache path already ships
-/// `serde_json` bytes today, so this introduces no new representation.
+/// Fixed Doc/settings values retain their JSON representation. Generic Store
+/// state uses the dedicated encoded-byte [`ServiceResponse::StoreState`].
 pub type WireCrdtValue = serde_json::Value;
 
 /// Everything a client needs to build **and sign** an entry locally without
@@ -143,6 +130,18 @@ pub type WireRecordMutations = Vec<(Vec<u8>, Option<Vec<u8>>)>;
 /// set-metadata) before dispatch.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DatabaseOp {
+    /// Read-scoped opaque dispatch at the asserted source and outer Store type.
+    ResolveStoreSource {
+        store: String,
+        expected_type: String,
+        source: crate::store::query::QuerySource,
+    },
+    ReadRawStore {
+        request: crate::store::source::RawStoreRequest,
+    },
+    QueryStore {
+        request: crate::store::query::StoreQueryRequest,
+    },
     /// Resolve cached state through an opaque view onto one published record set.
     ResolveStoreState { request: StoreStateRequest },
     /// Begin a private build.
@@ -192,9 +191,15 @@ pub enum DatabaseOp {
     /// The database's Verified-frontier tips (server runs `Database::snapshot`
     /// on its local instance). Gate Read.
     GetVerifiedTips,
-    /// Server-materialized merged state of an **unencrypted** store, against
-    /// the server's own Verified frontier. Gate Read.
-    GetStoreState { store: String },
+    /// Read-scoped server maintenance for registered plaintext codecs. The
+    /// server verifies registry identity and projection after the canonical
+    /// Read gate, builds any missing generation itself, and returns typed
+    /// state without exposing a staging token. Gate Read.
+    EnsureStoreStateGeneration {
+        store: String,
+        expected_type: String,
+        projection: crate::backend::ProjectionDescriptor,
+    },
     /// Ordered (by subtree height), verified, opaque store entries reachable
     /// from `tips` in `scope` — the universal primitive, incl. encrypted
     /// stores (client decrypts+merges locally). Gate Read.
@@ -283,9 +288,12 @@ impl DatabaseOp {
             // Gated against `_databases`, not the request's `root_id`; the
             // dispatcher special-cases this so the value here is advisory.
             DatabaseOp::SetInstanceMetadata { .. } => Permission::Admin(0),
-            DatabaseOp::BeginTransaction { .. }
+            DatabaseOp::ResolveStoreSource { .. }
+            | DatabaseOp::ReadRawStore { .. }
+            | DatabaseOp::QueryStore { .. }
+            | DatabaseOp::BeginTransaction { .. }
             | DatabaseOp::GetVerifiedTips
-            | DatabaseOp::GetStoreState { .. }
+            | DatabaseOp::EnsureStoreStateGeneration { .. }
             | DatabaseOp::GetStoreEntries { .. }
             | DatabaseOp::GetStoreTipsUpToEntries { .. }
             | DatabaseOp::ComputeMergeState { .. }
@@ -463,6 +471,9 @@ pub enum ServerFrame {
 /// Response from server to client.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ServiceResponse {
+    StoreQuery(crate::store::query::StoreQueryReply),
+    RawStore(crate::store::source::RawStorePage),
+    StoreSource(crate::store::source::StoreSource),
     /// Single entry
     Entry(Entry),
     /// Multiple entries
@@ -482,8 +493,9 @@ pub enum ServiceResponse {
     Token(String),
     /// Transaction-build context (response to `DatabaseOp::BeginTransaction`).
     TransactionContext(TransactionContext),
-    /// Materialized CRDT store state (response to `DatabaseOp::GetStoreState`).
-    CrdtValue(WireCrdtValue),
+    /// Complete Store state encoded by its Codec, inside the JSON frame
+    /// (response to `DatabaseOp::EnsureStoreStateGeneration`).
+    StoreState(Vec<u8>),
     /// Merge state: lowest common ancestor + path to tips (response to
     /// `DatabaseOp::ComputeMergeState`).
     MergeState(MergeState),
@@ -528,7 +540,15 @@ pub async fn write_frame<W: AsyncWrite + Unpin, T: Serialize>(
     value: &T,
 ) -> crate::Result<()> {
     let payload = serde_json::to_vec(value)?;
-    let len = payload.len() as u32;
+    write_encoded_frame(writer, &payload).await
+}
+
+/// Send previously encoded bytes unchanged (including on a retry).
+pub(crate) async fn write_encoded_frame<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    payload: &[u8],
+) -> crate::Result<()> {
+    let len = u32::try_from(payload.len()).unwrap_or(u32::MAX);
     if len > MAX_FRAME_SIZE {
         return Err(crate::Error::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -536,7 +556,7 @@ pub async fn write_frame<W: AsyncWrite + Unpin, T: Serialize>(
         )));
     }
     writer.write_all(&len.to_be_bytes()).await?;
-    writer.write_all(&payload).await?;
+    writer.write_all(payload).await?;
     writer.flush().await?;
     Ok(())
 }
@@ -596,6 +616,7 @@ mod tests {
     fn test_handshake_serde() {
         let h = Handshake {
             protocol_version: PROTOCOL_VERSION,
+            wire_revision: crate::service::protocol::WIRE_REVISION,
         };
         let json = serde_json::to_string(&h).unwrap();
         let h2: Handshake = serde_json::from_str(&json).unwrap();
@@ -606,6 +627,7 @@ mod tests {
     fn test_handshake_ack_serde() {
         let h = HandshakeAck {
             protocol_version: PROTOCOL_VERSION,
+            wire_revision: crate::service::protocol::WIRE_REVISION,
         };
         let json = serde_json::to_string(&h).unwrap();
         let h2: HandshakeAck = serde_json::from_str(&json).unwrap();
