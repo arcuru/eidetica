@@ -5,13 +5,20 @@ use async_trait::async_trait;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use crate::backend::RecordMutations;
+use crate::backend::RecordMutation;
 
-/// Converts canonical Entry deltas to and from a Store's cached record format.
+/// One-way projection of canonical Entry deltas into ordered record changes.
+/// Each delta may be consumed incrementally; callers apply changes in Entry order.
 pub trait RecordProjection<D: CRDT>: Send + Sync {
     fn descriptor(&self) -> ProjectionDescriptor;
-    fn project_delta(&self, delta: &D, out: &mut RecordMutations) -> Result<()>;
-    fn encode_entry_delta(&self, mutations: &RecordMutations) -> Result<D>;
+    /// Legacy hierarchical projections must collapse conflicts before publication.
+    fn legacy_collapsed(&self) -> bool {
+        false
+    }
+    fn mutations<'a>(
+        &'a self,
+        delta: &'a D,
+    ) -> Result<Box<dyn Iterator<Item = Result<RecordMutation>> + Send + 'a>>;
 
     /// Converts a caller-facing key into its persisted record key.
     fn normalize_record_key(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
@@ -49,12 +56,15 @@ impl<D: CRDT + 'static> RecordProjection<D> for DescribedProjection<D> {
         self.descriptor.clone()
     }
 
-    fn project_delta(&self, delta: &D, out: &mut RecordMutations) -> Result<()> {
-        self.inner.project_delta(delta, out)
+    fn legacy_collapsed(&self) -> bool {
+        self.inner.legacy_collapsed()
     }
 
-    fn encode_entry_delta(&self, mutations: &RecordMutations) -> Result<D> {
-        self.inner.encode_entry_delta(mutations)
+    fn mutations<'a>(
+        &'a self,
+        delta: &'a D,
+    ) -> Result<Box<dyn Iterator<Item = Result<RecordMutation>> + Send + 'a>> {
+        self.inner.mutations(delta)
     }
 
     fn normalize_record_key(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
@@ -129,7 +139,9 @@ mod errors;
 pub use errors::StoreError;
 
 mod docstore;
+mod docstore_query;
 pub use docstore::{DocStore, DocStoreInit};
+pub use docstore_query::GetValue;
 
 mod value_editor;
 pub use value_editor::ValueEditor;
@@ -140,7 +152,10 @@ pub use table::{Table, TableCursor, TablePage};
 mod settings_store;
 pub use settings_store::SettingsStore;
 
+pub mod query;
 mod registry;
+pub mod source;
+pub use query::ExecuteQuery;
 pub use registry::Registered;
 pub use registry::Registry;
 pub use registry::RegistryEntry;
@@ -175,6 +190,19 @@ pub trait Store: Sized + Registered + Send + Sync {
     /// This is the type stored within each individual Entry and in opaque state
     /// caches. Its Codec implementation chooses the complete durable byte format.
     type Data: CRDT + Codec + 'static;
+
+    /// Execute a typed query using this Store's own plan. Only delegated
+    /// messages require encoding; public queries may borrow application data.
+    fn query<'a, Q>(
+        &'a self,
+        query: Q,
+    ) -> impl std::future::Future<Output = Result<<Self as ExecuteQuery<Q>>::Output>> + 'a
+    where
+        Self: ExecuteQuery<Q>,
+        Q: 'a,
+    {
+        self.execute(query)
+    }
 
     /// Representation of this store's cached current state.
     ///

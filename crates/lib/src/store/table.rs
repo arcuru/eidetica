@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::{
     Result, Store, Transaction,
-    backend::RecordMutations,
+    backend::{RecordMutation, RecordMutations},
     crdt::{
         Doc,
         doc::{Value, path::normalize_path},
@@ -43,11 +43,34 @@ fn insert_projected_record(out: &mut RecordMutations, key: Vec<u8>, value: Optio
     out.insert(key, value);
 }
 
-pub(crate) fn encode_entry_delta(mutations: &RecordMutations) -> Result<Doc> {
-    TableProjection.encode_entry_delta(mutations)
+// The Doc-backed Table still stages legacy records; this adapter is removed
+// with the table:v0 format switch.
+pub(crate) fn legacy_doc_delta(mutations: &RecordMutations) -> Result<Doc> {
+    let mut delta = Doc::new();
+    for (key, value) in mutations {
+        let key = std::str::from_utf8(key).map_err(|error| StoreError::SerializationFailed {
+            store: "Table".to_string(),
+            reason: error.to_string(),
+        })?;
+        let _ = match value {
+            Some(value) => delta.set(
+                key,
+                std::str::from_utf8(value).map_err(|error| StoreError::SerializationFailed {
+                    store: "Table".to_string(),
+                    reason: error.to_string(),
+                })?,
+            ),
+            None => delta.remove(key),
+        };
+    }
+    Ok(delta)
 }
 
 impl RecordProjection<Doc> for TableProjection {
+    fn legacy_collapsed(&self) -> bool {
+        true
+    }
+
     fn descriptor(&self) -> ProjectionDescriptor {
         ProjectionDescriptor {
             name: "eidetica/table/rows".to_string(),
@@ -55,33 +78,19 @@ impl RecordProjection<Doc> for TableProjection {
         }
     }
 
-    fn project_delta(&self, delta: &Doc, out: &mut RecordMutations) -> Result<()> {
-        project_doc_delta(delta, "", out);
-        Ok(())
-    }
-
-    fn encode_entry_delta(&self, mutations: &RecordMutations) -> Result<Doc> {
-        let mut delta = Doc::new();
-        for (key, value) in mutations {
-            let key =
-                std::str::from_utf8(key).map_err(|error| StoreError::SerializationFailed {
-                    store: "Table".to_string(),
-                    reason: error.to_string(),
-                })?;
-            let _ = match value {
-                Some(value) => delta.set(
-                    key,
-                    std::str::from_utf8(value).map_err(|error| {
-                        StoreError::SerializationFailed {
-                            store: "Table".to_string(),
-                            reason: error.to_string(),
-                        }
-                    })?,
-                ),
-                None => delta.remove(key),
-            };
-        }
-        Ok(delta)
+    fn mutations<'a>(
+        &'a self,
+        delta: &'a Doc,
+    ) -> Result<Box<dyn Iterator<Item = Result<RecordMutation>> + Send + 'a>> {
+        // Doc's hierarchical conflicts need a collapsed view until Table migrates.
+        let mut out = RecordMutations::new();
+        project_doc_delta(delta, "", &mut out);
+        Ok(Box::new(out.into_iter().map(|(key, value)| {
+            Ok(match value {
+                Some(value) => RecordMutation::Put { key, value },
+                None => RecordMutation::Delete { key },
+            })
+        })))
     }
 
     fn normalize_record_key(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
@@ -110,9 +119,22 @@ impl RecordProjection<Doc> for TableProjection {
     }
 }
 
-/// Exclusive continuation for ordered Table scans.
+/// Opaque exclusive continuation for ordered Table scans.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TableCursor(Vec<u8>);
+pub struct TableCursor(pub(crate) CursorKind);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CursorKind {
+    // table:v0 remains Doc-backed until the format switch.
+    Legacy(Vec<u8>),
+    Projected {
+        view: Uuid,
+        revision: u64,
+        store: String,
+        projection: ProjectionDescriptor,
+        last_physical_key: Vec<u8>,
+    },
+}
 
 /// One bounded page of rows in the Store's persisted record-key order.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -380,7 +402,16 @@ where
             .record_scan(
                 &self.name,
                 &projection,
-                cursor.map(|cursor| cursor.0.as_slice()),
+                match cursor.map(|cursor| &cursor.0) {
+                    Some(CursorKind::Legacy(key)) => Some(key.as_slice()),
+                    Some(CursorKind::Projected { .. }) => {
+                        return Err(StoreError::StaleCursor {
+                            store: self.name.clone(),
+                        }
+                        .into());
+                    }
+                    None => None,
+                },
                 limit,
             )
             .await?;
@@ -401,7 +432,7 @@ where
         }
         Ok(TablePage {
             rows,
-            next: page.next.map(TableCursor),
+            next: page.next.map(|key| TableCursor(CursorKind::Legacy(key))),
         })
     }
 }

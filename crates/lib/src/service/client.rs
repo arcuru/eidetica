@@ -28,13 +28,14 @@ use crate::auth::types::SigKey;
 use crate::backend::{
     InstanceMetadata, RecordMutations, RecordPage, RecordRange, StoreStateRequest,
 };
+use crate::crdt::Codec;
 use crate::entry::{Entry, ID};
 use crate::instance::WeakInstance;
 use crate::service::error::service_error_to_eidetica_error;
 use crate::service::protocol::{
     AuthenticatedDbRequest, DatabaseOp, Handshake, HandshakeAck, MergeState, Notification,
     PROTOCOL_VERSION, ReadScope, ServerFrame, ServiceRequest, ServiceResponse, TransactionContext,
-    WireCrdtValue, read_frame, write_frame,
+    read_frame, write_encoded_frame, write_frame,
 };
 use crate::snapshot::Snapshot;
 use crate::user::UserError;
@@ -502,6 +503,7 @@ impl RemoteConnection {
         // Send handshake
         let handshake = Handshake {
             protocol_version: PROTOCOL_VERSION,
+            wire_revision: crate::service::protocol::WIRE_REVISION,
         };
         write_frame(&mut writer, &handshake).await?;
 
@@ -513,12 +515,17 @@ impl RemoteConnection {
             ))
         })?;
 
-        if ack.protocol_version != PROTOCOL_VERSION {
+        if ack.protocol_version != PROTOCOL_VERSION
+            || ack.wire_revision != super::protocol::WIRE_REVISION
+        {
             return Err(crate::Error::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!(
-                    "Protocol version mismatch: client={}, server={}",
-                    PROTOCOL_VERSION, ack.protocol_version
+                    "Protocol/wire mismatch: client={}/{}, server={}/{}",
+                    PROTOCOL_VERSION,
+                    super::protocol::WIRE_REVISION,
+                    ack.protocol_version,
+                    ack.wire_revision
                 ),
             )));
         }
@@ -595,6 +602,12 @@ impl RemoteConnection {
     /// a fresh request landing right after the reader clears could push
     /// a sender into the orphan queue and `rx.await` forever.
     async fn request(&self, req: ServiceRequest) -> crate::Result<ServiceResponse> {
+        self.request_encoded(serde_json::to_vec(&req)?).await
+    }
+
+    /// Retain the complete request frame through the response wait so a lost
+    /// acknowledgement can be retried on this or a newly authenticated socket.
+    async fn request_encoded(&self, payload: Vec<u8>) -> crate::Result<ServiceResponse> {
         if self.inner.closed.load(Ordering::Acquire) {
             return Err(connection_aborted());
         }
@@ -613,7 +626,7 @@ impl RemoteConnection {
             // pop the just-pushed sender so a future caller doesn't get
             // matched to a response that never comes.
             self.inner.pending_lock().push_back(tx);
-            if let Err(e) = write_frame(&mut *writer, &req).await {
+            if let Err(e) = write_encoded_frame(&mut *writer, &payload).await {
                 let _ = self.inner.pending_lock().pop_back();
                 return Err(e);
             }
@@ -1074,6 +1087,87 @@ impl RemoteConnection {
 
     // === Database operations (DatabaseOp via AuthenticatedDb envelope) ===
 
+    pub async fn query_store(
+        &self,
+        root_id: ID,
+        identity: SigKey,
+        request: crate::store::query::StoreQueryRequest,
+    ) -> crate::Result<crate::store::query::StoreQueryReply> {
+        let response = self
+            .db_request(
+                root_id.clone(),
+                identity,
+                DatabaseOp::QueryStore {
+                    request: request.clone(),
+                },
+            )
+            .await?;
+        match response {
+            ServiceResponse::StoreQuery(reply) => {
+                reply.validate(&root_id, &request)?;
+                Ok(reply)
+            }
+            other => Err(unexpected_response("source-bound StoreQuery", &other)),
+        }
+    }
+
+    pub async fn store_source(
+        &self,
+        root_id: ID,
+        identity: SigKey,
+        store: String,
+        expected_type: String,
+        source: crate::store::query::QuerySource,
+    ) -> crate::Result<crate::store::source::StoreSource> {
+        let response = self
+            .db_request(
+                root_id.clone(),
+                identity,
+                DatabaseOp::ResolveStoreSource {
+                    store: store.clone(),
+                    expected_type: expected_type.clone(),
+                    source: source.clone(),
+                },
+            )
+            .await?;
+        match response {
+            ServiceResponse::StoreSource(raw)
+                if raw.database == root_id
+                    && raw.store == store
+                    && raw.type_id == expected_type
+                    && raw.source == source
+                    && !raw.seal.is_empty() =>
+            {
+                Ok(raw)
+            }
+            other => Err(unexpected_response("canonical StoreSource", &other)),
+        }
+    }
+
+    pub async fn raw_store_page(
+        &self,
+        root_id: ID,
+        identity: SigKey,
+        request: crate::store::source::RawStoreRequest,
+    ) -> crate::Result<crate::store::source::RawStorePage> {
+        let response = self
+            .db_request(
+                root_id,
+                identity,
+                DatabaseOp::ReadRawStore {
+                    request: request.clone(),
+                },
+            )
+            .await?;
+        match response {
+            ServiceResponse::RawStore(page) => {
+                page.validate(&request)?;
+                Ok(page)
+            }
+            other => Err(unexpected_response("source-bound RawStore", &other)),
+        }
+    }
+
     /// Acquire a [`TransactionContext`] for the given stores and scope.
     ///
     /// The returned context includes main-tree parents with heights,
@@ -1100,20 +1194,72 @@ impl RemoteConnection {
         }
     }
 
-    /// Fetch the server-materialized merged state of an unencrypted store.
-    pub async fn get_store_state(
+    /// Fetch a registered Store's state; only an explicit maintenance
+    /// capability refusal selects client-side typed history reduction.
+    pub async fn get_store_state<S: crate::store::Store>(
         &self,
         root_id: ID,
         identity: SigKey,
         store: String,
-    ) -> crate::Result<WireCrdtValue> {
-        let resp = self
-            .db_request(root_id, identity, DatabaseOp::GetStoreState { store })
-            .await?;
-        match resp {
-            ServiceResponse::CrdtValue(v) => Ok(v),
-            other => Err(unexpected_response("CrdtValue", &other)),
+    ) -> crate::Result<S::Data> {
+        let response = self
+            .db_request(
+                root_id.clone(),
+                identity.clone(),
+                DatabaseOp::EnsureStoreStateGeneration {
+                    store: store.clone(),
+                    expected_type: S::type_id().to_string(),
+                    projection: S::state_model().descriptor(),
+                },
+            )
+            .await;
+        match response {
+            Ok(ServiceResponse::StoreState(bytes)) => S::Data::decode(&bytes),
+            Err(crate::Error::Store(error))
+                if matches!(
+                    *error,
+                    crate::store::StoreError::RecordMaintenanceUnavailable { .. }
+                ) =>
+            {
+                use crate::crdt::CRDT;
+                let tips = self
+                    .get_verified_tips(root_id.clone(), identity.clone())
+                    .await?;
+                let entries = self
+                    .get_store_entries(
+                        root_id,
+                        identity,
+                        store.clone(),
+                        tips.into_tips(),
+                        ReadScope::Verified,
+                    )
+                    .await?;
+                // The fallback may not publish: it owns no server maintenance
+                // capability. Fold only authorized, ordered canonical history.
+                let mut state = S::Data::default();
+                for entry in entries {
+                    if let Ok(data) = entry.data(&store) {
+                        state = state.merge(&S::Data::decode(data)?)?;
+                    }
+                }
+                Ok(state)
+            }
+            Err(error) => Err(error),
+            Ok(other) => Err(unexpected_response("StoreState", &other)),
         }
+    }
+
+    /// DocStore-specific JSON convenience; other Stores use typed retrieval.
+    pub async fn get_doc_store_state(
+        &self,
+        root_id: ID,
+        identity: SigKey,
+        store: String,
+    ) -> crate::Result<serde_json::Value> {
+        Ok(serde_json::to_value(
+            self.get_store_state::<crate::store::DocStore>(root_id, identity, store)
+                .await?,
+        )?)
     }
 
     /// Fetch ordered, verified, opaque store entries reachable from `tips`.
@@ -1310,7 +1456,7 @@ impl RemoteConnection {
         chunk_id: u64,
         records: RecordMutations,
     ) -> crate::Result<()> {
-        self.db_request(
+        let payload = Self::encode_staging_chunk(
             root,
             identity,
             DatabaseOp::StageStoreStateRecords {
@@ -1318,9 +1464,8 @@ impl RemoteConnection {
                 chunk_id,
                 records: records.into_iter().collect(),
             },
-        )
-        .await
-        .and_then(Self::expect_ok)
+        )?;
+        self.send_staging_chunk(&payload).await
     }
 
     /// Upload one ordered physical chunk without collapsing repeated keys.
@@ -1332,7 +1477,7 @@ impl RemoteConnection {
         chunk_id: u64,
         mutations: Vec<crate::backend::RecordMutation>,
     ) -> crate::Result<()> {
-        self.db_request(
+        let payload = Self::encode_staging_chunk(
             root,
             identity,
             DatabaseOp::StageStoreStateOrdered {
@@ -1340,9 +1485,53 @@ impl RemoteConnection {
                 chunk_id,
                 mutations,
             },
-        )
-        .await
-        .and_then(Self::expect_ok)
+        )?;
+        self.send_staging_chunk(&payload).await
+    }
+
+    /// Encode once before sending. The returned bytes can be retained by the
+    /// caller and replayed on a new authenticated connection after an ambiguous
+    /// transport failure; never reconstruct an encrypted mutation to retry it.
+    pub fn encode_staging_chunk(
+        root_id: ID,
+        identity: SigKey,
+        op: DatabaseOp,
+    ) -> crate::Result<Vec<u8>> {
+        if !matches!(
+            op,
+            DatabaseOp::StageStoreStateRecords { .. } | DatabaseOp::StageStoreStateOrdered { .. }
+        ) {
+            return Err(crate::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "only staging chunks may be replayed",
+            )));
+        }
+        Ok(serde_json::to_vec(&ServiceRequest::AuthenticatedDb(
+            Box::new(AuthenticatedDbRequest {
+                root_id,
+                identity,
+                op,
+            }),
+        ))?)
+    }
+
+    /// Send the exact encoded chunk. On an I/O failure the payload is still
+    /// owned by the caller, which can reconnect, authenticate, and retry it.
+    /// Server errors (including sequence conflicts) are not retried.
+    pub async fn send_staging_chunk(&self, payload: &[u8]) -> crate::Result<()> {
+        let req: ServiceRequest = serde_json::from_slice(payload)?;
+        if !matches!(req, ServiceRequest::AuthenticatedDb(ref envelope) if matches!(envelope.op, DatabaseOp::StageStoreStateRecords { .. } | DatabaseOp::StageStoreStateOrdered { .. }))
+        {
+            return Err(crate::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "only staging chunks may be replayed",
+            )));
+        }
+        let resp = self.request_encoded(payload.to_vec()).await?;
+        match resp {
+            ServiceResponse::Error(e) => Err(service_error_to_eidetica_error(e)),
+            other => Self::expect_ok(other),
+        }
     }
 
     /// Publish the private build and return a view onto the published record set.

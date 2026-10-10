@@ -23,6 +23,7 @@ use crate::auth::validation::permissions::resolve_identity_permission;
 use crate::backend::{
     CacheScope, StagingToken, StoreStateLifecycle, StoreStateRequest, VerificationStatus,
 };
+use crate::crdt::Codec;
 use crate::database::Database;
 use crate::entry::ID;
 use crate::instance::{CallbackId, WriteSource};
@@ -38,6 +39,19 @@ use crate::user::system_databases::lookup_user_record;
 /// diagnostic now — registry-based routing went away in the per-db
 /// callback refactor.
 type ConnectionId = u64;
+// A response acknowledgment prevents pipelined requests from retaining an
+// unbounded queue of large frames; notifications keep their existing ordering.
+type QueuedFrame = (
+    ServerFrame,
+    Option<tokio::sync::oneshot::Sender<()>>,
+    Option<crate::store::source::Work>,
+);
+struct WriterGuard(tokio::task::AbortHandle);
+impl Drop for WriterGuard {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
 
 /// How long an idle session token survives before the next dispatch reclaims
 /// its backend resources.
@@ -72,11 +86,14 @@ struct SessionStaging {
 /// per-tree callback list, no separate fan-out mechanism required.
 struct ConnectionContext {
     conn_id: ConnectionId,
-    tx: mpsc::UnboundedSender<ServerFrame>,
+    tx: mpsc::UnboundedSender<QueuedFrame>,
     instance: Instance,
     subscribed: std::sync::Mutex<HashMap<ID, CallbackId>>,
     staging: std::sync::Mutex<HashMap<String, SessionStaging>>,
     token_idle_ttl: Duration,
+    query_handlers: Vec<crate::store::query::QueryHandler>,
+    sources: Arc<crate::store::source::Sources>,
+    response_work: std::sync::Mutex<Option<crate::store::source::Work>>,
 }
 
 impl ConnectionContext {
@@ -119,6 +136,7 @@ impl Drop for ConnectionGuard {
             self.ctx.instance.remove_write_callback(tree_id, *id);
         }
         drop(subs);
+        self.ctx.sources.disconnect(self.ctx.conn_id);
     }
 }
 
@@ -180,6 +198,8 @@ enum ConnectionState {
 /// service-layer cache.
 pub struct ServiceServer {
     instance: Instance,
+    query_handlers: Vec<crate::store::query::QueryHandler>,
+    sources: Arc<crate::store::source::Sources>,
     socket_path: PathBuf,
     listener: UnixListener,
     socket_identity: SocketIdentity,
@@ -207,6 +227,14 @@ impl SocketIdentity {
 }
 
 impl ServiceServer {
+    /// Install read-only plaintext Store code. Requests cannot install code or
+    /// route encrypted wrappers to a hidden plaintext implementation.
+    pub fn register_store_query<S: crate::store::query::StoreQueryHandler>(
+        &mut self,
+    ) -> crate::Result<()> {
+        crate::store::query::register_handler::<S>(&mut self.query_handlers)
+    }
+
     /// Bind the service socket and return a server ready to accept clients.
     ///
     /// # Arguments
@@ -247,6 +275,11 @@ impl ServiceServer {
 
         Ok(Self {
             instance,
+            query_handlers: crate::store::query::default_handlers(),
+            sources: Arc::new(crate::store::source::Sources::new(
+                crate::store::source::Limits::default(),
+                token_idle_ttl,
+            )),
             socket_path,
             listener,
             socket_identity,
@@ -287,9 +320,11 @@ impl ServiceServer {
                         Ok((stream, _addr)) => {
                             let instance = self.instance.clone();
                             let token_idle_ttl = self.token_idle_ttl;
+                            let query_handlers = self.query_handlers.clone();
+                            let sources = self.sources.clone();
                             let conn_id = next_conn_id.fetch_add(1, Ordering::Relaxed);
                             handlers.spawn(async move {
-                                if let Err(e) = handle_connection(stream, instance, conn_id, token_idle_ttl).await {
+                                if let Err(e) = handle_connection(stream, instance, conn_id, token_idle_ttl, query_handlers, sources).await {
                                     tracing::debug!(conn_id, "Connection handler error: {e}");
                                 }
                             });
@@ -542,7 +577,7 @@ impl Drop for ServiceServer {
 /// I/O is split across two tasks:
 ///
 /// - **Writer task** (spawned below) owns the `WriteHalf` and drains an
-///   `mpsc::UnboundedReceiver<ServerFrame>` into `write_frame` in
+///   `mpsc::UnboundedReceiver<QueuedFrame>` into `write_frame` in
 ///   submission order. Responses (dispatched from the request loop) and
 ///   server-pushed notifications (from subscribed per-db callbacks both
 ///   capture clones of the same `frame_tx`, so a single connection-local
@@ -561,6 +596,8 @@ async fn handle_connection(
     instance: Instance,
     conn_id: ConnectionId,
     token_idle_ttl: Duration,
+    query_handlers: Vec<crate::store::query::QueryHandler>,
+    sources: Arc<crate::store::source::Sources>,
 ) -> crate::Result<()> {
     let (mut reader, mut writer) = tokio::io::split(stream);
 
@@ -570,17 +607,23 @@ async fn handle_connection(
         None => return Ok(()), // Client disconnected before handshake
     };
 
-    if handshake.protocol_version != PROTOCOL_VERSION {
+    if handshake.protocol_version != PROTOCOL_VERSION
+        || handshake.wire_revision != super::protocol::WIRE_REVISION
+    {
         // Send error ack and close
         let ack = HandshakeAck {
             protocol_version: PROTOCOL_VERSION,
+            wire_revision: crate::service::protocol::WIRE_REVISION,
         };
         write_frame(&mut writer, &ack).await?;
         return Err(crate::Error::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!(
-                "Protocol version mismatch: client={}, server={}",
-                handshake.protocol_version, PROTOCOL_VERSION
+                "Protocol/wire mismatch: client={}/{}, server={}/{}",
+                handshake.protocol_version,
+                handshake.wire_revision,
+                PROTOCOL_VERSION,
+                super::protocol::WIRE_REVISION
             ),
         )));
     }
@@ -588,6 +631,7 @@ async fn handle_connection(
     // Send handshake ack
     let ack = HandshakeAck {
         protocol_version: PROTOCOL_VERSION,
+        wire_revision: crate::service::protocol::WIRE_REVISION,
     };
     write_frame(&mut writer, &ack).await?;
 
@@ -619,16 +663,21 @@ async fn handle_connection(
     // and calls `ids_added(cursor, post_tips)` to catch up. That makes
     // drop-oldest the right policy and considerably softens the cost of
     // dropping at all — but the work still needs doing for prod.
-    let (frame_tx, mut frame_rx) = mpsc::unbounded_channel::<ServerFrame>();
+    let (frame_tx, mut frame_rx) = mpsc::unbounded_channel::<QueuedFrame>();
     let writer_task = tokio::spawn(async move {
-        while let Some(frame) = frame_rx.recv().await {
+        while let Some((frame, written, work)) = frame_rx.recv().await {
             if let Err(e) = write_frame(&mut writer, &frame).await {
                 tracing::debug!(conn_id, "Connection writer error: {e}");
                 break;
             }
+            drop(work);
+            if let Some(written) = written {
+                let _ = written.send(());
+            }
         }
     });
 
+    let _writer_guard = WriterGuard(writer_task.abort_handle());
     let ctx = Arc::new(ConnectionContext {
         conn_id,
         tx: frame_tx.clone(),
@@ -636,6 +685,9 @@ async fn handle_connection(
         subscribed: std::sync::Mutex::new(HashMap::new()),
         staging: std::sync::Mutex::new(HashMap::new()),
         token_idle_ttl,
+        query_handlers,
+        sources,
+        response_work: std::sync::Mutex::new(None),
     });
     let guard = ConnectionGuard { ctx: ctx.clone() };
 
@@ -650,11 +702,21 @@ async fn handle_connection(
             };
 
             let response = dispatch(&instance, &mut state, &ctx, request).await;
+            let (written, acknowledgment) = tokio::sync::oneshot::channel();
+            let work = ctx.response_work.lock().unwrap().take();
             if frame_tx
-                .send(ServerFrame::Response(Box::new(response)))
+                .send((
+                    ServerFrame::Response(Box::new(response)),
+                    Some(written),
+                    work,
+                ))
                 .is_err()
             {
                 // Writer task has exited; nothing more we can send.
+                break;
+            }
+            let sent = acknowledgment.await;
+            if sent.is_err() {
                 break;
             }
         }
@@ -834,11 +896,49 @@ async fn dispatch_inner(
                 resolve_acting_pubkey(&identity, &login_pubkey, &keyset_snapshot)?
             };
 
+            // Source work admission includes the existing authorization I/O;
+            // the permission gate still precedes all authoritative data use.
+            let reader = crate::store::source::Reader {
+                user: session_user_uuid.clone(),
+                principal: acting_pubkey.to_string(),
+                connection: ctx.conn_id,
+            };
+            let work = match &op {
+                DatabaseOp::QueryStore { request } => {
+                    Some(ctx.sources.admit(&reader, &root_id, request)?)
+                }
+                DatabaseOp::ResolveStoreSource {
+                    store,
+                    expected_type,
+                    source,
+                } => {
+                    let query = crate::store::query::StoreQueryRequest {
+                        store: store.clone(),
+                        expected_type: expected_type.clone(),
+                        source: source.clone(),
+                        query: Vec::new(),
+                    };
+                    Some(ctx.sources.admit(&reader, &root_id, &query)?)
+                }
+                DatabaseOp::ReadRawStore { request } => {
+                    let query = crate::store::query::StoreQueryRequest {
+                        store: request.source.store.clone(),
+                        expected_type: request.source.type_id.clone(),
+                        source: request.source.source.clone(),
+                        query: Vec::new(),
+                    };
+                    Some(ctx.sources.admit(&reader, &root_id, &query)?)
+                }
+                _ => None,
+            };
+            *ctx.response_work.lock().unwrap() = work;
+
             // Per-tree permission gate. Unconditional for every op *except*
             // submit (verification in the handler is its boundary) and
             // set-metadata (gated against `_databases` below). Create-flow
-            // passthrough (false) for the rest, so a not-yet-propagated tree is
-            // waved through and database creation works.
+            // passthrough for legacy operations preserves database creation.
+            // QueryStore requires an existing authorized source, so it fails
+            // closed even when the requested database is unavailable.
             if is_set_metadata {
                 gate_tree_permission(
                     instance,
@@ -856,7 +956,12 @@ async fn dispatch_inner(
                     &identity,
                     &root_id,
                     op.required_permission(),
-                    false,
+                    matches!(
+                        op,
+                        DatabaseOp::QueryStore { .. }
+                            | DatabaseOp::ReadRawStore { .. }
+                            | DatabaseOp::ResolveStoreSource { .. }
+                    ),
                 )
                 .await?;
             }
@@ -920,6 +1025,76 @@ async fn dispatch_database_op(
     op: DatabaseOp,
 ) -> crate::Result<ServiceResponse> {
     match op {
+        DatabaseOp::ResolveStoreSource {
+            store,
+            expected_type,
+            source,
+        } => {
+            let reader = crate::store::source::Reader {
+                user: user_uuid.into(),
+                principal: acting_pubkey.to_string(),
+                connection: ctx.conn_id,
+            };
+            let query = crate::store::query::StoreQueryRequest {
+                store,
+                expected_type,
+                source,
+                query: Vec::new(),
+            };
+            let source = ctx
+                .sources
+                .resolve(
+                    instance.require_local_engine()?.as_ref(),
+                    &reader,
+                    &root_id,
+                    &query,
+                )
+                .await?
+                .source;
+            let response = ServiceResponse::StoreSource(source);
+            crate::store::source::encoded_size(
+                &ServerFrame::Response(Box::new(response.clone())),
+                ctx.sources.limits.page_bytes,
+            )?;
+            Ok(response)
+        }
+        DatabaseOp::ReadRawStore { request } => {
+            let reader = crate::store::source::Reader {
+                user: user_uuid.into(),
+                principal: acting_pubkey.to_string(),
+                connection: ctx.conn_id,
+            };
+            ctx.sources
+                .check_source(&reader, &root_id, &request.source)?;
+            let page = ctx
+                .sources
+                .page(instance.require_local_engine()?.as_ref(), &reader, &request)
+                .await?;
+            Ok(ServiceResponse::RawStore(page))
+        }
+        DatabaseOp::QueryStore { request } => {
+            let reader = crate::store::source::Reader {
+                user: user_uuid.into(),
+                principal: acting_pubkey.to_string(),
+                connection: ctx.conn_id,
+            };
+            let engine = instance.require_local_engine()?;
+            let reply = crate::store::query::execute(
+                engine.as_ref(),
+                &root_id,
+                &request,
+                &ctx.query_handlers,
+                &ctx.sources,
+                &reader,
+            )
+            .await?;
+            let response = ServiceResponse::StoreQuery(reply);
+            crate::store::source::encoded_size(
+                &ServerFrame::Response(Box::new(response.clone())),
+                ctx.sources.limits.page_bytes,
+            )?;
+            Ok(response)
+        }
         DatabaseOp::ResolveStoreState { request } => {
             let request = session_store_state_request(request, user_uuid, &root_id)?;
             let view = match instance.backend().resolve_store_state(&request).await? {
@@ -1181,14 +1356,85 @@ async fn dispatch_database_op(
             Ok(ServiceResponse::TransactionContext(ctx))
         }
 
-        DatabaseOp::GetStoreState { store } => {
-            // Server-materialized merged state (unencrypted stores only).
-            // Encrypted stores must use GetStoreEntries instead — the
-            // ephemeral transaction here has no encryptor, and Doc
-            // deserialization would fail on ciphertext.
+        DatabaseOp::EnsureStoreStateGeneration {
+            store,
+            expected_type,
+            projection,
+        } => {
+            use crate::store::{DocStore, Registered, Store, StoreError, Table};
+
+            // The per-tree Read gate above runs before looking up metadata or
+            // doing internal cache maintenance. Never trust the caller's codec.
             let db = Database::open(instance, &root_id).await?;
-            let value = db.get_store_state(&store).await?;
-            Ok(ServiceResponse::CrdtValue(value))
+            let txn = db.new_transaction().await?;
+            let actual = txn.get_index().await?.get_entry(&store).await?.type_id;
+            if actual != expected_type {
+                return Err(StoreError::TypeMismatch {
+                    store,
+                    expected: actual.clone(),
+                    actual: expected_type,
+                }
+                .into());
+            }
+            let known = if actual == DocStore::type_id() {
+                DocStore::state_model().descriptor()
+            } else if actual == Table::<serde_json::Value>::type_id() {
+                Table::<serde_json::Value>::state_model().descriptor()
+            } else if actual == crate::store::PasswordStore::<DocStore>::type_id() {
+                // PasswordStore's registry identity does not reveal its wrapped
+                // codec. Both known wrappers have distinct effective descriptors;
+                // validate the claim, but never materialize encrypted history
+                // without the key or accept a caller-produced projection.
+                let candidates = [
+                    crate::store::PasswordStore::<DocStore>::state_model().descriptor(),
+                    crate::store::PasswordStore::<Table<serde_json::Value>>::state_model()
+                        .descriptor(),
+                ];
+                if !candidates.contains(&projection) {
+                    return Err(StoreError::TypeMismatch {
+                        store,
+                        expected: format!("{candidates:?}"),
+                        actual: format!("{projection:?}"),
+                    }
+                    .into());
+                }
+                return Err(StoreError::RecordMaintenanceUnavailable { store }.into());
+            } else {
+                return Err(StoreError::RecordMaintenanceUnavailable { store }.into());
+            };
+            if projection != known {
+                return Err(StoreError::TypeMismatch {
+                    store,
+                    expected: format!("{known:?}"),
+                    actual: format!("{projection:?}"),
+                }
+                .into());
+            }
+            // Probe the substrate only after authorization and descriptor
+            // validation. A recordless daemon cannot publish a generation.
+            let probe = crate::store::state::opaque_request(
+                &root_id,
+                &store,
+                known,
+                Vec::new(),
+                CacheScope::Shared,
+            );
+            match instance.backend().resolve_store_state(&probe).await {
+                Err(err) if err.is_unsupported_store_state() => {
+                    return Err(StoreError::RecordMaintenanceUnavailable { store }.into());
+                }
+                Err(err) => return Err(err),
+                Ok(_) => {}
+            }
+            // Both supported plaintext codecs currently encode Doc. A new
+            // canonical Data type must get its own registered dispatch here.
+            let value = if actual == DocStore::type_id() {
+                db.get_store_state::<DocStore>(&store).await?
+            } else {
+                db.get_store_state::<Table<serde_json::Value>>(&store)
+                    .await?
+            };
+            Ok(ServiceResponse::StoreState(value.encode()?))
         }
 
         DatabaseOp::GetStoreEntries { store, tips, scope } => {
@@ -1329,7 +1575,7 @@ async fn dispatch_database_op(
                         post_tips: event.post_tips().clone(),
                         source: event.source(),
                     });
-                    let _ = tx.send(frame);
+                    let _ = tx.send((frame, None, None));
                     async move { Ok(()) }
                 },
             );
@@ -1973,6 +2219,7 @@ mod tests {
         // Send a version that remains wrong when the protocol is bumped.
         let handshake = Handshake {
             protocol_version: PROTOCOL_VERSION.saturating_add(1),
+            wire_revision: crate::service::protocol::WIRE_REVISION,
         };
         write_frame(&mut writer, &handshake).await.unwrap();
 
@@ -2088,6 +2335,7 @@ mod tests {
             &mut writer,
             &Handshake {
                 protocol_version: PROTOCOL_VERSION,
+                wire_revision: crate::service::protocol::WIRE_REVISION,
             },
         )
         .await
@@ -2136,6 +2384,7 @@ mod tests {
             &mut writer,
             &Handshake {
                 protocol_version: PROTOCOL_VERSION,
+                wire_revision: crate::service::protocol::WIRE_REVISION,
             },
         )
         .await

@@ -833,6 +833,13 @@ impl BackendImpl for SqlxBackend {
         storage::begin_store_state_staging(self, request).await
     }
 
+    async fn replace_unknown_store_state_staging(
+        &self,
+        previous: &StagingToken,
+    ) -> Result<Option<StagingToken>> {
+        storage::replace_unknown_store_state_staging(self, previous).await
+    }
+
     async fn store_state_staging_status(
         &self,
         token: &StagingToken,
@@ -929,6 +936,10 @@ impl BackendImpl for SqlxBackend {
         storage::get(self, id).await
     }
 
+    async fn get_source_entry(&self, id: &ID) -> Result<Entry> {
+        storage::get_source_entry(self, id).await
+    }
+
     async fn get_verification_status(&self, id: &ID) -> Result<VerificationStatus> {
         storage::get_verification_status(self, id).await
     }
@@ -960,6 +971,15 @@ impl BackendImpl for SqlxBackend {
         traversal::store_snapshot(self, tree, store)
             .await
             .map(Snapshot::new)
+    }
+
+    async fn current_source_frontiers(
+        &self,
+        tree: &ID,
+        main: &Snapshot,
+        stores: &[&str],
+    ) -> Result<Option<Vec<Snapshot>>> {
+        traversal::current_source_frontiers(self, tree, main, stores).await
     }
 
     async fn store_snapshot_at(

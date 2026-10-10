@@ -312,7 +312,7 @@ impl BackendImpl for InMemory {
         }
         let target = request.clone();
         request.lifecycle = StoreStateLifecycle::Staging;
-        let namespace_id = uuid::Uuid::new_v4().to_string();
+        let namespace_id = uuid::Uuid::now_v7().to_string();
         let mut inner = self.inner.write().unwrap();
         inner.staging_tokens.insert(
             namespace_id.clone(),
@@ -337,6 +337,54 @@ impl BackendImpl for InMemory {
             namespace_id,
             target,
         })
+    }
+
+    async fn replace_unknown_store_state_staging(
+        &self,
+        previous: &StagingToken,
+    ) -> Result<Option<StagingToken>> {
+        let mut inner = self.inner.write().unwrap();
+        let now = staging_now();
+        if !crate::backend::forgotten_token_is_old(&previous.namespace_id, now)
+            || inner.staging_tokens.contains_key(&previous.namespace_id)
+            || inner
+                .store_state_namespaces
+                .values()
+                .any(|ns| ns.ready && !ns.unlinked && ns.request == previous.target)
+            || inner.staging_tokens.values().any(|state| {
+                state.target == previous.target
+                    && state.status == StagingStatus::Active
+                    && state.last_activity >= now - 300
+            })
+        {
+            return Ok(None);
+        }
+        let namespace_id = uuid::Uuid::now_v7().to_string();
+        let mut staging = previous.target.clone();
+        staging.lifecycle = StoreStateLifecycle::Staging;
+        inner.staging_tokens.insert(
+            namespace_id.clone(),
+            MemoryStagingToken {
+                target: previous.target.clone(),
+                status: StagingStatus::Active,
+                last_activity: now,
+                next_sequence: 0,
+                last_digest: None,
+            },
+        );
+        inner.store_state_namespaces.insert(
+            namespace_id.clone(),
+            RecordNamespace {
+                request: staging,
+                ready: false,
+                unlinked: false,
+                records: BTreeMap::new(),
+            },
+        );
+        Ok(Some(StagingToken {
+            namespace_id,
+            target: previous.target.clone(),
+        }))
     }
 
     async fn store_state_staging_status(
@@ -506,9 +554,16 @@ impl BackendImpl for InMemory {
             .map(|(id, _)| id.clone())
             .collect();
         for id in &expired {
-            inner.staging_tokens.get_mut(id).unwrap().status = StagingStatus::Expired;
+            let state = inner.staging_tokens.get_mut(id).unwrap();
+            state.status = StagingStatus::Expired;
+            state.last_activity = staging_now();
             inner.store_state_namespaces.remove(id);
         }
+        let now = staging_now();
+        inner.staging_tokens.retain(|_, state| {
+            state.status == StagingStatus::Active
+                || state.last_activity > now - crate::backend::STAGING_RETENTION_SECS
+        });
         Ok(expired.len() as u64)
     }
 
@@ -567,6 +622,11 @@ impl BackendImpl for InMemory {
                 .get_mut(&token.namespace_id)
                 .unwrap()
                 .status = StagingStatus::Adopted(view.clone());
+            inner
+                .staging_tokens
+                .get_mut(&token.namespace_id)
+                .unwrap()
+                .last_activity = staging_now();
             return Ok(view);
         }
         let namespace = inner
@@ -587,6 +647,11 @@ impl BackendImpl for InMemory {
             .get_mut(&token.namespace_id)
             .unwrap()
             .status = StagingStatus::Published(view.clone());
+        inner
+            .staging_tokens
+            .get_mut(&token.namespace_id)
+            .unwrap()
+            .last_activity = staging_now();
         Ok(view)
     }
 
@@ -598,6 +663,7 @@ impl BackendImpl for InMemory {
             .filter(|state| state.target == token.target && state.status == StagingStatus::Active)
         {
             state.status = StagingStatus::Aborted;
+            state.last_activity = staging_now();
             inner.store_state_namespaces.remove(&token.namespace_id);
         }
         Ok(())
@@ -715,6 +781,19 @@ impl BackendImpl for InMemory {
     ///
     /// # Returns
     /// A `Result` containing the `VerificationStatus` if the entry exists, or a `DatabaseError::VerificationStatusNotFound` otherwise.
+    async fn get_source_entry(&self, id: &ID) -> Result<Entry> {
+        let inner = self.inner.read().unwrap();
+        let entry = inner
+            .entries
+            .get(id)
+            .ok_or_else(|| BackendError::EntryNotFound { id: id.clone() })?;
+        crate::store::source::encoded_size(
+            entry,
+            crate::store::source::Limits::default().page_bytes,
+        )?;
+        Ok(entry.clone())
+    }
+
     async fn get_verification_status(&self, id: &ID) -> Result<VerificationStatus> {
         let inner = self.inner.read().unwrap();
         inner
@@ -808,6 +887,46 @@ impl BackendImpl for InMemory {
         // Slow path: compute and cache with write lock
         let mut inner = self.inner.write().unwrap();
         traversal::store_snapshot(&mut inner, tree, subtree).map(Snapshot::new)
+    }
+
+    async fn current_source_frontiers(
+        &self,
+        tree: &ID,
+        main: &Snapshot,
+        stores: &[&str],
+    ) -> Result<Option<Vec<Snapshot>>> {
+        let max_tips = crate::store::source::Limits::default().nodes;
+        let inner = self.inner.read().unwrap();
+        let Some(cache) = inner.tips.get(tree) else {
+            return Ok(None);
+        };
+        if cache.tree_tips.len() != main.len()
+            || !main.tips().iter().all(|id| cache.tree_tips.contains(id))
+        {
+            return Ok(None);
+        }
+        let count: usize = stores
+            .iter()
+            .filter_map(|s| cache.subtree_tips.get(*s))
+            .map(HashSet::len)
+            .sum();
+        if count + cache.tree_tips.len() > max_tips {
+            return Err(BackendError::SourceTooLarge.into());
+        }
+        Ok(Some(
+            stores
+                .iter()
+                .map(|store| {
+                    Snapshot::from(
+                        cache
+                            .subtree_tips
+                            .get(*store)
+                            .map(|tips| tips.iter().cloned().collect::<Vec<_>>())
+                            .unwrap_or_default(),
+                    )
+                })
+                .collect(),
+        ))
     }
 
     async fn store_snapshot_at(
