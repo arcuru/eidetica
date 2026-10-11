@@ -25,7 +25,7 @@ use crate::{
     },
     backend::VerificationStatus,
     constants::{ROOT, SETTINGS},
-    crdt::{CRDT, Doc},
+    crdt::{CRDT, Codec, Doc},
     entry::{Entry, ID},
     instance::{WriteCallback, WriteEvent, WriteSource, backend::Backend, errors::InstanceError},
     store::{SettingsStore, Store, Table},
@@ -74,7 +74,7 @@ pub(crate) fn fold_settings_entries(entries: &[Entry]) -> Result<AuthSettings> {
     let mut settings_doc = Doc::default();
     for entry in entries {
         if let Ok(data) = entry.data(SETTINGS) {
-            let part: Doc = serde_json::from_slice(data)?;
+            let part = Doc::decode(data)?;
             settings_doc = settings_doc.merge(&part)?;
         }
     }
@@ -347,7 +347,7 @@ impl Database {
         txn.set_entry_root(ID::default())?;
 
         // Populate the SETTINGS and ROOT subtrees for the very first entry
-        txn.update_subtree(SETTINGS, serde_json::to_vec(&initial_settings)?)
+        txn.update_subtree(SETTINGS, initial_settings.encode()?)
             .await?;
         txn.update_subtree(ROOT, serde_json::to_vec("")?).await?; // Standard practice for root entry's _root
 
@@ -1303,7 +1303,7 @@ impl Database {
     /// # Encrypted stores
     ///
     /// Encrypted stores cannot be materialized this way (the ephemeral
-    /// transaction has no encryptor, so `serde_json::from_slice::<Doc>`
+    /// transaction has no encryptor, so `Doc::decode`
     /// would fail on ciphertext). The caller must use
     /// [`get_store_entries`](Self::get_store_entries) for encrypted
     /// stores and decrypt+merge client-side.

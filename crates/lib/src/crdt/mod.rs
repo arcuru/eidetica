@@ -13,7 +13,7 @@
 //!
 //! # Traits
 //!
-//! - [`Data`] - Marker trait for types that can be stored in Eidetica
+//! - [`Codec`] - Explicit byte encoding at persistence boundaries
 //! - [`CRDT`] - Core trait defining merge semantics for conflict resolution
 
 // Core modules
@@ -24,4 +24,4 @@ pub mod traits;
 // Re-export core types
 pub use doc::Doc;
 pub use errors::CRDTError;
-pub use traits::{CRDT, Data};
+pub use traits::{CRDT, Codec};
