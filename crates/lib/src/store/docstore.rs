@@ -155,8 +155,8 @@ impl DocStore {
 
     /// Stages the setting of a key-value pair within the associated `Transaction`.
     ///
-    /// This method updates the `Map` data held within the `Transaction` for this
-    /// `Doc` instance's subtree name. The change is **not** persisted to the backend
+    /// This method updates the `Doc` data held within the `Transaction` for this
+    /// store's subtree name. The change is **not** persisted to the backend
     /// until the `Transaction::commit()` method is called.
     ///
     /// # Arguments
@@ -166,18 +166,7 @@ impl DocStore {
     /// # Returns
     /// A `Result<()>` indicating success or an error during serialization or staging.
     pub async fn set(&self, key: impl Into<String>, value: impl Into<Value>) -> Result<()> {
-        let key = key.into();
-        let value = value.into();
-
-        // Get current data from the transaction, or create new if not existing
-        let mut data = self.local_data()?.unwrap_or_default();
-
-        // Update the data using unified path interface
-        data.set(&key, value);
-
-        // Serialize and update the transaction
-        let serialized = data.encode()?;
-        self.txn.update_subtree(&self.name, serialized).await
+        self.set_path(key.into(), value).await
     }
 
     /// Sets a key-value pair (HashMap-like API).

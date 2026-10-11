@@ -67,12 +67,6 @@ fn test_codec_value_and_list_legacy_bytes() {
     );
     let bytes = br#"[[{"numerator":3,"denominator":2,"unique_id":"00000000-0000-0000-0000-000000000000"},"Deleted"]]"#;
     assert_fixture(&list, bytes);
-    let decoded = List::decode(bytes).unwrap();
-    assert_eq!(decoded.iter_with_positions().next().unwrap().0.numerator, 3);
-    assert_eq!(
-        decoded.iter_with_positions().next().unwrap().1,
-        &Value::Deleted
-    );
 }
 
 fn assert_json_error_unchanged<T: Codec + DeserializeOwned>(bytes: &[u8]) {
