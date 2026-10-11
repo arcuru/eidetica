@@ -45,9 +45,24 @@ fn test_lww_payload_without_default_crdt_or_encoding() {
     let value = Lww::Set(Payload("opaque"));
     assert_eq!(empty.merge(&value).unwrap(), value);
     assert_eq!(value.merge(&Lww::NoOp).unwrap(), value);
+    let deleted = Lww::<Payload>::Delete;
+    assert_eq!(
+        deleted.merge(&Payload("after").into()).unwrap(),
+        Lww::Set(Payload("after"))
+    );
 
     // Construction and Default do not require Clone either.
     struct NonClone;
     assert!(matches!(Lww::<NonClone>::default(), Lww::NoOp));
     assert!(matches!(Lww::Set(NonClone), Lww::Set(_)));
+}
+
+#[test]
+fn test_lww_from_payload_without_clone_or_other_traits() {
+    #[derive(Debug, PartialEq, Eq)]
+    struct Payload(&'static str);
+
+    assert_eq!(Lww::from(Payload("from")), Lww::Set(Payload("from")));
+    let converted: Lww<Payload> = Payload("into").into();
+    assert_eq!(converted, Lww::Set(Payload("into")));
 }

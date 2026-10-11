@@ -80,7 +80,8 @@ a durable format or changes an existing Store. Their payloads need not implement
 `Delete`. Merging chooses the rightmost non-`NoOp` in the caller's deterministic
 operation order. There are no timestamps or clocks, and merge is intentionally
 not commutative. The payload is replaced whole, not merged, and only needs
-`Clone` for `CRDT::merge`.
+`Clone` for `CRDT::merge`. `Lww::from(value)` or `value.into()` wraps a payload
+in `Set` without requiring `Clone` or other payload traits.
 
 `Delete` is retained as a tombstone. A later `Set` replaces it at the value
 level; this is not a causal delete-wins rule or Table row resurrection policy.
@@ -95,7 +96,7 @@ let old = Lww::Set(Payload("before"));
 let deleted = old.merge(&Lww::Delete)?;
 assert_eq!(deleted, Lww::Delete);
 assert_eq!(deleted.merge(&Lww::NoOp)?, Lww::Delete);
-assert_eq!(deleted.merge(&Lww::Set(Payload("after")))?, Lww::Set(Payload("after")));
+assert_eq!(deleted.merge(&Payload("after").into())?, Lww::Set(Payload("after")));
 # Ok::<(), eidetica::Error>(())
 ```
 
