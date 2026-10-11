@@ -67,6 +67,20 @@ impl Store for CounterStore {
     }
 }
 
+async fn test_database() -> (Instance, Database) {
+    let (instance, _admin) = Instance::create_backend(
+        Box::new(InMemory::new()),
+        crate::NewUser::passwordless("admin"),
+    )
+    .await
+    .unwrap();
+    let (private_key, _) = generate_keypair();
+    let database = Database::create(&instance, private_key, Doc::new())
+        .await
+        .unwrap();
+    (instance, database)
+}
+
 /// Test that corrupted auth configuration prevents commit
 ///
 /// Validates that transactions reject changes that would corrupt the auth configuration,
@@ -171,15 +185,7 @@ async fn test_docstore_set_preserves_malformed_staged_data() {
 
 #[tokio::test]
 async fn opaque_non_doc_state_materializes_cold_warm_and_after_clear() {
-    let backend = InMemory::new();
-    let (instance, _admin) =
-        Instance::create_backend(Box::new(backend), crate::NewUser::passwordless("admin"))
-            .await
-            .unwrap();
-    let (private_key, _) = generate_keypair();
-    let database = Database::create(&instance, private_key, Doc::new())
-        .await
-        .unwrap();
+    let (_instance, database) = test_database().await;
 
     let tx = database.new_transaction().await.unwrap();
     tx.update_subtree("counter", MaxCounter(7).encode().unwrap())
@@ -225,13 +231,6 @@ async fn opaque_non_doc_state_materializes_cold_warm_and_after_clear() {
         },
         source_key: entry_id.to_string().into_bytes(),
     };
-    assert!(
-        backend
-            .resolve_store_state(&request)
-            .await
-            .unwrap()
-            .is_some()
-    );
     let view = backend
         .resolve_store_state(&request)
         .await
@@ -270,16 +269,7 @@ async fn opaque_non_doc_state_materializes_cold_warm_and_after_clear() {
 
 #[tokio::test]
 async fn fixed_parent_subtree_read_ignores_concurrent_live_write() {
-    let (instance, _admin) = Instance::create_backend(
-        Box::new(InMemory::new()),
-        crate::NewUser::passwordless("admin"),
-    )
-    .await
-    .unwrap();
-    let (private_key, _) = generate_keypair();
-    let database = Database::create(&instance, private_key, Doc::new())
-        .await
-        .unwrap();
+    let (_instance, database) = test_database().await;
 
     let reader = database.new_transaction().await.unwrap();
     let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
@@ -349,16 +339,7 @@ async fn fixed_parent_auth_settings_read_ignores_concurrent_grant() {
 
 #[tokio::test]
 async fn test_codec_non_clone_counter_multi_tip_cold_and_warm() {
-    let (instance, _admin) = Instance::create_backend(
-        Box::new(InMemory::new()),
-        crate::NewUser::passwordless("admin"),
-    )
-    .await
-    .unwrap();
-    let (private_key, _) = generate_keypair();
-    let database = Database::create(&instance, private_key, Doc::new())
-        .await
-        .unwrap();
+    let (_instance, database) = test_database().await;
     let tx = database.new_transaction().await.unwrap();
     tx.update_subtree("counter", MaxCounter(1).encode().unwrap())
         .await
@@ -418,16 +399,7 @@ impl Codec for CodecOnly {
 
 #[tokio::test]
 async fn test_codec_only_staged_reads() {
-    let (instance, _admin) = Instance::create_backend(
-        Box::new(InMemory::new()),
-        crate::NewUser::passwordless("admin"),
-    )
-    .await
-    .unwrap();
-    let (private_key, _) = generate_keypair();
-    let database = Database::create(&instance, private_key, Doc::new())
-        .await
-        .unwrap();
+    let (_instance, database) = test_database().await;
     let tx = database.new_transaction().await.unwrap();
     assert!(tx.get_local_data::<CodecOnly>("bytes").unwrap().is_none());
     tx.update_subtree("bytes", CodecOnly(255).encode().unwrap())
@@ -448,16 +420,7 @@ async fn test_codec_only_staged_reads() {
 
 #[tokio::test]
 async fn test_codec_staged_json_errors_unchanged() {
-    let (instance, _admin) = Instance::create_backend(
-        Box::new(InMemory::new()),
-        crate::NewUser::passwordless("admin"),
-    )
-    .await
-    .unwrap();
-    let (private_key, _) = generate_keypair();
-    let database = Database::create(&instance, private_key, Doc::new())
-        .await
-        .unwrap();
+    let (_instance, database) = test_database().await;
     let tx = database.new_transaction().await.unwrap();
     for bytes in [b" ".as_slice(), b"not JSON", b"{\"children\":{}} trailing"] {
         tx.update_subtree("malformed", bytes.to_vec())

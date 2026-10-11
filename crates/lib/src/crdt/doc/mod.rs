@@ -704,10 +704,6 @@ impl Doc {
     }
 }
 
-// Conversion implementations
-// Node is now an alias for Doc, so no conversion implementations needed
-// The standard From<T> for T implementation in core handles this automatically
-
 impl Codec for Doc {
     fn encode(&self) -> crate::Result<Vec<u8>> {
         Ok(serde_json::to_vec(self)?)
