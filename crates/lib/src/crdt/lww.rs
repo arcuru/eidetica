@@ -36,6 +36,13 @@ pub enum Lww<T> {
     Delete,
 }
 
+impl<T> From<T> for Lww<T> {
+    /// Wrap a payload as a replacement operation without cloning it.
+    fn from(value: T) -> Self {
+        Self::Set(value)
+    }
+}
+
 impl<T: Clone> CRDT for Lww<T> {
     fn merge(&self, other: &Self) -> crate::Result<Self> {
         Ok(match other {
