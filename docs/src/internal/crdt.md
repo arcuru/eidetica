@@ -34,8 +34,8 @@ existing JSON-backed type, retain the same Serde representation: implement
 The [Codec API reference](../rustdoc/eidetica/crdt/traits/trait.Codec.html) contains a
 complete implementation example.
 
-Built-in types already implement `Codec`; import it to call their persistence
-methods:
+The existing `Doc`, `Value`, `List` and `YrsBinary` types implement `Codec`;
+import it to call their persistence methods:
 
 ```rust
 use eidetica::crdt::{Codec, Doc};
@@ -66,6 +66,86 @@ tombstones and list positions. `YrsBinary` retains the JSON `{"data":[...]}`
 wrapper around Yjs v1 update bytes, rather than writing raw updates. Settings,
 Table rows, Entry hashing, encryption and service formats are unchanged. This
 does not introduce canonical JSON ordering or a new merge algebra.
+
+## Standalone Map and Lww Algebra
+
+`Map<K, V>` and `Lww<T>` implement merge algebra independently of persistence.
+Neither provides a built-in `Codec` or Serde implementation, so neither selects
+a durable format or changes an existing Store. Their payloads need not implement
+`Default` or encoding traits.
+
+### Ordered register operations
+
+`Lww<T>` has three operations: `NoOp` (the default and identity), `Set(T)` and
+`Delete`. Merging chooses the rightmost non-`NoOp` in the caller's deterministic
+operation order. There are no timestamps or clocks, and merge is intentionally
+not commutative. The payload is replaced whole, not merged, and only needs
+`Clone` for `CRDT::merge`.
+
+`Delete` is retained as a tombstone. A later `Set` replaces it at the value
+level; this is not a causal delete-wins rule or Table row resurrection policy.
+
+```rust
+use eidetica::crdt::{CRDT, Lww};
+
+#[derive(Clone, Debug, PartialEq)]
+struct Payload(&'static str); // No Default, CRDT, Codec or Serde.
+
+let old = Lww::Set(Payload("before"));
+let deleted = old.merge(&Lww::Delete)?;
+assert_eq!(deleted, Lww::Delete);
+assert_eq!(deleted.merge(&Lww::NoOp)?, Lww::Delete);
+assert_eq!(deleted.merge(&Lww::Set(Payload("after")))?, Lww::Set(Payload("after")));
+# Ok::<(), eidetica::Error>(())
+```
+
+### Per-key delta composition
+
+`Map<K, V>` stores operations in a `BTreeMap`. The empty map is the identity.
+Merge preserves keys present on only one side and invokes `V::merge` exactly
+once for each overlapping key. It propagates value merge errors and leaves both
+inputs unchanged. Associativity follows from the value algebra; commutativity
+and idempotency are not required.
+
+Keys are literal ordered keys, not document paths. `get`, `iter` and `len`
+include every stored operation, even `Lww::NoOp` and `Lww::Delete`. Map does not
+interpret or discard tombstones, and defines no row deletion/lifecycle policy.
+Values can be other Maps, Docs or application-defined CRDTs, not just Lww.
+
+Use `insert_delta` for repeated same-key updates: it composes the new delta
+with the stored operation via `V::merge`. If merging fails, the stored operation
+is unchanged. The low-level `insert` instead replaces the stored operation
+verbatim and returns the previous value. It does not compose deltas.
+
+```rust
+use eidetica::{crdt::{CRDT, Map}, Result};
+
+#[derive(Clone, Debug, PartialEq)]
+struct Events(Vec<u8>); // An associative, non-idempotent application CRDT.
+
+impl CRDT for Events {
+    fn merge(&self, other: &Self) -> Result<Self> {
+        Ok(Self([self.0.as_slice(), other.0.as_slice()].concat()))
+    }
+}
+
+let mut updates = Map::new();
+updates.insert_delta("events".to_owned(), Events(vec![1]))?;
+updates.insert_delta("events".to_owned(), Events(vec![2]))?;
+assert_eq!(updates.get("events"), Some(&Events(vec![1, 2])));
+assert_eq!(updates.merge(&Map::new())?, updates);
+# Ok::<(), eidetica::Error>(())
+```
+
+Construction and iteration require no key or value traits. Lookup and literal
+insertion require ordered keys; delta insertion additionally requires `V: CRDT`,
+without cloning. Map merge requires `K: Ord + Clone` and `V: CRDT + Clone` to
+return an owned result while preserving one-sided operations. No `V: Default`
+is required.
+
+These primitives do not integrate with Table, add a live-value convenience
+layer, or define lifecycle resets. Table behavior and persisted bytes are
+unchanged.
 
 ## Fork and Merge
 

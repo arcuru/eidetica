@@ -10,5 +10,7 @@ mod helpers;
 mod improved_interface_tests;
 mod integration;
 mod list_tests;
+mod lww_tests;
+mod map_tests;
 mod serialization_tests;
 mod value_tests;
