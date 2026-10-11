@@ -9,6 +9,64 @@ Eidetica implements a Merkle-CRDT using content-addressable entries organized in
 - **Parent References**: Maintain history and define DAG structure
 - **Tips Tracking**: Identifies current heads for efficient synchronization
 
+## Encoding and the Rust API
+
+`Codec` and `CRDT` are independent traits exported from `eidetica::crdt`:
+
+- `Codec: Sized` provides `encode(&self) -> Result<Vec<u8>>` and
+  `decode(bytes: &[u8]) -> Result<Self>` at persistence boundaries.
+- `CRDT: Sized` provides only `merge(&self, other: &Self) -> Result<Self>`.
+  Its existing merge semantics are unchanged.
+- `Store::Data` requires `CRDT + Codec + Default + 'static`. History
+  reconstruction needs a default state and encoding; merge-only code does not.
+- `Transaction::get_local_data<T>` requires only `T: Codec`.
+
+Neither trait requires `Clone` or Serde. There is no blanket `Codec`
+implementation: deriving Serde does not choose a persistence format.
+
+### Migrating implementers from `Data`
+
+This is an intentional source-level Rust API change. Replace the old empty
+`impl Data for MyData {}` with an explicit `Codec` implementation. For an
+existing JSON-backed type, retain the same Serde representation: implement
+`encode` with `Ok(serde_json::to_vec(self)?)` and `decode` with
+`Ok(serde_json::from_slice(bytes)?)`, using the existing `serde_json` dependency.
+The [Codec API reference](../rustdoc/eidetica/crdt/traits/trait.Codec.html) contains a
+complete implementation example.
+
+Built-in types already implement `Codec`; import it to call their persistence
+methods:
+
+```rust
+use eidetica::crdt::{Codec, Doc};
+
+let mut value = Doc::atomic();
+value.set("name", "example");
+let bytes = value.encode()?;
+assert_eq!(bytes, br#"{"_a":true,"children":{"name":{"Text":"example"}}}"#);
+assert_eq!(Doc::decode(&bytes)?, value);
+# Ok::<(), eidetica::Error>(())
+```
+
+Keep the existing `CRDT::merge` implementation. Generic code that previously
+inherited serialization, cloning or a default value from `CRDT` must request
+only the additional traits it actually uses. Existing concrete types retain
+their Serde and Clone implementations; those capabilities are no longer
+requirements of either trait.
+
+A codec must preserve tombstones and all other merge-relevant state. Decode one
+complete value and report malformed or trailing data as an error, not as a
+default state. Staged reads still treat zero bytes as absent; whitespace-only
+JSON remains a decode error. Custom codecs may use non-JSON bytes, but switching
+an existing Store's durable format is a separate compatibility change.
+
+No storage migration is needed for the built-in types. `Doc`, `Value` and
+`List` use their existing JSON representations, including atomic flags,
+tombstones and list positions. `YrsBinary` retains the JSON `{"data":[...]}`
+wrapper around Yjs v1 update bytes, rather than writing raw updates. Settings,
+Table rows, Entry hashing, encryption and service formats are unchanged. This
+does not introduce canonical JSON ordering or a new merge algebra.
+
 ## Fork and Merge
 
 The system supports branching and merging through parent-child relationships:

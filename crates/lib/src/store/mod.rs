@@ -1,5 +1,5 @@
 use crate::HeightStrategy;
-use crate::crdt::{CRDT, Doc};
+use crate::crdt::{CRDT, Codec, Doc};
 use crate::{Result, Transaction};
 use async_trait::async_trait;
 use std::marker::PhantomData;
@@ -173,7 +173,7 @@ pub trait Store: Sized + Registered + Send + Sync {
     /// The CRDT data type used for local (staged) data in this store.
     ///
     /// This is the type stored within each individual Entry.
-    type Data: CRDT + 'static;
+    type Data: CRDT + Codec + Default + 'static;
 
     /// Representation of this store's cached current state.
     ///

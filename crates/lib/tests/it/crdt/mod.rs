@@ -3,6 +3,7 @@
 //! This module tests the CRDT implementations including Doc, List, and Value types.
 //! Tests are organized by CRDT type for better maintainability.
 
+mod codec_tests;
 mod doc_advanced_tests;
 mod doc_tests;
 mod helpers;

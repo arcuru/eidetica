@@ -609,6 +609,11 @@ For detailed usage examples, see [Height Strategies](../transactions.md#height-s
 
 ## Store History and Merging (CRDT Aspects)
 
+Custom Store data implements both `Codec` (persistence encoding) and `CRDT`
+(merging), plus `Default` for history reconstruction. Neither trait requires
+Serde or cloning. See [Encoding and the Rust API](../../internal/crdt.md#encoding-and-the-rust-api)
+for the migration from the old `Data` marker and the unchanged built-in formats.
+
 While Eidetica uses Merkle-DAGs for overall history, the way data _within_ a Store is combined when branches merge relies on Conflict-free Replicated Data Type (CRDT) principles. This ensures that even if different replicas of the database have diverged and made concurrent changes, they can be merged back together automatically without conflicts (though the merge _result_ depends on the CRDT strategy).
 
 Each Store type implements its own merge logic, typically triggered implicitly when an `Transaction` reads the current state of the store (which involves finding and merging the tips of that store's history):

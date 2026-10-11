@@ -1,6 +1,10 @@
 //! ValueEditor for mutable access to DocStore values.
 
-use crate::{Result, Store, crdt::doc::Value, store::errors::StoreError};
+use crate::{
+    Result, Store,
+    crdt::{Codec, doc::Value},
+    store::errors::StoreError,
+};
 
 use super::DocStore;
 
@@ -240,7 +244,7 @@ impl DocStore {
             // Setting the root of this Doc's named subtree.
             // The value must be a node.
             if let Value::Doc(node) = value {
-                let serialized_data = serde_json::to_vec(&node)?;
+                let serialized_data = node.encode()?;
                 return self.txn.update_subtree(&self.name, serialized_data).await;
             } else {
                 return Err(StoreError::TypeMismatch {
@@ -267,7 +271,7 @@ impl DocStore {
         // Use Doc::set which now creates intermediate nodes automatically
         subtree_data.set(&path_str, value);
 
-        let serialized_data = serde_json::to_vec(&subtree_data)?;
+        let serialized_data = subtree_data.encode()?;
         self.txn.update_subtree(&self.name, serialized_data).await
     }
 }

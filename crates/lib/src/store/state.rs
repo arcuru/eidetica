@@ -9,7 +9,7 @@ use crate::{
 
 use super::ProjectionDescriptor;
 use super::RecordProjection;
-use crate::crdt::Doc;
+use crate::crdt::{Codec, Doc};
 
 /// Reserved key for the generic opaque whole-state projection.
 pub const OPAQUE_STATE_KEY: &[u8] = &[0x00];
@@ -51,7 +51,7 @@ pub(crate) async fn publish_records<'a>(
     let result = async {
         let mut records = BTreeMap::new();
         for bytes in deltas {
-            let delta: Doc = serde_json::from_slice(bytes)?;
+            let delta = Doc::decode(bytes)?;
             projection.project_delta(&delta, &mut records)?;
         }
         records.retain(|_, value| value.is_some());
