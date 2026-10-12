@@ -106,6 +106,7 @@ eidetica daemon [OPTIONS]
 | `--dashboard`      |       | off           | `EIDETICA_DASHBOARD`      | Enable web dashboard (never service RPC)                        |
 | `--dashboard-host` |       | `127.0.0.1`   | `EIDETICA_DASHBOARD_HOST` | Dashboard bind address (only with `--dashboard`)                |
 | `--dashboard-port` |       | `5942`        | `EIDETICA_DASHBOARD_PORT` | Dashboard port (only with `--dashboard`)                        |
+| `--http-sync-bind` |       | disabled      | `EIDETICA_HTTP_SYNC_BIND` | Inbound HTTP sync IP:port; shares an equal dashboard bind       |
 | `--socket`         | `-s`  | auto-detected | `EIDETICA_SOCKET`         | Unix socket path (see [Service Mode](service.md) for defaults)  |
 | `--backend`        | `-b`  | `sqlite`      | `EIDETICA_BACKEND`        | Storage backend (`sqlite`, `postgres`, `inmemory`)              |
 | `--data-dir`       | `-d`  | current dir   | `EIDETICA_DATA_DIR`       | Data directory for storage files                                |
@@ -153,14 +154,15 @@ The `--json` flag works with `info` and `db list`.
 
 ## Environment Variables
 
-| Variable                | Description                                        | Default           |
-| ----------------------- | -------------------------------------------------- | ----------------- |
-| `EIDETICA_SOCKET`       | Unix socket path for daemon mode (`daemon`)        | auto-detected     |
-| `EIDETICA_PORT`         | Port for the HTTP server (`serve`)                 | `5942`            |
-| `EIDETICA_HOST`         | Bind address (`serve`)                             | `0.0.0.0`         |
-| `EIDETICA_BACKEND`      | Storage backend (`sqlite`, `postgres`, `inmemory`) | `sqlite`          |
-| `EIDETICA_DATA_DIR`     | Directory for database and data files              | current directory |
-| `EIDETICA_POSTGRES_URL` | PostgreSQL connection URL                          | —                 |
+| Variable                  | Description                                                             | Default           |
+| ------------------------- | ----------------------------------------------------------------------- | ----------------- |
+| `EIDETICA_SOCKET`         | Unix socket path for daemon mode (`daemon`)                             | auto-detected     |
+| `EIDETICA_HTTP_SYNC_BIND` | Inbound HTTP peer sync bind (`daemon`); outbound HTTP is always enabled | disabled          |
+| `EIDETICA_PORT`           | Port for the HTTP server (`serve`)                                      | `5942`            |
+| `EIDETICA_HOST`           | Bind address (`serve`)                                                  | `0.0.0.0`         |
+| `EIDETICA_BACKEND`        | Storage backend (`sqlite`, `postgres`, `inmemory`)                      | `sqlite`          |
+| `EIDETICA_DATA_DIR`       | Directory for database and data files                                   | current directory |
+| `EIDETICA_POSTGRES_URL`   | PostgreSQL connection URL                                               | —                 |
 
 Command-line flags take precedence over environment variables.
 

@@ -112,7 +112,7 @@
   nixosEnabledResult = nixosEvalEnabled.config.services.eidetica;
   hmDisabledResult = hmEvalDisabled.config.services.eidetica.enable;
   hmEnabledResult = hmEvalEnabled.config.services.eidetica;
-  nixosCombined =
+  nixosCombinedConfig =
     (nixosEvalEnabled.extendModules {
       modules = [
         {
@@ -121,10 +121,24 @@
             dashboard = true;
             host = "0.0.0.0";
             openFirewall = true;
+            httpSyncBind = "0.0.0.0:8080";
           };
         }
       ];
-    }).config.systemd.services.eidetica.serviceConfig.ExecStart;
+    }).config;
+  nixosCombined = nixosCombinedConfig.systemd.services.eidetica.serviceConfig.ExecStart;
+  nixosSeparateHttp =
+    (nixosEvalEnabled.extendModules {
+      modules = [
+        {
+          services.eidetica = {
+            daemon = true;
+            httpSyncBind = "[::1]:8081";
+            openFirewall = true;
+          };
+        }
+      ];
+    }).config;
   nixosDashboardFirewall =
     (nixosEvalEnabled.extendModules {
       modules = [
@@ -137,7 +151,7 @@
         }
       ];
     }).config.networking.firewall.allowedTCPPorts;
-  hmCombined =
+  hmCombinedConfig =
     (hmEvalEnabled.extendModules {
       modules = [
         {
@@ -145,10 +159,12 @@
             daemon = true;
             dashboard = true;
             host = "0.0.0.0";
+            httpSyncBind = "0.0.0.0:9000";
           };
         }
       ];
-    }).config.systemd.user.services.eidetica.Service.ExecStart;
+    }).config;
+  hmCombined = hmCombinedConfig.systemd.user.services.eidetica.Service.ExecStart;
 in {
   eval = {
     # Fast module evaluation test for NixOS module
@@ -182,6 +198,11 @@ in {
           lib.hasSuffix "/bin/eidetica serve" nixosEvalEnabled.config.systemd.services.eidetica.serviceConfig.ExecStart
           && lib.hasSuffix "/bin/eidetica daemon --dashboard --dashboard-host 0.0.0.0 --dashboard-port 8080" nixosCombined
           && lib.elem 8080 nixosDashboardFirewall
+          && nixosEnabledResult.httpSyncBind == null
+          && nixosCombinedConfig.systemd.services.eidetica.environment.EIDETICA_HTTP_SYNC_BIND == "0.0.0.0:8080"
+          && nixosSeparateHttp.systemd.services.eidetica.environment.EIDETICA_HTTP_SYNC_BIND == "[::1]:8081"
+          && lib.elem 8081 nixosSeparateHttp.networking.firewall.allowedTCPPorts
+          && !(lib.elem 8080 nixosSeparateHttp.networking.firewall.allowedTCPPorts)
         then "echo '✓ Legacy serve and combined daemon commands evaluate correctly'"
         else "echo '✗ NixOS service command mismatch' && exit 1"
       }
@@ -217,6 +238,8 @@ in {
         if
           lib.hasSuffix "/bin/eidetica serve" hmEvalEnabled.config.systemd.user.services.eidetica.Service.ExecStart
           && lib.hasSuffix "/bin/eidetica daemon --dashboard --dashboard-host 0.0.0.0 --dashboard-port 9000" hmCombined
+          && hmEnabledResult.httpSyncBind == null
+          && lib.elem "EIDETICA_HTTP_SYNC_BIND=0.0.0.0:9000" hmCombinedConfig.systemd.user.services.eidetica.Service.Environment
         then "echo '✓ Legacy serve and combined daemon commands evaluate correctly'"
         else "echo '✗ Home Manager service command mismatch' && exit 1"
       }
@@ -428,12 +451,42 @@ in {
         grep -q "All sync servers stopped" "$DAEMON_LOG"
         grep -q "Daemon shut down" "$DAEMON_LOG"
 
+        # Separate HTTP sync uses its own wildcard bind, leaving the dashboard
+        # peer-sync route disabled. Exercise real database transfer without an
+        # Origin header or browser session on the sync listener.
+        DAEMON_LOG="$TMPDIR/daemon-http-separate.log"
+        EIDETICA_HTTP_SYNC_BIND=0.0.0.0:0 \
+          eidetica daemon --backend sqlite --data-dir "$DATA" --socket "$SOCKET" \
+            --dashboard --dashboard-port "$PORT" >"$DAEMON_LOG" 2>&1 &
+        DAEMON_PID=$!
+        for i in $(seq 1 50); do
+          if curl -fsS "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then break; fi
+          if ! kill -0 "$DAEMON_PID" 2>/dev/null; then cat "$DAEMON_LOG"; exit 1; fi
+          sleep 0.1
+        done
+        HTTP_PORT=$(sed -n 's/.*HTTP sync listening on http:\/\/0.0.0.0:\([0-9]*\).*/\1/p' "$DAEMON_LOG" | head -1)
+        test -n "$HTTP_PORT"
+        test "$HTTP_PORT" != "$PORT"
+        awk -v port="$(printf '%04X' "$HTTP_PORT")" \
+          '$2 == "00000000:" port && $4 == "0A" { found=1 } END { exit !found }' /proc/net/tcp
+        test "$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$PORT/api/v0")" = 404
+        test "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$HTTP_PORT/login")" = 404
+        export EIDETICA_EXTERNAL_HTTP_BIND="127.0.0.1:$HTTP_PORT"
+        cargo-nextest nextest run \
+          --archive-file ${testPkgs.archive}/archive.tar.zst \
+          --workspace-remap "$TMPDIR/src" --show-progress=none --no-tests fail \
+          -E 'test(=daemon_http_inbound_sync)'
+        kill -TERM "$DAEMON_PID"
+        wait "$DAEMON_PID"
+        DAEMON_PID=""
+
         # The dashboard listens exactly where configured. A wildcard bind accepts
         # whatever Host the browser uses; form writes still need a matching
         # Origin. The same socket and persisted instance survive a restart.
         DAEMON_LOG="$TMPDIR/daemon-public.log"
         eidetica daemon --backend sqlite --data-dir "$DATA" --socket "$SOCKET" \
-          --dashboard --dashboard-host 0.0.0.0 --dashboard-port "$PORT" >"$DAEMON_LOG" 2>&1 &
+          --dashboard --dashboard-host 0.0.0.0 --dashboard-port "$PORT" \
+          --http-sync-bind "0.0.0.0:$PORT" >"$DAEMON_LOG" 2>&1 &
         DAEMON_PID=$!
         for i in $(seq 1 50); do
           if curl -fsS "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
@@ -443,6 +496,12 @@ in {
           sleep 0.1
         done
         grep -q "Dashboard listening on http://0.0.0.0:$PORT" "$DAEMON_LOG"
+        grep -q "HTTP sync listening on http://0.0.0.0:$PORT (shared dashboard listener)" "$DAEMON_LOG"
+        export EIDETICA_EXTERNAL_HTTP_BIND="127.0.0.1:$PORT"
+        cargo-nextest nextest run \
+          --archive-file ${testPkgs.archive}/archive.tar.zst \
+          --workspace-remap "$TMPDIR/src" --show-progress=none --no-tests fail \
+          -E 'test(=daemon_http_inbound_sync)'
         # /proc/net/tcp records the kernel listener address in hex.
         awk -v port="$(printf '%04X' "$PORT")" \
           '$2 == "00000000:" port && $4 == "0A" { found=1 } END { exit !found }' /proc/net/tcp
@@ -461,6 +520,14 @@ in {
         kill -TERM "$DAEMON_PID"
         wait "$DAEMON_PID"
         DAEMON_PID=""
+
+        # No inbound bind or dashboard is configured on this second daemon:
+        # its startup ticket must still bootstrap over outbound HTTP.
+        export EIDETICA_BIN="${eidetica-bin}/bin/eidetica"
+        cargo-nextest nextest run \
+          --archive-file ${testPkgs.archive}/archive.tar.zst \
+          --workspace-remap "$TMPDIR/src" --show-progress=none --no-tests fail \
+          -E 'test(=daemon_http_outbound_without_listener) | test(=daemon_shared_http_listener_survives_final_flush)'
 
         echo "Service integration test passed"
         mkdir -p $out

@@ -9,7 +9,19 @@
 //!   already-initialised backend. Fails with a pointer to `daemon init` if
 //!   the backend is empty.
 
-use tokio::signal::unix::{SignalKind, signal};
+use std::{sync::Arc, time::Duration};
+
+use axum::{
+    extract::State,
+    http::StatusCode,
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
+};
+use tokio::{
+    signal::unix::{SignalKind, signal},
+    sync::RwLock,
+    task::JoinHandle,
+};
 use tracing_subscriber::EnvFilter;
 
 use eidetica::Instance;
@@ -18,6 +30,7 @@ use eidetica::instance::InstanceError;
 use eidetica::service::ServiceServer;
 use eidetica::service::default_socket_path;
 use eidetica::sync::DatabaseTicket;
+use eidetica::sync::transports::http::HttpTransport;
 use eidetica::sync::transports::iroh::IrohTransport;
 
 use crate::backend::create_backend;
@@ -67,13 +80,38 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
     } else {
         None
     };
+    let shared_http_sync = web_listener.as_ref().is_some_and(|listener| {
+        // Compare the configured port, including zero, rather than the allocated
+        // ephemeral port. The bound IP also handles dashboard host resolution.
+        args.http_sync_bind
+            == Some(std::net::SocketAddr::new(
+                listener.local_addr().expect("bound listener").ip(),
+                args.dashboard_port,
+            ))
+    });
 
     instance.enable_sync().await?;
     let sync = instance.sync().ok_or("Sync not enabled on instance")?;
     let startup: eidetica::Result<String> = async {
         sync.register_transport("iroh", IrohTransport::builder())
             .await?;
-        sync.accept_connections().await?;
+        let mut http = HttpTransport::builder();
+        if let Some(bind) = args.http_sync_bind
+            && !shared_http_sync
+        {
+            http = http.bind(bind.to_string());
+        }
+        sync.register_transport("http", http).await?;
+        // Start each required listener explicitly: accept_connections() allows
+        // partial success, which would hide a failed HTTP bind behind Iroh.
+        sync.accept_connections_on("iroh").await?;
+        if args.http_sync_bind.is_some() && !shared_http_sync {
+            sync.accept_connections_on("http").await?;
+            println!(
+                "HTTP sync listening on http://{}",
+                sync.get_server_address_for("http").await?
+            );
+        }
         for ticket in &args.sync_tickets {
             sync.sync_with_ticket(&ticket.parse::<DatabaseTicket>()?)
                 .await?;
@@ -90,10 +128,17 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
     };
     tracing::info!(%address, "Daemon sync listener started");
 
+    let dashboard_open = Arc::new(RwLock::new(true));
     let web = web_listener.map(|listener| {
         let addr = listener.local_addr().expect("bound listener");
         println!("Dashboard listening on http://{addr}");
-        (listener, super::serve::web_router(instance.clone(), false))
+        if shared_http_sync {
+            println!("HTTP sync listening on http://{addr} (shared dashboard listener)");
+        }
+        let app = super::serve::web_router(instance.clone(), shared_http_sync).route_layer(
+            middleware::from_fn_with_state(dashboard_open.clone(), dashboard_admission),
+        );
+        (listener, app)
     });
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
@@ -109,10 +154,10 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
     println!();
     println!("Press Ctrl+C to shutdown");
 
-    let server = server.run(shutdown_rx);
-    tokio::pin!(server);
-    let web_shutdown = shutdown_tx.subscribe();
-    let web_server = async move {
+    let mut server =
+        tokio::spawn(async move { server.run(shutdown_rx).await.map_err(|e| e.to_string()) });
+    let (web_shutdown_tx, web_shutdown) = tokio::sync::watch::channel(());
+    let mut web_server = tokio::spawn(async move {
         if let Some((listener, app)) = web {
             axum::serve(
                 listener,
@@ -123,49 +168,52 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
                 let _ = rx.changed().await;
             })
             .await
+            .map_err(|e| e.to_string())
         } else {
             let mut rx = web_shutdown;
             let _ = rx.changed().await;
             Ok(())
         }
-    };
-    tokio::pin!(web_server);
+    });
 
     let mut sigterm = signal(SignalKind::terminate()).expect("failed to set up SIGTERM handler");
     let mut sigint = signal(SignalKind::interrupt()).expect("failed to set up SIGINT handler");
 
     let stopped = tokio::select! {
-        result = &mut server => Some(("service", result.map_err(|e| e.to_string()))),
-        result = &mut web_server => Some(("dashboard", result.map_err(|e| e.to_string()))),
+        result = &mut server => Some(("service", result)),
+        result = &mut web_server => Some(("dashboard", result)),
         _ = sigterm.recv() => None,
         _ = sigint.recv() => None,
     };
     drop(shutdown_tx);
-    // Bound both graceful drains. A cancelled server drops its listener; the
-    // service owner removes only the socket identity it bound.
-    let drain = std::time::Duration::from_secs(10);
+    let drain = Duration::from_secs(10);
+    // Stop browser writes and wait for admitted requests before flushing. The
+    // shared /api/v0 route bypasses this gate and stays served during the flush.
+    let dashboard_result = tokio::time::timeout(drain, async {
+        *dashboard_open.write().await = false;
+    })
+    .await
+    .map_err(|_| "dashboard requests did not drain before sync flush".to_string());
+    if !shared_http_sync {
+        let _ = web_shutdown_tx.send(());
+    }
     let (service_result, web_result) = tokio::join!(
         async {
             if stopped.as_ref().is_some_and(|(name, _)| *name == "service") {
                 Ok(())
             } else {
-                tokio::time::timeout(drain, &mut server)
-                    .await
-                    .map_err(|_| "service shutdown timed out".to_string())
-                    .and_then(|r| r.map_err(|e| e.to_string()))
+                drain_listener(&mut server, "service", drain).await
             }
         },
         async {
-            if stopped
-                .as_ref()
-                .is_some_and(|(name, _)| *name == "dashboard")
+            if shared_http_sync
+                || stopped
+                    .as_ref()
+                    .is_some_and(|(name, _)| *name == "dashboard")
             {
                 Ok(())
             } else {
-                tokio::time::timeout(drain, &mut web_server)
-                    .await
-                    .map_err(|_| "dashboard shutdown timed out".to_string())
-                    .and_then(|r| r.map_err(|e| e.to_string()))
+                drain_listener(&mut web_server, "dashboard", drain).await
             }
         }
     );
@@ -175,18 +223,40 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
     // through that flush, then close its endpoint even if either operation
     // reports an error.
     let flush_timeout = std::time::Duration::from_secs(10);
-    let sync_flush = match tokio::time::timeout(flush_timeout, instance.flush_sync()).await {
-        Ok(result) => result,
-        Err(_) => Err(eidetica::sync::SyncError::Network(
-            "Timed out flushing daemon sync during shutdown".into(),
+    tracing::info!("Flushing daemon sync before closing sync listeners");
+    let sync_flush = if dashboard_result.is_err() {
+        Err(eidetica::sync::SyncError::Network(
+            "Dashboard writes still active during shutdown".into(),
         )
-        .into()),
+        .into())
+    } else {
+        match tokio::time::timeout(flush_timeout, instance.flush_sync()).await {
+            Ok(result) => result,
+            Err(_) => Err(eidetica::sync::SyncError::Network(
+                "Timed out flushing daemon sync during shutdown".into(),
+            )
+            .into()),
+        }
+    };
+    drop(web_shutdown_tx);
+    let shared_web_result = if shared_http_sync
+        && !stopped
+            .as_ref()
+            .is_some_and(|(name, _)| *name == "dashboard")
+    {
+        drain_listener(&mut web_server, "dashboard", drain).await
+    } else {
+        Ok(())
     };
     let sync_stop = sync.stop_server().await;
     service_result?;
     web_result?;
+    shared_web_result?;
+    dashboard_result?;
     if let Some((name, result)) = stopped {
-        result.map_err(|e| format!("{name} listener failed: {e}"))?;
+        result
+            .map_err(|e| format!("{name} listener task failed: {e}"))?
+            .map_err(|e| format!("{name} listener failed: {e}"))?;
         return Err(format!("{name} listener stopped unexpectedly").into());
     }
     sync_flush?;
@@ -194,6 +264,38 @@ pub async fn run(args: &DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Daemon shut down");
     Ok(())
+}
+
+/// Hold a read guard until a browser handler finishes, so shutdown can quiesce
+/// local writes without stopping HTTP peer sync on the same listener.
+async fn dashboard_admission(
+    State(open): State<Arc<RwLock<bool>>>,
+    request: axum::extract::Request,
+    next: Next,
+) -> Response {
+    if request.uri().path() == "/api/v0" {
+        return next.run(request).await;
+    }
+    let open = open.read().await;
+    if !*open {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+    next.run(request).await
+}
+
+async fn drain_listener(
+    task: &mut JoinHandle<Result<(), String>>,
+    name: &str,
+    timeout: Duration,
+) -> Result<(), String> {
+    match tokio::time::timeout(timeout, &mut *task).await {
+        Ok(result) => result.map_err(|e| format!("{name} listener task failed: {e}"))?,
+        Err(_) => {
+            task.abort();
+            let _ = task.await;
+            Err(format!("{name} shutdown timed out"))
+        }
+    }
 }
 
 /// Initialise a fresh daemon instance with an initial admin user.
@@ -281,6 +383,7 @@ mod tests {
         DaemonArgs {
             command: None,
             sync_tickets: Vec::new(),
+            http_sync_bind: None,
             socket: Some(socket.to_path_buf()),
             dashboard: false,
             dashboard_host: "127.0.0.1".into(),
@@ -348,6 +451,117 @@ mod tests {
             .await
             .unwrap();
         assert!(result.is_err());
+        assert!(!socket.exists());
+    }
+
+    #[tokio::test]
+    async fn shared_sync_remains_served_while_dashboard_drains() {
+        let (instance, _) = Instance::create_backend(
+            Box::new(eidetica::backend::database::InMemory::new()),
+            NewUser::passwordless("admin"),
+        )
+        .await
+        .unwrap();
+        instance.enable_sync().await.unwrap();
+        let open = Arc::new(RwLock::new(true));
+        let app = super::super::serve::web_router(instance, true).route_layer(
+            middleware::from_fn_with_state(open.clone(), dashboard_admission),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (shutdown, rx) = tokio::sync::oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .with_graceful_shutdown(async {
+                let _ = rx.await;
+            })
+            .await
+            .unwrap();
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            // Simulate an admitted browser write. Shutdown must wait for it,
+            // without parking /api/v0 behind the pending exclusive gate lock.
+            let admitted = open.read().await;
+            let closing = open.clone();
+            let close = tokio::spawn(async move {
+                *closing.write().await = false;
+            });
+            tokio::task::yield_now().await;
+            assert!(!close.is_finished());
+            let http = reqwest::Client::new();
+            let response = http
+                .post(format!("{url}/api/v0"))
+                .json(&eidetica::sync::protocol::SyncRequest::SendEntries(
+                    Vec::new(),
+                ))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert!(matches!(
+                response
+                    .json::<eidetica::sync::protocol::SyncResponse>()
+                    .await
+                    .unwrap(),
+                eidetica::sync::protocol::SyncResponse::Ack
+            ));
+            drop(admitted);
+            close.await.unwrap();
+            assert_eq!(
+                http.post(format!("{url}/login"))
+                    .header("Origin", &url)
+                    .form(&[("username", "admin")])
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::SERVICE_UNAVAILABLE
+            );
+            assert_eq!(
+                http.post(format!("{url}/api/v0"))
+                    .json(&eidetica::sync::protocol::SyncRequest::SendEntries(
+                        Vec::new()
+                    ))
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::OK
+            );
+            shutdown.send(()).unwrap();
+            task.await.unwrap();
+        })
+        .await
+        .expect("shared listener drain must remain bounded");
+    }
+
+    #[tokio::test]
+    async fn http_sync_bind_failure_releases_socket() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("service.sock");
+        let backend = create_backend(&BackendConfig {
+            backend: Backend::Inmemory,
+            data_dir: Some(dir.path().into()),
+            postgres_url: None,
+        })
+        .await
+        .unwrap();
+        Instance::create_backend(backend, NewUser::passwordless("admin"))
+            .await
+            .unwrap();
+        let occupied = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut args = daemon_args(dir.path(), &socket);
+        args.http_sync_bind = Some(occupied.local_addr().unwrap());
+        let result = tokio::time::timeout(Duration::from_secs(5), run(&args))
+            .await
+            .unwrap();
+        assert!(
+            result.is_err(),
+            "HTTP bind failure cannot be hidden by Iroh startup"
+        );
         assert!(!socket.exists());
     }
 

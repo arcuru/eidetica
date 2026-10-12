@@ -118,6 +118,11 @@ pub struct DaemonArgs {
     )]
     pub sync_tickets: Vec<String>,
 
+    /// Inbound HTTP peer sync bind (IP:port); unset means HTTP client-only.
+    /// Shares the dashboard listener when both bind addresses are equal.
+    #[arg(long, env = "EIDETICA_HTTP_SYNC_BIND")]
+    pub http_sync_bind: Option<std::net::SocketAddr>,
+
     /// Also host the web dashboard (disabled by default).
     #[arg(long, env = "EIDETICA_DASHBOARD", default_value_t = false)]
     pub dashboard: bool,
