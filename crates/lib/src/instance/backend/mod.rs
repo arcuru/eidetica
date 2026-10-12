@@ -172,6 +172,12 @@ pub trait Backend: Send + Sync + std::fmt::Debug {
         None
     }
 
+    /// Acting identity used by this backend's authenticated database requests.
+    #[cfg(all(unix, feature = "service"))]
+    fn remote_identity(&self) -> Option<crate::auth::SigKey> {
+        None
+    }
+
     /// The remote connection, if this is a remote backend. Returns `None` for
     /// local backends.
     #[cfg(all(unix, feature = "service"))]

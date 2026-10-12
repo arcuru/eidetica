@@ -39,12 +39,15 @@ use crate::auth::types::{Permission, SigKey};
 use crate::backend::{InstanceMetadata, RecordPage, RecordRange, StoreStateRequest};
 use crate::entry::{Entry, ID};
 use crate::instance::WriteSource;
+use crate::lease::{LeaseAcquireResponse, LeaseStatus};
 use crate::service::error::ServiceError;
 use crate::snapshot::Snapshot;
 use crate::user::UserInfo;
+use uuid::Uuid;
 
-/// Protocol version. Version 0 indicates an unstable protocol that may change
-/// without notice between releases.
+/// Protocol version. Version 1 adds daemon-local advisory lease operations
+/// and observations. Version 0 peers are incompatible. The protocol remains
+/// unstable and may change between releases.
 ///
 /// This constant is the compatibility gate for serialized types in this
 /// protocol. `#[non_exhaustive]` does **not** protect wire compatibility: a
@@ -52,7 +55,7 @@ use crate::user::UserInfo;
 /// variant to a serialized enum (e.g. [`WriteSource`](crate::instance::WriteSource)
 /// inside [`Notification::DatabaseWrite`]) is therefore a protocol version
 /// bump, not a backward-compatible addition.
-pub const PROTOCOL_VERSION: u32 = 0;
+pub const PROTOCOL_VERSION: u32 = 1;
 
 /// Maximum frame size: 64 MiB.
 pub const MAX_FRAME_SIZE: u32 = 64 * 1024 * 1024;
@@ -248,24 +251,50 @@ pub enum DatabaseOp {
     /// is a no-op. Gate Read on `root_id`.
     UnsubscribeWrites,
 
+    /// Live advisory lease observation. Gate Read; root must already exist.
+    LeaseStatus { name: String },
+    /// Register and return initial state atomically. Gate Read.
+    WatchLease { name: String, watch_id: Uuid },
+    /// Unregister this connection's watch, including after permission revocation.
+    UnwatchLease { name: String, watch_id: Uuid },
+    /// Nonblocking atomic acquisition. Gate Write; root must already exist.
+    TryAcquireLease { name: String },
+    /// Release an active grant owned by this same connection. Possession-gated,
+    /// not permission-gated, so an owner can release after revocation.
+    ReleaseLease { name: String, grant_id: Uuid },
+
     /// Return a point-in-time locator for the request's `root_id`.
     /// Gate Read.
     CreateTicket,
 }
 
 impl DatabaseOp {
+    pub(crate) fn lease_name(&self) -> Option<&str> {
+        match self {
+            Self::LeaseStatus { name }
+            | Self::WatchLease { name, .. }
+            | Self::UnwatchLease { name, .. }
+            | Self::TryAcquireLease { name }
+            | Self::ReleaseLease { name, .. } => Some(name),
+            _ => None,
+        }
+    }
+
     /// Minimum permission the caller needs against the target database.
     ///
-    /// Only `SubmitSignedEntry` mutates; everything else is a read. Every
+    /// Signed submit, staging and lease acquisition require Write. Every
     /// read variant is tree-scoped via the request's `root_id`, so the
     /// per-tree gate always runs for reads — there is no tree-less
     /// fall-through. `SubmitSignedEntry` is the exception: the server skips
     /// the per-tree gate for submit and relies on its own verification pass,
     /// so the `Write(0)` returned here is advisory only for that variant
-    /// (kept for completeness / non-submit callers that inspect it).
+    /// (kept for completeness / non-submit callers that inspect it). Lease
+    /// release/unwatch instead check connection-owned possession; their Read
+    /// value here is likewise advisory.
     pub fn required_permission(&self) -> Permission {
         match self {
-            DatabaseOp::SubmitSignedEntry { .. }
+            DatabaseOp::TryAcquireLease { .. }
+            | DatabaseOp::SubmitSignedEntry { .. }
             | DatabaseOp::BeginStoreStateStaging { .. }
             | DatabaseOp::StageStoreStateRecords { .. }
             | DatabaseOp::PublishStoreState { .. }
@@ -285,6 +314,11 @@ impl DatabaseOp {
             | DatabaseOp::StoreStateRecordScan { .. }
             | DatabaseOp::SubscribeWrites { .. }
             | DatabaseOp::UnsubscribeWrites
+            | DatabaseOp::LeaseStatus { .. }
+            | DatabaseOp::WatchLease { .. }
+            // Cleanup uses same-connection possession instead of this value.
+            | DatabaseOp::UnwatchLease { .. }
+            | DatabaseOp::ReleaseLease { .. }
             | DatabaseOp::CreateTicket => Permission::Read,
         }
     }
@@ -409,6 +443,13 @@ pub enum ServiceRequest {
 ///    is constant-size regardless of batch width.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Notification {
+    /// Coalescible observation for one keyed watch. Never an ownership grant.
+    LeaseChanged {
+        root_id: ID,
+        name: String,
+        watch_id: Uuid,
+        status: LeaseStatus,
+    },
     /// A settled-state write landed on the daemon for `root_id`.
     ///
     /// - `previous_tips` is the daemon-side subscription cursor at the
@@ -453,6 +494,10 @@ pub enum ServerFrame {
 /// Response from server to client.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ServiceResponse {
+    /// Live advisory observation / initial watch state.
+    LeaseStatus(LeaseStatus),
+    /// Owner-only grant or observed contention.
+    LeaseAcquired(LeaseAcquireResponse),
     /// Single entry
     Entry(Entry),
     /// Multiple entries

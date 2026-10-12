@@ -231,3 +231,47 @@ For the `Database::on_write` semantics on a connected Instance — including
 the deliberate trade that callbacks fire asynchronously to `commit()` in
 exchange for a single daemon-canonical event ordering — see [Write
 Callbacks](transactions.md#write-callbacks).
+
+## Advisory leases
+
+`Database::lease(name)` coordinates cooperative work among clients of one live
+Instance, without writing lease data into the database.
+It also works embedded: an Instance and its clones share one implicit client.
+Separate Instances and daemons do not coordinate, even on identical database data.
+Names are opaque strings of at most 256 UTF-8 bytes; the key includes the database root.
+
+```rust,no_run
+# use eidetica::{Database, Result};
+# async fn example(database: &Database) -> Result<()> {
+let lease = database.lease("runtime");
+let guard = lease.wait_acquire().await?;
+// Run cooperative work only while the guard and transport remain healthy.
+// Select guard.lost() alongside long-running work and stop on loss.
+if !guard.is_lost() {
+    // Perform an idempotent unit of work, recording progress in the database.
+}
+guard.release().await?;
+# Ok(()) }
+```
+
+`try_acquire()` returns `LeaseAcquire::Granted`, `Held`, or `AlreadyHeld`.
+A client cannot obtain a second independently releasable grant for the same key.
+`wait_acquire()` watches and retries on the client; contenders race without FIFO guarantees.
+`status()` and `watch()` expose a holder and an observation generation.
+Neither is an authorization token or a durable fencing term.
+A watch may coalesce transitions; dropping it unregisters it.
+
+Remote status/watch require Read permission; acquisition requires Write.
+Release requires the active grant on the same connection, including after database
+permission revocation.
+Dropping a remote guard sends a best-effort release; `release().await` waits for acknowledgment.
+Server-observed disconnect and shutdown clean up that connection's grants and watches.
+`guard.lost()` signals transport loss; it never reconnects or reacquires.
+A still-connected stalled holder keeps its grant: there is no TTL or renewal.
+Embedded guards release synchronously on drop, and Instance teardown loses all grants.
+Restarting an Instance clears lease state.
+
+These leases are advisory, not external exactly-once guarantees.
+A paused or disconnected old holder can still finish an already-started effect.
+Use idempotency keys and persist progress; stop voluntarily on loss.
+Ordinary database writes and replication are not fenced by leases.

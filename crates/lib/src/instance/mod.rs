@@ -323,6 +323,7 @@ pub(crate) struct InstanceInternal {
     /// `WriteEvent::previous_tips` is consistent for concurrent writers
     /// to the same tree.
     tree_locks: Mutex<HashMap<ID, Arc<tokio::sync::Mutex<()>>>>,
+    leases: crate::lease::LeaseRegistry,
 }
 
 impl std::fmt::Debug for InstanceInternal {
@@ -826,6 +827,7 @@ impl Instance {
             global_write_callbacks: Mutex::new(Vec::new()),
             next_callback_id: AtomicU64::new(0),
             tree_locks: Mutex::new(HashMap::new()),
+            leases: crate::lease::LeaseRegistry::default(),
         });
         let instance = Self { inner };
         // Hand the reader task a Weak reference so it can dispatch
@@ -1003,6 +1005,7 @@ impl Instance {
             global_write_callbacks: Mutex::new(Vec::new()),
             next_callback_id: AtomicU64::new(0),
             tree_locks: Mutex::new(HashMap::new()),
+            leases: crate::lease::LeaseRegistry::default(),
         });
         Ok(Self { inner })
     }
@@ -1035,6 +1038,7 @@ impl Instance {
             global_write_callbacks: Mutex::new(Vec::new()),
             next_callback_id: AtomicU64::new(0),
             tree_locks: Mutex::new(HashMap::new()),
+            leases: crate::lease::LeaseRegistry::default(),
         });
         Ok(Self { inner })
     }
@@ -1082,6 +1086,7 @@ impl Instance {
                 global_write_callbacks: Mutex::new(Vec::new()),
                 next_callback_id: AtomicU64::new(0),
                 tree_locks: Mutex::new(HashMap::new()),
+                leases: crate::lease::LeaseRegistry::default(),
             }),
         };
         let users_db = create_users_database(&temp_instance, &device_key).await?;
@@ -1115,6 +1120,7 @@ impl Instance {
             global_write_callbacks: Mutex::new(Vec::new()),
             next_callback_id: AtomicU64::new(0),
             tree_locks: Mutex::new(HashMap::new()),
+            leases: crate::lease::LeaseRegistry::default(),
         });
 
         let instance = Self { inner };
@@ -1145,6 +1151,10 @@ impl Instance {
         .await?;
 
         Ok((instance, user))
+    }
+
+    pub(crate) fn lease_registry(&self) -> &crate::lease::LeaseRegistry {
+        &self.inner.leases
     }
 
     /// Get a reference to the backend seam.

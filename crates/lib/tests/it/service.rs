@@ -3152,3 +3152,5 @@ async fn remote_snapshot_at_preserves_missing_boundary_error() {
         .expect_err("an incomplete boundary cannot be reported as an empty store");
     assert!(error.is_not_found(), "{error}");
 }
+
+mod leases;

@@ -41,7 +41,7 @@ The protocol uses **length-prefixed JSON frames** over a Unix domain socket.
 
 Each frame is a 4-byte big-endian length prefix followed by a JSON-serialized payload. Maximum frame size is 64 MiB (`MAX_FRAME_SIZE`); frames exceeding this are rejected on both read and write. `write_frame`/`read_frame` handle serialization and framing; `read_frame` returns `None` on clean EOF.
 
-`PROTOCOL_VERSION` is currently `0`, indicating an unstable protocol that may change without notice. Version mismatches fail the handshake.
+`PROTOCOL_VERSION` is currently `1` (daemon-local leases); the protocol remains unstable. Version mismatches fail the handshake, including connections from version `0` peers.
 
 `#[non_exhaustive]` does not protect wire compatibility — it only covers Rust source compatibility (exhaustive `match` arms in downstream code). Serialized enums like `WriteSource` (carried by `Notification::DatabaseWrite`) are versioned by `PROTOCOL_VERSION`: a peer on an older version fails to deserialize an unknown variant, so adding a variant is a version bump, not a backward-compatible addition.
 
@@ -397,3 +397,38 @@ This is a **fully trusted local-client** v1. Filesystem access to the socket gra
 - **Verified-frontier cursors**: `WriteEvent` cursors are raw DAG frontiers, so a bracket can span `Unverified`/`Failed` tips and `Database::ids_added` enumerates them — consumers must filter on verification status themselves. Narrowing the cursors to the Verified frontier needs an incremental frontier first; `Database::verified_frontier` is an O(N) walk, too expensive on the per-commit path.
 - **Notification backpressure**: the per-connection writer channel is `mpsc::unbounded_channel`; a stalled client reader buffers notifications in memory. Switch to a bounded channel with a documented drop-oldest policy if memory growth becomes measurable.
 - **Derived-key caching**: cache the Argon2id-derived encryption key in an OS secret store with a TTL, evolving the daemon into an ssh-agent-like key agent to eliminate repeated password prompts for CLI tools.
+
+## Lease coordination
+
+`Instance` owns one in-memory registry keyed by `(database root, opaque name)`.
+A synchronous registry mutex serializes acquire, release, status and watch
+registration; it is never held across an await.
+This registry is separate from CRDT storage and per-tree write locks.
+
+`DatabaseOp::{LeaseStatus, WatchLease, TryAcquireLease}` use the authenticated
+wrapper and session-keyset identity resolution.
+Unlike creation flows, their permission gate requires an existing root.
+Status/watch require Read; acquisition requires Write.
+`ReleaseLease` checks the same connection's active random grant ID instead of
+current database permission.
+`UnwatchLease` likewise checks a connection-owned watch, so revocation cannot
+strand cleanup.
+`ConnectionGuard` removes that connection's watches and releases its grants on every exit.
+Connection owners are random IDs, not usernames or counters shared by separate servers.
+
+Watch registration queues its initial `Notification::LeaseChanged` and returns
+status under the same registry lock.
+The client registers its keyed watch before sending the request, then reconciles
+initial response and notifications by generation, keeping the newer observation.
+Lease notifications update coalescing watch channels directly in the reader;
+user callbacks do not block that reader.
+Dropped watches remove local routing synchronously and send bounded best-effort
+wire cleanup; a timed-out cleanup tears down the connection.
+Cancelled acquisitions retain a cleanup token until their response is consumed,
+so an abandoned grant is released even if its response had already been delivered.
+
+There is no server-side blocking acquisition.
+`Lease::wait_acquire` subscribes, tries and retries after changes on the client.
+Guard loss follows connection death without automatic reconnect or reacquisition.
+Embedded use runs the same registry with one implicit owner and weak Instance handles.
+No lease entries, TTLs, renewal, durable fencing or write rejection are implemented.

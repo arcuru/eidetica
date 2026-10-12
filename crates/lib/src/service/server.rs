@@ -26,12 +26,14 @@ use crate::backend::{
 use crate::database::Database;
 use crate::entry::ID;
 use crate::instance::{CallbackId, WriteSource};
+use crate::lease::{LeaseKey, LeaseOwner, invalid_grant, validate_name};
 use crate::service::error::ServiceError;
 use crate::service::protocol::{
     AuthenticatedDbRequest, DatabaseOp, HandshakeAck, MergeState, Notification, PROTOCOL_VERSION,
     ServerFrame, ServiceRequest, ServiceResponse, read_frame, write_frame,
 };
 use crate::user::system_databases::lookup_user_record;
+use uuid::Uuid;
 
 /// Connection identifier. Monotonic per server-run; reused only after
 /// `AtomicU64` wraps (effectively never on a real daemon). Purely
@@ -67,13 +69,14 @@ struct SessionStaging {
 ///   this connection has done. Cleaned up on disconnect (via the guard's
 ///   `Drop`) and on explicit `UnsubscribeWrites`.
 ///
-/// There is no per-connection registry on the server. Each subscription
+/// Write subscriptions need no separate server registry. Each subscription
 /// is just a per-db callback registered against the daemon's Instance
 /// (`Instance::register_write_callback`); the daemon's existing
 /// `fire_write_callbacks` dispatch path handles fan-out by walking the
 /// per-tree callback list, no separate fan-out mechanism required.
 struct ConnectionContext {
     conn_id: ConnectionId,
+    lease_owner: LeaseOwner,
     tx: mpsc::UnboundedSender<ServerFrame>,
     instance: Instance,
     subscribed: std::sync::Mutex<HashMap<ID, CallbackId>>,
@@ -104,8 +107,9 @@ impl ConnectionContext {
     }
 }
 
-/// RAII cleanup: on connection drop (clean EOF, error, or panic), call
-/// `Instance::remove_write_callback` for every subscription this
+/// RAII cleanup: on connection drop (clean EOF, error, or panic), release
+/// connection-owned leases/watches and call `Instance::remove_write_callback`
+/// for every write subscription this
 /// connection registered. Holds an `Arc<ConnectionContext>` rather than
 /// borrowing so the cleanup path is identical for every exit case
 /// without sprinkling `remove_*` calls through the connection handler.
@@ -127,6 +131,10 @@ impl Drop for ConnectionGuard {
             self.ctx.instance.remove_write_callback(tree_id, *id);
         }
         drop(subs);
+        self.ctx
+            .instance
+            .lease_registry()
+            .disconnect(self.ctx.lease_owner);
         let staging = std::mem::take(&mut *self.ctx.staging.lock().unwrap())
             .into_values()
             .filter(|value| !value.published)
@@ -652,6 +660,7 @@ async fn handle_connection(
 
     let ctx = Arc::new(ConnectionContext {
         conn_id,
+        lease_owner: LeaseOwner::Connection(Uuid::new_v4()),
         tx: frame_tx.clone(),
         instance: instance.clone(),
         subscribed: std::sync::Mutex::new(HashMap::new()),
@@ -770,9 +779,9 @@ async fn dispatch_inner(
         // Gate 1: the connection must have completed `TrustedLogin*`. Gate 2:
         // the per-tree permission gate. Every `DatabaseOp` carries its target
         // `root_id` explicitly, so the gate is *unconditional* — there is no
-        // tree-less op to fall through it — with two exceptions handled below
-        // (`SubmitSignedEntry`, verification-gated; `SetInstanceMetadata`,
-        // gated against the server-known `_databases`, not the request root).
+        // tree-less op to fall through it — except signed submit (verification),
+        // instance metadata (Admin on `_databases`), and connection-owned
+        // lease cleanup (active grant/watch possession).
         ServiceRequest::AuthenticatedDb(inner) => {
             let (login_pubkey, keyset_snapshot, session_user_uuid) = match state {
                 ConnectionState::Authenticated {
@@ -802,6 +811,14 @@ async fn dispatch_inner(
                 identity,
                 op,
             } = *inner;
+            if let Some(name) = op.lease_name() {
+                validate_name(name)?;
+            }
+            let is_lease = op.lease_name().is_some();
+            let lease_cleanup = matches!(
+                op,
+                DatabaseOp::ReleaseLease { .. } | DatabaseOp::UnwatchLease { .. }
+            );
 
             // Submit is verification-gated, not session-gated.
             //
@@ -851,10 +868,10 @@ async fn dispatch_inner(
             };
 
             // Per-tree permission gate. Unconditional for every op *except*
-            // submit (verification in the handler is its boundary) and
-            // set-metadata (gated against `_databases` below). Create-flow
-            // passthrough (false) for the rest, so a not-yet-propagated tree is
-            // waved through and database creation works.
+            // submit (verification), set-metadata (`_databases` Admin), and
+            // lease cleanup (connection-owned possession in the handler).
+            // Lease observations/acquisition require an existing root; other
+            // ops retain the creation-flow passthrough.
             if is_set_metadata {
                 gate_tree_permission(
                     instance,
@@ -865,14 +882,14 @@ async fn dispatch_inner(
                     true,
                 )
                 .await?;
-            } else if !is_submit {
+            } else if !is_submit && !lease_cleanup {
                 gate_tree_permission(
                     instance,
                     &acting_pubkey,
                     &identity,
                     &root_id,
                     op.required_permission(),
-                    false,
+                    is_lease,
                 )
                 .await?;
             }
@@ -936,6 +953,70 @@ async fn dispatch_database_op(
     op: DatabaseOp,
 ) -> crate::Result<ServiceResponse> {
     match op {
+        DatabaseOp::LeaseStatus { name } => Ok(ServiceResponse::LeaseStatus(
+            instance.lease_registry().status(&LeaseKey {
+                root: root_id,
+                name,
+            }),
+        )),
+        DatabaseOp::TryAcquireLease { name } => {
+            let (response, _) = instance.lease_registry().acquire(
+                &LeaseKey {
+                    root: root_id,
+                    name,
+                },
+                ctx.lease_owner,
+            );
+            Ok(ServiceResponse::LeaseAcquired(response))
+        }
+        DatabaseOp::ReleaseLease { name, grant_id } => {
+            if !instance.lease_registry().release(
+                &LeaseKey {
+                    root: root_id,
+                    name,
+                },
+                ctx.lease_owner,
+                grant_id,
+            ) {
+                return Err(invalid_grant());
+            }
+            Ok(ServiceResponse::Ok)
+        }
+        DatabaseOp::WatchLease { name, watch_id } => {
+            let key = LeaseKey {
+                root: root_id,
+                name,
+            };
+            let event_key = key.clone();
+            let tx = ctx.tx.clone();
+            let status = instance.lease_registry().watch(
+                &key,
+                ctx.lease_owner,
+                watch_id,
+                Arc::new(move |status| {
+                    let _ = tx.send(ServerFrame::Notification(Notification::LeaseChanged {
+                        root_id: event_key.root.clone(),
+                        name: event_key.name.clone(),
+                        watch_id,
+                        status,
+                    }));
+                }),
+            );
+            Ok(ServiceResponse::LeaseStatus(status))
+        }
+        DatabaseOp::UnwatchLease { name, watch_id } => {
+            if !instance.lease_registry().unwatch(
+                &LeaseKey {
+                    root: root_id,
+                    name,
+                },
+                ctx.lease_owner,
+                watch_id,
+            ) {
+                return Err(invalid_grant());
+            }
+            Ok(ServiceResponse::Ok)
+        }
         DatabaseOp::ResolveStoreState { request } => {
             let request = session_store_state_request(request, user_uuid, &root_id)?;
             let view = match instance.backend().resolve_store_state(&request).await? {
